@@ -93,4 +93,32 @@ class ConversationProjectionTest {
         val committed = reducer.accept(event(checkpoint.replace("90", "91")))!!
         assertTrue(committed.pendingInputs.isEmpty())
     }
+
+    @Test fun `live overflow requires fresh history boundary before evicting any turns`() {
+        val initialRaw = fixture().raw.toMutableMap().apply {
+            put("turns", JsonArray(emptyList())); put("active_turns", JsonArray(emptyList()))
+            put("has_more", JsonPrimitive(false)); remove("next_before_cursor")
+        }
+        val initial = HolonConversationSnapshot.from(HolonJsonDocument(JsonObject(initialRaw)))
+        val reducer = ConversationStreamReducer(initial)
+        reducer.accept(event(begin))
+        val template = fixture().turns.last().raw
+        val incoming = (1..181).map { index -> JsonObject(template.toMutableMap().apply {
+            put("turn_id", JsonPrimitive("turn-$index"))
+            put("key", JsonObject(mapOf("turn_index" to JsonPrimitive(index))))
+        }) }
+        incoming.forEach { turn -> reducer.accept(event(JsonObject(mapOf("type" to JsonPrimitive("turn_summary_upsert"), "turn" to turn)).toString())) }
+        assertFailsWith<ConversationHistoryBoundaryRequiredException> { reducer.accept(event(checkpoint)) }
+        assertEquals(initial, reducer.snapshot) // No hidden eviction or checkpoint publication.
+        val authoritative = HolonConversationSnapshot.from(HolonJsonDocument(JsonObject(initialRaw.toMutableMap().apply {
+            put("turns", JsonArray(incoming.takeLast(60)))
+            put("has_more", JsonPrimitive(true)); put("next_before_cursor", JsonPrimitive("history-before-122"))
+        })))
+        val recovered = ConversationStreamReducer(authoritative)
+        recovered.accept(event(begin))
+        val committed = recovered.accept(event(checkpoint))!!
+        assertTrue(committed.hasMore)
+        assertEquals("history-before-122", committed.nextBeforeCursor)
+        assertEquals("opaque-stream", committed.snapshotCursor)
+    }
 }

@@ -21,6 +21,8 @@ class SessionCoordinatorTest {
         owner.activate(session("A"), second)
         assertFailsWith<CancellationException> { owner.requireCurrent(old) }
         assertFalse(owner.acceptsFailure(HolonHttpException(401, null, clientInstanceId = first.instanceId)))
+        assertFalse(owner.acceptsFailure(SessionScopeChangedException(first.instanceId)))
+        assertTrue(owner.acceptsFailure(SessionScopeChangedException(second.instanceId)))
         assertTrue(owner.acceptsFailure(HolonHttpException(401, null, clientInstanceId = second.instanceId)))
         assertSame(second, owner.capture().client)
     }

@@ -7,6 +7,9 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
+/** Recover with an authoritative bootstrap before evicting any reachable history. */
+public class ConversationHistoryBoundaryRequiredException : IllegalStateException("Conversation history boundary needs refresh")
+
 /** Immutable publication at checkpoints; partial batches never touch visible state. */
 public class ConversationStreamReducer(initial: HolonConversationSnapshot, private val maxTurns: Int = 180) {
     public var snapshot: HolonConversationSnapshot = initial
@@ -68,7 +71,9 @@ public class ConversationStreamReducer(initial: HolonConversationSnapshot, priva
                 val assigned = turns.flatMap { it.inputs }.mapTo(hashSetOf()) { it.messageId }
                 assigned.forEach(pending::remove)
                 val active = turns.filter { it.executionKind == "active" }
-                turns = mergeConversationTurns(turns.filter { it.executionKind != "active" }.takeLast(maxTurns), active)
+                val terminal = turns.filter { it.executionKind != "active" }
+                if (terminal.size > maxTurns) throw ConversationHistoryBoundaryRequiredException()
+                turns = mergeConversationTurns(terminal, active)
                 val raw = snapshot.raw.toMutableMap()
                 raw["turns"] = JsonArray(turns.map { it.raw })
                 raw["active_turns"] = JsonArray(active.map { it.raw })

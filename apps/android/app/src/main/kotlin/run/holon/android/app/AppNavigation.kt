@@ -1,6 +1,13 @@
 package run.holon.android.app
 
 import androidx.lifecycle.SavedStateHandle
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+
+/** Independent of session startup so a failed resume cannot disable later persistence. */
+internal fun observeNavigationBookmarks(scope: CoroutineScope, state: StateFlow<HolonUiState>, handle: SavedStateHandle) =
+    scope.launch { state.collect { current -> NavigationBookmark.from(current)?.save(handle) } }
 
 /** Routes contain identity/parameters only; inline expansion is not a route. */
 internal sealed interface AppRoute {
@@ -68,4 +75,3 @@ internal fun HolonUiState.backTarget(artifactLoading: Boolean = false): BackTarg
     mainDestination != MainDestination.Agents -> BackTarget.Agents
     else -> BackTarget.Exit
 }
-

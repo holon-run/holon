@@ -23,11 +23,22 @@ internal class SessionCoordinator {
         }
     }
 
-    fun acceptsFailure(error: Throwable): Boolean =
-        error !is HolonHttpException || error.clientInstanceId == null || error.clientInstanceId == current?.client?.instanceId
+    fun acceptsFailure(error: Throwable): Boolean {
+        val clientId = when (error) {
+            is HolonHttpException -> error.clientInstanceId
+            is SessionScopeChangedException -> error.clientInstanceId
+            else -> null
+        }
+        return clientId == null || clientId == current?.client?.instanceId
+    }
 
     fun <T> read(read: (HolonHttpClient) -> T): T {
         val lease = capture()
+        return read(lease, read)
+    }
+
+    fun <T> read(lease: SessionLease, read: (HolonHttpClient) -> T): T {
+        requireCurrent(lease)
         return read(lease.client).also { requireCurrent(lease) }
     }
 }

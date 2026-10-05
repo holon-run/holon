@@ -6,6 +6,9 @@ window, independent history/stream cursors, and publication only after a complet
 batch checkpoint. Unknown control messages require a new authoritative snapshot;
 they are never silently applied. The mobile v2 fixture under
 `tests/fixtures/client-wire` is a cross-client conformance input.
+When a live window would overflow, retain the published window until a new
+bootstrap provides the authoritative history boundary. Never fabricate a history
+cursor from the independent stream checkpoint.
 
 The app owns credentials and lifecycle. SessionCoordinator binds a client
 generation to a network/base URL/runtime/user/visibility scope. Transport errors

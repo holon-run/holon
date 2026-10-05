@@ -11,6 +11,7 @@ internal fun trimArtifactCache(directory: File, protected: File) {
     val files = directory.listFiles().orEmpty().filter(File::isFile)
     var bytes = files.sumOf(File::length)
     files.sortedBy(File::lastModified).filterNot { it == protected }.forEach { file ->
-        if (bytes > MAX_CACHED_ARTIFACT_BYTES && file.delete()) bytes -= file.length()
+        val length = file.length()
+        if (bytes > MAX_CACHED_ARTIFACT_BYTES && file.delete()) bytes -= length
     }
 }
