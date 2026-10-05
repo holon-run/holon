@@ -1,7 +1,5 @@
-//! Explicit, loopback-only desktop integration. File identity uses the browsing resolver.
+//! Explicit host desktop integration. File identity uses the browsing resolver.
 use super::*;
-use axum::{extract::ConnectInfo, Extension};
-use std::net::SocketAddr;
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct DesktopCapabilities {
@@ -16,10 +14,7 @@ pub(crate) struct RevealFileRequest {
     path: String,
 }
 
-fn loopback_request(headers: &HeaderMap, peer: Option<SocketAddr>, mutation: bool) -> bool {
-    if !peer.is_some_and(|peer| peer.ip().is_loopback()) {
-        return false;
-    }
+fn same_origin_request(headers: &HeaderMap, mutation: bool, authenticated_remote: bool) -> bool {
     let Some(host) = headers.get("host").and_then(|v| v.to_str().ok()) else {
         return false;
     };
@@ -35,7 +30,20 @@ fn loopback_request(headers: &HeaderMap, peer: Option<SocketAddr>, mutation: boo
     {
         return false;
     }
-    if !matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")) {
+    // Local mode without credentials must not trust a DNS-rebound Host.
+    if !authenticated_remote
+        && !match url.host() {
+            Some(url::Host::Domain(host)) => {
+                let host = host.trim_end_matches('.');
+                host == "localhost" || host.ends_with(".localhost")
+            }
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => {
+                ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback())
+            }
+            None => false,
+        }
+    {
         return false;
     }
     if headers
@@ -56,34 +64,23 @@ fn loopback_request(headers: &HeaderMap, peer: Option<SocketAddr>, mutation: boo
 
 pub(crate) async fn capabilities(
     State(state): State<Arc<AppState>>,
-    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
 ) -> Result<Json<DesktopCapabilities>, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     Ok(Json(DesktopCapabilities {
-        reveal_in_finder: state.desktop_integration
-            && loopback_request(
-                &headers,
-                peer.map(|Extension(ConnectInfo(peer))| peer),
-                false,
-            ),
+        reveal_in_finder: state.desktop_integration,
     }))
 }
 
 pub(crate) async fn reveal(
     State(state): State<Arc<AppState>>,
-    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<RevealFileRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    if !state.desktop_integration
-        || !loopback_request(
-            &headers,
-            peer.map(|Extension(ConnectInfo(peer))| peer),
-            true,
-        )
-    {
+    let authenticated_remote = state.require_control_token
+        || state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc;
+    if !state.desktop_integration || !same_origin_request(&headers, true, authenticated_remote) {
         return Err(forbidden(
             "desktop integration is unavailable for this connection",
         ));
@@ -123,26 +120,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn desktop_requires_loopback_peer_host_and_same_origin() {
-        let peer = Some("127.0.0.1:4567".parse().unwrap());
-        for host in ["localhost:7878", "127.0.0.1:7878", "[::1]:7878"] {
+    fn desktop_requires_same_origin_without_restricting_host_location() {
+        for host in [
+            "localhost:7878",
+            "127.0.0.1:7878",
+            "[::1]:7878",
+            "192.0.2.5:7878",
+            "host.tailnet.ts.net",
+        ] {
             let mut headers = HeaderMap::new();
             headers.insert("host", host.parse().unwrap());
-            assert!(loopback_request(&headers, peer, false));
-            assert!(!loopback_request(&headers, peer, true));
+            assert!(same_origin_request(&headers, false, true));
+            assert!(!same_origin_request(&headers, true, true));
             headers.insert("origin", format!("http://{host}").parse().unwrap());
-            assert!(loopback_request(&headers, peer, true));
-            assert!(!loopback_request(&headers, None, true));
-            assert!(!loopback_request(
-                &headers,
-                Some("10.0.0.1:1234".parse().unwrap()),
-                true
-            ));
+            assert!(same_origin_request(&headers, true, true));
             headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
-            assert!(!loopback_request(&headers, peer, true));
+            assert!(!same_origin_request(&headers, true, true));
         }
         for (host, origin) in [
-            ("evil.test:7878", "http://evil.test:7878"),
+            ("host.tailnet.ts.net", "https://evil.test"),
             ("localhost:7878", "http://evil.test"),
             ("localhost:7878", "http://localhost:9999"),
             ("localhost:7878", "null"),
@@ -151,7 +147,30 @@ mod tests {
             let mut headers = HeaderMap::new();
             headers.insert("host", host.parse().unwrap());
             headers.insert("origin", origin.parse().unwrap());
-            assert!(!loopback_request(&headers, peer, true));
+            assert!(!same_origin_request(&headers, true, true));
+        }
+    }
+
+    #[test]
+    fn unauthenticated_local_mode_rejects_dns_rebinding() {
+        for (host, allowed) in [
+            ("localhost:7878", true),
+            ("127.0.0.1:7878", true),
+            ("[::1]:7878", true),
+            ("[::ffff:7f00:1]:7878", true),
+            ("[::ffff:127.0.0.1]:7878", false),
+            ("evil.test:7878", false),
+            ("192.0.2.5:7878", false),
+            ("host.tailnet.ts.net", false),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert("host", host.parse().unwrap());
+            headers.insert("origin", format!("http://{host}").parse().unwrap());
+            assert_eq!(
+                same_origin_request(&headers, true, false),
+                allowed,
+                "{host}"
+            );
         }
     }
 }

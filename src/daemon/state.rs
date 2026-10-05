@@ -87,6 +87,8 @@ pub struct DaemonStatusView {
 pub struct DaemonLifecycleResult {
     pub ok: bool,
     pub action: DaemonLifecycleAction,
+    #[serde(default)]
+    pub process_created: bool,
     #[serde(flatten)]
     pub status: DaemonStatusView,
 }

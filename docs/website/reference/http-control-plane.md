@@ -626,11 +626,11 @@ Reverts to the default model. Accepts an optional body:
 
 **`GET /api/control/network/tailscale/serve`** — Tailscale Serve status
 
-Returns current Tailscale Serve status, target loopback port, and the active tailnet domain when configured.
+Returns current Tailscale Serve status, target loopback port, and the active tailnet domain when configured. `control_authentication_available` indicates effective TCP control authentication without exposing credentials; disabled authentication does not qualify.
 
 **`POST /api/control/network/tailscale/serve/enable`** — Enable Tailscale Serve
 
-Enables Tailscale Serve to expose the local HTTP control plane securely over HTTPS on your tailnet.
+Enables Tailscale Serve to expose the local HTTP control plane securely over HTTPS on your tailnet. Effective control authentication and a listener including loopback are required before a rule is changed; LAN access is not required.
 
 **`POST /api/control/network/tailscale/serve/disable`** — Disable Tailscale Serve
 
@@ -797,7 +797,7 @@ Response:
 
 **`GET /api/desktop/capabilities`** — Desktop integration capabilities
 
-Returns whether desktop integration (such as macOS Finder reveal) is available on the current connection. This requires `--desktop-integration` enabled, running on macOS, and accessed directly over loopback with matching origin.
+Returns the daemon host's desktop capability (such as macOS Finder reveal). This requires `--desktop-integration` enabled and running on macOS, independent of LAN/Serve or caller locality. The Web UI hides the action outside localhost/loopback entry points; this is not an API permission boundary.
 
 ```json
 {
@@ -807,7 +807,7 @@ Returns whether desktop integration (such as macOS Finder reveal) is available o
 
 **`POST /api/desktop/reveal`** — Reveal file in desktop file manager
 
-Opens macOS Finder highlighting the specified file or directory. Denied unless desktop integration is enabled, loopback connection verified, and the path stays strictly within the registered workspace execution root.
+Reveals the specified file or directory in the **daemon host's** macOS Finder, not the caller's device. Authorized remote calls are allowed when desktop integration is enabled, the desktop Origin/cross-site checks pass, and the path stays strictly within the registered workspace execution root.
 
 ```json
 {

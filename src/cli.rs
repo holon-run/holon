@@ -312,7 +312,7 @@ pub struct ServeOptions {
     pub token_file: Option<PathBuf>,
     #[arg(long)]
     pub web_dist: Option<PathBuf>,
-    /// Enable Finder integration on a directly accessed, loopback-only macOS server.
+    /// Enable authorized Finder operations on the macOS daemon host.
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub desktop_integration: Option<bool>,
 }

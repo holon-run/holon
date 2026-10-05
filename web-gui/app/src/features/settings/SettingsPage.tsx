@@ -13,6 +13,7 @@ import { LANGUAGE_MODE_OPTIONS } from "../../i18n/types";
 import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusChip } from "../../components/ui/StatusChip";
+import { useServeStatus } from "./useServeStatus";
 import { PairingCard } from "./PairingCard";
 import { readSettingsTab, rememberSettingsTab, type SettingsTabKey } from "./settings-preferences";
 import { TailscaleServeCard } from "./TailscaleServeCard";
@@ -310,6 +311,7 @@ export function SettingsPage({
   onStartCodexDeviceLogin,
   onClearCodexDeviceLogin,
 }: SettingsPageProps) {
+  const serve = useServeStatus(connection);
   const groupedModels = groupModelsByProvider(modelCatalog.options);
   const decisionModels = useMemo(
     () => modelCatalog.options.filter((model) => model.decisionCapable),
@@ -960,8 +962,8 @@ export function SettingsPage({
               </dl>
             </Card>
 
-            <PairingCard connection={connection} />
-            <TailscaleServeCard connection={connection} />
+            <PairingCard connection={connection} serve={serve} />
+            <TailscaleServeCard connection={connection} serve={serve} />
 
             {/* ── Language ── */}
             <Card className="settings-card settings-primary-card">

@@ -9,7 +9,7 @@ actor RecordingProcessLauncher: HolonProcessLaunching {
     }
 
     private var recordedInvocations: [Invocation] = []
-    private let result: Result<HolonProcessResult, Error>
+    private var result: Result<HolonProcessResult, Error>
     private let address: String?
     private let responses: [String: String]
 
@@ -41,6 +41,10 @@ actor RecordingProcessLauncher: HolonProcessLaunching {
     func invocations() -> [Invocation] {
         recordedInvocations
     }
+
+    func replaceResult(_ result: HolonProcessResult) {
+        self.result = .success(result)
+    }
 }
 
 final class HolonMenuClientTests: XCTestCase {
@@ -64,7 +68,8 @@ final class HolonMenuClientTests: XCTestCase {
         let client = HolonCLIClient(
             executableURL: URL(fileURLWithPath: "/opt/holon"),
             launcher: launcher,
-            launchOptions: HolonDaemonLaunchOptions(tokenFilePath: "/tmp/nonexistent-holon-menu-token")
+            launchOptions: HolonDaemonLaunchOptions(tokenFilePath: "/tmp/nonexistent-holon-menu-token"),
+            networkSession: serveSession()
         )
 
         let url = try await client.authenticatedWebURL()
@@ -78,6 +83,9 @@ final class HolonMenuClientTests: XCTestCase {
         static let lock = NSLock()
         nonisolated(unsafe) static var requests: [(String, String, String?, URL?)] = []
         nonisolated(unsafe) static var responseCode = 200
+        nonisolated(unsafe) static var authenticationAvailable: Bool? = true
+        nonisolated(unsafe) static var authenticateBearer = false
+        nonisolated(unsafe) static var authMode = "local"
 
         override class func canInit(with request: URLRequest) -> Bool { true }
         override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -90,38 +98,91 @@ final class HolonMenuClientTests: XCTestCase {
                 request.url
             ))
             let code = Self.responseCode
+            let authMode = Self.authMode
+            let authenticated = Self.authenticationAvailable.map {
+                $0 || Self.authenticateBearer && request.value(forHTTPHeaderField: "Authorization") != nil
+            }
             Self.lock.unlock()
             client?.urlProtocol(self, didReceive: HTTPURLResponse(
                 url: request.url!, statusCode: code, httpVersion: nil, headerFields: nil
             )!, cacheStoragePolicy: .notAllowed)
+            if request.url?.path == "/api/auth/method" {
+                client?.urlProtocol(self, didLoad: Data("{\"mode\":\"\(authMode)\"}".utf8))
+                client?.urlProtocolDidFinishLoading(self)
+                return
+            }
             client?.urlProtocol(self, didLoad: Data("""
                 {"desired_enabled":true,"available":true,"connected":true,"status_known":true,
                  "serving":false,"conflict":false,"hostname":"holon.example.ts.net",
-                 "serve_url":"https://holon.example.ts.net","message":"Not serving"}
+                 "serve_url":"https://holon.example.ts.net","message":"Not serving",
+                 "control_authentication_available":\(authenticated.map(String.init) ?? "null")}
                 """.utf8))
             client?.urlProtocolDidFinishLoading(self)
         }
         override func stopLoading() {}
     }
 
-    private func serveClient(address: String = "127.0.0.1:7878") -> (HolonCLIClient, RecordingProcessLauncher) {
+    private func serveSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ServeURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    func testOIDCConnectionUsesNormalLoginWithoutIssuingTicket() async throws {
+        ServeURLProtocol.lock.withLock {
+            ServeURLProtocol.authMode = "oidc"
+            ServeURLProtocol.responseCode = 200
+        }
+        defer { ServeURLProtocol.lock.withLock { ServeURLProtocol.authMode = "local" } }
         let launcher = RecordingProcessLauncher(result: .success(HolonProcessResult(
             terminationStatus: 0,
             stdout: Data("""
                 {"ok":true,"state":"running","healthy":true,"home_dir":"/tmp/holon",
-                "socket_path":"/tmp/holon.sock","http_addr":"\(address)",
-                "web_url":"http://127.0.0.1:7878","desired_running":true,
-                "control_connectivity":true,"message":"Running"}
+                 "socket_path":"/tmp/holon.sock","http_addr":"127.0.0.1:7878",
+                 "web_url":"http://127.0.0.1:7878","desired_running":true,
+                 "control_connectivity":true,"message":"Running"}
                 """.utf8),
             stderr: Data()
         )))
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [ServeURLProtocol.self]
+        let client = HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher, networkSession: serveSession()
+        )
+        let url = try await client.pairingURL(for: URL(string: "https://holon.example.com")!)
+        XCTAssertEqual(url.absoluteString, "https://holon.example.com/login")
+        let localURL = try await client.authenticatedWebURL()
+        XCTAssertEqual(localURL.absoluteString, "http://127.0.0.1:7878/login")
+        let invocations = await launcher.invocations()
+        XCTAssertFalse(invocations.contains { $0.executableURL.path == "/usr/bin/curl" })
+    }
+
+    private func serveClient(
+        address: String = "127.0.0.1:7878",
+        home: String = "/tmp/holon",
+        token: String? = "test-token",
+        daemonExecutable: String = "/opt/holon",
+        lanAddress: String? = nil,
+        desktopIntegration: Bool? = true,
+        processCreated: Bool? = nil,
+        preferences: UserDefaults = .standard
+    ) -> (HolonCLIClient, RecordingProcessLauncher) {
+        let launcher = RecordingProcessLauncher(result: .success(HolonProcessResult(
+            terminationStatus: 0,
+            stdout: Data("""
+                {"ok":true,"state":"running","healthy":true,"home_dir":"\(home)",
+                "socket_path":"/tmp/holon.sock","http_addr":"\(address)",
+                "web_url":"http://127.0.0.1:7878","desired_running":true,
+                "control_connectivity":true,"executable_path":"\(daemonExecutable)","pid":99,"message":"Running"
+                \(processCreated.map { ",\"process_created\":\($0)" } ?? "")}
+                """.utf8),
+            stderr: Data()
+        )), address: lanAddress)
         return (HolonCLIClient(
             executableURL: URL(fileURLWithPath: "/opt/holon"),
             launcher: launcher,
-            launchOptions: HolonDaemonLaunchOptions(token: "test-token"),
-            networkSession: URLSession(configuration: configuration)
+            launchOptions: HolonDaemonLaunchOptions(token: token, desktopIntegration: desktopIntegration),
+            networkSession: serveSession(),
+            preferences: preferences
         ), launcher)
     }
     func testParsesConnectedAndServingTailscaleStatus() {
@@ -225,7 +286,17 @@ final class HolonMenuClientTests: XCTestCase {
         )
     }
 
-    func testLANUsesClientVisibleAddressWithoutDesktopIntegration() async throws {
+    func testLANUsesWildcardListenerAndIndependentDesktopIntegration() async throws {
+        ServeURLProtocol.lock.withLock {
+            ServeURLProtocol.authenticationAvailable = false
+            ServeURLProtocol.authenticateBearer = true
+        }
+        defer {
+            ServeURLProtocol.lock.withLock {
+                ServeURLProtocol.authenticationAvailable = true
+                ServeURLProtocol.authenticateBearer = false
+            }
+        }
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
@@ -244,7 +315,8 @@ final class HolonMenuClientTests: XCTestCase {
         let client = HolonCLIClient(
             executableURL: URL(fileURLWithPath: "/opt/holon"),
             launcher: launcher,
-            launchOptions: HolonDaemonLaunchOptions(access: "local", port: 7878)
+            launchOptions: HolonDaemonLaunchOptions(access: "local", port: 7878),
+            networkSession: serveSession()
         )
         let webURL = try await client.webURL()
         XCTAssertEqual(webURL.absoluteString, "http://192.168.1.20:7878")
@@ -253,6 +325,7 @@ final class HolonMenuClientTests: XCTestCase {
         }
         XCTAssertEqual(addressLookup?.executableURL.path, "/usr/sbin/ipconfig")
         XCTAssertEqual(addressLookup?.arguments, ["getifaddr", "en0"])
+        _ = try await client.enableLAN()
         _ = try await client.restart()
         var invocations = await launcher.invocations()
         let tokenPath = home.appendingPathComponent("control.token").path
@@ -264,21 +337,22 @@ final class HolonMenuClientTests: XCTestCase {
         )
         XCTAssertEqual(
             invocations.last?.arguments,
-            ["daemon", "restart", "--access", "lan", "--host", "192.168.1.20", "--port", "7878",
-             "--token-file", tokenPath, "--desktop-integration=false"]
+            ["daemon", "restart", "--access", "lan", "--host", "192.168.1.20", "--listen", "0.0.0.0:7878",
+             "--token-file", tokenPath, "--desktop-integration"]
         )
         _ = try await client.disableLAN()
         invocations = await launcher.invocations()
         XCTAssertEqual(
             invocations.last?.arguments,
-            ["daemon", "restart", "--access", "local", "--listen", "127.0.0.1:7878", "--desktop-integration"]
+            ["daemon", "restart", "--access", "local", "--listen", "127.0.0.1:7878",
+             "--token-file", tokenPath, "--desktop-integration"]
         )
         _ = try await client.enableLAN()
         invocations = await launcher.invocations()
         XCTAssertEqual(
             invocations.last?.arguments,
-            ["daemon", "restart", "--access", "lan", "--host", "192.168.1.20", "--port", "7878",
-             "--token-file", tokenPath, "--desktop-integration=false"]
+            ["daemon", "restart", "--access", "lan", "--host", "192.168.1.20", "--listen", "0.0.0.0:7878",
+             "--token-file", tokenPath, "--desktop-integration"]
         )
         XCTAssertEqual(try String(contentsOfFile: tokenPath, encoding: .utf8), token)
     }
@@ -308,11 +382,274 @@ final class HolonMenuClientTests: XCTestCase {
             _ = try await client.enableLAN()
             XCTFail("Expected insecure token file to be rejected")
         } catch let error as HolonCLIError {
-            XCTAssertEqual(error.localizedDescription,
-                           "The LAN token file must be a nonempty, owner-only regular file: \(tokenPath)")
+            XCTAssertTrue(error.localizedDescription.contains(
+                "The control token file must be a nonempty, owner-only regular file: \(tokenPath)"
+            ))
         }
         let invocations = await launcher.invocations()
         XCTAssertFalse(invocations.contains { $0.arguments.starts(with: ["daemon", "restart"]) })
+    }
+
+    func testLANWithExistingAuthenticationDoesNotReplaceUnknownCredentials() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let (client, launcher) = serveClient(
+            home: home.path, token: nil, lanAddress: "192.168.1.20",
+            desktopIntegration: false
+        )
+        _ = try await client.enableLAN()
+        let invocations = await launcher.invocations()
+        XCTAssertEqual(invocations.last?.arguments, [
+            "daemon", "restart", "--access", "lan", "--host", "192.168.1.20",
+            "--listen", "0.0.0.0:7878", "--desktop-integration=false",
+        ])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent("control.token").path))
+    }
+
+    func testRestoringWildcardListenerDoesNotCreateOrReplaceCredentials() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let (client, launcher) = serveClient(
+            address: "0.0.0.0:9000", home: home.path, token: nil,
+            lanAddress: "192.168.1.20", desktopIntegration: false
+        )
+        _ = try await client.restart()
+        let invocations = await launcher.invocations()
+        XCTAssertEqual(invocations.last?.arguments, [
+            "daemon", "restart", "--access", "lan", "--host", "192.168.1.20",
+            "--listen", "0.0.0.0:9000", "--desktop-integration=false",
+        ])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent("control.token").path))
+    }
+
+    func testLocalStartupDoesNotLoadUnapprovedExistingTokenFile() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let path = home.appendingPathComponent("control.token").path
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: path, contents: Data("unapproved".utf8), attributes: [.posixPermissions: 0o600]
+        ))
+        let (client, launcher) = serveClient(home: home.path, token: nil)
+        _ = try await client.start()
+        let invocations = await launcher.invocations()
+        XCTAssertFalse(invocations.last?.arguments.contains("--token-file") == true)
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), "unapproved")
+    }
+
+    func testStartRecordsOwnershipOnlyForExplicitlyCreatedProcess() async throws {
+        for created in [true, false, nil] as [Bool?] {
+            let suite = UUID().uuidString
+            let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defer { preferences.removePersistentDomain(forName: suite) }
+            let home = "/tmp/holon-\(UUID().uuidString)"
+            let (client, _) = serveClient(home: home, processCreated: created, preferences: preferences)
+            let status = try await client.start()
+            XCTAssertEqual(status.processCreated, created)
+            XCTAssertEqual(
+                preferences.string(forKey: "HolonMenu.managedDaemonPID.\(home)"),
+                created == true ? "99" : nil
+            )
+        }
+    }
+
+    func testServeRejectsPersistedOwnershipReusedAndUnknownAuthentication() async throws {
+        for (created, authenticated) in [(false, false), (nil, false), (true, nil)] as [(Bool?, Bool?)] {
+            let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let suite = UUID().uuidString
+            let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defer { preferences.removePersistentDomain(forName: suite) }
+            preferences.set("99", forKey: "HolonMenu.managedDaemonPID.\(home.path)")
+            ServeURLProtocol.lock.withLock {
+                ServeURLProtocol.requests = []
+                ServeURLProtocol.authenticationAvailable = authenticated
+            }
+            defer { ServeURLProtocol.lock.withLock { ServeURLProtocol.authenticationAvailable = true } }
+            let (client, launcher) = serveClient(
+                home: home.path, token: nil, processCreated: created, preferences: preferences
+            )
+            _ = try await client.start()
+            do {
+                _ = try await client.enableTailscaleServe()
+                XCTFail("Uncertain provenance or authentication must fail closed")
+            } catch {}
+            let calls = await launcher.invocations()
+            XCTAssertFalse(calls.contains { $0.arguments.contains("restart") })
+            XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent("control.token").path))
+            XCTAssertFalse(ServeURLProtocol.lock.withLock { ServeURLProtocol.requests }.contains { $0.0 == "POST" })
+        }
+    }
+
+    func testServePreparesAuthenticationOnlyForSessionCreatedDaemon() async throws {
+        for address in ["127.0.0.1:7878", "0.0.0.0:9000", "[::]:9001"] {
+            let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: home) }
+            let suite = UUID().uuidString
+            let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defer { preferences.removePersistentDomain(forName: suite) }
+            ServeURLProtocol.lock.withLock {
+                ServeURLProtocol.requests = []
+                ServeURLProtocol.authenticationAvailable = false
+                ServeURLProtocol.authenticateBearer = true
+            }
+            defer {
+                ServeURLProtocol.lock.withLock {
+                    ServeURLProtocol.authenticationAvailable = true
+                    ServeURLProtocol.authenticateBearer = false
+                }
+            }
+            let (client, launcher) = serveClient(
+                address: address, home: home.path, token: nil,
+                lanAddress: "192.168.1.10", processCreated: true, preferences: preferences
+            )
+            _ = try await client.start()
+            _ = try await client.enableTailscaleServe()
+            let calls = await launcher.invocations()
+            XCTAssertEqual(calls.first { $0.arguments.contains("restart") }?.arguments, [
+                "daemon", "restart",
+                "--token-file", home.appendingPathComponent("control.token").path,
+            ])
+            let requests = ServeURLProtocol.lock.withLock { ServeURLProtocol.requests }
+            XCTAssertEqual(requests.map { $0.0 }, ["GET", "GET", "POST"])
+            XCTAssertNil(requests[0].2)
+            XCTAssertNotNil(requests[1].2)
+            XCTAssertNotNil(requests[2].2)
+            let attributes = try FileManager.default.attributesOfItem(
+                atPath: home.appendingPathComponent("control.token").path
+            )
+            XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        }
+    }
+
+    func testServeRejectsExpiredSessionProcessProvenance() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        ServeURLProtocol.lock.withLock {
+            ServeURLProtocol.requests = []
+            ServeURLProtocol.authenticationAvailable = false
+        }
+        defer { ServeURLProtocol.lock.withLock { ServeURLProtocol.authenticationAvailable = true } }
+        let (client, launcher) = serveClient(home: home.path, token: nil, processCreated: true)
+        _ = try await client.start()
+        await launcher.replaceResult(HolonProcessResult(
+            terminationStatus: 0,
+            stdout: Data("""
+                {"ok":true,"state":"running","healthy":true,"home_dir":"\(home.path)",
+                "socket_path":"/tmp/holon.sock","http_addr":"127.0.0.1:7878",
+                "desired_running":true,"control_connectivity":true,
+                "executable_path":"/opt/holon","pid":100,"message":"Replaced"}
+                """.utf8),
+            stderr: Data()
+        ))
+        do {
+            _ = try await client.enableTailscaleServe()
+            XCTFail("Expired process provenance must fail closed")
+        } catch {}
+        let calls = await launcher.invocations()
+        XCTAssertFalse(calls.contains { $0.arguments.contains("restart") })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent("control.token").path))
+        XCTAssertFalse(ServeURLProtocol.lock.withLock { ServeURLProtocol.requests }.contains { $0.0 == "POST" })
+    }
+
+    func testServeRejectsAuthenticationStillDisabledAfterManagedRestart() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        ServeURLProtocol.lock.withLock {
+            ServeURLProtocol.requests = []
+            ServeURLProtocol.authenticationAvailable = false
+        }
+        defer { ServeURLProtocol.lock.withLock { ServeURLProtocol.authenticationAvailable = true } }
+        let (client, _) = serveClient(home: home.path, token: nil, processCreated: true)
+        _ = try await client.start()
+        do {
+            _ = try await client.enableTailscaleServe()
+            XCTFail("Authentication must be verified before POST")
+        } catch {}
+        XCTAssertFalse(ServeURLProtocol.lock.withLock { ServeURLProtocol.requests }.contains { $0.0 == "POST" })
+    }
+
+    func testServeDoesNotClaimExternalDaemonReturnedByMenuStart() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        ServeURLProtocol.lock.withLock {
+            ServeURLProtocol.requests = []
+            ServeURLProtocol.authenticationAvailable = false
+        }
+        defer { ServeURLProtocol.lock.withLock { ServeURLProtocol.authenticationAvailable = true } }
+        let (client, launcher) = serveClient(home: home.path, token: nil, processCreated: false, preferences: preferences)
+        // daemon start can return the already-running same-binary process.
+        _ = try await client.start()
+        XCTAssertNil(preferences.string(forKey: "HolonMenu.managedDaemonPID.\(home.path)"))
+        do {
+            _ = try await client.enableTailscaleServe()
+            XCTFail("A start result must not grant ownership or authorize auth preparation")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("ownership is unknown"))
+        }
+        let invocations = await launcher.invocations()
+        XCTAssertFalse(invocations.contains { $0.arguments.contains("restart") })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent("control.token").path))
+        let requests = ServeURLProtocol.lock.withLock { ServeURLProtocol.requests }
+        XCTAssertFalse(requests.contains { $0.0 == "POST" })
+    }
+
+    func testServeDisabledControlAuthenticationDoesNotReplaceConfiguredCredential() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        ServeURLProtocol.lock.withLock {
+            ServeURLProtocol.requests = []
+            ServeURLProtocol.authenticationAvailable = false
+        }
+        defer { ServeURLProtocol.lock.withLock { ServeURLProtocol.authenticationAvailable = true } }
+        let (client, launcher) = serveClient(home: home.path, token: "existing-token", processCreated: true)
+        _ = try await client.start()
+        do {
+            _ = try await client.enableTailscaleServe()
+            XCTFail("Disabled control authentication must not be silently overridden")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("explicit daemon configuration"))
+        }
+        let invocations = await launcher.invocations()
+        XCTAssertFalse(invocations.contains { $0.arguments.contains("restart") })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent("control.token").path))
+    }
+
+    func testServeMissingAuthenticationDoesNotRestartUnknownSameBinaryDaemon() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        ServeURLProtocol.lock.withLock {
+            ServeURLProtocol.requests = []
+            ServeURLProtocol.authenticationAvailable = false
+        }
+        defer { ServeURLProtocol.lock.withLock { ServeURLProtocol.authenticationAvailable = true } }
+        let (client, launcher) = serveClient(home: home.path, token: nil)
+        do {
+            _ = try await client.enableTailscaleServe()
+            XCTFail("Unknown ownership must not be inferred from executable path")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("externally managed"))
+        }
+        let invocations = await launcher.invocations()
+        XCTAssertFalse(invocations.contains { $0.arguments.contains("restart") })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent("control.token").path))
+    }
+
+    func testServeMissingAuthenticationDoesNotRestartExternalDaemon() async throws {
+        ServeURLProtocol.lock.withLock {
+            ServeURLProtocol.requests = []
+            ServeURLProtocol.authenticationAvailable = false
+        }
+        defer { ServeURLProtocol.lock.withLock { ServeURLProtocol.authenticationAvailable = true } }
+        let (client, launcher) = serveClient(token: nil, daemonExecutable: "/external/holon")
+        do {
+            _ = try await client.enableTailscaleServe()
+            XCTFail("External daemon must not be restarted")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("externally managed"))
+        }
+        let invocations = await launcher.invocations()
+        XCTAssertFalse(invocations.contains { $0.arguments.contains("restart") })
+        let requests = ServeURLProtocol.lock.withLock { ServeURLProtocol.requests }
+        XCTAssertFalse(requests.contains { $0.0 == "POST" })
     }
 
     func testDisableServeOnlyRemovesHolonRootRule() async throws {
@@ -328,6 +665,7 @@ final class HolonMenuClientTests: XCTestCase {
         _ = try await client.disableTailscaleServe()
         let requests = ServeURLProtocol.lock.withLock { ServeURLProtocol.requests }
         XCTAssertEqual(requests.map { "\($0.0) \($0.1)" }, [
+            "GET /api/control/network/tailscale/serve",
             "GET /api/control/network/tailscale/serve",
             "POST /api/control/network/tailscale/serve/enable",
             "POST /api/control/network/tailscale/serve/disable"
@@ -350,6 +688,7 @@ final class HolonMenuClientTests: XCTestCase {
         let requests = ServeURLProtocol.lock.withLock { ServeURLProtocol.requests }
         XCTAssertEqual(requests.map { $0.3?.absoluteString }, [
             "http://127.0.0.1:7878/api/control/network/tailscale/serve",
+            "http://127.0.0.1:7878/api/control/network/tailscale/serve",
             "http://127.0.0.1:7878/api/control/network/tailscale/serve/enable",
             "http://127.0.0.1:7878/api/control/network/tailscale/serve/disable"
         ])
@@ -360,13 +699,14 @@ final class HolonMenuClientTests: XCTestCase {
             ServeURLProtocol.requests = []
             ServeURLProtocol.responseCode = 200
         }
-        let (client, _) = serveClient(address: "[::1]:7878")
+        let (client, _) = serveClient(address: "[::]:7878")
         _ = try await client.tailscaleStatus()
         _ = try await client.enableTailscaleServe()
         _ = try await client.disableTailscaleServe()
 
         let requests = ServeURLProtocol.lock.withLock { ServeURLProtocol.requests }
         XCTAssertEqual(requests.map { $0.3?.absoluteString }, [
+            "http://[::1]:7878/api/control/network/tailscale/serve",
             "http://[::1]:7878/api/control/network/tailscale/serve",
             "http://[::1]:7878/api/control/network/tailscale/serve/enable",
             "http://[::1]:7878/api/control/network/tailscale/serve/disable"

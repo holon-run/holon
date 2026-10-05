@@ -32,7 +32,7 @@ struct HolonMenuView: View {
 
             GroupBox("Local network") {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(viewModel.lanURL == nil ? "LAN access is off" : "LAN access is on")
+                    Text(viewModel.lanStateTitle)
                         .font(.headline)
                     if let lanURL = viewModel.lanURL {
                         Text(lanURL.absoluteString)
@@ -46,7 +46,7 @@ struct HolonMenuView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         if viewModel.showLANConfirmation {
-                            Text("Holon will listen on the local network and require a control token. If none is configured, the app creates a private control.token file in the Holon home directory. Devices on the same network may be able to reach this service.")
+                            Text("Holon will restart and listen on ALL IPv4 interfaces (0.0.0.0), including LAN, VPN, and potentially public interfaces. A private control token is required and will be prepared if needed. Use firewall rules to limit access.")
                                 .font(.caption)
                             HStack {
                                 Button("Enable") {
@@ -109,7 +109,7 @@ struct HolonMenuView: View {
                         .disabled(viewModel.isOperating || viewModel.tailscaleStatus?.conflict == true)
                     } else if viewModel.tailscaleStatus?.statusKnown == true {
                         if viewModel.showTailscaleServeConfirmation {
-                            Text("Holon will ask Tailscale to expose its local web service over your tailnet. This changes network reachability and can be disabled from this menu.")
+                            Text("Holon will expose its local web service over your tailnet. If authentication is missing, the app prepares a private token and may restart its managed daemon, preserving LAN and desktop settings. Externally managed daemons require manual authentication configuration. Your phone needs tailnet membership and ACL access.")
                                 .font(.caption)
                             HStack {
                                 Button("Enable") {
@@ -148,6 +148,25 @@ struct HolonMenuView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
+            GroupBox("Pairing destination") {
+                VStack(alignment: .leading, spacing: 6) {
+                    TextField("Custom remote origin (optional)", text: $viewModel.customPairingOrigin)
+                    Toggle("Use LAN instead of Tailscale", isOn: $viewModel.preferLANPairing)
+                    if let destination = viewModel.connectionURL {
+                        Text(destination.absoluteString)
+                            .font(.caption2)
+                            .textSelection(.enabled)
+                        if destination == viewModel.tailscaleStatus?.pairingOrigin {
+                            Text("Your phone must join this tailnet and have ACL access.")
+                                .font(.caption)
+                        }
+                    } else {
+                        Text("No valid remote origin. Enable LAN or Serve, or enter a custom origin without a path, query, or fragment.")
+                            .font(.caption)
+                    }
+                }
+            }
+
             if let connectionURL = viewModel.connectionURL {
                 GroupBox("Connect from phone") {
                     VStack(alignment: .leading, spacing: 6) {
@@ -158,11 +177,13 @@ struct HolonMenuView: View {
                         if let pairingURL = viewModel.pairingURL {
                             HolonQRCodeView(payload: pairingURL.absoluteString)
                                 .frame(maxWidth: .infinity)
-                            Text("One-time pairing code; expires after 2 minutes. Keep this QR private.")
+                            Text(pairingURL.fragment == nil
+                                 ? "Open this URL and sign in normally."
+                                 : "One-time pairing code; expires after 2 minutes. Keep this QR private.")
                                 .font(.caption2)
                             Button("Hide pairing code") { viewModel.hidePairingCode() }
                         } else {
-                            Button("Show one-time pairing QR…") {
+                            Button("Show connection QR…") {
                                 Task { await viewModel.showPairingCode() }
                             }
                         }

@@ -267,6 +267,10 @@ holon daemon restart
 holon daemon stop
 ```
 
+Lifecycle command JSON includes `process_created`: true only when the command
+created the returned daemon process. An idempotent Start that reuses an existing
+daemon reports false; success alone does not establish process ownership.
+
 ### Onboarding
 
 `holon onboard` is the fastest way to configure Holon for the first time or
@@ -441,7 +445,7 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 | `--token <TOKEN>` | Bearer token for auth |
 | `--token-file <PATH>` | Read token from file |
 | `--advertise <URL>` | Advertised URL |
-| `--desktop-integration[=true\|false]` | Opt into Finder actions; macOS and loopback listener only; default off |
+| `--desktop-integration[=true\|false]` | Allow authorized Finder actions on the daemon host; macOS only, independent of LAN/Serve; default off |
 
 ### `holon daemon start` options
 

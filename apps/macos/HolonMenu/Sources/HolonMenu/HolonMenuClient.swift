@@ -32,7 +32,7 @@ enum HolonCLIError: LocalizedError {
         case let .invalidWebAddress(address):
             return "holon returned an invalid web address: \(address)"
         case let .invalidLANTokenFile(path):
-            return "The LAN token file must be a nonempty, owner-only regular file: \(path)"
+            return "The control token file must be a nonempty, owner-only regular file: \(path)"
         case let .loginItem(error):
             return "Failed to update the login item: \(error.localizedDescription)"
         case let .commandLineToolConflict(path):
@@ -133,6 +133,29 @@ enum TailscaleBinaryLocator {
     }
 }
 
+// UserDefaults supports concurrent access. Store only non-secret approval flags.
+private final class HolonAuthenticationPreferences: @unchecked Sendable {
+    private let defaults: UserDefaults
+    init(_ defaults: UserDefaults) { self.defaults = defaults }
+    func string(forKey key: String) -> String? { defaults.string(forKey: key) }
+    func set(_ value: String, forKey key: String) { defaults.set(value, forKey: key) }
+}
+
+private final class HolonCreatedDaemonProvenance: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: HolonDaemonStatus?
+    func get() -> HolonDaemonStatus? {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+    func set(_ daemon: HolonDaemonStatus?) {
+        lock.lock()
+        defer { lock.unlock() }
+        value = daemon
+    }
+}
+
 final class HolonCLIClient: HolonDesiredStateClient {
     private let executableURL: URL?
     private let tailscaleExecutableURL: URL?
@@ -140,19 +163,24 @@ final class HolonCLIClient: HolonDesiredStateClient {
     private let launchOptions: HolonDaemonLaunchOptions
     private let decoder: JSONDecoder
     private let networkSession: URLSession
+    private let preferences: HolonAuthenticationPreferences
+    // Session-local provenance; persisted PIDs never authorize authentication changes.
+    private let createdDaemon = HolonCreatedDaemonProvenance()
 
     init(
         executableURL: URL? = nil,
         launcher: HolonProcessLaunching = SystemHolonProcessLauncher(),
         launchOptions: HolonDaemonLaunchOptions = .default,
         tailscaleExecutableURL: URL? = nil,
-        networkSession: URLSession = .shared
+        networkSession: URLSession = .shared,
+        preferences: UserDefaults = .standard
     ) {
         self.executableURL = executableURL
         self.tailscaleExecutableURL = tailscaleExecutableURL
         self.launcher = launcher
         self.launchOptions = launchOptions
         self.networkSession = networkSession
+        self.preferences = HolonAuthenticationPreferences(preferences)
 
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -164,33 +192,45 @@ final class HolonCLIClient: HolonDesiredStateClient {
     }
 
     func start() async throws -> HolonDaemonStatus {
-        try await run(["daemon", "start"] + launchOptionsForCurrentAccess().arguments(), as: HolonDaemonStatus.self)
+        createdDaemon.set(nil)
+        let started = try await run(["daemon", "start"] + launchOptionsForCurrentAccess().arguments(), as: HolonDaemonStatus.self)
+        // Older CLIs and reused processes do not grant ownership.
+        if started.processCreated == true {
+            recordManagedDaemon(started)
+        }
+        return started
     }
 
     func stop() async throws -> HolonDaemonStatus {
-        try await run(["daemon", "stop"], as: HolonDaemonStatus.self)
+        createdDaemon.set(nil)
+        return try await run(["daemon", "stop"], as: HolonDaemonStatus.self)
     }
 
     func restart() async throws -> HolonDaemonStatus {
-        try await run(["daemon", "restart"] + launchOptionsForCurrentAccess().arguments(), as: HolonDaemonStatus.self)
+        createdDaemon.set(nil)
+        let restarted = try await run(["daemon", "restart"] + launchOptionsForCurrentAccess().arguments(), as: HolonDaemonStatus.self)
+        recordManagedDaemon(restarted)
+        return restarted
     }
 
     private func launchOptionsForCurrentAccess() async throws -> HolonDaemonLaunchOptions {
         var options = launchOptions
         let currentStatus = try await status()
-        if isNonLoopbackAddress(currentStatus.httpAddr) {
+        if currentStatus.httpAddr.hasPrefix("0.0.0.0:") {
             options.access = "lan"
             options.host = try await localNetworkHost()
-            options.listen = nil
-            options.port = port(from: currentStatus.httpAddr)
-            try configureLANToken(&options, homeDir: currentStatus.homeDir)
+            options.listen = "0.0.0.0:\(port(from: currentStatus.httpAddr))"
+            options.port = nil
+        }
+        if canReuseApprovedAuthentication(currentStatus) {
+            try loadApprovedAuthentication(&options, homeDir: currentStatus.homeDir)
         }
         return options
     }
 
     func webURL() async throws -> URL {
         let status = try await status()
-        if isNonLoopbackAddress(status.httpAddr) {
+        if status.httpAddr.hasPrefix("0.0.0.0:") {
             guard let url = try await lanURL(for: status) else {
                 throw HolonCLIError.invalidWebAddress(status.httpAddr)
             }
@@ -204,7 +244,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
 
     func authenticatedWebURL() async throws -> URL {
         let current = try await status()
-        let local = URL(string: "http://127.0.0.1:\(port(from: current.httpAddr))")!
+        let local = loopbackURL(for: current.httpAddr)
         return try await pairingURL(for: local, status: current)
     }
 
@@ -216,14 +256,33 @@ final class HolonCLIClient: HolonDesiredStateClient {
         guard status.healthy, status.state == .running || status.state == .degraded else {
             throw HolonCLIError.pairingFailed("Start the Holon daemon before pairing.")
         }
-        let local = URL(string: "http://127.0.0.1:\(port(from: status.httpAddr))")!
+        let local = loopbackURL(for: status.httpAddr)
+        let (methodData, methodResponse) = try await networkSession.data(
+            from: local.appendingPathComponent("api/auth/method")
+        )
+        guard (methodResponse as? HTTPURLResponse)?.statusCode == 200 else {
+            throw HolonCLIError.pairingFailed("Unable to determine the daemon authentication mode.")
+        }
+        struct AuthMethod: Decodable { let mode: String }
+        let mode = try JSONDecoder().decode(AuthMethod.self, from: methodData).mode
+        if mode == "oidc" {
+            var components = URLComponents(url: destination, resolvingAgainstBaseURL: false)
+            components?.path = "/login"
+            components?.query = nil
+            components?.fragment = nil
+            guard let url = components?.url else {
+                throw HolonCLIError.invalidWebAddress(destination.absoluteString)
+            }
+            return url
+        }
+        guard mode == "local" else {
+            throw HolonCLIError.pairingFailed("Unsupported daemon authentication mode.")
+        }
         var request = URLRequest(url: local.appendingPathComponent("api/auth/pairing/issue"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         // The long-lived token only travels over the loopback request, not in the QR.
-        let tokenPath = launchOptions.tokenFilePath ?? URL(fileURLWithPath: status.homeDir)
-            .appendingPathComponent("control.token").path
-        let token = launchOptions.token ?? (try? String(contentsOfFile: tokenPath, encoding: .utf8))
+        let token = try controlToken(homeDir: status.homeDir)
         if let token, !token.isEmpty {
             request.setValue("Bearer \(token.trimmingCharacters(in: .whitespacesAndNewlines))",
                              forHTTPHeaderField: "Authorization")
@@ -315,7 +374,44 @@ final class HolonCLIClient: HolonDesiredStateClient {
     }
 
     func enableTailscaleServe() async throws -> HolonTailscaleStatus {
-        try await tailscaleServeRequest(method: "POST", action: "enable")
+        let network = try await tailscaleStatus()
+        if network.controlAuthenticationAvailable == false {
+            let daemon = try await status()
+            guard let created = createdDaemon.get(), daemon.healthy,
+                  daemon.controlConnectivity, daemon.pid != nil,
+                  daemon.configFingerprintMatch != false,
+                  launchOptions.token == nil, launchOptions.tokenFilePath == nil,
+                  daemon.pid == created.pid, daemon.homeDir == created.homeDir,
+                  daemon.socketPath == created.socketPath,
+                  daemon.executablePath == created.executablePath,
+                  daemon.httpAddr == created.httpAddr,
+                  daemon.runtimeConfigFingerprint == created.runtimeConfigFingerprint,
+                  try controlToken(homeDir: daemon.homeDir) == nil else {
+                throw HolonCLIError.tailscaleServeConflict(
+                    "This daemon is externally managed or its ownership is unknown, or existing credentials conflict with disabled control authentication; an explicit daemon configuration change is required."
+                )
+            }
+            var options = HolonDaemonLaunchOptions()
+            // Authentication-only restart inherits network and desktop configuration.
+            options.desktopIntegration = nil
+            try prepareRemoteAuthentication(&options, homeDir: daemon.homeDir)
+            recordAuthenticationApproval(options, homeDir: daemon.homeDir)
+            createdDaemon.set(nil)
+            let restarted = try await run(
+                ["daemon", "restart"] + options.arguments(), as: HolonDaemonStatus.self
+            )
+            recordManagedDaemon(restarted)
+            guard restarted.processCreated == true,
+                  restarted.httpAddr == daemon.httpAddr,
+                  restarted.homeDir == daemon.homeDir,
+                  restarted.healthy, restarted.controlConnectivity,
+                  try await tailscaleStatus().controlAuthenticationAvailable == true else {
+                throw HolonCLIError.tailscaleServeConflict("Unable to verify restarted daemon authentication before enabling Serve.")
+            }
+        } else if network.controlAuthenticationAvailable == nil {
+            throw HolonCLIError.tailscaleServeConflict("Daemon authentication status is unknown. Configure or update the daemon before enabling Serve.")
+        }
+        return try await tailscaleServeRequest(method: "POST", action: "enable")
     }
 
     func disableTailscaleServe() async throws -> HolonTailscaleStatus {
@@ -324,18 +420,13 @@ final class HolonCLIClient: HolonDesiredStateClient {
 
     private func tailscaleServeRequest(method: String, action: String?) async throws -> HolonTailscaleStatus {
         let daemon = try await status()
-        let port = port(from: daemon.httpAddr)
-        let loopback = daemon.httpAddr.hasPrefix("[::1]:") ? "[::1]" : "127.0.0.1"
-        let base = URL(string: "http://\(loopback):\(port)")!
+        let base = loopbackURL(for: daemon.httpAddr)
         var url = base.appendingPathComponent("api/control/network/tailscale/serve")
         if let action { url.appendPathComponent(action) }
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let tokenPath = launchOptions.tokenFilePath ?? URL(fileURLWithPath: daemon.homeDir)
-            .appendingPathComponent("control.token").path
-        let token = (launchOptions.token ?? (try? String(contentsOfFile: tokenPath, encoding: .utf8)))?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = try controlToken(homeDir: daemon.homeDir)
         if let token, !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -356,7 +447,8 @@ final class HolonCLIClient: HolonDesiredStateClient {
             desiredEnabled: payload.desiredEnabled,
             serving: payload.serving,
             conflict: payload.conflict,
-            statusKnown: payload.statusKnown
+            statusKnown: payload.statusKnown,
+            controlAuthenticationAvailable: payload.controlAuthenticationAvailable
         )
     }
 
@@ -387,7 +479,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
     }
 
     private func lanURL(for currentStatus: HolonDaemonStatus) async throws -> URL? {
-        guard isNonLoopbackAddress(currentStatus.httpAddr) else {
+        guard currentStatus.httpAddr.hasPrefix("0.0.0.0:") else {
             return nil
         }
         let host = try await localNetworkHost()
@@ -401,22 +493,48 @@ final class HolonCLIClient: HolonDesiredStateClient {
         var options = launchOptions
         options.access = "lan"
         options.host = host
-        options.listen = nil
-        options.port = port
+        options.listen = "0.0.0.0:\(port)"
+        options.port = nil
         options.advertise = nil
-        try configureLANToken(&options, homeDir: currentStatus.homeDir)
-        _ = try await run(
+        let network: HolonTailscaleStatus
+        do {
+            network = try await tailscaleStatus()
+        } catch {
+            throw HolonCLIError.tailscaleServeConflict(
+                "Unable to verify daemon authentication. Configure credentials in its launch settings before enabling LAN: \(error.localizedDescription)"
+            )
+        }
+        guard let authenticated = network.controlAuthenticationAvailable else {
+            throw HolonCLIError.tailscaleServeConflict("Daemon authentication status is unknown. Configure or update the daemon before enabling LAN.")
+        }
+        if !authenticated {
+            try prepareRemoteAuthentication(&options, homeDir: currentStatus.homeDir)
+            recordAuthenticationApproval(options, homeDir: currentStatus.homeDir)
+        } else if canReuseApprovedAuthentication(currentStatus) {
+            try loadApprovedAuthentication(&options, homeDir: currentStatus.homeDir)
+        }
+        let restarted = try await run(
             ["daemon", "restart"] + options.arguments(),
             as: HolonDaemonStatus.self
         )
+        recordManagedDaemon(restarted)
         guard let url = URL(string: "http://\(host):\(port)") else {
             throw HolonCLIError.invalidWebAddress("\(host):\(port)")
         }
         return url
     }
 
-    private func configureLANToken(_ options: inout HolonDaemonLaunchOptions, homeDir: String) throws {
-        guard options.token == nil, options.tokenFilePath == nil else { return }
+    private func prepareRemoteAuthentication(_ options: inout HolonDaemonLaunchOptions, homeDir: String) throws {
+        if let token = options.token {
+            guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw HolonCLIError.invalidLANTokenFile("configured token is empty")
+            }
+            return
+        }
+        if let path = options.tokenFilePath {
+            try validateRemoteTokenFile(path)
+            return
+        }
         let path = URL(fileURLWithPath: homeDir, isDirectory: true)
             .appendingPathComponent("control.token").path
         let fd = Darwin.open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(0o600))
@@ -438,17 +556,42 @@ final class HolonCLIClient: HolonDesiredStateClient {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
 
+        try validateRemoteTokenFile(path)
+        options.tokenFilePath = path
+    }
+
+    private func validateRemoteTokenFile(_ path: String) throws {
+        _ = try readRemoteTokenFile(path)
+    }
+
+    private func readRemoteTokenFile(_ path: String) throws -> String {
+        let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { throw HolonCLIError.invalidLANTokenFile(path) }
+        defer { Darwin.close(fd) }
         var info = stat()
-        guard lstat(path, &info) == 0,
+        guard fstat(fd, &info) == 0,
               (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
               info.st_uid == getuid(),
               (info.st_mode & 0o400) != 0,
               (info.st_mode & 0o077) == 0,
-              let token = try? String(contentsOfFile: path, encoding: .utf8),
+              let data = try? FileHandle(fileDescriptor: fd, closeOnDealloc: false).readToEnd(),
+              let token = String(data: data, encoding: .utf8),
               !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw HolonCLIError.invalidLANTokenFile(path)
         }
-        options.tokenFilePath = path
+        return token.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func controlToken(homeDir: String) throws -> String? {
+        if let token = launchOptions.token {
+            return token.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let path = launchOptions.tokenFilePath
+            ?? preferences.string(forKey: authenticationApprovalKey(homeDir))
+            ?? URL(fileURLWithPath: homeDir).appendingPathComponent("control.token").path
+        var info = stat()
+        if lstat(path, &info) != 0, errno == ENOENT { return nil }
+        return try readRemoteTokenFile(path)
     }
 
     func disableLAN() async throws -> HolonDaemonStatus {
@@ -459,10 +602,46 @@ final class HolonCLIClient: HolonDesiredStateClient {
         let currentStatus = try await status()
         options.listen = "127.0.0.1:\(port(from: currentStatus.httpAddr))"
         options.advertise = nil
-        return try await run(
+        if canReuseApprovedAuthentication(currentStatus) {
+            try loadApprovedAuthentication(&options, homeDir: currentStatus.homeDir)
+        }
+        let restarted = try await run(
             ["daemon", "restart"] + options.arguments(),
             as: HolonDaemonStatus.self
         )
+        recordManagedDaemon(restarted)
+        return restarted
+    }
+
+    private func managedDaemonKey(_ homeDir: String) -> String {
+        "HolonMenu.managedDaemonPID.\(homeDir)"
+    }
+
+    private func canReuseApprovedAuthentication(_ daemon: HolonDaemonStatus) -> Bool {
+        guard let pid = daemon.pid else { return true }
+        return preferences.string(forKey: managedDaemonKey(daemon.homeDir)) == String(pid)
+    }
+
+    private func recordManagedDaemon(_ daemon: HolonDaemonStatus) {
+        createdDaemon.set(daemon.processCreated == true ? daemon : nil)
+        guard let pid = daemon.pid else { return }
+        preferences.set(String(pid), forKey: managedDaemonKey(daemon.homeDir))
+    }
+
+    private func authenticationApprovalKey(_ homeDir: String) -> String {
+        "HolonMenu.remoteAuthenticationApproved.\(homeDir)"
+    }
+
+    private func recordAuthenticationApproval(_ options: HolonDaemonLaunchOptions, homeDir: String) {
+        guard let path = options.tokenFilePath else { return }
+        preferences.set(path, forKey: authenticationApprovalKey(homeDir))
+    }
+
+    private func loadApprovedAuthentication(_ options: inout HolonDaemonLaunchOptions, homeDir: String) throws {
+        guard options.token == nil, options.tokenFilePath == nil,
+              let path = preferences.string(forKey: authenticationApprovalKey(homeDir)) else { return }
+        try validateRemoteTokenFile(path)
+        options.tokenFilePath = path
     }
 
     private func localNetworkHost() async throws -> String {
@@ -487,9 +666,10 @@ final class HolonCLIClient: HolonDesiredStateClient {
         UInt16(address.split(separator: ":").last ?? "7878") ?? 7878
     }
 
-    private func isNonLoopbackAddress(_ address: String) -> Bool {
-        let host = address.split(separator: ":").first.map(String.init) ?? address
-        return host != "127.0.0.1" && host != "localhost" && host != "[::1]"
+    private func loopbackURL(for address: String) -> URL {
+        let host = address.hasPrefix("[::1]:") || address.hasPrefix("[::]:")
+            ? "[::1]" : "127.0.0.1"
+        return URL(string: "http://\(host):\(port(from: address))")!
     }
 
     private func isIPv4Address(_ value: String) -> Bool {
@@ -532,6 +712,7 @@ private struct HolonTailscaleServeResponse: Decodable {
     let hostname: String?
     let serveUrl: String?
     let message: String
+    let controlAuthenticationAvailable: Bool?
 }
 
 private struct HolonServeErrorResponse: Decodable {

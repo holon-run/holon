@@ -177,17 +177,20 @@ holon daemon start --access local --desktop-integration
 holon daemon restart --access local --desktop-integration
 ```
 
-The Holon macOS menu app adds `--desktop-integration` automatically when it
-starts or restarts its managed daemon. The file actions menu then offers **Show in Finder**. It locates the selected
+The Holon macOS menu app defaults to `--desktop-integration` for its managed
+daemon and preserves the opt-in independently of LAN access. At a
+localhost/loopback browser entry point, the file actions menu offers
+**Show in Holon host's Finder**. It locates the selected
 file without opening or executing its contents. Other platforms continue to
 support preview, copying, and downloading.
 
 Direct CLI launches default to off and require an explicit option. The menu app
-enables it on each start and restart; a CLI restart retains the setting unless
-overridden with `--desktop-integration=false`. The runtime requires a
-loopback-only listener. Do not enable
-it for a forwarded port, reverse proxy, or container: a loopback address does
-not prove that files belong to the computer displaying the browser. The
+retains the independent setting; a CLI restart retains it unless overridden
+with `--desktop-integration=false`. LAN and Serve do not disable Finder.
+Authorized remote API calls can reveal a validated path on the Holon host;
+the Web UI hides this action at LAN/Serve origins only to prevent misclicks.
+A loopback address does not prove that files belong to the computer displaying
+the browser. The
 connection indicator says **Loopback address**, rather than claiming that the
 runtime is local.
 
@@ -219,6 +222,17 @@ Configure Holon from the browser:
 - **Decision settings** — configure decision routes and providers directly from the browser. Switch between remote endpoints (such as TypeSafe Jev or OpenAI-compatible models) and zero-egress local ONNX presets, view decision telemetry, and toggle advisory tool access.
 - **Device pairing** — generate short-lived, single-use pairing QR codes and links directly from the Settings page. Scan with the Holon Android client or open in another browser to establish an authenticated session without exposing your long-lived control token.
 - **Tailscale Serve** — inspect status and toggle Tailscale Serve from the browser. When enabled, your Holon instance is securely shared across your private tailnet with automatic HTTPS certificates, requiring no manual firewall or reverse proxy setup.
+
+Pairing prefers a valid Serve HTTPS destination; the phone must join the tailnet
+and have ACL access. A custom destination overrides the default, and LAN remains
+an alternative. From an HTTPS reverse proxy, the current origin can be used
+without passing `--advertise`; serve Web and API at the same origin's root.
+OIDC users use normal login rather than ticket pairing. Serve needs effective
+control authentication and a loopback-capable backend, but does not require LAN
+access. The menu may prepare a private token and restart its managed daemon after
+an explicit enable confirmation; the Web UI only provides configuration guidance.
+Enabling menu LAN access binds all IPv4 interfaces (potentially public ones), not
+just one LAN adapter, while retaining loopback for Serve.
 
 ### Internationalization (i18n)
 

@@ -927,6 +927,40 @@ async fn probe_runtime_reports_running_when_socket_missing_but_pid_alive() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn daemon_start_reusing_live_process_does_not_claim_creation() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    let pid = std::process::id();
+    let metadata = RuntimeServiceMetadata {
+        pid,
+        home_dir: config.home_dir.clone(),
+        socket_path: config.socket_path.clone(),
+        http_addr: config.http_addr.clone(),
+        started_at: Utc::now(),
+        config_fingerprint: config_fingerprint(&config).unwrap(),
+        product_version: env!("HOLON_VERSION").into(),
+        control_protocol_version: crate::daemon::DAEMON_CONTROL_PROTOCOL_VERSION,
+        lifecycle_owner: crate::daemon::DaemonLifecycleOwner::Standalone,
+        executable_path: std::env::current_exe().unwrap(),
+        serve_args: Vec::new(),
+        control_token_env_configured: false,
+    };
+    fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
+    fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+
+    let result = daemon_start(&config, &[], None).await.unwrap();
+    assert_eq!(result.action, DaemonLifecycleAction::Start);
+    assert_eq!(result.status.pid, Some(pid));
+    assert!(!result.process_created);
+    assert_eq!(result.status.message, "runtime is already running");
+
+    let wire = serde_json::to_value(&result).unwrap();
+    assert_eq!(wire["process_created"], false);
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn probe_runtime_reports_running_when_socket_refuses_but_pid_alive() {
     let config = test_config();
     let paths = daemon_paths(&config);
@@ -1208,6 +1242,7 @@ async fn daemon_stop_treats_missing_pid_process_as_stale_state() {
 
     let stopped = daemon_stop(&config).await.unwrap();
     assert_eq!(stopped.action, crate::daemon::DaemonLifecycleAction::Stop);
+    assert!(!stopped.process_created);
     assert_eq!(stopped.status.state, DaemonLifecycleState::Stopped);
     assert!(!paths.pid_path.exists());
     assert!(!paths.metadata_path.exists());

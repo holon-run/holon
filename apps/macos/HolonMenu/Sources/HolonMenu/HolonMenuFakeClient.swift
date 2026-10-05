@@ -27,6 +27,8 @@ actor FakeHolonClient: HolonDesiredStateClient {
     private var tailscaleStatusValue: HolonTailscaleStatus
     private var enableLANError: Error?
     private var enableTailscaleServeError: Error?
+    private var tailscaleStatusError: Error?
+    private var lanStatusError: Error?
 
     init(
         currentStatus: HolonDaemonStatus = HolonDaemonStatus(
@@ -51,6 +53,8 @@ actor FakeHolonClient: HolonDesiredStateClient {
         launchAtLoginEnabled: Bool = false,
         enableLANError: Error? = nil,
         enableTailscaleServeError: Error? = nil,
+        tailscaleStatusError: Error? = nil,
+        lanStatusError: Error? = nil,
         tailscaleStatus: HolonTailscaleStatus = HolonTailscaleStatus(
             state: .connected,
             hostname: "holon.example.ts.net",
@@ -63,6 +67,8 @@ actor FakeHolonClient: HolonDesiredStateClient {
         self.tailscaleStatusValue = tailscaleStatus
         self.enableLANError = enableLANError
         self.enableTailscaleServeError = enableTailscaleServeError
+        self.tailscaleStatusError = tailscaleStatusError
+        self.lanStatusError = lanStatusError
     }
 
     func status() async throws -> HolonDaemonStatus {
@@ -140,7 +146,12 @@ actor FakeHolonClient: HolonDesiredStateClient {
 
     func tailscaleStatus() async throws -> HolonTailscaleStatus {
         commands.append(.tailscaleStatus)
+        if let tailscaleStatusError { throw tailscaleStatusError }
         return tailscaleStatusValue
+    }
+
+    func setTailscaleStatusError(_ error: Error?) {
+        tailscaleStatusError = error
     }
 
     func enableTailscaleServe() async throws -> HolonTailscaleStatus {
@@ -152,7 +163,11 @@ actor FakeHolonClient: HolonDesiredStateClient {
             state: .serving,
             hostname: tailscaleStatusValue.hostname,
             serveURL: URL(string: "https://holon.example.ts.net"),
-            message: "Tailscale Serve is exposing Holon."
+            message: "Tailscale Serve is exposing Holon.",
+            desiredEnabled: true,
+            serving: true,
+            statusKnown: true,
+            controlAuthenticationAvailable: true
         )
         return tailscaleStatusValue
     }
@@ -170,6 +185,7 @@ actor FakeHolonClient: HolonDesiredStateClient {
 
     func lanURL() async throws -> URL? {
         commands.append(.lanURL)
+        if let lanStatusError { throw lanStatusError }
         return currentStatus.httpAddr.hasPrefix("127.")
             ? nil
             : URL(string: "http://192.168.1.20:7878")
