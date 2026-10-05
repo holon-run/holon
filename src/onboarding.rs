@@ -705,14 +705,8 @@ fn model_provider_section(config: &AppConfig) -> OnboardingSection {
             ],
             [OnboardingAction {
                 id: "configure_model_provider".into(),
-                title: "Configure a model provider credential.".into(),
-                command: Some(vec![
-                    "holon".into(),
-                    "config".into(),
-                    "providers".into(),
-                    "set".into(),
-                    model_ref.provider.as_str().into(),
-                ]),
+                title: "Run the interactive onboarding setup.".into(),
+                command: Some(vec!["holon".into(), "onboard".into()]),
             }],
         );
     };
@@ -732,14 +726,8 @@ fn model_provider_section(config: &AppConfig) -> OnboardingSection {
     } else {
         vec![OnboardingAction {
             id: "configure_model_credential".into(),
-            title: "Configure a credential for the default model provider.".into(),
-            command: Some(vec![
-                "holon".into(),
-                "config".into(),
-                "providers".into(),
-                "set".into(),
-                model_ref.provider.as_str().into(),
-            ]),
+            title: "Run onboarding to repair the provider credential.".into(),
+            command: Some(vec!["holon".into(), "onboard".into()]),
         }]
     };
 

@@ -557,6 +557,19 @@ fn onboard_json_contract_is_secret_safe_and_actionable() {
         }),
         "onboard report should include model provider diagnostics: {value}"
     );
+    let model_provider = value["sections"]
+        .as_array()
+        .and_then(|sections| {
+            sections
+                .iter()
+                .find(|section| section["id"] == "model_provider")
+        })
+        .expect("onboard report should include a model provider section");
+    assert_eq!(
+        model_provider["actions"][0]["command"],
+        json!(["holon", "onboard"]),
+        "missing provider diagnostics should point back to the complete onboarding flow: {value}"
+    );
     match value.get("next_actions") {
         Some(next_actions) => assert!(
             next_actions.as_array().is_some(),

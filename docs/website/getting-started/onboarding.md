@@ -27,7 +27,9 @@ holon onboard
 ```
 
 This launches the interactive TUI. At the end you will have a working default
-model configuration — no manual config file edits needed.
+model configuration — no manual config file edits needed. When stdin or stdout
+is not a TTY, `holon onboard` automatically prints the same scriptable JSON
+diagnostics as `holon onboard --json` instead of entering the wizard.
 
 ## The onboarding flow
 
@@ -107,9 +109,11 @@ holon config get model.default
 # Start the daemon and create your first agent
 holon daemon start
 holon agent create my-first-agent
+holon tui
 ```
 
-Continue to [Create your first agent](first-agent.md) for the full walkthrough.
+In the TUI, send the new agent its first task. Continue to
+[Create your first agent](first-agent.md) for the full walkthrough.
 
 ## Credential repair
 
@@ -148,7 +152,9 @@ This prints a machine-readable onboarding report with each section's status:
 - `failed` — configuration attempt failed and needs repair
 
 Each section includes a `summary` string, optional `details`, and
-`actions` with suggested CLI commands.
+`actions` with suggested CLI commands. Missing provider or credential actions
+point to `holon onboard`, so the same command is safe to re-run for repair or
+provider/model changes.
 
 ## Configuration files
 
