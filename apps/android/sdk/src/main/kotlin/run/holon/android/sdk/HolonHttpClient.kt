@@ -46,6 +46,7 @@ public fun interface BearerTokenProvider {
 public class HolonHttpException(
     public val statusCode: Int,
     public val apiError: HolonApiError?,
+    public val requestPath: String? = null,
 ) : IOException(
     apiError?.let { "${it.code}: ${it.message}" }
         ?: "Holon request failed with HTTP $statusCode",
@@ -808,7 +809,11 @@ public class HolonHttpClient internal constructor(
         response.use {
             val body = it.body
             if (!it.isSuccessful) {
-                throw httpException(it.code, body?.string().orEmpty())
+                throw httpException(
+                    it.code,
+                    body?.string().orEmpty(),
+                    requestPath = workspaceFilePath(workspaceId, safePath),
+                )
             }
             val bytes = body?.bytes() ?: throw HolonProtocolException("Holon returned an empty artifact")
             return HolonDownloadedArtifact(
@@ -844,7 +849,13 @@ public class HolonHttpClient internal constructor(
         }
         response.use {
             val body = it.body
-            if (!it.isSuccessful) throw httpException(it.code, body?.string().orEmpty())
+            if (!it.isSuccessful) {
+                throw httpException(
+                    it.code,
+                    body?.string().orEmpty(),
+                    requestPath = workspaceFilePath(workspaceId, safePath),
+                )
+            }
             body ?: throw HolonProtocolException("Holon returned an empty artifact")
             if (body.contentLength() > maxBytes) throw HolonProtocolException("文件超过本机读取上限（$maxBytes 字节）")
             var copied = 0L
@@ -1012,7 +1023,7 @@ public class HolonHttpClient internal constructor(
             val body = response.body?.string().orEmpty()
             val statusCode = response.code
             response.close()
-            throw httpException(statusCode, body)
+            throw httpException(statusCode, body, requestPath = path)
         }
         val body =
             response.body
@@ -1193,7 +1204,7 @@ public class HolonHttpClient internal constructor(
             response.use {
                 val body = it.body?.string().orEmpty()
                 if (!it.isSuccessful) {
-                    throw httpException(it.code, body)
+                    throw httpException(it.code, body, requestPath = path)
                 }
 
                 return try {
@@ -1235,7 +1246,7 @@ public class HolonHttpClient internal constructor(
             response.use {
                 val responseText = it.body?.string().orEmpty()
                 if (!it.isSuccessful) {
-                    throw httpException(it.code, responseText)
+                    throw httpException(it.code, responseText, requestPath = path)
                 }
                 return try {
                     HolonWire.json.decodeFromString(responseSerializer, responseText)
@@ -1270,7 +1281,7 @@ public class HolonHttpClient internal constructor(
             response.use {
                 val body = it.body?.string().orEmpty()
                 if (!it.isSuccessful) {
-                    throw httpException(it.code, body)
+                    throw httpException(it.code, body, requestPath = path)
                 }
             }
         } catch (error: IOException) {
@@ -1300,7 +1311,11 @@ public class HolonHttpClient internal constructor(
         return requestBuilder
     }
 
-    private fun httpException(statusCode: Int, body: String): HolonHttpException {
+    private fun httpException(
+        statusCode: Int,
+        body: String,
+        requestPath: String? = null,
+    ): HolonHttpException {
         val apiError =
             runCatching {
                 HolonWire.json.decodeFromString(ErrorResponse.serializer(), body)
@@ -1308,7 +1323,7 @@ public class HolonHttpClient internal constructor(
         if (statusCode == 401) {
             sessionCredentialStore?.clear()
         }
-        return HolonHttpException(statusCode, apiError)
+        return HolonHttpException(statusCode, apiError, requestPath)
     }
 
     private fun endpoint(

@@ -1271,8 +1271,21 @@ internal fun pairingHumanError(error: Throwable): String =
     if (error.isAuthenticationFailure()) "配对码无效或已过期，请在 macOS 菜单重新生成"
     else humanError(error)
 
-internal fun Throwable.isAuthenticationFailure(): Boolean =
-    this is HolonHttpException && statusCode in setOf(401, 403)
+internal fun Throwable.isAuthenticationFailure(): Boolean {
+    if (this !is HolonHttpException || statusCode != 401) return false
+    val apiError = apiError
+    return apiError == null || apiError.code in AUTHENTICATION_ERROR_CODES
+}
+
+private val AUTHENTICATION_ERROR_CODES =
+    setOf(
+        "auth_required",
+        "invalid_static_token",
+        "pairing_invalid_or_expired",
+        "session_invalid_or_expired",
+        "session_expired_or_revoked",
+        "session_user_disabled",
+    )
 
 internal fun Throwable.isTransientNetworkFailure(): Boolean =
     when (this) {

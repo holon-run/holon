@@ -208,10 +208,38 @@ class HolonViewModelTest {
                 apiError = null,
             ).isAuthenticationFailure(),
         )
-        assertTrue(
+        assertFalse(
             HolonHttpException(
                 statusCode = 403,
                 apiError = null,
+            ).isAuthenticationFailure(),
+        )
+        assertTrue(
+            HolonHttpException(
+                statusCode = 401,
+                apiError =
+                    HolonApiError(
+                        code = "session_expired_or_revoked",
+                        message = "session is expired or revoked",
+                        retryable = false,
+                        detail = null,
+                        domain = null,
+                        context = emptyMap(),
+                    ),
+            ).isAuthenticationFailure(),
+        )
+        assertFalse(
+            HolonHttpException(
+                statusCode = 401,
+                apiError =
+                    HolonApiError(
+                        code = "forbidden",
+                        message = "not allowed",
+                        retryable = false,
+                        detail = null,
+                        domain = null,
+                        context = emptyMap(),
+                    ),
             ).isAuthenticationFailure(),
         )
         assertFalse(
