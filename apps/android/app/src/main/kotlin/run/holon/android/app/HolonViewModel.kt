@@ -6,8 +6,11 @@ import android.net.Uri
 import android.os.Looper
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.createSavedStateHandle
+import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewModelScope
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -50,235 +53,20 @@ import run.holon.android.sdk.toConversationEvent
 internal fun HolonHttpException.isStaleAgentEventCursor(): Boolean =
     statusCode == 404 && apiError?.code == "cursor_not_found"
 
-internal enum class AppPhase {
-    Starting,
-    SignedOut,
-    AddingNetwork,
-    Ready,
-}
-
-internal enum class MainDestination(private val sourceLabel: String) {
-    Agents("Agents"),
-    Settings("设置"),
-    ;
-
-    val label: String get() = ui(sourceLabel)
-}
-
-internal enum class AgentSection(private val sourceLabel: String) {
-    Results("会话"),
-    Work("工作"),
-    Files("文件"),
-    ;
-
-    val label: String get() = ui(sourceLabel)
-}
-
-internal data class FileLinkOrigin(
-    val section: AgentSection,
-    val brief: HolonBrief?,
-    val turn: HolonConversationTurn?,
-    val activity: HolonConversationActivity?,
-    val workItem: HolonWorkItemSnapshot?,
-    val planFile: PreparedArtifact?,
-    val workspace: HolonWorkspace?,
-    val directory: HolonWorkspaceDirectory?,
-)
-
-internal data class HolonUiState(
-    val phase: AppPhase = AppPhase.Starting,
-    val baseUrl: String = "",
-    val token: String = "",
-    val showToken: Boolean = false,
-    val allowInsecureHttp: Boolean = false,
-    val pendingPairing: ScannedPairing? = null,
-    val mainDestination: MainDestination = MainDestination.Agents,
-    val busy: Boolean = false,
-    val enqueueing: Boolean = false,
-    val stagingAttachment: Boolean = false,
-    val abortingRun: Boolean = false,
-    val online: Boolean = false,
-    val lastSyncedAt: Long? = null,
-    val session: ActiveSession? = null,
-    val networkProfiles: List<NetworkProfile> = emptyList(),
-    val switchingNetworkId: String? = null,
-    val agents: List<AgentSummary> = emptyList(),
-    val operatorPreviews: Map<String, OperatorPreview?> = emptyMap(),
-    val briefReadStates: Map<String, HolonBriefReadState> = emptyMap(),
-    val briefReadStatesLoaded: Boolean = false,
-    val readBriefIds: Map<String, String> = emptyMap(),
-    val readBriefsLoaded: Boolean = false,
-    val selectedAgent: AgentSummary? = null,
-    val modelCatalog: HolonModelCatalog? = null,
-    val modelBusy: Boolean = false,
-    val modelError: String? = null,
-    val conversation: HolonConversationSnapshot? = null,
-    val olderTurns: List<HolonConversationTurn> = emptyList(),
-    val historyBeforeCursor: String? = null,
-    val hasOlderTurns: Boolean = false,
-    val historyBusy: Boolean = false,
-    val outbox: List<OutboxEntity> = emptyList(),
-    val draft: String = "",
-    val attachments: List<StagedAttachment> = emptyList(),
-    val pendingShare: PendingAgentShare? = null,
-    val queuedShares: List<PendingAgentShare> = emptyList(),
-    val shareSending: Boolean = false,
-    val shareError: String? = null,
-    val agentSection: AgentSection = AgentSection.Results,
-    val briefs: Map<String, HolonBrief> = emptyMap(),
-    val briefLoads: Map<String, BriefLoadState> = emptyMap(),
-    val selectedBrief: HolonBrief? = null,
-    val briefOriginWork: HolonWorkItemSnapshot? = null,
-    val workOriginBrief: HolonBrief? = null,
-    val selectedTurn: HolonConversationTurn? = null,
-    val fullScreenTurn: Boolean = false,
-    val conversationDetail: HolonConversationDetail? = null,
-    val olderActivitiesBusy: Boolean = false,
-    val olderActivitiesLoaded: Boolean = false,
-    val selectedActivity: HolonConversationActivity? = null,
-    val selectedToolExecution: HolonToolExecutionSnapshot? = null,
-    val detailBusy: Boolean = false,
-    val workItems: List<HolonWorkItemSnapshot> = emptyList(),
-    val workItemsLimit: Int = 30,
-    val workItemsHasMore: Boolean = false,
-    val workItemsLoadingMore: Boolean = false,
-    val selectedWorkItem: HolonWorkItemSnapshot? = null,
-    val tasks: List<HolonTaskSnapshot> = emptyList(),
-    val tasksBusy: Boolean = false,
-    val tasksError: String? = null,
-    val selectedTask: HolonTaskSnapshot? = null,
-    val taskOutput: HolonTaskOutputSnapshot? = null,
-    val workItemsBusy: Boolean = false,
-    val planFile: PreparedArtifact? = null,
-    val workspaces: List<HolonWorkspace> = emptyList(),
-    val selectedWorkspace: HolonWorkspace? = null,
-    val workspaceDirectory: HolonWorkspaceDirectory? = null,
-    val workspaceBusy: Boolean = false,
-    val preparedArtifact: PreparedArtifact? = null,
-    val fileLinkOrigin: FileLinkOrigin? = null,
-    val error: String? = null,
-    val statusMessage: String? = null,
-    val search: String = "",
-) {
-    val recentAgents: List<AgentSummary>
-        get() =
-            agents.sortedWith(
-                compareByDescending<AgentSummary> { it.needsReply() }
-                    .thenByDescending {
-                        if (briefReadStatesLoaded) {
-                            it.unreadCount(briefReadStates) > 0
-                        } else {
-                            readBriefsLoaded && it.hasUnreadBrief(readBriefIds)
-                        }
-                    }
-                    .thenByDescending { listOfNotNull(activityTime(it.latestBrief?.createdAt), activityTime(operatorPreviews[it.id]?.createdAt)).maxOrNull() }
-                    .thenBy { it.displayName.lowercase() },
-            )
-
-    val filteredAgents: List<AgentSummary>
-        get() =
-            recentAgents.filter {
-                search.isBlank() ||
-                    it.displayName.contains(search, ignoreCase = true) ||
-                    it.id.contains(search, ignoreCase = true)
-            }
-}
-
-internal fun HolonUiState.forAddingNetwork(): HolonUiState =
-    copy(
-        phase = AppPhase.AddingNetwork,
-        baseUrl = "",
-        token = "",
-        showToken = false,
-        allowInsecureHttp = false,
-        error = null,
-        statusMessage = null,
-    )
-
-internal fun HolonUiState.afterCancelAddingNetwork(): HolonUiState =
-    copy(
-        phase = AppPhase.Ready,
-        baseUrl = session?.baseUrl.orEmpty(),
-        token = "",
-        showToken = false,
-        allowInsecureHttp = networkProfiles.firstOrNull { it.networkId == session?.networkId }?.allowInsecureHttp ?: false,
-        error = null,
-        statusMessage = null,
-    )
-
-internal fun isCurrentLiveSync(
-    foreground: Boolean,
-    phase: AppPhase,
-    expectedGeneration: Long,
-    currentGeneration: Long,
-): Boolean =
-    foreground && phase == AppPhase.Ready && expectedGeneration == currentGeneration
 
 private const val SESSION_KEEPALIVE_INTERVAL_MILLIS = 15 * 60 * 1000L
 
-internal class SessionResetBarrier(private val scope: kotlinx.coroutines.CoroutineScope) {
-    private var pending: Job? = null
-    private var activeTransitions = 0
-
-    fun beginTransition() {
-        synchronized(this) {
-            activeTransitions += 1
-        }
-    }
-
-    fun endTransition() {
-        synchronized(this) {
-            check(activeTransitions > 0)
-            activeTransitions -= 1
-        }
-    }
-
-    fun schedule(reset: suspend () -> Unit): Job {
-        synchronized(this) {
-            if (activeTransitions > 0) return scope.launch {}
-        }
-        val previous = pending
-        val next =
-            scope.launch {
-                previous?.join()
-                runCatching { reset() }
-            }
-        pending = next
-        return next
-    }
-
-    suspend fun await() {
-        while (true) {
-            val current = pending ?: return
-            current.join()
-            if (pending === current) {
-                pending = null
-                return
-            }
-        }
-    }
-}
-
-internal class AppContainer(context: Context) {
-    private val database = HolonDatabase.create(context)
-    val traceRecorder = TraceRecorder(context)
-    val repository =
-        HolonRepository(
-            context = context,
-            sessionStore = createSessionStore(context),
-            preferences = HostPreferences(context),
-            dao = database.holonDao(),
-            traceRecorder = traceRecorder,
-        )
-}
 
 internal class HolonViewModel(
     application: Application,
     private val repository: HolonRepository,
     internal val traceRecorder: TraceRecorder,
+    private val savedState: SavedStateHandle = SavedStateHandle(),
 ) : AndroidViewModel(application) {
+    internal val screenActions = AndroidScreenActions(this)
     private val mutableState = MutableStateFlow(HolonUiState(baseUrl = defaultBaseUrl()))
     val state: StateFlow<HolonUiState> = mutableState.asStateFlow()
+    private val restoredNavigation = NavigationBookmark.read(savedState)
     private val oidcPreferences =
         application.getSharedPreferences("holon_oidc_login", Context.MODE_PRIVATE)
     private val nativeProofStore = createSessionStore(application)
@@ -398,8 +186,13 @@ internal class HolonViewModel(
     init {
         viewModelScope.launch {
             val (profiles, result) =
-                withContext(Dispatchers.IO) {
+                runCatching { withContext(Dispatchers.IO) {
                     repository.networkProfiles() to repository.resume()
+                } }.getOrElse { error ->
+                    if (error is CancellationException) throw error
+                    // A temporarily unavailable credential store must not destroy its contents.
+                    mutableState.update { it.copy(phase = AppPhase.SignedOut, error = humanError(error)) }
+                    return@launch
                 }
             when (result) {
                 ResumeResult.NoSession ->
@@ -445,6 +238,14 @@ internal class HolonViewModel(
                         )
                     }
             }
+            restoredNavigation?.takeIf { it.scopeKey == state.value.session?.scopeKey }?.let { bookmark ->
+                selectMainDestination(bookmark.destination)
+                bookmark.agentFor(state.value)?.let { agent ->
+                    openAgent(agent)
+                    selectAgentSection(bookmark.section)
+                }
+            }
+            state.collect { current -> NavigationBookmark.from(current)?.save(savedState) }
         }
     }
 
@@ -685,7 +486,10 @@ internal class HolonViewModel(
                 }
         val state = UUID.randomUUID().toString().replace("-", "")
         val proof = run.holon.android.sdk.NativeLoginProof.create()
-        nativeProofStore.write("oidc-login-proof", proof.verifier)
+        runCatching { nativeProofStore.write("oidc-login-proof", proof.verifier) }.getOrElse {
+            mutableState.update { state -> state.copy(error = "安全存储暂时不可用，请重试") }
+            return null
+        }
         oidcPreferences.edit()
             .putString("state", state)
             .putString("base_url", baseUrl)
@@ -713,10 +517,17 @@ internal class HolonViewModel(
             mutableState.update { it.copy(error = "OIDC 登录回调无效，请重新开始登录") }
             return true
         }
-        val verifier = nativeProofStore.read("oidc-login-proof")
+        val verifier = runCatching { nativeProofStore.read("oidc-login-proof") }.getOrElse {
+            mutableState.update { state -> state.copy(error = "安全存储暂时不可用，请重试") }
+            return true
+        }
         val age = System.currentTimeMillis() - oidcPreferences.getLong("started_at", 0)
         oidcPreferences.edit().clear().apply()
-        nativeProofStore.clear("oidc-login-proof")
+        runCatching { nativeProofStore.clear("oidc-login-proof") }
+        if (uri.getQueryParameter("code_challenge_method") != "S256") {
+            mutableState.update { it.copy(error = "daemon 不支持安全的原生浏览器登录，请升级 daemon") }
+            return true
+        }
         if (verifier.isNullOrBlank() || age !in 0..600_000) {
             mutableState.update { it.copy(error = "OIDC 登录回调无效，请重新开始登录") }
             return true
@@ -2576,7 +2387,7 @@ internal class HolonViewModel(
             return
         }
         mutableState.update {
-            it.copy(busy = false, online = false, error = humanError(error))
+            it.copy(busy = false, online = if (error is HolonHttpException) it.online else false, error = humanError(error))
         }
     }
 
@@ -2586,6 +2397,9 @@ internal class HolonViewModel(
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T =
                     HolonViewModel(application, container.repository, container.traceRecorder) as T
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T =
+                    HolonViewModel(application, container.repository, container.traceRecorder, extras.createSavedStateHandle()) as T
             }
     }
 }

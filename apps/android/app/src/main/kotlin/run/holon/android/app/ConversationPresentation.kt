@@ -4,6 +4,8 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import run.holon.android.sdk.HolonConversationTurn
+import run.holon.android.sdk.HolonConversationActivity
+import run.holon.android.sdk.HolonTurnInput
 
 internal sealed interface ConversationRow {
     val key: String
@@ -36,3 +38,22 @@ internal fun localTimestamp(timestamp: String, zone: ZoneId = ZoneId.systemDefau
 
 internal fun readingAnchorIndex(keys: List<String>, anchor: String, fallback: Int): Int =
     keys.indexOf(anchor).takeIf { it >= 0 } ?: fallback.coerceIn(0, keys.lastIndex.coerceAtLeast(0))
+
+internal sealed interface TurnProcessRow {
+    val key: String
+    val seq: Long
+    data class Activity(val activity: HolonConversationActivity) : TurnProcessRow {
+        override val key = "activity:${activity.id}"
+        override val seq = activity.eventSeq ?: Long.MAX_VALUE
+    }
+    data class Interjection(val input: HolonTurnInput) : TurnProcessRow {
+        override val key = "input:${input.messageId}"
+        override val seq = requireNotNull(input.activityKey).eventSeq
+    }
+}
+
+/** Placement uses canonical activity identity, not text or wall-clock guesses. */
+internal fun turnProcessRows(turn: HolonConversationTurn, activities: List<HolonConversationActivity>): List<TurnProcessRow> =
+    (activities.filter { it.kind != "operator" }.map(TurnProcessRow::Activity) +
+        turn.inputs.filter { it.interjected && it.activityKey != null && it.presentationClass != "internal" }
+            .map(TurnProcessRow::Interjection)).sortedWith(compareBy<TurnProcessRow> { it.seq }.thenBy { it.key })

@@ -40,7 +40,7 @@ internal fun TaskRow(task: HolonTaskSnapshot, onClick: () -> Unit) {
 }
 
 @Composable
-internal fun TaskDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
+internal fun TaskDetailScreen(state: HolonUiState, viewModel: WorkActions) {
     val task = state.selectedTask ?: return
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {

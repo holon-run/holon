@@ -61,7 +61,6 @@ internal val REQUIRED_CAPABILITIES =
         "brief.attachments.v1",
     )
 
-private const val MAX_ARTIFACT_CACHE_BYTES = 100L * 1024L * 1024L
 private const val READ_BRIEF_BASELINE_AGENT_ID = "__android_brief_baseline_v1__"
 
 internal data class ActiveSession(
@@ -137,10 +136,14 @@ internal class HolonRepository(
     private val preferences: HostPreferences,
     private val dao: HolonDao,
     private val traceRecorder: TraceRecorder,
+    internal val sessions: SessionCoordinator = SessionCoordinator(),
 ) {
     private val json = Json { ignoreUnknownKeys = true }
-    private var active: ActiveSession? = null
-    private var client: HolonHttpClient? = null
+    private val active: ActiveSession? get() = sessions.current?.session
+    private val client: HolonHttpClient? get() = sessions.current?.client
+    private val outboxDelivery = DurableOutbox(OutboxStore(dao::putOutbox), OutboxSender(::sendOutbox))
+    private val files = FilesRepository(context, sessions)
+    private val work = WorkRepository(sessions)
 
     suspend fun login(
         address: String,
@@ -172,8 +175,7 @@ internal class HolonRepository(
             attributes = mapOf("path" to TraceRedactor.path(baseUrl)),
         )
         val previousCredential = scopedStore.read()
-        val previousActive = active
-        val previousClient = client
+        val previousLease = sessions.current
         var transientToken: String? =
             if (pairingTicket == null && nativeSessionTicket == null) token.concatToString() else null
         token.fill('\u0000')
@@ -226,8 +228,7 @@ internal class HolonRepository(
             session to roster
         } catch (error: Throwable) {
             transientToken = null
-            active = previousActive
-            client = previousClient
+            sessions.restore(previousLease)
             if (previousCredential.isNullOrBlank()) {
                 scopedStore.clear()
             } else {
@@ -254,6 +255,7 @@ internal class HolonRepository(
         val userId = profile.userId ?: return ResumeResult.NoSession
         val visibilityScopeId = profile.visibilityScopeId ?: return ResumeResult.NoSession
         migrateLegacyCredential(profile)
+        migrateSavedScope(profile, runtimeId, userId, visibilityScopeId)
         val saved =
             SavedConnection(
                 baseUrl = profile.baseUrl,
@@ -307,21 +309,20 @@ internal class HolonRepository(
                 throw error
             }
         } catch (error: HolonProtocolException) {
-            if (error.isCompatibilityFailure()) {
-                ResumeResult.Incompatible(saved.baseUrl, humanError(error))
-            } else {
-                offlineResult(saved, candidate)
-            }
+            ResumeResult.Incompatible(saved.baseUrl, humanError(error))
+        } catch (error: IOException) {
+            offlineResult(saved, candidate)
         }
     }
 
     suspend fun refreshSessionAndRoster(): Pair<ActiveSession, HolonRosterSnapshot> {
-        val client = requireClient()
-        val current = requireSession()
+        val lease = sessions.capture()
+        val client = lease.client
+        val current = lease.session
         val user = client.currentUser()
         val server = requireCompatible(client.handshake(REQUIRED_CAPABILITIES))
         val roster = client.rosterSnapshot()
-        ensureCurrentScope(current)
+        sessions.requireCurrent(lease)
         if (
             user.userId != current.user.userId ||
             roster.runtimeId != current.runtimeId ||
@@ -330,7 +331,7 @@ internal class HolonRepository(
             clearAuthentication()
             throw SessionScopeChangedException()
         }
-        active = current.copy(user = user, server = server)
+        sessions.activate(current.copy(user = user, server = server), client)
         cacheRoster(requireSession().scopeKey, roster)
         return requireSession() to roster
     }
@@ -346,17 +347,17 @@ internal class HolonRepository(
 
     suspend fun modelCatalog(refresh: Boolean = false): HolonModelCatalog =
         withContext(Dispatchers.IO) {
-            requireClient().modelCatalog(refresh)
+            readScoped { it.modelCatalog(refresh) }
         }
 
     suspend fun setAgentModel(agentId: String, model: String, reasoningEffort: String?): HolonAgentModelState =
         withContext(Dispatchers.IO) {
-            requireClient().setAgentModel(agentId, model, reasoningEffort)
+            readScoped { it.setAgentModel(agentId, model, reasoningEffort) }
         }
 
     suspend fun clearAgentModel(agentId: String): HolonAgentModelState =
         withContext(Dispatchers.IO) {
-            requireClient().clearAgentModel(agentId)
+            readScoped { it.clearAgentModel(agentId) }
         }
 
     suspend fun cachedRoster(): List<AgentProjectionEntity> =
@@ -372,8 +373,7 @@ internal class HolonRepository(
             "network",
             "network.switch.started",
         )
-        active = null
-        client = null
+        sessions.clear()
         preferences.selectProfile(networkId)
         return resume().also {
             traceRecorder.record(
@@ -395,8 +395,7 @@ internal class HolonRepository(
         credentialStore(networkId).clear()
         preferences.removeProfile(networkId)
         if (active?.networkId == networkId) {
-            active = null
-            client = null
+            sessions.clear()
         }
     }
 
@@ -670,7 +669,7 @@ internal class HolonRepository(
     }
 
     suspend fun deliverOutbox(entry: OutboxEntity): OutboxEntity =
-        deliver(entry).also { dao.putOutbox(it) }
+        outboxDelivery.deliver(entry)
 
     suspend fun editFailedOutbox(entry: OutboxEntity): List<StagedAttachment> {
         require(entry.state == "failed") { "只有未发送成功的消息可以编辑" }
@@ -715,55 +714,11 @@ internal class HolonRepository(
         }
     }
 
-    fun reconnectingAgentEvents(
-        agentId: String,
-        afterSeq: Long?,
-        policy: SseReconnectPolicy = SseReconnectPolicy(),
-    ): Sequence<HolonAgentEvent> =
-        requireClient().reconnectingAgentEvents(
-            agentId = agentId,
-            afterSeq = afterSeq,
-            limit = 100,
-            policy = policy,
-        )
-
-    suspend fun syncState(agentId: String): AgentSyncStateEntity? =
-        requireSession().let { dao.syncState(it.scopeKey, agentId) }
-
-    suspend fun saveAgentEventCursor(agentId: String, event: HolonAgentEvent) {
-        val session = requireSession()
-        val current = dao.syncState(session.scopeKey, agentId)
-        dao.putSyncState(
-            AgentSyncStateEntity(
-                scopeKey = session.scopeKey,
-                agentId = agentId,
-                eventCursor = event.eventSeq,
-                conversationCursor = current?.conversationCursor,
-                eventLogEpoch = event.eventLogEpoch,
-                updatedAt = System.currentTimeMillis(),
-            ),
-        )
-    }
-
-    suspend fun resetAgentEventCursor(agentId: String, eventLogEpoch: String?) {
-        val session = requireSession()
-        val current = dao.syncState(session.scopeKey, agentId)
-        dao.putSyncState(
-            AgentSyncStateEntity(
-                scopeKey = session.scopeKey,
-                agentId = agentId,
-                eventCursor = null,
-                conversationCursor = current?.conversationCursor,
-                eventLogEpoch = eventLogEpoch,
-                updatedAt = System.currentTimeMillis(),
-            ),
-        )
-    }
 
     suspend fun brief(agentId: String, briefId: String): HolonBrief {
         val session = requireSession()
         return try {
-            requireClient().brief(agentId, briefId).also { brief ->
+            readScoped { it.brief(agentId, briefId) }.also { brief ->
                 dao.putBrief(
                     BriefCacheEntity(
                         session.scopeKey,
@@ -783,22 +738,22 @@ internal class HolonRepository(
     }
 
     suspend fun workItems(agentId: String, limit: Int = 30): List<HolonWorkItemSnapshot> =
-        requireClient().workItemSnapshots(agentId, limit = limit)
+        work.items(agentId, limit)
 
     suspend fun operatorPreview(agentId: String): OperatorPreview? =
         readScoped { it.conversationSnapshot(agentId, limit = 1) }.also { validateConversationScope(it) }.operatorPreview()
 
     suspend fun tasks(agentId: String): List<run.holon.android.sdk.HolonTaskSnapshot> =
-        requireClient().taskSnapshots(agentId, limit = 50)
+        work.tasks(agentId)
 
     suspend fun task(agentId: String, taskId: String): run.holon.android.sdk.HolonTaskSnapshot =
-        requireClient().taskStatusSnapshot(agentId, taskId)
+        work.task(agentId, taskId)
 
     suspend fun taskOutput(agentId: String, taskId: String): run.holon.android.sdk.HolonTaskOutputSnapshot =
-        requireClient().taskOutputSnapshot(agentId, taskId, block = false)
+        work.output(agentId, taskId)
 
     suspend fun workItem(agentId: String, workItemId: String): HolonWorkItemSnapshot =
-        requireClient().workItemSnapshot(agentId, workItemId)
+        work.item(agentId, workItemId)
 
     suspend fun conversationDetail(agentId: String, turnId: String, before: String? = null): HolonConversationDetail =
         readScoped { it.conversationDetail(agentId, turnId, limit = 100, before = before) }.also { detail ->
@@ -809,102 +764,20 @@ internal class HolonRepository(
         }
 
     suspend fun toolExecution(agentId: String, toolExecutionId: String): HolonToolExecutionSnapshot =
-        requireClient().toolExecutionSnapshot(agentId, toolExecutionId)
+        work.tool(agentId, toolExecutionId)
 
     suspend fun abortCurrentRun(agentId: String, runId: String) {
         requireClient().abortCurrentRun(agentId, runId)
     }
 
-    suspend fun workspaces(agentId: String): List<HolonWorkspace> =
-        requireClient().agentWorkspaces(agentId)
-
-    suspend fun browseWorkspace(
-        workspace: HolonWorkspace,
-        path: String = "",
-    ): HolonWorkspaceDirectory =
-        requireClient().browseWorkspaceDirectory(
-            workspaceId = workspace.workspaceId,
-            path = path,
-            executionRootId = workspace.executionRootId,
-        )
-
-    suspend fun resolveFileReference(reference: HolonFileReference): HolonFileReferenceResult =
-        requireClient().resolveFileReference(reference)
-
-    suspend fun prepareArtifact(locator: String, preferredName: String): PreparedArtifact {
-        val client = requireClient()
-        return cacheDownloadedArtifact(locator, preferredName) { target ->
-            client.downloadWorkspaceArtifactToFile(locator, target, MAX_ARTIFACT_CACHE_BYTES)
-        }
-    }
-
-    suspend fun prepareWorkspaceFile(
-        workspace: HolonWorkspace,
-        path: String,
-    ): PreparedArtifact {
-        val client = requireClient()
-        val sourceKey = listOf(workspace.workspaceId, workspace.executionRootId.orEmpty(), path).joinToString("|")
-        return cacheDownloadedArtifact(sourceKey, path.substringAfterLast('/')) { target ->
-            client.downloadWorkspaceFileToFile(
-                workspaceId = workspace.workspaceId,
-                path = path,
-                targetFile = target,
-                maxBytes = MAX_ARTIFACT_CACHE_BYTES,
-                executionRootId = workspace.executionRootId,
-            )
-        }
-    }
-
-    suspend fun prepareWorkItemPlan(agentId: String, plan: HolonWorkItemPlanArtifact): PreparedArtifact {
-        require(plan.ownerAgentId == null || plan.ownerAgentId == agentId) { "计划不属于当前 Agent" }
-        val workspaceId = plan.workspaceId?.takeIf(String::isNotBlank)
-            ?: throw IllegalArgumentException("服务端没有提供计划的工作区标识")
-        val relativePath = plan.relativePath?.takeIf(String::isNotBlank)
-            ?: throw IllegalArgumentException("服务端没有提供计划文件位置")
-        val client = requireClient()
-        return cacheDownloadedArtifact("plan|$workspaceId|$relativePath", "plan.md") { target ->
-            client.downloadWorkspaceFileToFile(
-                workspaceId = workspaceId,
-                path = relativePath,
-                targetFile = target,
-                maxBytes = MAX_ARTIFACT_CACHE_BYTES,
-            )
-        }
-    }
-
-    suspend fun saveArtifactToDevice(artifact: PreparedArtifact, destination: Uri) {
-        val source = File(artifact.localPath)
-        require(source.isFile) { "预览文件已不存在，请重新读取后再保存" }
-        context.contentResolver.openOutputStream(destination, "wt")?.use { output ->
-            source.inputStream().use { input -> input.copyTo(output) }
-        } ?: throw IOException("无法写入所选位置")
-    }
-
-    private fun cacheDownloadedArtifact(
-        locator: String,
-        preferredName: String,
-        download: (File) -> HolonDownloadedFile,
-    ): PreparedArtifact {
-        val directory = File(context.cacheDir, "shared-artifacts/${scopeFileKey(requireSession().scopeKey)}").apply { mkdirs() }
-        val cachedFiles = directory.listFiles().orEmpty().filter(File::isFile).sortedBy(File::lastModified)
-        var cachedBytes = cachedFiles.sumOf(File::length)
-        cachedFiles.forEach { cached ->
-            if (cachedBytes > MAX_ARTIFACT_CACHE_BYTES * 2) {
-                cachedBytes -= cached.length()
-                cached.delete()
-            }
-        }
-        val name = safeFileName(preferredName.ifBlank { "artifact" })
-        val target = File(directory, "${UUID.randomUUID()}-$name")
-        return try {
-            val downloaded = download(target)
-            trimArtifactCache(directory, protected = target)
-            PreparedArtifact(locator, target.absolutePath, downloaded.mediaType, name)
-        } catch (error: Throwable) {
-            target.delete()
-            throw error
-        }
-    }
+    suspend fun workspaces(agentId: String): List<HolonWorkspace> = files.workspaces(agentId)
+    suspend fun browseWorkspace(workspace: HolonWorkspace, path: String = ""): HolonWorkspaceDirectory =
+        files.browseWorkspace(workspace, path)
+    suspend fun resolveFileReference(reference: HolonFileReference): HolonFileReferenceResult = files.resolveFileReference(reference)
+    suspend fun prepareArtifact(locator: String, preferredName: String): PreparedArtifact = files.prepareArtifact(locator, preferredName)
+    suspend fun prepareWorkspaceFile(workspace: HolonWorkspace, path: String): PreparedArtifact = files.prepareWorkspaceFile(workspace, path)
+    suspend fun prepareWorkItemPlan(agentId: String, plan: HolonWorkItemPlanArtifact): PreparedArtifact = files.prepareWorkItemPlan(agentId, plan)
+    suspend fun saveArtifactToDevice(artifact: PreparedArtifact, destination: Uri) = files.saveArtifactToDevice(artifact, destination)
 
     suspend fun logout() {
         active?.networkId?.let {
@@ -914,57 +787,29 @@ internal class HolonRepository(
         clearAuthentication(removeProfile = true)
     }
 
-    private suspend fun deliver(entry: OutboxEntity): OutboxEntity {
-        require(entry.scopeKey == requireSession().scopeKey) { "消息不属于当前登录身份" }
-        val sending = entry.copy(state = "sending", error = null, updatedAt = System.currentTimeMillis())
-        dao.putOutbox(sending)
+    private fun sendOutbox(entry: OutboxEntity): run.holon.android.sdk.HolonPromptReceipt {
+        val lease = sessions.capture()
+        require(entry.scopeKey == lease.session.scopeKey) { "消息不属于当前登录身份" }
         val attachments = json.decodeFromString(ListSerializer(StagedAttachment.serializer()), entry.attachmentsJson)
-        return try {
-            val receipt =
-                requireClient().sendOperatorPrompt(
-                    agentId = entry.agentId,
-                    text = entry.text,
-                    clientRequestId = entry.requestId,
-                    attachments = attachments.map { staged ->
-                        val file = File(staged.localPath)
-                        require(file.isFile) { "待发送附件已不存在：${staged.name}" }
-                        HolonPromptAttachment(
-                            kind = staged.kind,
-                            name = staged.name,
-                            mediaType = staged.mediaType,
-                            dataBase64 = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP),
-                            size = staged.size,
-                        )
-                    },
-                )
-            sending.copy(
-                state = "received",
-                messageId = receipt.messageId,
-                updatedAt = System.currentTimeMillis(),
-            )
-        } catch (error: HolonHttpException) {
-            if (error.statusCode == 401 || error.statusCode == 403) throw error
-            sending.copy(
-                state = if (error.statusCode >= 500) "unknown" else "failed",
-                error = humanError(error),
-                updatedAt = System.currentTimeMillis(),
-            )
-        } catch (error: Throwable) {
-            sending.copy(
-                state = "unknown",
-                error = humanError(error),
-                updatedAt = System.currentTimeMillis(),
+        val payload = attachments.map { staged ->
+            val file = File(staged.localPath)
+            require(file.isFile) { "待发送附件已不存在：${staged.name}" }
+            HolonPromptAttachment(
+                kind = staged.kind, name = staged.name, mediaType = staged.mediaType,
+                dataBase64 = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP), size = staged.size,
             )
         }
+        sessions.requireCurrent(lease)
+        return lease.client.sendOperatorPrompt(
+            agentId = entry.agentId, text = entry.text, clientRequestId = entry.requestId, attachments = payload,
+        )
     }
-
     private suspend fun activate(
         session: ActiveSession,
         newClient: HolonHttpClient,
         roster: HolonRosterSnapshot,
     ) {
-        active = session
-        client = newClient
+        sessions.activate(session, newClient)
         cacheRoster(session.scopeKey, roster)
     }
 
@@ -1052,8 +897,7 @@ internal class HolonRepository(
                         capabilities = emptySet(),
                     ),
             )
-        active = session
-        client = candidate
+        sessions.activate(session, candidate)
         return ResumeResult.Offline(session, dao.conversations(saved.scopeKey))
     }
 
@@ -1070,28 +914,6 @@ internal class HolonRepository(
                 throw HolonProtocolException("daemon 拒绝了兼容性握手")
         }
 
-    private suspend fun purgeOtherScopes(scopeKey: String) {
-        dao.purgeOtherConversationScopes(scopeKey)
-        dao.purgeOtherDraftScopes(scopeKey)
-        dao.purgeOtherComposerScopes(scopeKey)
-        dao.purgeOtherOutboxScopes(scopeKey)
-        dao.purgeOtherBriefScopes(scopeKey)
-        dao.purgeOtherCursorScopes(scopeKey)
-        dao.purgeOtherSyncScopes(scopeKey)
-    }
-
-    private suspend fun clearLocalState() {
-        dao.clearConversations()
-        dao.clearDrafts()
-        dao.clearComposerAttachments()
-        dao.clearOutbox()
-        dao.clearBriefs()
-        dao.clearCursors()
-        dao.clearRuntimeScopes()
-        dao.clearSyncStates()
-        File(context.filesDir, "outbox").deleteRecursively()
-        File(context.cacheDir, "shared-artifacts").deleteRecursively()
-    }
 
     private suspend fun clearLocalState(scopeKey: String) {
         val removed = dao.attachmentPayloads(scopeKey).flatMap(::attachmentPaths).toSet()
@@ -1106,7 +928,7 @@ internal class HolonRepository(
             .getOrDefault(emptyList()).map(StagedAttachment::localPath)
 
     fun isCurrentFailure(error: Throwable): Boolean =
-        error !is HolonHttpException || error.clientInstanceId == null || error.clientInstanceId == client?.instanceId
+        sessions.acceptsFailure(error)
 
     private suspend fun clearAuthentication(
         removeProfile: Boolean = false,
@@ -1124,14 +946,26 @@ internal class HolonRepository(
         }
         if (scopeKey != null) clearLocalState(scopeKey)
         if (current?.networkId == targetNetworkId) {
-            active = null
-            client = null
+            sessions.clear()
         }
     }
 
     private fun migrateLegacyCredential(profile: NetworkProfile) {
         if (!shouldMigrateLegacyCredential(profile)) return
         (sessionStore as? LegacySessionCredentialMigrator)?.migrateLegacy(profile.networkId)
+    }
+
+    private suspend fun migrateSavedScope(profile: NetworkProfile, runtime: String, user: String, visibility: String) {
+        val identity = cacheScopeKey(runtime, user, visibility)
+        val previous = if (profile.networkId == legacyNetworkId(profile.baseUrl)) identity else "${profile.networkId}:$identity"
+        val next = scopeKeyForNetwork(profile.networkId, profile.baseUrl, runtime, user, visibility)
+        val owner = dao.runtimeScope(previous)
+        // Old v2 caches have no runtime_scope row; an existing owner must match this host.
+        if (owner != null && owner.baseUrl != profile.baseUrl) return
+        dao.moveScope(previous, next)
+        val oldFiles = File(context.cacheDir, "shared-artifacts/${scopeFileKey(previous)}")
+        val newFiles = File(context.cacheDir, "shared-artifacts/${scopeFileKey(next)}")
+        if (oldFiles.isDirectory && !newFiles.exists()) oldFiles.renameTo(newFiles)
     }
 
     private fun requireSession(): ActiveSession = checkNotNull(active) { "No active Holon session" }
@@ -1142,12 +976,7 @@ internal class HolonRepository(
     }
 
     private fun <T> readScoped(read: (HolonHttpClient) -> T): T {
-        val session = requireSession()
-        val transport = requireClient()
-        val value = read(transport)
-        if (client !== transport) throw kotlinx.coroutines.CancellationException("Stale transport response")
-        ensureCurrentScope(session)
-        return value
+        return sessions.read(read)
     }
 
     private fun attachmentLimit(kind: String): Long {
@@ -1314,7 +1143,7 @@ internal fun Throwable.isTransientNetworkFailure(): Boolean =
 internal const val TRANSIENT_NETWORK_STATUS_MESSAGE: String =
     "网络暂时不可用，已保留当前内容；恢复后可重试"
 
-private fun safeFileName(value: String): String =
+internal fun safeFileName(value: String): String =
     value.map { if (it.isLetterOrDigit() || it in ".-_ ") it else '_' }.joinToString("").take(120)
 
 private fun latestActivityMillis(value: String?): Long? =
@@ -1351,7 +1180,7 @@ internal fun scopeKeyForNetwork(
     visibilityScopeId: String,
 ): String {
     val scope = cacheScopeKey(runtimeId, userId, visibilityScopeId)
-    return if (networkId == legacyNetworkId(baseUrl)) scope else "$networkId:$scope"
+    return "$networkId:${baseUrl.length}:$baseUrl:$scope"
 }
 
 internal fun shouldMigrateLegacyCredential(profile: NetworkProfile): Boolean =
@@ -1384,10 +1213,7 @@ private fun utf8Size(value: String): Long = value.toByteArray(Charsets.UTF_8).si
 
 private fun attachmentLabel(kind: String): String = if (kind == "image") "图片" else "文件"
 
-private fun formatBytes(bytes: Long): String =
-    if (bytes % (1024 * 1024) == 0L) "${bytes / (1024 * 1024)} MB" else "$bytes 字节"
-
 private const val SAMPLE_REQUEST_ID = "00000000-0000-0000-0000-000000000000"
 
-private val SavedConnection.scopeKey: String
-    get() = cacheScopeKey(runtimeId, userId, visibilityScopeId)
+internal val SavedConnection.scopeKey: String
+    get() = scopeKeyForNetwork(networkId, baseUrl, runtimeId, userId, visibilityScopeId)

@@ -36,6 +36,13 @@ The generated transport sources remain owned by
 `packages/client-wire-kotlin`. Do not copy or edit those models in this
 directory.
 
+Client boundaries and shared iOS conformance inputs are described in
+[the boundary decision](../../docs/implementation-decisions/android-client-boundaries.md).
+The app keeps feature rendering/actions, active session binding, bounded
+foreground synchronization, durable send state, and work/file reads separate.
+Native organization sign-in now requires an updated daemon and an S256-bound
+callback ticket; local-token login and confirmed HTTP remain compatible.
+
 Run the SDK tests from the repository root:
 
 ```sh
@@ -54,6 +61,20 @@ Build the app with the Android SDK installed and `ANDROID_HOME` configured:
 cd apps/android
 ./gradlew :app:assembleDebug :app:assembleRelease :sdk:test
 ```
+
+Run ordinary tests separately from screenshot verification:
+
+```sh
+./gradlew :sdk:test :app:testDebugUnitTest
+./gradlew :app:verifyPaparazziDebug :app:lintRelease
+./gradlew :app:connectedDebugAndroidTest
+```
+
+The instrumented suite is for isolated test devices/emulators: it creates test
+sessions, modifies the test app's local preferences/database and verifies
+migration, independent network scopes, system sharing and Activity/draft
+restoration against a local fixture. Do not run it against a user's production
+app data.
 
 The debug app defaults to `http://10.0.2.2:7878/api` on an Android emulator and
 `http://127.0.0.1:7878/api` on a physical device. For a USB-connected device,
