@@ -168,18 +168,10 @@ fn target_for_addr(addr: &str) -> Result<String> {
 }
 
 fn target(state: &AppState) -> Result<String> {
-    target_for_addr(&state.host.config().http_addr)
-}
-
-fn listener_includes_loopback(addr: &str) -> bool {
-    // Serve enable validates the configured primary listener, not CLI-added sockets.
-    addr.parse::<std::net::SocketAddr>()
-        .map(|socket| socket.ip().is_loopback() || socket.ip().is_unspecified())
-        .unwrap_or_else(|_| {
-            addr.rsplit_once(':').is_some_and(|(host, port)| {
-                host.eq_ignore_ascii_case("localhost") && port.parse::<u16>().is_ok()
-            })
-        })
+    match state.loopback_http_addr {
+        Some(address) => Ok(format!("http://{address}")),
+        None => target_for_addr(&state.host.config().http_addr),
+    }
 }
 
 pub(super) fn serve_authentication_available(state: &AppState) -> bool {
@@ -201,12 +193,14 @@ fn authenticated_control_available(
 }
 
 fn legacy_target(state: &AppState) -> Option<String> {
-    let addr = state
-        .host
-        .config()
-        .http_addr
-        .parse::<std::net::SocketAddr>()
-        .ok()?;
+    let configured = &state.host.config().http_addr;
+    if configured
+        .rsplit_once(':')
+        .is_some_and(|(host, _)| host.eq_ignore_ascii_case("localhost"))
+    {
+        return target_for_addr(configured).ok();
+    }
+    let addr = configured.parse::<std::net::SocketAddr>().ok()?;
     if addr.ip().is_unspecified() || addr.ip().is_loopback() {
         return None;
     }
@@ -249,9 +243,9 @@ pub(super) fn change(
         .lock()
         .map_err(|_| anyhow!("Tailscale Serve change lock unavailable"))?;
     let config = state.host.config();
-    if enabled && !listener_includes_loopback(&config.http_addr) {
+    if enabled && state.loopback_http_addr.is_none() {
         return Err(anyhow!(
-            "Tailscale Serve requires a loopback or wildcard primary listener; use --listen 0.0.0.0:PORT or a loopback address"
+            "Tailscale Serve requires a bound loopback HTTP listener"
         ));
     }
     let mut stored = load_persisted_config_at(&config.config_file_path)?;
@@ -316,24 +310,45 @@ mod tests {
     use super::*;
     use crate::config::AppConfig;
 
+    fn test_state(directory: &std::path::Path, address: &str) -> AppState {
+        std::fs::write(
+            directory.join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+        let mut config = AppConfig::load_with_home(Some(directory.to_path_buf())).unwrap();
+        config.http_addr = address.into();
+        config.control_auth_mode = crate::config::ControlAuthMode::Required;
+        config.control_token = Some("test-secret".into());
+        let host = RuntimeHost::new_with_provider(
+            config,
+            Arc::new(crate::provider::StubProvider::new("unused")),
+        )
+        .unwrap();
+        AppState::for_tcp(host)
+    }
+
     #[tokio::test]
     async fn ipv4_wildcard_listener_accepts_loopback_connections() {
         let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        assert!(listener_includes_loopback(&address.to_string()));
+        let directory = tempfile::tempdir().unwrap();
+        let state =
+            test_state(directory.path(), "0.0.0.0:0").with_http_listener_addresses(address, None);
+        assert_eq!(
+            target(&state).unwrap(),
+            format!("http://127.0.0.1:{}", address.port())
+        );
         let client = tokio::net::TcpStream::connect(("127.0.0.1", address.port()))
             .await
             .unwrap();
         let (_, peer) = listener.accept().await.unwrap();
         assert!(peer.ip().is_loopback());
         drop(client);
-        for address in ["192.0.2.5:7878", "100.64.0.5:7878", "[2001:db8::5]:7878"] {
-            assert!(!listener_includes_loopback(address));
-        }
     }
 
     #[test]
-    fn numeric_lan_primary_enable_is_rejected_before_running_tailscale() {
+    fn missing_bound_loopback_is_rejected_before_running_tailscale() {
         struct NoCalls;
         impl Runner for NoCalls {
             fn run(&self, _: &[&str]) -> Result<Value> {
@@ -343,24 +358,111 @@ mod tests {
                 panic!("invalid listener must never change Serve rules")
             }
         }
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::write(
-            directory.path().join("config.json"),
-            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
-        )
-        .unwrap();
-        let mut config = AppConfig::load_with_home(Some(directory.path().to_path_buf())).unwrap();
-        config.http_addr = "192.0.2.5:7878".into();
-        let host = RuntimeHost::new_with_provider(
-            config,
-            Arc::new(crate::provider::StubProvider::new("unused")),
-        )
-        .unwrap();
-        let state = AppState::for_tcp(host);
-        let error = change(&state, &NoCalls, true).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("loopback or wildcard primary listener"));
+        for address in [
+            "127.0.0.1:7878",
+            "192.0.2.5:7878",
+            "100.64.0.5:7878",
+            "[2001:db8::5]:7878",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut state = test_state(directory.path(), address);
+            if !address.starts_with("127.") {
+                state = state.with_http_listener_addresses(address.parse().unwrap(), None);
+            }
+            let error = change(&state, &NoCalls, true).unwrap_err();
+            assert!(error.to_string().contains("bound loopback HTTP listener"));
+            assert_eq!(
+                load_persisted_config_at(&state.host.config().config_file_path)
+                    .unwrap()
+                    .tailscale_serve_desired_enabled,
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_primary_can_disable_and_reenable_with_bound_loopback() {
+        struct MutableServe {
+            proxy: std::sync::Mutex<Option<String>>,
+            commands: std::sync::Mutex<Vec<Vec<String>>>,
+        }
+        impl Runner for MutableServe {
+            fn run(&self, args: &[&str]) -> Result<Value> {
+                if args == ["status", "--json"] {
+                    return Ok(json!({
+                        "BackendState": "Running",
+                        "Self": {"DNSName": "host.example.ts.net."}
+                    }));
+                }
+                let handlers = match self.proxy.lock().unwrap().as_ref() {
+                    Some(proxy) => json!({"/": {"Proxy": proxy}}),
+                    None => json!({}),
+                };
+                Ok(json!({"Web": {"host.example.ts.net:443": {"Handlers": handlers}}}))
+            }
+            fn command(&self, args: &[&str]) -> Result<()> {
+                self.commands
+                    .lock()
+                    .unwrap()
+                    .push(args.iter().map(|arg| (*arg).to_owned()).collect());
+                *self.proxy.lock().unwrap() = if args.last() == Some(&"off") {
+                    None
+                } else {
+                    args.last().map(|target| (*target).to_owned())
+                };
+                Ok(())
+            }
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let loopback = listener.local_addr().unwrap();
+        for primary in ["192.0.2.5:0", "100.64.0.5:0", "[2001:db8::5]:0"] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut primary_addr: std::net::SocketAddr = primary.parse().unwrap();
+            primary_addr.set_port(loopback.port());
+            let state = test_state(directory.path(), primary)
+                .with_http_listener_addresses(primary_addr, Some(loopback));
+            let unix = AppState::for_unix(state.host.clone()).share_listener_state_from(&state);
+            let runner = MutableServe {
+                proxy: std::sync::Mutex::new(None),
+                commands: std::sync::Mutex::new(Vec::new()),
+            };
+            let expected_target = format!("http://{loopback}");
+            assert_eq!(target(&state).unwrap(), expected_target);
+            assert_eq!(target(&unix).unwrap(), expected_target);
+            assert!(change(&state, &runner, true).unwrap().serving);
+            let disabled = change(&unix, &runner, false).unwrap();
+            assert!(!disabled.serving);
+            assert!(!disabled.desired_enabled);
+            let enabled = change(&unix, &runner, true).unwrap();
+            assert!(enabled.serving);
+            assert!(enabled.desired_enabled);
+            assert_eq!(
+                runner.commands.lock().unwrap().as_slice(),
+                [
+                    vec![
+                        "serve",
+                        "--bg",
+                        "--https=443",
+                        "--set-path=/",
+                        &expected_target
+                    ],
+                    vec!["serve", "--https=443", "--set-path=/", "off"],
+                    vec![
+                        "serve",
+                        "--bg",
+                        "--https=443",
+                        "--set-path=/",
+                        &expected_target
+                    ],
+                ]
+            );
+            assert_eq!(
+                load_persisted_config_at(&state.host.config().config_file_path)
+                    .unwrap()
+                    .tailscale_serve_desired_enabled,
+                Some(true)
+            );
+        }
     }
 
     #[test]
@@ -426,7 +528,8 @@ mod tests {
                 Arc::new(crate::provider::StubProvider::new("unused")),
             )
             .unwrap();
-            let state = AppState::for_tcp(host);
+            let state = AppState::for_tcp(host)
+                .with_http_listener_addresses("127.0.0.1:7878".parse().unwrap(), None);
             let status = read(&state, &runner).unwrap();
             assert_eq!(
                 status.control_authentication_available,
@@ -444,17 +547,47 @@ mod tests {
                         .unwrap()
                         .control_authentication_available
                 );
+            } else {
+                assert!(change(&state, &runner, true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("requires Holon control authentication"));
             }
         }
+    }
+
+    #[test]
+    fn localhost_legacy_rule_can_migrate_to_resolved_listener() {
+        let directory = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("[::1]:0").unwrap();
+        let bound = listener.local_addr().unwrap();
+        let configured = format!("localhost:{}", bound.port());
+        let state =
+            test_state(directory.path(), &configured).with_http_listener_addresses(bound, None);
+        let legacy = format!("http://{configured}");
+        let runner = Mock {
+            serve: json!({"Web": {"host.example.ts.net:443": {
+                "Handlers": {"/": {"Proxy": legacy}}
+            }}}),
+        };
+        let status = read(&state, &runner).unwrap();
+        assert!(status.serving);
+        assert!(status.legacy_serving);
+        assert!(!status.conflict);
+        assert_eq!(target(&state).unwrap(), format!("http://{bound}"));
     }
 
     #[tokio::test]
     async fn ipv6_wildcard_listener_accepts_selected_backend_target() {
         let listener = tokio::net::TcpListener::bind("[::]:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        assert!(listener_includes_loopback(&address.to_string()));
-        let target = target_for_addr(&address.to_string()).unwrap();
-        assert_eq!(target, format!("http://[::1]:{}", address.port()));
+        let directory = tempfile::tempdir().unwrap();
+        let state =
+            test_state(directory.path(), "[::]:0").with_http_listener_addresses(address, None);
+        assert_eq!(
+            target(&state).unwrap(),
+            format!("http://[::1]:{}", address.port())
+        );
         let client = tokio::net::TcpStream::connect(("::1", address.port()))
             .await
             .unwrap();

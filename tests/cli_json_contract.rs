@@ -60,8 +60,13 @@ fn serve_test_lock() -> &'static Mutex<()> {
 }
 
 fn spawn_local_serve(home: &tempfile::TempDir) -> (ServeChild, String) {
-    let mut child = isolated_holon_command(home)
-        .args(["serve", "--listen", "127.0.0.1:0"])
+    let mut command = isolated_holon_command(home);
+    command.args(["serve", "--listen", "127.0.0.1:0"]);
+    spawn_serve_command(command)
+}
+
+fn spawn_serve_command(mut command: Command) -> (ServeChild, String) {
+    let mut child = command
         .env("HOLON_PRE_SERVER_RUNTIME_PREPARED", "1")
         .env("OPENAI_API_KEY", "test-openai-api-key")
         .stdout(Stdio::piped())
@@ -139,6 +144,121 @@ fn spawn_local_serve(home: &tempfile::TempDir) -> (ServeChild, String) {
         .recv_timeout(Duration::from_millis(100))
         .unwrap_or_default();
     panic!("timed out waiting for holon serve to print listening address\nstderr:\n{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn tailscale_serve_reenable_uses_bound_loopback_for_each_primary() {
+    use std::{net::UdpSocket, os::unix::fs::PermissionsExt};
+
+    let _serve_guard = serve_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut primaries = vec!["127.0.0.1".to_owned(), "0.0.0.0".to_owned()];
+    let route = UdpSocket::bind("0.0.0.0:0").unwrap();
+    if route.connect("192.0.2.1:9").is_ok() {
+        let ip = route.local_addr().unwrap().ip();
+        if !ip.is_loopback() && !ip.is_unspecified() {
+            primaries.push(ip.to_string());
+        }
+    }
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    for primary in primaries {
+        let home = tempfile::tempdir().unwrap();
+        let stub = home.path().join("tailscale");
+        std::fs::write(
+            &stub,
+            r#"#!/bin/sh
+set -eu
+case "$*" in
+  "status --json")
+    printf '%s\n' '{"BackendState":"Running","Self":{"DNSName":"test.example.ts.net."}}' ;;
+  "serve status --json")
+    if [ -f "$TAILSCALE_TEST_HOME/serve.json" ]; then
+      cat "$TAILSCALE_TEST_HOME/serve.json"
+    else
+      printf '%s\n' '{}'
+    fi ;;
+  "serve --https=443 --set-path=/ off")
+    printf '%s\n' '{}' > "$TAILSCALE_TEST_HOME/serve.json"
+    printf '%s\n' "$*" >> "$TAILSCALE_TEST_HOME/commands" ;;
+  "serve --bg --https=443 --set-path=/"*)
+    printf '{"Web":{"test.example.ts.net:443":{"Handlers":{"/":{"Proxy":"%s"}}}}}\n' "$5" > "$TAILSCALE_TEST_HOME/serve.json"
+    printf '%s\n' "$*" >> "$TAILSCALE_TEST_HOME/commands" ;;
+  *) exit 1 ;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let listen = format!("{primary}:0");
+        let mut command = isolated_holon_command(&home);
+        command
+            .args(["serve", "--listen", &listen])
+            .env("HOLON_CONTROL_AUTH_MODE", "required")
+            .env("HOLON_CONTROL_TOKEN", "serve-test-token")
+            .env("TAILSCALE_BINARY_PATH", &stub)
+            .env("TAILSCALE_TEST_HOME", home.path())
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    home.path().display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            );
+        let (_serve, address) = spawn_serve_command(command);
+        let port = address.parse::<std::net::SocketAddr>().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let endpoint = format!("{base}/api/control/network/tailscale/serve");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match client.get(&endpoint).send() {
+                Ok(response) if response.status() == 401 => break,
+                _ if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
+                result => panic!("daemon did not become healthy: {result:?}"),
+            }
+        }
+        assert_eq!(
+            client
+                .post(format!("{endpoint}/enable"))
+                .send()
+                .unwrap()
+                .status(),
+            401
+        );
+        assert!(!home.path().join("commands").exists());
+        for enabled in [true, false, true] {
+            let action = if enabled { "enable" } else { "disable" };
+            let response = client
+                .post(format!("{endpoint}/{action}"))
+                .bearer_auth("serve-test-token")
+                .send()
+                .unwrap();
+            assert_eq!(response.status(), 200, "{primary}: {action}");
+            let status: Value = response.json().unwrap();
+            assert_eq!(status["desired_enabled"], enabled);
+            assert_eq!(status["serving"], enabled);
+            assert_eq!(status["conflict"], false);
+        }
+        let commands = std::fs::read_to_string(home.path().join("commands")).unwrap();
+        assert_eq!(
+            commands.lines().collect::<Vec<_>>(),
+            vec![
+                format!("serve --bg --https=443 --set-path=/ {base}"),
+                "serve --https=443 --set-path=/ off".to_owned(),
+                format!("serve --bg --https=443 --set-path=/ {base}"),
+            ]
+        );
+        let stored: Value =
+            serde_json::from_slice(&std::fs::read(home.path().join("config.json")).unwrap())
+                .unwrap();
+        assert_eq!(stored["tailscale_serve_desired_enabled"], true);
+    }
 }
 
 fn run_json(home: &tempfile::TempDir, args: &[&str]) -> Value {

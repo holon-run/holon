@@ -217,6 +217,7 @@ pub struct AppState {
     pub require_control_token: bool,
     pairing_tickets: Arc<std::sync::Mutex<auth::PairingTickets>>,
     tailscale_serve_change: Arc<std::sync::Mutex<()>>,
+    loopback_http_addr: Option<std::net::SocketAddr>,
     transport: ControlTransportKind,
     pub runtime_service: Option<RuntimeServiceHandle>,
     pub advertise_url: Option<String>,
@@ -364,8 +365,30 @@ impl AppState {
     pub fn share_listener_state_from(mut self, other: &Self) -> Self {
         self.pairing_tickets = other.pairing_tickets.clone();
         self.tailscale_serve_change = other.tailscale_serve_change.clone();
+        self.loopback_http_addr = other.loopback_http_addr;
         self
     }
+
+    /// Record bound TCP listeners before publishing either control router.
+    pub fn with_http_listener_addresses(
+        mut self,
+        primary: std::net::SocketAddr,
+        additional_loopback: Option<std::net::SocketAddr>,
+    ) -> Self {
+        self.loopback_http_addr = if primary.ip().is_loopback() {
+            Some(primary)
+        } else if primary.ip().is_unspecified() {
+            let ip = match primary {
+                std::net::SocketAddr::V4(_) => std::net::Ipv4Addr::LOCALHOST.into(),
+                std::net::SocketAddr::V6(_) => std::net::Ipv6Addr::LOCALHOST.into(),
+            };
+            Some(std::net::SocketAddr::new(ip, primary.port()))
+        } else {
+            additional_loopback.filter(|address| address.ip().is_loopback())
+        };
+        self
+    }
+
     pub fn for_tcp(host: RuntimeHost) -> Self {
         Self::for_tcp_with_runtime_service(host, None)
     }
@@ -391,6 +414,7 @@ impl AppState {
             require_control_token,
             pairing_tickets: Arc::new(std::sync::Mutex::new(auth::PairingTickets::default())),
             tailscale_serve_change: Arc::new(std::sync::Mutex::new(())),
+            loopback_http_addr: None,
             transport: ControlTransportKind::Tcp,
             runtime_service,
             advertise_url: None,
@@ -430,6 +454,7 @@ impl AppState {
             require_control_token: false,
             pairing_tickets: Arc::new(std::sync::Mutex::new(auth::PairingTickets::default())),
             tailscale_serve_change: Arc::new(std::sync::Mutex::new(())),
+            loopback_http_addr: None,
             transport: ControlTransportKind::Unix,
             runtime_service,
             advertise_url: None,
@@ -2130,7 +2155,8 @@ mod tests {
         }
 
         let (_home, host) = control_token_test_host();
-        let state = AppState::for_tcp(host);
+        let state = AppState::for_tcp(host)
+            .with_http_listener_addresses("127.0.0.1:7878".parse().unwrap(), None);
         let runner = ServeRunner {
             serving: AtomicBool::new(false),
             active: AtomicUsize::new(0),
