@@ -1,16 +1,12 @@
 # models.dev refresh summary
 
-- Supplement models: 51 (drafted this run: 0, retained: 51, removed: 1)
-- Deferred candidates: 203 (not auto-drafted; see below)
+- Supplement models: 51 (drafted this run: 0, retained: 51, removed: 0)
+- Deferred candidates: 205 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
 
 (none this run)
-
-## Removed from previous supplement
-
-- `openai-codex/gpt-realtime-2.1` — UnsupportedByProvider
 
 ## Deferred (needs human decision or outside policy)
 
@@ -54,4 +50,4 @@
 - `dashscope/qwen3-livetranslate-flash-realtime` — ReleaseOutsideWindow (release 2025-09-22)
 - `dashscope/qwen3-max` — ReleaseOutsideWindow (release 2025-09-23)
 - `dashscope/qwen3-next-80b-a3b-instruct` — ReleaseOutsideWindow (release 2025-09)
-- … and 163 more (see `holon models-dev audit`)
+- … and 165 more (see `holon models-dev audit`)

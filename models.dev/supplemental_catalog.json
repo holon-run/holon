@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "upstream_revision": "e2c7ccfcd2315060e1baf90f68c66a6e457fab2c3bb1df8d3f400c8d5b6c9065",
-  "adapter_version": "0.46.0 (0602173e)",
+  "upstream_revision": "e47bd31afb882a62655a5783b4b37fb47bbd7652ab71b1ab0a85cfecfd33aacd",
+  "adapter_version": "0.47.0 (3296189)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
