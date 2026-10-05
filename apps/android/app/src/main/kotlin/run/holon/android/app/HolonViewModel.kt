@@ -2638,6 +2638,9 @@ internal class HolonViewModel(
                     attributes = buildMap {
                         httpError.requestPath?.let { put("path", it) }
                         httpError.apiError?.code?.let { put("code", it) }
+                        httpError.apiError?.context?.get("auth_reason_code")?.let {
+                            put("auth_reason_code", it)
+                        }
                         httpError.apiError?.domain?.let { put("domain", it) }
                     },
                 )
