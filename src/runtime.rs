@@ -4724,6 +4724,26 @@ impl RuntimeHandle {
         )];
         let commit = {
             let mut guard = self.inner.agent.lock().await;
+            if matches!(
+                &message.origin,
+                MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"
+            ) && message.authority_class == AuthorityClass::RuntimeInstruction
+            {
+                if let Some(owner_key) = message.source_refs.get("task_result_owner_key") {
+                    if let Some(existing_id) =
+                        task_result_recovery::outstanding_recovery_message_id(
+                            self,
+                            &message.agent_id,
+                            message.work_item_id.as_deref(),
+                            owner_key,
+                        )?
+                    {
+                        if existing_id != message.id {
+                            return Ok(TransitionCommit::default());
+                        }
+                    }
+                }
+            }
             let queue_needs_push = guard
                 .queue
                 .peek_next_matching(|queued| queued.id == message.id)

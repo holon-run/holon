@@ -1195,9 +1195,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 message.work_item_id.as_deref(),
                 crate::runtime_db::task_result_settlement::TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT,
             )?;
-            return Ok(records.iter().any(|record| {
-                crate::runtime::task_result_recovery::recovery_owner_key(record) == *owner_key
-            }));
+            for record in records {
+                if crate::runtime::task_result_recovery::recovery_owner_key(&record) == *owner_key
+                    && self.task_result_record_is_deliverable(&message.agent_id, &record)?
+                {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
         }
         let Some(result_message_id) = message.source_refs.get("task_result_message_id") else {
             return Ok(false);
@@ -1219,6 +1224,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         {
             return Ok(false);
         }
+        self.task_result_record_is_deliverable(&message.agent_id, &record)
+    }
+
+    fn task_result_record_is_deliverable(
+        &self,
+        agent_id: &str,
+        record: &crate::runtime_db::TaskResultSettlementRecord,
+    ) -> Result<bool> {
         let task = self
             .runtime
             .inner
@@ -1239,7 +1252,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .runtime
             .inner
             .storage
-            .active_wait_conditions_for_agent(&message.agent_id)?
+            .active_wait_conditions_for_agent(agent_id)?
             .iter()
             .any(|wait| wait.work_item_id == record.work_item_id))
     }

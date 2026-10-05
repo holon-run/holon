@@ -16,18 +16,46 @@ pub(crate) fn recovery_owner_key(record: &crate::runtime_db::TaskResultSettlemen
     hasher.update(record.agent_id.as_bytes());
     hasher.update([0]);
     hasher.update(record.work_item_id.as_deref().unwrap_or("").as_bytes());
-    hasher.update([0]);
-    hasher.update(record.rejoin_generation.to_be_bytes());
-    hasher.update([0]);
-    hasher.update(record.parent_turn_id.as_bytes());
     format!("recovery_owner_{}", hex(&hasher.finalize()[..16]))
 }
 
-fn recovery_message_id(owner_key: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"holon.task-result-recovery-message.v1\0");
-    hasher.update(owner_key.as_bytes());
-    format!("msg_task_result_recovery_{}", hex(&hasher.finalize()[..16]))
+fn recovery_message_id() -> String {
+    crate::ids::runtime_id("msg_task_result_recovery")
+}
+
+pub(super) fn outstanding_recovery_message_id(
+    runtime: &RuntimeHandle,
+    agent_id: &str,
+    work_item_id: Option<&str>,
+    owner_key: &str,
+) -> Result<Option<String>> {
+    let messages = runtime.inner.runtime_db.messages().all(Some(agent_id))?;
+    let queue_entries = runtime.inner.runtime_db.queue_entries().latest_all()?;
+    let queue_entries = queue_entries
+        .into_iter()
+        .map(|entry| (entry.message_id.clone(), entry))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    Ok(messages.into_iter().rev().find_map(|message| {
+        if !matches!(
+            message.origin,
+            MessageOrigin::System { ref subsystem } if subsystem == "task_result_recovery"
+        ) || message.authority_class != AuthorityClass::RuntimeInstruction
+            || message.work_item_id.as_deref() != work_item_id
+            || message.source_refs.get("task_result_owner_key") != Some(&owner_key.to_owned())
+        {
+            return None;
+        }
+        let entry = queue_entries.get(&message.id)?;
+        (!matches!(
+            entry.status,
+            QueueEntryStatus::Processed
+                | QueueEntryStatus::Aborted
+                | QueueEntryStatus::Dropped
+                | QueueEntryStatus::Quarantined
+        ))
+        .then_some(message.id)
+    }))
 }
 
 impl RuntimeHandle {
@@ -116,6 +144,21 @@ impl RuntimeHandle {
             if !eligible || !queued_owners.insert(owner_key.clone()) {
                 continue;
             }
+            if let Some(message_id) = outstanding_recovery_message_id(
+                self,
+                &state.id,
+                record.work_item_id.as_deref(),
+                &owner_key,
+            )? {
+                tracing::debug!(
+                    agent_id = %state.id,
+                    work_item_id = ?record.work_item_id,
+                    owner_key = %owner_key,
+                    message_id = %message_id,
+                    "task-result recovery wake already outstanding"
+                );
+                continue;
+            }
             let mut message = MessageEnvelope::new(
                 &state.id,
                 MessageKind::InternalFollowup,
@@ -132,7 +175,7 @@ impl RuntimeHandle {
                 MessageDeliverySurface::RuntimeSystem,
                 AdmissionContext::RuntimeOwned,
             );
-            message.id = recovery_message_id(&owner_key);
+            message.id = recovery_message_id();
             message.work_item_id = record.work_item_id;
             message
                 .source_refs
