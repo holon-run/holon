@@ -202,8 +202,7 @@ struct HolonDaemonLaunchOptions: Equatable, Sendable {
     var webDistPath: String?
     var desktopIntegration: Bool? = true
 
-    // Unknown existing desktop settings are inherited; callers may explicitly opt in or out.
-    static let `default` = HolonDaemonLaunchOptions(desktopIntegration: nil)
+    static let `default` = HolonDaemonLaunchOptions(desktopIntegration: true)
 
     func arguments() -> [String] {
         var arguments: [String] = []

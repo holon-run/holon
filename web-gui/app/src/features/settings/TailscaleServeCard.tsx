@@ -54,7 +54,7 @@ export function TailscaleServeCard({ connection, serve }: { connection: RuntimeC
           {drifted ? <p role="alert">{t("settings.serve.drift")}</p> : null}
         </div>
       ) : null}
-      {error ? <div className="settings-error-banner" role="alert">{t("settings.serve.loadError")}</div> : null}
+      {error ? <div className="settings-error-banner" role="alert">{t("settings.serve.loadError")}: {error}</div> : null}
       {connection.source === "http" ? (
         <Button variant="secondary" disabled={busy} onClick={() => void serve.request()}>{t("settings.serve.retry")}</Button>
       ) : null}

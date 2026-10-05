@@ -344,6 +344,11 @@ mod tests {
             }
         }
         let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
         let mut config = AppConfig::load_with_home(Some(directory.path().to_path_buf())).unwrap();
         config.http_addr = "192.0.2.5:7878".into();
         let host = RuntimeHost::new_with_provider(
@@ -402,6 +407,11 @@ mod tests {
             }
         }
         let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
         let config = AppConfig::load_with_home(Some(directory.path().to_path_buf())).unwrap();
         let runner = ControlMock(Mock { serve: json!({}) });
         for mode in [

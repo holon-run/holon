@@ -107,6 +107,21 @@ async fn desktop_disabled_and_capability_is_independent_of_peer() -> Result<()> 
         capabilities,
         json!({ "reveal_in_finder": cfg!(target_os = "macos") })
     );
+    // A same-origin DNS-rebound request must not reach Finder in local mode
+    // without required credentials. The path is deliberately nonexistent.
+    let response = client
+        .post(format!("http://{addr}/api/desktop/reveal"))
+        .header("Host", "evil.test")
+        .header("Origin", "http://evil.test")
+        .header("Sec-Fetch-Site", "same-origin")
+        .json(&json!({
+            "workspace_id": "agent_home:default",
+            "execution_root_id": "canonical_root:agent_home:default",
+            "path": "does-not-exist.md"
+        }))
+        .send()
+        .await?;
+    assert_eq!(response.status(), 403);
     task.abort();
     Ok(())
 }

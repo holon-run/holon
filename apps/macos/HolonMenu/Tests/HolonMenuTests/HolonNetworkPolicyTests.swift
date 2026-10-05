@@ -14,8 +14,22 @@ final class HolonNetworkPolicyTests: XCTestCase {
         XCTAssertEqual(HolonDaemonLaunchOptions(access: "lan").arguments().last, "--desktop-integration")
         XCTAssertFalse(HolonDaemonLaunchOptions(desktopIntegration: nil).arguments()
             .contains(where: { $0.hasPrefix("--desktop-integration") }))
-        XCTAssertFalse(HolonDaemonLaunchOptions.default.arguments()
-            .contains(where: { $0.hasPrefix("--desktop-integration") }))
+        XCTAssertTrue(HolonDaemonLaunchOptions.default.arguments().contains("--desktop-integration"))
+    }
+
+    @MainActor
+    func testCustomOriginRejectsLocalAliasesAndMappedLoopback() {
+        let model = HolonMenuViewModel(client: FakeHolonClient())
+        for origin in [
+            "http://sub.localhost", "http://sub.localhost.", "http://127.1",
+            "http://[::ffff:127.0.0.1]", "http://[::ffff:7f00:1]",
+            "http://[::ffff:0.0.0.0]",
+        ] {
+            model.customPairingOrigin = origin
+            XCTAssertNil(model.connectionURL, origin)
+        }
+        model.customPairingOrigin = "https://holon.example.com"
+        XCTAssertNotNil(model.connectionURL)
     }
 
     func testServeOriginRequiresKnownNonConflictingMatchingHTTPSOrigin() {

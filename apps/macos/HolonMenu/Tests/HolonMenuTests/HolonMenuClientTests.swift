@@ -68,7 +68,8 @@ final class HolonMenuClientTests: XCTestCase {
         let client = HolonCLIClient(
             executableURL: URL(fileURLWithPath: "/opt/holon"),
             launcher: launcher,
-            launchOptions: HolonDaemonLaunchOptions(tokenFilePath: "/tmp/nonexistent-holon-menu-token")
+            launchOptions: HolonDaemonLaunchOptions(tokenFilePath: "/tmp/nonexistent-holon-menu-token"),
+            networkSession: serveSession()
         )
 
         let url = try await client.authenticatedWebURL()
@@ -84,6 +85,7 @@ final class HolonMenuClientTests: XCTestCase {
         nonisolated(unsafe) static var responseCode = 200
         nonisolated(unsafe) static var authenticationAvailable: Bool? = true
         nonisolated(unsafe) static var authenticateBearer = false
+        nonisolated(unsafe) static var authMode = "local"
 
         override class func canInit(with request: URLRequest) -> Bool { true }
         override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -96,6 +98,7 @@ final class HolonMenuClientTests: XCTestCase {
                 request.url
             ))
             let code = Self.responseCode
+            let authMode = Self.authMode
             let authenticated = Self.authenticationAvailable.map {
                 $0 || Self.authenticateBearer && request.value(forHTTPHeaderField: "Authorization") != nil
             }
@@ -103,6 +106,11 @@ final class HolonMenuClientTests: XCTestCase {
             client?.urlProtocol(self, didReceive: HTTPURLResponse(
                 url: request.url!, statusCode: code, httpVersion: nil, headerFields: nil
             )!, cacheStoragePolicy: .notAllowed)
+            if request.url?.path == "/api/auth/method" {
+                client?.urlProtocol(self, didLoad: Data("{\"mode\":\"\(authMode)\"}".utf8))
+                client?.urlProtocolDidFinishLoading(self)
+                return
+            }
             client?.urlProtocol(self, didLoad: Data("""
                 {"desired_enabled":true,"available":true,"connected":true,"status_known":true,
                  "serving":false,"conflict":false,"hostname":"holon.example.ts.net",
@@ -118,6 +126,34 @@ final class HolonMenuClientTests: XCTestCase {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [ServeURLProtocol.self]
         return URLSession(configuration: configuration)
+    }
+
+    func testOIDCConnectionUsesNormalLoginWithoutIssuingTicket() async throws {
+        ServeURLProtocol.lock.withLock {
+            ServeURLProtocol.authMode = "oidc"
+            ServeURLProtocol.responseCode = 200
+        }
+        defer { ServeURLProtocol.lock.withLock { ServeURLProtocol.authMode = "local" } }
+        let launcher = RecordingProcessLauncher(result: .success(HolonProcessResult(
+            terminationStatus: 0,
+            stdout: Data("""
+                {"ok":true,"state":"running","healthy":true,"home_dir":"/tmp/holon",
+                 "socket_path":"/tmp/holon.sock","http_addr":"127.0.0.1:7878",
+                 "web_url":"http://127.0.0.1:7878","desired_running":true,
+                 "control_connectivity":true,"message":"Running"}
+                """.utf8),
+            stderr: Data()
+        )))
+        let client = HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher, networkSession: serveSession()
+        )
+        let url = try await client.pairingURL(for: URL(string: "https://holon.example.com")!)
+        XCTAssertEqual(url.absoluteString, "https://holon.example.com/login")
+        let localURL = try await client.authenticatedWebURL()
+        XCTAssertEqual(localURL.absoluteString, "http://127.0.0.1:7878/login")
+        let invocations = await launcher.invocations()
+        XCTAssertFalse(invocations.contains { $0.executableURL.path == "/usr/bin/curl" })
     }
 
     private func serveClient(

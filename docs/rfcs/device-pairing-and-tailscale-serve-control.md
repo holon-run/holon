@@ -118,4 +118,8 @@ Finder opt-in enables the daemon host's macOS capability, not a same-device API
 restriction. Authorized remote API callers may reveal a validated path; the Web
 UI hides the entry point outside localhost/loopback as a UX policy. Path,
 authentication, opt-in, and desktop cross-site protections remain enforced.
+Local mode without required credentials additionally accepts only a loopback
+Host for reveal requests, preventing DNS rebinding from turning a same-origin
+check into unauthenticated remote desktop access. Required local credentials
+and OIDC permit remote Hosts, while still requiring a matching Origin.
 This does not broaden the general Cookie/Origin/CSRF work tracked in #3315.

@@ -257,6 +257,27 @@ final class HolonCLIClient: HolonDesiredStateClient {
             throw HolonCLIError.pairingFailed("Start the Holon daemon before pairing.")
         }
         let local = loopbackURL(for: status.httpAddr)
+        let (methodData, methodResponse) = try await networkSession.data(
+            from: local.appendingPathComponent("api/auth/method")
+        )
+        guard (methodResponse as? HTTPURLResponse)?.statusCode == 200 else {
+            throw HolonCLIError.pairingFailed("Unable to determine the daemon authentication mode.")
+        }
+        struct AuthMethod: Decodable { let mode: String }
+        let mode = try JSONDecoder().decode(AuthMethod.self, from: methodData).mode
+        if mode == "oidc" {
+            var components = URLComponents(url: destination, resolvingAgainstBaseURL: false)
+            components?.path = "/login"
+            components?.query = nil
+            components?.fragment = nil
+            guard let url = components?.url else {
+                throw HolonCLIError.invalidWebAddress(destination.absoluteString)
+            }
+            return url
+        }
+        guard mode == "local" else {
+            throw HolonCLIError.pairingFailed("Unsupported daemon authentication mode.")
+        }
         var request = URLRequest(url: local.appendingPathComponent("api/auth/pairing/issue"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")

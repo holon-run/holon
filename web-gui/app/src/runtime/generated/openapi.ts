@@ -2070,7 +2070,7 @@ export interface paths {
         };
         /**
          * Desktop capabilities
-         * @description Explicit desktop integration available for this authenticated loopback connection. Does not prove the browser and runtime share a filesystem.
+         * @description Explicit desktop integration available on the daemon host for authorized callers. Independent of the caller's network location; does not prove the browser and runtime share a filesystem.
          */
         get: operations["desktopCapabilities"];
         put?: never;
@@ -2092,7 +2092,7 @@ export interface paths {
         put?: never;
         /**
          * Reveal a file in Finder
-         * @description Requires explicit desktop integration, a loopback peer and Host, and matching Origin. Resolves the registered file locator before invoking Finder.
+         * @description Requires explicit desktop integration, control authorization, and matching Origin. Local mode without required credentials also requires a loopback Host. Resolves the registered file locator before invoking Finder on the daemon host; authenticated remote callers are allowed.
          */
         post: operations["desktopReveal"];
         delete?: never;

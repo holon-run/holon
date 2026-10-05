@@ -47,13 +47,20 @@ export function useServeStatus(connection: RuntimeConnection) {
         method: action ? "POST" : "GET", credentials: "include",
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
-      if (!response.ok) throw new Error("Serve status request failed");
+      if (!response.ok) {
+        const body: unknown = await response.json().catch(() => undefined);
+        const detail = body && typeof body === "object" && "error" in body
+          && typeof body.error === "string" ? body.error.trim() : "";
+        throw new Error(detail || "Serve status request failed");
+      }
       const status: ServeStatus = await response.json();
       if (id !== sequence.current || currentKey.current !== key) return undefined;
       setSnapshot({ key, status });
       return status;
     } catch (cause) {
-      if (id === sequence.current && currentKey.current === key) setError(String(cause));
+      if (id === sequence.current && currentKey.current === key) {
+        setError(cause instanceof Error ? cause.message : "Serve status request failed");
+      }
       return undefined;
     } finally {
       if (id === sequence.current && currentKey.current === key) setBusy(false);

@@ -177,11 +177,13 @@ struct HolonMenuView: View {
                         if let pairingURL = viewModel.pairingURL {
                             HolonQRCodeView(payload: pairingURL.absoluteString)
                                 .frame(maxWidth: .infinity)
-                            Text("One-time pairing code; expires after 2 minutes. Keep this QR private.")
+                            Text(pairingURL.fragment == nil
+                                 ? "Open this URL and sign in normally."
+                                 : "One-time pairing code; expires after 2 minutes. Keep this QR private.")
                                 .font(.caption2)
                             Button("Hide pairing code") { viewModel.hidePairingCode() }
                         } else {
-                            Button("Show one-time pairing QR…") {
+                            Button("Show connection QR…") {
                                 Task { await viewModel.showPairingCode() }
                             }
                         }

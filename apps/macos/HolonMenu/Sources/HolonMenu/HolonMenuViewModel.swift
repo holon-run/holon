@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import SwiftUI
+import Darwin
 
 protocol MenuURLOpening {
     func open(_ url: URL)
@@ -298,12 +299,25 @@ final class HolonMenuViewModel: ObservableObject {
                   ["http", "https"].contains(url.scheme ?? ""),
                   let host = url.host?.lowercased(),
                   !["localhost", "localhost.", "0.0.0.0", "::1", "[::1]", "[::]", "::"].contains(host),
+                  !host.trimmingCharacters(in: CharacterSet(charactersIn: ".")).hasSuffix(".localhost"),
+                  !Self.isMappedLoopbackOrUnspecified(host),
                   !host.hasPrefix("127."),
                   url.user == nil, url.password == nil, url.path.isEmpty,
                   url.query == nil, url.fragment == nil else { return nil }
             return url
         }
         return preferLANPairing ? lanURL : tailscaleStatus?.pairingOrigin ?? lanURL
+    }
+
+    private static func isMappedLoopbackOrUnspecified(_ host: String) -> Bool {
+        let address = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        var ipv6 = in6_addr()
+        guard inet_pton(AF_INET6, address, &ipv6) == 1 else { return false }
+        return withUnsafeBytes(of: ipv6) { bytes in
+            guard bytes.prefix(10).allSatisfy({ $0 == 0 }),
+                  bytes[10] == 255, bytes[11] == 255 else { return false }
+            return bytes[12] == 127 || bytes.suffix(4).allSatisfy({ $0 == 0 })
+        }
     }
 
     var isRunning: Bool {

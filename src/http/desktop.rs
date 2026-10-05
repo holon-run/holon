@@ -14,7 +14,7 @@ pub(crate) struct RevealFileRequest {
     path: String,
 }
 
-fn same_origin_request(headers: &HeaderMap, mutation: bool) -> bool {
+fn same_origin_request(headers: &HeaderMap, mutation: bool, authenticated_remote: bool) -> bool {
     let Some(host) = headers.get("host").and_then(|v| v.to_str().ok()) else {
         return false;
     };
@@ -27,6 +27,22 @@ fn same_origin_request(headers: &HeaderMap, mutation: bool) -> bool {
         || url.path() != "/"
         || url.query().is_some()
         || url.fragment().is_some()
+    {
+        return false;
+    }
+    // Local mode without credentials must not trust a DNS-rebound Host.
+    if !authenticated_remote
+        && !match url.host() {
+            Some(url::Host::Domain(host)) => {
+                let host = host.trim_end_matches('.');
+                host == "localhost" || host.ends_with(".localhost")
+            }
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => {
+                ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback())
+            }
+            None => false,
+        }
     {
         return false;
     }
@@ -62,7 +78,9 @@ pub(crate) async fn reveal(
     ApiJson(request): ApiJson<RevealFileRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    if !state.desktop_integration || !same_origin_request(&headers, true) {
+    let authenticated_remote = state.require_control_token
+        || state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc;
+    if !state.desktop_integration || !same_origin_request(&headers, true, authenticated_remote) {
         return Err(forbidden(
             "desktop integration is unavailable for this connection",
         ));
@@ -112,12 +130,12 @@ mod tests {
         ] {
             let mut headers = HeaderMap::new();
             headers.insert("host", host.parse().unwrap());
-            assert!(same_origin_request(&headers, false));
-            assert!(!same_origin_request(&headers, true));
+            assert!(same_origin_request(&headers, false, true));
+            assert!(!same_origin_request(&headers, true, true));
             headers.insert("origin", format!("http://{host}").parse().unwrap());
-            assert!(same_origin_request(&headers, true));
+            assert!(same_origin_request(&headers, true, true));
             headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
-            assert!(!same_origin_request(&headers, true));
+            assert!(!same_origin_request(&headers, true, true));
         }
         for (host, origin) in [
             ("host.tailnet.ts.net", "https://evil.test"),
@@ -129,7 +147,30 @@ mod tests {
             let mut headers = HeaderMap::new();
             headers.insert("host", host.parse().unwrap());
             headers.insert("origin", origin.parse().unwrap());
-            assert!(!same_origin_request(&headers, true));
+            assert!(!same_origin_request(&headers, true, true));
+        }
+    }
+
+    #[test]
+    fn unauthenticated_local_mode_rejects_dns_rebinding() {
+        for (host, allowed) in [
+            ("localhost:7878", true),
+            ("127.0.0.1:7878", true),
+            ("[::1]:7878", true),
+            ("[::ffff:7f00:1]:7878", true),
+            ("[::ffff:127.0.0.1]:7878", false),
+            ("evil.test:7878", false),
+            ("192.0.2.5:7878", false),
+            ("host.tailnet.ts.net", false),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert("host", host.parse().unwrap());
+            headers.insert("origin", format!("http://{host}").parse().unwrap());
+            assert_eq!(
+                same_origin_request(&headers, true, false),
+                allowed,
+                "{host}"
+            );
         }
     }
 }
