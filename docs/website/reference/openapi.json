@@ -14477,6 +14477,13 @@
         "properties": {
           "credential": {
             "type": "string"
+          },
+          "native_verifier": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [

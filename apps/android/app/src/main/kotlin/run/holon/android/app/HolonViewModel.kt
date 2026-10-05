@@ -6,11 +6,13 @@ import android.net.Uri
 import android.os.Looper
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.createSavedStateHandle
+import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewModelScope
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -21,19 +23,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import run.holon.android.sdk.AgentSummary
-import run.holon.android.sdk.HolonAgentEvent
 import run.holon.android.sdk.HolonModelCatalog
 import run.holon.android.sdk.HolonBrief
 import run.holon.android.sdk.HolonBriefReadState
 import run.holon.android.sdk.HolonConversationActivity
 import run.holon.android.sdk.HolonConversationDetail
 import run.holon.android.sdk.HolonConversationSnapshot
-import run.holon.android.sdk.SseReconnectPolicy
-import run.holon.android.sdk.HolonConversationStreamEvent
 import run.holon.android.sdk.HolonConversationTurn
 import run.holon.android.sdk.HolonHttpException
 import run.holon.android.sdk.HolonFileReferenceResult
@@ -45,251 +42,32 @@ import run.holon.android.sdk.HolonTaskSnapshot
 import run.holon.android.sdk.HolonTaskOutputSnapshot
 import run.holon.android.sdk.HolonWorkspace
 import run.holon.android.sdk.HolonWorkspaceDirectory
-import run.holon.android.sdk.toConversationEvent
 
 internal fun HolonHttpException.isStaleAgentEventCursor(): Boolean =
     statusCode == 404 && apiError?.code == "cursor_not_found"
 
-internal enum class AppPhase {
-    Starting,
-    SignedOut,
-    AddingNetwork,
-    Ready,
-}
-
-internal enum class MainDestination(private val sourceLabel: String) {
-    Agents("Agents"),
-    Settings("设置"),
-    ;
-
-    val label: String get() = ui(sourceLabel)
-}
-
-internal enum class AgentSection(private val sourceLabel: String) {
-    Results("会话"),
-    Work("工作"),
-    Files("文件"),
-    ;
-
-    val label: String get() = ui(sourceLabel)
-}
-
-internal data class FileLinkOrigin(
-    val section: AgentSection,
-    val brief: HolonBrief?,
-    val turn: HolonConversationTurn?,
-    val activity: HolonConversationActivity?,
-    val workItem: HolonWorkItemSnapshot?,
-    val planFile: PreparedArtifact?,
-    val workspace: HolonWorkspace?,
-    val directory: HolonWorkspaceDirectory?,
-)
-
-internal data class HolonUiState(
-    val phase: AppPhase = AppPhase.Starting,
-    val baseUrl: String = "",
-    val token: String = "",
-    val showToken: Boolean = false,
-    val allowInsecureHttp: Boolean = false,
-    val pendingPairing: ScannedPairing? = null,
-    val mainDestination: MainDestination = MainDestination.Agents,
-    val busy: Boolean = false,
-    val enqueueing: Boolean = false,
-    val stagingAttachment: Boolean = false,
-    val abortingRun: Boolean = false,
-    val online: Boolean = false,
-    val lastSyncedAt: Long? = null,
-    val session: ActiveSession? = null,
-    val networkProfiles: List<NetworkProfile> = emptyList(),
-    val switchingNetworkId: String? = null,
-    val agents: List<AgentSummary> = emptyList(),
-    val operatorPreviews: Map<String, OperatorPreview?> = emptyMap(),
-    val briefReadStates: Map<String, HolonBriefReadState> = emptyMap(),
-    val briefReadStatesLoaded: Boolean = false,
-    val readBriefIds: Map<String, String> = emptyMap(),
-    val readBriefsLoaded: Boolean = false,
-    val selectedAgent: AgentSummary? = null,
-    val modelCatalog: HolonModelCatalog? = null,
-    val modelBusy: Boolean = false,
-    val modelError: String? = null,
-    val conversation: HolonConversationSnapshot? = null,
-    val olderTurns: List<HolonConversationTurn> = emptyList(),
-    val historyBeforeCursor: String? = null,
-    val hasOlderTurns: Boolean = false,
-    val historyBusy: Boolean = false,
-    val outbox: List<OutboxEntity> = emptyList(),
-    val draft: String = "",
-    val attachments: List<StagedAttachment> = emptyList(),
-    val pendingShare: PendingAgentShare? = null,
-    val queuedShares: List<PendingAgentShare> = emptyList(),
-    val shareSending: Boolean = false,
-    val shareError: String? = null,
-    val agentSection: AgentSection = AgentSection.Results,
-    val briefs: Map<String, HolonBrief> = emptyMap(),
-    val briefLoads: Map<String, BriefLoadState> = emptyMap(),
-    val selectedBrief: HolonBrief? = null,
-    val briefOriginWork: HolonWorkItemSnapshot? = null,
-    val workOriginBrief: HolonBrief? = null,
-    val selectedTurn: HolonConversationTurn? = null,
-    val fullScreenTurn: Boolean = false,
-    val conversationDetail: HolonConversationDetail? = null,
-    val olderActivitiesBusy: Boolean = false,
-    val olderActivitiesLoaded: Boolean = false,
-    val selectedActivity: HolonConversationActivity? = null,
-    val selectedToolExecution: HolonToolExecutionSnapshot? = null,
-    val detailBusy: Boolean = false,
-    val workItems: List<HolonWorkItemSnapshot> = emptyList(),
-    val workItemsLimit: Int = 30,
-    val workItemsHasMore: Boolean = false,
-    val workItemsLoadingMore: Boolean = false,
-    val selectedWorkItem: HolonWorkItemSnapshot? = null,
-    val tasks: List<HolonTaskSnapshot> = emptyList(),
-    val tasksBusy: Boolean = false,
-    val tasksError: String? = null,
-    val selectedTask: HolonTaskSnapshot? = null,
-    val taskOutput: HolonTaskOutputSnapshot? = null,
-    val workItemsBusy: Boolean = false,
-    val planFile: PreparedArtifact? = null,
-    val workspaces: List<HolonWorkspace> = emptyList(),
-    val selectedWorkspace: HolonWorkspace? = null,
-    val workspaceDirectory: HolonWorkspaceDirectory? = null,
-    val workspaceBusy: Boolean = false,
-    val preparedArtifact: PreparedArtifact? = null,
-    val fileLinkOrigin: FileLinkOrigin? = null,
-    val error: String? = null,
-    val statusMessage: String? = null,
-    val search: String = "",
-) {
-    val recentAgents: List<AgentSummary>
-        get() =
-            agents.sortedWith(
-                compareByDescending<AgentSummary> { it.needsReply() }
-                    .thenByDescending {
-                        if (briefReadStatesLoaded) {
-                            it.unreadCount(briefReadStates) > 0
-                        } else {
-                            readBriefsLoaded && it.hasUnreadBrief(readBriefIds)
-                        }
-                    }
-                    .thenByDescending { listOfNotNull(activityTime(it.latestBrief?.createdAt), activityTime(operatorPreviews[it.id]?.createdAt)).maxOrNull() }
-                    .thenBy { it.displayName.lowercase() },
-            )
-
-    val filteredAgents: List<AgentSummary>
-        get() =
-            recentAgents.filter {
-                search.isBlank() ||
-                    it.displayName.contains(search, ignoreCase = true) ||
-                    it.id.contains(search, ignoreCase = true)
-            }
-}
-
-internal fun HolonUiState.forAddingNetwork(): HolonUiState =
-    copy(
-        phase = AppPhase.AddingNetwork,
-        baseUrl = "",
-        token = "",
-        showToken = false,
-        allowInsecureHttp = false,
-        error = null,
-        statusMessage = null,
-    )
-
-internal fun HolonUiState.afterCancelAddingNetwork(): HolonUiState =
-    copy(
-        phase = AppPhase.Ready,
-        baseUrl = session?.baseUrl.orEmpty(),
-        token = "",
-        showToken = false,
-        allowInsecureHttp = networkProfiles.firstOrNull { it.networkId == session?.networkId }?.allowInsecureHttp ?: false,
-        error = null,
-        statusMessage = null,
-    )
-
-internal fun isCurrentLiveSync(
-    foreground: Boolean,
-    phase: AppPhase,
-    expectedGeneration: Long,
-    currentGeneration: Long,
-): Boolean =
-    foreground && phase == AppPhase.Ready && expectedGeneration == currentGeneration
 
 private const val SESSION_KEEPALIVE_INTERVAL_MILLIS = 15 * 60 * 1000L
 
-internal class SessionResetBarrier(private val scope: kotlinx.coroutines.CoroutineScope) {
-    private var pending: Job? = null
-    private var activeTransitions = 0
-
-    fun beginTransition() {
-        synchronized(this) {
-            activeTransitions += 1
-        }
-    }
-
-    fun endTransition() {
-        synchronized(this) {
-            check(activeTransitions > 0)
-            activeTransitions -= 1
-        }
-    }
-
-    fun schedule(reset: suspend () -> Unit): Job {
-        synchronized(this) {
-            if (activeTransitions > 0) return scope.launch {}
-        }
-        val previous = pending
-        val next =
-            scope.launch {
-                previous?.join()
-                runCatching { reset() }
-            }
-        pending = next
-        return next
-    }
-
-    suspend fun await() {
-        while (true) {
-            val current = pending ?: return
-            current.join()
-            if (pending === current) {
-                pending = null
-                return
-            }
-        }
-    }
-}
-
-internal class AppContainer(context: Context) {
-    private val database = HolonDatabase.create(context)
-    val traceRecorder = TraceRecorder(context)
-    val repository =
-        HolonRepository(
-            context = context,
-            sessionStore = createSessionStore(context),
-            preferences = HostPreferences(context),
-            dao = database.holonDao(),
-            traceRecorder = traceRecorder,
-        )
-}
 
 internal class HolonViewModel(
     application: Application,
     private val repository: HolonRepository,
     internal val traceRecorder: TraceRecorder,
+    private val savedState: SavedStateHandle = SavedStateHandle(),
 ) : AndroidViewModel(application) {
+    internal val screenActions = AndroidScreenActions(this)
     private val mutableState = MutableStateFlow(HolonUiState(baseUrl = defaultBaseUrl()))
     val state: StateFlow<HolonUiState> = mutableState.asStateFlow()
+    private val restoredNavigation = NavigationBookmark.read(savedState)
     private val oidcPreferences =
         application.getSharedPreferences("holon_oidc_login", Context.MODE_PRIVATE)
+    private val nativeProofStore = createSessionStore(application)
     private var conversationJob: Job? = null
     private var conversationStreamJob: Job? = null
     private var conversationStream: HolonSseConnection? = null
-    private var globalEventStreamJob: Job? = null
     // SSE readers block threads; keep them off the pool used by foreground sends and file staging.
-    private val eventStreamIo = Dispatchers.IO.limitedParallelism(64)
-    private val agentEventStreamJobs = ConcurrentHashMap<String, Job>()
-    private val agentEventCursors = ConcurrentHashMap<String, Long>()
-    private val staleCursorRecoveryMutex = Mutex()
+    private val eventStreamIo = Dispatchers.IO.limitedParallelism(2)
     @Volatile private var liveEventLogEpoch: String? = null
     private var liveRosterRefreshJob: Job? = null
     private var detailRefreshJob: Job? = null
@@ -310,6 +88,21 @@ internal class HolonViewModel(
         onFailure = { error ->
             if (error.isAuthenticationFailure() || error is SessionScopeChangedException) handleRuntimeFailure(error)
         },
+    )
+    private val foregroundSync = ForegroundSyncCoordinator(
+        scope = viewModelScope,
+        open = repository::openRosterHints,
+        onConnected = {
+            scheduleLiveRosterRefresh()
+            state.value.agents.forEach { operatorPreviewLoader.request(it.id) }
+        },
+        onHint = { id ->
+            scheduleLiveRosterRefresh()
+            if (state.value.agents.any { it.id == id }) operatorPreviewLoader.request(id)
+            if (state.value.selectedAgent?.id == id && state.value.agentSection == AgentSection.Work) refreshTasks()
+        },
+        onFailure = ::handleRuntimeFailure,
+        reader = eventStreamIo,
     )
     private val briefReadStateWriter = BriefReadStateWriter(
         scope = viewModelScope,
@@ -383,10 +176,16 @@ internal class HolonViewModel(
     )
 
     init {
+        observeNavigationBookmarks(viewModelScope, state, savedState)
         viewModelScope.launch {
             val (profiles, result) =
-                withContext(Dispatchers.IO) {
+                runCatching { withContext(Dispatchers.IO) {
                     repository.networkProfiles() to repository.resume()
+                } }.getOrElse { error ->
+                    if (error is CancellationException) throw error
+                    // A temporarily unavailable credential store must not destroy its contents.
+                    mutableState.update { it.copy(phase = AppPhase.SignedOut, error = humanError(error)) }
+                    return@launch
                 }
             when (result) {
                 ResumeResult.NoSession ->
@@ -431,6 +230,13 @@ internal class HolonViewModel(
                             error = result.message,
                         )
                     }
+            }
+            restoredNavigation?.takeIf { it.scopeKey == state.value.session?.scopeKey }?.let { bookmark ->
+                selectMainDestination(bookmark.destination)
+                bookmark.agentFor(state.value)?.let { agent ->
+                    openAgent(agent)
+                    selectAgentSection(bookmark.section)
+                }
             }
         }
     }
@@ -671,14 +477,21 @@ internal class HolonViewModel(
                     return null
                 }
         val state = UUID.randomUUID().toString().replace("-", "")
+        val proof = run.holon.android.sdk.NativeLoginProof.create()
+        runCatching { nativeProofStore.write("oidc-login-proof", proof.verifier) }.getOrElse {
+            mutableState.update { state -> state.copy(error = "安全存储暂时不可用，请重试") }
+            return null
+        }
         oidcPreferences.edit()
             .putString("state", state)
             .putString("base_url", baseUrl)
             .putBoolean("allow_insecure_http", before.allowInsecureHttp)
+            .putLong("started_at", System.currentTimeMillis())
             .apply()
         return Uri.parse("${baseUrl.trimEnd('/')}/auth/oidc/native/start")
             .buildUpon()
             .appendQueryParameter("state", state)
+            .appendQueryParameter("code_challenge", proof.challenge)
             .build()
             .toString()
     }
@@ -692,8 +505,22 @@ internal class HolonViewModel(
         val allowInsecureHttp = oidcPreferences.getBoolean("allow_insecure_http", false)
         val ticket = uri.getQueryParameter("ticket")
         val callbackState = uri.getQueryParameter("state")
-        oidcPreferences.edit().clear().apply()
         if (expectedState.isNullOrBlank() || expectedState != callbackState || address.isNullOrBlank()) {
+            mutableState.update { it.copy(error = "OIDC 登录回调无效，请重新开始登录") }
+            return true
+        }
+        val verifier = runCatching { nativeProofStore.read("oidc-login-proof") }.getOrElse {
+            mutableState.update { state -> state.copy(error = "安全存储暂时不可用，请重试") }
+            return true
+        }
+        val age = System.currentTimeMillis() - oidcPreferences.getLong("started_at", 0)
+        oidcPreferences.edit().clear().apply()
+        runCatching { nativeProofStore.clear("oidc-login-proof") }
+        if (uri.getQueryParameter("code_challenge_method") != "S256") {
+            mutableState.update { it.copy(error = "daemon 不支持安全的原生浏览器登录，请升级 daemon") }
+            return true
+        }
+        if (verifier.isNullOrBlank() || age !in 0..600_000) {
             mutableState.update { it.copy(error = "OIDC 登录回调无效，请重新开始登录") }
             return true
         }
@@ -707,11 +534,11 @@ internal class HolonViewModel(
                 allowInsecureHttp = allowInsecureHttp,
             )
         }
-        login(null, ticket)
+        login(null, ticket, verifier)
         return true
     }
 
-    private fun login(pairing: ScannedPairing?, nativeSessionTicket: String? = null) {
+    private fun login(pairing: ScannedPairing?, nativeSessionTicket: String? = null, nativeVerifier: String? = null) {
         val before = state.value
         if (before.busy || before.phase !in setOf(AppPhase.SignedOut, AppPhase.AddingNetwork)) return
         if (pairing == null && nativeSessionTicket == null && before.token.isBlank()) {
@@ -734,6 +561,7 @@ internal class HolonViewModel(
                             pairing?.address?.startsWith("http://") ?: before.allowInsecureHttp,
                             pairing?.ticket,
                             nativeSessionTicket,
+                            nativeVerifier,
                         )
                     Triple(session, roster, repository.networkProfiles())
                 }
@@ -783,6 +611,11 @@ internal class HolonViewModel(
         foreground = false
         stopConversationStream()
         stopLiveSync()
+    }
+
+    override fun onCleared() {
+        onBackground()
+        super.onCleared()
     }
 
     private suspend fun loadRoster(generation: Long = liveSyncGeneration): Pair<ActiveSession, HolonRosterSnapshot> {
@@ -865,166 +698,12 @@ internal class HolonViewModel(
         }
         eventLogEpoch?.let { liveEventLogEpoch = it }
         startSessionKeepAlive(generation)
-        if (globalEventStreamJob?.isActive != true) {
-            globalEventStreamJob =
-                viewModelScope.launch(eventStreamIo) {
-                    runCatching {
-                        while (
-                            isActive &&
-                                isCurrentLiveSync(
-                                    foreground,
-                                    state.value.phase,
-                                    generation,
-                                    liveSyncGeneration,
-                                )
-                        ) {
-                            repository.reconnectingRosterHints(
-                                policy = SseReconnectPolicy(maxAttempts = 8),
-                            ).forEach {
-                                if (
-                                    isActive &&
-                                        isCurrentLiveSync(
-                                            foreground,
-                                            state.value.phase,
-                                            generation,
-                                            liveSyncGeneration,
-                                        )
-                                ) {
-                                    scheduleLiveRosterRefresh()
-                                }
-                            }
-                            delay(500)
-                        }
-                    }.onFailure { error ->
-                        if (isActive && foreground) {
-                            mutableState.update {
-                                it.copy(statusMessage = "列表同步已暂停：${humanError(error)}")
-                            }
-                        }
-                    }
-                }
-        }
-        val ids = agents.mapTo(mutableSetOf()) { it.id }
-        agentEventStreamJobs.keys.toList()
-            .filter { it !in ids }
-            .forEach { agentId ->
-                agentEventStreamJobs.remove(agentId)?.cancel()
-                agentEventCursors.remove(agentId)
-            }
-        agents.forEach { agent ->
-            if (agentEventStreamJobs[agent.id]?.isActive == true) return@forEach
+        agents.filter { it.id !in state.value.operatorPreviews }.forEach { agent ->
             viewModelScope.launch { operatorPreviewLoader.request(agent.id) }
-            agentEventStreamJobs[agent.id] =
-                viewModelScope.launch(eventStreamIo) {
-                    runCatching {
-                        val persistedState = repository.syncState(agent.id)
-                        var persistedCursor = persistedState?.eventCursor
-                        var streamEpoch = liveEventLogEpoch
-                        if (
-                            persistedState?.eventLogEpoch != null &&
-                                streamEpoch != null &&
-                                persistedState.eventLogEpoch != streamEpoch
-                        ) {
-                            repository.resetAgentEventCursor(agent.id, streamEpoch)
-                            persistedCursor = null
-                            agentEventCursors.remove(agent.id)
-                        }
-                        persistedCursor?.let { agentEventCursors[agent.id] = it }
-                        while (
-                            isActive &&
-                                isCurrentLiveSync(
-                                    foreground,
-                                    state.value.phase,
-                                    generation,
-                                    liveSyncGeneration,
-                                )
-                        ) {
-                            val currentEpoch = liveEventLogEpoch
-                            if (streamEpoch != null && currentEpoch != null && streamEpoch != currentEpoch) {
-                                repository.resetAgentEventCursor(agent.id, currentEpoch)
-                                persistedCursor = null
-                                streamEpoch = currentEpoch
-                                agentEventCursors.remove(agent.id)
-                            }
-                            try {
-                                for (event in repository.reconnectingAgentEvents(
-                                    agentId = agent.id,
-                                    afterSeq = persistedCursor,
-                                    policy = SseReconnectPolicy(maxAttempts = 8),
-                                )) {
-                                    if (
-                                        !isActive ||
-                                            !isCurrentLiveSync(
-                                                foreground,
-                                                state.value.phase,
-                                                generation,
-                                                liveSyncGeneration,
-                                            )
-                                    ) {
-                                        break
-                                    }
-                                    if (
-                                        liveEventLogEpoch != null &&
-                                            event.eventLogEpoch != liveEventLogEpoch
-                                    ) {
-                                        repository.resetAgentEventCursor(agent.id, event.eventLogEpoch)
-                                        persistedCursor = null
-                                        streamEpoch = event.eventLogEpoch
-                                        agentEventCursors.remove(agent.id)
-                                        recoverLiveRosterAfterStaleCursor()
-                                        break
-                                    }
-                                    persistedCursor = event.eventSeq
-                                    agentEventCursors[agent.id] = event.eventSeq
-                                    repository.saveAgentEventCursor(agent.id, event)
-                                    scheduleLiveRosterRefresh()
-                                    withContext(Dispatchers.Main) {
-                                        if (event.type in setOf("message_enqueued", "message_processing_started", "brief_created", "agent_state_changed")) operatorPreviewLoader.request(agent.id)
-                                        if (state.value.selectedAgent?.id == agent.id && event.type.startsWith("task_")) refreshTasks()
-                                    }
-                                }
-                            } catch (error: HolonHttpException) {
-                                if (!error.isStaleAgentEventCursor()) throw error
-                                persistedCursor = null
-                                agentEventCursors.remove(agent.id)
-                                repository.resetAgentEventCursor(agent.id, liveEventLogEpoch)
-                                streamEpoch = recoverLiveRosterAfterStaleCursor() ?: liveEventLogEpoch
-                            }
-                            delay(500)
-                        }
-                    }.onFailure { error ->
-                        if (isActive && foreground) {
-                            mutableState.update {
-                                it.copy(statusMessage = "列表同步已暂停：${humanError(error)}")
-                            }
-                        }
-                    }
-                }
         }
+        foregroundSync.start(generation)
     }
 
-    private suspend fun recoverLiveRosterAfterStaleCursor(): String? =
-        staleCursorRecoveryMutex.withLock {
-            if (!foreground || state.value.phase != AppPhase.Ready) return@withLock liveEventLogEpoch
-            val generation = liveSyncGeneration
-            runCatching {
-                loadRoster(generation)
-            }.onSuccess { (session, roster) ->
-                if (generation != liveSyncGeneration) return@onSuccess
-                liveEventLogEpoch = roster.eventLogEpoch
-                mutableState.update {
-                    it.copy(
-                        session = session,
-                        agents = roster.agents,
-                        online = true,
-                        lastSyncedAt = System.currentTimeMillis(),
-                        statusMessage = null,
-                    )
-                }
-                loadBriefReadStates()
-                startLiveSync(roster.agents, roster.eventLogEpoch, generation)
-            }.onFailure(::handleRuntimeFailure).getOrNull()?.second?.eventLogEpoch
-        }
 
     private fun stopLiveSync() {
         operatorPreviewLoader.reset()
@@ -1033,10 +712,7 @@ internal class HolonViewModel(
         briefReadStateLoader.reset()
         sessionKeepAliveJob?.cancel()
         sessionKeepAliveJob = null
-        globalEventStreamJob?.cancel()
-        globalEventStreamJob = null
-        agentEventStreamJobs.values.forEach(Job::cancel)
-        agentEventStreamJobs.clear()
+        foregroundSync.stop()
         liveRosterRefreshJob?.cancel()
         liveRosterRefreshJob = null
     }
@@ -1775,7 +1451,7 @@ internal class HolonViewModel(
                     }
                     mutableState.update {
                         val newerIds = it.conversation?.turns.orEmpty().mapTo(mutableSetOf(), HolonConversationTurn::id)
-                        val older = (page.turns + it.olderTurns).distinctBy(HolonConversationTurn::id)
+                        val older = run.holon.android.sdk.mergeConversationTurns(it.olderTurns, page.turns)
                             .filterNot { turn -> turn.id in newerIds }
                         it.copy(
                             olderTurns = older,
@@ -2316,6 +1992,7 @@ internal class HolonViewModel(
                         generation == liveSyncGeneration &&
                         state.value.selectedAgent?.id == agent.id
                 ) {
+                    var historyBoundaryRefresh = false
                     try {
                         if (!state.value.online) {
                             val (session, roster) = repository.refreshSessionAndRoster()
@@ -2328,68 +2005,61 @@ internal class HolonViewModel(
                                 }
                             }
                         }
-                        var reopenAfterReset = false
-                        val connection = repository.openConversationStream(agent.id, cursor)
+                        val opened = repository.openConversationStream(agent.id, cursor)
+                        val connection = opened.connection
                         conversationStream = connection
                         try {
-                            for (event in connection.events()) {
-                                val change = event.toConversationEvent()
-                                if (change is HolonConversationStreamEvent.Mutation &&
-                                    change.type in setOf("activity_upsert", "detail_invalidated", "turn_summary_upsert")
-                                ) {
-                                    state.value.selectedTurn?.id?.let { turnId ->
-                                        scheduleTurnDetailRefresh(agent, turnId)
-                                    }
-                                }
-                                if (change is HolonConversationStreamEvent.Checkpoint ||
-                                    change is HolonConversationStreamEvent.ResetRequired
-                                ) {
-                                    val bundle = repository.conversation(agent)
-                                    cursor = bundle.snapshot.snapshotCursor
-                                    withContext(Dispatchers.Main) {
-                                        if (
-                                            generation == liveSyncGeneration &&
-                                                state.value.selectedAgent?.id == agent.id
-                                        ) {
-                                            mutableState.update {
-                                                val selectedTurnId = it.selectedTurn?.id
-                                                val keepHistory = it.conversation?.eventLogEpoch == bundle.snapshot.eventLogEpoch &&
-                                                    it.conversation?.runtimeId == bundle.snapshot.runtimeId
-                                                it.copy(
-                                                    conversation = bundle.snapshot,
-                                                    briefs = it.briefs.takeIf { keepHistory }.orEmpty(),
-                                                    olderTurns = it.olderTurns.takeIf { keepHistory }.orEmpty(),
-                                                    historyBeforeCursor = if (keepHistory && it.olderTurns.isNotEmpty()) it.historyBeforeCursor else bundle.snapshot.nextBeforeCursor,
-                                                    hasOlderTurns = if (keepHistory && it.olderTurns.isNotEmpty()) it.hasOlderTurns else bundle.snapshot.hasMore,
-                                                    selectedTurn =
-                                                        selectedTurnId?.let { id ->
-                                                            bundle.snapshot.turns.firstOrNull { turn -> turn.id == id }
-                                                        } ?: it.selectedTurn,
-                                                    outbox = bundle.outbox,
-                                                    online = true,
-                                                    lastSyncedAt = System.currentTimeMillis(),
-                                                    statusMessage = null,
-                                                )
+                            withOwnedConnection(connection) {
+                                val seed = state.value.conversation ?: repository.conversation(agent, opened.lease).snapshot
+                                repository.sessions.requireCurrent(opened.lease)
+                                val reducer = run.holon.android.sdk.ConversationStreamReducer(seed)
+                                for (event in connection.events()) {
+                                    val committed = reducer.accept(event)
+                                    if (committed != null) {
+                                        val bundle = repository.acceptConversation(agent, committed, opened.lease)
+                                        cursor = bundle.snapshot.snapshotCursor
+                                        withContext(Dispatchers.Main) {
+                                            if (
+                                                generation == liveSyncGeneration &&
+                                                    state.value.selectedAgent?.id == agent.id
+                                            ) {
+                                                mutableState.update {
+                                                    val selectedTurnId = it.selectedTurn?.id
+                                                    val keepHistory = it.conversation?.eventLogEpoch == bundle.snapshot.eventLogEpoch &&
+                                                        it.conversation?.runtimeId == bundle.snapshot.runtimeId
+                                                    it.copy(
+                                                        conversation = bundle.snapshot,
+                                                        briefs = it.briefs.takeIf { keepHistory }.orEmpty(),
+                                                        olderTurns = it.olderTurns.takeIf { keepHistory }.orEmpty(),
+                                                        historyBeforeCursor = if (keepHistory && it.olderTurns.isNotEmpty()) it.historyBeforeCursor else bundle.snapshot.nextBeforeCursor,
+                                                        hasOlderTurns = if (keepHistory && it.olderTurns.isNotEmpty()) it.hasOlderTurns else bundle.snapshot.hasMore,
+                                                        selectedTurn =
+                                                            selectedTurnId?.let { id ->
+                                                                bundle.snapshot.turns.firstOrNull { turn -> turn.id == id }
+                                                            } ?: it.selectedTurn,
+                                                        outbox = bundle.outbox,
+                                                        online = true,
+                                                        lastSyncedAt = System.currentTimeMillis(),
+                                                        statusMessage = null,
+                                                    )
+                                                }
+                                                state.value.selectedTurn?.id?.let { turnId ->
+                                                    scheduleTurnDetailRefresh(agent, turnId)
+                                                }
+                                                hydrateBriefs(agent, bundle.snapshot)
                                             }
                                         }
+                                        retryDelay = 1_000L
                                     }
-                                    state.value.selectedTurn?.id?.let { turnId ->
-                                        scheduleTurnDetailRefresh(agent, turnId)
-                                    }
-                                    retryDelay = 1_000L
-                                    if (change is HolonConversationStreamEvent.ResetRequired) {
-                                        reopenAfterReset = true
-                                        break
-                                    }
-                                    hydrateBriefs(agent, bundle.snapshot)
                                 }
                             }
                         } finally {
-                            connection.close()
                             if (conversationStream === connection) conversationStream = null
                         }
-                        if (reopenAfterReset) continue
                         withContext(Dispatchers.Main) { markConnectionInterrupted(agent.id) }
+                    } catch (_: run.holon.android.sdk.ConversationHistoryBoundaryRequiredException) {
+                        // Keep the old window visible until bootstrap supplies a fresh history cursor.
+                        historyBoundaryRefresh = true
                     } catch (_: CancellationException) {
                         break
                     } catch (error: Throwable) {
@@ -2401,7 +2071,7 @@ internal class HolonViewModel(
                         }
                         withContext(Dispatchers.Main) { markConnectionInterrupted(agent.id) }
                     }
-                    delay(retryDelay)
+                    if (!historyBoundaryRefresh) delay(retryDelay)
                     retryDelay = (retryDelay * 2).coerceAtMost(30_000L)
                     if (
                         !isActive ||
@@ -2417,7 +2087,7 @@ internal class HolonViewModel(
                     }
                     try {
                         val (session, roster) = repository.refreshSessionAndRoster()
-                        val bundle = repository.conversation(agent)
+                        val bundle = repository.conversation(agent, freshWindow = historyBoundaryRefresh)
                         cursor = bundle.snapshot.snapshotCursor
                         withContext(Dispatchers.Main) {
                             if (
@@ -2425,7 +2095,7 @@ internal class HolonViewModel(
                                     state.value.selectedAgent?.id == agent.id
                             ) {
                                 mutableState.update {
-                                    val keepHistory = it.conversation?.eventLogEpoch == bundle.snapshot.eventLogEpoch &&
+                                    val keepHistory = !historyBoundaryRefresh && it.conversation?.eventLogEpoch == bundle.snapshot.eventLogEpoch &&
                                         it.conversation?.runtimeId == bundle.snapshot.runtimeId
                                     it.copy(
                                         session = session,
@@ -2626,6 +2296,7 @@ internal class HolonViewModel(
             return
         }
         if (error is CancellationException) return
+        if (!repository.isCurrentFailure(error)) return
         val httpError = error as? HolonHttpException
         state.value.session?.networkId?.let { networkId ->
             if (httpError != null) {
@@ -2684,7 +2355,7 @@ internal class HolonViewModel(
             return
         }
         mutableState.update {
-            it.copy(busy = false, online = false, error = humanError(error))
+            it.copy(busy = false, online = if (error is HolonHttpException) it.online else false, error = humanError(error))
         }
     }
 
@@ -2694,6 +2365,9 @@ internal class HolonViewModel(
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T =
                     HolonViewModel(application, container.repository, container.traceRecorder) as T
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T =
+                    HolonViewModel(application, container.repository, container.traceRecorder, extras.createSavedStateHandle()) as T
             }
     }
 }

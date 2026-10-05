@@ -65,6 +65,30 @@ OIDC state, nonce, and transaction values are stored as digests. Login
 transactions have a bounded lifetime and a consumed marker, allowing the
 callback handler to enforce one-time use without persisting protocol secrets.
 
+### Native callback proof binding
+
+The custom URI scheme is a delivery channel, not an application identity.
+Native login requires `state` and an S256 `code_challenge` at
+`/auth/oidc/native/start`. The application generates a fresh 32-byte random
+verifier and keeps it in platform secure storage for at most ten minutes.
+This proof is independent of the daemon-to-provider PKCE verifier.
+
+The login transaction retains only the native challenge. Its callback ticket
+has scope `native-session:<challenge>` and expires after two minutes. The
+callback URL contains state, ticket and `code_challenge_method=S256`, never
+the verifier. Updated apps reject callbacks without the method marker so they
+do not silently downgrade when connected to an older daemon. Exchanging it at
+`/auth/session/exchange/native` requires `native_verifier`; all bootstrap
+exchange routes enforce the same scope check. A wrong or missing proof neither
+issues a session nor consumes the ticket. Validation and consumption are atomic.
+Intercepting the callback can deny delivery but cannot redeem its ticket.
+
+Manual local tokens, recovery credentials, pairing, and browser OIDC are
+unchanged. Older native apps must update to initiate OIDC; we do not fall back
+to an unbound bearer callback. In-flight native transactions created by an old
+daemon are rejected and restarted. This does not impose HTTPS-only on LANs
+or bypass TLS certificate validation.
+
 ## Runtime database boundary
 
 The runtime database contains:

@@ -1,0 +1,14 @@
+<resources>
+    <string name="connection_restoring">Restoring Holon…</string>
+    <string name="connection_title">Connect to Holon</string>
+    <string name="connection_address">Holon address</string>
+    <string name="connection_token">Access token</string>
+    <string name="connection_session_policy">Only a revocable session is saved after sign-in, not the original token</string>
+    <string name="session_expired">Session expired. Sign in again.</string>
+    <string name="connection_offline_cache">Offline · showing previously synced content</string>
+    <string name="outbox_sending">Sending</string>
+    <string name="outbox_received">Received</string>
+    <string name="outbox_unknown">Result unknown</string>
+    <string name="outbox_failed">Failed to send</string>
+    <string name="navigation_exit_again">Press Back again to exit</string>
+</resources>

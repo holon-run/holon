@@ -6835,6 +6835,8 @@ export interface components {
         /** SessionExchangeRequest */
         SessionExchangeRequest: {
             credential: string;
+            /** @default null */
+            native_verifier: string | null;
         };
         /** SessionResponse */
         SessionResponse: {

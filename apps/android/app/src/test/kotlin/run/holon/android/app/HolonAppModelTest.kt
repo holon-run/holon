@@ -54,14 +54,14 @@ class HolonAppModelTest {
     }
 
     @Test
-    fun `legacy profile keeps legacy cache scope and credential migration is profile specific`() {
+    fun `all profiles isolate host identity and credential migration is profile specific`() {
         val baseUrl = "https://holon.example/api/"
         val legacyId = legacyNetworkId(baseUrl)
         val legacyScope = cacheScopeKey("runtime", "user", "visibility")
 
-        assertEquals(legacyScope, scopeKeyForNetwork(legacyId, baseUrl, "runtime", "user", "visibility"))
+        assertEquals("$legacyId:${baseUrl.length}:$baseUrl:$legacyScope", scopeKeyForNetwork(legacyId, baseUrl, "runtime", "user", "visibility"))
         assertEquals(
-            "new-network:$legacyScope",
+            "new-network:${baseUrl.length}:$baseUrl:$legacyScope",
             scopeKeyForNetwork("new-network", baseUrl, "runtime", "user", "visibility"),
         )
         assertEquals(

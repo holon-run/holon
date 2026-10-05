@@ -49,6 +49,10 @@ internal data class SavedConnection(
         runCatching { URI(baseUrl).scheme.equals("http", ignoreCase = true) }.getOrDefault(false),
 )
 
+internal fun NetworkProfile.savedScopeKey(): String? =
+    if (runtimeId == null || userId == null || visibilityScopeId == null) null
+    else scopeKeyForNetwork(networkId, baseUrl, runtimeId, userId, visibilityScopeId)
+
 internal class HostPreferences(private val context: Context) {
     private val baseUrlKey = stringPreferencesKey("base_url")
     private val runtimeIdKey = stringPreferencesKey("runtime_id")
@@ -156,7 +160,7 @@ internal fun displayNameFor(baseUrl: String): String =
 @Entity(
     tableName = "runtime_scope",
     primaryKeys = ["scopeId"],
-    indices = [Index(value = ["runtimeId", "userId", "visibilityScopeId"], unique = true)],
+    indices = [Index(value = ["runtimeId", "userId", "visibilityScopeId"])],
 )
 internal data class RuntimeScopeEntity(
     val scopeId: String,
@@ -253,6 +257,40 @@ internal data class AgentSyncStateEntity(
 
 @Dao
 internal interface HolonDao {
+    @Transaction
+    suspend fun moveScope(from: String, to: String) {
+        moveProjectionScope(from, to)
+        moveDraftScope(from, to)
+        moveComposerScope(from, to)
+        moveOutboxScope(from, to)
+        moveBriefScope(from, to)
+        moveCursorScope(from, to)
+        moveSyncScope(from, to)
+        moveRuntimeScope(from, to)
+    }
+
+    @Query("UPDATE OR IGNORE agent_projection SET scopeKey = :to WHERE scopeKey = :from")
+    suspend fun moveProjectionScope(from: String, to: String)
+    @Query("UPDATE OR IGNORE drafts SET scopeKey = :to WHERE scopeKey = :from")
+    suspend fun moveDraftScope(from: String, to: String)
+    @Query("UPDATE OR IGNORE composer_attachments SET scopeKey = :to WHERE scopeKey = :from")
+    suspend fun moveComposerScope(from: String, to: String)
+    @Query("UPDATE outbox SET scopeKey = :to WHERE scopeKey = :from")
+    suspend fun moveOutboxScope(from: String, to: String)
+    @Query("UPDATE OR IGNORE brief_cache SET scopeKey = :to WHERE scopeKey = :from")
+    suspend fun moveBriefScope(from: String, to: String)
+    @Query("UPDATE OR IGNORE read_cursors SET scopeKey = :to WHERE scopeKey = :from")
+    suspend fun moveCursorScope(from: String, to: String)
+    @Query("UPDATE OR IGNORE agent_sync_state SET scopeKey = :to WHERE scopeKey = :from")
+    suspend fun moveSyncScope(from: String, to: String)
+    @Query("UPDATE OR IGNORE runtime_scope SET scopeId = :to WHERE scopeId = :from")
+    suspend fun moveRuntimeScope(from: String, to: String)
+
+    @Query("SELECT attachmentsJson FROM outbox WHERE scopeKey = :scopeKey UNION ALL SELECT attachmentsJson FROM composer_attachments WHERE scopeKey = :scopeKey")
+    suspend fun attachmentPayloads(scopeKey: String): List<String>
+
+    @Query("SELECT attachmentsJson FROM outbox UNION ALL SELECT attachmentsJson FROM composer_attachments")
+    suspend fun attachmentPayloads(): List<String>
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun putRuntimeScope(entry: RuntimeScopeEntity)
 
@@ -297,6 +335,9 @@ internal interface HolonDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun putBrief(entry: BriefCacheEntity)
+
+    @Query("DELETE FROM brief_cache WHERE scopeKey = :scopeKey AND rowid NOT IN (SELECT rowid FROM brief_cache WHERE scopeKey = :scopeKey ORDER BY createdAt DESC LIMIT :limit)")
+    suspend fun trimBriefs(scopeKey: String, limit: Int)
 
     @Query("SELECT * FROM brief_cache WHERE scopeKey = :scopeKey AND agentId = :agentId AND briefId = :briefId")
     suspend fun brief(scopeKey: String, agentId: String, briefId: String): BriefCacheEntity?
@@ -431,13 +472,19 @@ internal interface HolonDao {
         ReadCursorEntity::class,
         AgentSyncStateEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 internal abstract class HolonDatabase : RoomDatabase() {
     abstract fun holonDao(): HolonDao
 
     companion object {
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP INDEX IF EXISTS `index_runtime_scope_runtimeId_userId_visibilityScopeId`")
+                db.execSQL("CREATE INDEX `index_runtime_scope_runtimeId_userId_visibilityScopeId` ON `runtime_scope` (`runtimeId`, `userId`, `visibilityScopeId`)")
+            }
+        }
         private val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS `composer_attachments` (`scopeKey` TEXT NOT NULL, `agentId` TEXT NOT NULL, `attachmentsJson` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`scopeKey`, `agentId`))")
@@ -495,6 +542,7 @@ internal abstract class HolonDatabase : RoomDatabase() {
             Room.databaseBuilder(context, HolonDatabase::class.java, "holon.db")
                 .addMigrations(MIGRATION_1_2)
                 .addMigrations(MIGRATION_2_3)
+                .addMigrations(MIGRATION_3_4)
                 .build()
     }
 }

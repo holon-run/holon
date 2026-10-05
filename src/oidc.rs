@@ -418,13 +418,36 @@ pub fn exchange_bootstrap(
     credential: &str,
     now: DateTime<Utc>,
 ) -> Result<IssuedSession> {
+    exchange_bootstrap_with_native_verifier(db, config, credential, None, now)
+}
+
+pub fn exchange_bootstrap_with_native_verifier(
+    db: &RuntimeDb,
+    config: &AuthConfig,
+    credential: &str,
+    native_verifier: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<IssuedSession> {
+    let native_scope = native_verifier
+        .map(|verifier| {
+            if !(43..=128).contains(&verifier.len())
+                || !verifier
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-._~".contains(&byte))
+            {
+                bail!("invalid native verifier");
+            }
+            Ok(format!("native-session:{}", pkce_challenge(verifier)))
+        })
+        .transpose()?;
+    let mut scopes = vec!["session", "recovery"];
+    if let Some(scope) = native_scope.as_deref() {
+        scopes.push(scope);
+    }
     let bootstrap = db
         .authentication()
-        .consume_bootstrap_credential(&digest_secret(credential), now)?
+        .consume_bootstrap_credential_for_scopes(&digest_secret(credential), now, Some(&scopes))?
         .context("bootstrap credential is invalid or expired")?;
-    if bootstrap.scope != "session" && bootstrap.scope != "recovery" {
-        bail!("bootstrap credential cannot create a session");
-    }
     let user_id = bootstrap
         .user_id
         .context("bootstrap credential has no user")?;

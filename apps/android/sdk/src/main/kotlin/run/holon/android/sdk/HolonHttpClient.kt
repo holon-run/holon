@@ -47,6 +47,7 @@ public class HolonHttpException(
     public val statusCode: Int,
     public val apiError: HolonApiError?,
     public val requestPath: String? = null,
+    public val clientInstanceId: String? = null,
 ) : IOException(
     apiError?.let { "${it.code}: ${it.message}" }
         ?: "Holon request failed with HTTP $statusCode",
@@ -81,6 +82,8 @@ public class HolonHttpClient internal constructor(
     insecureHttpHosts: Set<String>,
     private val sseRetryObserver: SseRetryObserver? = null,
 ) {
+    /** Identifies the transport generation, never the credential or remote identity. */
+    public val instanceId: String = java.util.UUID.randomUUID().toString()
     public constructor(
         baseUrl: String,
         bearerTokenProvider: BearerTokenProvider = BearerTokenProvider { null },
@@ -352,12 +355,12 @@ public class HolonHttpClient internal constructor(
      * When [sessionCredentialStore] was supplied to the client, the returned
      * credential is persisted through that interface only after a valid response.
      */
-    public fun exchangeSession(credential: String): SessionCredentials {
+    public fun exchangeSession(credential: String, nativeVerifier: String? = null): SessionCredentials {
         require(credential.isNotBlank()) { "Session exchange credential must not be blank" }
         val response =
             post(
                 path = "auth/session/exchange/native",
-                body = SessionExchangeRequest(credential = credential),
+                body = SessionExchangeRequest(credential = credential, nativeVerifier = nativeVerifier),
                 bodySerializer = SessionExchangeRequest.serializer(),
                 responseSerializer = NativeSessionResponse.serializer(),
                 unauthenticated = true,
@@ -478,6 +481,7 @@ public class HolonHttpClient internal constructor(
                     before?.let { put("before", it) }
                 },
             ).objectOrNull ?: throw HolonProtocolException("Holon activity response is not an object")
+        validateConversationVersions(raw)
         val activities =
             (raw["activities"] as? JsonArray).orEmpty().mapIndexedNotNull { index, element ->
                 val activity = element as? JsonObject
@@ -1320,10 +1324,9 @@ public class HolonHttpClient internal constructor(
             runCatching {
                 HolonWire.json.decodeFromString(ErrorResponse.serializer(), body)
             }.getOrNull()?.toHolonApiError()
-        if (statusCode == 401) {
-            sessionCredentialStore?.clear()
-        }
-        return HolonHttpException(statusCode, apiError, requestPath)
+        // Transport reports facts. The session owner decides whether this response
+        // still belongs to the active login before invalidating any credentials.
+        return HolonHttpException(statusCode, apiError, requestPath, instanceId)
     }
 
     private fun endpoint(

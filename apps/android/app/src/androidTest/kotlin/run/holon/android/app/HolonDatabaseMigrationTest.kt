@@ -9,11 +9,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlinx.coroutines.runBlocking
 
 @RunWith(AndroidJUnit4::class)
 class HolonDatabaseMigrationTest {
     @Test
-    fun migratesVersion2ToVersion3AndPreservesRosterProjection() {
+    fun migratesVersion2ToVersion4AndPreservesRosterProjection() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val databaseName = "holon.db"
         context.deleteDatabase(databaseName)
@@ -37,7 +38,7 @@ class HolonDatabaseMigrationTest {
         val upgraded = HolonDatabase.create(context)
         val database = upgraded.openHelper.writableDatabase
 
-        assertEquals(3, database.version)
+        assertEquals(4, database.version)
         assertTrue(database.hasTable("runtime_scope"))
         assertTrue(database.hasTable("agent_projection"))
         assertTrue(database.hasTable("agent_sync_state"))
@@ -55,6 +56,36 @@ class HolonDatabaseMigrationTest {
 
         upgraded.close()
         context.deleteDatabase(databaseName)
+    }
+
+    @Test
+    fun sameIdentityOnTwoNetworksKeepsIndependentDraftsAndOutbox() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        context.deleteDatabase("holon.db")
+        val database = HolonDatabase.create(context)
+        try {
+            val dao = database.holonDao()
+            listOf("network-A", "network-B").forEach { scope ->
+                dao.putRuntimeScope(RuntimeScopeEntity(scope, "https://same.example/api/", "runtime",
+                    "user", "visibility", 1, 1))
+                dao.putDraft(DraftEntity(scope, "holon-tester", "draft-$scope", 1))
+                dao.putOutbox(OutboxEntity("request-$scope", scope, "holon-tester", "send-$scope",
+                    "[]", "unknown", null, null, 1, 1))
+            }
+            assertTrue(dao.runtimeScope("network-A") != null)
+            assertTrue(dao.runtimeScope("network-B") != null)
+            dao.moveScope("network-A", "network-A-new-key")
+            assertEquals("draft-network-A", dao.draft("network-A-new-key", "holon-tester"))
+            assertEquals("request-network-A", dao.outbox("network-A-new-key", "holon-tester").single().requestId)
+            assertEquals(null, dao.runtimeScope("network-A"))
+            dao.clearScope("network-A-new-key")
+            assertEquals("draft-network-B", dao.draft("network-B", "holon-tester"))
+            assertEquals("request-network-B", dao.outbox("network-B", "holon-tester").single().requestId)
+            assertEquals(null, dao.runtimeScope("network-A"))
+        } finally {
+            database.close()
+            context.deleteDatabase("holon.db")
+        }
     }
 
     private fun createVersion2Schema(database: SQLiteDatabase) {

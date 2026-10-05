@@ -9,6 +9,7 @@ const ANDROID_OIDC_REDIRECT_URI: &str = "run.holon.android://oidc/callback";
 #[derive(Debug, Deserialize)]
 pub struct NativeOidcStartQuery {
     pub state: Option<String>,
+    pub code_challenge: Option<String>,
 }
 
 #[derive(Default)]
@@ -218,6 +219,8 @@ pub struct OidcCallbackQuery {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SessionExchangeRequest {
     pub credential: String,
+    #[serde(default)]
+    pub native_verifier: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -323,18 +326,30 @@ pub async fn start_native_oidc_login(
     State(state): State<Arc<AppState>>,
     Query(query): Query<NativeOidcStartQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let challenge = query
+        .code_challenge
+        .filter(|value| {
+            value.len() == 43
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        })
+        .ok_or_else(|| {
+            bad_request("native login requires an S256 code_challenge; update the app")
+        })?;
+    let app_state = query
+        .state
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+        .ok_or_else(|| bad_request("native login requires state"))?;
     let config = state.host.config().auth.clone();
     let client = crate::oidc::OidcClient::new(config).map_err(error_response)?;
-    let native_redirect_uri = query
-        .state
-        .filter(|state| !state.is_empty() && state.len() <= 128)
-        .map(|state| {
-            let mut redirect = Url::parse(ANDROID_OIDC_REDIRECT_URI)
-                .expect("static Android OIDC redirect URI must be valid");
-            redirect.query_pairs_mut().append_pair("state", &state);
-            redirect.to_string()
-        })
-        .unwrap_or_else(|| ANDROID_OIDC_REDIRECT_URI.to_string());
+    let mut redirect = Url::parse(ANDROID_OIDC_REDIRECT_URI)
+        .expect("static Android OIDC redirect URI must be valid");
+    redirect
+        .query_pairs_mut()
+        .append_pair("state", &app_state)
+        .append_pair("code_challenge", &challenge);
+    let native_redirect_uri = redirect.to_string();
     let login = client
         .begin_login_with_native_redirect(
             state.host.runtime_db(),
@@ -379,6 +394,18 @@ pub async fn complete_oidc_login(
         .await
         .map_err(error_response)?;
     if let Some(native_redirect_uri) = completed.native_redirect_uri {
+        let mut redirect = Url::parse(&native_redirect_uri).map_err(|error| {
+            error_response(anyhow!("invalid native OIDC redirect URL: {error}"))
+        })?;
+        let pairs: Vec<(String, String)> = redirect
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect();
+        let challenge = pairs
+            .iter()
+            .find(|(key, _)| key == "code_challenge")
+            .map(|(_, value)| value.clone())
+            .ok_or_else(|| bad_request("restart native login with the updated app"))?;
         let ticket = format!(
             "{}{}",
             uuid::Uuid::new_v4().simple(),
@@ -392,17 +419,21 @@ pub async fn complete_oidc_login(
             .insert_bootstrap_credential(&crate::authentication::BootstrapCredentialRecord {
                 credential_digest: crate::authentication::digest_secret(&ticket),
                 user_id: Some(completed.session.record.user_id),
-                scope: "session".to_string(),
+                scope: format!("native-session:{challenge}"),
                 created_at: now,
                 expires_at: now + PAIRING_TTL,
                 consumed_at: None,
                 revoked_at: None,
             })
             .map_err(error_response)?;
-        let mut redirect = Url::parse(&native_redirect_uri).map_err(|error| {
-            error_response(anyhow!("invalid native OIDC redirect URL: {error}"))
-        })?;
+        redirect.set_query(None);
+        for (key, value) in pairs.iter().filter(|(key, _)| key != "code_challenge") {
+            redirect.query_pairs_mut().append_pair(key, value);
+        }
         redirect.query_pairs_mut().append_pair("ticket", &ticket);
+        redirect
+            .query_pairs_mut()
+            .append_pair("code_challenge_method", "S256");
         let location = axum::http::HeaderValue::from_str(redirect.as_str())
             .map_err(|error| error_response(anyhow!("invalid native OIDC redirect: {error}")))?;
         let mut response = axum::http::Response::new(axum::body::Body::empty());
@@ -459,13 +490,16 @@ async fn exchange_session_credential(
         }
         issue_local_session(&state, "static_token", now)?
     } else {
-        crate::oidc::exchange_bootstrap(
+        crate::oidc::exchange_bootstrap_with_native_verifier(
             state.host.runtime_db(),
             &config.auth,
             &request.credential,
+            request.native_verifier.as_deref(),
             now,
         )
-        .map_err(error_response)?
+        .map_err(|_| {
+            auth_required("bootstrap credential or native login proof is invalid or expired")
+        })?
     };
     let cookie = session_cookie(&state, &session.credential);
     Ok((session, cookie))

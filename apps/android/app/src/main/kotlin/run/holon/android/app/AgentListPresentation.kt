@@ -38,24 +38,3 @@ internal fun commonModelOptions(options: List<HolonModelOption>, agents: List<Ag
 internal fun HolonUiState.hasStandaloneActivity(): Boolean =
     selectedActivity != null && (fullScreenTurn || selectedTurn == null) &&
         selectedWorkItem == null && selectedBrief == null && agentSection == AgentSection.Results
-
-internal enum class BackTarget { Share, Artifact, AddingNetwork, MessageFile, Plan, Activity, FullScreenTurn, Task, WorkItem, Brief, Folder, Conversation, Agents, Exit }
-
-internal fun HolonUiState.backTarget(artifactLoading: Boolean = false): BackTarget = when {
-    pendingShare != null -> BackTarget.Share
-    artifactLoading -> BackTarget.Artifact
-    phase == AppPhase.AddingNetwork -> BackTarget.AddingNetwork
-    fileLinkOrigin != null -> BackTarget.MessageFile
-    planFile != null -> BackTarget.Plan
-    preparedArtifact != null -> BackTarget.Artifact
-    hasStandaloneActivity() -> BackTarget.Activity
-    fullScreenTurn -> BackTarget.FullScreenTurn
-    selectedTask != null -> BackTarget.Task
-    selectedWorkItem != null -> BackTarget.WorkItem
-    selectedBrief != null -> BackTarget.Brief
-    selectedAgent != null && agentSection == AgentSection.Files && !workspaceDirectory?.path.isNullOrBlank() -> BackTarget.Folder
-    selectedAgent != null && agentSection != AgentSection.Results -> BackTarget.Conversation
-    selectedAgent != null -> BackTarget.Agents
-    mainDestination != MainDestination.Agents -> BackTarget.Agents
-    else -> BackTarget.Exit
-}

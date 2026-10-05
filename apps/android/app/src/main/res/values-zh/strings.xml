@@ -1,0 +1,14 @@
+<resources>
+    <string name="connection_restoring">正在恢复 Holon…</string>
+    <string name="connection_title">连接 Holon</string>
+    <string name="connection_address">Holon 地址</string>
+    <string name="connection_token">访问令牌（token）</string>
+    <string name="connection_session_policy">登录后只保存可撤销的会话，不保存原始令牌</string>
+    <string name="session_expired">登录已失效，请重新登录</string>
+    <string name="connection_offline_cache">当前离线，显示上次同步内容</string>
+    <string name="outbox_sending">发送中</string>
+    <string name="outbox_received">已接收</string>
+    <string name="outbox_unknown">结果未知</string>
+    <string name="outbox_failed">发送失败</string>
+    <string name="navigation_exit_again">再按一次返回桌面</string>
+</resources>

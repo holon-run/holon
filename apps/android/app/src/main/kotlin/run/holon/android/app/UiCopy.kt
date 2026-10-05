@@ -13,8 +13,10 @@ internal object UiCopy {
 
     @Volatile private var systemLanguage = Locale.getDefault().language
     @Volatile private var preferredLanguage: String? = null
+    @Volatile private var resourcesContext: Context? = null
 
     fun initialize(context: Context) {
+        resourcesContext = context.applicationContext
         systemLanguage = context.resources.configuration.locales[0].language
         preferredLanguage = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(LANGUAGE, null)
     }
@@ -29,7 +31,33 @@ internal object UiCopy {
         preferredLanguage = language
     }
 
-    fun text(source: String): String = translate(source, preferredLanguage ?: systemLanguage)
+    fun text(source: String): String {
+        val language = preferredLanguage ?: systemLanguage
+        val resource = coreCopyResources[source]
+        val context = resourcesContext
+        if (resource != null && context != null) {
+            val configuration = android.content.res.Configuration(context.resources.configuration)
+            configuration.setLocale(Locale.forLanguageTag(if (language.startsWith("zh")) "zh" else "en"))
+            return context.createConfigurationContext(configuration).getString(resource)
+        }
+        return translate(source, language)
+    }
+
+    // Compatibility keys at existing call sites; new core copy uses stable resource IDs.
+    private val coreCopyResources = mapOf(
+        "正在恢复 Holon…" to R.string.connection_restoring,
+        "连接 Holon" to R.string.connection_title,
+        "Holon 地址" to R.string.connection_address,
+        "访问令牌（token）" to R.string.connection_token,
+        "登录后只保存可撤销的会话，不保存原始令牌" to R.string.connection_session_policy,
+        "登录已失效，请重新登录" to R.string.session_expired,
+        "当前离线，显示上次同步内容" to R.string.connection_offline_cache,
+        "发送中" to R.string.outbox_sending,
+        "已接收" to R.string.outbox_received,
+        "结果未知" to R.string.outbox_unknown,
+        "发送失败" to R.string.outbox_failed,
+        "再按一次返回桌面" to R.string.navigation_exit_again,
+    )
 
     internal fun translate(source: String, language: String): String {
         if (language.startsWith("zh", ignoreCase = true)) return chineseTerminology[source] ?: source
@@ -80,6 +108,9 @@ internal object UiCopy {
         Agent 尚未连接可访问的工作区。|This Agent has no accessible workspace yet.
         Agent 的工作计划和验收结果会显示在这里。|The Agent's work plans and results will appear here.
         Assistant 文本|Assistant text
+        补充输入|Additional input
+        安全存储暂时不可用，请重试|Secure storage is temporarily unavailable. Try again.
+        daemon 不支持安全的原生浏览器登录，请升级 daemon|This daemon does not support secure native browser sign-in. Update the daemon.
         HTTP 本身不加密；请只在可信局域网或 Tailscale 等加密隧道中使用|HTTP is not encrypted. Use it only on a trusted LAN or encrypted tunnel such as Tailscale.
         HTTPS 默认安全；HTTP 需要逐次确认。浏览器登录和扫码配对将在后续版本提供。|HTTPS is recommended. HTTP requires confirmation for each login. Browser login and QR pairing are coming later.
         Holon 地址|Holon address

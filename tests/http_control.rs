@@ -52,6 +52,7 @@ http_async_tests!(
     control_prompt_attributes_oidc_user_identity,
     control_prompt_local_credentials_keep_control_identity,
     auth_native_session_exchange_returns_reusable_session_and_logout_revokes_it,
+    native_oidc_ticket_requires_matching_verifier_without_consuming_on_failure,
     auth_session_me_returns_oidc_user_identity,
     auth_session_me_returns_local_control_identity,
     control_prompt_rejects_stopped_agent_without_queueing,
