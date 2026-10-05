@@ -469,6 +469,7 @@ impl ModelRuntimeOverride {
 #[serde(rename_all = "snake_case")]
 pub enum DecisionProtocol {
     OpenAiCompatible,
+    OpenAiDecisions,
     Jev,
 }
 
