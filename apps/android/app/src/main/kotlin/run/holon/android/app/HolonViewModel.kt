@@ -31,7 +31,6 @@ import run.holon.android.sdk.HolonBriefReadState
 import run.holon.android.sdk.HolonConversationActivity
 import run.holon.android.sdk.HolonConversationDetail
 import run.holon.android.sdk.HolonConversationSnapshot
-import run.holon.android.sdk.HolonConversationStreamEvent
 import run.holon.android.sdk.HolonConversationTurn
 import run.holon.android.sdk.HolonHttpException
 import run.holon.android.sdk.HolonFileReferenceResult
@@ -43,7 +42,6 @@ import run.holon.android.sdk.HolonTaskSnapshot
 import run.holon.android.sdk.HolonTaskOutputSnapshot
 import run.holon.android.sdk.HolonWorkspace
 import run.holon.android.sdk.HolonWorkspaceDirectory
-import run.holon.android.sdk.toConversationEvent
 
 internal fun HolonHttpException.isStaleAgentEventCursor(): Boolean =
     statusCode == 404 && apiError?.code == "cursor_not_found"
@@ -2006,7 +2004,6 @@ internal class HolonViewModel(
                                 }
                             }
                         }
-                        var reopenAfterReset = false
                         val connection = repository.openConversationStream(agent.id, cursor)
                         val seed = state.value.conversation ?: repository.conversation(agent).snapshot
                         val reducer = run.holon.android.sdk.ConversationStreamReducer(seed)
@@ -2014,14 +2011,6 @@ internal class HolonViewModel(
                         try {
                             for (event in connection.events()) {
                                 val committed = reducer.accept(event)
-                                val change = event.toConversationEvent()
-                                if (change is HolonConversationStreamEvent.Mutation &&
-                                    change.type in setOf("activity_upsert", "detail_invalidated", "turn_summary_upsert")
-                                ) {
-                                    state.value.selectedTurn?.id?.let { turnId ->
-                                        scheduleTurnDetailRefresh(agent, turnId)
-                                    }
-                                }
                                 if (committed != null) {
                                     val bundle = repository.acceptConversation(agent, committed)
                                     cursor = bundle.snapshot.snapshotCursor
@@ -2050,24 +2039,19 @@ internal class HolonViewModel(
                                                     statusMessage = null,
                                                 )
                                             }
+                                            state.value.selectedTurn?.id?.let { turnId ->
+                                                scheduleTurnDetailRefresh(agent, turnId)
+                                            }
+                                            hydrateBriefs(agent, bundle.snapshot)
                                         }
                                     }
-                                    state.value.selectedTurn?.id?.let { turnId ->
-                                        scheduleTurnDetailRefresh(agent, turnId)
-                                    }
                                     retryDelay = 1_000L
-                                    if (change is HolonConversationStreamEvent.ResetRequired) {
-                                        reopenAfterReset = true
-                                        break
-                                    }
-                                    hydrateBriefs(agent, bundle.snapshot)
                                 }
                             }
                         } finally {
                             connection.close()
                             if (conversationStream === connection) conversationStream = null
                         }
-                        if (reopenAfterReset) continue
                         withContext(Dispatchers.Main) { markConnectionInterrupted(agent.id) }
                     } catch (_: CancellationException) {
                         break

@@ -14,6 +14,7 @@ public class ConversationStreamReducer(initial: HolonConversationSnapshot, priva
     private val boundary = ConversationBatchBoundary(initial)
     private val mutations = mutableListOf<JsonObject>()
     private val inputRevisions = initial.pendingInputs.mapNotNull { input -> input.revision?.let { input.messageId to it } }.toMap().toMutableMap()
+    private val removedInputs = linkedMapOf<String, Long>()
 
     /** Null means the batch is incomplete; reset requires a fresh authoritative bootstrap. */
     public fun accept(event: HolonSseEvent): HolonConversationSnapshot? {
@@ -45,9 +46,21 @@ public class ConversationStreamReducer(initial: HolonConversationSnapshot, priva
                             val id = (input?.get("message_id") ?: mutation["message_id"])?.jsonPrimitive?.contentOrNull
                                 ?: throw HolonProtocolException("Missing input identity")
                             val revision = (input?.get("revision") ?: mutation["revision"])?.jsonPrimitive?.longOrNull ?: 0
-                            if (revision >= (inputRevisions[id] ?: -1)) {
+                            if (input != null && revision <= (removedInputs[id] ?: -1)) return@forEach
+                            val previous = inputRevisions[id] ?: -1
+                            if (input != null && revision == previous && pending[id] != null && pending[id] != input) {
+                                throw HolonProtocolException("Input reused revision with different content: $id")
+                            }
+                            if (revision >= previous) {
                                 inputRevisions[id] = revision
-                                if (input == null) pending.remove(id) else pending[id] = input
+                                if (input == null) {
+                                    pending.remove(id)
+                                    removedInputs.remove(id)
+                                    removedInputs[id] = revision
+                                } else {
+                                    removedInputs.remove(id)
+                                    pending[id] = input
+                                }
                             }
                         }
                     }
@@ -68,6 +81,7 @@ public class ConversationStreamReducer(initial: HolonConversationSnapshot, priva
                 if (inputRevisions.size > 4096) {
                     inputRevisions.keys.retainAll(pending.keys + assigned)
                 }
+                while (removedInputs.size > 4096) removedInputs.remove(removedInputs.keys.first())
                 return next
             }
             is HolonConversationStreamEvent.Unknown -> throw HolonProtocolException("Unknown conversation control")

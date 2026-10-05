@@ -14,6 +14,10 @@ public fun mergeConversationTurns(
     val byId = existing.associateByTo(linkedMapOf()) { it.id }
     incoming.forEach { turn ->
         val previous = byId[turn.id]
+        if (previous?.executionKind == "terminal" && turn.executionKind == "active") return@forEach
+        if (previous?.revision != null && previous.revision == turn.revision && previous.raw != turn.raw) {
+            throw HolonProtocolException("Turn reused revision with different content: ${turn.id}")
+        }
         if (previous == null || previous.revision == null || turn.revision == null || turn.revision >= previous.revision) {
             byId[turn.id] = turn
         }
