@@ -3813,6 +3813,19 @@ impl RuntimeHost {
             if agent_id == self.config().default_agent_id {
                 self.ensure_default_agent_identity()?;
             }
+            self.active_agent_identity(agent_id)
+                .map_err(anyhow::Error::new)?;
+            {
+                let registry = self.inner.runtimes.read().await;
+                if registry.phase != HostRuntimePhase::Open {
+                    return Err(anyhow::Error::new(RuntimeAdmissionClosed));
+                }
+                if let Some(entry) = registry.agents.get(agent_id) {
+                    if entry.accepts_host_access() {
+                        return Ok(entry.runtime.clone());
+                    }
+                }
+            }
             if agent_id != self.config().default_agent_id && self.bootstrap_mode_active() {
                 self.wait_for_bootstrap_ready().await;
             }
@@ -7454,6 +7467,102 @@ mod tests {
             .await
             .unwrap();
         assert!(runtime.has_provider_reconfig());
+
+        host.shutdown().await.unwrap();
+        match original_bootstrap {
+            Some(value) => std::env::set_var("HOLON_BOOTSTRAP", value),
+            None => std::env::remove_var("HOLON_BOOTSTRAP"),
+        }
+        match original_openai_key {
+            Some(value) => std::env::set_var("OPENAI_API_KEY", value),
+            None => std::env::remove_var("OPENAI_API_KEY"),
+        }
+    }
+
+    #[tokio::test]
+    async fn active_runtime_activation_does_not_wait_for_bootstrap_handoff_lock() {
+        let (_home, host) = test_host();
+        let default_agent_id = host.config().default_agent_id.clone();
+        host.default_runtime().await.unwrap();
+        let handoff_guard = host.inner.bootstrap_handoff_lock.lock().await;
+
+        let activation = tokio::time::timeout(
+            Duration::from_millis(100),
+            host.activate_agent(&default_agent_id, RuntimeActivationReason::OperatorControl),
+        )
+        .await
+        .expect("active runtime activation should use the unlocked fast path");
+        activation.unwrap();
+
+        drop(handoff_guard);
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn runtime_creation_waits_for_bootstrap_handoff_during_reload() {
+        let _env_lock = crate::test_env::lock_env();
+        let original_bootstrap = std::env::var_os("HOLON_BOOTSTRAP");
+        let original_openai_key = std::env::var_os("OPENAI_API_KEY");
+        std::env::set_var("HOLON_BOOTSTRAP", "1");
+        std::env::remove_var("OPENAI_API_KEY");
+
+        let home = tempdir().unwrap();
+        write_test_model_config(home.path());
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.user_home_dir = Some(home.path().to_path_buf());
+        let host = RuntimeHost::new(config).unwrap();
+        host.default_runtime().await.unwrap();
+        host.ensure_named_agent(
+            "reload-race-named-runtime",
+            None,
+            NamedAgentExistingBehavior::Reuse,
+            None,
+            AgentBootstrapDesiredState {
+                template: None,
+                catalog_agent_home: None,
+                workspace: None,
+                model_resolution: None,
+                initial_message: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        std::env::set_var("OPENAI_API_KEY", "test-key");
+        let handoff_guard = host.inner.bootstrap_handoff_lock.lock().await;
+        assert_eq!(host.schedule_config_reload().unwrap(), 1);
+        wait_for_config_reload(&host, |status| status.state == ConfigReloadState::Applying).await;
+
+        let named_activation = {
+            let host = host.clone();
+            tokio::spawn(async move {
+                host.activate_agent(
+                    "reload-race-named-runtime",
+                    RuntimeActivationReason::OperatorControl,
+                )
+                .await
+            })
+        };
+        let temporary_creation = {
+            let host = host.clone();
+            tokio::spawn(async move { host.spawn_temporary_runtime("run").await })
+        };
+        let mut temporary_creation = temporary_creation;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut temporary_creation)
+                .await
+                .is_err(),
+            "temporary runtime creation must remain behind the handoff guard"
+        );
+
+        drop(handoff_guard);
+        let status = wait_for_config_reload(&host, |status| status.completed_generation == 1).await;
+        assert_eq!(status.state, ConfigReloadState::Completed);
+        let (_, temporary_runtime, temporary_task) = temporary_creation.await.unwrap().unwrap();
+        let named_runtime = named_activation.await.unwrap().unwrap();
+        assert!(temporary_runtime.has_provider_reconfig());
+        assert!(named_runtime.has_provider_reconfig());
+        temporary_task.abort();
 
         host.shutdown().await.unwrap();
         match original_bootstrap {
