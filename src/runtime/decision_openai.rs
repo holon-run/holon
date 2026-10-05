@@ -7,6 +7,7 @@ use super::scheduler::{
     SemanticCandidateSelectionHookResult,
 };
 use async_trait::async_trait;
+use decision_clef::{ClefConfig, ClefProvider};
 use decision_core::{
     DecisionContext, DecisionError, DecisionOutcome, DecisionProvider, DecisionRequest,
     DecisionResponse,
@@ -56,6 +57,7 @@ pub(crate) struct ResolvedDecisionRoute {
 enum DecisionProviderKind {
     OpenAi(OpenAiConfig),
     OpenAiDecisions(OpenAiDecisionsConfig),
+    CloudflareClef(ClefConfig),
     Jev(JevConfig),
     #[cfg(feature = "local-onnx")]
     LocalOnnx(LocalOnnxConfig),
@@ -72,6 +74,7 @@ fn build_provider(
         DecisionProviderKind::OpenAiDecisions(config) => {
             Ok(Box::new(OpenAiDecisionsProvider::new(config)?))
         }
+        DecisionProviderKind::CloudflareClef(config) => Ok(Box::new(ClefProvider::new(config)?)),
         DecisionProviderKind::Jev(config) => Ok(Box::new(JevProvider::new(config)?)),
         #[cfg(feature = "local-onnx")]
         DecisionProviderKind::LocalOnnx(config) => LocalOnnxProvider::new(config)
@@ -197,6 +200,13 @@ pub(crate) fn resolve_shared_decision_route(
                 provider = provider.with_api_key(credential);
             }
             DecisionProviderKind::OpenAiDecisions(provider)
+        }
+        Some(crate::model_catalog::DecisionProtocol::CloudflareClef) => {
+            let mut provider = ClefConfig::new(endpoint, model).with_timeout(timeout);
+            if let Some(credential) = credential {
+                provider = provider.with_api_key(credential);
+            }
+            DecisionProviderKind::CloudflareClef(provider)
         }
         Some(crate::model_catalog::DecisionProtocol::Jev) => {
             let mut provider = JevConfig::new(endpoint)

@@ -586,7 +586,7 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         ConfigSchemaEntry {
             key: "decision.model",
             kind: "string",
-            description: "Shared provider model route used by Decision; the selected model must explicitly advertise Decision capability and may choose an OpenAI-compatible or Jev protocol.",
+            description: "Shared provider model route used by Decision; the selected model must explicitly advertise Decision capability and may choose an OpenAI-compatible, OpenAI Decisions, Cloudflare Clef, or Jev protocol.",
             default: Value::Null,
             allowed_values: vec![],
         },

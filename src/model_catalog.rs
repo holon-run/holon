@@ -470,6 +470,7 @@ impl ModelRuntimeOverride {
 pub enum DecisionProtocol {
     OpenAiCompatible,
     OpenAiDecisions,
+    CloudflareClef,
     Jev,
 }
 

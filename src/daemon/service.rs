@@ -223,6 +223,9 @@ impl RuntimeDecisionSurface {
                     crate::model_catalog::DecisionProtocol::OpenAiDecisions => {
                         "openai_decisions".to_string()
                     }
+                    crate::model_catalog::DecisionProtocol::CloudflareClef => {
+                        "cloudflare_clef".to_string()
+                    }
                     crate::model_catalog::DecisionProtocol::Jev => "jev".to_string(),
                 }),
             provider: selected_availability

@@ -8,12 +8,14 @@ reuse the ordinary agent model view blindly.
 - Ordinary agent selection requires `capabilities.agent_turn: true`.
   These flags are independent, so one provider may expose Turn-capable models,
   Decision-only models, or models supporting both.
-- `decision_protocol` selects the adapter for that model route. `jev` and
-  `openai_decisions` are not inferred from provider name, transport, or model
-  id. `openai_decisions` normalizes a provider base URL to
+- `decision_protocol` selects the adapter for that model route. `jev`,
+  `openai_decisions`, and `cloudflare_clef` are not inferred from provider name,
+  transport, or model id. `openai_decisions` normalizes a provider base URL to
   `/v1/decisions`, uses the dedicated Decisions wire protocol, and is allowed
   only with the API-key based `openai_responses` transport; it must not be
-  configured on the Codex Responses transport. OpenAI-compatible routes must
+  configured on the Codex Responses transport. `cloudflare_clef` uses the
+  Cloudflare Clef/Clef-flash buffered `state/questions` wire protocol and the
+  shared provider endpoint and bearer credential. OpenAI-compatible routes must
   use an OpenAI-compatible transport.
 - Provider endpoint and credential configuration remain shared. The Decision
   section stores only the selected route and runtime limits, avoiding a
