@@ -140,6 +140,25 @@ writable workspace at `/workspace`, or derive a project-specific image when
 the agent needs additional development toolchains. The published image is
 currently Linux amd64.
 
+For a browser-first local trial without a provider configured yet, use the
+checked-in Compose entrypoint:
+
+```bash
+docker compose up --build
+```
+
+It persists Holon state and the workspace in named volumes, starts with
+`HOLON_BOOTSTRAP=1`, and redirects the browser to
+<http://localhost:7878/settings>. Configure a provider credential and default
+model there; task and tool mutations remain blocked until the runtime reports a
+ready default provider. Set `HOLON_CONTROL_TOKEN` before exposing the port
+beyond the local machine.
+
+For a Railway Service or Template deployment, see
+[Railway deployment](docs/deployment-railway.md). It uses the same Docker
+image and bootstrap onboarding flow, maps the injected Railway `PORT`, and
+keeps runtime state plus the workspace on one Railway Volume.
+
 For release-level container smoke and optional real-LLM workspace/WorkItem
 acceptance cases, see
 [Docker release acceptance](docs/testing/docker-acceptance.md).

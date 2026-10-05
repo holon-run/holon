@@ -145,9 +145,9 @@ impl AppConfig {
     /// Returns true when the default model provider has a usable credential,
     /// indicating the agent can actually make model calls.
     ///
-    /// Local providers with `CredentialSource::None` (e.g. vllm) are excluded
-    /// because their availability cannot be verified from config alone — they
-    /// exist in the builtin registry regardless of whether the service is running.
+    /// Providers with `CredentialSource::None` are ready when they explicitly
+    /// declare `CredentialKind::None`; availability is then governed by the
+    /// provider transport rather than a stored credential.
     pub fn default_provider_ready(&self) -> bool {
         self.providers
             .values()
@@ -157,6 +157,12 @@ impl AppConfig {
             })
             .map(provider_has_usable_auth)
             .unwrap_or(false)
+    }
+
+    /// Returns true when browser-first bootstrap was explicitly requested and
+    /// the configured default provider is not ready yet.
+    pub fn bootstrap_mode_enabled(&self) -> bool {
+        bootstrap_mode_requested() && !self.default_provider_ready()
     }
 
     fn load_with_home_and_mode(
@@ -324,7 +330,10 @@ impl AppConfig {
         ) {
             Ok(selection) => selection,
             Err(error) if mode.allow_unresolved_model() => {
-                tracing::debug!(error = %error, "using unresolved diagnostic model for config inspection");
+                tracing::debug!(
+                    error = %error,
+                    "using unresolved model for bootstrap or config inspection"
+                );
                 (
                     ModelRouteRef::new(
                         ProviderId::openai(),
@@ -521,11 +530,21 @@ pub(crate) enum ConfigLoadMode {
 impl ConfigLoadMode {
     fn allow_unresolved_model(self) -> bool {
         matches!(self, Self::ConfigInspection)
+            || matches!(self, Self::Runtime) && bootstrap_mode_requested()
     }
 
     fn skip_authenticated_model_resolution(self) -> bool {
         matches!(self, Self::ConfigInspection)
     }
+}
+
+fn bootstrap_mode_requested() -> bool {
+    env::var("HOLON_BOOTSTRAP").ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 impl AltScreenMode {

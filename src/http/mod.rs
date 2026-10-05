@@ -883,9 +883,17 @@ pub fn router(state: AppState) -> Router {
         Arc::new(state.clone()),
         session_auth_middleware,
     ));
+    let api_routes = api_routes.layer(from_fn_with_state(
+        Arc::new(state.clone()),
+        bootstrap_guard_middleware,
+    ));
     let app_routes = apps::router().layer(from_fn_with_state(
         Arc::new(state.clone()),
         session_auth_middleware,
+    ));
+    let app_routes = app_routes.layer(from_fn_with_state(
+        Arc::new(state.clone()),
+        bootstrap_guard_middleware,
     ));
 
     Router::new()
@@ -1480,6 +1488,57 @@ async fn session_auth_middleware(
         if let Err(error) = authenticate_session(request.headers(), &state) {
             return auth_required(error.to_string()).into_response();
         }
+    }
+
+    next.run(request).await
+}
+
+async fn bootstrap_guard_middleware(
+    State(state): State<Arc<AppState>>,
+    request: AxumRequest<Body>,
+    next: Next,
+) -> AxumResponse {
+    if !state.host.bootstrap_mode_active() {
+        return next.run(request).await;
+    }
+
+    let request_path = request.uri().path();
+    let path = request_path.strip_prefix("/api").unwrap_or(request_path);
+    let is_device_start = path
+        .strip_prefix("/auth/")
+        .and_then(|provider| provider.strip_suffix("/device/start"))
+        .is_some_and(|provider| !provider.is_empty() && !provider.contains('/'));
+    let setup_write = matches!(
+        request_path,
+        "/auth/session/exchange"
+            | "/auth/session/exchange/native"
+            | "/api/auth/session/exchange"
+            | "/api/auth/session/exchange/native"
+    ) || path.starts_with("/auth/session/")
+        || matches!(
+            path,
+            "/auth/pairing/redeem"
+                | "/auth/pairing/redeem/native"
+                | "/models/refresh"
+                | "/control/runtime/config"
+                | "/control/runtime/credentials"
+        )
+        || is_device_start
+        || path.starts_with("/control/runtime/credentials/");
+    let is_mutation = !matches!(
+        *request.method(),
+        Method::GET | Method::HEAD | Method::OPTIONS
+    );
+
+    if is_mutation && !setup_write {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": "bootstrap_required",
+                "message": "Holon is waiting for provider credentials and a default model. Complete setup in /settings before running agents or tools.",
+            })),
+        )
+            .into_response();
     }
 
     next.run(request).await

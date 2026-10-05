@@ -1,0 +1,26 @@
+services:
+  holon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: holon:local
+    ports:
+      - "127.0.0.1:${HOLON_PORT:-7878}:7878"
+    environment:
+      HOME: /var/lib/holon
+      HOLON_HOME: /var/lib/holon
+      HOLON_WORKSPACE_DIR: /workspace
+      HOLON_CONTROL_TOKEN: "${HOLON_CONTROL_TOKEN:-local-holon-token}"
+      HOLON_BOOTSTRAP: "1"
+    volumes:
+      - holon-home:/var/lib/holon
+      - holon-workspace:/workspace
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--header", "Accept: text/html", "http://127.0.0.1:7878/settings"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  holon-home:
+  holon-workspace:

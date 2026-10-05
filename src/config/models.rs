@@ -1193,7 +1193,8 @@ pub(crate) fn provider_has_usable_auth(provider: &ProviderRuntimeConfig) -> bool
                     })
                     .unwrap_or(false)
         }
-        CredentialSource::None | CredentialSource::CredentialProcess => false,
+        CredentialSource::None => provider.auth.kind == CredentialKind::None,
+        CredentialSource::CredentialProcess => false,
     }
 }
 
