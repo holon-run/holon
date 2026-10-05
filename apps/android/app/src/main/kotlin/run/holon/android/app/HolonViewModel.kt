@@ -285,11 +285,8 @@ internal class HolonViewModel(
     private var conversationJob: Job? = null
     private var conversationStreamJob: Job? = null
     private var conversationStream: HolonSseConnection? = null
-    private var globalEventStreamJob: Job? = null
     // SSE readers block threads; keep them off the pool used by foreground sends and file staging.
-    private val eventStreamIo = Dispatchers.IO.limitedParallelism(64)
-    private val agentEventStreamJobs = ConcurrentHashMap<String, Job>()
-    private val agentEventCursors = ConcurrentHashMap<String, Long>()
+    private val eventStreamIo = Dispatchers.IO.limitedParallelism(2)
     private val staleCursorRecoveryMutex = Mutex()
     @Volatile private var liveEventLogEpoch: String? = null
     private var liveRosterRefreshJob: Job? = null
@@ -311,6 +308,21 @@ internal class HolonViewModel(
         onFailure = { error ->
             if (error.isAuthenticationFailure() || error is SessionScopeChangedException) handleRuntimeFailure(error)
         },
+    )
+    private val foregroundSync = ForegroundSyncCoordinator(
+        scope = viewModelScope,
+        open = repository::openRosterHints,
+        onConnected = {
+            scheduleLiveRosterRefresh()
+            state.value.agents.forEach { operatorPreviewLoader.request(it.id) }
+        },
+        onHint = { id ->
+            scheduleLiveRosterRefresh()
+            if (state.value.agents.any { it.id == id }) operatorPreviewLoader.request(id)
+            if (state.value.selectedAgent?.id == id && state.value.agentSection == AgentSection.Work) refreshTasks()
+        },
+        onFailure = ::handleRuntimeFailure,
+        reader = eventStreamIo,
     )
     private val briefReadStateWriter = BriefReadStateWriter(
         scope = viewModelScope,
@@ -878,142 +890,10 @@ internal class HolonViewModel(
         }
         eventLogEpoch?.let { liveEventLogEpoch = it }
         startSessionKeepAlive(generation)
-        if (globalEventStreamJob?.isActive != true) {
-            globalEventStreamJob =
-                viewModelScope.launch(eventStreamIo) {
-                    runCatching {
-                        while (
-                            isActive &&
-                                isCurrentLiveSync(
-                                    foreground,
-                                    state.value.phase,
-                                    generation,
-                                    liveSyncGeneration,
-                                )
-                        ) {
-                            repository.reconnectingRosterHints(
-                                policy = SseReconnectPolicy(maxAttempts = 8),
-                            ).forEach {
-                                if (
-                                    isActive &&
-                                        isCurrentLiveSync(
-                                            foreground,
-                                            state.value.phase,
-                                            generation,
-                                            liveSyncGeneration,
-                                        )
-                                ) {
-                                    scheduleLiveRosterRefresh()
-                                }
-                            }
-                            delay(500)
-                        }
-                    }.onFailure { error ->
-                        if (isActive && foreground) {
-                            mutableState.update {
-                                it.copy(statusMessage = "列表同步已暂停：${humanError(error)}")
-                            }
-                        }
-                    }
-                }
-        }
-        val ids = agents.mapTo(mutableSetOf()) { it.id }
-        agentEventStreamJobs.keys.toList()
-            .filter { it !in ids }
-            .forEach { agentId ->
-                agentEventStreamJobs.remove(agentId)?.cancel()
-                agentEventCursors.remove(agentId)
-            }
-        agents.forEach { agent ->
-            if (agentEventStreamJobs[agent.id]?.isActive == true) return@forEach
+        agents.filter { it.id !in state.value.operatorPreviews }.forEach { agent ->
             viewModelScope.launch { operatorPreviewLoader.request(agent.id) }
-            agentEventStreamJobs[agent.id] =
-                viewModelScope.launch(eventStreamIo) {
-                    runCatching {
-                        val persistedState = repository.syncState(agent.id)
-                        var persistedCursor = persistedState?.eventCursor
-                        var streamEpoch = liveEventLogEpoch
-                        if (
-                            persistedState?.eventLogEpoch != null &&
-                                streamEpoch != null &&
-                                persistedState.eventLogEpoch != streamEpoch
-                        ) {
-                            repository.resetAgentEventCursor(agent.id, streamEpoch)
-                            persistedCursor = null
-                            agentEventCursors.remove(agent.id)
-                        }
-                        persistedCursor?.let { agentEventCursors[agent.id] = it }
-                        while (
-                            isActive &&
-                                isCurrentLiveSync(
-                                    foreground,
-                                    state.value.phase,
-                                    generation,
-                                    liveSyncGeneration,
-                                )
-                        ) {
-                            val currentEpoch = liveEventLogEpoch
-                            if (streamEpoch != null && currentEpoch != null && streamEpoch != currentEpoch) {
-                                repository.resetAgentEventCursor(agent.id, currentEpoch)
-                                persistedCursor = null
-                                streamEpoch = currentEpoch
-                                agentEventCursors.remove(agent.id)
-                            }
-                            try {
-                                for (event in repository.reconnectingAgentEvents(
-                                    agentId = agent.id,
-                                    afterSeq = persistedCursor,
-                                    policy = SseReconnectPolicy(maxAttempts = 8),
-                                )) {
-                                    if (
-                                        !isActive ||
-                                            !isCurrentLiveSync(
-                                                foreground,
-                                                state.value.phase,
-                                                generation,
-                                                liveSyncGeneration,
-                                            )
-                                    ) {
-                                        break
-                                    }
-                                    if (
-                                        liveEventLogEpoch != null &&
-                                            event.eventLogEpoch != liveEventLogEpoch
-                                    ) {
-                                        repository.resetAgentEventCursor(agent.id, event.eventLogEpoch)
-                                        persistedCursor = null
-                                        streamEpoch = event.eventLogEpoch
-                                        agentEventCursors.remove(agent.id)
-                                        recoverLiveRosterAfterStaleCursor()
-                                        break
-                                    }
-                                    persistedCursor = event.eventSeq
-                                    agentEventCursors[agent.id] = event.eventSeq
-                                    repository.saveAgentEventCursor(agent.id, event)
-                                    scheduleLiveRosterRefresh()
-                                    withContext(Dispatchers.Main) {
-                                        if (event.type in setOf("message_enqueued", "message_processing_started", "brief_created", "agent_state_changed")) operatorPreviewLoader.request(agent.id)
-                                        if (state.value.selectedAgent?.id == agent.id && event.type.startsWith("task_")) refreshTasks()
-                                    }
-                                }
-                            } catch (error: HolonHttpException) {
-                                if (!error.isStaleAgentEventCursor()) throw error
-                                persistedCursor = null
-                                agentEventCursors.remove(agent.id)
-                                repository.resetAgentEventCursor(agent.id, liveEventLogEpoch)
-                                streamEpoch = recoverLiveRosterAfterStaleCursor() ?: liveEventLogEpoch
-                            }
-                            delay(500)
-                        }
-                    }.onFailure { error ->
-                        if (isActive && foreground) {
-                            mutableState.update {
-                                it.copy(statusMessage = "列表同步已暂停：${humanError(error)}")
-                            }
-                        }
-                    }
-                }
         }
+        foregroundSync.start(generation)
     }
 
     private suspend fun recoverLiveRosterAfterStaleCursor(): String? =
@@ -1046,10 +926,7 @@ internal class HolonViewModel(
         briefReadStateLoader.reset()
         sessionKeepAliveJob?.cancel()
         sessionKeepAliveJob = null
-        globalEventStreamJob?.cancel()
-        globalEventStreamJob = null
-        agentEventStreamJobs.values.forEach(Job::cancel)
-        agentEventStreamJobs.clear()
+        foregroundSync.stop()
         liveRosterRefreshJob?.cancel()
         liveRosterRefreshJob = null
     }
@@ -1788,7 +1665,7 @@ internal class HolonViewModel(
                     }
                     mutableState.update {
                         val newerIds = it.conversation?.turns.orEmpty().mapTo(mutableSetOf(), HolonConversationTurn::id)
-                        val older = (page.turns + it.olderTurns).distinctBy(HolonConversationTurn::id)
+                        val older = run.holon.android.sdk.mergeConversationTurns(it.olderTurns, page.turns)
                             .filterNot { turn -> turn.id in newerIds }
                         it.copy(
                             olderTurns = older,
@@ -2343,9 +2220,12 @@ internal class HolonViewModel(
                         }
                         var reopenAfterReset = false
                         val connection = repository.openConversationStream(agent.id, cursor)
+                        val seed = state.value.conversation ?: repository.conversation(agent).snapshot
+                        val reducer = run.holon.android.sdk.ConversationStreamReducer(seed)
                         conversationStream = connection
                         try {
                             for (event in connection.events()) {
+                                val committed = reducer.accept(event)
                                 val change = event.toConversationEvent()
                                 if (change is HolonConversationStreamEvent.Mutation &&
                                     change.type in setOf("activity_upsert", "detail_invalidated", "turn_summary_upsert")
@@ -2354,10 +2234,8 @@ internal class HolonViewModel(
                                         scheduleTurnDetailRefresh(agent, turnId)
                                     }
                                 }
-                                if (change is HolonConversationStreamEvent.Checkpoint ||
-                                    change is HolonConversationStreamEvent.ResetRequired
-                                ) {
-                                    val bundle = repository.conversation(agent)
+                                if (committed != null) {
+                                    val bundle = repository.acceptConversation(agent, committed)
                                     cursor = bundle.snapshot.snapshotCursor
                                     withContext(Dispatchers.Main) {
                                         if (

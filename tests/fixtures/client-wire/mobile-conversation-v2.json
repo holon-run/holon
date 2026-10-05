@@ -1,0 +1,19 @@
+{
+  "schema_version": 2,
+  "query_version": 2,
+  "runtime_id": "runtime-mobile",
+  "event_log_epoch": "epoch-mobile",
+  "agent_id": "holon-tester",
+  "visibility_scope_id": "scope-mobile",
+  "snapshot_cursor": "opaque-bootstrap",
+  "has_more": true,
+  "next_before_cursor": "opaque-history",
+  "turns": [
+    {"turn_id":"newer","key":{"turn_index":20,"turn_id":"newer"},"revision":9,"started_at":"2026-10-01T00:00:00Z","duration_ms":1200,"execution":{"kind":"terminal","outcome":"completed"},"result":{"kind":"available"},"brief_ids":["brief-newer"],"settled":true,"inputs":[]},
+    {"turn_id":"older","key":{"turn_index":10,"turn_id":"older"},"revision":5,"started_at":"2026-10-02T00:00:00Z","execution":{"kind":"terminal","outcome":"interrupted"},"result":{"kind":"none"},"brief_ids":[],"inputs":[]}
+  ],
+  "active_turns": [
+    {"turn_id":"outside-window","key":{"turn_index":1,"turn_id":"outside-window"},"revision":12,"execution":{"kind":"active"},"result":{"kind":"available"},"settled":true,"brief_ids":["early-brief"],"inputs":[{"message_id":"interjection","preview":"Follow up","presentation_class":"operator","actor_display_name":"Operator","interjected":true,"activity_key":{"event_seq":88,"activity_id":"operator:interjection"}}]}
+  ],
+  "pending_inputs": [{"message_id":"pending-message","revision":4,"state":"queued","presentation_class":"operator","actor_display_name":"Another device","preview":"{\"type\":\"text\",\"text\":\"Please inspect the report\"}","created_at":"2026-10-06T00:00:00Z"}]
+}

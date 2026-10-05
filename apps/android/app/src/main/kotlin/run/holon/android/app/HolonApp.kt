@@ -1248,8 +1248,7 @@ private fun ConversationTimeline(
     val listState = position.listState
     val dragging by listState.interactionSource.collectIsDraggedAsState()
     val scope = rememberCoroutineScope()
-    val recentIds = snapshot?.turns.orEmpty().mapTo(mutableSetOf(), HolonConversationTurn::id)
-    val turns = state.olderTurns.filterNot { it.id in recentIds } + snapshot?.turns.orEmpty()
+    val turns = run.holon.android.sdk.mergeConversationTurns(state.olderTurns, snapshot?.turns.orEmpty())
     val rows = conversationRows(turns)
     val latestBriefId = state.selectedAgent?.latestBrief?.briefId
     val latestBriefEventSeq = state.selectedAgent?.latestBrief?.createdEventSeq
@@ -1257,8 +1256,8 @@ private fun ConversationTimeline(
     val tail = "conversation-tail"
     val itemKeys = buildList {
         if (state.hasOlderTurns) add("load-older-turns")
-        if (snapshot?.pendingInputs?.isNotEmpty() == true) add("pending-inputs")
         addAll(rows.map(ConversationRow::key))
+        addAll(snapshot?.pendingInputs.orEmpty().map { "pending:${it.messageId}" })
         addAll(state.outbox.map { "outbox:${it.requestId}" })
         if (turns.isEmpty() && state.outbox.isEmpty()) add("empty")
         add(tail)
@@ -1325,11 +1324,6 @@ private fun ConversationTimeline(
                     else Text(if (state.historyBeforeCursor == null) ui("更早记录暂不可读取") else ui("加载更早记录"))
                 }
             }
-            snapshot?.pendingInputs?.takeIf { it.isNotEmpty() }?.let { pending ->
-                item(key = "pending-inputs") {
-                    Text(ui("${pending.size} 条输入正在排队"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
             items(rows, key = ConversationRow::key) { row ->
                 when (row) {
                     is ConversationRow.Day -> Text(row.date, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1347,6 +1341,13 @@ private fun ConversationTimeline(
                             )
                         }
                     }
+                }
+            }
+            items(snapshot?.pendingInputs.orEmpty().sortedWith(compareBy({ it.createdAt.orEmpty() }, { it.messageId })), key = { "pending:${it.messageId}" }) { input ->
+                if (input.presentationClass == "operator") {
+                    OperatorInputText(input.preview, input.createdAt, input.actorDisplayName, ui("待处理"))
+                } else {
+                    Text(ui("${input.state}: ${input.preview}"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             items(state.outbox, key = { "outbox:${it.requestId}" }) { message ->
@@ -1378,13 +1379,19 @@ private fun ConversationTimeline(
 private fun OperatorInput(turn: HolonConversationTurn) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         turn.inputs.filter { it.presentationClass == "operator" || (it.presentationClass == null && turn.presentationClass == "operator") }.forEach { input ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp), modifier = Modifier.fillMaxWidth(0.92f)) {
-                    Column(Modifier.padding(horizontal = 13.dp, vertical = 10.dp)) {
-                        MarkdownText(input.preview.ifBlank { ui("已提交输入") })
-                        input.createdAt?.let { Text(relativeTime(it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                        input.actorDisplayName?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                    }
+            OperatorInputText(input.preview, input.createdAt, input.actorDisplayName)
+        }
+    }
+}
+
+@Composable
+internal fun OperatorInputText(text: String, createdAt: String?, actor: String?, status: String? = null) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp), modifier = Modifier.fillMaxWidth(0.92f)) {
+            Column(Modifier.padding(horizontal = 13.dp, vertical = 10.dp)) {
+                MarkdownText(text.ifBlank { ui("已提交输入") })
+                listOfNotNull(actor, createdAt?.let(::relativeTime), status).takeIf { it.isNotEmpty() }?.let {
+                    Text(it.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -1484,7 +1491,7 @@ internal fun ResultLinkRow(label: String, meta: String, onClick: () -> Unit) {
 }
 
 internal fun HolonConversationTurn.isRunning(): Boolean =
-    executionKind == "active" && completedAt == null && !settled
+    executionKind == "active" && completedAt == null
 
 internal fun HolonConversationTurn.compactStatusText(): String? =
     when {
@@ -1738,7 +1745,7 @@ internal fun ActivityRow(
                                     if (detail.status in setOf("completed", "success", "succeeded")) StatusTone.Success else StatusTone.Neutral,
                                 )
                             }
-                            detail.summary?.takeIf { it.isNotBlank() && it != activity.summary }?.let {
+                            detail.summary?.takeIf { it.isNotBlank() && it != activity.summary && payloadBlocks.none { block -> block.text == it } }?.let {
                                 Text(it, style = MaterialTheme.typography.bodySmall)
                             }
                             payloadBlocks.forEach { block ->

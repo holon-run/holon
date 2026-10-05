@@ -1,5 +1,4 @@
 package run.holon.android.app
-
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -102,27 +101,7 @@ internal data class ConversationBundle(
 internal fun mergeConversationSnapshots(
     cached: HolonConversationSnapshot?,
     incoming: HolonConversationSnapshot,
-): HolonConversationSnapshot {
-    if (cached == null ||
-        cached.runtimeId != incoming.runtimeId ||
-        cached.eventLogEpoch != incoming.eventLogEpoch
-    ) {
-        return incoming
-    }
-
-    val turns =
-        (incoming.turns + cached.turns)
-            .distinctBy(HolonConversationTurn::id)
-            .sortedWith(
-                compareBy<HolonConversationTurn> { it.startedAt ?: it.completedAt ?: "\uFFFF" }
-                    .thenBy(HolonConversationTurn::id),
-            )
-    val raw = incoming.raw.toMutableMap()
-    raw["turns"] = JsonArray(turns.map(HolonConversationTurn::raw))
-    return HolonConversationSnapshot.from(
-        run.holon.android.sdk.HolonJsonDocument(JsonObject(raw)),
-    )
-}
+): HolonConversationSnapshot = run.holon.android.sdk.mergeConversationPage(cached, incoming, maxTurns = MAX_CACHED_TURNS)
 
 internal data class PreparedArtifact(
     val locator: String,
@@ -342,6 +321,7 @@ internal class HolonRepository(
         val user = client.currentUser()
         val server = requireCompatible(client.handshake(REQUIRED_CAPABILITIES))
         val roster = client.rosterSnapshot()
+        ensureCurrentScope(current)
         if (
             user.userId != current.user.userId ||
             roster.runtimeId != current.runtimeId ||
@@ -357,7 +337,7 @@ internal class HolonRepository(
 
     suspend fun keepSessionAlive() {
         val current = requireSession()
-        val user = requireClient().currentUser()
+        val user = readScoped { it.currentUser() }
         if (user.userId != current.user.userId) {
             clearAuthentication()
             throw SessionScopeChangedException()
@@ -423,7 +403,8 @@ internal class HolonRepository(
     suspend fun conversation(agent: AgentSummary): ConversationBundle {
         val session = requireSession()
         val existing = dao.conversation(session.scopeKey, agent.id)
-        val incoming = requireClient().conversationSnapshot(agent.id, limit = 60)
+        val incoming = readScoped { it.conversationSnapshot(agent.id, limit = 60) }
+        ensureCurrentScope(session)
         validateConversationScope(incoming)
         val cached =
             existing?.snapshotJson?.let { raw ->
@@ -434,6 +415,13 @@ internal class HolonRepository(
                 }.getOrNull()
             }
         val snapshot = mergeConversationSnapshots(cached, incoming)
+        return acceptConversation(agent, snapshot)
+    }
+
+    suspend fun acceptConversation(agent: AgentSummary, snapshot: HolonConversationSnapshot): ConversationBundle {
+        val session = requireSession()
+        validateConversationScope(snapshot)
+        val existing = dao.conversation(session.scopeKey, agent.id)
         val now = System.currentTimeMillis()
         dao.putProjectionAndSync(
             projection =
@@ -451,12 +439,12 @@ internal class HolonRepository(
                     updatedAt = now,
                 ),
         )
-        val authoritativeMessageIds = snapshot.turns.flatMap { turn -> turn.inputs.map { it.messageId } }.toSet()
+        val authoritativeMessageIds = (snapshot.turns.flatMap { turn -> turn.inputs.map { it.messageId } } + snapshot.pendingInputs.map { it.messageId }).toSet()
         dao.outbox(session.scopeKey, agent.id)
             .filter { it.state == "received" && it.messageId in authoritativeMessageIds }
             .forEach {
-                deleteOutboxFiles(it)
                 dao.deleteOutbox(it.requestId)
+                deleteOutboxFiles(it)
             }
         return ConversationBundle(
             snapshot = snapshot,
@@ -467,7 +455,7 @@ internal class HolonRepository(
     }
 
     suspend fun olderConversation(agentId: String, before: String): HolonConversationSnapshot =
-        requireClient().conversationSnapshot(agentId, limit = 60, before = before).also {
+        readScoped { it.conversationSnapshot(agentId, limit = 60, before = before) }.also {
             validateConversationScope(it)
             cacheConversationSnapshot(agentId, it)
         }
@@ -486,7 +474,7 @@ internal class HolonRepository(
                     )
                 }.getOrNull()
             }
-        val merged = mergeConversationSnapshots(cached, incoming)
+        val merged = run.holon.android.sdk.mergeConversationPage(cached, incoming, history = true, maxTurns = MAX_CACHED_TURNS)
         if (merged.raw.toString() != existing.snapshotJson) {
             dao.putConversation(existing.copy(snapshotJson = merged.raw.toString(), updatedAt = System.currentTimeMillis()))
         }
@@ -567,12 +555,12 @@ internal class HolonRepository(
     }
 
     suspend fun briefReadStates(): Map<String, HolonBriefReadState> =
-        requireClient().briefReadStates().onEach { state ->
+        readScoped { it.briefReadStates() }.onEach { state ->
             validateReadScope(null, state.visibilityScopeId)
         }.associateBy { it.agentId }
 
     suspend fun markBriefRead(agentId: String, readThroughEventSeq: Long): HolonMarkBriefReadResult =
-        requireClient().markBriefRead(agentId, readThroughEventSeq).also { result ->
+        readScoped { it.markBriefRead(agentId, readThroughEventSeq) }.also { result ->
             validateReadScope(null, result.state.visibilityScopeId)
         }
 
@@ -718,6 +706,15 @@ internal class HolonRepository(
     fun reconnectingRosterHints(policy: SseReconnectPolicy = SseReconnectPolicy()): Sequence<String> =
         requireClient().reconnectingRosterHints(policy)
 
+    fun openRosterHints(): RosterHintConnection {
+        val stream = requireClient().openSse("events/stream")
+        return object : RosterHintConnection {
+            override fun hints(): Sequence<String> = stream.events().filter { it.event == "agent_roster_hint" }
+                .mapNotNull { (it.json() as? JsonObject)?.get("agent_id")?.jsonPrimitive?.contentOrNull }
+            override fun close() = stream.close()
+        }
+    }
+
     fun reconnectingAgentEvents(
         agentId: String,
         afterSeq: Long?,
@@ -776,6 +773,7 @@ internal class HolonRepository(
                         brief.createdAt,
                     ),
                 )
+                dao.trimBriefs(session.scopeKey, MAX_CACHED_BRIEFS)
             }
         } catch (error: Throwable) {
             if (!error.isTransportFailure()) throw error
@@ -788,7 +786,7 @@ internal class HolonRepository(
         requireClient().workItemSnapshots(agentId, limit = limit)
 
     suspend fun operatorPreview(agentId: String): OperatorPreview? =
-        requireClient().conversationSnapshot(agentId, limit = 1).also { validateConversationScope(it) }.operatorPreview()
+        readScoped { it.conversationSnapshot(agentId, limit = 1) }.also { validateConversationScope(it) }.operatorPreview()
 
     suspend fun tasks(agentId: String): List<run.holon.android.sdk.HolonTaskSnapshot> =
         requireClient().taskSnapshots(agentId, limit = 50)
@@ -803,7 +801,7 @@ internal class HolonRepository(
         requireClient().workItemSnapshot(agentId, workItemId)
 
     suspend fun conversationDetail(agentId: String, turnId: String, before: String? = null): HolonConversationDetail =
-        requireClient().conversationDetail(agentId, turnId, limit = 100, before = before).also { detail ->
+        readScoped { it.conversationDetail(agentId, turnId, limit = 100, before = before) }.also { detail ->
             validateReadScope(
                 detail.raw["runtime_id"]?.jsonPrimitive?.contentOrNull,
                 detail.raw["visibility_scope_id"]?.jsonPrimitive?.contentOrNull,
@@ -1139,6 +1137,19 @@ internal class HolonRepository(
     private fun requireSession(): ActiveSession = checkNotNull(active) { "No active Holon session" }
     private fun requireClient(): HolonHttpClient = checkNotNull(client) { "No active Holon client" }
 
+    private fun ensureCurrentScope(expected: ActiveSession) {
+        if (active?.scopeKey != expected.scopeKey) throw kotlinx.coroutines.CancellationException("Stale session response")
+    }
+
+    private fun <T> readScoped(read: (HolonHttpClient) -> T): T {
+        val session = requireSession()
+        val transport = requireClient()
+        val value = read(transport)
+        if (client !== transport) throw kotlinx.coroutines.CancellationException("Stale transport response")
+        ensureCurrentScope(session)
+        return value
+    }
+
     private fun attachmentLimit(kind: String): Long {
         val limits = requireNotNull(requireSession().server.limits) {
             "daemon 未报告附件大小限制，请升级 daemon"
@@ -1164,11 +1175,10 @@ internal class HolonRepository(
         }
     }
 
-    private fun deleteOutboxFiles(entry: OutboxEntity) {
-        runCatching {
-            json.decodeFromString(ListSerializer(StagedAttachment.serializer()), entry.attachmentsJson)
-                .forEach(::discardAttachment)
-        }
+    private suspend fun deleteOutboxFiles(entry: OutboxEntity) {
+        val removed = attachmentPaths(entry.attachmentsJson).toSet()
+        val retained = dao.attachmentPayloads().flatMap(::attachmentPaths).toSet()
+        ScopedFiles(File(context.filesDir, "outbox")).removeUnreferenced(removed, retained)
     }
 
     private fun encodeBrief(brief: HolonBrief): String =

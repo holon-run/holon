@@ -481,6 +481,7 @@ public class HolonHttpClient internal constructor(
                     before?.let { put("before", it) }
                 },
             ).objectOrNull ?: throw HolonProtocolException("Holon activity response is not an object")
+        validateConversationVersions(raw)
         val activities =
             (raw["activities"] as? JsonArray).orEmpty().mapIndexedNotNull { index, element ->
                 val activity = element as? JsonObject

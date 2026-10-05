@@ -307,6 +307,9 @@ internal interface HolonDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun putBrief(entry: BriefCacheEntity)
 
+    @Query("DELETE FROM brief_cache WHERE scopeKey = :scopeKey AND rowid NOT IN (SELECT rowid FROM brief_cache WHERE scopeKey = :scopeKey ORDER BY createdAt DESC LIMIT :limit)")
+    suspend fun trimBriefs(scopeKey: String, limit: Int)
+
     @Query("SELECT * FROM brief_cache WHERE scopeKey = :scopeKey AND agentId = :agentId AND briefId = :briefId")
     suspend fun brief(scopeKey: String, agentId: String, briefId: String): BriefCacheEntity?
 

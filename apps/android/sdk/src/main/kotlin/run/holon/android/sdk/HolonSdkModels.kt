@@ -86,6 +86,9 @@ public data class HolonPendingInput(
     public val state: String,
     public val preview: String,
     public val createdAt: String?,
+    public val presentationClass: String? = null,
+    public val actorDisplayName: String? = null,
+    public val revision: Long? = null,
 )
 
 public data class HolonTurnInput(
@@ -94,7 +97,11 @@ public data class HolonTurnInput(
     public val actorDisplayName: String?,
     public val presentationClass: String?,
     public val createdAt: String? = null,
+    public val interjected: Boolean = false,
+    public val activityKey: HolonActivityKey? = null,
 )
+
+public data class HolonActivityKey(public val eventSeq: Long, public val activityId: String)
 
 /** A forward-compatible JSON response from a Holon route. */
 public data class HolonJsonDocument(
@@ -312,6 +319,9 @@ public data class HolonConversationTurn(
     public val completedAt: String?,
     public val settled: Boolean,
     public val raw: JsonObject,
+    public val revision: Long? = null,
+    public val turnIndex: Long? = null,
+    public val durationMillis: Long? = null,
 )
 
 public data class HolonConversationSnapshot(
@@ -323,18 +333,23 @@ public data class HolonConversationSnapshot(
     public val eventLogEpoch: String?,
     public val hasMore: Boolean,
     public val nextBeforeCursor: String?,
+    public val activeTurns: List<HolonConversationTurn> = emptyList(),
+    public val agentId: String? = null,
+    public val visibilityScopeId: String? = null,
 ) {
     public companion object {
         public fun from(document: HolonJsonDocument): HolonConversationSnapshot {
             val raw =
                 document.objectOrNull
                     ?: throw HolonProtocolException("Holon conversation snapshot is not an object")
-            val turns =
-                (raw["turns"] as? JsonArray).orEmpty().mapIndexed { index, element ->
+            validateConversationVersions(raw)
+            fun decodeTurns(field: String): List<HolonConversationTurn> =
+                (raw[field] as? JsonArray).orEmpty().mapIndexed { index, element ->
                     val turn = element as? JsonObject
                         ?: throw HolonProtocolException("Holon conversation turn $index is not an object")
                     HolonConversationTurn(
-                        id = turn.stringValue("turn_id") ?: turn.stringValue("id") ?: "turn-$index",
+                        id = (turn.stringValue("turn_id") ?: turn.stringValue("id"))?.takeIf(String::isNotBlank)
+                            ?: throw HolonProtocolException("Holon conversation turn is missing identity"),
                         summary = turn.conversationSummary(),
                         presentationClass = turn.stringValue("presentation_class"),
                         inputs =
@@ -346,6 +361,12 @@ public data class HolonConversationSnapshot(
                                     actorDisplayName = input.stringValue("actor_display_name"),
                                     presentationClass = input.stringValue("presentation_class"),
                                     createdAt = input.stringValue("created_at"),
+                                    interjected = input["interjected"]?.jsonPrimitive?.contentOrNull == "true",
+                                    activityKey = (input["activity_key"] as? JsonObject)?.let { key ->
+                                        key.longValue("event_seq")?.let { seq ->
+                                            key.stringValue("activity_id")?.let { HolonActivityKey(seq, it) }
+                                        }
+                                    },
                                 )
                             },
                         executionKind = (turn["execution"] as? JsonObject).stringValue("kind") ?: "unknown",
@@ -360,27 +381,38 @@ public data class HolonConversationSnapshot(
                         completedAt = turn.stringValue("completed_at"),
                         settled = turn["settled"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
                         raw = turn,
+                        revision = turn.longValue("revision"),
+                        turnIndex = (turn["key"] as? JsonObject).longValue("turn_index"),
+                        durationMillis = turn.longValue("duration_ms"),
                     )
                 }
+            val turns = decodeTurns("turns")
+            val activeTurns = decodeTurns("active_turns")
             val pendingInputs =
                 (raw["pending_inputs"] as? JsonArray).orEmpty().mapNotNull { inputElement ->
                     val input = inputElement as? JsonObject ?: return@mapNotNull null
                     HolonPendingInput(
                         messageId = input.stringValue("message_id") ?: return@mapNotNull null,
                         state = input.stringValue("state") ?: "unknown",
-                        preview = input.stringValue("preview").orEmpty(),
+                        preview = input.stringValue("preview").orEmpty().displayTextPreview(),
                         createdAt = input.stringValue("created_at"),
+                        presentationClass = input.stringValue("presentation_class"),
+                        actorDisplayName = input.stringValue("actor_display_name"),
+                        revision = input.longValue("revision"),
                     )
                 }
             return HolonConversationSnapshot(
                 raw = raw,
                 snapshotCursor = raw.stringValue("snapshot_cursor"),
-                turns = turns,
+                turns = mergeConversationTurns(turns, activeTurns),
                 pendingInputs = pendingInputs,
                 runtimeId = raw.stringValue("runtime_id"),
                 eventLogEpoch = raw.stringValue("event_log_epoch"),
                 hasMore = raw["has_more"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
                 nextBeforeCursor = raw.stringValue("next_before_cursor"),
+                activeTurns = activeTurns,
+                agentId = raw.stringValue("agent_id"),
+                visibilityScopeId = raw.stringValue("visibility_scope_id"),
             )
         }
     }
@@ -393,9 +425,7 @@ private fun JsonObject.conversationSummary(): String {
     val execution = this["execution"] as? JsonObject
     val result = this["result"] as? JsonObject
     val hasTerminalEvidence =
-        execution.stringValue("kind") == "terminal" ||
-            stringValue("completed_at") != null ||
-            this["settled"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() == true
+        execution.stringValue("kind") == "terminal" || stringValue("completed_at") != null
     return when {
         result.stringValue("kind") == "available" -> "Work result available"
         hasTerminalEvidence ->
