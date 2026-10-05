@@ -1,5 +1,5 @@
 
-.PHONY: help web web-ci api-sdk app-sdk android-sdk-test android-sdk-integration-test conversation-sdk-ci macos-menu-test macos-menu-package transport-types transport-types-check transport-types-kotlin-check snapshots-check snapshots-refresh build all test test-shard test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime validate-agent-templates docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
+.PHONY: help web web-ci api-sdk app-sdk android-sdk-test android-sdk-integration-test conversation-sdk-ci macos-menu-test macos-menu-package transport-types transport-types-check transport-types-kotlin-check snapshots-check snapshots-refresh build all test test-shard test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime validate-agent-templates docker-build docker-smoke docker-e2e docker-e2e-bootstrap docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
 
 PYTHON ?= python3
 
@@ -222,6 +222,9 @@ docker-e2e-scheduler-live-canary: docker-build ## Run the real-model scheduler c
 docker-e2e-validate: ## Validate the Docker E2E manifest and runner unit tests
 	python3 scripts/docker-e2e.py --validate-manifest
 	python3 -m unittest tests.test_docker_e2e_runner tests.test_scheduler_drill
+
+docker-e2e-bootstrap: docker-build ## Run the opt-in browser-first setup + first-task E2E (needs a real API key)
+	python3 scripts/docker-e2e.py --image "$(DOCKER_IMAGE)" --skip-build --case runtime-bootstrap-first-task
 
 docker-live-acceptance: docker-e2e ## Compatibility alias for docker-e2e
 
