@@ -14883,6 +14883,9 @@
           "connected": {
             "type": "boolean"
           },
+          "control_authentication_available": {
+            "type": "boolean"
+          },
           "desired_enabled": {
             "type": "boolean"
           },
@@ -14909,6 +14912,7 @@
           }
         },
         "required": [
+          "control_authentication_available",
           "desired_enabled",
           "available",
           "connected",

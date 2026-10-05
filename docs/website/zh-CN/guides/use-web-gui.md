@@ -117,9 +117,9 @@ holon daemon start --access local --desktop-integration
 holon daemon restart --access local --desktop-integration
 ```
 
-Holon macOS 菜单应用启动或重启它管理的 daemon 时，会自动添加 `--desktop-integration`。文件操作菜单会出现 **在 Finder 中显示**，用于定位文件，不会打开或执行文件内容。其他平台仍支持预览、复制和下载。
+Holon macOS 菜单应用默认对它管理的 daemon 开启 `--desktop-integration`，独立于 LAN 保留此设置。在 localhost/loopback 浏览器入口，文件操作菜单会出现 **在 Holon 主机的 Finder 中显示**，用于定位文件，不会打开或执行文件内容。其他平台仍支持预览、复制和下载。
 
-直接使用 CLI 启动时，此选项默认关闭，需要手动指定；菜单应用每次启动或重启都会开启。CLI 重启会继承设置，也可以用 `--desktop-integration=false` 覆盖。运行时只允许回环地址监听。不要对端口转发、反向代理或容器实例启用：`localhost` 并不能证明文件属于当前电脑。因此界面显示“本机地址”，不据此断言“本机运行”。
+直接使用 CLI 启动时，此选项默认关闭，需要手动指定；菜单应用保留独立设置。CLI 重启会继承设置，也可以用 `--desktop-integration=false` 覆盖。LAN/Serve 不会关闭 Finder；已授权远程 API 也可定位 Holon 主机内的合法路径，前端只在 LAN/Serve 入口隐藏操作以防误点，并非权限隔离。`localhost` 不能证明文件属于当前电脑，因此界面显示“本机地址”，不据此断言“本机运行”。
 
 ### 设置
 
@@ -135,6 +135,8 @@ Holon macOS 菜单应用启动或重启它管理的 daemon 时，会自动添加
 - **Decision 决策设置** — 直接在浏览器中配置决策路由与提供者。支持在远程端点（如 TypeSafe Jev 或 OpenAI 兼容模型）与零外发本地 ONNX 预设之间切换，查看决策遥测数据，并开启或关闭咨询工具访问。
 - **设备配对** — 直接在设置页生成 2 分钟有效的一次性配对二维码和快速链接。使用 Holon Android 客户端扫码或在其他浏览器中打开即可快速建立认证会话，无需手动复制或传输长期控制令牌。
 - **Tailscale Serve 控制** — 在设置页中查看状态并启停 Tailscale Serve。启用后，系统会自动为当前控制平面配置 Tailscale 内网 HTTPS 访问与证书，无需手动配置反向代理或公网端口转发。
+
+配对默认优先使用有效的 Serve HTTPS 地址，手机须加入相应 tailnet 并具有 ACL 权限；显式自定义地址优先，LAN 仍可作为替代。通过 HTTPS 反向代理访问时可直接使用当前 origin，无需为二维码传 `--advertise`；Web 与 API 须部署在同源根路径。OIDC 用户使用正常登录，不使用票据配对。Serve 需要有效控制认证和包含 loopback 的后端监听，但不要求 LAN on。菜单可在明确启用确认后准备私有 token、必要时重启其管理的 daemon；Web 只提示配置方式。菜单启用 LAN 会监听所有 IPv4 接口（可能包括公网接口），不只单一 LAN 网卡，并保留 loopback 供 Serve 使用。
 
 ### 国际化（i18n）
 

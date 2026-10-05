@@ -286,6 +286,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
   const copyText = useCopyText();
   const client = useMemo(() => createRuntimeClient(getRuntimeConnectionConfig()), [identity]);
   const connection = connectionLocation(getRuntimeConnectionConfig(), window.location.origin);
+  const browserIsLocal = connectionLocation({ mode: "local" }, window.location.origin).loopback;
   const [canReveal, setCanReveal] = useState(false);
   const [revealing, setRevealing] = useState(false);
   const [actionError, setActionError] = useState<string>();
@@ -296,13 +297,14 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
   const ancestorsRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let cancelled = false;
-    if (connection.loopback && connection.sameOrigin) {
+    setCanReveal(false);
+    if (browserIsLocal) {
       void client.desktopCapabilities().then((caps) => {
         if (!cancelled) setCanReveal(caps.reveal_in_finder === true);
       }).catch(() => { /* Older servers and disabled integrations have no desktop actions. */ });
     }
     return () => { cancelled = true; };
-  }, [client, connection.loopback, connection.sameOrigin]);
+  }, [client, browserIsLocal]);
   useEffect(() => {
     if (!menuOpen && !ancestorsOpen) return;
     const close = (event: MouseEvent) => {
@@ -781,7 +783,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
             <button type="button" aria-label={t("fileBrowser.fileActions")} aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}><MoreHorizontal size={18} /></button>
             {menuOpen ? <div className="file-browser-popover-content">
               {selectedFile && (viewMode === "preview" || split) ? <>
-                {canReveal ? <button type="button" disabled={revealing || selectedFile.loading || Boolean(selectedFile.error) || !effectiveRootId} onClick={() => {
+                {browserIsLocal && canReveal ? <button type="button" disabled={revealing || selectedFile.loading || Boolean(selectedFile.error) || !effectiveRootId} onClick={() => {
                   setActionError(undefined); setRevealing(true);
                   void client.revealFileInFinder({ workspaceId, executionRootId: effectiveRootId!, path: selectedFile.path })
                     .then(() => setMenuOpen(false)).catch((cause: unknown) => setActionError(cause instanceof Error ? cause.message : t("fileBrowser.revealFailed")))

@@ -451,15 +451,8 @@ impl AppState {
     }
 
     pub fn with_desktop_integration(mut self, enabled: bool) -> Self {
-        self.desktop_integration = enabled
-            && cfg!(target_os = "macos")
-            && self.transport == ControlTransportKind::Tcp
-            && self
-                .host
-                .config()
-                .http_addr
-                .parse::<std::net::SocketAddr>()
-                .is_ok_and(|address| address.ip().is_loopback());
+        self.desktop_integration =
+            enabled && cfg!(target_os = "macos") && self.transport == ControlTransportKind::Tcp;
         self
     }
 

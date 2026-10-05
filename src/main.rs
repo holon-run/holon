@@ -870,14 +870,8 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     let desktop_integration = options.desktop_integration.unwrap_or(false);
     let web_dist = options.web_dist.clone();
     let advertise_url = apply_serve_options(&mut config, options)?;
-    if desktop_integration {
-        let address: std::net::SocketAddr = config
-            .http_addr
-            .parse()
-            .context("desktop integration requires a numeric loopback listen address")?;
-        if !cfg!(target_os = "macos") || !address.ip().is_loopback() {
-            anyhow::bail!("desktop integration requires macOS and a loopback-only listener");
-        }
+    if desktop_integration && !cfg!(target_os = "macos") {
+        anyhow::bail!("desktop integration requires macOS");
     }
     if let Some(web_dist) = &web_dist {
         if !web_dist.is_dir() {
@@ -2590,6 +2584,66 @@ mod tests {
             serve_args: args.into_iter().map(String::from).collect(),
             control_token_env_configured,
         }
+    }
+
+    #[test]
+    fn daemon_restart_authentication_only_preserves_network_and_desktop_options() {
+        let mut config = test_config();
+        config.control_token = None;
+        let token_file = config.home_dir.join("control.token");
+        fs::write(&token_file, "file-secret").unwrap();
+        let metadata = runtime_metadata_with_serve_args(
+            &config,
+            vec![
+                "--access",
+                "lan",
+                "--host",
+                "192.168.1.10",
+                "--listen",
+                "0.0.0.0:8787",
+                "--advertise",
+                "https://custom.example.test",
+                "--desktop-integration=true",
+            ],
+            false,
+        );
+        let launch = restart_serve_launch_options(
+            &mut config,
+            ServeOptions {
+                access: None,
+                host: None,
+                listen: None,
+                port: None,
+                advertise: None,
+                token: None,
+                token_file: Some(token_file.clone()),
+                web_dist: None,
+                desktop_integration: None,
+            },
+            Some(&metadata),
+        )
+        .unwrap();
+
+        assert_eq!(config.http_addr, "0.0.0.0:8787");
+        assert_eq!(config.callback_base_url, "http://127.0.0.1:8787");
+        assert_eq!(config.control_token.as_deref(), Some("file-secret"));
+        assert_eq!(
+            launch.args,
+            vec![
+                OsString::from("--access"),
+                OsString::from("lan"),
+                OsString::from("--host"),
+                OsString::from("192.168.1.10"),
+                OsString::from("--listen"),
+                OsString::from("0.0.0.0:8787"),
+                OsString::from("--advertise"),
+                OsString::from("https://custom.example.test"),
+                OsString::from("--token-file"),
+                token_file.into_os_string(),
+                OsString::from("--desktop-integration=true"),
+            ]
+        );
+        assert_eq!(launch.control_token_env, None);
     }
 
     #[test]

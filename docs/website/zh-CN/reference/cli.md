@@ -259,6 +259,9 @@ holon daemon restart
 holon daemon stop
 ```
 
+生命周期命令的 JSON 包含 `process_created`：仅当本次命令创建了返回的 daemon
+进程时为 true。幂等 Start 复用已有 daemon 时为 false；成功返回不代表取得进程管理权。
+
 ### 初始化配置
 
 `holon onboard` 是首次配置 Holon，或修复损坏的提供商/模型配置的最快方式。
@@ -427,7 +430,7 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 | `--token <TOKEN>` | 用于鉴权的 Bearer token |
 | `--token-file <PATH>` | 从文件读取 token |
 | `--advertise <URL>` | 对外公布的 URL |
-| `--desktop-integration[=true\|false]` | 开启 Finder 操作；仅支持 macOS 和回环监听，默认关闭 |
+| `--desktop-integration[=true\|false]` | 允许已授权调用操作 daemon 主机 Finder；仅支持 macOS，与 LAN/Serve 无关，默认关闭 |
 
 ### `holon daemon start` 参数
 

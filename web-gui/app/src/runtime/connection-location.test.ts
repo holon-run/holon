@@ -5,7 +5,7 @@ describe("connection address, not filesystem locality", () => {
   it("does not call same-origin remote hosting local", () => {
     expect(connectionLocation({ mode: "local" }, "https://holon.example.com")).toEqual({ host: "holon.example.com", origin: "https://holon.example.com", loopback: false, sameOrigin: true });
   });
-  it.each(["localhost", "127.0.0.1", "[::1]"])("recognizes %s as a loopback address", (host) => {
+  it.each(["localhost", "localhost.", "sub.localhost", "127.0.0.1", "127.2.3.4", "[::1]", "[::ffff:127.0.0.1]"])("recognizes %s as a loopback address", (host) => {
     expect(connectionLocation({ mode: "local" }, `http://${host}:7878`).loopback).toBe(true);
   });
   it("uses the actual API endpoint for separately configured connections", () => {

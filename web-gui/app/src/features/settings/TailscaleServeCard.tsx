@@ -1,81 +1,18 @@
-import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
-import { resolveRuntimeApiBase } from "../../runtime/client";
-import { getRuntimeConnectionConfig } from "../../runtime/runtime-store";
 import type { RuntimeConnection } from "../../runtime/types";
 
-type ServeStatus = {
-  desired_enabled: boolean;
-  available: boolean;
-  connected: boolean;
-  status_known: boolean;
-  serving: boolean;
-  conflict: boolean;
-  hostname?: string;
-  serve_url?: string;
-  message: string;
-};
+import type { ServeState } from "./useServeStatus";
+export { tailscaleServeUrl } from "./useServeStatus";
 
-export function tailscaleServeUrl(connection: RuntimeConnection, path = ""): string {
-  const base = resolveRuntimeApiBase(connection);
-  if (!base) throw new Error("Runtime API base is unavailable");
-  return `${base}/control/network/tailscale/serve${path}`;
-}
-
-function request(connection: RuntimeConnection, path: string, method = "GET", signal?: AbortSignal) {
-  const token = getRuntimeConnectionConfig().token;
-  return fetch(tailscaleServeUrl(connection, path), {
-    method,
-    credentials: "include",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-    signal,
-  });
-}
-
-export function TailscaleServeCard({ connection }: { connection: RuntimeConnection }) {
+export function TailscaleServeCard({ connection, serve }: { connection: RuntimeConnection; serve: ServeState }) {
   const { t } = useTranslation();
-  const [status, setStatus] = useState<ServeStatus>();
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [reload, setReload] = useState(0);
-
-  useEffect(() => {
-    setStatus(undefined);
-    setError("");
-    if (connection.source !== "http") return;
-    const controller = new AbortController();
-    void request(connection, "", "GET", controller.signal)
-      .then(async (response) => {
-        if (!response.ok) throw new Error(t("settings.serve.loadError"));
-        const result: ServeStatus = await response.json();
-        if (!controller.signal.aborted) setStatus(result);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setError(t("settings.serve.loadError"));
-      });
-    return () => controller.abort();
-  }, [connection, t, reload]);
-
+  const { status, error, busy } = serve;
   async function change(action: "enable" | "disable") {
     if (action === "enable" && !window.confirm(t("settings.serve.confirm"))) return;
-    setBusy(true);
-    setError("");
-    try {
-      const response = await request(connection, `/${action}`, "POST");
-      if (!response.ok) {
-        const body: { error?: string } = await response.json().catch(() => ({}));
-        throw new Error(body.error || t("settings.serve.actionError"));
-      }
-      const result: ServeStatus = await response.json();
-      setStatus(result);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("settings.serve.actionError"));
-    } finally {
-      setBusy(false);
-    }
+    await serve.request(action);
   }
 
   const state = !status?.available || (status.connected && !status.status_known) ? "unavailable"
@@ -113,12 +50,13 @@ export function TailscaleServeCard({ connection }: { connection: RuntimeConnecti
           {status.hostname ? <p>{t("settings.serve.hostname")}: {status.hostname}</p> : null}
           {status.serve_url ? <p>{t("settings.serve.url")}: {status.serve_url}</p> : null}
           <p>{status.message}</p>
+          {status.control_authentication_available === false ? <p>{t("settings.pairing.authenticationRequired")}</p> : null}
           {drifted ? <p role="alert">{t("settings.serve.drift")}</p> : null}
         </div>
       ) : null}
-      {error ? <div className="settings-error-banner" role="alert">{error}</div> : null}
-      {connection.source === "http" && !status && error ? (
-        <Button variant="secondary" onClick={() => setReload((value) => value + 1)}>{t("settings.serve.retry")}</Button>
+      {error ? <div className="settings-error-banner" role="alert">{t("settings.serve.loadError")}</div> : null}
+      {connection.source === "http" ? (
+        <Button variant="secondary" disabled={busy} onClick={() => void serve.request()}>{t("settings.serve.retry")}</Button>
       ) : null}
     </Card>
   );

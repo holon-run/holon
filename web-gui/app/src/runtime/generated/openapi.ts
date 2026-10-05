@@ -6956,6 +6956,7 @@ export interface components {
             available: boolean;
             conflict: boolean;
             connected: boolean;
+            control_authentication_available: boolean;
             desired_enabled: boolean;
             hostname?: string | null;
             message: string;

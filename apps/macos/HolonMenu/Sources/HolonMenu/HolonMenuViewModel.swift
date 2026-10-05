@@ -23,6 +23,12 @@ final class HolonMenuViewModel: ObservableObject {
     @Published private(set) var lanError: String?
     @Published private(set) var pairingURL: URL?
     @Published private(set) var pairingError: String?
+    @Published var customPairingOrigin = "" {
+        didSet { if oldValue != customPairingOrigin { hidePairingCode() } }
+    }
+    @Published var preferLANPairing = false {
+        didSet { if oldValue != preferLANPairing { hidePairingCode() } }
+    }
     @Published var showTailscaleServeConfirmation = false
     @Published var showLANConfirmation = false
     @Published var launchAtLoginEnabled = false
@@ -31,12 +37,19 @@ final class HolonMenuViewModel: ObservableObject {
 
     private let client: any HolonDesiredStateClient
     private let opener: MenuURLOpening
+    private let pairingLifetime: Duration
     private var pollingTask: Task<Void, Never>?
     private var pairingExpiryTask: Task<Void, Never>?
+    private var pairingRevision: UInt64 = 0
 
-    init(client: some HolonDesiredStateClient, opener: some MenuURLOpening = SystemMenuURLOpener()) {
+    init(
+        client: some HolonDesiredStateClient,
+        opener: some MenuURLOpening = SystemMenuURLOpener(),
+        pairingLifetime: Duration = .seconds(120)
+    ) {
         self.client = client
         self.opener = opener
+        self.pairingLifetime = pairingLifetime
     }
 
     deinit {
@@ -60,18 +73,36 @@ final class HolonMenuViewModel: ObservableObject {
     }
 
     func refresh() async {
+        let previousStatus = status
+        let previousConnection = connectionURL
+        let previousNetwork = tailscaleStatus
+        let previousLAN = lanURL
         do {
-            let previousPID = status?.pid
-            let previousConnection = connectionURL
             status = try await client.status()
-            tailscaleStatus = try await client.tailscaleStatus()
-            lanURL = try await client.lanURL()
-            if previousPID != nil && previousPID != status?.pid
-                || previousConnection != nil && previousConnection != connectionURL {
-                hidePairingCode()
-            }
-            launchAtLoginEnabled = try await client.launchAtLoginEnabled()
             lastError = nil
+        } catch {
+            status = nil
+            lastError = error.localizedDescription
+        }
+        do {
+            tailscaleStatus = try await client.tailscaleStatus()
+        } catch {
+            tailscaleStatus = nil
+            tailscaleError = error.localizedDescription
+        }
+        do {
+            lanURL = try await client.lanURL()
+        } catch {
+            lanURL = nil
+            lanError = error.localizedDescription
+        }
+        if previousStatus?.pid != status?.pid || previousStatus?.httpAddr != status?.httpAddr
+            || previousStatus?.state != status?.state || previousConnection != connectionURL
+            || previousNetwork != tailscaleStatus || previousLAN != lanURL {
+            hidePairingCode()
+        }
+        do {
+            launchAtLoginEnabled = try await client.launchAtLoginEnabled()
         } catch {
             lastError = error.localizedDescription
         }
@@ -98,6 +129,7 @@ final class HolonMenuViewModel: ObservableObject {
     }
 
     func enableLAN() async {
+        hidePairingCode()
         showLANConfirmation = false
         lanError = nil
         activeOperation = "Enabling LAN access…"
@@ -112,6 +144,7 @@ final class HolonMenuViewModel: ObservableObject {
     }
 
     func disableLAN() async {
+        hidePairingCode()
         lanError = nil
         activeOperation = "Disabling LAN access…"
         defer { activeOperation = nil }
@@ -125,6 +158,7 @@ final class HolonMenuViewModel: ObservableObject {
     }
 
     func enableTailscaleServe() async {
+        hidePairingCode()
         showTailscaleServeConfirmation = false
         tailscaleError = nil
         activeOperation = "Updating Tailscale…"
@@ -138,6 +172,7 @@ final class HolonMenuViewModel: ObservableObject {
     }
 
     func disableTailscaleServe() async {
+        hidePairingCode()
         tailscaleError = nil
         activeOperation = "Updating Tailscale…"
         defer { activeOperation = nil }
@@ -161,15 +196,19 @@ final class HolonMenuViewModel: ObservableObject {
     }
 
     func showPairingCode() async {
+        await refresh()
         guard let destination = connectionURL else { return }
+        let revision = pairingRevision
         pairingError = nil
         do {
             let url = try await client.pairingURL(for: destination)
+            guard destination == connectionURL, revision == pairingRevision else { return }
             pairingExpiryTask?.cancel()
             pairingURL = url
             lastError = nil
+            let lifetime = pairingLifetime
             pairingExpiryTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(120))
+                try? await Task.sleep(for: lifetime)
                 guard !Task.isCancelled else { return }
                 self?.pairingURL = nil
             }
@@ -179,6 +218,7 @@ final class HolonMenuViewModel: ObservableObject {
     }
 
     func hidePairingCode() {
+        pairingRevision &+= 1
         pairingExpiryTask?.cancel()
         pairingURL = nil
     }
@@ -243,8 +283,27 @@ final class HolonMenuViewModel: ObservableObject {
         lanURL?.absoluteString ?? status?.webUrl ?? status?.httpAddr ?? "No web endpoint yet."
     }
 
+    var lanStateTitle: String {
+        if lanURL != nil { return "LAN access is on" }
+        guard let address = status?.httpAddr else { return "LAN state unknown" }
+        if address.hasPrefix("127.0.0.1:") || address.hasPrefix("[::1]:") {
+            return "LAN access is off"
+        }
+        return "Listener: \(address) — LAN access unknown"
+    }
+
     var connectionURL: URL? {
-        tailscaleStatus?.serveURL ?? lanURL
+        if !customPairingOrigin.isEmpty {
+            guard let url = URL(string: customPairingOrigin),
+                  ["http", "https"].contains(url.scheme ?? ""),
+                  let host = url.host?.lowercased(),
+                  !["localhost", "localhost.", "0.0.0.0", "::1", "[::1]", "[::]", "::"].contains(host),
+                  !host.hasPrefix("127."),
+                  url.user == nil, url.password == nil, url.path.isEmpty,
+                  url.query == nil, url.fragment == nil else { return nil }
+            return url
+        }
+        return preferLANPairing ? lanURL : tailscaleStatus?.pairingOrigin ?? lanURL
     }
 
     var isRunning: Bool {
@@ -256,6 +315,7 @@ final class HolonMenuViewModel: ObservableObject {
     }
 
     private func runOperation(_ operation: @escaping () async throws -> HolonDaemonStatus) async {
+        hidePairingCode()
         activeOperation = "Updating Holon…"
         defer { activeOperation = nil }
         do {

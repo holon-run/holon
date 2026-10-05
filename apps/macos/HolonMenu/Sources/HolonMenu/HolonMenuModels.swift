@@ -31,6 +31,7 @@ struct HolonDaemonStatus: Codable, Equatable, Sendable {
     var runtimeConfigFingerprint: String?
     var configFingerprintMatch: Bool?
     var message: String
+    var processCreated: Bool? = nil
 
     var webURL: URL? {
         HolonURLBuilder.webURL(from: webUrl ?? httpAddr)
@@ -71,6 +72,16 @@ struct HolonTailscaleStatus: Equatable, Sendable {
     var serving = false
     var conflict = false
     var statusKnown = false
+    var controlAuthenticationAvailable: Bool? = nil
+
+    var pairingOrigin: URL? {
+        guard state == .serving, statusKnown, serving, !conflict,
+              let hostname, let url = serveURL,
+              url.scheme == "https", url.host?.lowercased() == hostname.lowercased(),
+              url.user == nil, url.password == nil, url.port == nil || url.port == 443,
+              url.path.isEmpty, url.query == nil, url.fragment == nil else { return nil }
+        return url
+    }
 
     var hasDrift: Bool { statusKnown && desiredEnabled != serving }
 
@@ -189,8 +200,10 @@ struct HolonDaemonLaunchOptions: Equatable, Sendable {
     var token: String?
     var tokenFilePath: String?
     var webDistPath: String?
+    var desktopIntegration: Bool? = true
 
-    static let `default` = HolonDaemonLaunchOptions()
+    // Unknown existing desktop settings are inherited; callers may explicitly opt in or out.
+    static let `default` = HolonDaemonLaunchOptions(desktopIntegration: nil)
 
     func arguments() -> [String] {
         var arguments: [String] = []
@@ -204,7 +217,7 @@ struct HolonDaemonLaunchOptions: Equatable, Sendable {
         if let listen {
             arguments += ["--listen", listen]
         }
-        if let port {
+        if let port, listen == nil {
             arguments += ["--port", String(port)]
         }
         if let advertise {
@@ -220,9 +233,9 @@ struct HolonDaemonLaunchOptions: Equatable, Sendable {
             arguments += ["--web-dist", webDistPath]
         }
 
-        // The menu app runs alongside its managed daemon on this Mac.
-        // Restarts inherit the previous daemon's flags; LAN must explicitly turn this off.
-        arguments.append(access == "lan" ? "--desktop-integration=false" : "--desktop-integration")
+        if let desktopIntegration {
+            arguments.append(desktopIntegration ? "--desktop-integration" : "--desktop-integration=false")
+        }
         return arguments
     }
 }

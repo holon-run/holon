@@ -283,6 +283,7 @@ async fn daemon_start_unlocked(
             return Ok(DaemonLifecycleResult {
                 ok: true,
                 action: DaemonLifecycleAction::Start,
+                process_created: false,
                 status,
             });
         }
@@ -395,6 +396,7 @@ async fn daemon_start_unlocked(
                 return Ok(DaemonLifecycleResult {
                     ok: true,
                     action: DaemonLifecycleAction::Start,
+                    process_created: true,
                     status: daemon_status(config).await?,
                 });
             }
@@ -616,6 +618,7 @@ Probe error: {details}",
         return Ok(DaemonLifecycleResult {
             ok: true,
             action: DaemonLifecycleAction::Stop,
+            process_created: false,
             status: before,
         });
     }
@@ -632,6 +635,7 @@ Probe error: {details}",
         return Ok(DaemonLifecycleResult {
             ok: true,
             action: DaemonLifecycleAction::Stop,
+            process_created: false,
             status: stopped_status(config)?,
         });
     }
@@ -648,6 +652,7 @@ Probe error: {details}",
                     return Ok(DaemonLifecycleResult {
                         ok: true,
                         action: DaemonLifecycleAction::Stop,
+                        process_created: false,
                         status: stopped_status(config)?,
                     });
                 }
@@ -658,6 +663,7 @@ Probe error: {details}",
                 return Ok(DaemonLifecycleResult {
                     ok: true,
                     action: DaemonLifecycleAction::Stop,
+                    process_created: false,
                     status: stopped_status(config)?,
                 });
             }
@@ -684,6 +690,7 @@ Probe error: {details}",
     Ok(DaemonLifecycleResult {
         ok: true,
         action: DaemonLifecycleAction::Stop,
+        process_created: false,
         status: stopped_status(config)?,
     })
 }
@@ -752,6 +759,7 @@ pub async fn daemon_restart_with_timeout(
     Ok(DaemonLifecycleResult {
         ok: true,
         action: DaemonLifecycleAction::Restart,
+        process_created: started.process_created,
         status: started.status,
     })
 }

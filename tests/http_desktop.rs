@@ -8,10 +8,76 @@ use holon::{
     provider::StubProvider,
 };
 use serde_json::json;
-use std::{net::SocketAddr, sync::Arc};
+use std::{future::IntoFuture, net::SocketAddr, sync::Arc};
 
 #[tokio::test]
-async fn desktop_disabled_and_missing_peer_fail_closed() -> Result<()> {
+async fn wildcard_listener_preserves_local_and_lan_access_with_desktop_opt_in() -> Result<()> {
+    // UDP connect selects a local interface without sending traffic.
+    let route = std::net::UdpSocket::bind("0.0.0.0:0")?;
+    if route.connect("192.0.2.1:9").is_err() {
+        eprintln!("skipping LAN listener test: no IPv4 route");
+        return Ok(());
+    }
+    let lan_ip = route.local_addr()?.ip();
+    if lan_ip.is_loopback() || lan_ip.is_unspecified() {
+        eprintln!("skipping LAN listener test: no non-loopback IPv4 interface");
+        return Ok(());
+    }
+    let config = support::TestConfigBuilder::new()
+        .with_http_addr("0.0.0.0:0")
+        .with_control_auth_mode(ControlAuthMode::Required)
+        .with_control_token("listener-test-token")
+        .build();
+    let host = RuntimeHost::new_with_provider(
+        config.config().clone(),
+        Arc::new(StubProvider::new("unused")),
+    )?;
+    let app = http::router(AppState::for_tcp(host).with_desktop_integration(true));
+    let listener = tokio::net::TcpListener::bind(&config.config().http_addr).await?;
+    let port = listener.local_addr()?.port();
+    let server = tokio::spawn(axum::serve(listener, app.clone()).into_future());
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()?;
+    for ip in [std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), lan_ip] {
+        let url = format!("http://{ip}:{port}/api/desktop/capabilities");
+        assert_eq!(client.get(&url).send().await?.status(), 401);
+        let response = client
+            .get(&url)
+            .bearer_auth("listener-test-token")
+            .send()
+            .await?;
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.json::<serde_json::Value>().await?,
+            json!({ "reveal_in_finder": cfg!(target_os = "macos") })
+        );
+    }
+    server.abort();
+    let _ = server.await;
+    // Use the same port to model LAN off, not a second unrelated endpoint.
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    let server = tokio::spawn(axum::serve(listener, app).into_future());
+    let response = client
+        .get(format!("http://127.0.0.1:{port}/api/desktop/capabilities"))
+        .bearer_auth("listener-test-token")
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200);
+    assert!(client
+        .get(format!("http://{lan_ip}:{port}/api/desktop/capabilities"))
+        .bearer_auth("listener-test-token")
+        .send()
+        .await
+        .is_err());
+    server.abort();
+    let _ = server.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn desktop_disabled_and_capability_is_independent_of_peer() -> Result<()> {
     let (host, base, server) = support::spawn_server().await?;
     let client = reqwest::Client::new();
     let capabilities: serde_json::Value = client
@@ -37,7 +103,10 @@ async fn desktop_disabled_and_missing_peer_fail_closed() -> Result<()> {
         .await?
         .json()
         .await?;
-    assert_eq!(capabilities, json!({ "reveal_in_finder": false }));
+    assert_eq!(
+        capabilities,
+        json!({ "reveal_in_finder": cfg!(target_os = "macos") })
+    );
     task.abort();
     Ok(())
 }
@@ -76,6 +145,15 @@ async fn desktop_auth_origin_and_file_scope_are_enforced() -> Result<()> {
         .json()
         .await?;
     assert_eq!(caps["reveal_in_finder"], cfg!(target_os = "macos"));
+    let remote_caps: serde_json::Value = client
+        .get(&caps_url)
+        .bearer_auth("desktop-test-token")
+        .header("Host", "host.tailnet.ts.net")
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(remote_caps["reveal_in_finder"], cfg!(target_os = "macos"));
     let payload = json!({ "workspace_id": "agent_home:default", "execution_root_id": "canonical_root:agent_home:default", "path": "missing.md" });
     let url = format!("{base}/api/desktop/reveal");
     assert_eq!(
@@ -113,12 +191,34 @@ async fn desktop_auth_origin_and_file_scope_are_enforced() -> Result<()> {
         .await?;
     assert_eq!(response.status(), 403);
     if cfg!(target_os = "macos") {
+        let remote = client
+            .post(&url)
+            .bearer_auth("desktop-test-token")
+            .header("Host", "host.tailnet.ts.net")
+            .header("Origin", "https://host.tailnet.ts.net")
+            .header("Sec-Fetch-Site", "same-origin")
+            .json(&payload)
+            .send()
+            .await?;
+        assert_eq!(remote.status(), 404);
+        let cross_site = client
+            .post(&url)
+            .bearer_auth("desktop-test-token")
+            .header("Host", "host.tailnet.ts.net")
+            .header("Origin", "https://evil.test")
+            .json(&payload)
+            .send()
+            .await?;
+        assert_eq!(cross_site.status(), 403);
         for (root, path, expected) in [
             ("canonical_root:agent_home:default", "missing.md", 404),
             ("unknown-root", "missing.md", 404),
             ("canonical_root:agent_home:default", "../../outside.md", 403),
         ] {
-            let response = client.post(&url).bearer_auth("desktop-test-token").header("Origin", &base)
+            let response = client.post(&url).bearer_auth("desktop-test-token")
+                .header("Host", "host.tailnet.ts.net")
+                .header("Origin", "https://host.tailnet.ts.net")
+                .header("Sec-Fetch-Site", "same-origin")
                 .json(&json!({ "workspace_id": "agent_home:default", "execution_root_id": root, "path": path })).send().await?;
             assert_eq!(response.status().as_u16(), expected, "{root} {path}");
         }

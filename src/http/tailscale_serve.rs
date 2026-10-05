@@ -3,6 +3,7 @@ use std::process::Command;
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TailscaleServeStatus {
+    pub control_authentication_available: bool,
     pub desired_enabled: bool,
     pub available: bool,
     pub connected: bool,
@@ -74,6 +75,7 @@ fn inspect(
     legacy_target: Option<&str>,
 ) -> TailscaleServeStatus {
     let mut result = TailscaleServeStatus {
+        control_authentication_available: false,
         desired_enabled,
         available: false,
         connected: false,
@@ -169,6 +171,17 @@ fn target(state: &AppState) -> Result<String> {
     target_for_addr(&state.host.config().http_addr)
 }
 
+fn listener_includes_loopback(addr: &str) -> bool {
+    // Serve enable validates the configured primary listener, not CLI-added sockets.
+    addr.parse::<std::net::SocketAddr>()
+        .map(|socket| socket.ip().is_loopback() || socket.ip().is_unspecified())
+        .unwrap_or_else(|_| {
+            addr.rsplit_once(':').is_some_and(|(host, port)| {
+                host.eq_ignore_ascii_case("localhost") && port.parse::<u16>().is_ok()
+            })
+        })
+}
+
 pub(super) fn serve_authentication_available(state: &AppState) -> bool {
     let config = state.host.config();
     authenticated_control_available(
@@ -204,12 +217,14 @@ fn read(state: &AppState, runner: &impl Runner) -> Result<TailscaleServeStatus> 
     let config = state.host.config();
     let stored = load_persisted_config_at(&config.config_file_path)?;
     let target = target(state)?;
-    Ok(inspect(
+    let mut status = inspect(
         runner,
         stored.tailscale_serve_desired_enabled.unwrap_or(false),
         &target,
         legacy_target(state).as_deref(),
-    ))
+    );
+    status.control_authentication_available = serve_authentication_available(state);
+    Ok(status)
 }
 
 pub async fn status(
@@ -234,6 +249,11 @@ pub(super) fn change(
         .lock()
         .map_err(|_| anyhow!("Tailscale Serve change lock unavailable"))?;
     let config = state.host.config();
+    if enabled && !listener_includes_loopback(&config.http_addr) {
+        return Err(anyhow!(
+            "Tailscale Serve requires a loopback or wildcard primary listener; use --listen 0.0.0.0:PORT or a loopback address"
+        ));
+    }
     let mut stored = load_persisted_config_at(&config.config_file_path)?;
     let target = target(state)?;
     let before = inspect(
@@ -294,6 +314,49 @@ pub async fn disable(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AppConfig;
+
+    #[tokio::test]
+    async fn ipv4_wildcard_listener_accepts_loopback_connections() {
+        let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        assert!(listener_includes_loopback(&address.to_string()));
+        let client = tokio::net::TcpStream::connect(("127.0.0.1", address.port()))
+            .await
+            .unwrap();
+        let (_, peer) = listener.accept().await.unwrap();
+        assert!(peer.ip().is_loopback());
+        drop(client);
+        for address in ["192.0.2.5:7878", "100.64.0.5:7878", "[2001:db8::5]:7878"] {
+            assert!(!listener_includes_loopback(address));
+        }
+    }
+
+    #[test]
+    fn numeric_lan_primary_enable_is_rejected_before_running_tailscale() {
+        struct NoCalls;
+        impl Runner for NoCalls {
+            fn run(&self, _: &[&str]) -> Result<Value> {
+                panic!("invalid listener must be rejected before inspection")
+            }
+            fn command(&self, _: &[&str]) -> Result<()> {
+                panic!("invalid listener must never change Serve rules")
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::load_with_home(Some(directory.path().to_path_buf())).unwrap();
+        config.http_addr = "192.0.2.5:7878".into();
+        let host = RuntimeHost::new_with_provider(
+            config,
+            Arc::new(crate::provider::StubProvider::new("unused")),
+        )
+        .unwrap();
+        let state = AppState::for_tcp(host);
+        let error = change(&state, &NoCalls, true).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("loopback or wildcard primary listener"));
+    }
 
     #[test]
     fn serve_target_uses_loopback_even_with_lan_listener() {
@@ -324,6 +387,70 @@ mod tests {
         assert!(!authenticated_control_available(Local, true, Some(" ")));
         assert!(authenticated_control_available(Local, true, Some("secret")));
         assert!(authenticated_control_available(Oidc, false, None));
+    }
+
+    #[test]
+    fn status_reports_effective_authentication_not_token_presence() {
+        struct ControlMock(Mock);
+        impl Runner for ControlMock {
+            fn run(&self, args: &[&str]) -> Result<Value> {
+                self.0.run(args)
+            }
+
+            fn command(&self, _: &[&str]) -> Result<()> {
+                Ok(())
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let config = AppConfig::load_with_home(Some(directory.path().to_path_buf())).unwrap();
+        let runner = ControlMock(Mock { serve: json!({}) });
+        for mode in [
+            crate::config::ControlAuthMode::Disabled,
+            crate::config::ControlAuthMode::Required,
+        ] {
+            let mut config = config.clone();
+            config.control_auth_mode = mode;
+            config.control_token = Some("secret".into());
+            let host = RuntimeHost::new_with_provider(
+                config,
+                Arc::new(crate::provider::StubProvider::new("unused")),
+            )
+            .unwrap();
+            let state = AppState::for_tcp(host);
+            let status = read(&state, &runner).unwrap();
+            assert_eq!(
+                status.control_authentication_available,
+                mode == crate::config::ControlAuthMode::Required
+            );
+            assert_eq!(
+                change(&state, &runner, false)
+                    .unwrap()
+                    .control_authentication_available,
+                mode == crate::config::ControlAuthMode::Required
+            );
+            if mode == crate::config::ControlAuthMode::Required {
+                assert!(
+                    change(&state, &runner, true)
+                        .unwrap()
+                        .control_authentication_available
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn ipv6_wildcard_listener_accepts_selected_backend_target() {
+        let listener = tokio::net::TcpListener::bind("[::]:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        assert!(listener_includes_loopback(&address.to_string()));
+        let target = target_for_addr(&address.to_string()).unwrap();
+        assert_eq!(target, format!("http://[::1]:{}", address.port()));
+        let client = tokio::net::TcpStream::connect(("::1", address.port()))
+            .await
+            .unwrap();
+        let (_, peer) = listener.accept().await.unwrap();
+        assert!(peer.ip().is_loopback());
+        drop(client);
     }
 
     struct Mock {

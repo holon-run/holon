@@ -592,11 +592,11 @@ bearer 模式下，所有 `/api/control/*` 路由都要求 control token。
 
 **`GET /api/control/network/tailscale/serve`** — Tailscale Serve 状态
 
-返回当前 Tailscale Serve 的运行状态、本地目标端口以及激活的 tailnet 域名。
+返回当前 Tailscale Serve 的运行状态、本地目标端口以及激活的 tailnet 域名。`control_authentication_available` 表示有效的 TCP 控制认证，不暴露凭据；禁用认证不算可用。
 
 **`POST /api/control/network/tailscale/serve/enable`** — 启用 Tailscale Serve
 
-启用 Tailscale Serve，通过 Tailscale 内网为当前 HTTP 控制平面提供安全的 HTTPS 访问。
+启用 Tailscale Serve，通过 Tailscale 内网为当前 HTTP 控制平面提供安全的 HTTPS 访问。改写规则前要求有效控制认证及包含 loopback 的监听；不要求打开 LAN access。
 
 **`POST /api/control/network/tailscale/serve/disable`** — 禁用 Tailscale Serve
 
@@ -760,7 +760,7 @@ Holon 支持托管由 Agent 自主拥有的静态 HTML/JS 应用。这些应用�
 
 **`GET /api/desktop/capabilities`** — 桌面集成能力查询
 
-返回当前连接是否支持桌面集成（如 macOS Finder 定位展示）。需服务端显式开启 `--desktop-integration`，运行在 macOS 上，且通过同源环回地址（loopback）直连访问。
+返回 daemon 主机是否支持桌面集成（如 macOS Finder 定位展示）。需服务端显式开启 `--desktop-integration` 且运行在 macOS 上，与 LAN/Serve 或调用者是否同机无关。Web 仅在 localhost/loopback 入口显示操作，这是 UX 策略，不是 API 权限边界。
 
 ```json
 {
@@ -770,7 +770,7 @@ Holon 支持托管由 Agent 自主拥有的静态 HTML/JS 应用。这些应用�
 
 **`POST /api/desktop/reveal`** — 在桌面文件管理器中展示文件
 
-调用系统原生能力在 macOS Finder 中高亮选定文件或目录。必须在启用桌面集成、环回连接校验通过且目标路径严格受限于注册的工作区执行根内时才允许执行。
+在 **daemon 主机** 的 macOS Finder 中高亮选定文件或目录，不操作调用者设备。启用桌面集成后，已授权远程调用也可执行，但必须通过 desktop Origin/跨站校验，且目标路径严格受限于注册的工作区执行根内。
 
 ```json
 {

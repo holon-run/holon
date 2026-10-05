@@ -60,6 +60,23 @@ test.beforeEach(async ({ page, context }, info) => {
   await page.getByRole("button", { name: "Context side panel", exact: true }).click();
 });
 
+test("remote browser hides host Finder even when the daemon reports capability", async ({ page, context }, info) => {
+  const localOrigin = new URL(page.url()).origin;
+  await context.addCookies([{ name: "holon_e2e_session", value: sessionFor(info, "panel"), domain: "holon.example.test", path: "/" }]);
+  await page.route("http://holon.example.test/**", (route) => {
+    const url = new URL(route.request().url());
+    return route.fallback({ url: `${localOrigin}${url.pathname}${url.search}` });
+  });
+  await page.route("**/api/desktop/capabilities", (route) => route.fulfill({ json: { reveal_in_finder: true } }));
+  await page.goto("http://holon.example.test/agents/bootstrap-agent/conversation");
+  const panel = page.locator(".side-panel");
+  if (!(await panel.isVisible())) await page.getByRole("button", { name: "Context side panel", exact: true }).click();
+  await panel.locator(".panel-sections").getByRole("button", { name: "Files", exact: true }).click();
+  await panel.getByRole("button", { name: "README.md", exact: false }).click();
+  await panel.getByRole("button", { name: "File actions", exact: true }).click();
+  await expect(panel.getByRole("button", { name: "Show in Holon host Finder", exact: true })).toHaveCount(0);
+});
+
 test("late runtime discovery adopts the open file without remounting its browser", async ({ page }, info) => {
   const panel = page.locator(".side-panel");
   await panel.locator(".panel-sections").getByRole("button", { name: "Files", exact: true }).click();
@@ -274,11 +291,11 @@ for (const enabled of [false, true]) {
     await expect.poll(() => content.evaluate((node) => node.scrollTop)).toBe(400);
     await panel.getByRole("button", { name: "File actions", exact: true }).click();
     if (enabled) {
-      await panel.getByRole("button", { name: "Show in Finder", exact: true }).click();
+      await panel.getByRole("button", { name: "Show in Holon host Finder", exact: true }).click();
       await expect(panel.getByRole("alert")).toContainText("Desktop integration was disabled");
       expect(reveals).toEqual([{ workspace_id: "files-test", execution_root_id: "root-test", path: "README.md" }]);
     } else {
-      await expect(panel.getByRole("button", { name: "Show in Finder", exact: true })).toHaveCount(0);
+      await expect(panel.getByRole("button", { name: "Show in Holon host Finder", exact: true })).toHaveCount(0);
     }
     await page.keyboard.press("Escape");
     await expect(panel).toBeVisible();

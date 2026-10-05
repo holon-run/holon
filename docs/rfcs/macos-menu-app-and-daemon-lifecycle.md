@@ -119,6 +119,42 @@ contract.
 
 Quitting the menu app does not stop Holon.
 
+## Network controls
+
+LAN, Tailscale Serve, and Finder opt-in are independent. The menu's LAN preset
+uses an explicit IPv4 wildcard listener and a separate LAN advertised host, so
+its loopback control requests and Serve backend remain reachable. This exposes
+all IPv4 interfaces, not just one LAN adapter; confirmation and effective TCP
+authentication are required. Disabling LAN restores loopback without disabling
+Serve or removing an approved credential. Custom/tailnet-only listeners are not
+silently converted to this LAN preset.
+
+An explicit enable-Serve action may prepare a validated private token for a
+menu-managed daemon and restart it to load authentication, while retaining
+listener, port, access and desktop opt-in. Unknown/external credentials must not
+be overwritten. Matching executable paths alone do not establish menu ownership;
+without known menu launch provenance, authentication preparation must instead
+provide explicit restart/configuration guidance, not automatically take over
+an existing daemon. Lifecycle command JSON includes `process_created`: Start
+reports false when reusing an existing daemon and true after spawning one;
+Restart forwards its start outcome, and Stop/PrepareUpdate report false.
+The menu records Start ownership only for explicit true; an absent field from
+older binaries is unknown, not evidence of ownership.
+Authentication preparation additionally requires same-client-instance creation
+provenance and a still-matching healthy PID, home, socket, executable, listener,
+and configuration fingerprint. Persisted PID records do not authorize it.
+Disabled authentication with an existing credential is rejected. Preparation
+restarts with only the private token file, omitting listen, access, advertise,
+and desktop flags to inherit configuration; explicitly repeating `--listen`
+would clear the inherited advertised URL under the CLI override contract.
+The restarted listener must match the original, and authenticated status must
+be rechecked before the enable POST.
+Start/restart retains approved remote credentials; a local first
+start does not generate one merely to run locally. Independent status failures
+must not erase other known network/lifecycle facts. See
+[pairing and Serve control](device-pairing-and-tailscale-serve-control.md) for
+destination selection, ticket invalidation, and desired-versus-actual state.
+
 ## Updates
 
 The supported release transaction replaces the complete app bundle:
