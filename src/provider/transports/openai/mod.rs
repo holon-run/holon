@@ -1314,6 +1314,7 @@ fn openai_codex_auth_error(
             url: None,
             status: None,
             reqwest: None,
+            context_budget: None,
             http_trace: None,
             source_chain,
         }),

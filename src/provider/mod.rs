@@ -826,9 +826,22 @@ pub struct ProviderTransportDiagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reqwest: Option<ReqwestTransportDiagnostics>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_budget: Option<ProviderContextBudgetDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_trace: Option<ProviderHttpTraceDiagnostics>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_chain: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderContextBudgetDiagnostics {
+    pub estimated_input_tokens: usize,
+    pub requested_output_tokens: usize,
+    pub safety_headroom_tokens: usize,
+    pub required_tokens: usize,
+    pub context_window_tokens: usize,
+    pub overflow_tokens: usize,
+    pub suggestion: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

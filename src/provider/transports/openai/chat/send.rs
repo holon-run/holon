@@ -269,6 +269,7 @@ fn classify_openai_chat_completion_error_with_streaming(
             url: url.map(crate::provider::retry::sanitize_transport_url),
             status: Some(status.as_u16()),
             reqwest: None,
+            context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(Some(status.as_u16()))),
             source_chain: Vec::new(),
         }),
