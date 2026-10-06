@@ -24,7 +24,15 @@ jobs:
     name: Run Holon
     timeout-minutes: 30
     runs-on: ubuntu-latest
+    env:
+      HOLON_JOB_TIMEOUT_MINUTES: 30
     steps:
+      - name: Capture Holon job deadline
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HOLON_JOB_DEADLINE_EPOCH=$(( $(date +%s) + HOLON_JOB_TIMEOUT_MINUTES * 60 ))" >> "$GITHUB_ENV"
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -34,6 +42,7 @@ jobs:
         uses: ./
         with:
           build_from_source: 'true'
+          holon_ref: ${{ github.sha }}
           trigger: auto
           auto_review: ${{ vars.HOLON_AUTO_REVIEW || 'false' }}
           auto_review_on_push: ${{ vars.HOLON_AUTO_REVIEW_ON_PUSH || 'false' }}
