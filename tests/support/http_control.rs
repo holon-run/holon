@@ -3982,6 +3982,33 @@ pub async fn native_oidc_ticket_requires_matching_verifier_without_consuming_on_
         .send()
         .await?;
     assert_eq!(missing_proof.status(), reqwest::StatusCode::BAD_REQUEST);
+    for client_name in ["ios", "android"] {
+        let missing_proof = client
+            .get(format!("{base}/api/auth/oidc/native/start"))
+            .query(&[("state", "app-state"), ("client", client_name)])
+            .send()
+            .await?;
+        assert_eq!(missing_proof.status(), reqwest::StatusCode::BAD_REQUEST);
+    }
+    for client_name in ["unknown", "", "IOS", "run.holon.ios://oidc/callback"] {
+        let response = client
+            .get(format!("{base}/api/auth/oidc/native/start"))
+            .query(&[
+                ("state", "app-state"),
+                (
+                    "code_challenge",
+                    "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+                ),
+                ("client", client_name),
+            ])
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert!(response
+            .text()
+            .await?
+            .contains("unsupported native OIDC client"));
+    }
     for proof in [
         None,
         Some("wrong-verifier-with-valid-length-abcdefghijklm"),

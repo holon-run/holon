@@ -5,11 +5,45 @@ use url::Url;
 const PAIRING_TTL: chrono::Duration = chrono::Duration::minutes(2);
 const MAX_PAIRING_TICKETS: usize = 128;
 const ANDROID_OIDC_REDIRECT_URI: &str = "run.holon.android://oidc/callback";
+const IOS_OIDC_REDIRECT_URI: &str = "run.holon.ios://oidc/callback";
 
 #[derive(Debug, Deserialize)]
 pub struct NativeOidcStartQuery {
+    pub client: Option<String>,
     pub state: Option<String>,
     pub code_challenge: Option<String>,
+}
+
+#[cfg(test)]
+mod native_oidc_tests {
+    use super::*;
+
+    #[test]
+    fn native_oidc_clients_use_only_fixed_callback_uris() {
+        for (client, expected) in [
+            (None, "run.holon.android://oidc/callback"),
+            (Some("android"), "run.holon.android://oidc/callback"),
+            (Some("ios"), "run.holon.ios://oidc/callback"),
+        ] {
+            assert_eq!(native_oidc_redirect_uri(client).unwrap(), expected);
+        }
+        for client in ["unknown", "", "IOS", "https://example.com/callback"] {
+            assert_eq!(
+                native_oidc_redirect_uri(Some(client)).unwrap_err().0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+    }
+}
+
+fn native_oidc_redirect_uri(
+    client: Option<&str>,
+) -> Result<&'static str, (StatusCode, Json<Value>)> {
+    match client {
+        None | Some("android") => Ok(ANDROID_OIDC_REDIRECT_URI),
+        Some("ios") => Ok(IOS_OIDC_REDIRECT_URI),
+        Some(_) => Err(bad_request("unsupported native OIDC client")),
+    }
 }
 
 #[derive(Default)]
@@ -326,6 +360,7 @@ pub async fn start_native_oidc_login(
     State(state): State<Arc<AppState>>,
     Query(query): Query<NativeOidcStartQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let redirect_uri = native_oidc_redirect_uri(query.client.as_deref())?;
     let challenge = query
         .code_challenge
         .filter(|value| {
@@ -343,8 +378,8 @@ pub async fn start_native_oidc_login(
         .ok_or_else(|| bad_request("native login requires state"))?;
     let config = state.host.config().auth.clone();
     let client = crate::oidc::OidcClient::new(config).map_err(error_response)?;
-    let mut redirect = Url::parse(ANDROID_OIDC_REDIRECT_URI)
-        .expect("static Android OIDC redirect URI must be valid");
+    let mut redirect =
+        Url::parse(redirect_uri).expect("static native OIDC redirect URI must be valid");
     redirect
         .query_pairs_mut()
         .append_pair("state", &app_state)
