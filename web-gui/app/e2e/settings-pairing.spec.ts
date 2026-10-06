@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function setupPairing(page: Page, serving: boolean) {
+async function setupPairing(page: Page, serving: boolean, settingsUrl = "/settings") {
   let issued = 0;
   await page.route("**/api/auth/method", (route) => route.fulfill({ json: { mode: "local" } }));
   await page.route("**/api/control/network/tailscale/serve", (route) => route.fulfill({
@@ -17,9 +17,72 @@ async function setupPairing(page: Page, serving: boolean) {
       json: { ticket: "one-time/+ticket", expires_at: new Date(Date.now() + 60_000).toISOString() },
     });
   });
-  await page.goto("/settings");
+  await page.goto(settingsUrl);
   return () => issued;
 }
+
+test("automatic Serve address is a full-width editable value on desktop and mobile", async ({ page }) => {
+  await setupPairing(page, true);
+  const address = page.getByRole("textbox", { name: "Device-accessible server address", exact: true });
+  await expect(address).toHaveValue("https://holon.example.ts.net");
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const bounds = await address.boundingBox();
+    expect(bounds!.width).toBeGreaterThan(width === 1280 ? 600 : 200);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+    expect(await address.evaluate((input) => parseFloat(getComputedStyle(input).borderTopWidth))).toBeGreaterThan(0);
+  }
+  await address.click();
+  await address.press("ControlOrMeta+A");
+  await address.pressSequentially("http://192.168.1.10:7878");
+  await expect(address).toHaveValue("http://192.168.1.10:7878");
+  await page.getByRole("button", { name: "Refresh status", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Disable", exact: true })).toBeVisible();
+  await expect(address).toHaveValue("http://192.168.1.10:7878");
+});
+
+for (const host of ["192.168.1.10", "holon-http.test"]) {
+  test(`defaults to the non-local browser origin ${host} without Serve`, async ({ page, baseURL }) => {
+    const origin = new URL(baseURL!);
+    origin.hostname = host;
+    await page.route(`${origin.origin}/**`, (route) => {
+      if (route.request().headers().accept === "text/event-stream") {
+        return route.fulfill({ contentType: "text/event-stream", body: ": keepalive\n\n" });
+      }
+      const localUrl = new URL(route.request().url());
+      localUrl.hostname = "127.0.0.1";
+      return route.fetch({ url: localUrl.toString() }).then((response) => route.fulfill({ response }));
+    });
+    await setupPairing(page, false, `${origin.origin}/settings`);
+    await expect(page.getByRole("textbox", { name: "Device-accessible server address", exact: true }))
+      .toHaveValue(origin.origin);
+    await page.getByRole("button", { name: "Create one-time pairing link", exact: true }).click();
+    const link = page.getByRole("textbox", { name: "Pairing link", exact: true });
+    await expect(link).toBeVisible();
+    expect(new URL(await link.inputValue()).origin).toBe(origin.origin);
+  });
+}
+
+test("clearing the default survives status refresh and never silently issues to Serve", async ({ page }) => {
+  const issued = await setupPairing(page, true);
+  const address = page.getByRole("textbox", { name: "Device-accessible server address", exact: true });
+  await expect(address).toHaveValue("https://holon.example.ts.net");
+  await address.fill("");
+  const mutations: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/control/network/tailscale/serve") && request.method() !== "GET") {
+      mutations.push(request.method());
+    }
+  });
+  await page.getByRole("button", { name: "Refresh status", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Disable", exact: true })).toBeVisible();
+  await expect(address).toHaveValue("");
+  await page.getByRole("button", { name: "Create one-time pairing link", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Localhost cannot");
+  await expect(address).toHaveValue("");
+  expect(issued()).toBe(0);
+  expect(mutations).toEqual([]);
+});
 
 test("localhost pairing uses active Tailscale Serve without changing the issue endpoint", async ({ page }) => {
   const issued = await setupPairing(page, true);
@@ -59,6 +122,7 @@ for (const serving of [true, false]) {
     const issued = await setupPairing(page, serving);
     const address = page.getByRole("textbox", { name: "Device-accessible server address", exact: true });
     if (!serving) await address.fill("http://192.168.1.10:7878");
+    else await expect(address).toHaveValue("https://holon.example.ts.net");
     const previousAddress = await address.inputValue();
     await page.getByRole("button", { name: "Create one-time pairing link", exact: true }).click();
     const link = page.getByRole("textbox", { name: "Pairing link", exact: true });
@@ -135,7 +199,7 @@ for (const action of ["enable", "refresh"] as const) {
       } });
     });
     if (action === "enable") page.once("dialog", (dialog) => void dialog.accept());
-    await page.getByRole("button", { name: action === "enable" ? "Enable" : "Retry", exact: true }).click();
+    await page.getByRole("button", { name: action === "enable" ? "Enable" : "Refresh status", exact: true }).click();
     await expect(link).toHaveCount(0);
     await expect(page.getByAltText("QR code for one-time pairing link")).toHaveCount(0);
     release();

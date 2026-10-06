@@ -1175,6 +1175,15 @@ async fn anthropic_claude_code_prompt_cache_strategy_marks_tool_results() {
 
 #[tokio::test]
 async fn ollama_tool_only_round_appends_placeholder_user_text() {
+    assert_ollama_tool_result_tail_has_placeholder(false).await;
+}
+
+#[tokio::test]
+async fn ollama_tool_result_tail_with_history_appends_placeholder_user_text() {
+    assert_ollama_tool_result_tail_has_placeholder(true).await;
+}
+
+async fn assert_ollama_tool_result_tail_has_placeholder(include_earlier_user_text: bool) {
     let captured_body = Arc::new(Mutex::new(None::<serde_json::Value>));
     let captured_body_for_server = captured_body.clone();
     let base_url = spawn_test_server(Router::new().route(
@@ -1216,25 +1225,25 @@ async fn ollama_tool_only_round_appends_placeholder_user_text() {
     )
     .unwrap();
 
-    let request = ProviderTurnRequest::plain(
-        "system",
-        vec![
-            ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
-                id: "exec-1".into(),
-                name: "ExecCommand".into(),
-                input: json!({ "cmd": "ls /tmp" }),
-                kind: crate::provider::ModelToolCallKind::Function,
-                provider_data: None,
-            }]),
-            ConversationMessage::UserToolResults(vec![ToolResultBlock {
-                tool_use_id: "exec-1".into(),
-                content: "stdout:\na.txt\nb.txt".into(),
-                is_error: false,
-                error: None,
-            }]),
-        ],
-        Vec::new(),
-    );
+    let mut conversation = vec![
+        ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
+            id: "exec-1".into(),
+            name: "ExecCommand".into(),
+            input: json!({ "cmd": "ls /tmp" }),
+            kind: crate::provider::ModelToolCallKind::Function,
+            provider_data: None,
+        }]),
+        ConversationMessage::UserToolResults(vec![ToolResultBlock {
+            tool_use_id: "exec-1".into(),
+            content: "stdout:\na.txt\nb.txt".into(),
+            is_error: false,
+            error: None,
+        }]),
+    ];
+    if include_earlier_user_text {
+        conversation.insert(0, ConversationMessage::UserText("original query".into()));
+    }
+    let request = ProviderTurnRequest::plain("system", conversation, Vec::new());
     provider.complete_turn(request).await.unwrap();
 
     let body = captured_body
@@ -1246,9 +1255,16 @@ async fn ollama_tool_only_round_appends_placeholder_user_text() {
     let last = messages.last().unwrap();
     assert_eq!(last["role"], json!("user"));
     let blocks = last["content"].as_array().unwrap();
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0]["type"], json!("tool_result"));
+    assert_eq!(blocks[0]["tool_use_id"], json!("exec-1"));
+    assert_eq!(blocks[0]["content"], json!("stdout:\na.txt\nb.txt"));
     let placeholder = blocks.last().unwrap();
     assert_eq!(placeholder["type"], json!("text"));
-    assert!(!placeholder["text"].as_str().unwrap().trim().is_empty());
+    assert_eq!(placeholder["text"], json!("(continue)"));
+    if include_earlier_user_text {
+        assert_eq!(messages[0]["content"][0]["text"], json!("original query"));
+    }
 }
 
 #[tokio::test]

@@ -199,4 +199,3 @@ holon agent status builder
 ## 下一步
 
 先按[创建第一个 Agent](/zh-CN/getting-started/first-agent)安装 Holon、配置模型提供商；如果任务需要在断开连接后继续，或需要等待结果，再阅读[运行长期任务](/zh-CN/guides/run-long-lived-task)，并把上面的 Prompt 改成适合你仓库的版本。
-

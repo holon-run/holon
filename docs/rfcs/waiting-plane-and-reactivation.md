@@ -180,6 +180,20 @@ The runtime therefore preserves these invariants:
 - different timers are never coalesced with each other
 - `fire_count` counts actual timer fires, not queued messages or model turns
 
+UTC deadlines use the shared runtime clock's wall-clock wait contract, not a
+single conversion to a monotonic duration. A wait rechecks UTC after at most
+30 seconds of monotonic waiting and completes only when UTC reaches the
+deadline. Shorter remaining durations are awaited directly; a backward wall
+clock change extends the wait instead of firing early.
+
+After host suspend or a forward wall clock change, an overdue timer is
+discovered within one such slice once the process resumes sustained execution,
+plus normal scheduling overhead. This does not wake a sleeping host or promise
+execution during DarkWake. Repeating timers catch up with one fire, then skip
+elapsed slots to the first future deadline on their original schedule; they do
+not replay every missed interval or reanchor to the late fire time. Cancellation,
+the durable wake fence, and recovery remain governed by the rules below.
+
 The same durable-obligation rule applies to `WaitFor` rechecks:
 
 - an agent-scope wait with `recheck_at` has a runtime-owned deadline executor

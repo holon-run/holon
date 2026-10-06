@@ -594,7 +594,7 @@ const zh: Record<string, any> = {
       drift: "期望状态与实际 Serve 状态不同。可通过上方控件手动恢复。",
       loadError: "无法加载 Tailscale Serve 状态。",
       actionError: "无法更新 Tailscale Serve。",
-      retry: "重试", httpOnly: "仅 HTTP 运行时连接可用。",
+      retry: "重试", refresh: "刷新状态", httpOnly: "仅 HTTP 运行时连接可用。",
       states: { serving: "服务中", connected: "已连接", conflict: "冲突", unavailable: "不可用", stopped: "已停止", logged_out: "未登录" },
     },
     pairing: {
@@ -609,7 +609,7 @@ const zh: Record<string, any> = {
       warning: "持有链接的人可在过期前登录一次。仅通过可信网络分享给可信设备。",
       target: "目标地址：{{target}}",
       address: "另一台设备可访问的服务地址",
-      addressHint: "优先使用显式地址，其次为有效 Tailscale Serve HTTPS，最后为当前非本地 origin，也可填写 LAN 或 Tailscale 服务地址（仅协议、主机与端口）。LAN 需要服务监听可达地址；Tailscale 需要另一台设备加入同一 tailnet。此操作不会开启网络访问。",
+      addressHint: "默认填入有效的 Tailscale Serve HTTPS 地址，其次为当前非本地服务地址（包括 LAN）。可编辑为其他可达地址，仅支持协议、主机与端口。LAN 需要服务监听可达地址；Tailscale 需要另一台设备加入同一 tailnet。此操作不会开启网络访问。",
       addressRequired: "请填写可达的 LAN/Tailscale 服务地址，或在下方启用 Tailscale Serve。另一台设备不能使用 localhost。",
       expires: "过期时间：{{time}}",
       link: "配对链接",

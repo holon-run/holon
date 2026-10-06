@@ -2023,7 +2023,6 @@ impl AgentProvider for OperatorInterjectionProbeProvider {
                     name: "Sleep".into(),
                     input: serde_json::json!({
                         "reason": "wait for operator interjection",
-                        "duration_ms": 1,
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
                     provider_data: None,
