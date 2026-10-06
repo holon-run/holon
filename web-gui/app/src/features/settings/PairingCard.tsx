@@ -55,7 +55,8 @@ export function PairingCard({ connection, serve }: { connection: RuntimeConnecti
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
-  const [customTarget, setCustomTarget] = useState("");
+  // Undefined follows the automatic destination; an empty edit stays empty.
+  const [customTarget, setCustomTarget] = useState<string>();
   const [authMode, setAuthMode] = useState<{ key: string; mode: string }>();
   const [authRetry, setAuthRetry] = useState(0);
   const [authError, setAuthError] = useState(false);
@@ -66,7 +67,9 @@ export function PairingCard({ connection, serve }: { connection: RuntimeConnecti
   const basePath = runtimeBase ? new URL(runtimeBase, window.location.origin).pathname : "/api";
   const directTarget = basePath === "/api" || basePath === "/api/" ? pairingOrigin(runtimeOrigin) : undefined;
   const serveTarget = validServeOrigin(serve.status);
-  const target = customTarget ? pairingOrigin(customTarget) : serveTarget ?? directTarget;
+  const automaticTarget = serveTarget ?? directTarget;
+  const address = customTarget ?? automaticTarget ?? "";
+  const target = customTarget !== undefined ? pairingOrigin(customTarget) : automaticTarget;
   const identity = JSON.stringify([serve.key, serve.revision, serve.status, customTarget, target]);
   const inputs = JSON.stringify([serve.key, customTarget, runtimeOrigin]);
   const currentInputs = useRef(inputs);
@@ -74,7 +77,7 @@ export function PairingCard({ connection, serve }: { connection: RuntimeConnecti
   const mode = authMode?.key === serve.key ? authMode.mode : undefined;
 
   useEffect(() => {
-    setCustomTarget("");
+    setCustomTarget(undefined);
     setPairing(undefined);
   }, [serve.key, runtimeBase, connection.source]);
 
@@ -122,7 +125,7 @@ export function PairingCard({ connection, serve }: { connection: RuntimeConnecti
       const generation = serve.sequence.current + 1;
       const status = await serve.request();
       if (currentInputs.current !== inputs || serve.sequence.current !== generation) return;
-      const origin = issuedCustom ? pairingOrigin(issuedCustom) : validServeOrigin(status) ?? directTarget;
+      const origin = issuedCustom !== undefined ? pairingOrigin(issuedCustom) : validServeOrigin(status) ?? directTarget;
       if (!origin) throw new Error(t("settings.pairing.addressRequired"));
       const token = getRuntimeConnectionConfig().token;
       const response = await fetch(pairingIssueUrl(connection), {
@@ -168,23 +171,28 @@ export function PairingCard({ connection, serve }: { connection: RuntimeConnecti
       </div> : null}
       {mode === "oidc" ? <p>{t("settings.pairing.oidc")}</p> : null}
       {!target ? <p>{t("settings.pairing.unavailable")}</p> : null}
-      {serveTarget && !customTarget ? <p>{t("settings.pairing.tailnet")}</p> : null}
-      <label>
-        {t("settings.pairing.address")}
-        <input
-          type="url"
-          value={customTarget}
-          placeholder={target ?? "http://192.168.1.10:7878"}
-          disabled={busy}
-          onChange={(event) => {
-            setCustomTarget(event.currentTarget.value);
-            setPairing(undefined);
-            setCopied(false);
-            setError("");
-          }}
-        />
-      </label>
-      <p className="settings-muted">{t("settings.pairing.addressHint")}</p>
+      {serveTarget && target === serveTarget ? <p>{t("settings.pairing.tailnet")}</p> : null}
+      <div className="settings-form">
+        <label>
+          {t("settings.pairing.address")}
+          <input
+            type="url"
+            value={address}
+            placeholder="http://192.168.1.10:7878"
+            autoCapitalize="none"
+            spellCheck={false}
+            aria-describedby="pairing-address-hint"
+            disabled={busy}
+            onChange={(event) => {
+              setCustomTarget(event.currentTarget.value);
+              setPairing(undefined);
+              setCopied(false);
+              setError("");
+            }}
+          />
+        </label>
+      </div>
+      <p id="pairing-address-hint" className="settings-muted">{t("settings.pairing.addressHint")}</p>
       {target ? <p className="settings-muted">{t("settings.pairing.target", { target })}</p> : null}
       {error ? <div className="settings-error-banner" role="alert">{error}</div> : null}
       {pairing && pairing.identity === identity && !serve.busy && mode && mode !== "oidc" ? (

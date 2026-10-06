@@ -576,7 +576,7 @@ const en = {
       drift: "Desired and actual Serve states differ. Use the control above to reconcile them manually.",
       loadError: "Could not load Tailscale Serve status.",
       actionError: "Could not update Tailscale Serve.",
-      retry: "Retry", httpOnly: "Available only with an HTTP runtime connection.",
+      retry: "Retry", refresh: "Refresh status", httpOnly: "Available only with an HTTP runtime connection.",
       states: { serving: "Serving", connected: "Connected", conflict: "Conflict", unavailable: "Unavailable", stopped: "Stopped", logged_out: "Logged out" },
     },
     pairing: {
@@ -591,7 +591,7 @@ const en = {
       warning: "Anyone with this link can sign in once before it expires. Share it only with a device you trust, over a trusted connection.",
       target: "Destination: {{target}}",
       address: "Device-accessible server address",
-      addressHint: "Explicit address takes priority, then valid Tailscale Serve HTTPS, then the current non-local origin. You can enter a LAN or Tailscale server origin (scheme, host and port only). LAN access requires a reachable listener; Tailscale access requires the other device to join your tailnet. This does not enable network access.",
+      addressHint: "Defaults to active Tailscale Serve HTTPS, then the current non-local server address (including LAN). Edit it to use another reachable origin (scheme, host and port only). LAN requires a reachable listener; Tailscale requires the other device to join your tailnet. This does not enable network access.",
       addressRequired: "Enter a reachable LAN/Tailscale server address or enable Tailscale Serve below. Localhost cannot be used by another device.",
       expires: "Expires at {{time}}",
       link: "Pairing link",
