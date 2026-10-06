@@ -1849,8 +1849,8 @@ fn transfer_tail_cache_marker(assistant: &mut ApiMessage, inserted: &mut ApiMess
 /// Ollama's Anthropic-compatible `/v1/messages` endpoint rejects message
 /// lists without any user text (e.g. pure tool-result rounds) with
 /// `500 no user query found in messages`; see ollama/ollama#18303. Until
-/// upstream ships a fix, append a non-empty placeholder user text block so
-/// tool-only rounds stay usable against ollama deployments.
+/// upstream ships a fix, keep non-empty user text in the latest user turn;
+/// older user text may be discarded by Ollama's context truncation.
 fn needs_placeholder_user_text(route_provider: &str) -> bool {
     route_provider == "ollama"
 }
@@ -1859,7 +1859,9 @@ fn ensure_placeholder_user_text(messages: &mut Vec<ApiMessage>) {
     const PLACEHOLDER_USER_TEXT: &str = "(continue)";
     if messages
         .iter()
-        .any(|message| api_message_has_nonempty_user_text(message))
+        .rev()
+        .find(|message| message.role == "user")
+        .is_some_and(api_message_has_nonempty_user_text)
     {
         return;
     }
@@ -3081,6 +3083,78 @@ mod tests {
         let placeholder = blocks.last().unwrap();
         assert_eq!(placeholder["type"], json!("text"));
         assert!(!placeholder["text"].as_str().unwrap().trim().is_empty());
+    }
+
+    #[test]
+    fn ensure_placeholder_user_text_checks_latest_user_turn() {
+        let mut messages = vec![
+            ApiMessage {
+                role: "user",
+                content: json!([{ "type": "text", "text": "original query" }]),
+            },
+            ApiMessage {
+                role: "assistant",
+                content: json!([{ "type": "tool_use", "id": "toolu_1" }]),
+            },
+            ApiMessage {
+                role: "user",
+                content: json!([{ "type": "tool_result", "tool_use_id": "toolu_1" }]),
+            },
+        ];
+        ensure_placeholder_user_text(&mut messages);
+        ensure_placeholder_user_text(&mut messages);
+
+        assert_eq!(messages.len(), 3);
+        let blocks = messages[2].content.as_array().unwrap();
+        assert_eq!(
+            blocks,
+            &vec![
+                json!({ "type": "tool_result", "tool_use_id": "toolu_1" }),
+                json!({ "type": "text", "text": "(continue)" }),
+            ]
+        );
+        assert_eq!(messages[0].content[0]["text"], json!("original query"));
+    }
+
+    #[test]
+    fn ensure_placeholder_user_text_fills_empty_latest_user_turn() {
+        for content in [json!([]), json!([{ "type": "text", "text": " \n" }])] {
+            let mut messages = vec![
+                ApiMessage {
+                    role: "user",
+                    content: json!("original query"),
+                },
+                ApiMessage {
+                    role: "user",
+                    content,
+                },
+            ];
+            ensure_placeholder_user_text(&mut messages);
+            assert_eq!(messages.len(), 2);
+            assert_eq!(
+                messages[1].content.as_array().unwrap().last(),
+                Some(&json!({ "type": "text", "text": "(continue)" }))
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_placeholder_user_text_preserves_latest_user_text() {
+        for content in [
+            json!("latest query"),
+            json!([
+                { "type": "tool_result", "tool_use_id": "toolu_1" },
+                { "type": "text", "text": "latest query" },
+            ]),
+        ] {
+            let mut messages = vec![ApiMessage {
+                role: "user",
+                content: content.clone(),
+            }];
+            ensure_placeholder_user_text(&mut messages);
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].content, content);
+        }
     }
 
     #[test]
