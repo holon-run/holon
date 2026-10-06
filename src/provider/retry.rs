@@ -74,6 +74,18 @@ pub(crate) fn set_provider_transport_streaming(
     error
 }
 
+pub(crate) fn set_provider_transport_quota_identity(
+    mut error: anyhow::Error,
+    identity: super::ProviderQuotaIdentity,
+) -> anyhow::Error {
+    if let Some(transport_error) = error.downcast_mut::<ProviderTransportError>() {
+        if let Some(diagnostics) = transport_error.diagnostics.as_mut() {
+            diagnostics.quota_identity = Some(identity);
+        }
+    }
+    error
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderRetryDelaySource {
     ServerRetryAfter,
@@ -525,6 +537,7 @@ pub(crate) fn classify_status_error_with_trace(
             reqwest: None,
             context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(Some(status.as_u16()))),
+            quota_identity: None,
             source_chain: status_error_source_chain(provider, status),
         }),
         retry_after,
@@ -746,6 +759,7 @@ pub(crate) fn invalid_response_error_with_trace(
             reqwest: None,
             context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
+            quota_identity: None,
             source_chain: vec![error.clone()],
         }),
         format!("{context}: {error}"),
@@ -784,6 +798,7 @@ pub(crate) fn retryable_invalid_response_error_with_trace(
             reqwest: None,
             context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
+            quota_identity: None,
             source_chain: vec![error.clone()],
         }),
         Some(token_usage),
@@ -839,6 +854,7 @@ pub(crate) fn empty_response_error_with_trace(
             reqwest: None,
             context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
+            quota_identity: None,
             source_chain: vec![error.clone()],
         }),
         Some(token_usage),
@@ -872,6 +888,7 @@ pub(crate) fn timeout_transport_error_with_trace(
             reqwest: None,
             context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
+            quota_identity: None,
             source_chain: vec![reason.into()],
         }),
         context.to_string(),
@@ -921,6 +938,7 @@ fn reqwest_transport_diagnostics(
         }),
         context_budget: None,
         http_trace: trace.and_then(|trace| trace.diagnostics(status)),
+        quota_identity: None,
         source_chain,
     }
 }

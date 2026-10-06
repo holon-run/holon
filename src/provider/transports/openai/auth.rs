@@ -219,6 +219,7 @@ impl OpenAiCodexProvider {
             credential_material: provider_config.credential.clone(),
             credential_external: provider_config.auth.external.clone(),
             credential_store_path: provider_config.credential_store_path.clone(),
+            quota_identity: super::openai_codex_coarse_quota_identity(provider_config),
             codex_home,
             originator: provider_config
                 .originator

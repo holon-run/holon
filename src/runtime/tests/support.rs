@@ -1425,6 +1425,7 @@ impl AgentProvider for FailingTimelineProvider {
                                 .into(),
                             status: None
                         }),
+                        quota_identity: None,
                         source_chain: vec!["connection reset by peer".into()]
                     })
                 }],

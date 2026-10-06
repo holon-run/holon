@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
@@ -829,8 +830,55 @@ pub struct ProviderTransportDiagnostics {
     pub context_budget: Option<ProviderContextBudgetDiagnostics>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_trace: Option<ProviderHttpTraceDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_identity: Option<ProviderQuotaIdentity>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_chain: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderQuotaIdentityConfidence {
+    Exact,
+    Coarse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderQuotaIdentity {
+    pub scope: String,
+    pub confidence: ProviderQuotaIdentityConfidence,
+}
+
+impl ProviderQuotaIdentity {
+    pub fn exact(namespace: &str, value: &str) -> Option<Self> {
+        Self::hashed(namespace, value, ProviderQuotaIdentityConfidence::Exact)
+    }
+
+    pub fn coarse(namespace: &str, value: &str) -> Self {
+        Self::hashed(namespace, value, ProviderQuotaIdentityConfidence::Coarse)
+            .expect("coarse quota identity namespace and value are non-empty")
+    }
+
+    fn hashed(
+        namespace: &str,
+        value: &str,
+        confidence: ProviderQuotaIdentityConfidence,
+    ) -> Option<Self> {
+        let namespace = namespace.trim();
+        let value = value.trim();
+        if namespace.is_empty() || value.is_empty() {
+            return None;
+        }
+
+        let mut hasher = Sha256::new();
+        hasher.update(namespace.as_bytes());
+        hasher.update([0]);
+        hasher.update(value.as_bytes());
+        Some(Self {
+            scope: format!("sha256:{:x}", hasher.finalize()),
+            confidence,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
