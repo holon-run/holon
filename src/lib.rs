@@ -4,6 +4,7 @@ pub mod agents_md;
 mod auth;
 pub mod authentication;
 mod callbacks;
+pub(crate) mod github;
 pub mod ids;
 
 pub mod brief;

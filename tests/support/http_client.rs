@@ -64,6 +64,54 @@ async fn next_message_admitted_event(stream: &mut LocalEventStream) -> Result<Ag
     .await?
 }
 
+pub async fn github_rate_limit_envelope_decodes_and_displays_recovery_guidance() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let app = axum::Router::new().route(
+        "/api/skills/catalog/add",
+        axum::routing::post(|| async {
+            (
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                axum::Json(serde_json::json!({
+                    "ok": false,
+                    "error": "GitHub API rate limit exceeded",
+                    "code": "remote_skill_rate_limited",
+                    "hint": "Wait 17 seconds before retrying.",
+                    "domain": "http",
+                    "retryable": true,
+                    "upstream_status": 403,
+                    "retry_after_seconds": 17
+                })),
+            )
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let client = LocalClient::remote(test_config(), format!("http://{address}"), "test-token")?;
+    let result: Result<serde_json::Value> = client
+        .post_json(
+            "/skills/catalog/add",
+            &serde_json::json!({"source": "owner/repo", "remote": true}),
+        )
+        .await;
+    server.abort();
+    let error = result.expect_err("rate limits must not decode as success");
+    let wire_error = error
+        .downcast_ref::<holon::client::LocalHttpError>()
+        .unwrap();
+    assert_eq!(wire_error.status_code, 429);
+    assert!(wire_error.has_code("remote_skill_rate_limited"));
+    assert_eq!(wire_error.retryable, Some(true));
+    assert_eq!(
+        wire_error.hint.as_deref(),
+        Some("Wait 17 seconds before retrying.")
+    );
+    let displayed = wire_error.to_string();
+    assert!(displayed.contains("GitHub API rate limit"));
+    assert!(displayed.contains("[remote_skill_rate_limited]"));
+    assert!(displayed.contains("Hint: Wait 17 seconds before retrying."));
+    Ok(())
+}
+
 pub async fn agent_summary_routes_default_to_compact_and_allow_full_detail() -> Result<()> {
     let (_host, base, server) = spawn_server().await?;
     let client = reqwest::Client::new();
