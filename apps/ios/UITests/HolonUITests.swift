@@ -11,10 +11,10 @@ final class HolonUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(\(language))", "-AppleLocale", language,
                                "-AppleInterfaceStyle", dark ? "Dark" : "Light"]
-        if large {
-            app.launchArguments += ["-UIPreferredContentSizeCategoryName",
-                                    "UICTContentSizeCategoryAccessibilityXXXL"]
-        }
+        // The runner verifies the real simulator preference, not an app-only override.
+        XCTAssertEqual(ProcessInfo.processInfo.environment["HOLON_UI_CONTENT_SIZE"],
+                       large ? "accessibility-extra-extra-extra-large" : "large",
+                       "The UI runner must configure and verify the system text size")
         app.launch()
         return app
     }
@@ -27,23 +27,37 @@ final class HolonUITests: XCTestCase {
     }
 
     private func reveal(_ element: XCUIElement, in app: XCUIApplication,
+                        fullyVisible: Bool = false,
                         file: StaticString = #filePath, line: UInt = #line) {
         for _ in 0..<40 {
-            if element.exists && element.isHittable { return }
             let window = app.windows.firstMatch.frame
             let navigation = app.navigationBars.firstMatch
             let tabs = app.tabBars.firstMatch
             let keyboard = app.keyboards.firstMatch
             let top = navigation.exists ? max(window.minY, navigation.frame.maxY) : window.minY
             var bottom = tabs.exists ? min(window.maxY, tabs.frame.minY) : window.maxY
-            if keyboard.exists { bottom = min(bottom, keyboard.frame.minY) }
+            if keyboard.exists {
+                bottom = min(bottom, keyboard.frame.minY)
+                // The keyboard's AX frame excludes its input assistant overlay.
+                let assistant = app.otherElements["SystemInputAssistantView"].firstMatch
+                if assistant.exists && !assistant.frame.isEmpty {
+                    bottom = min(bottom, assistant.frame.minY)
+                }
+            }
             guard bottom > top else { break }
             let viewport = CGRect(x: window.minX, y: top, width: window.width, height: bottom - top)
+            if element.exists && element.isHittable
+                && (!fullyVisible || (!element.frame.isEmpty && viewport.contains(element.frame))) {
+                return
+            }
             // Form rows are lazy; small drags load them without skipping the target.
             var distance = viewport.height * 0.3
             if element.exists {
                 let frame = element.frame
-                if frame.maxY > viewport.maxY {
+                // Lazy rows may exist before their frame is laid out.
+                if frame.isEmpty {
+                    distance = viewport.height * 0.3
+                } else if frame.maxY > viewport.maxY {
                     distance = frame.maxY - viewport.maxY + 8
                 } else if frame.minY < viewport.minY {
                     distance = frame.minY - viewport.minY - 8
@@ -56,6 +70,11 @@ final class HolonUITests: XCTestCase {
             let end = start.withOffset(CGVector(dx: 0, dy: -delta))
             start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow,
                         thenHoldForDuration: 0.1)
+        }
+        if fullyVisible {
+            capture(app, "unreachable-control")
+            XCTFail("Control must be fully visible before navigation", file: file, line: line)
+            return
         }
         if !element.exists || !element.isHittable { capture(app, "unreachable-control") }
         XCTAssertTrue(element.waitForExistence(timeout: 10), file: file, line: line)
@@ -188,18 +207,7 @@ final class HolonUITests: XCTestCase {
         let originalReport = report.label
 
         // Change the real system preference while the prepared view is alive.
-        let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
-        settings.launch()
-        capture(settings, "runtime-size-settings")
-        let accessibility = settings.staticTexts["Accessibility"].firstMatch
-        reveal(accessibility, in: settings)
-        accessibility.tap()
-        let display = settings.staticTexts["Display & Text Size"].firstMatch
-        XCTAssertTrue(display.waitForExistence(timeout: 10))
-        display.tap()
-        let largerText = settings.staticTexts["Larger Text"].firstMatch
-        XCTAssertTrue(largerText.waitForExistence(timeout: 10))
-        largerText.tap()
+        let settings = openLargerTextSettings()
         let largerSizes = settings.switches.firstMatch
         XCTAssertTrue(largerSizes.waitForExistence(timeout: 10))
         let wasEnabled = largerSizes.value as? String == "1"
@@ -222,6 +230,63 @@ final class HolonUITests: XCTestCase {
                                  "\(element.identifier) must respond without regenerating the report")
         }
         capture(app, "prepared-diagnostics-runtime-accessibility-size")
+    }
+
+    func testDiagnosticsControlsRespondToRuntimeTextSize() throws {
+        let app = launch(language: "en", dark: false, large: true)
+        defer { app.terminate() }
+        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 15))
+        app.tabBars.buttons["Tools"].tap()
+        openDiagnostics(app)
+        let allowlist = app.staticTexts[
+            "Only connection states and counts are included. Credentials, identities, addresses, message content and raw errors are excluded."]
+        let prepare = app.buttons["diagnostics.prepare"]
+        XCTAssertTrue(allowlist.waitForExistence(timeout: 10))
+        let elements = [allowlist, prepare]
+        let maximumHeights = elements.map { $0.frame.height }
+        capture(app, "diagnostics-controls-maximum-size")
+
+        let settings = openLargerTextSettings()
+        let largerSizes = settings.switches.firstMatch
+        let slider = settings.sliders.firstMatch
+        XCTAssertTrue(largerSizes.waitForExistence(timeout: 10))
+        XCTAssertTrue(slider.waitForExistence(timeout: 10))
+        let wasEnabled = largerSizes.value as? String == "1"
+        let originalValue = try XCTUnwrap(slider.value as? String)
+        let originalPercentage = try XCTUnwrap(Double(originalValue.replacingOccurrences(of: "%", with: "")))
+        let originalPosition = CGFloat(originalPercentage / 100)
+        defer {
+            settings.activate()
+            if (largerSizes.value as? String == "1") != wasEnabled { largerSizes.tap() }
+            slider.adjust(toNormalizedSliderPosition: originalPosition)
+            settings.terminate()
+        }
+        if wasEnabled { largerSizes.tap() }
+        slider.adjust(toNormalizedSliderPosition: 0.5)
+        app.activate()
+        for (element, maximumHeight) in zip(elements, maximumHeights) {
+            XCTAssertLessThan(element.frame.height, maximumHeight,
+                              "\(element.label) must respond to the real system text size")
+        }
+        capture(app, "diagnostics-controls-ordinary-size")
+    }
+
+    private func openLargerTextSettings() -> XCUIApplication {
+        let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
+        settings.launch()
+        capture(settings, "runtime-size-settings")
+        let accessibility = settings.staticTexts["Accessibility"].firstMatch
+        reveal(accessibility, in: settings, fullyVisible: true)
+        accessibility.tap()
+        let display = settings.cells["DISPLAY_AND_TEXT"].firstMatch
+        XCTAssertTrue(display.waitForExistence(timeout: 10))
+        reveal(display, in: settings, fullyVisible: true)
+        display.tap()
+        let largerText = settings.staticTexts["Larger Text"].firstMatch
+        XCTAssertTrue(largerText.waitForExistence(timeout: 10))
+        reveal(largerText, in: settings, fullyVisible: true)
+        largerText.tap()
+        return settings
     }
 
     private func disconnected(language: String, dark: Bool, large: Bool) throws {

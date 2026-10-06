@@ -5,13 +5,11 @@ replace transports, or install production test hooks. Use a fresh, isolated
 simulator owned by the invoking harness. A simulator containing a prior logged-in
 installation is not the disconnected fixture.
 
-Run through the repository UI harness, or invoke:
+Set `IOS_SIMULATOR_ID`, `IOS_DERIVED_DATA_PATH`, and an unused
+`IOS_RESULT_BUNDLE_PATH`, then run through the repository UI harness:
 
 ```sh
-xcodebuild test -project apps/ios/Holon.xcodeproj -scheme Holon \
-  -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
-  -parallel-testing-enabled NO -only-testing:HolonUITests \
-  -resultBundlePath "$RESULT_BUNDLE" CODE_SIGNING_ALLOWED=NO
+make ios-ui-test
 ```
 
 The harness must explicitly export the following `TEST_RUNNER_` variables to
@@ -21,6 +19,7 @@ not the forwarding contract. None are passed to the application environment.
 
 | Exported variable | Required fixture value |
 | --- | --- |
+| `TEST_RUNNER_HOLON_UI_CONTENT_SIZE` | Verified simulator system text size: `large` or `accessibility-extra-extra-extra-large`, according to the case |
 | `TEST_RUNNER_HOLON_UI_ENDPOINT` | Complete isolated daemon API URL ending `/api` |
 | `TEST_RUNNER_HOLON_UI_PAIRING_CODE` | Fresh, single-use 64-hex pairing ticket |
 | `TEST_RUNNER_HOLON_UI_AGENT_ID` | Visible test agent with reading snapshot |
@@ -39,7 +38,13 @@ final `/api` with `/login` and adding `#pair=<ticket>`. Tests explicitly operate
 both profile HTTP permission and pairing HTTP permission.
 
 Two disconnected cases cover English/light and Simplified Chinese/dark with
-accessibility XXXL text. XCUITest accessibility audits run without ignored
+accessibility XXXL text. The harness sets and reads back the real simulator
+`simctl ui content_size` before each case and restores the original value even
+if configuration or XCTest fails. Do not replace this with an application-only
+launch override. Three diagnostic regressions cover control text shrinking from
+maximum to ordinary size, prepared text growing at runtime, and maximum-size
+viewport coverage. Each case runs separately with its required initial size.
+XCUITest accessibility audits run without ignored
 findings or generated screenshot baselines. Screenshots are retained xcresult
 attachments. The authenticated workflow covers reading, sending/received,
 Work detail/full plan, task output, file preview and diagnostic-send confirmation.

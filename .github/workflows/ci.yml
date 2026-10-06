@@ -19,6 +19,7 @@ on:
       - "scripts/test-ios-app.sh"
       - "scripts/test-ios-ui.sh"
       - "scripts/ios_ui_fixture.py"
+      - "scripts/ios_simulator_text_size.py"
       - "scripts/test-ios-build-tools.py"
       - "scripts/package-ios-archive.sh"
       - "apps/ios/**"
@@ -67,6 +68,7 @@ on:
       - "scripts/test-ios-app.sh"
       - "scripts/test-ios-ui.sh"
       - "scripts/ios_ui_fixture.py"
+      - "scripts/ios_simulator_text_size.py"
       - "scripts/test-ios-build-tools.py"
       - "scripts/package-ios-archive.sh"
       - "apps/ios/**"
@@ -213,6 +215,7 @@ jobs:
               - 'scripts/test-ios-app.sh'
               - 'scripts/test-ios-ui.sh'
               - 'scripts/ios_ui_fixture.py'
+              - 'scripts/ios_simulator_text_size.py'
               - 'scripts/test-ios-build-tools.py'
               - 'scripts/package-ios-archive.sh'
               - 'src/**'

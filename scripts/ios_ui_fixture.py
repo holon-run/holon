@@ -12,6 +12,8 @@ import threading
 import time
 import urllib.request
 
+from ios_simulator_text_size import MAXIMUM_TEXT_SIZE, simulator_text_size
+
 binary, repo, mode = sys.argv[1:]
 with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
     root = pathlib.Path(temporary)
@@ -211,33 +213,37 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 if not bundle.is_absolute() or bundle == pathlib.Path("/") or bundle.exists():
                     raise RuntimeError("IOS_RESULT_BUNDLE_PATH must be an unused non-root absolute path")
                 # Disconnected cases must run before authenticated installs credentials.
-                methods = ["testDisconnectedEnglishLight",
-                           "testDisconnectedChineseDarkAccessibilitySize",
-                           "testPreparedDiagnosticsRespondToRuntimeTextSize",
-                           "testPreparedDiagnosticsViewportCoverage",
-                           "testAuthenticatedNativeWorkflow"]
-                bundles = [bundle.with_name(bundle.stem + "-" + method + ".xcresult") for method in methods]
+                cases = [("testDisconnectedEnglishLight", "large"),
+                         ("testDisconnectedChineseDarkAccessibilitySize", MAXIMUM_TEXT_SIZE),
+                         ("testDiagnosticsControlsRespondToRuntimeTextSize", MAXIMUM_TEXT_SIZE),
+                         ("testPreparedDiagnosticsRespondToRuntimeTextSize", "large"),
+                         ("testPreparedDiagnosticsViewportCoverage", MAXIMUM_TEXT_SIZE),
+                         ("testAuthenticatedNativeWorkflow", "large")]
+                bundles = [bundle.with_name(bundle.stem + "-" + method + ".xcresult")
+                           for method, _ in cases]
                 if any(path.exists() for path in bundles):
                     raise RuntimeError("Per-case xcresult paths must be unused")
-                for method, case_bundle in zip(methods, bundles):
-                    if method == "testAuthenticatedNativeWorkflow":
-                        # Tickets expire after two minutes. The preceding cases also
-                        # warm the build; issue only when redemption is about to run.
-                        ticket = local("POST", "/auth/pairing/issue")["ticket"]
-                        test_env["TEST_RUNNER_HOLON_UI_PAIRING_CODE"] = ticket
-                    result = subprocess.run(["xcodebuild", "-project", repo + "/apps/ios/Holon.xcodeproj",
-                        "-scheme", "Holon", "-destination", destination,
-                        "-parallel-testing-enabled", "NO",
-                        # Keep test failures and attachments, but avoid a blocking sysdiagnose.
-                        "-collect-test-diagnostics", "never",
-                        "-test-timeouts-enabled", "YES",
-                        "-default-test-execution-time-allowance", "600",
-                        "-maximum-test-execution-time-allowance", "600",
-                        "-derivedDataPath", derived,
-                        "-only-testing:HolonUITests/HolonUITests/" + method,
-                        "-resultBundlePath", str(case_bundle), "CODE_SIGN_IDENTITY=-", "test"], env=test_env)
-                    if result.returncode:
-                        raise RuntimeError(f"UI case {method} 失败（SDK 通过不能替代 UI）")
+                for (method, content_size), case_bundle in zip(cases, bundles):
+                    with simulator_text_size(simulator, content_size):
+                        test_env["TEST_RUNNER_HOLON_UI_CONTENT_SIZE"] = content_size
+                        if method == "testAuthenticatedNativeWorkflow":
+                            # Tickets expire after two minutes. The preceding cases also
+                            # warm the build; issue only when redemption is about to run.
+                            ticket = local("POST", "/auth/pairing/issue")["ticket"]
+                            test_env["TEST_RUNNER_HOLON_UI_PAIRING_CODE"] = ticket
+                        result = subprocess.run(["xcodebuild", "-project", repo + "/apps/ios/Holon.xcodeproj",
+                            "-scheme", "Holon", "-destination", destination,
+                            "-parallel-testing-enabled", "NO",
+                            # Keep test failures and attachments, but avoid a blocking sysdiagnose.
+                            "-collect-test-diagnostics", "never",
+                            "-test-timeouts-enabled", "YES",
+                            "-default-test-execution-time-allowance", "600",
+                            "-maximum-test-execution-time-allowance", "600",
+                            "-derivedDataPath", derived,
+                            "-only-testing:HolonUITests/HolonUITests/" + method,
+                            "-resultBundlePath", str(case_bundle), "CODE_SIGN_IDENTITY=-", "test"], env=test_env)
+                        if result.returncode:
+                            raise RuntimeError(f"UI case {method} 失败（SDK 通过不能替代 UI）")
             else:
                 print("4 项真实 SDK probes 已运行；SDK-only 未运行 UI", flush=True)
         finally:
