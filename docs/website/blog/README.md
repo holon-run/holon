@@ -28,6 +28,13 @@ order: 4
 <h2 id="blog-stories-title">Design &amp; practice</h2>
 <p>How it works. How to use it.</p>
 </div>
+<a class="blog-story" href="/blog/from-prompt-to-finished-work">
+<img src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">HANDS-ON GUIDE</span>
+<h3>From prompt to finished work</h3>
+<p>A repeatable workflow for giving an agent a real repository task, letting it work past the prompt, and checking the result when it comes back.</p>
+<span class="blog-read">Follow the workflow <span aria-hidden="true">→</span></span></div>
+</a>
 <a class="blog-story" href="/blog/why-work-items">
 <img src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
 <div><span class="blog-category">DESIGN</span>
@@ -73,6 +80,10 @@ order: 4
 
 - [From personal AI tools to team collaboration: an agent-native case study](./agents-in-a-small-team.md)
   How a small team moved from individual AI tools to shared agents, with 77 days of retained usage records, device investigations, and a hands-on test of silent piano keys.
+  <!-- mdorigin:index kind=article -->
+
+- [From prompt to finished work: a practical Holon workflow](./from-prompt-to-finished-work.md)
+  A repeatable workflow for giving an agent a real repository task, letting it work past the prompt, and checking the result when it comes back.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

@@ -14,6 +14,7 @@ ARTICLES = {
     "why-work-items",
     "one-pr-one-work-item",
     "agents-in-a-small-team",
+    "from-prompt-to-finished-work",
 }
 CJK = re.compile(r"[\u3400-\u9fff]")
 DRAFT = re.compile(
@@ -96,4 +97,4 @@ for locale in ("", "zh-CN"):
 if errors:
     print("\n".join(errors), file=sys.stderr)
     sys.exit(1)
-print("Blog checks passed: four articles per locale, translated copy, assets, and entry points.")
+print("Blog checks passed: five articles per locale, translated copy, assets, and entry points.")
