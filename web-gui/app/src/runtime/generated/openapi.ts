@@ -2750,8 +2750,8 @@ export interface components {
             identity: {
                 agent_id: string;
                 /**
-                 * @description True when this identity satisfies the backend rename guard (public,
-                 *      self-owned, not the configured default agent). UI surfaces use this to
+                 * @description True when this identity satisfies the backend rename guard (public
+                 *      and self-owned). UI surfaces use this to
                  *      show the rename entry point; the rename endpoint stays authoritative.
                  * @default false
                  */
@@ -2807,8 +2807,8 @@ export interface components {
             identity: {
                 agent_id: string;
                 /**
-                 * @description True when this identity satisfies the backend rename guard (public,
-                 *      self-owned, not the configured default agent). UI surfaces use this to
+                 * @description True when this identity satisfies the backend rename guard (public
+                 *      and self-owned). UI surfaces use this to
                  *      show the rename entry point; the rename endpoint stays authoritative.
                  * @default false
                  */
@@ -3061,8 +3061,8 @@ export interface components {
             identity: {
                 agent_id: string;
                 /**
-                 * @description True when this identity satisfies the backend rename guard (public,
-                 *      self-owned, not the configured default agent). UI surfaces use this to
+                 * @description True when this identity satisfies the backend rename guard (public
+                 *      and self-owned). UI surfaces use this to
                  *      show the rename entry point; the rename endpoint stays authoritative.
                  * @default false
                  */
@@ -3113,8 +3113,8 @@ export interface components {
         AgentIdentityView: {
             agent_id: string;
             /**
-             * @description True when this identity satisfies the backend rename guard (public,
-             *      self-owned, not the configured default agent). UI surfaces use this to
+             * @description True when this identity satisfies the backend rename guard (public
+             *      and self-owned). UI surfaces use this to
              *      show the rename entry point; the rename endpoint stays authoritative.
              * @default false
              */
@@ -3246,8 +3246,8 @@ export interface components {
                     identity: {
                         agent_id: string;
                         /**
-                         * @description True when this identity satisfies the backend rename guard (public,
-                         *      self-owned, not the configured default agent). UI surfaces use this to
+                         * @description True when this identity satisfies the backend rename guard (public
+                         *      and self-owned). UI surfaces use this to
                          *      show the rename entry point; the rename endpoint stays authoritative.
                          * @default false
                          */
@@ -3417,8 +3417,8 @@ export interface components {
                 identity: {
                     agent_id: string;
                     /**
-                     * @description True when this identity satisfies the backend rename guard (public,
-                     *      self-owned, not the configured default agent). UI surfaces use this to
+                     * @description True when this identity satisfies the backend rename guard (public
+                     *      and self-owned). UI surfaces use this to
                      *      show the rename entry point; the rename endpoint stays authoritative.
                      * @default false
                      */
@@ -3698,8 +3698,8 @@ export interface components {
                 identity: {
                     agent_id: string;
                     /**
-                     * @description True when this identity satisfies the backend rename guard (public,
-                     *      self-owned, not the configured default agent). UI surfaces use this to
+                     * @description True when this identity satisfies the backend rename guard (public
+                     *      and self-owned). UI surfaces use this to
                      *      show the rename entry point; the rename endpoint stays authoritative.
                      * @default false
                      */
@@ -3900,8 +3900,8 @@ export interface components {
                     identity: {
                         agent_id: string;
                         /**
-                         * @description True when this identity satisfies the backend rename guard (public,
-                         *      self-owned, not the configured default agent). UI surfaces use this to
+                         * @description True when this identity satisfies the backend rename guard (public
+                         *      and self-owned). UI surfaces use this to
                          *      show the rename entry point; the rename endpoint stays authoritative.
                          * @default false
                          */

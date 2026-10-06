@@ -943,8 +943,8 @@ pub struct AgentIdentityView {
     #[serde(skip, default = "default_agent_profile_preset")]
     #[schemars(skip)]
     pub profile_preset: AgentProfilePreset,
-    /// True when this identity satisfies the backend rename guard (public,
-    /// self-owned, not the configured default agent). UI surfaces use this to
+    /// True when this identity satisfies the backend rename guard (public
+    /// and self-owned). UI surfaces use this to
     /// show the rename entry point; the rename endpoint stays authoritative.
     #[serde(default)]
     pub can_rename: bool,
@@ -989,8 +989,7 @@ impl AgentIdentityView {
             ownership: record.ownership(),
             profile_preset: record.profile_preset(),
             can_rename: record.visibility == AgentVisibility::Public
-                && record.ownership() == AgentOwnership::SelfOwned
-                && record.agent_id != default_agent_id,
+                && record.ownership() == AgentOwnership::SelfOwned,
             status: record.status,
             is_default_agent: record.agent_id == default_agent_id,
             incarnation: record.incarnation,

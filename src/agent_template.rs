@@ -3016,7 +3016,13 @@ async fn materialize_skill_ref(
     match skill_ref {
         TemplateSkillRef::Local { path } => materialize_local_skill_ref(skills_root, path),
         TemplateSkillRef::Github(github_ref) => {
-            materialize_github_skill_ref(agent_home, github_ref)
+            let agent_home = agent_home.to_path_buf();
+            let github_ref = github_ref.clone();
+            tokio::task::spawn_blocking(move || {
+                materialize_github_skill_ref(&agent_home, &github_ref)
+            })
+            .await
+            .context("GitHub skill materialization task failed")?
         }
     }
 }

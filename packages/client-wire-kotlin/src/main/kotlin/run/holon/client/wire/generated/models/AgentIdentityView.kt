@@ -35,7 +35,7 @@ import kotlinx.serialization.Contextual
  * @param agentId
  * @param isDefaultAgent
  * @param status
- * @param canRename True when this identity satisfies the backend rename guard (public,  self-owned, not the configured default agent). UI surfaces use this to  show the rename entry point; the rename endpoint stays authoritative.
+ * @param canRename True when this identity satisfies the backend rename guard (public  and self-owned). UI surfaces use this to  show the rename entry point; the rename endpoint stays authoritative.
  * @param delegatedFromTaskId
  * @param incarnation Monotonic incarnation counter; 1 for the original identity and +1  for every explicit recreation of the same agent id after a fully  completed deletion.
  * @param lineageParentAgentId
@@ -55,7 +55,7 @@ data class AgentIdentityView (
     @Contextual @SerialName(value = "status")
     val status: AgentRegistryStatus,
 
-    /* True when this identity satisfies the backend rename guard (public,  self-owned, not the configured default agent). UI surfaces use this to  show the rename entry point; the rename endpoint stays authoritative. */
+    /* True when this identity satisfies the backend rename guard (public  and self-owned). UI surfaces use this to  show the rename entry point; the rename endpoint stays authoritative. */
     @SerialName(value = "can_rename")
     val canRename: kotlin.Boolean? = false,
 

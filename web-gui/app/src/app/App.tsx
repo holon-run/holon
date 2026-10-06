@@ -31,6 +31,7 @@ import type { ComponentType } from "react";
 
 import holonMarkUrl from "../assets/holon-mark.png";
 import { AgentPage } from "../features/agent/AgentPage";
+import { OnboardingModal } from "../features/onboarding/OnboardingModal";
 import { FilePreviewPage } from "../features/right-panel/FilePreviewPage";
 import { LoginPage } from "../features/auth/LoginPage";
 import { Button } from "../components/ui/Button";
@@ -94,6 +95,7 @@ export function App() {
   const { t } = useTranslation();
   useSyncExternalStore(subscribeRuntimeTrace, getRuntimeTraceRevision, getRuntimeTraceRevision);
   const developerDiagnosticsEnabled = isRuntimeTraceEnabled();
+  const [showOnboardingModal, setShowOnboardingModal] = useState(false);
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [createAgentId, setCreateAgentId] = useState("");
   const [createAgentTemplate, setCreateAgentTemplate] = useState("");
@@ -498,6 +500,22 @@ export function App() {
     return ok;
   }
 
+  function openOnboarding(): void {
+    setShowOnboardingModal(true);
+    void Promise.all([
+      refreshModelCatalog({ refresh: true }),
+      refreshRuntimeConfig(),
+      refreshTemplateCatalog(),
+    ]);
+  }
+
+  async function saveOnboardingModel(model: string): Promise<boolean> {
+    const result = await updateRuntimeConfig([{ key: "model.default", value: model }]);
+    if (!result) return false;
+    await refreshRuntimeConfig();
+    return true;
+  }
+
   if (isInitialBootstrapping) {
     return <BootstrappingPage />;
   }
@@ -605,6 +623,15 @@ export function App() {
               <div className="agent-list-state" role="status">
                 <strong>{loading ? t("status.syncing") : t("dashboard.noAgentsTitle")}</strong>
                 <span>{loading ? t("boot.body") : t("dashboard.startAgent")}</span>
+                {!loading ? (
+                  <button
+                    className="button button-primary"
+                    type="button"
+                    onClick={openOnboarding}
+                  >
+                    {t("dashboard.createFirstAgent")}
+                  </button>
+                ) : null}
               </div>
             ) : (
               visibleAgents.filter((agent) => navCollapsed || `${agent.name ?? ""} ${agent.id}`.toLowerCase().includes(agentFilter.toLowerCase())).map((agent) => {
@@ -984,6 +1011,20 @@ export function App() {
             });
           }}
           onClose={() => setRightPanelOpen(false)}
+        />
+      ) : null}
+
+      {showOnboardingModal ? (
+        <OnboardingModal
+          modelCatalog={modelCatalog}
+          modelCatalogLoading={modelCatalogLoading}
+          runtimeConfig={runtimeConfig}
+          runtimeConfigLoading={runtimeConfigLoading}
+          templateCatalog={templateCatalog}
+          templateCatalogLoading={templateCatalogLoading}
+          onSaveModel={saveOnboardingModel}
+          onCreateAgent={createTemplateAgent}
+          onClose={() => setShowOnboardingModal(false)}
         />
       ) : null}
 

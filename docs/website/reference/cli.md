@@ -183,8 +183,7 @@ Agent or overwrite conflicting user-managed state.
 
 `holon agent rename <AGENT_ID> --name <NAME>` updates the display name of a
 public self-owned agent and echoes the updated agent detail. The agent id is
-permanent; the configured default agent cannot be renamed, and duplicate names
-are rejected with a readable conflict error.
+permanent; duplicate names are rejected with a readable conflict error.
 
 ### Model selection
 
