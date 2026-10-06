@@ -1,0 +1,22 @@
+[package]
+name = "holon-model-client"
+version = "0.1.0"
+edition = "2021"
+description = "Provider-neutral model client contracts with an OpenAI-compatible transport"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+readme = "README.md"
+
+[features]
+default = ["openai-compatible"]
+openai-compatible = ["dep:reqwest"]
+
+[dependencies]
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+
+[dev-dependencies]
+tokio = { version = "1.43", features = ["macros", "rt-multi-thread"] }

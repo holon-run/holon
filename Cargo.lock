@@ -1449,6 +1449,7 @@ dependencies = [
  "flate2",
  "fs2",
  "futures-util",
+ "holon-model-client",
  "hyper",
  "hyper-util",
  "jsonwebtoken",
@@ -1485,6 +1486,17 @@ dependencies = [
  "uuid",
  "wreq",
  "wreq-util",
+]
+
+[[package]]
+name = "holon-model-client"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

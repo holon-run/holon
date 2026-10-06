@@ -44,6 +44,7 @@ decision-jev = { version = "0.1.0", path = "crates/decision-jev" }
 decision-openai = { version = "0.1.0", path = "crates/decision-openai" }
 decision-openai-decisions = { version = "0.1.0", path = "crates/decision-openai-decisions" }
 decision-local-onnx = { version = "0.1.0", path = "crates/decision-local-onnx", optional = true }
+holon-model-client = { version = "0.1.0", path = "crates/holon-model-client" }
 encoding_rs = "0.8"
 fs2 = "0.4"
 hyper = { version = "1.5", features = ["server", "http1", "http2"] }
