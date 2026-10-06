@@ -287,6 +287,9 @@ fn check_template_dir(template_dir: &FsPath) -> anyhow::Result<TemplateCheckResu
 }
 
 fn template_install_error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+    if error.downcast_ref::<crate::github::RateLimit>().is_some() {
+        return error_response(error);
+    }
     (
         StatusCode::BAD_REQUEST,
         Json(json!({
@@ -295,4 +298,30 @@ fn template_install_error_response(error: anyhow::Error) -> (StatusCode, Json<Va
             "code": "template_install_failed",
         })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tarball_limit_keeps_typed_http_projection_and_other_failures_are_compatible() {
+        let error = anyhow::Error::new(crate::github::RateLimit {
+            upstream_status: 403,
+            kind: crate::github::RateLimitKind::Secondary,
+            retry_after_seconds: Some(60),
+            reset_at: None,
+            auth_source: crate::github::AuthSource::Anonymous,
+        })
+        .context("template tarball failed");
+        let (status, Json(body)) = template_install_error_response(error);
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(body["code"], "github_rate_limited");
+        assert_eq!(body["retry_after_seconds"], 60);
+        assert_eq!(body["retryable"], true);
+        let (status, Json(body)) = template_install_error_response(anyhow!("no valid ref found"));
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "template_install_failed");
+        assert_eq!(body["error"], "no valid ref found");
+    }
 }

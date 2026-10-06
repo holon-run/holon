@@ -361,6 +361,99 @@ fn unreachable_control_plane_exits_nonzero_without_machine_stdout() {
 }
 
 #[test]
+fn remote_skill_errors_render_codes_and_recovery_hints_and_exit_one() {
+    let cases = [
+        (
+            429,
+            "remote_skill_rate_limited",
+            "GitHub API rate limit exceeded",
+            "Wait 17 seconds before retrying. For anonymous access, configure daemon-visible GITHUB_TOKEN / GH_TOKEN or authenticated gh.",
+        ),
+        (
+            429,
+            "remote_skill_rate_limited",
+            "GitHub API rate limit exceeded",
+            "Wait until 2026-10-06T12:00:00Z (UTC) before retrying.",
+        ),
+        (
+            400,
+            "remote_skill_not_found",
+            "remote skill was not found",
+            "browse the repository's skills/ directory and install one concrete skill",
+        ),
+    ];
+    for subcommand in ["add", "install"] {
+        for (status, code, error, hint) in cases {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let handle = thread::spawn(move || {
+                listener.set_nonblocking(true).unwrap();
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "missing CLI request");
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                let request = read_http_request(&mut stream);
+                let expected = if subcommand == "add" {
+                    "/api/skills/catalog/add"
+                } else {
+                    "/api/control/agents/main/skills/install"
+                };
+                assert!(
+                    request.starts_with(&format!("POST {expected} ")),
+                    "{request}"
+                );
+                let body = serde_json::json!({
+                    "ok": false,
+                    "error": error,
+                    "code": code,
+                    "hint": hint,
+                    "retryable": status == 429,
+                    "upstream_status": 403
+                })
+                .to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} Error\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            });
+            let (mut command, _home) = isolated_holon_command();
+            let output = command
+                .env("HOLON_HTTP_ADDR", addr.to_string())
+                .args([
+                    "skills",
+                    subcommand,
+                    "owner/repo",
+                    "--remote",
+                    "--skill",
+                    "demo",
+                ])
+                .output()
+                .unwrap();
+            handle.join().unwrap();
+            let (stdout, stderr) = output_text(&output);
+            assert_eq!(output.status.code(), Some(1), "{subcommand}: {stderr}");
+            assert!(stdout.is_empty(), "{stdout}");
+            assert!(stderr.contains(code), "{stderr}");
+            assert!(stderr.contains(error), "{stderr}");
+            assert!(stderr.contains(hint), "{stderr}");
+            assert!(!stderr.contains("exit status 403"), "{stderr}");
+        }
+    }
+}
+
+#[test]
 fn invalid_provider_configuration_exits_nonzero_without_machine_stdout() {
     let (mut command, _home) = isolated_holon_command();
     let output = command
