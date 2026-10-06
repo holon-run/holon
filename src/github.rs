@@ -884,8 +884,17 @@ mod tests {
         let base = format!("http://{}", listener.local_addr().unwrap());
         let thread = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
             let mut request = [0; 4096];
-            stream.read(&mut request).unwrap();
+            let mut received = 0;
+            while !request[..received].ends_with(b"\r\n\r\n") {
+                assert!(received < request.len(), "request headers exceed buffer");
+                let read = stream.read(&mut request[received..]).unwrap();
+                assert!(read > 0, "request closed before complete headers");
+                received += read;
+            }
             let body = "x".repeat(BODY_LIMIT * 2);
             write!(stream, "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
         });
