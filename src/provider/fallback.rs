@@ -196,6 +196,7 @@ mod tests {
         ServerError {
             retry_after: Option<std::time::Duration>,
         },
+        DeterministicError,
         Succeed,
     }
 
@@ -236,6 +237,19 @@ mod tests {
                         None,
                         retry_after,
                         "scripted server error",
+                    ),
+                ),
+                ScriptedFailure::DeterministicError => Err(
+                    crate::provider::retry::provider_transport_error_with_code_and_retry_after(
+                        crate::provider::retry::ProviderFailureClassification {
+                            kind: crate::provider::ProviderFailureKind::ContractError,
+                            disposition: RetryDisposition::FailFast,
+                        },
+                        Some("context_length_exceeded"),
+                        Some(500),
+                        None,
+                        None,
+                        "context length exceeded",
                     ),
                 ),
                 ScriptedFailure::Succeed => Ok(ProviderTurnResponse {
@@ -350,6 +364,34 @@ mod tests {
         );
         assert_eq!(timeline.attempts[0].backoff_ms, None);
         assert_eq!(timeline.attempts[0].backoff_source, None);
+    }
+
+    #[tokio::test]
+    async fn deterministic_provider_error_does_not_retry_same_request() {
+        let provider = FallbackProvider {
+            candidates: vec![scripted_candidate(
+                "openai/gpt-5.4",
+                vec![
+                    ScriptedFailure::DeterministicError,
+                    ScriptedFailure::Succeed,
+                ],
+            )],
+        };
+
+        let error = provider
+            .complete_turn(plain_turn_request())
+            .await
+            .expect_err("deterministic provider error should fail fast");
+        let timeline = crate::provider::provider_attempt_timeline(&error).expect("timeline");
+        assert_eq!(timeline.attempts.len(), 1);
+        assert_eq!(
+            timeline.attempts[0].failure_kind.as_deref(),
+            Some("contract_error")
+        );
+        assert_eq!(
+            timeline.attempts[0].outcome,
+            ProviderAttemptOutcome::FailFastAborted
+        );
     }
 
     #[tokio::test(start_paused = true)]

@@ -197,6 +197,8 @@ fn classify_openai_chat_completion_error_with_streaming(
         .and_then(|detail| detail.message.as_deref())
         .unwrap_or("unknown error");
     let error_code = detail.as_ref().and_then(|detail| detail.code.as_deref());
+    let deterministic_error =
+        is_known_deterministic_provider_error(detail.as_ref(), error.as_str());
 
     let classification = match error_code {
         Some("rate_limit_exceeded") | Some("rate_limit_exceeded_error") => {
@@ -221,9 +223,15 @@ fn classify_openai_chat_completion_error_with_streaming(
             kind: ProviderFailureKind::ContractError,
             disposition: RetryDisposition::FailFast,
         },
-        Some("server_error") | Some("service_unavailable") => ProviderFailureClassification {
-            kind: ProviderFailureKind::ServerError,
-            disposition: RetryDisposition::Retryable,
+        Some("server_error") | Some("service_unavailable") if !deterministic_error => {
+            ProviderFailureClassification {
+                kind: ProviderFailureKind::ServerError,
+                disposition: RetryDisposition::Retryable,
+            }
+        }
+        _ if deterministic_error => ProviderFailureClassification {
+            kind: ProviderFailureKind::ContractError,
+            disposition: RetryDisposition::FailFast,
         },
         _ => match error_type {
             "rate_limit_error" => ProviderFailureClassification {
