@@ -14,6 +14,20 @@ lifecycle implementations.
 
 The first supported system is macOS 13.
 
+## Branding And Localization
+
+The app bundle declares a multi-resolution `Holon.icns`, generated from the
+existing Holon brand mark during packaging. This is separate from the template
+image used by the menu bar, and does not change the accessory/Dock lifecycle.
+
+User-facing app text supports English and Simplified Chinese, selected through
+macOS language preferences with English as the development fallback. SwiftPM
+owns the localized resource bundle; the outer app declares the same supported
+languages and packaging verification checks that both catalogs are present.
+CLI commands, paths, URLs and daemon configuration values remain untranslated.
+Additional languages can extend the same catalogs without changing the runtime
+or introducing a separate language setting.
+
 ## Product Shape
 
 `Holon.app` contains:

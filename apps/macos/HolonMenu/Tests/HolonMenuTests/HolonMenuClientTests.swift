@@ -383,7 +383,7 @@ final class HolonMenuClientTests: XCTestCase {
             XCTFail("Expected insecure token file to be rejected")
         } catch let error as HolonCLIError {
             XCTAssertTrue(error.localizedDescription.contains(
-                "The control token file must be a nonempty, owner-only regular file: \(tokenPath)"
+                L10n.format("The control token file must be a nonempty, owner-only regular file: %@", tokenPath)
             ))
         }
         let invocations = await launcher.invocations()
@@ -585,7 +585,7 @@ final class HolonMenuClientTests: XCTestCase {
             _ = try await client.enableTailscaleServe()
             XCTFail("A start result must not grant ownership or authorize auth preparation")
         } catch {
-            XCTAssertTrue(error.localizedDescription.contains("ownership is unknown"))
+            XCTAssertEqual(error.localizedDescription, L10n.text("This daemon is externally managed or its ownership is unknown, or existing credentials conflict with disabled control authentication; an explicit daemon configuration change is required."))
         }
         let invocations = await launcher.invocations()
         XCTAssertFalse(invocations.contains { $0.arguments.contains("restart") })
@@ -607,7 +607,7 @@ final class HolonMenuClientTests: XCTestCase {
             _ = try await client.enableTailscaleServe()
             XCTFail("Disabled control authentication must not be silently overridden")
         } catch {
-            XCTAssertTrue(error.localizedDescription.contains("explicit daemon configuration"))
+            XCTAssertEqual(error.localizedDescription, L10n.text("This daemon is externally managed or its ownership is unknown, or existing credentials conflict with disabled control authentication; an explicit daemon configuration change is required."))
         }
         let invocations = await launcher.invocations()
         XCTAssertFalse(invocations.contains { $0.arguments.contains("restart") })
@@ -626,7 +626,7 @@ final class HolonMenuClientTests: XCTestCase {
             _ = try await client.enableTailscaleServe()
             XCTFail("Unknown ownership must not be inferred from executable path")
         } catch {
-            XCTAssertTrue(error.localizedDescription.contains("externally managed"))
+            XCTAssertEqual(error.localizedDescription, L10n.text("This daemon is externally managed or its ownership is unknown, or existing credentials conflict with disabled control authentication; an explicit daemon configuration change is required."))
         }
         let invocations = await launcher.invocations()
         XCTAssertFalse(invocations.contains { $0.arguments.contains("restart") })
@@ -644,7 +644,7 @@ final class HolonMenuClientTests: XCTestCase {
             _ = try await client.enableTailscaleServe()
             XCTFail("External daemon must not be restarted")
         } catch {
-            XCTAssertTrue(error.localizedDescription.contains("externally managed"))
+            XCTAssertEqual(error.localizedDescription, L10n.text("This daemon is externally managed or its ownership is unknown, or existing credentials conflict with disabled control authentication; an explicit daemon configuration change is required."))
         }
         let invocations = await launcher.invocations()
         XCTAssertFalse(invocations.contains { $0.arguments.contains("restart") })

@@ -71,7 +71,7 @@ final class HolonMenuViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.showTailscaleServeConfirmation)
         XCTAssertEqual(
             viewModel.tailscaleError,
-            "Tailscale Serve already exposes another service at /; leave its configuration unchanged."
+            L10n.text("Tailscale Serve already exposes another service at /; leave its configuration unchanged.")
         )
         XCTAssertEqual(viewModel.tailscaleStatus?.state, .connected)
         viewModel.stopPolling()

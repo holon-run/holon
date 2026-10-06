@@ -68,7 +68,7 @@ final class HolonMenuStatusController: NSObject {
                 backing: .buffered,
                 defer: false
             )
-            window.title = "Holon Settings"
+            window.title = L10n.text("Holon Settings")
             window.isReleasedWhenClosed = false
             window.contentViewController = NSHostingController(
                 rootView: HolonMenuSettingsView(viewModel: viewModel)

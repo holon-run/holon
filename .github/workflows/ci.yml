@@ -36,6 +36,7 @@ on:
       - "tests/e2e/scheduler/**"
       - "apps/macos/**"
       - "scripts/create-macos-dmg.sh"
+      - "scripts/generate-macos-app-icon.sh"
       - "scripts/package-macos-menu-app.sh"
       - "scripts/verify-macos-menu-app.sh"
       - "scripts/ci_timing.py"
@@ -75,6 +76,7 @@ on:
       - "tests/e2e/scheduler/**"
       - "apps/macos/**"
       - "scripts/create-macos-dmg.sh"
+      - "scripts/generate-macos-app-icon.sh"
       - "scripts/package-macos-menu-app.sh"
       - "scripts/verify-macos-menu-app.sh"
       - "scripts/ci_timing.py"
@@ -180,6 +182,7 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'apps/macos/**'
               - 'scripts/create-macos-dmg.sh'
+              - 'scripts/generate-macos-app-icon.sh'
               - 'scripts/package-macos-menu-app.sh'
               - 'scripts/verify-macos-menu-app.sh'
             macos_rust_check:

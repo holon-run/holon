@@ -13,12 +13,12 @@ struct HolonQRCodeView: View {
                     .scaledToFit()
                     .frame(width: 180, height: 180)
             } else {
-                Text("Unable to generate QR code.")
+                Text(L10n.text("Unable to generate QR code."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
-        .accessibilityLabel("Connection QR code")
+        .accessibilityLabel(L10n.text("Connection QR code"))
     }
 
     private static func image(for payload: String) -> CGImage? {

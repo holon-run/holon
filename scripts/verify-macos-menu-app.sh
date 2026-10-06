@@ -35,6 +35,27 @@ require_universal "$holon_binary"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info_plist")" == "$expected_version" ]]
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$info_plist")" == "13.0" ]]
 
+icon_file="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$info_plist")"
+[[ "$icon_file" == "Holon.icns" && -s "$app_dir/Contents/Resources/$icon_file" ]] || {
+  echo "Holon.app is missing its brand icon" >&2
+  exit 1
+}
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDevelopmentRegion' "$info_plist")" == "en" ]]
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleLocalizations:0' "$info_plist")" == "en" ]]
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleLocalizations:1' "$info_plist")" == "zh-Hans" ]]
+
+# SwiftPM resources must survive app packaging, not just swift test. Resource
+# directory names are lowercased by SwiftPM on some toolchain versions.
+resource_bundle="$app_dir/Contents/Resources/HolonMenu_HolonMenu.bundle"
+for language in en zh-Hans; do
+  strings_file="$(find "$resource_bundle" -type f -ipath "*/$language.lproj/Localizable.strings" -print -quit)"
+  [[ -n "$strings_file" ]] || {
+    echo "Holon.app is missing $language localization resources" >&2
+    exit 1
+  }
+  plutil -lint "$strings_file" >/dev/null
+done
+
 version_output="$("$holon_binary" --version)"
 if [[ "$version_output" == "holon ${expected_version} ("*"-dirty)" ]]; then
   commit_sha="${version_output#*"("}"

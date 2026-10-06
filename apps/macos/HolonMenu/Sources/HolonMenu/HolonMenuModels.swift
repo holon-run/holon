@@ -9,7 +9,11 @@ enum HolonDaemonLifecycleState: String, Codable, Sendable {
     case versionMismatch = "version_mismatch"
 
     var title: String {
-        rawValue.capitalized
+        title(locale: nil)
+    }
+
+    func title(locale: Locale?) -> String {
+        L10n.text(self == .versionMismatch ? "Version mismatch" : rawValue.capitalized, locale: locale)
     }
 }
 
@@ -85,23 +89,23 @@ struct HolonTailscaleStatus: Equatable, Sendable {
 
     var hasDrift: Bool { statusKnown && desiredEnabled != serving }
 
-    var desiredTitle: String { "Desired: \(desiredEnabled ? "On" : "Off")" }
+    var desiredTitle: String { L10n.format("Desired: %@", desiredEnabled ? L10n.text("On") : L10n.text("Off")) }
     var actualTitle: String {
-        statusKnown ? "Actual: \(serving ? "Serving" : "Not serving")" : "Actual: Unknown"
+        statusKnown ? L10n.format("Actual: %@", serving ? L10n.text("Serving") : L10n.text("Not serving")) : L10n.text("Actual: Unknown")
     }
 
     var title: String {
         switch state {
         case .unavailable:
-            return "Not installed"
+            return L10n.text("Not installed")
         case .stopped:
-            return "Not running"
+            return L10n.text("Not running")
         case .loggedOut:
-            return "Sign-in required"
+            return L10n.text("Sign-in required")
         case .connected:
-            return "Connected"
+            return L10n.text("Connected")
         case .serving:
-            return "Serve enabled"
+            return L10n.text("Serve enabled")
         }
     }
 
@@ -130,7 +134,7 @@ struct HolonTailscaleStatus: Equatable, Sendable {
                 state: .serving,
                 hostname: hostname,
                 serveURL: serveURL,
-                message: "Tailscale Serve is exposing Holon."
+                message: L10n.text("Tailscale Serve is exposing Holon.")
             )
         }
         if status.contains("needslogin") || status.contains("logged out") {
@@ -138,7 +142,7 @@ struct HolonTailscaleStatus: Equatable, Sendable {
                 state: .loggedOut,
                 hostname: hostname,
                 serveURL: nil,
-                message: "Sign in to Tailscale before enabling Serve."
+                message: L10n.text("Sign in to Tailscale before enabling Serve.")
             )
         }
         if status.contains("stopped") {
@@ -146,14 +150,14 @@ struct HolonTailscaleStatus: Equatable, Sendable {
                 state: .stopped,
                 hostname: hostname,
                 serveURL: nil,
-                message: "Start Tailscale before enabling Serve."
+                message: L10n.text("Start Tailscale before enabling Serve.")
             )
         }
         return Self(
             state: .connected,
             hostname: hostname,
             serveURL: nil,
-            message: "Tailscale is connected; Serve is not enabled."
+            message: L10n.text("Tailscale is connected; Serve is not enabled.")
         )
     }
 }
