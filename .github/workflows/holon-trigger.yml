@@ -36,6 +36,7 @@ jobs:
         uses: ./
         with:
           build_from_source: 'true'
+          holon_ref: ${{ github.sha }}
           trigger: auto
           auto_review: ${{ vars.HOLON_AUTO_REVIEW || 'false' }}
           auto_review_on_push: ${{ vars.HOLON_AUTO_REVIEW_ON_PUSH || 'false' }}
