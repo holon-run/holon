@@ -453,7 +453,7 @@ fn parse_tool_call(value: &Value) -> Result<ToolCall, ClientError> {
             ClientError::Decode(format!("invalid tool call arguments JSON: {error}"))
         })?,
         Some(arguments) => arguments.clone(),
-        None => Value::Null,
+        None => json!({}),
     };
     let id = value
         .get("id")
@@ -599,6 +599,28 @@ mod tests {
                         "function": {
                             "name": "get_status",
                             "arguments": ""
+                        }
+                    }]
+                }
+            }]
+        }))
+        .unwrap();
+
+        assert_eq!(response.tool_calls[0].arguments, json!({}));
+    }
+
+    #[test]
+    fn parses_missing_tool_call_arguments_as_an_empty_object() {
+        let response = parse_response(json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call-missing-args",
+                        "type": "function",
+                        "function": {
+                            "name": "get_status"
                         }
                     }]
                 }
