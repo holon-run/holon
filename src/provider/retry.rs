@@ -74,6 +74,18 @@ pub(crate) fn set_provider_transport_streaming(
     error
 }
 
+pub(crate) fn set_provider_transport_quota_identity(
+    mut error: anyhow::Error,
+    identity: super::ProviderQuotaIdentity,
+) -> anyhow::Error {
+    if let Some(transport_error) = error.downcast_mut::<ProviderTransportError>() {
+        if let Some(diagnostics) = transport_error.diagnostics.as_mut() {
+            diagnostics.quota_identity = Some(identity);
+        }
+    }
+    error
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderRetryDelaySource {
     ServerRetryAfter,
@@ -525,6 +537,7 @@ pub(crate) fn classify_status_error_with_trace(
             reqwest: None,
             context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(Some(status.as_u16()))),
+            quota_identity: None,
             source_chain: status_error_source_chain(provider, status),
         }),
         retry_after,
@@ -746,6 +759,7 @@ pub(crate) fn invalid_response_error_with_trace(
             reqwest: None,
             context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
+            quota_identity: None,
             source_chain: vec![error.clone()],
         }),
         format!("{context}: {error}"),
@@ -784,6 +798,7 @@ pub(crate) fn retryable_invalid_response_error_with_trace(
             reqwest: None,
             context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
+            quota_identity: None,
             source_chain: vec![error.clone()],
         }),
         Some(token_usage),
@@ -839,6 +854,7 @@ pub(crate) fn empty_response_error_with_trace(
             reqwest: None,
             context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
+            quota_identity: None,
             source_chain: vec![error.clone()],
         }),
         Some(token_usage),
@@ -872,6 +888,7 @@ pub(crate) fn timeout_transport_error_with_trace(
             reqwest: None,
             context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
+            quota_identity: None,
             source_chain: vec![reason.into()],
         }),
         context.to_string(),
@@ -921,6 +938,7 @@ fn reqwest_transport_diagnostics(
         }),
         context_budget: None,
         http_trace: trace.and_then(|trace| trace.diagnostics(status)),
+        quota_identity: None,
         source_chain,
     }
 }
@@ -968,9 +986,10 @@ mod tests {
 
     use super::{
         classify_status_error_with_trace, provider_fallback_disposition, provider_retry_delay,
-        ProviderFailureKind, ProviderRetryDelay, ProviderRetryDelaySource, ProviderTransportError,
+        set_provider_transport_quota_identity, ProviderFailureKind, ProviderRetryDelay,
+        ProviderRetryDelaySource, ProviderTransportError,
     };
-    use crate::provider::ProviderFallbackDisposition;
+    use crate::provider::{ProviderFallbackDisposition, ProviderQuotaIdentity};
 
     #[test]
     fn network_failures_defer_fallback_but_other_failures_remain_immediate() {
@@ -1208,6 +1227,56 @@ mod tests {
             ProviderFailureKind::RateLimited
         );
         assert_eq!(transport.retry_after, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn rate_limit_diagnostics_carry_redacted_quota_identity_and_round_trip() {
+        let identity = ProviderQuotaIdentity::exact("codex-account", "account-secret")
+            .expect("non-empty account should produce an identity");
+        let error = set_provider_transport_quota_identity(
+            classify_status_error_with_trace(
+                "OpenAI request failed",
+                "response_status",
+                Some("openai-codex"),
+                Some("openai-codex/gpt-5.3-codex-spark"),
+                Some("https://chatgpt.com/backend-api/codex/responses"),
+                StatusCode::TOO_MANY_REQUESTS,
+                r#"{"error":{"message":"rate limited"}}"#.into(),
+                None,
+                Some(Duration::from_secs(5)),
+            ),
+            identity.clone(),
+        );
+        let transport = error
+            .downcast_ref::<ProviderTransportError>()
+            .expect("transport error");
+        assert_eq!(
+            transport.status,
+            Some(StatusCode::TOO_MANY_REQUESTS.as_u16())
+        );
+        assert_eq!(transport.retry_after, Some(Duration::from_secs(5)));
+
+        let diagnostics = transport
+            .diagnostics
+            .as_ref()
+            .expect("rate limit should include transport diagnostics");
+        assert_eq!(diagnostics.provider.as_deref(), Some("openai-codex"));
+        assert_eq!(
+            diagnostics.status,
+            Some(StatusCode::TOO_MANY_REQUESTS.as_u16())
+        );
+        assert_eq!(diagnostics.quota_identity.as_ref(), Some(&identity));
+
+        let encoded = serde_json::to_value(diagnostics).expect("diagnostics should serialize");
+        assert_eq!(
+            encoded["quota_identity"],
+            serde_json::to_value(&identity).expect("identity should serialize")
+        );
+        assert!(!encoded.to_string().contains("account-secret"));
+
+        let decoded: crate::provider::ProviderTransportDiagnostics =
+            serde_json::from_value(encoded).expect("diagnostics should deserialize");
+        assert_eq!(decoded, *diagnostics);
     }
 
     #[test]

@@ -338,6 +338,7 @@ fn context_budget_overflow_error(
             suggestion: SUGGESTION.to_string(),
         }),
         http_trace: None,
+        quota_identity: None,
         source_chain: Vec::new(),
     };
     provider_transport_error_with_code(
