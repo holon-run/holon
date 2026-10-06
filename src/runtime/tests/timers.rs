@@ -1,6 +1,195 @@
 use super::super::*;
 use super::support::*;
 
+// Keep the test task runnable so paused Tokio cannot jump to the old deadline.
+async fn yield_timer_loop() {
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+}
+
+async fn assert_timer_fire_count(
+    runtime: &RuntimeHandle,
+    timer_id: &str,
+    expected: u64,
+) -> TimerRecord {
+    for _ in 0..100 {
+        let timer = runtime
+            .recent_timers(100)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|timer| timer.id == timer_id)
+            .unwrap();
+        if timer.fire_count == expected {
+            return timer;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("timer {timer_id} did not reach fire_count {expected}");
+}
+
+fn assert_single_durable_timer_wake(runtime: &RuntimeHandle, timer_id: &str) -> String {
+    let messages = runtime
+        .storage()
+        .read_recent_messages(100)
+        .unwrap()
+        .into_iter()
+        .filter(|message| {
+            matches!(&message.origin, MessageOrigin::Timer { timer_id: id } if id == timer_id)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(messages.len(), 1);
+    let wake = runtime
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(timer_id)
+        .unwrap()
+        .expect("timer must retain a durable pending wake");
+    assert_eq!(wake.message_id, messages[0].id);
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&wake.message_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
+    wake.message_id
+}
+
+#[tokio::test(start_paused = true)]
+async fn one_shot_timer_rechecks_wall_clock_after_long_suspend() {
+    for hours in [24, 48] {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let clock = controlled_clock();
+        let runtime = RuntimeHandle::new_with_clock(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("timer done")),
+            "default".into(),
+            context_config(),
+            clock.clone(),
+        )
+        .unwrap();
+        let timer = runtime.schedule_timer(3_600_000, None, None).await.unwrap();
+        yield_timer_loop().await;
+        assert_timer_fire_count(&runtime, &timer.id, 0).await;
+
+        clock.advance(std::time::Duration::from_secs(hours * 3_600));
+        tokio::time::advance(std::time::Duration::from_secs(30)).await;
+        yield_timer_loop().await;
+        let fired = assert_timer_fire_count(&runtime, &timer.id, 1).await;
+        assert_eq!(fired.status, TimerStatus::Completed);
+        assert_single_durable_timer_wake(&runtime, &timer.id);
+        assert_eq!(runtime.agent_state().await.unwrap().pending, 1);
+
+        tokio::time::advance(std::time::Duration::from_secs(30)).await;
+        yield_timer_loop().await;
+        assert_timer_fire_count(&runtime, &timer.id, 1).await;
+        assert_single_durable_timer_wake(&runtime, &timer.id);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn repeating_timer_rechecks_wall_clock_on_each_arm_without_replaying_history() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("timer done")),
+        "default".into(),
+        context_config(),
+        clock.clone(),
+    )
+    .unwrap();
+    let timer = runtime
+        .schedule_timer(3_600_000, Some(7 * 3_600_000), None)
+        .await
+        .unwrap();
+    let original_deadline = timer.next_fire_at.unwrap();
+    yield_timer_loop().await;
+    assert_timer_fire_count(&runtime, &timer.id, 0).await;
+
+    let mut first_wake = None;
+    for (round, hours) in [24, 48].into_iter().enumerate() {
+        clock.advance(std::time::Duration::from_secs(hours * 3_600));
+        tokio::time::advance(std::time::Duration::from_secs(30)).await;
+        yield_timer_loop().await;
+        let fired = assert_timer_fire_count(&runtime, &timer.id, (round + 1) as u64).await;
+        assert_eq!(fired.status, TimerStatus::Active);
+        let next = fired.next_fire_at.unwrap();
+        assert!(next > clock.now());
+        assert!(next <= clock.now() + chrono::Duration::hours(7));
+        assert_eq!(
+            (next - original_deadline).num_milliseconds() % (7 * 3_600_000),
+            0
+        );
+        let wake_id = assert_single_durable_timer_wake(&runtime, &timer.id);
+        if let Some(first) = &first_wake {
+            assert_eq!(&wake_id, first);
+        } else {
+            first_wake = Some(wake_id);
+        }
+        assert_eq!(runtime.agent_state().await.unwrap().pending, 1);
+        // Let the next sleep arm before separating the clocks again.
+        yield_timer_loop().await;
+        assert_timer_fire_count(&runtime, &timer.id, (round + 1) as u64).await;
+    }
+    runtime.cancel_timer(&timer.id).await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_sleeping_timer_cannot_fire_after_wall_clock_suspend() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("timer done")),
+        "default".into(),
+        context_config(),
+        clock.clone(),
+    )
+    .unwrap();
+    let timer = runtime
+        .schedule_timer(3_600_000, Some(3_600_000), None)
+        .await
+        .unwrap();
+    yield_timer_loop().await;
+    runtime.cancel_timer(&timer.id).await.unwrap();
+    clock.advance(std::time::Duration::from_secs(48 * 3_600));
+    tokio::time::advance(std::time::Duration::from_secs(30)).await;
+    yield_timer_loop().await;
+    let cancelled = assert_timer_fire_count(&runtime, &timer.id, 0).await;
+    assert_eq!(cancelled.status, TimerStatus::Cancelled);
+    assert!(runtime
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(&timer.id)
+        .unwrap()
+        .is_none());
+    assert!(!runtime.storage().read_recent_messages(100).unwrap().iter().any(
+        |message| matches!(&message.origin, MessageOrigin::Timer { timer_id } if timer_id == &timer.id)
+    ));
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+}
+
 #[tokio::test(start_paused = true)]
 async fn runtime_fires_overdue_timer_after_restart() {
     let dir = tempdir().unwrap();

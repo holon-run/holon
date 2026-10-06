@@ -1829,6 +1829,9 @@ pub(crate) fn abort_error_response(error: anyhow::Error) -> (StatusCode, Json<Va
 }
 
 pub(crate) fn skill_install_error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+    if let Some(limit) = error.downcast_ref::<crate::github::RateLimit>() {
+        return github_rate_limit_response(limit, "remote_skill_rate_limited");
+    }
     match error.downcast::<crate::skills::SkillInstallConflict>() {
         Ok(conflict) => http_error(
             StatusCode::CONFLICT,
@@ -1885,9 +1888,49 @@ fn remote_skill_install_failed_envelope(
 }
 
 pub(crate) fn error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+    if let Some(limit) = error.downcast_ref::<crate::github::RateLimit>() {
+        return github_rate_limit_response(limit, "github_rate_limited");
+    }
     let descriptor = describe_runtime_error(&error);
     let status = runtime_error_status(&descriptor);
     http_error(status, HttpErrorEnvelope::from_descriptor(descriptor))
+}
+
+fn github_rate_limit_response(
+    limit: &crate::github::RateLimit,
+    code: &str,
+) -> (StatusCode, Json<Value>) {
+    use crate::github::{AuthSource, RateLimitKind};
+
+    let mut envelope = HttpErrorEnvelope::new(code, limit.to_string())
+        .hint(limit.recovery_hint())
+        .retryable(true)
+        .extension("upstream_status", limit.upstream_status)
+        .extension(
+            "rate_limit_kind",
+            match limit.kind {
+                RateLimitKind::Primary => "primary",
+                RateLimitKind::Secondary => "secondary",
+                RateLimitKind::Unknown => "unknown",
+            },
+        )
+        .extension(
+            "auth_source",
+            match limit.auth_source {
+                AuthSource::Anonymous => "anonymous",
+                AuthSource::Configured => "configured",
+                AuthSource::Environment => "environment",
+                AuthSource::Gh => "gh",
+            },
+        );
+    envelope.domain = Some(RuntimeErrorDomain::Http);
+    if let Some(seconds) = limit.retry_after_seconds {
+        envelope = envelope.extension("retry_after_seconds", seconds);
+    }
+    if let Some(reset_at) = &limit.reset_at {
+        envelope = envelope.extension("reset_at", reset_at.clone());
+    }
+    http_error(StatusCode::TOO_MANY_REQUESTS, envelope)
 }
 
 fn runtime_error_status(descriptor: &RuntimeErrorDescriptor) -> StatusCode {
@@ -2951,6 +2994,100 @@ mod tests {
         assert_eq!(body["code"], "runtime_error");
         assert_eq!(body["domain"], "unknown");
         assert_eq!(body["retryable"], false);
+    }
+
+    #[test]
+    fn github_limits_project_safe_typed_sources_for_skills_and_templates() {
+        use crate::github::{AuthSource, RateLimit, RateLimitKind};
+
+        for auth_source in [AuthSource::Anonymous, AuthSource::Gh] {
+            for skill in [false, true] {
+                let limit = RateLimit {
+                    upstream_status: 403,
+                    kind: RateLimitKind::Primary,
+                    retry_after_seconds: Some(17),
+                    reset_at: Some("2026-10-06T12:00:00Z".to_string()),
+                    auth_source,
+                };
+                let expected_hint = limit.recovery_hint();
+                let error = anyhow::Error::new(limit)
+                    .context("untrusted upstream context: Bearer do-not-publish");
+                let (status, axum::Json(body)) = if skill {
+                    super::skill_install_error_response(error)
+                } else {
+                    error_response(error)
+                };
+                assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+                assert_eq!(body["ok"], false);
+                assert_eq!(body["retryable"], true);
+                assert_eq!(
+                    body["code"],
+                    if skill {
+                        "remote_skill_rate_limited"
+                    } else {
+                        "github_rate_limited"
+                    }
+                );
+                assert_eq!(body["upstream_status"], 403);
+                assert_eq!(body["rate_limit_kind"], "primary");
+                assert_eq!(body["retry_after_seconds"], 17);
+                assert_eq!(body["reset_at"], "2026-10-06T12:00:00Z");
+                assert_eq!(body["hint"], expected_hint);
+                let serialized = body.to_string();
+                assert!(!serialized.contains("do-not-publish"));
+                for key in ["stdout", "stderr", "exit_status", "body"] {
+                    assert!(body.get(key).is_none(), "{key}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn github_limits_without_deadlines_do_not_invent_recovery_times() {
+        let limit = crate::github::RateLimit {
+            upstream_status: 429,
+            kind: crate::github::RateLimitKind::Unknown,
+            retry_after_seconds: None,
+            reset_at: None,
+            auth_source: crate::github::AuthSource::Environment,
+        };
+        let (status, axum::Json(body)) = error_response(anyhow::Error::new(limit));
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(body["upstream_status"], 429);
+        assert_eq!(body["auth_source"], "environment");
+        assert!(body.get("reset_at").is_none());
+        assert!(body.get("retry_after_seconds").is_none());
+        assert!(!body["hint"].as_str().unwrap().contains("GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn non_limit_skill_failures_keep_existing_status_and_codes() {
+        for (upstream, status, code) in [
+            (404, StatusCode::BAD_REQUEST, "remote_skill_not_found"),
+            (403, StatusCode::BAD_GATEWAY, "remote_skill_install_failed"),
+            (401, StatusCode::BAD_GATEWAY, "remote_skill_install_failed"),
+        ] {
+            let failed = crate::skills::RemoteSkillInstallFailed {
+                package: "owner/repo".to_string(),
+                status: Some(upstream),
+                stdout: String::new(),
+                stderr: "Forbidden".to_string(),
+            };
+            let (actual_status, axum::Json(body)) =
+                super::skill_install_error_response(failed.into());
+            assert_eq!(actual_status, status);
+            assert_eq!(body["code"], code);
+            assert_eq!(body["exit_status"], upstream);
+        }
+        let (status, axum::Json(body)) = super::skill_install_error_response(
+            crate::skills::RemoteSkillInstallTimedOut {
+                package: "owner/repo".to_string(),
+                timeout_seconds: 120,
+            }
+            .into(),
+        );
+        assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(body["code"], "remote_skill_install_timeout");
     }
 
     #[test]

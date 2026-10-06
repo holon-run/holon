@@ -453,7 +453,7 @@ pub async fn control_agent_delete_fails_closed_when_home_is_symlink() -> Result<
     Ok(())
 }
 
-pub async fn control_agent_name_validation_and_default_rename_errors_are_typed() -> Result<()> {
+pub async fn control_agent_name_validation_and_default_rename_are_applied() -> Result<()> {
     let (_host, base, server) = spawn_server().await?;
     let client = Client::new();
 
@@ -468,20 +468,27 @@ pub async fn control_agent_name_validation_and_default_rename_errors_are_typed()
         "agent_name_invalid"
     );
 
+    // The configured default agent is public and self-owned, so it can be
+    // renamed like any other user agent; only its stable `agent_id` is kept.
     let default_rename = client
         .patch(format!("{base}/api/control/agents/default/name"))
         .json(&serde_json::json!({ "name": "Renamed Default" }))
         .send()
         .await?;
-    assert_eq!(default_rename.status(), reqwest::StatusCode::CONFLICT);
+    assert_eq!(default_rename.status(), reqwest::StatusCode::OK);
+    let default_renamed: serde_json::Value = default_rename.json().await?;
     assert_eq!(
-        default_rename.json::<serde_json::Value>().await?["code"],
-        "agent_rename_forbidden"
+        default_renamed["identity"]["agent_id"],
+        serde_json::json!("default")
+    );
+    assert_eq!(
+        default_renamed["identity"]["name"],
+        serde_json::json!("Renamed Default")
     );
 
     // The agents list reports rename eligibility so UIs can gate the entry
-    // point: the configured default agent is not renameable, a created named
-    // agent is.
+    // point: the configured default agent is renameable, and so is a created
+    // named agent.
     let created: serde_json::Value = client
         .post(format!("{base}/api/control/agents/renamable-http/create"))
         .json(&serde_json::json!({ "name": "Renamable One" }))
@@ -507,7 +514,7 @@ pub async fn control_agent_name_validation_and_default_rename_errors_are_typed()
         .iter()
         .find(|identity| identity["is_default_agent"] == serde_json::json!(true))
         .expect("default agent identity");
-    assert_eq!(default_identity["can_rename"], serde_json::json!(false));
+    assert_eq!(default_identity["can_rename"], serde_json::json!(true));
     let named_identity = identities
         .iter()
         .find(|identity| identity["agent_id"] == serde_json::json!("renamable-http"))
@@ -3989,6 +3996,23 @@ pub async fn native_oidc_ticket_requires_matching_verifier_without_consuming_on_
             .send()
             .await?;
         assert_eq!(missing_proof.status(), reqwest::StatusCode::BAD_REQUEST);
+        for method in ["plain", "s256", "S512", ""] {
+            let response = client
+                .get(format!("{base}/api/auth/oidc/native/start"))
+                .query(&[
+                    ("state", "app-state"),
+                    ("client", client_name),
+                    (
+                        "code_challenge",
+                        "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+                    ),
+                    ("code_challenge_method", method),
+                ])
+                .send()
+                .await?;
+            assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+            assert!(response.text().await?.contains("only supports S256"));
+        }
     }
     for client_name in ["unknown", "", "IOS", "run.holon.ios://oidc/callback"] {
         let response = client

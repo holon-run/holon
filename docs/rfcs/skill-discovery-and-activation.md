@@ -126,6 +126,57 @@ promotion event.
 Activated skills should contribute guidance through normal prompt assembly and
 should survive compaction and resume as durable activation records.
 
+## Remote GitHub Acquisition
+
+Skill acquisition and the two Rust template acquisition paths share an internal
+GitHub foundation for authentication, thin blocking/async HTTP adapters, and
+typed upstream rate-limit classification. Discovery, package/ref selection,
+archive extraction, registry state, and credential-profile loading remain in
+their respective business modules; the shared module does not depend on them.
+
+Authentication is resolved once per operation, without a permanent token cache:
+
+- Skills and blocking template tarballs: `GITHUB_TOKEN`, then `GH_TOKEN`.
+- Async templates: an explicit credential profile, then `HOLON_GITHUB_TOKEN`,
+  `GITHUB_TOKEN`, and `GH_TOKEN`.
+- A non-empty configured or environment token that is invalid as an HTTP header
+  stops credential fallback and selects anonymous access; lower-priority tokens
+  and `gh` are not tried.
+- Empty values are skipped. When no configured token is available, all three
+  paths may use `gh auth token -h github.com`, non-interactively with a five-second
+  deadline and child-process cleanup. Missing, unsuccessful, empty, or invalid
+  output permits anonymous public access. An HTTP authentication failure never
+  triggers token replacement or another attempt.
+
+The blocking `gh` fallback uses Unix nonblocking pipes, covering the current
+Linux and macOS release targets. Non-Unix blocking callers retain environment
+authentication and anonymous access, without launching `gh`.
+
+Authorization headers are sensitive. Requests attach credentials only to the
+configured GitHub API origin or validated HTTPS raw GitHub downloads; redirects
+must not forward them to unrelated hosts. Skill downloads retain their existing
+`raw.githubusercontent.com` allowlist. The module does not introduce a new
+production skill API-base override or expand credential-profile access.
+
+API failures capture status and rate-limit headers before reading bounded error
+bodies. A `403` with zero remaining quota or an explicit GitHub primary/secondary
+rate-limit message, and any `429`, produce a common typed rate-limit source.
+An ordinary `403`, a `Retry-After` header alone, or rate-limit wording in an
+unrelated raw-file response is not sufficient. Malformed or absent deadlines
+are ignored. No automatic retries or extra discovery probes are introduced.
+Typed limits survive contents-to-tree fallback and template ref probing; they
+must not be replaced by "not found" or "no valid ref" failures.
+
+HTTP boundaries project upstream limits as `429`, with
+`remote_skill_rate_limited` for skills and `github_rate_limited` for templates.
+The compatible `ok/error/code/hint` envelope adds `retryable=true` and allowlisted
+status, authentication-source, limit-kind, and optional waiting-deadline scalars.
+Recovery hints prefer Retry-After, then an absolute UTC reset time, otherwise
+waiting without a promised deadline. Only anonymous access suggests configuring
+a daemon-visible token or authenticated `gh`. Public limit errors never include
+upstream bodies, token material, or `gh` output. Other failure codes and statuses
+remain unchanged; CLI operational errors still exit with code 1.
+
 ## Related Historical Notes
 
 Supersedes and absorbs:

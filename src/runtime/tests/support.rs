@@ -1417,6 +1417,7 @@ impl AgentProvider for FailingTimelineProvider {
                             is_redirect: false,
                             status: None
                         }),
+                        context_budget: None,
                         http_trace: Some(ProviderHttpTraceDiagnostics {
                             capture_id: "trace-1-1".into(),
                             mode: "failure_only".into(),
@@ -1424,6 +1425,7 @@ impl AgentProvider for FailingTimelineProvider {
                                 .into(),
                             status: None
                         }),
+                        quota_identity: None,
                         source_chain: vec!["connection reset by peer".into()]
                     })
                 }],

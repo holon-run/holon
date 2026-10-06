@@ -12,6 +12,14 @@ pub struct NativeOidcStartQuery {
     pub client: Option<String>,
     pub state: Option<String>,
     pub code_challenge: Option<String>,
+    pub code_challenge_method: Option<String>,
+}
+
+fn validate_native_pkce_method(method: Option<&str>) -> Result<(), (StatusCode, Json<Value>)> {
+    if method.is_some_and(|method| method != "S256") {
+        return Err(bad_request("native login only supports S256"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -361,6 +369,7 @@ pub async fn start_native_oidc_login(
     Query(query): Query<NativeOidcStartQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let redirect_uri = native_oidc_redirect_uri(query.client.as_deref())?;
+    validate_native_pkce_method(query.code_challenge_method.as_deref())?;
     let challenge = query
         .code_challenge
         .filter(|value| {
@@ -544,6 +553,11 @@ pub async fn exchange_session(
     State(state): State<Arc<AppState>>,
     ApiJson(request): ApiJson<SessionExchangeRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    if request.native_verifier.is_some() {
+        return Err(auth_required(
+            "native login proof requires the native exchange endpoint",
+        ));
+    }
     let (session, cookie) = exchange_session_credential(State(state), ApiJson(request)).await?;
     Ok((
         StatusCode::OK,
@@ -643,6 +657,18 @@ pub async fn start_codex_device_login(
 #[cfg(test)]
 mod pairing_tests {
     use super::*;
+
+    #[test]
+    fn native_pkce_rejects_explicit_downgrade() {
+        assert!(validate_native_pkce_method(None).is_ok());
+        assert!(validate_native_pkce_method(Some("S256")).is_ok());
+        for method in ["plain", "", "s256", "unknown"] {
+            assert_eq!(
+                validate_native_pkce_method(Some(method)).unwrap_err().0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+    }
 
     #[test]
     fn ticket_is_single_use_expires_and_is_bounded() {

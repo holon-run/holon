@@ -74,6 +74,18 @@ pub(crate) fn set_provider_transport_streaming(
     error
 }
 
+pub(crate) fn set_provider_transport_quota_identity(
+    mut error: anyhow::Error,
+    identity: super::ProviderQuotaIdentity,
+) -> anyhow::Error {
+    if let Some(transport_error) = error.downcast_mut::<ProviderTransportError>() {
+        if let Some(diagnostics) = transport_error.diagnostics.as_mut() {
+            diagnostics.quota_identity = Some(identity);
+        }
+    }
+    error
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderRetryDelaySource {
     ServerRetryAfter,
@@ -472,10 +484,17 @@ pub(crate) fn classify_status_error_with_trace(
     trace: Option<&ProviderHttpTraceRequest>,
     retry_after: Option<Duration>,
 ) -> anyhow::Error {
+    let detail = extract_upstream_error_detail(&body);
+    let deterministic_error =
+        is_known_deterministic_provider_error(detail.as_ref(), Some(body.as_str()));
     let classification = match status {
         StatusCode::TOO_MANY_REQUESTS => ProviderFailureClassification {
             kind: ProviderFailureKind::RateLimited,
             disposition: RetryDisposition::Retryable,
+        },
+        _ if deterministic_error => ProviderFailureClassification {
+            kind: ProviderFailureKind::ContractError,
+            disposition: RetryDisposition::FailFast,
         },
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ProviderFailureClassification {
             kind: ProviderFailureKind::AuthError,
@@ -494,7 +513,6 @@ pub(crate) fn classify_status_error_with_trace(
             disposition: RetryDisposition::FailFast,
         },
     };
-    let detail = extract_upstream_error_detail(&body);
     let code = detail
         .as_ref()
         .and_then(|detail| detail.code.as_deref())
@@ -517,7 +535,9 @@ pub(crate) fn classify_status_error_with_trace(
             url: url.map(sanitize_transport_url),
             status: Some(status.as_u16()),
             reqwest: None,
+            context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(Some(status.as_u16()))),
+            quota_identity: None,
             source_chain: status_error_source_chain(provider, status),
         }),
         retry_after,
@@ -538,6 +558,44 @@ pub(crate) struct UpstreamErrorDetail {
     pub error_type: Option<String>,
     pub code: Option<String>,
     pub message: Option<String>,
+}
+
+pub(crate) fn is_known_deterministic_provider_error(
+    detail: Option<&UpstreamErrorDetail>,
+    raw_text: Option<&str>,
+) -> bool {
+    raw_text.is_some_and(is_known_deterministic_provider_error_text)
+        || detail.is_some_and(|detail| {
+            detail
+                .error_type
+                .as_deref()
+                .is_some_and(is_known_deterministic_provider_error_text)
+                || detail
+                    .code
+                    .as_deref()
+                    .is_some_and(is_known_deterministic_provider_error_text)
+                || detail
+                    .message
+                    .as_deref()
+                    .is_some_and(is_known_deterministic_provider_error_text)
+        })
+}
+
+pub(crate) fn is_known_deterministic_provider_error_text(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    [
+        "no user query found in messages",
+        "context_length_exceeded",
+        "context length exceeded",
+        "maximum context length",
+        "context window exceeded",
+        "context window is too small",
+        "prompt is too long",
+        "input is too long",
+        "too many tokens",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
 }
 
 pub(crate) fn extract_upstream_error_detail(body: &str) -> Option<UpstreamErrorDetail> {
@@ -699,7 +757,9 @@ pub(crate) fn invalid_response_error_with_trace(
             url: url.map(sanitize_transport_url),
             status: None,
             reqwest: None,
+            context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
+            quota_identity: None,
             source_chain: vec![error.clone()],
         }),
         format!("{context}: {error}"),
@@ -736,7 +796,9 @@ pub(crate) fn retryable_invalid_response_error_with_trace(
             url: url.map(sanitize_transport_url),
             status: None,
             reqwest: None,
+            context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
+            quota_identity: None,
             source_chain: vec![error.clone()],
         }),
         Some(token_usage),
@@ -790,7 +852,9 @@ pub(crate) fn empty_response_error_with_trace(
             url: url.map(sanitize_transport_url),
             status: None,
             reqwest: None,
+            context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
+            quota_identity: None,
             source_chain: vec![error.clone()],
         }),
         Some(token_usage),
@@ -822,7 +886,9 @@ pub(crate) fn timeout_transport_error_with_trace(
             url: url.map(sanitize_transport_url),
             status: None,
             reqwest: None,
+            context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
+            quota_identity: None,
             source_chain: vec![reason.into()],
         }),
         context.to_string(),
@@ -870,7 +936,9 @@ fn reqwest_transport_diagnostics(
             is_redirect: error.is_redirect(),
             status,
         }),
+        context_budget: None,
         http_trace: trace.and_then(|trace| trace.diagnostics(status)),
+        quota_identity: None,
         source_chain,
     }
 }
@@ -918,9 +986,10 @@ mod tests {
 
     use super::{
         classify_status_error_with_trace, provider_fallback_disposition, provider_retry_delay,
-        ProviderFailureKind, ProviderRetryDelay, ProviderRetryDelaySource, ProviderTransportError,
+        set_provider_transport_quota_identity, ProviderFailureKind, ProviderRetryDelay,
+        ProviderRetryDelaySource, ProviderTransportError,
     };
-    use crate::provider::ProviderFallbackDisposition;
+    use crate::provider::{ProviderFallbackDisposition, ProviderQuotaIdentity};
 
     #[test]
     fn network_failures_defer_fallback_but_other_failures_remain_immediate() {
@@ -1158,6 +1227,161 @@ mod tests {
             ProviderFailureKind::RateLimited
         );
         assert_eq!(transport.retry_after, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn rate_limit_diagnostics_carry_redacted_quota_identity_and_round_trip() {
+        let identity = ProviderQuotaIdentity::exact("codex-account", "account-secret")
+            .expect("non-empty account should produce an identity");
+        let error = set_provider_transport_quota_identity(
+            classify_status_error_with_trace(
+                "OpenAI request failed",
+                "response_status",
+                Some("openai-codex"),
+                Some("openai-codex/gpt-5.3-codex-spark"),
+                Some("https://chatgpt.com/backend-api/codex/responses"),
+                StatusCode::TOO_MANY_REQUESTS,
+                r#"{"error":{"message":"rate limited"}}"#.into(),
+                None,
+                Some(Duration::from_secs(5)),
+            ),
+            identity.clone(),
+        );
+        let transport = error
+            .downcast_ref::<ProviderTransportError>()
+            .expect("transport error");
+        assert_eq!(
+            transport.status,
+            Some(StatusCode::TOO_MANY_REQUESTS.as_u16())
+        );
+        assert_eq!(transport.retry_after, Some(Duration::from_secs(5)));
+
+        let diagnostics = transport
+            .diagnostics
+            .as_ref()
+            .expect("rate limit should include transport diagnostics");
+        assert_eq!(diagnostics.provider.as_deref(), Some("openai-codex"));
+        assert_eq!(
+            diagnostics.status,
+            Some(StatusCode::TOO_MANY_REQUESTS.as_u16())
+        );
+        assert_eq!(diagnostics.quota_identity.as_ref(), Some(&identity));
+
+        let encoded = serde_json::to_value(diagnostics).expect("diagnostics should serialize");
+        assert_eq!(
+            encoded["quota_identity"],
+            serde_json::to_value(&identity).expect("identity should serialize")
+        );
+        assert!(!encoded.to_string().contains("account-secret"));
+
+        let decoded: crate::provider::ProviderTransportDiagnostics =
+            serde_json::from_value(encoded).expect("diagnostics should deserialize");
+        assert_eq!(decoded, *diagnostics);
+    }
+
+    #[test]
+    fn rate_limit_status_wins_over_deterministic_marker() {
+        let error = classify_status_error_with_trace(
+            "Provider request failed",
+            "response_status",
+            Some("openai"),
+            Some("openai/gpt-5.4"),
+            Some("https://example.com/v1/chat/completions"),
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many tokens per minute".into(),
+            None,
+            Some(Duration::from_secs(5)),
+        );
+        let transport = error
+            .downcast_ref::<ProviderTransportError>()
+            .expect("transport error");
+        assert_eq!(
+            transport.classification.kind,
+            ProviderFailureKind::RateLimited
+        );
+        assert_eq!(
+            transport.classification.disposition,
+            super::RetryDisposition::Retryable
+        );
+        assert_eq!(transport.retry_after, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn deterministic_context_overflow_on_server_error_is_fail_fast() {
+        let error = classify_status_error_with_trace(
+            "Ollama request failed",
+            "response_status",
+            Some("ollama"),
+            Some("ollama/qwen3.8:latest"),
+            Some("http://localhost:11434/v1/chat/completions"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "context length exceeded: prompt is too long".into(),
+            None,
+            None,
+        );
+        let transport = error
+            .downcast_ref::<ProviderTransportError>()
+            .expect("transport error");
+        assert_eq!(
+            transport.classification.kind,
+            ProviderFailureKind::ContractError
+        );
+        assert_eq!(
+            transport.classification.disposition,
+            super::RetryDisposition::FailFast
+        );
+    }
+
+    #[test]
+    fn ollama_missing_user_query_on_server_error_is_fail_fast() {
+        let error = classify_status_error_with_trace(
+            "Ollama request failed",
+            "response_status",
+            Some("ollama"),
+            Some("ollama/qwen3.8:latest"),
+            Some("http://localhost:11434/v1/chat/completions"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "no user query found in messages".into(),
+            None,
+            None,
+        );
+        let transport = error
+            .downcast_ref::<ProviderTransportError>()
+            .expect("transport error");
+        assert_eq!(
+            transport.classification.kind,
+            ProviderFailureKind::ContractError
+        );
+        assert_eq!(
+            transport.classification.disposition,
+            super::RetryDisposition::FailFast
+        );
+    }
+
+    #[test]
+    fn generic_server_error_remains_retryable() {
+        let error = classify_status_error_with_trace(
+            "Provider request failed",
+            "response_status",
+            Some("ollama"),
+            Some("ollama/qwen3.8:latest"),
+            Some("http://localhost:11434/v1/chat/completions"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "temporary upstream failure".into(),
+            None,
+            None,
+        );
+        let transport = error
+            .downcast_ref::<ProviderTransportError>()
+            .expect("transport error");
+        assert_eq!(
+            transport.classification.kind,
+            ProviderFailureKind::ServerError
+        );
+        assert_eq!(
+            transport.classification.disposition,
+            super::RetryDisposition::Retryable
+        );
     }
 
     #[test]

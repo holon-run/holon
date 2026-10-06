@@ -1,17 +1,22 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- Self-hosted Holon runtimes commonly use trusted LAN or tailnet HTTP.
          The SDK restricts cleartext requests to the user-confirmed base host. -->
+    <!-- Keystore-bound revocable sessions must not leave the device via backup or transfer. -->
     <application
         android:allowBackup="false"
-        android:icon="@drawable/ic_holon"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:label="Holon"
         android:localeConfig="@xml/locales_config"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
-        android:theme="@style/Theme.Holon">
+        android:theme="@style/Theme.Holon"
+        tools:ignore="DataExtractionRules">
         <meta-data
             android:name="com.google.mlkit.vision.DEPENDENCIES"
             android:value="barcode" />

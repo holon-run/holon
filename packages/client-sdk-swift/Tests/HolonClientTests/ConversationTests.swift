@@ -15,6 +15,7 @@ final class ConversationTests: XCTestCase {
     }
     private func begin(_ seq: Int64 = 100) throws -> HolonSSEEvent {
         try frame("batch_begin", ["batch_id": .string("b"), "from_seq": .integer(0), "through_seq": .integer(seq),
+                                  "schema_version": .integer(2), "query_version": .integer(2),
                                   "runtime_id": .string("runtime-mobile"), "event_log_epoch": .string("epoch-mobile"),
                                   "visibility_scope_id": .string("scope-mobile")])
     }
@@ -22,6 +23,61 @@ final class ConversationTests: XCTestCase {
         try frame("checkpoint", ["batch_id": .string("b"), "through_seq": .integer(seq), "checkpoint": .string("committed"),
                                  "event_log_epoch": .string("epoch-mobile"), "visibility_scope_id": .string("scope-mobile")])
     }
+    func testRequiredConversationVersionsFailClosed() throws {
+        let snapshot = try initial()
+        guard case .object(let original) = snapshot.raw else { return XCTFail("Expected object") }
+        let event = try begin()
+        let raw = try JSONDecoder().decode(JSONValue.self, from: Data(event.data.utf8))
+        guard case .object(let batch) = raw else { return XCTFail("Expected object") }
+        let invalid: [JSONValue?] = [nil, .null, .string("2"), .bool(true), .number(1.5),
+                                    .integer(-1), .integer(0), .integer(3), .integer(Int64.max)]
+        // Include both absent, each absent (partial pair), wrong type, and unsupported values.
+        var pairs: [[String: JSONValue]] = [[:]]
+        for key in ["schema_version", "query_version"] {
+            for value in invalid {
+                var pair: [String: JSONValue] = ["schema_version": .integer(2), "query_version": .integer(2)]
+                pair[key] = value
+                pairs.append(pair)
+            }
+        }
+        for pair in pairs {
+            var fields = original
+            var beginFields = batch
+            for key in ["schema_version", "query_version"] {
+                fields[key] = pair[key]
+                beginFields[key] = pair[key]
+            }
+            XCTAssertThrowsError(try HolonConversationSnapshot(raw: .object(fields))) {
+                XCTAssertEqual($0 as? HolonConversationError, .malformedProtocol)
+            }
+            var reducer = HolonConversationReducer(snapshot: snapshot)
+            XCTAssertThrowsError(try reducer.acceptCommit(frame("batch_begin", beginFields))) {
+                XCTAssertEqual($0 as? HolonConversationError, .malformedProtocol)
+            }
+            XCTAssertThrowsError(try reducer.acceptCommit(checkpoint())) {
+                XCTAssertEqual($0 as? HolonConversationError, .malformedProtocol)
+            }
+            XCTAssertEqual(reducer.snapshot, snapshot)
+            XCTAssertNil(try reducer.acceptCommit(begin()))
+            XCTAssertNotNil(try reducer.acceptCommit(checkpoint()))
+        }
+        for schema: Int64 in 1...2 {
+            for query: Int64 in 1...2 {
+                var fields = original
+                var beginFields = batch
+                fields["schema_version"] = .integer(schema)
+                fields["query_version"] = .integer(query)
+                beginFields["schema_version"] = .integer(schema)
+                beginFields["query_version"] = .integer(query)
+                let compatible = try HolonConversationSnapshot(raw: .object(fields))
+                var reducer = HolonConversationReducer(snapshot: compatible)
+                XCTAssertNil(try reducer.acceptCommit(frame("batch_begin", beginFields)))
+                // Checkpoints have no versions in the Rust stream contract.
+                XCTAssertNotNil(try reducer.acceptCommit(checkpoint()))
+            }
+        }
+    }
+
     func testDetailInvalidationsCommitAtomicallyWithoutSummaryChanges() throws {
         let snapshot = try initial()
         var reducer = HolonConversationReducer(snapshot: snapshot)
@@ -154,9 +210,12 @@ final class ConversationTests: XCTestCase {
         XCTAssertEqual(reducer.snapshot, snapshot)
         let changedEpoch = try frame("batch_begin", [
             "batch_id": .string("b"), "from_seq": .integer(0), "through_seq": .integer(100),
+            "schema_version": .integer(2), "query_version": .integer(2),
             "runtime_id": .string("runtime-mobile"), "event_log_epoch": .string("new-epoch"),
             "visibility_scope_id": .string("scope-mobile")])
-        XCTAssertThrowsError(try reducer.accept(changedEpoch))
+        XCTAssertThrowsError(try reducer.accept(changedEpoch)) {
+            XCTAssertEqual($0 as? HolonConversationError, .bootstrapRequired)
+        }
         XCTAssertEqual(reducer.snapshot, snapshot)
         XCTAssertThrowsError(try reducer.accept(checkpoint()))
     }

@@ -105,30 +105,37 @@ See how teams share agents, set up continuous code review, and explore the desig
 </div>
 <a class="home-reading-all" href="/blog/">View all articles →</a>
 <div class="home-reading-grid">
+<a class="home-reading-card" href="/blog/from-prompt-to-finished-work">
+<img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
+<span class="home-reading-card__category">01 · WORKFLOW</span>
+<h3>From prompt to finished work</h3>
+<p>Give an agent a bounded repository task, let it work past the prompt, and return to a result you can inspect.</p>
+<span class="home-reading-card__cta">Follow the workflow →</span>
+</a>
 <a class="home-reading-card" href="/blog/what-is-holon">
 <img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">01 · PRODUCT</span>
+<span class="home-reading-card__category">02 · PRODUCT</span>
 <h3>Let multiple agents keep working in your environment</h3>
 <p>Move from asking AI for help each time to giving agents ongoing roles. Meet the local workbench that supports this way of working.</p>
 <span class="home-reading-card__cta">Meet Holon →</span>
 </a>
 <a class="home-reading-card" href="/blog/agents-in-a-small-team">
 <img class="home-reading-card__cover" src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">02 · TEAM</span>
+<span class="home-reading-card__category">03 · TEAM</span>
 <h3>Everyone has AI. How does the team work together?</h3>
 <p>Follow a team investigating a faulty digital piano. See how a shared agent uses teammates’ test results to continue the investigation.</p>
 <span class="home-reading-card__cta">Read the team story →</span>
 </a>
 <a class="home-reading-card" href="/blog/one-pr-one-work-item">
 <img class="home-reading-card__cover" src="/assets/continuous-pr-reviewer-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">03 · REVIEWER</span>
+<span class="home-reading-card__category">04 · REVIEWER</span>
 <h3>Set up an agent to follow code reviews through to completion</h3>
 <p>Start with the code-reviewer template, define its role and permissions, and connect repository events. Let it follow pull requests through fixes, automated checks, and merging.</p>
 <span class="home-reading-card__cta">Set up continuous review →</span>
 </a>
 <a class="home-reading-card" href="/blog/why-work-items">
 <img class="home-reading-card__cover" src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">04 · DESIGN</span>
+<span class="home-reading-card__category">05 · DESIGN</span>
 <h3>WorkItem: separate work state from the conversation</h3>
 <p>From an API migration to two reviews running side by side, see how work items retain goals, progress, and pending results between conversations.</p>
 <span class="home-reading-card__cta">Explore the design →</span>
@@ -147,7 +154,7 @@ Create an agent from an Agent Template, define its role, and give it a first tas
 
 First, install Holon, configure a model provider, and start the background service. Then open `http://localhost:7878` in your browser or run `holon tui`.
 
-<p class="home-start__boundary">Recommended release: <a href="https://github.com/holon-run/holon/releases/tag/v0.47.0">v0.47.0</a></p>
+<p class="home-start__boundary">Recommended release: <a href="https://github.com/holon-run/holon/releases/tag/v0.48.0">v0.48.0</a></p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="/getting-started/">Full setup guide</a>

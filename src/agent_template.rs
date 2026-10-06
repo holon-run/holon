@@ -2,7 +2,6 @@ use std::{
     collections::BTreeMap,
     env, fs,
     path::{Path, PathBuf},
-    time::Duration,
 };
 
 use crate::{
@@ -10,6 +9,7 @@ use crate::{
         credential_store_path, load_credential_store_at, AgentTemplateRemoteSourceConfigFile,
         AgentTemplatesConfigFile, CredentialKind,
     },
+    github::{ApiFailure, AsyncClient, BlockingClient, GitHubAuth},
     runtime_db::RuntimeDb,
     types::{
         AgentTemplateCatalogEntry, AgentTemplateDetail, AgentTemplateSkillDependency,
@@ -20,10 +20,7 @@ use crate::{
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
-use reqwest::{
-    header::{HeaderValue, AUTHORIZATION, USER_AGENT},
-    StatusCode,
-};
+use reqwest::{header::USER_AGENT, StatusCode};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -40,7 +37,6 @@ pub const OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_URL: &str = "https://github.com/
 const GITHUB_TEMPLATE_API_BASE_ENV: &str = "HOLON_TEMPLATE_GITHUB_API_BASE";
 const GITHUB_TEMPLATE_TOKEN_ENV_VARS: &[&str] = &["HOLON_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"];
 const GITHUB_TEMPLATE_USER_AGENT: &str = "holon-template-resolver";
-const GITHUB_TOKEN_RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 const MEMORY_SELF_INITIAL: &str = "# Self Memory\n\n";
 const MEMORY_OPERATOR_INITIAL: &str = r#"# Operator Memory
 
@@ -2542,8 +2538,7 @@ async fn resolve_github_template_with_client(
 }
 
 struct GitHubTemplateClient {
-    client: reqwest::Client,
-    auth: GitHubTemplateAuth,
+    client: AsyncClient,
 }
 
 impl GitHubTemplateClient {
@@ -2569,47 +2564,30 @@ impl GitHubTemplateClient {
             .build()
             .context("failed to build GitHub template client")?;
         Ok(Self {
-            client,
-            auth: GitHubTemplateAuth::resolve(configured_token).await,
+            client: AsyncClient::new(
+                client,
+                GitHubAuth::resolve(configured_token, GITHUB_TEMPLATE_TOKEN_ENV_VARS).await,
+                &github_template_api_base(),
+            )?,
         })
     }
 
     fn get(&self, url: reqwest::Url) -> reqwest::RequestBuilder {
-        self.auth.apply(
-            self.client
-                .get(url)
-                .header(USER_AGENT, GITHUB_TEMPLATE_USER_AGENT),
+        self.client
+            .get(url)
+            .header(USER_AGENT, GITHUB_TEMPLATE_USER_AGENT)
+    }
+}
+
+fn github_template_failure(failure: ApiFailure, context: String) -> anyhow::Error {
+    if let Some(rate_limit) = failure.rate_limit {
+        anyhow::Error::new(rate_limit).context(context)
+    } else {
+        anyhow!(
+            "{context} with status {}: {}",
+            failure.status,
+            failure.diagnostic
         )
-    }
-}
-
-#[derive(Debug, Clone)]
-struct GitHubTemplateAuth {
-    token: Option<String>,
-}
-
-impl GitHubTemplateAuth {
-    async fn resolve(configured_token: Option<String>) -> Self {
-        Self {
-            token: resolve_github_template_token(configured_token).await,
-        }
-    }
-
-    fn apply(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        let Some(token) = self.token.as_deref() else {
-            return request;
-        };
-        let value = format!("Bearer {token}");
-        match HeaderValue::from_str(&value) {
-            Ok(mut value) => {
-                value.set_sensitive(true);
-                request.header(AUTHORIZATION, value)
-            }
-            Err(error) => {
-                tracing::warn!(%error, "ignoring invalid GitHub template token header value");
-                request
-            }
-        }
     }
 }
 
@@ -2630,45 +2608,6 @@ fn load_github_template_credential_profile_token(
         bail!("GitHub template credential profile '{profile}' is empty");
     }
     Ok(token.to_string())
-}
-
-async fn resolve_github_template_token(configured_token: Option<String>) -> Option<String> {
-    if let Some(token) = configured_token
-        .map(|token| token.trim().to_string())
-        .filter(|token| !token.is_empty())
-    {
-        return Some(token);
-    }
-    if let Some(token) = resolve_github_template_env_token() {
-        return Some(token);
-    }
-    resolve_github_template_gh_token().await
-}
-
-fn resolve_github_template_env_token() -> Option<String> {
-    GITHUB_TEMPLATE_TOKEN_ENV_VARS
-        .iter()
-        .find_map(|key| env::var(key).ok().map(|value| value.trim().to_string()))
-        .filter(|value| !value.is_empty())
-}
-
-async fn resolve_github_template_gh_token() -> Option<String> {
-    let output = tokio::time::timeout(
-        GITHUB_TOKEN_RESOLVE_TIMEOUT,
-        tokio::process::Command::new("gh")
-            .args(["auth", "token", "-h", "github.com"])
-            .env("GH_PROMPT_DISABLED", "1")
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .ok()?
-    .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let token = String::from_utf8(output.stdout).ok()?.trim().to_string();
-    (!token.is_empty()).then_some(token)
 }
 
 fn github_template_api_base() -> String {
@@ -2697,11 +2636,10 @@ async fn fetch_github_file(
         return Ok(None);
     }
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        bail!(
-            "GitHub template fetch failed for {owner}/{repo}:{path}@{git_ref} with status {status}: {body}"
-        );
+        return Err(github_template_failure(
+            github.client.response_error(response).await,
+            format!("GitHub template fetch failed for {owner}/{repo}:{path}@{git_ref}"),
+        ));
     }
 
     let payload: GitHubContentsFileResponse = response.json().await.with_context(|| {
@@ -2793,11 +2731,10 @@ async fn fetch_github_dir(
         return Ok(None);
     }
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        bail!(
-            "GitHub directory listing failed for {owner}/{repo}:{path}@{git_ref} with status {status}: {body}"
-        );
+        return Err(github_template_failure(
+            github.client.response_error(response).await,
+            format!("GitHub directory listing failed for {owner}/{repo}:{path}@{git_ref}"),
+        ));
     }
     let entries = response
         .json::<Vec<GitHubContentsDirEntry>>()
@@ -2840,9 +2777,10 @@ async fn fetch_default_branch_with_client(
         .await
         .with_context(|| format!("failed to fetch repo info for {owner}/{repo}"))?;
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        bail!("GitHub repo info fetch failed for {owner}/{repo} with status {status}: {body}");
+        return Err(github_template_failure(
+            github.client.response_error(response).await,
+            format!("GitHub repo info fetch failed for {owner}/{repo}"),
+        ));
     }
     response
         .json::<GitHubRepoInfo>()
@@ -3016,7 +2954,13 @@ async fn materialize_skill_ref(
     match skill_ref {
         TemplateSkillRef::Local { path } => materialize_local_skill_ref(skills_root, path),
         TemplateSkillRef::Github(github_ref) => {
-            materialize_github_skill_ref(agent_home, github_ref)
+            let agent_home = agent_home.to_path_buf();
+            let github_ref = github_ref.clone();
+            tokio::task::spawn_blocking(move || {
+                materialize_github_skill_ref(&agent_home, &github_ref)
+            })
+            .await
+            .context("GitHub skill materialization task failed")?
         }
     }
 }
@@ -3168,6 +3112,30 @@ pub fn remove_user_template(user_home: &Path, template_id: &str) -> Result<()> {
 ///
 /// Expected URL: `https://github.com/<owner>/<repo>/tree/<ref>[/<path>]`
 pub fn install_template_from_github(user_home: &Path, github_url: &str) -> Result<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .user_agent(format!("holon/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("failed to create HTTP client for template install")?;
+    let client = BlockingClient::new(
+        client,
+        GitHubAuth::resolve_blocking(None, &["GITHUB_TOKEN", "GH_TOKEN"]),
+        "https://api.github.com",
+    )?;
+    install_template_from_github_with_client(
+        user_home,
+        github_url,
+        &client,
+        "https://api.github.com",
+    )
+}
+
+fn install_template_from_github_with_client(
+    user_home: &Path,
+    github_url: &str,
+    client: &BlockingClient,
+    api_base: &str,
+) -> Result<String> {
     let source = ParsedGithubTemplateUrl::parse(github_url)?;
     let templates_root = templates_root_for_home(user_home);
     fs::create_dir_all(&templates_root)
@@ -3181,12 +3149,6 @@ pub fn install_template_from_github(user_home: &Path, github_url: &str) -> Resul
     let _guard = TmpDirGuard(&tmp);
 
     fs::create_dir_all(&tmp).with_context(|| format!("failed to create {}", tmp.display()))?;
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .user_agent(format!("holon/{}", env!("CARGO_PKG_VERSION")))
-        .build()
-        .context("failed to create HTTP client for template install")?;
 
     // GitHub refs (branch/tag names) can contain slashes, making the
     // ref/path boundary in a tree URL ambiguous.  Try candidate splits
@@ -3204,18 +3166,14 @@ pub fn install_template_from_github(user_home: &Path, github_url: &str) -> Resul
             String::new()
         };
         let tarball_url = format!(
-            "https://api.github.com/repos/{}/{}/tarball/{}",
+            "{api_base}/repos/{}/{}/tarball/{}",
             source.owner, source.repo, candidate_ref
         );
-        // Forward GITHUB_TOKEN / GH_TOKEN when available so private repos work and
-        // the 60 req/hr unauthenticated rate limit is avoided.
-        let mut request = client
+        let response = client
             .get(&tarball_url)
-            .header("Accept", "application/vnd.github+json");
-        if let Ok(token) = env::var("GITHUB_TOKEN").or_else(|_| env::var("GH_TOKEN")) {
-            request = request.bearer_auth(&token);
-        }
-        let response = request.send().context("failed to request GitHub tarball")?;
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .context("failed to request GitHub tarball")?;
         if response.status().is_success() {
             resolved_path = candidate_path;
             bytes = Some(
@@ -3224,6 +3182,16 @@ pub fn install_template_from_github(user_home: &Path, github_url: &str) -> Resul
                     .context("failed to read GitHub tarball body")?,
             );
             break;
+        }
+        let failure = client.response_error(response);
+        if failure.rate_limit.is_some() {
+            return Err(github_template_failure(
+                failure,
+                format!(
+                    "GitHub tarball download failed for {}/{}@{candidate_ref}",
+                    source.owner, source.repo
+                ),
+            ));
         }
     }
     let bytes = bytes.ok_or_else(|| {
@@ -4538,6 +4506,220 @@ uses = "owner/repo/skills/demo@main"
         assert!(parse_github_repo_url("https://github.com/owner/repo#section").is_err());
     }
 
+    #[tokio::test]
+    async fn github_template_api_paths_preserve_typed_rate_limits() {
+        let _lock = crate::test_env::lock_env();
+        let server = MockGithubServer::start(vec![
+            ("/repos/owner/repo/contents/file", 429, "{}".into()),
+            ("/repos/owner/repo/contents/dir", 429, "{}".into()),
+            ("/repos/owner/repo", 429, "{}".into()),
+        ]);
+        let _base = EnvGuard::set(
+            GITHUB_TEMPLATE_API_BASE_ENV,
+            format!("http://{}", server.addr),
+        );
+        let github = GitHubTemplateClient::with_token(Some("test-token".into()))
+            .await
+            .unwrap();
+        let errors = [
+            fetch_github_file(&github, "owner", "repo", "main", "file")
+                .await
+                .unwrap_err(),
+            fetch_github_dir(&github, "owner", "repo", "main", "dir")
+                .await
+                .unwrap_err(),
+            fetch_default_branch_with_client(&github, "owner", "repo")
+                .await
+                .unwrap_err(),
+        ];
+        for error in errors {
+            assert!(error.downcast_ref::<crate::github::RateLimit>().is_some());
+            assert!(!format!("{error:#}").contains("test-token"));
+        }
+        assert_eq!(server.requests().len(), 3);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn github_template_anonymous_success_when_gh_fails_or_is_missing() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = crate::test_env::lock_env();
+        let home = tempdir().unwrap();
+        let bin = home.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let gh = bin.join("gh");
+        fs::write(&gh, "#!/bin/sh\nexit 1\n").unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+        let _home = EnvGuard::set("HOME", home.path().display().to_string());
+        let _path = EnvGuard::set("PATH", bin.display().to_string());
+        let _holon = EnvGuard::remove("HOLON_GITHUB_TOKEN");
+        let _github = EnvGuard::remove("GITHUB_TOKEN");
+        let _gh = EnvGuard::remove("GH_TOKEN");
+        for missing in [false, true] {
+            if missing {
+                fs::remove_file(&gh).unwrap();
+            }
+            let server = MockGithubServer::start(vec![(
+                "/repos/owner/repo/contents/template/AGENTS.md",
+                200,
+                github_file_response("# Public template"),
+            )]);
+            let _base = EnvGuard::set(
+                GITHUB_TEMPLATE_API_BASE_ENV,
+                format!("http://{}", server.addr),
+            );
+            resolve_github_template("https://github.com/owner/repo/tree/main/template")
+                .await
+                .unwrap();
+            let requests = server.requests();
+            assert!(!requests.is_empty());
+            assert!(requests
+                .iter()
+                .all(|request| request.authorization.is_none()));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn github_tarball_anonymous_and_gh_token_success() {
+        use std::os::unix::{fs::symlink, fs::PermissionsExt};
+
+        let _lock = crate::test_env::lock_env();
+        let home = tempdir().unwrap();
+        let archive_root = home.path().join("repo");
+        fs::create_dir(&archive_root).unwrap();
+        fs::write(archive_root.join("AGENTS.md"), "# Public template").unwrap();
+        let archive = home.path().join("archive.tar.gz");
+        assert!(std::process::Command::new("/usr/bin/tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(home.path())
+            .arg("repo")
+            .status()
+            .unwrap()
+            .success());
+        let bytes = fs::read(&archive).unwrap();
+        let bin = home.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        symlink("/usr/bin/tar", bin.join("tar")).unwrap();
+        symlink("/usr/bin/gzip", bin.join("gzip")).unwrap();
+        let gh = bin.join("gh");
+        let _home = EnvGuard::set("HOME", home.path().display().to_string());
+        let _path = EnvGuard::set("PATH", bin.display().to_string());
+        let _holon = EnvGuard::remove("HOLON_GITHUB_TOKEN");
+        let _github = EnvGuard::remove("GITHUB_TOKEN");
+        let _gh = EnvGuard::remove("GH_TOKEN");
+        for (script, expected) in [
+            (Some("#!/bin/sh\nexit 1\n"), None),
+            (None, None),
+            (
+                Some("#!/bin/sh\n[ \"$1 $2 $3 $4\" = \"auth token -h github.com\" ] && printf artificial-gh-token\n"),
+                Some("Bearer artificial-gh-token"),
+            ),
+        ] {
+            if let Some(script) = script {
+                fs::write(&gh, script).unwrap();
+                fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+            } else {
+                fs::remove_file(&gh).unwrap();
+            }
+            let server = MockGithubServer::start_bytes(vec![(
+                "/repos/owner/repo/tarball/main",
+                200,
+                bytes.clone(),
+            )]);
+            let base = format!("http://{}", server.addr);
+            let client = BlockingClient::new(
+                reqwest::blocking::Client::new(),
+                GitHubAuth::resolve_blocking(None, &["GITHUB_TOKEN", "GH_TOKEN"]),
+                &base,
+            )
+            .unwrap();
+            let destination = tempdir().unwrap();
+            assert_eq!(
+                install_template_from_github_with_client(
+                    destination.path(),
+                    "https://github.com/owner/repo/tree/main",
+                    &client,
+                    &base,
+                )
+                .unwrap(),
+                "repo"
+            );
+            let requests = server.requests();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].authorization.as_deref(), expected);
+        }
+    }
+
+    #[test]
+    fn github_tarball_ordinary_failures_preserve_ref_probe_order() {
+        let server = MockGithubServer::start(vec![]);
+        let base = format!("http://{}", server.addr);
+        let client = BlockingClient::new(
+            reqwest::blocking::Client::new(),
+            GitHubAuth::resolve_blocking(Some("test-token".into()), &[]),
+            &base,
+        )
+        .unwrap();
+        let home = tempdir().unwrap();
+        let error = install_template_from_github_with_client(
+            home.path(),
+            "https://github.com/owner/repo/tree/feature/topic/template",
+            &client,
+            &base,
+        )
+        .unwrap_err();
+        assert!(error.downcast_ref::<crate::github::RateLimit>().is_none());
+        assert!(format!("{error:#}").contains("no valid ref"));
+        let paths: Vec<String> = server
+            .requests()
+            .iter()
+            .map(|request| request.path.clone())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "/repos/owner/repo/tarball/feature/topic/template",
+                "/repos/owner/repo/tarball/feature/topic",
+                "/repos/owner/repo/tarball/feature",
+            ]
+        );
+    }
+
+    #[test]
+    fn github_tarball_rate_limit_stops_ref_probing() {
+        let server = MockGithubServer::start(vec![(
+            "/repos/owner/repo/tarball/feature/topic/template",
+            429,
+            "{}".into(),
+        )]);
+        let base = format!("http://{}", server.addr);
+        let client = BlockingClient::new(
+            reqwest::blocking::Client::new(),
+            GitHubAuth::resolve_blocking(Some("test-token".into()), &[]),
+            &base,
+        )
+        .unwrap();
+        let home = tempdir().unwrap();
+        let error = install_template_from_github_with_client(
+            home.path(),
+            "https://github.com/owner/repo/tree/feature/topic/template",
+            &client,
+            &base,
+        )
+        .unwrap_err();
+        assert!(error.downcast_ref::<crate::github::RateLimit>().is_some());
+        assert!(!format!("{error:#}").contains("no valid ref"));
+        assert_eq!(server.requests().len(), 1);
+        assert_eq!(
+            server.requests()[0].authorization.as_deref(),
+            Some("Bearer test-token")
+        );
+    }
+
     /// Build a mock GitHub API server that serves configured responses.
     struct MockGithubServer {
         addr: std::net::SocketAddr,
@@ -4558,6 +4740,15 @@ uses = "owner/repo/skills/demo@main"
         /// after each response so HTTP clients open a fresh connection per request
         /// instead of racing pooled keep-alive reuse against this server's close.
         fn start(responses: Vec<(&'static str, u16, String)>) -> Self {
+            Self::start_bytes(
+                responses
+                    .into_iter()
+                    .map(|(path, status, body)| (path, status, body.into_bytes()))
+                    .collect(),
+            )
+        }
+
+        fn start_bytes(responses: Vec<(&'static str, u16, Vec<u8>)>) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
             let requests = Arc::new(Mutex::new(Vec::new()));
@@ -4598,19 +4789,15 @@ uses = "owner/repo/skills/demo@main"
                     let matched = responses.iter().find(|(p, _, _)| match_path == *p);
                     let (status_code, body) = match matched {
                         Some((_, code, body)) => (*code, body.clone()),
-                        None => (404, "{\"message\":\"not found\"}".to_string()),
+                        None => (404, b"{\"message\":\"not found\"}".to_vec()),
                     };
-                    let status_text = if status_code == 200 {
-                        "200 OK"
-                    } else {
-                        "404 Not Found"
-                    };
+                    let status_text = format!("{status_code} Mock");
                     let _ = write!(
                         stream,
-                        "HTTP/1.1 {status_text}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(),
-                        body
+                        "HTTP/1.1 {status_text}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+                        body.len()
                     );
+                    let _ = stream.write_all(&body);
                     let _ = stream.flush();
                     let _ = stream.shutdown(Shutdown::Both);
                 }

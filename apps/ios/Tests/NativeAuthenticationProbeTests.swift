@@ -19,6 +19,7 @@ final class NativeAuthenticationProbeTests: XCTestCase {
         XCTAssertEqual(items.first { $0.name == "client" }?.value, "ios")
         XCTAssertEqual(items.first { $0.name == "state" }?.value, proof.state)
         XCTAssertEqual(items.first { $0.name == "code_challenge" }?.value, proof.challenge)
+        XCTAssertEqual(items.first { $0.name == "code_challenge_method" }?.value, "S256")
         XCTAssertThrowsError(try NativeLoginProof.make(apiBaseURL: URL(string: "http://holon.example/api/")!))
         XCTAssertThrowsError(try NativeLoginProof.make(apiBaseURL: URL(string: "https://user:secret@holon.example/api/")!))
     }

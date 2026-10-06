@@ -13,7 +13,7 @@ import AnyCodable
 public struct AgentIdentityView: Codable, JSONEncodable {
 
     public var agentId: String
-    /** True when this identity satisfies the backend rename guard (public,  self-owned, not the configured default agent). UI surfaces use this to  show the rename entry point; the rename endpoint stays authoritative. */
+    /** True when this identity satisfies the backend rename guard (public  and self-owned). UI surfaces use this to  show the rename entry point; the rename endpoint stays authoritative. */
     public var canRename: Bool? = false
     public var delegatedFromTaskId: String?
     /** Monotonic incarnation counter; 1 for the original identity and +1  for every explicit recreation of the same agent id after a fully  completed deletion. */

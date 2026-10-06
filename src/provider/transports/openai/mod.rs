@@ -35,10 +35,10 @@ use crate::{
         ProviderIncrementalContinuationDiagnostics, ProviderNativeWebSearchDiagnostics,
         ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
         ProviderOpenAiRemoteCompactionDiagnostics, ProviderOpenAiRequestControlsDiagnostics,
-        ProviderPromptFrame, ProviderRequestDiagnostics, ProviderResponseFormatDiagnostics,
-        ProviderResponseFormatRequest, ProviderStablePrefixDiagnostics,
-        ProviderTransportDiagnostics, ProviderTransportTimeline, ProviderTurnRequest,
-        ProviderTurnResponse, ToolSchemaContract,
+        ProviderPromptFrame, ProviderQuotaIdentity, ProviderRequestDiagnostics,
+        ProviderResponseFormatDiagnostics, ProviderResponseFormatRequest,
+        ProviderStablePrefixDiagnostics, ProviderTransportDiagnostics, ProviderTransportTimeline,
+        ProviderTurnRequest, ProviderTurnResponse, ToolSchemaContract,
     },
     token_estimate::estimate_json_tokens,
 };
@@ -48,7 +48,8 @@ use super::{build_http_client, request_send_timeout, response_body_timeout, stre
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
     empty_response_error, extract_upstream_error_detail_from_value, format_upstream_error_detail,
-    invalid_response_error, parse_retry_after, provider_transport_error,
+    invalid_response_error, is_known_deterministic_provider_error, parse_retry_after,
+    provider_transport_error, set_provider_transport_quota_identity,
     timeout_transport_error_with_trace, ProviderFailureClassification, ProviderFailureKind,
     ProviderTransportError, RetryDisposition,
 };
@@ -152,6 +153,7 @@ pub struct OpenAiCodexProvider {
     credential_material: Option<String>,
     credential_external: Option<String>,
     credential_store_path: Option<PathBuf>,
+    quota_identity: ProviderQuotaIdentity,
     codex_home: std::path::PathBuf,
     originator: String,
     model: String,
@@ -238,6 +240,24 @@ fn request_agent_id(request: &ProviderTurnRequest) -> Option<&str> {
         .cache
         .as_ref()
         .map(|cache| cache.agent_id.as_str())
+}
+
+fn openai_codex_coarse_quota_identity(
+    provider_config: &ProviderRuntimeConfig,
+) -> ProviderQuotaIdentity {
+    let credential_scope = provider_config
+        .auth
+        .profile
+        .as_deref()
+        .or(provider_config.auth.external.as_deref())
+        .unwrap_or("default");
+    ProviderQuotaIdentity::coarse(
+        "provider-credential",
+        &format!(
+            "{}:{credential_scope}",
+            provider_config.route_provider.as_str()
+        ),
+    )
 }
 
 fn openai_responses_url(base_url: &str) -> String {
@@ -852,6 +872,9 @@ impl AgentProvider for OpenAiCodexProvider {
         let plan_scope = plan.scope.clone();
         let plan_request_shape = plan.request_shape.clone();
         let mut credential = credential;
+        let mut quota_identity =
+            ProviderQuotaIdentity::exact("codex-account", &credential.account_id)
+                .unwrap_or_else(|| self.quota_identity.clone());
         let mut headers = openai_codex_headers(&credential, &self.originator);
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
         if let Some(remote_compaction) = maybe_compact_openai_request_plan(
@@ -891,6 +914,7 @@ impl AgentProvider for OpenAiCodexProvider {
         {
             Ok(parsed) => parsed,
             Err(error) => {
+                let error = set_provider_transport_quota_identity(error, quota_identity.clone());
                 if is_openai_codex_auth_status_error(&error) {
                     if let Some(refreshed) =
                         self.refresh_after_auth_failure(&credential).await.map_err(|refresh_error| {
@@ -908,6 +932,9 @@ impl AgentProvider for OpenAiCodexProvider {
                         })?
                     {
                         credential = refreshed;
+                        quota_identity =
+                            ProviderQuotaIdentity::exact("codex-account", &credential.account_id)
+                                .unwrap_or_else(|| self.quota_identity.clone());
                         headers = openai_codex_headers(&credential, &self.originator);
                         match send_openai_responses_streaming_request(
                             &self.client,
@@ -927,7 +954,10 @@ impl AgentProvider for OpenAiCodexProvider {
                                     &self.continuation,
                                     plan.scope.as_ref(),
                                 );
-                                return Err(retry_error);
+                                return Err(set_provider_transport_quota_identity(
+                                    retry_error,
+                                    quota_identity.clone(),
+                                ));
                             }
                         }
                     } else {
@@ -1314,7 +1344,9 @@ fn openai_codex_auth_error(
             url: None,
             status: None,
             reqwest: None,
+            context_budget: None,
             http_trace: None,
+            quota_identity: None,
             source_chain,
         }),
         message,

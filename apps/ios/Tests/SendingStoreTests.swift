@@ -48,6 +48,39 @@ final class SendingStoreTests: XCTestCase {
         XCTAssertThrowsError(try reopened.update(mutation))
     }
 
+    func testCompletePromptBudgetFailurePreservesDraftAndManagedReferences() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try FileManager.default.removeItem(at: folder) }
+        let scope = try scope()
+        let store = try makeStore(directory: folder)
+        let source = folder.appendingPathComponent("source.bin")
+        try Data(repeating: 0, count: 13 * 1024 * 1024).write(to: source)
+        try store.saveDraft(SendingDraft(text: "hello", modelID: "model"), scope: scope)
+        try store.stage(source: source, scope: scope)
+        try store.stage(source: source, scope: scope)
+        let original = store.draft(scope)
+        XCTAssertThrowsError(try store.enqueue(scope)) {
+            guard case SendingFailure.rejected = $0 else {
+                return XCTFail("Expected full prompt budget rejection, got \($0)")
+            }
+        }
+        XCTAssertEqual(store.draft(scope), original)
+        XCTAssertTrue(store.entries(scope).isEmpty)
+        for attachment in original.attachments {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: store.attachmentURL(attachment).path))
+        }
+        try store.closeForTesting()
+        let reopened = try makeStore(directory: folder)
+        XCTAssertEqual(reopened.draft(scope), original)
+        XCTAssertTrue(reopened.entries(scope).isEmpty)
+        var smaller = original
+        smaller.attachments.removeLast()
+        try reopened.saveDraft(smaller, scope: scope)
+        let entry = try reopened.enqueue(scope)
+        XCTAssertEqual(entry.draft, smaller)
+        XCTAssertTrue(reopened.draft(scope).attachments.isEmpty)
+    }
+
     func testLastDraftReferenceRemovalCleansOnlyManagedCopy() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         addTeardownBlock { try FileManager.default.removeItem(at: folder) }

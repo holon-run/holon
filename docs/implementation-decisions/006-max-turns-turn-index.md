@@ -25,3 +25,6 @@ max_turns`).
 
 The budget warning is not enforcement. The scheduling layer independently
 guarantees that no new turn starts beyond `max_turns`.
+
+Soft-timeout wrap-up follows the same boundary: when the last allowed turn
+settles after the timeout, no additional timeout follow-up turn is injected.

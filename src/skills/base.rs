@@ -7,11 +7,11 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tracing::warn;
 
+use crate::github::{BlockingClient, GitHubAuth, RateLimit};
 use crate::types::{
     ActiveSkillRecord, SkillCatalogEntry, SkillInstallMode, SkillRootRegistration,
     SkillRootScanStatus, SkillRootSourceKind, SkillRootView, SkillRootWatchStatus, SkillScope,
@@ -773,7 +773,7 @@ fn remote_package_ref_installs_all_skills(package: &str) -> bool {
 /// Downloads to `tmp`, verifies `SKILL_ENTRYPOINT` exists, records install
 /// metadata, then renames to `destination`.
 fn finalize_remote_skill_download(
-    client: &reqwest::blocking::Client,
+    client: &BlockingClient,
     source: &RemoteSkillSource,
     skill_path: &str,
     tmp: &Path,
@@ -808,9 +808,16 @@ fn install_github_remote_skill(
     package: &str,
     source: &RemoteSkillSource,
 ) -> Result<String> {
-    const REMOTE_SKILL_INSTALL_TIMEOUT: Duration =
-        Duration::from_secs(REMOTE_SKILL_INSTALL_TIMEOUT_SECONDS);
+    let client = remote_skill_client()?;
+    install_github_remote_skill_with_client(user_home, package, source, &client)
+}
 
+fn install_github_remote_skill_with_client(
+    user_home: &Path,
+    package: &str,
+    source: &RemoteSkillSource,
+    client: &BlockingClient,
+) -> Result<String> {
     let skills_root = user_library_skills_root(user_home);
     fs::create_dir_all(&skills_root)
         .with_context(|| format!("failed to create {}", skills_root.display()))?;
@@ -835,15 +842,9 @@ fn install_github_remote_skill(
         fs::remove_dir_all(&tmp).with_context(|| format!("failed to clear {}", tmp.display()))?;
     }
     fs::create_dir_all(&tmp).with_context(|| format!("failed to create {}", tmp.display()))?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(REMOTE_SKILL_INSTALL_TIMEOUT)
-        .user_agent(format!("holon/{}", env!("CARGO_PKG_VERSION")))
-        .default_headers(github_auth_headers())
-        .build()
-        .context("failed to create remote skill HTTP client")?;
 
     let effective_ref = resolve_effective_reference(
-        &client,
+        client,
         &source.owner,
         &source.repo,
         &source.reference,
@@ -856,7 +857,7 @@ fn install_github_remote_skill(
 
     // Try the candidate path first (e.g. `skills/my-skill`).
     let result = finalize_remote_skill_download(
-        &client,
+        client,
         &resolved_source,
         &source.path,
         &tmp,
@@ -883,7 +884,7 @@ fn install_github_remote_skill(
             fs::create_dir_all(&tmp)
                 .with_context(|| format!("failed to create {}", tmp.display()))?;
             match discover_skills_via_tree(
-                &client,
+                client,
                 &source.owner,
                 &source.repo,
                 &effective_ref,
@@ -897,7 +898,7 @@ fn install_github_remote_skill(
                     .filter(|path| path != &source.path)
                 {
                     Some(found_path) => finalize_remote_skill_download(
-                        &client,
+                        client,
                         &resolved_source,
                         &found_path,
                         &tmp,
@@ -907,6 +908,7 @@ fn install_github_remote_skill(
                     .map(|()| found_path),
                     None => Err(original_error),
                 },
+                Err(error) if error.downcast_ref::<RateLimit>().is_some() => Err(error),
                 Err(_) => Err(original_error),
             }
         }
@@ -922,24 +924,25 @@ fn install_github_remote_skill_set(
     package: &str,
     source: &RemoteSkillSetSource,
 ) -> Result<Vec<RemoteSkillInstall>> {
-    const REMOTE_SKILL_INSTALL_TIMEOUT: Duration =
-        Duration::from_secs(REMOTE_SKILL_INSTALL_TIMEOUT_SECONDS);
+    let client = remote_skill_client()?;
+    install_github_remote_skill_set_with_client(user_home, package, source, &client)
+}
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(REMOTE_SKILL_INSTALL_TIMEOUT)
-        .user_agent(format!("holon/{}", env!("CARGO_PKG_VERSION")))
-        .default_headers(github_auth_headers())
-        .build()
-        .context("failed to create remote skill HTTP client")?;
+fn install_github_remote_skill_set_with_client(
+    user_home: &Path,
+    package: &str,
+    source: &RemoteSkillSetSource,
+    client: &BlockingClient,
+) -> Result<Vec<RemoteSkillInstall>> {
     let effective_ref = resolve_effective_reference(
-        &client,
+        client,
         &source.owner,
         &source.repo,
         &source.reference,
         package,
     )?;
     let skills = discover_skills_via_tree(
-        &client,
+        client,
         &source.owner,
         &source.repo,
         &effective_ref,
@@ -982,7 +985,8 @@ fn install_github_remote_skill_set(
             path: skill_path,
             skill_name,
         };
-        let installed_path = install_github_remote_skill(user_home, package, &source)?;
+        let installed_path =
+            install_github_remote_skill_with_client(user_home, package, &source, &client)?;
         installed.push(RemoteSkillInstall {
             skill_name: source.skill_name,
             owner: source.owner,
@@ -1025,7 +1029,7 @@ struct GithubTreeResponse {
 /// If the reference is empty or `"HEAD"`, queries the repository's actual
 /// default branch via `GET /repos/{o}/{r}`.
 fn resolve_effective_reference(
-    client: &reqwest::blocking::Client,
+    client: &BlockingClient,
     owner: &str,
     repo: &str,
     reference: &str,
@@ -1038,7 +1042,7 @@ fn resolve_effective_reference(
 }
 
 fn resolve_default_branch(
-    client: &reqwest::blocking::Client,
+    client: &BlockingClient,
     owner: &str,
     repo: &str,
     package: &str,
@@ -1048,17 +1052,12 @@ fn resolve_default_branch(
         utf8_percent_encode(owner, NON_ALPHANUMERIC),
         utf8_percent_encode(repo, NON_ALPHANUMERIC),
     );
-    let response = remote_skill_request(client.get(&url).send(), package, || {
-        format!("failed to fetch repository metadata for {url}")
-    })?;
+    let response =
+        remote_skill_request(client.get(&client.api_url(&url)?).send(), package, || {
+            format!("failed to fetch repository metadata for {url}")
+        })?;
     if !response.status().is_success() {
-        return Err(RemoteSkillInstallFailed {
-            package: package.to_string(),
-            status: Some(response.status().as_u16().into()),
-            stdout: String::new(),
-            stderr: response.text().unwrap_or_default(),
-        }
-        .into());
+        return Err(remote_skill_api_error(client, response, &package));
     }
     let info: GithubRepoInfo = response
         .json()
@@ -1070,7 +1069,7 @@ fn resolve_default_branch(
 /// Trees API. Returns `(skill_name, skill_dir_path)` pairs filtered by
 /// `path_prefix`.
 fn discover_skills_via_tree(
-    client: &reqwest::blocking::Client,
+    client: &BlockingClient,
     owner: &str,
     repo: &str,
     reference: &str,
@@ -1083,17 +1082,12 @@ fn discover_skills_via_tree(
         utf8_percent_encode(repo, NON_ALPHANUMERIC),
         utf8_percent_encode(reference, NON_ALPHANUMERIC),
     );
-    let response = remote_skill_request(client.get(&url).send(), package, || {
-        format!("failed to fetch repository tree for {url}")
-    })?;
+    let response =
+        remote_skill_request(client.get(&client.api_url(&url)?).send(), package, || {
+            format!("failed to fetch repository tree for {url}")
+        })?;
     if !response.status().is_success() {
-        return Err(RemoteSkillInstallFailed {
-            package: package.to_string(),
-            status: Some(response.status().as_u16().into()),
-            stdout: String::new(),
-            stderr: response.text().unwrap_or_default(),
-        }
-        .into());
+        return Err(remote_skill_api_error(client, response, &package));
     }
     let tree_data: GithubTreeResponse = response
         .json()
@@ -1122,28 +1116,36 @@ fn discover_skills_via_tree(
     Ok(skills)
 }
 
-fn github_auth_headers() -> HeaderMap {
-    let mut headers = HeaderMap::new();
-    if let Some(token) = std::env::var("GITHUB_TOKEN")
-        .ok()
-        .filter(|token| !token.trim().is_empty())
-        .or_else(|| {
-            std::env::var("GH_TOKEN")
-                .ok()
-                .filter(|token| !token.trim().is_empty())
-        })
-    {
-        let value = format!("Bearer {token}");
-        match HeaderValue::from_str(&value) {
-            Ok(value) => {
-                headers.insert(AUTHORIZATION, value);
-            }
-            Err(error) => {
-                warn!("ignoring invalid GitHub token header value: {error}");
-            }
-        }
+fn remote_skill_client() -> Result<BlockingClient> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(REMOTE_SKILL_INSTALL_TIMEOUT_SECONDS))
+        .user_agent(format!("holon/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("failed to create remote skill HTTP client")?;
+    BlockingClient::new(
+        client,
+        GitHubAuth::resolve_blocking(None, &["GITHUB_TOKEN", "GH_TOKEN"]),
+        "https://api.github.com",
+    )
+}
+
+fn remote_skill_api_error(
+    client: &BlockingClient,
+    response: reqwest::blocking::Response,
+    package: &str,
+) -> anyhow::Error {
+    let failure = client.response_error(response);
+    if let Some(rate_limit) = failure.rate_limit {
+        let context = format!("failed to install remote skill '{package}': {rate_limit}");
+        return anyhow::Error::new(rate_limit).context(context);
     }
-    headers
+    RemoteSkillInstallFailed {
+        package: package.to_owned(),
+        status: Some(failure.status.into()),
+        stdout: String::new(),
+        stderr: failure.diagnostic,
+    }
+    .into()
 }
 
 fn is_repo_root_skill_path(path: &str) -> bool {
@@ -1173,23 +1175,18 @@ fn remote_skill_from_tree_blob(path: &str, prefix: &str, repo: &str) -> Option<(
 }
 
 fn download_github_root_skill(
-    client: &reqwest::blocking::Client,
+    client: &BlockingClient,
     source: &RemoteSkillSource,
     destination: &Path,
     package: &str,
 ) -> Result<()> {
     let url = github_contents_url_parts(&source.owner, &source.repo, &source.reference, "");
-    let response = remote_skill_request(client.get(&url).send(), package, || {
-        format!("failed to fetch remote skill directory {url}")
-    })?;
+    let response =
+        remote_skill_request(client.get(&client.api_url(&url)?).send(), package, || {
+            format!("failed to fetch remote skill directory {url}")
+        })?;
     if !response.status().is_success() {
-        return Err(RemoteSkillInstallFailed {
-            package: package.to_string(),
-            status: Some(response.status().as_u16().into()),
-            stdout: String::new(),
-            stderr: response.text().unwrap_or_default(),
-        }
-        .into());
+        return Err(remote_skill_api_error(client, response, &package));
     }
     let entries: Vec<GithubContentEntry> = response
         .json()
@@ -1222,24 +1219,19 @@ fn download_github_root_skill(
 }
 
 fn download_github_directory(
-    client: &reqwest::blocking::Client,
+    client: &BlockingClient,
     source: &RemoteSkillSource,
     remote_path: &str,
     destination: &Path,
 ) -> Result<()> {
     let url = github_contents_url(source, remote_path);
     let package = format!("{}/{}", source.owner, source.repo);
-    let response = remote_skill_request(client.get(&url).send(), &package, || {
-        format!("failed to fetch remote skill directory {url}")
-    })?;
+    let response =
+        remote_skill_request(client.get(&client.api_url(&url)?).send(), &package, || {
+            format!("failed to fetch remote skill directory {url}")
+        })?;
     if !response.status().is_success() {
-        return Err(RemoteSkillInstallFailed {
-            package,
-            status: Some(response.status().as_u16().into()),
-            stdout: String::new(),
-            stderr: response.text().unwrap_or_default(),
-        }
-        .into());
+        return Err(remote_skill_api_error(client, response, &package));
     }
     let entries: Vec<GithubContentEntry> = response
         .json()
@@ -1263,7 +1255,7 @@ fn download_github_directory(
 }
 
 fn download_github_file(
-    client: &reqwest::blocking::Client,
+    client: &BlockingClient,
     package: &str,
     entry: &GithubContentEntry,
     destination_dir: &Path,
@@ -2010,14 +2002,7 @@ impl SkillRemoteUpdater for GithubSkillRemoteUpdater {
     }
 
     fn install(&self, source: &LockedRemoteSkillSource, destination: &Path) -> Result<()> {
-        const REMOTE_SKILL_INSTALL_TIMEOUT: Duration =
-            Duration::from_secs(REMOTE_SKILL_INSTALL_TIMEOUT_SECONDS);
-        let client = reqwest::blocking::Client::builder()
-            .timeout(REMOTE_SKILL_INSTALL_TIMEOUT)
-            .user_agent(format!("holon/{}", env!("CARGO_PKG_VERSION")))
-            .default_headers(github_auth_headers())
-            .build()
-            .context("failed to create remote skill HTTP client")?;
+        let client = remote_skill_client()?;
         let package = format!("{}/{}", source.owner, source.repo);
         let effective_ref = resolve_effective_reference(
             &client,
@@ -2783,6 +2768,346 @@ mod tests {
 
     use super::*;
     use crate::types::{SkillActivationSource, SkillActivationState};
+
+    // Serve real HTTP responses without contacting GitHub or reading credentials.
+    fn github_mock(
+        responses: Vec<(u16, &'static str, String)>,
+        auth: GitHubAuth,
+        timeout: Duration,
+    ) -> (BlockingClient, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            listener.set_nonblocking(true).unwrap();
+            for (status, headers, body) in responses {
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(std::time::Instant::now() < deadline, "missing mock request");
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0];
+                while !request.ends_with(b"\r\n\r\n") {
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                requests.push(String::from_utf8(request).unwrap());
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} Mock\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n{headers}\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            requests
+        });
+        let client = BlockingClient::new(
+            reqwest::blocking::Client::builder()
+                .timeout(timeout)
+                .build()
+                .unwrap(),
+            auth,
+            &base,
+        )
+        .unwrap();
+        (client, server)
+    }
+
+    fn mock_auth() -> GitHubAuth {
+        GitHubAuth::resolve_blocking(Some("test-skill-token".to_owned()), &[])
+    }
+
+    fn mock_source(path: &str) -> RemoteSkillSource {
+        RemoteSkillSource {
+            owner: "owner".into(),
+            repo: "repo".into(),
+            reference: "main".into(),
+            path: path.into(),
+            skill_name: "demo".into(),
+        }
+    }
+
+    #[test]
+    fn github_skill_metadata_tree_contents_share_auth() {
+        let (client, server) = github_mock(
+            vec![
+                (200, "", r#"{"default_branch":"main"}"#.into()),
+                (
+                    200,
+                    "",
+                    r#"{"tree":[{"path":"skills/demo/SKILL.md","type":"blob"}],"truncated":false}"#
+                        .into(),
+                ),
+                (200, "", "[]".into()),
+            ],
+            mock_auth(),
+            Duration::from_secs(2),
+        );
+        let reference = resolve_default_branch(&client, "owner", "repo", "owner/repo").unwrap();
+        let skills =
+            discover_skills_via_tree(&client, "owner", "repo", &reference, "", "owner/repo")
+                .unwrap();
+        assert_eq!(skills, vec![("demo".into(), "skills/demo".into())]);
+        download_github_directory(
+            &client,
+            &mock_source("skills/demo"),
+            "skills/demo",
+            tempdir().unwrap().path(),
+        )
+        .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 3);
+        for request in requests {
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer test-skill-token\r\n"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_skill_anonymous_metadata_tree_contents_succeed_without_credentials() {
+        use std::os::unix::fs::PermissionsExt;
+        let _lock = crate::test_env::lock_env();
+        let directory = tempdir().unwrap();
+        let executable = directory.path().join("gh");
+        let calls = directory.path().join("calls");
+        fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\n[ \"$*\" = 'auth token -h github.com' ] || exit 9\nprintf 'call\\n' >> '{}'\nexit 1\n",
+                calls.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        struct RestorePath(Option<std::ffi::OsString>);
+        impl Drop for RestorePath {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(path) => std::env::set_var("PATH", path),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+        let _restore = RestorePath(std::env::var_os("PATH"));
+        std::env::set_var("PATH", directory.path());
+        // No environment keys or configured token; only the failing fake gh is reachable.
+        let auth = GitHubAuth::resolve_blocking(None, &[]);
+        let (client, server) = github_mock(
+            vec![
+                (200, "", r#"{"default_branch":"main"}"#.into()),
+                (
+                    200,
+                    "",
+                    r#"{"tree":[{"path":"skills/demo/SKILL.md","type":"blob"}],"truncated":false}"#
+                        .into(),
+                ),
+                (200, "", "[]".into()),
+            ],
+            auth,
+            Duration::from_secs(2),
+        );
+        let reference = resolve_default_branch(&client, "owner", "repo", "owner/repo").unwrap();
+        assert_eq!(reference, "main");
+        let skills =
+            discover_skills_via_tree(&client, "owner", "repo", &reference, "", "owner/repo")
+                .unwrap();
+        assert_eq!(skills, vec![("demo".into(), "skills/demo".into())]);
+        download_github_directory(
+            &client,
+            &mock_source("skills/demo"),
+            "skills/demo",
+            directory.path(),
+        )
+        .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 3);
+        for request in requests {
+            assert!(!request.to_ascii_lowercase().contains("authorization:"));
+        }
+        assert_eq!(fs::read_to_string(calls).unwrap(), "call\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_skill_fake_gh_auth_resolves_once_for_multiple_requests() {
+        use std::os::unix::fs::PermissionsExt;
+        let _lock = crate::test_env::lock_env();
+        let directory = tempdir().unwrap();
+        let executable = directory.path().join("gh");
+        let calls = directory.path().join("calls");
+        fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\n[ \"$*\" = 'auth token -h github.com' ] || exit 9\nprintf 'call\\n' >> '{}'\nprintf 'test-skill-token\\n'\n",
+                calls.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        struct RestorePath(Option<std::ffi::OsString>);
+        impl Drop for RestorePath {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(path) => std::env::set_var("PATH", path),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+        let _restore = RestorePath(std::env::var_os("PATH"));
+        std::env::set_var("PATH", directory.path());
+        // Empty environment keys exclude real credentials; PATH contains only fake gh.
+        let auth = GitHubAuth::resolve_blocking(None, &[]);
+        let (client, server) = github_mock(
+            vec![
+                (200, "", r#"{"default_branch":"main"}"#.into()),
+                (200, "", r#"{"tree":[],"truncated":false}"#.into()),
+                (200, "", "[]".into()),
+            ],
+            auth,
+            Duration::from_secs(2),
+        );
+        let reference = resolve_default_branch(&client, "owner", "repo", "owner/repo").unwrap();
+        discover_skills_via_tree(&client, "owner", "repo", &reference, "", "owner/repo").unwrap();
+        download_github_directory(
+            &client,
+            &mock_source("skills/demo"),
+            "skills/demo",
+            directory.path(),
+        )
+        .unwrap();
+        for request in server.join().unwrap() {
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer test-skill-token\r\n"));
+        }
+        assert_eq!(fs::read_to_string(calls).unwrap(), "call\n");
+    }
+
+    #[test]
+    fn github_skill_404_fallback_preserves_tree_rate_limit_and_stops() {
+        let home = tempdir().unwrap();
+        let (client, server) = github_mock(
+            vec![
+                (404, "", r#"{"message":"Not Found"}"#.into()),
+                (
+                    403,
+                    "X-RateLimit-Remaining: 0\r\n",
+                    r#"{"message":"API rate limit exceeded"}"#.into(),
+                ),
+            ],
+            mock_auth(),
+            Duration::from_secs(2),
+        );
+        let error = install_github_remote_skill_with_client(
+            home.path(),
+            "owner/repo",
+            &mock_source("skills/demo"),
+            &client,
+        )
+        .unwrap_err();
+        assert!(error.downcast_ref::<RateLimit>().is_some(), "{error:#}");
+        assert!(error
+            .to_string()
+            .contains("GitHub API rate limit exceeded (HTTP 403)"));
+        assert!(error.downcast_ref::<RemoteSkillInstallFailed>().is_none());
+        assert_eq!(server.join().unwrap().len(), 2);
+        assert!(!skill_lock_path(home.path()).exists());
+        assert!(!user_library_skills_root(home.path()).join("demo").exists());
+    }
+
+    #[test]
+    fn github_skill_root_recursive_and_set_rate_limits_stop() {
+        for scenario in ["root", "recursive", "set", "metadata"] {
+            let mut responses = Vec::new();
+            if scenario == "recursive" {
+                responses.push((200, "", r#"[{"name":"nested","path":"skills/demo/nested","type":"dir","download_url":null}]"#.into()));
+            }
+            if scenario == "set" {
+                responses.push((200, "", r#"{"tree":[{"path":"skills/demo/SKILL.md","type":"blob"},{"path":"skills/second/SKILL.md","type":"blob"}],"truncated":false}"#.into()));
+            }
+            responses.push((429, "Retry-After: 1\r\n", "{}".into()));
+            let count = responses.len();
+            let (client, server) = github_mock(responses, mock_auth(), Duration::from_secs(2));
+            let home = tempdir().unwrap();
+            let error = match scenario {
+                "set" => install_github_remote_skill_set_with_client(
+                    home.path(),
+                    "owner/repo",
+                    &RemoteSkillSetSource {
+                        owner: "owner".into(),
+                        repo: "repo".into(),
+                        reference: "main".into(),
+                        path: "skills".into(),
+                    },
+                    &client,
+                )
+                .unwrap_err(),
+                "metadata" => {
+                    resolve_default_branch(&client, "owner", "repo", "owner/repo").unwrap_err()
+                }
+                _ => install_github_remote_skill_with_client(
+                    home.path(),
+                    "owner/repo",
+                    &mock_source(if scenario == "root" {
+                        ""
+                    } else {
+                        "skills/demo"
+                    }),
+                    &client,
+                )
+                .unwrap_err(),
+            };
+            assert!(
+                error.downcast_ref::<RateLimit>().is_some(),
+                "{scenario}: {error:#}"
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains("GitHub API rate limit exceeded (HTTP 429)"),
+                "{scenario}: {error}"
+            );
+            assert_eq!(server.join().unwrap().len(), count);
+            assert!(!skill_lock_path(home.path()).exists());
+            assert!(!user_library_skills_root(home.path()).join("demo").exists());
+        }
+    }
+
+    #[test]
+    fn github_skill_non_rate_failure_diagnostic_is_safe() {
+        let (client, server) = github_mock(
+            vec![(
+                403,
+                "",
+                format!(
+                    "Authorization: Bearer test-skill-token\n{}",
+                    "x".repeat(20_000)
+                ),
+            )],
+            mock_auth(),
+            Duration::from_secs(2),
+        );
+        let error = resolve_default_branch(&client, "owner", "repo", "owner/repo").unwrap_err();
+        assert!(error.downcast_ref::<RateLimit>().is_none());
+        let failure = error.downcast_ref::<RemoteSkillInstallFailed>().unwrap();
+        assert_eq!(failure.status, Some(403));
+        assert!(!failure.stderr.contains("test-skill-token"));
+        assert!(failure.stderr.len() <= 8192);
+        server.join().unwrap();
+    }
 
     struct FakeSkillRemoteUpdater {
         contents: HashMap<String, String>,

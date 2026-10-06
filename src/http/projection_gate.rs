@@ -26,8 +26,8 @@ pub(crate) const PROJECTION_STALE_FALLBACK_MAX_AGE: Duration = Duration::from_se
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum ProjectionKey {
     AgentsList(Option<String>),
-    AgentsRosterSnapshot,
-    AgentProjectionSnapshot(String),
+    AgentsRosterSnapshot(String),
+    AgentProjectionSnapshot(String, String),
     AgentState(String),
 }
 
@@ -387,6 +387,10 @@ mod tests {
 
     use super::*;
 
+    fn roster_key() -> ProjectionKey {
+        ProjectionKey::AgentsRosterSnapshot("principal".into())
+    }
+
     #[tokio::test]
     async fn concurrent_requests_for_the_same_key_share_one_build() {
         let gate = Arc::new(ProjectionGate::new(4, Duration::from_millis(250)));
@@ -695,13 +699,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn observer_stale_fallback_never_crosses_principals() {
+        tokio::time::pause();
+        for (key_a, key_b) in [
+            (
+                ProjectionKey::AgentsRosterSnapshot("user-a".into()),
+                ProjectionKey::AgentsRosterSnapshot("user-b".into()),
+            ),
+            (
+                ProjectionKey::AgentProjectionSnapshot("web".into(), "user-a".into()),
+                ProjectionKey::AgentProjectionSnapshot("web".into(), "user-b".into()),
+            ),
+        ] {
+            let gate = ProjectionGate::new(4, Duration::from_millis(250));
+            gate.run(key_a.clone(), || async {
+                Ok(Bytes::from_static(b"user-a"))
+            })
+            .await
+            .unwrap();
+            tokio::time::advance(Duration::from_millis(251)).await;
+            assert!(matches!(
+                gate.run(key_b, || async { Err(service_unavailable_failure()) })
+                    .await,
+                Err(ProjectionGateError::Build(_))
+            ));
+            assert!(matches!(
+                gate.run(key_a, || async { Err(service_unavailable_failure()) })
+                    .await,
+                Err(ProjectionGateError::StaleServed(bytes)) if bytes == Bytes::from_static(b"user-a")
+            ));
+        }
+    }
+
+    #[tokio::test]
     async fn retryable_failure_serves_last_good_bytes_and_releases_the_key() {
         tokio::time::pause();
         let gate = ProjectionGate::new(4, Duration::from_millis(250));
         let builds = AtomicUsize::new(0);
 
         let first = gate
-            .run(ProjectionKey::AgentsRosterSnapshot, || async {
+            .run(roster_key(), || async {
                 builds.fetch_add(1, Ordering::SeqCst);
                 Ok(Bytes::from_static(b"first"))
             })
@@ -710,7 +747,7 @@ mod tests {
         tokio::time::advance(Duration::from_millis(251)).await;
 
         let stale = gate
-            .run(ProjectionKey::AgentsRosterSnapshot, || async {
+            .run(roster_key(), || async {
                 builds.fetch_add(1, Ordering::SeqCst);
                 Err(service_unavailable_failure())
             })
@@ -724,7 +761,7 @@ mod tests {
         assert_eq!(first, Bytes::from_static(b"first"));
 
         let rebuilt = gate
-            .run(ProjectionKey::AgentsRosterSnapshot, || async {
+            .run(roster_key(), || async {
                 builds.fetch_add(1, Ordering::SeqCst);
                 Ok(Bytes::from_static(b"rebuilt"))
             })
@@ -739,15 +776,13 @@ mod tests {
         tokio::time::pause();
         let gate = ProjectionGate::new(4, Duration::from_millis(250));
 
-        gate.run(ProjectionKey::AgentsRosterSnapshot, || async {
-            Ok(Bytes::from_static(b"first"))
-        })
-        .await
-        .unwrap();
+        gate.run(roster_key(), || async { Ok(Bytes::from_static(b"first")) })
+            .await
+            .unwrap();
         tokio::time::advance(Duration::from_millis(251)).await;
 
         let surfaced = gate
-            .run(ProjectionKey::AgentsRosterSnapshot, || async {
+            .run(roster_key(), || async {
                 Err(ProjectionFailure {
                     status: StatusCode::INTERNAL_SERVER_ERROR,
                     body: json!({ "error": "failed" }),
@@ -766,14 +801,12 @@ mod tests {
             Duration::from_millis(300),
         );
 
-        gate.run(ProjectionKey::AgentsRosterSnapshot, || async {
-            Ok(Bytes::from_static(b"first"))
-        })
-        .await
-        .unwrap();
+        gate.run(roster_key(), || async { Ok(Bytes::from_static(b"first")) })
+            .await
+            .unwrap();
         tokio::time::advance(Duration::from_millis(251)).await;
         let still_fresh = gate
-            .run(ProjectionKey::AgentsRosterSnapshot, || async {
+            .run(roster_key(), || async {
                 Err(service_unavailable_failure())
             })
             .await;
@@ -786,7 +819,7 @@ mod tests {
 
         tokio::time::advance(Duration::from_millis(100)).await;
         let expired = gate
-            .run(ProjectionKey::AgentsRosterSnapshot, || async {
+            .run(roster_key(), || async {
                 Err(service_unavailable_failure())
             })
             .await;
@@ -813,11 +846,9 @@ mod tests {
             Duration::from_millis(300),
         );
 
-        gate.run(ProjectionKey::AgentsRosterSnapshot, || async {
-            Ok(Bytes::from_static(b"roster"))
-        })
-        .await
-        .unwrap();
+        gate.run(roster_key(), || async { Ok(Bytes::from_static(b"roster")) })
+            .await
+            .unwrap();
         // Advance beyond stale_max_age without touching the roster key again.
         tokio::time::advance(Duration::from_millis(400)).await;
         let expired_before = diagnostics::performance_snapshot()
@@ -827,16 +858,17 @@ mod tests {
         // A successful build on a different key sweeps the expired roster
         // entry even though its key is never accessed again.
         gate.run(
-            ProjectionKey::AgentProjectionSnapshot("agent-1".to_string()),
+            ProjectionKey::AgentProjectionSnapshot("agent-1".to_string(), "principal".to_string()),
             || async { Ok(Bytes::from_static(b"projection")) },
         )
         .await
         .unwrap();
 
         let stale = gate.stale.lock().expect("projection gate lock poisoned");
-        assert!(!stale.contains_key(&ProjectionKey::AgentsRosterSnapshot));
+        assert!(!stale.contains_key(&roster_key()));
         assert!(stale.contains_key(&ProjectionKey::AgentProjectionSnapshot(
-            "agent-1".to_string()
+            "agent-1".to_string(),
+            "principal".to_string()
         )));
         drop(stale);
         let expired_after = diagnostics::performance_snapshot()
@@ -850,18 +882,16 @@ mod tests {
         tokio::time::pause();
         let gate = ProjectionGate::new(4, Duration::from_millis(250));
 
-        gate.run(ProjectionKey::AgentsRosterSnapshot, || async {
-            Ok(Bytes::from_static(b"first"))
-        })
-        .await
-        .unwrap();
+        gate.run(roster_key(), || async { Ok(Bytes::from_static(b"first")) })
+            .await
+            .unwrap();
         tokio::time::advance(Duration::from_millis(251)).await;
 
         let served_before = diagnostics::performance_snapshot()
             .projection_gate
             .stale_served;
         let surfaced = gate
-            .run(ProjectionKey::AgentsRosterSnapshot, || async {
+            .run(roster_key(), || async {
                 Err(ProjectionFailure {
                     status: StatusCode::SERVICE_UNAVAILABLE,
                     body: json!({
@@ -891,11 +921,9 @@ mod tests {
     async fn waiters_receive_stale_bytes_when_leader_fails_retryably() {
         tokio::time::pause();
         let gate = Arc::new(ProjectionGate::new(4, Duration::from_millis(250)));
-        gate.run(ProjectionKey::AgentsRosterSnapshot, || async {
-            Ok(Bytes::from_static(b"first"))
-        })
-        .await
-        .unwrap();
+        gate.run(roster_key(), || async { Ok(Bytes::from_static(b"first")) })
+            .await
+            .unwrap();
         tokio::time::advance(Duration::from_millis(251)).await;
 
         let started = Arc::new(Notify::new());
@@ -905,7 +933,7 @@ mod tests {
             let started = Arc::clone(&started);
             let release = Arc::clone(&release);
             tokio::spawn(async move {
-                gate.run(ProjectionKey::AgentsRosterSnapshot, || async move {
+                gate.run(roster_key(), || async move {
                     started.notify_one();
                     release.notified().await;
                     Err(service_unavailable_failure())
@@ -917,7 +945,7 @@ mod tests {
         let waiter = {
             let gate = Arc::clone(&gate);
             tokio::spawn(async move {
-                gate.run(ProjectionKey::AgentsRosterSnapshot, || async {
+                gate.run(roster_key(), || async {
                     Ok(Bytes::from_static(b"unexpected"))
                 })
                 .await

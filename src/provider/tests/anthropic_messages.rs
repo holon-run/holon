@@ -1,6 +1,9 @@
 //! Anthropic Messages API request/cache/context-management tests.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+};
 
 use super::support::*;
 use super::*;
@@ -8,7 +11,9 @@ use crate::config::{
     AnthropicCacheStrategy, ProviderEndpointId, ProviderId, ProviderRuntimeConfig,
     ProviderTransportKind,
 };
-use crate::provider::{http_trace::ProviderHttpTrace, provider_transport_diagnostics};
+use crate::provider::{
+    http_trace::ProviderHttpTrace, provider_error_code, provider_transport_diagnostics,
+};
 use axum::{http::HeaderMap, routing::post, Json, Router};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -1175,6 +1180,15 @@ async fn anthropic_claude_code_prompt_cache_strategy_marks_tool_results() {
 
 #[tokio::test]
 async fn ollama_tool_only_round_appends_placeholder_user_text() {
+    assert_ollama_tool_result_tail_has_placeholder(false).await;
+}
+
+#[tokio::test]
+async fn ollama_tool_result_tail_with_history_appends_placeholder_user_text() {
+    assert_ollama_tool_result_tail_has_placeholder(true).await;
+}
+
+async fn assert_ollama_tool_result_tail_has_placeholder(include_earlier_user_text: bool) {
     let captured_body = Arc::new(Mutex::new(None::<serde_json::Value>));
     let captured_body_for_server = captured_body.clone();
     let base_url = spawn_test_server(Router::new().route(
@@ -1216,25 +1230,25 @@ async fn ollama_tool_only_round_appends_placeholder_user_text() {
     )
     .unwrap();
 
-    let request = ProviderTurnRequest::plain(
-        "system",
-        vec![
-            ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
-                id: "exec-1".into(),
-                name: "ExecCommand".into(),
-                input: json!({ "cmd": "ls /tmp" }),
-                kind: crate::provider::ModelToolCallKind::Function,
-                provider_data: None,
-            }]),
-            ConversationMessage::UserToolResults(vec![ToolResultBlock {
-                tool_use_id: "exec-1".into(),
-                content: "stdout:\na.txt\nb.txt".into(),
-                is_error: false,
-                error: None,
-            }]),
-        ],
-        Vec::new(),
-    );
+    let mut conversation = vec![
+        ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
+            id: "exec-1".into(),
+            name: "ExecCommand".into(),
+            input: json!({ "cmd": "ls /tmp" }),
+            kind: crate::provider::ModelToolCallKind::Function,
+            provider_data: None,
+        }]),
+        ConversationMessage::UserToolResults(vec![ToolResultBlock {
+            tool_use_id: "exec-1".into(),
+            content: "stdout:\na.txt\nb.txt".into(),
+            is_error: false,
+            error: None,
+        }]),
+    ];
+    if include_earlier_user_text {
+        conversation.insert(0, ConversationMessage::UserText("original query".into()));
+    }
+    let request = ProviderTurnRequest::plain("system", conversation, Vec::new());
     provider.complete_turn(request).await.unwrap();
 
     let body = captured_body
@@ -1246,9 +1260,16 @@ async fn ollama_tool_only_round_appends_placeholder_user_text() {
     let last = messages.last().unwrap();
     assert_eq!(last["role"], json!("user"));
     let blocks = last["content"].as_array().unwrap();
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0]["type"], json!("tool_result"));
+    assert_eq!(blocks[0]["tool_use_id"], json!("exec-1"));
+    assert_eq!(blocks[0]["content"], json!("stdout:\na.txt\nb.txt"));
     let placeholder = blocks.last().unwrap();
     assert_eq!(placeholder["type"], json!("text"));
-    assert!(!placeholder["text"].as_str().unwrap().trim().is_empty());
+    assert_eq!(placeholder["text"], json!("(continue)"));
+    if include_earlier_user_text {
+        assert_eq!(messages[0]["content"][0]["text"], json!("original query"));
+    }
 }
 
 #[tokio::test]
@@ -1319,4 +1340,96 @@ async fn anthropic_tool_only_round_does_not_append_placeholder_user_text() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn anthropic_context_budget_overflow_fails_before_http_send() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let request_count_for_server = request_count.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/v1/messages",
+        post(move || {
+            let request_count = request_count_for_server.clone();
+            async move {
+                request_count.fetch_add(1, Ordering::SeqCst);
+                Json(json!({
+                    "content": [{ "type": "text", "text": "unexpected request" }],
+                    "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 4, "output_tokens": 2 }
+                }))
+            }
+        }),
+    ))
+    .await;
+    let mut fixture = test_config(
+        "anthropic/qwen3.8:latest",
+        &[],
+        None,
+        Some("anthropic-token"),
+        false,
+    );
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::anthropic())
+        .unwrap()
+        .base_url = format!("{base_url}?api_key=query-secret");
+    let provider_config = fixture
+        .config
+        .providers
+        .get(&ProviderId::anthropic())
+        .unwrap();
+    let provider = AnthropicProvider::from_runtime_config_with_context_window(
+        provider_config,
+        "qwen3.8:latest",
+        8192,
+        Some(8192),
+        &fixture.config.home_dir,
+        false,
+    )
+    .unwrap();
+
+    let error = provider
+        .complete_turn(ProviderTurnRequest::plain(
+            &"x".repeat(40_000),
+            vec![ConversationMessage::UserText("continue".into())],
+            vec![crate::tool::ToolSpec {
+                name: "ExecCommand".into(),
+                description: "Run a command with a large tool schema".into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "cmd": { "type": "string" }
+                    },
+                    "required": ["cmd"]
+                }),
+                freeform_grammar: None,
+            }],
+        ))
+        .await
+        .expect_err("an oversized final payload should fail before sending");
+
+    assert_eq!(request_count.load(Ordering::SeqCst), 0);
+    assert_eq!(provider_error_code(&error), Some("context_length_exceeded"));
+    let diagnostics =
+        provider_transport_diagnostics(&error).expect("overflow should include diagnostics");
+    assert_eq!(diagnostics.stage, "request_preflight");
+    assert!(diagnostics
+        .url
+        .as_deref()
+        .is_some_and(|url| { !url.contains("query-secret") && !url.contains("api_key") }));
+    let budget = diagnostics
+        .context_budget
+        .as_ref()
+        .expect("overflow should include context budget diagnostics");
+    assert!(budget.estimated_input_tokens > 8_000);
+    assert_eq!(budget.requested_output_tokens, 1);
+    assert_eq!(budget.context_window_tokens, 8_192);
+    assert!(budget.overflow_tokens > 0);
+    assert!(budget
+        .suggestion
+        .contains("increase the provider context window"));
+    let serialized = serde_json::to_string(diagnostics).unwrap();
+    assert!(!serialized.contains("anthropic-token"));
+    assert!(!serialized.contains("query-secret"));
 }

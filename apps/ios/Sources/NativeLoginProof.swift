@@ -56,6 +56,7 @@ struct NativeLoginProof: Codable, Equatable, Sendable, CustomStringConvertible, 
             URLQueryItem(name: "client", value: "ios"),
             URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "code_challenge", value: challenge),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
         ]
         return url.url!
     }

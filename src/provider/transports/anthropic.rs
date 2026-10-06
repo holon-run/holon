@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use tracing::warn;
 use twox_hash::XxHash64;
 
-use super::super::budget::effective_output_tokens;
+use super::super::budget::{effective_output_tokens, estimate_context_budget, ContextBudget};
 use crate::{
     config::{
         AnthropicCacheStrategy, AnthropicContextManagementConfig, AppConfig, CredentialKind,
@@ -22,12 +22,12 @@ use crate::{
         http_trace::{ProviderHttpTrace, ProviderHttpTraceRequest},
         AgentProvider, AnthropicPromptCacheDiagnostics, CacheBreakpointInfo, ConversationMessage,
         ModelBlock, ModelToolCallKind, PromptContentBlock, ProviderBlockData,
-        ProviderBuiltinWebSearchCapability, ProviderCacheUsage, ProviderContextManagementPolicy,
-        ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind,
-        ProviderNativeWebSearchRequest, ProviderPromptCapability,
+        ProviderBuiltinWebSearchCapability, ProviderCacheUsage, ProviderContextBudgetDiagnostics,
+        ProviderContextManagementPolicy, ProviderNativeWebSearchDiagnostics,
+        ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest, ProviderPromptCapability,
         ProviderResponseFormatDiagnostics, ProviderResponseFormatRequest,
-        ProviderTransportTimeline, ProviderTurnRequest, ProviderTurnResponse,
-        INCOMPLETE_TOOL_RESULT_SENTINEL,
+        ProviderTransportDiagnostics, ProviderTransportTimeline, ProviderTurnRequest,
+        ProviderTurnResponse, INCOMPLETE_TOOL_RESULT_SENTINEL,
     },
 };
 
@@ -35,7 +35,8 @@ use super::{build_http_client, request_send_timeout, response_body_timeout, stre
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
     empty_response_error_with_trace, invalid_response_error_with_trace, parse_retry_after,
-    provider_transport_error, retryable_invalid_response_error_with_trace,
+    provider_transport_error, provider_transport_error_with_code,
+    retryable_invalid_response_error_with_trace, sanitize_transport_url,
     timeout_transport_error_with_trace, ProviderFailureClassification, ProviderFailureKind,
     RetryDisposition,
 };
@@ -310,6 +311,55 @@ fn anthropic_reasoning_controls<'a>(
     )
 }
 
+fn context_budget_overflow_error(
+    route_provider: &str,
+    model_ref: &str,
+    url: &str,
+    budget: ContextBudget,
+) -> anyhow::Error {
+    const SUGGESTION: &str =
+        "reduce prompt/context or requested output tokens, or increase the provider context window";
+    let required_tokens = budget.required_tokens();
+    let diagnostics = ProviderTransportDiagnostics {
+        stage: "request_preflight".to_string(),
+        streaming: None,
+        provider: Some(route_provider.to_string()),
+        model_ref: Some(model_ref.to_string()),
+        url: Some(sanitize_transport_url(url)),
+        status: None,
+        reqwest: None,
+        context_budget: Some(ProviderContextBudgetDiagnostics {
+            estimated_input_tokens: budget.estimated_input_tokens,
+            requested_output_tokens: budget.requested_output_tokens,
+            safety_headroom_tokens: budget.safety_headroom_tokens,
+            required_tokens,
+            context_window_tokens: budget.context_window_tokens,
+            overflow_tokens: budget.overflow_tokens(),
+            suggestion: SUGGESTION.to_string(),
+        }),
+        http_trace: None,
+        quota_identity: None,
+        source_chain: Vec::new(),
+    };
+    provider_transport_error_with_code(
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::ContractError,
+            disposition: RetryDisposition::FailFast,
+        },
+        Some("context_length_exceeded"),
+        None,
+        Some(diagnostics),
+        format!(
+            "provider request exceeds context window: estimated input {} + requested output {} + safety headroom {} = {} tokens, context window {} tokens; {SUGGESTION}",
+            budget.estimated_input_tokens,
+            budget.requested_output_tokens,
+            budget.safety_headroom_tokens,
+            required_tokens,
+            budget.context_window_tokens,
+        ),
+    )
+}
+
 #[async_trait]
 impl AgentProvider for AnthropicProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
@@ -375,6 +425,21 @@ impl AgentProvider for AnthropicProvider {
             "{}@{}/{}",
             self.route_provider, self.route_endpoint, self.model
         );
+        if let Some(budget) = estimate_context_budget(
+            self.context_window_tokens,
+            effective_output,
+            &request_payload,
+            &["max_tokens"],
+        )
+        .filter(|budget| budget.overflow_tokens() > 0)
+        {
+            return Err(context_budget_overflow_error(
+                &self.route_provider,
+                &model_ref,
+                &url,
+                budget,
+            ));
+        }
         let mut headers = vec![
             ("content-type", "application/json".to_string()),
             ("anthropic-version", "2023-06-01".to_string()),
@@ -1849,8 +1914,8 @@ fn transfer_tail_cache_marker(assistant: &mut ApiMessage, inserted: &mut ApiMess
 /// Ollama's Anthropic-compatible `/v1/messages` endpoint rejects message
 /// lists without any user text (e.g. pure tool-result rounds) with
 /// `500 no user query found in messages`; see ollama/ollama#18303. Until
-/// upstream ships a fix, append a non-empty placeholder user text block so
-/// tool-only rounds stay usable against ollama deployments.
+/// upstream ships a fix, keep non-empty user text in the latest user turn;
+/// older user text may be discarded by Ollama's context truncation.
 fn needs_placeholder_user_text(route_provider: &str) -> bool {
     route_provider == "ollama"
 }
@@ -1859,7 +1924,9 @@ fn ensure_placeholder_user_text(messages: &mut Vec<ApiMessage>) {
     const PLACEHOLDER_USER_TEXT: &str = "(continue)";
     if messages
         .iter()
-        .any(|message| api_message_has_nonempty_user_text(message))
+        .rev()
+        .find(|message| message.role == "user")
+        .is_some_and(api_message_has_nonempty_user_text)
     {
         return;
     }
@@ -3081,6 +3148,78 @@ mod tests {
         let placeholder = blocks.last().unwrap();
         assert_eq!(placeholder["type"], json!("text"));
         assert!(!placeholder["text"].as_str().unwrap().trim().is_empty());
+    }
+
+    #[test]
+    fn ensure_placeholder_user_text_checks_latest_user_turn() {
+        let mut messages = vec![
+            ApiMessage {
+                role: "user",
+                content: json!([{ "type": "text", "text": "original query" }]),
+            },
+            ApiMessage {
+                role: "assistant",
+                content: json!([{ "type": "tool_use", "id": "toolu_1" }]),
+            },
+            ApiMessage {
+                role: "user",
+                content: json!([{ "type": "tool_result", "tool_use_id": "toolu_1" }]),
+            },
+        ];
+        ensure_placeholder_user_text(&mut messages);
+        ensure_placeholder_user_text(&mut messages);
+
+        assert_eq!(messages.len(), 3);
+        let blocks = messages[2].content.as_array().unwrap();
+        assert_eq!(
+            blocks,
+            &vec![
+                json!({ "type": "tool_result", "tool_use_id": "toolu_1" }),
+                json!({ "type": "text", "text": "(continue)" }),
+            ]
+        );
+        assert_eq!(messages[0].content[0]["text"], json!("original query"));
+    }
+
+    #[test]
+    fn ensure_placeholder_user_text_fills_empty_latest_user_turn() {
+        for content in [json!([]), json!([{ "type": "text", "text": " \n" }])] {
+            let mut messages = vec![
+                ApiMessage {
+                    role: "user",
+                    content: json!("original query"),
+                },
+                ApiMessage {
+                    role: "user",
+                    content,
+                },
+            ];
+            ensure_placeholder_user_text(&mut messages);
+            assert_eq!(messages.len(), 2);
+            assert_eq!(
+                messages[1].content.as_array().unwrap().last(),
+                Some(&json!({ "type": "text", "text": "(continue)" }))
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_placeholder_user_text_preserves_latest_user_text() {
+        for content in [
+            json!("latest query"),
+            json!([
+                { "type": "tool_result", "tool_use_id": "toolu_1" },
+                { "type": "text", "text": "latest query" },
+            ]),
+        ] {
+            let mut messages = vec![ApiMessage {
+                role: "user",
+                content: content.clone(),
+            }];
+            ensure_placeholder_user_text(&mut messages);
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].content, content);
+        }
     }
 
     #[test]

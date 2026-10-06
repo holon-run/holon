@@ -1,12 +1,16 @@
 package run.holon.android.app
 
+import android.annotation.SuppressLint
 import android.content.Context
+import androidx.core.content.edit
 import java.util.Locale
 
 /**
+ * Holds only applicationContext and is retained for the app lifetime, so the StaticFieldLeak warning is a false positive.
  * Source-keyed copy keeps the existing Compose call sites small while this client gains i18n.
  * Only app-authored UI strings call [ui]; Agent messages, briefs, tool output and file contents do not.
  */
+@SuppressLint("StaticFieldLeak")
 internal object UiCopy {
     private const val PREFS = "holon_ui_language"
     private const val LANGUAGE = "language"
@@ -25,9 +29,9 @@ internal object UiCopy {
 
     fun select(context: Context, language: String?) {
         require(language == null || language == "en" || language == "zh")
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().apply {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
             if (language == null) remove(LANGUAGE) else putString(LANGUAGE, language)
-        }.apply()
+        }
         preferredLanguage = language
     }
 
@@ -141,6 +145,22 @@ internal object UiCopy {
         关闭|Close
         常用模型|Common models
         全部模型|All models
+        模型|Model
+        选择模型|Select model
+        当前生效：|Active: 
+        Agent 自定义|Agent override
+        Auto · 运行时默认|Auto · Runtime default
+        Auto · 恢复运行时默认|Auto · Reset to runtime default
+        刷新模型|Refresh models
+        搜索模型|Search models
+        暂无模型目录，请刷新后重试|No model catalog yet. Refresh and try again.
+        应用到此 Agent|Apply to this Agent
+        待应用：|Pending: 
+        当前不可用|Currently unavailable
+        默认|Default
+        模型更改保存到此 Agent；运行中的任务不会被切换。|Model changes are saved to this Agent. Running tasks are not switched.
+        模型已更新|Model updated
+        已恢复 Auto 模型|Restored the Auto model
         仅显示常用|Show common models
         查看全部|Show all
         进行中的任务|Active tasks
@@ -323,6 +343,7 @@ internal object UiCopy {
         目前没有工作中的 Agent|No Agents in progress
         目前没有未读结果|No unread results
         目前没有需要回应的 Agent|No Agents need a reply
+        待处理|Pending
         目标|Objective
         目标、进度、结果与关联产物将在这里打开。|Objectives, progress, results and related artifacts will appear here.
         相关工作|Related work

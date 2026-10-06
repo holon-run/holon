@@ -12,11 +12,10 @@ extension JSONValue {
 }
 
 func conversationVersions(_ raw: JSONValue) throws {
+    // Snapshots and batch_begin require both versions; patch frames do not.
     for key in ["schema_version", "query_version"] {
-        if let value = raw[key] {
-            guard let version = value.conversationInt, (1...2).contains(version) else {
-                throw HolonConversationError.malformedProtocol
-            }
+        guard let version = raw[key]?.conversationInt, (1...2).contains(version) else {
+            throw HolonConversationError.malformedProtocol
         }
     }
 }

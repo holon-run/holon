@@ -28,6 +28,13 @@ order: 4
 <h2 id="blog-stories-title">设计与实践</h2>
 <p>理解它如何工作，再把它用起来。</p>
 </div>
+<a class="blog-story" href="/zh-CN/blog/from-prompt-to-finished-work">
+<img src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">操作指南</span>
+<h3>从 Prompt 到完成工作</h3>
+<p>给 Agent 一项真实的仓库任务，让它在 Prompt 结束后继续工作，并在回来时检查结果。</p>
+<span class="blog-read">跟着流程开始 <span aria-hidden="true">→</span></span></div>
+</a>
 <a class="blog-story" href="/zh-CN/blog/why-work-items">
 <img src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
 <div><span class="blog-category">技术设计</span>
@@ -73,6 +80,10 @@ order: 4
 
 - [从个人 AI 工具到团队协作：一个小团队的 Agent Native 实践](./agents-in-a-small-team.md)
   从开发者各自使用 AI，到共享 Agent 参与团队分工：用 77 天的留存用量、设备故障调查和琴键无声的实测案例，记录一个小团队的 Agent Native 实践。
+  <!-- mdorigin:index kind=article -->
+
+- [“从 Prompt 到完成工作：一套可复现的 Holon 工作流”](./from-prompt-to-finished-work.md)
+  “给 Agent 一项真实的仓库任务，让它在 Prompt 结束后继续工作，并在回来时检查结果。”
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

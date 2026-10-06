@@ -4,6 +4,35 @@ This case is the repeatable black-box acceptance procedure for Issue #2735.
 It is intentionally separate from release-level Docker and real-LLM cases.
 Run it against a freshly built Holon image and isolated temporary state.
 
+## Automated local native/browser case
+
+The standard-library Python fixture starts a loopback HTTPS IdP (discovery,
+authorization, token, and JWKS endpoints with real RS256 signatures) and a
+separate Holon process with a temporary home, database, and workspace:
+
+```bash
+cargo build --bin holon --features reqwest/rustls-tls-native-roots
+HOLON_OIDC_E2E_BINARY="$PWD/target/debug/holon" \
+  python3 -m unittest discover -s tests -p test_oidc_authentication_e2e.py -v
+```
+
+This test-only build enables native roots so the child process can trust the
+fixture's temporary CA via `SSL_CERT_FILE`; it does not disable HTTPS/certificate
+validation, change system trust, or alter the normal production build. Requires
+`openssl` on `PATH`. The test skips unless `HOLON_OIDC_E2E_BINARY` is set, fails
+if that binary cannot start, and cleans up its processes and temporary state.
+It never reuses the running daemon, credentials, or user workspace.
+
+Coverage includes both upstream and app-to-Holon S256 PKCE, browser state
+binding, native callback interception without the verifier, non-consuming
+failed proofs, ordinary exchange rejection even with the correct native
+verifier, single-use/concurrent exchange, cookie/bearer authentication,
+logout/revocation, invalid ID Token claims/signatures, and per-user observer
+scope/cache isolation across repeated logins, including conversation summaries
+and shadow diagnostics. Rust router tests additionally cover activity snapshots
+and conversation stream scopes. It does not replace real IdP,
+Android keystore/browser/deep-link, or multi-app scheme-routing acceptance.
+
 ## Preconditions
 
 - Build the candidate image from the exact commit under test:

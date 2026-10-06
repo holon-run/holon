@@ -45,7 +45,7 @@ private final class MetadataProtocol: URLProtocol, @unchecked Sendable {
             Self.metrics.begin(limit)
             if mode == "preview-denied.invalid" { status = 403 }
             if mode == "preview-unavailable.invalid" { status = 503 }
-            body = #"{"runtime_id":"runtime","visibility_scope_id":"private","agent_id":"\#(id)","event_log_epoch":"epoch","snapshot_cursor":"live","has_more":false,"turns":[],"active_turns":[],"pending_inputs":[{"message_id":"m","presentation_class":"operator","created_at":"2026-01-01T00:00:00Z","preview":"{\"type\":\"text\",\"text\":\"real operator\"}"}]}"#
+            body = #"{"runtime_id":"runtime","visibility_scope_id":"private","agent_id":"\#(id)","event_log_epoch":"epoch","schema_version":1,"query_version":1,"snapshot_cursor":"live","has_more":false,"turns":[],"active_turns":[],"pending_inputs":[{"message_id":"m","presentation_class":"operator","created_at":"2026-01-01T00:00:00Z","preview":"{\"type\":\"text\",\"text\":\"real operator\"}"}]}"#
         }
         let conversation = path.hasSuffix("/conversation")
         let responseStatus = status

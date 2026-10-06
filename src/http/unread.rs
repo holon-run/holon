@@ -33,15 +33,7 @@ mod tests {
 fn principal_and_scope(headers: &HeaderMap, state: &AppState) -> Result<(String, String)> {
     let roster = state.host.agent_roster_snapshot()?;
     let (principal, entitlement) =
-        if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc {
-            (
-                control_actor(headers, state)?.principal_id(),
-                observer_sync::CONTROL_SCOPE_ENTITLEMENT,
-            )
-        } else {
-            let (principal, entitlement) = observer_sync::observer_scope_authority(state);
-            (principal.to_string(), entitlement)
-        };
+        observer_sync::observer_principal_and_entitlement(headers, state)?;
     let scope = observer_visibility_scope_for_principal(
         &roster.runtime_id,
         &principal,

@@ -200,6 +200,7 @@ final class ReadingCoordinatorTests: XCTestCase {
     private func beginDetailBatch(_ fake: ReadingFakeTransport, sequence: Int64, detailRevision: Int64) async throws {
         let begin: JSONValue = .object([
             "type": .string("batch_begin"), "batch_id": .string("batch-\(sequence)"),
+            "schema_version": .integer(1), "query_version": .integer(1),
             "from_seq": .integer(sequence - 1), "through_seq": .integer(sequence),
             "runtime_id": .string("runtime"), "event_log_epoch": .string("epoch"),
             "visibility_scope_id": .string("private")
@@ -350,6 +351,7 @@ final class ReadingCoordinatorTests: XCTestCase {
         try await wait { await fake.isBlocked() }
         let begin: JSONValue = .object([
             "type": .string("batch_begin"), "batch_id": .string("batch-8"),
+            "schema_version": .integer(1), "query_version": .integer(1),
             "from_seq": .integer(7), "through_seq": .integer(8),
             "runtime_id": .string("runtime"), "event_log_epoch": .string("epoch"),
             "visibility_scope_id": .string("private")

@@ -105,30 +105,37 @@ order: 1
 </div>
 <a class="home-reading-all" href="/zh-CN/blog/">查看全部文章 →</a>
 <div class="home-reading-grid">
+<a class="home-reading-card" href="/zh-CN/blog/from-prompt-to-finished-work">
+<img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
+<span class="home-reading-card__category">01 · 工作流</span>
+<h3>从 Prompt 到完成工作</h3>
+<p>给 Agent 一项边界清楚的仓库任务，让它在 Prompt 结束后继续工作，并在回来时检查结果。</p>
+<span class="home-reading-card__cta">跟着流程开始 →</span>
+</a>
 <a class="home-reading-card" href="/zh-CN/blog/what-is-holon">
 <img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">01 · 产品故事</span>
+<span class="home-reading-card__category">02 · 产品故事</span>
 <h3>让多个 Agent 在你的工作环境里持续做事</h3>
 <p>从每次叫 AI 帮忙，到让固定角色持续跟进。认识支撑这种协作方式的本地工作台。</p>
 <span class="home-reading-card__cta">认识 Holon →</span>
 </a>
 <a class="home-reading-card" href="/zh-CN/blog/agents-in-a-small-team">
 <img class="home-reading-card__cover" src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">02 · 团队协作</span>
+<span class="home-reading-card__category">03 · 团队协作</span>
 <h3>个人有了 AI，团队怎样一起工作？</h3>
 <p>从设备故障调查到琴键无声的真机验证，看团队怎样共享 Agent，并根据测试反馈继续调查。</p>
 <span class="home-reading-card__cta">看团队如何协作 →</span>
 </a>
 <a class="home-reading-card" href="/zh-CN/blog/one-pr-one-work-item">
 <img class="home-reading-card__cover" src="/assets/continuous-pr-reviewer-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">03 · 审阅实践</span>
+<span class="home-reading-card__category">04 · 审阅实践</span>
 <h3>搭建持续跟进 PR 的 Reviewer</h3>
 <p>从 code-reviewer 模板开始，确认职责与权限，订阅仓库 PR，持续跟进修复、CI 和合并。</p>
 <span class="home-reading-card__cta">配置持续审阅 →</span>
 </a>
 <a class="home-reading-card" href="/zh-CN/blog/why-work-items">
 <img class="home-reading-card__cover" src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">04 · 技术设计</span>
+<span class="home-reading-card__category">05 · 技术设计</span>
 <h3>WorkItem：把工作状态从对话中分离</h3>
 <p>从接口迁移到两个 PR 交替推进，看看目标、进度和等待条件如何跨轮保留。</p>
 <span class="home-reading-card__cta">拆解 WorkItem →</span>
@@ -147,7 +154,7 @@ order: 1
 
 先安装 Holon、配置模型并启动后台服务。然后打开 Web 界面 `http://localhost:7878`，或运行 `holon tui`。
 
-<p class="home-start__boundary">推荐版本：<a href="https://github.com/holon-run/holon/releases/tag/v0.47.0">v0.47.0</a></p>
+<p class="home-start__boundary">推荐版本：<a href="https://github.com/holon-run/holon/releases/tag/v0.48.0">v0.48.0</a></p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="/zh-CN/getting-started/">完整安装指南</a>

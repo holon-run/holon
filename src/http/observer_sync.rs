@@ -308,6 +308,10 @@ pub async fn agent_roster_snapshot(
     if let Err(error) = authorize_remote_access(&headers, &state) {
         return auth_required(error.to_string()).into_response();
     }
+    let (principal, entitlement) = match observer_principal_and_entitlement(&headers, &state) {
+        Ok(authority) => authority,
+        Err(error) => return auth_required(error.to_string()).into_response(),
+    };
     let verification = load_observer_sync_verification(&state);
     if !advertised_observer_sync_capabilities(&verification).contains(&ROSTER_SNAPSHOT_CAPABILITY) {
         tracing::warn!(
@@ -331,9 +335,10 @@ pub async fn agent_roster_snapshot(
         .into_response();
     }
     let gate_state = Arc::clone(&state);
+    let key = ProjectionKey::AgentsRosterSnapshot(principal.clone());
     let result = state
         .projection_gate
-        .run(ProjectionKey::AgentsRosterSnapshot, || async {
+        .run(key, || async {
             let limits = gate_state.roster_snapshot_limits.clone();
             let host = gate_state.host.clone();
             let snapshot = match tokio::time::timeout(
@@ -370,9 +375,10 @@ pub async fn agent_roster_snapshot(
                     .extension("max_agents", limits.max_agents),
                 )));
             }
-            let visibility_scope_id = observer_visibility_scope(
-                &gate_state,
+            let visibility_scope_id = observer_visibility_scope_for(
                 &snapshot.runtime_id,
+                &principal,
+                entitlement,
                 snapshot.visibility_policy_generation,
             );
             let snapshot = AgentRosterSnapshot {
@@ -428,22 +434,22 @@ pub async fn agent_roster_snapshot(
     }
 }
 
-/// Derives the observer scope for the caller from facts inside the snapshot
-/// read view plus the request's resolved authority mode. Credentials are
-/// never an input, so token rotation with unchanged entitlement keeps the
-/// scope stable.
-pub(crate) fn observer_visibility_scope(
+/// Resolves one authority for snapshots and read cursors. OIDC credentials
+/// identify the user, but the scope/cache key never contains the credential,
+/// so rotation within the same principal keeps the scope stable.
+pub(crate) fn observer_principal_and_entitlement(
+    headers: &HeaderMap,
     state: &AppState,
-    runtime_id: &str,
-    visibility_policy_generation: u64,
-) -> String {
-    let (principal, entitlement) = observer_scope_authority(state);
-    observer_visibility_scope_for(
-        runtime_id,
-        principal,
-        entitlement,
-        visibility_policy_generation,
-    )
+) -> anyhow::Result<(String, &'static str)> {
+    if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc {
+        Ok((
+            super::control_actor(headers, state)?.principal_id(),
+            CONTROL_SCOPE_ENTITLEMENT,
+        ))
+    } else {
+        let (principal, entitlement) = observer_scope_authority(state);
+        Ok((principal.to_string(), entitlement))
+    }
 }
 
 pub(crate) fn observer_visibility_scope_for(
@@ -487,6 +493,10 @@ pub async fn agent_projection_snapshot(
     if let Err(error) = authorize_remote_access(&headers, &state) {
         return auth_required(error.to_string()).into_response();
     }
+    let (principal, entitlement) = match observer_principal_and_entitlement(&headers, &state) {
+        Ok(authority) => authority,
+        Err(error) => return auth_required(error.to_string()).into_response(),
+    };
     let verification = load_observer_sync_verification(&state);
     if !advertised_observer_sync_capabilities(&verification)
         .contains(&PROJECTION_SNAPSHOT_CAPABILITY)
@@ -516,7 +526,7 @@ pub async fn agent_projection_snapshot(
     let result = state
         .projection_gate
         .run(
-            ProjectionKey::AgentProjectionSnapshot(agent_id.clone()),
+            ProjectionKey::AgentProjectionSnapshot(agent_id.clone(), principal.clone()),
             || async {
                 let limits = gate_state.projection_snapshot_limits.clone();
                 let host = gate_state.host.clone();
@@ -556,9 +566,10 @@ pub async fn agent_projection_snapshot(
                         ),
                     )));
                 };
-                let visibility_scope_id = observer_visibility_scope(
-                    &gate_state,
+                let visibility_scope_id = observer_visibility_scope_for(
                     &snapshot.runtime_id,
+                    &principal,
+                    entitlement,
                     snapshot.visibility_policy_generation,
                 );
                 let snapshot = AgentProjectionSnapshot {
@@ -881,6 +892,102 @@ mod tests {
                 .unwrap();
             host.create_named_agent("web", None).await.unwrap();
             (home, host)
+        }
+
+        async fn authenticated_json(
+            app: axum::Router,
+            credential: &str,
+            path: &str,
+        ) -> serde_json::Value {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header("authorization", format!("Bearer {credential}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body
+        }
+
+        #[tokio::test]
+        async fn oidc_login_scope_matches_read_states_and_isolates_snapshot_cache() {
+            let (home, _) = roster_test_host().await;
+            let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+            config.auth.mode = crate::authentication::AuthenticationMode::Oidc;
+            let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done")))
+                .unwrap();
+            let now = chrono::Utc::now();
+            for (user_id, credential) in [
+                ("user-a", "session-a"),
+                ("user-b", "session-b"),
+                ("user-a", "rotated-session-a"),
+            ] {
+                let authentication = host.runtime_db().authentication();
+                authentication
+                    .upsert_user(&crate::authentication::AuthUserRecord {
+                        user_id: user_id.to_string(),
+                        issuer: "https://issuer.example".to_string(),
+                        subject: user_id.to_string(),
+                        display_name: None,
+                        email: None,
+                        created_at: now,
+                        updated_at: now,
+                        disabled_at: None,
+                    })
+                    .unwrap();
+                authentication
+                    .create_session(&crate::authentication::AuthSessionRecord {
+                        session_digest: crate::authentication::digest_secret(credential),
+                        user_id: user_id.to_string(),
+                        auth_method: "oidc".to_string(),
+                        created_at: now,
+                        expires_at: None,
+                        last_seen_at: now,
+                        revoked_at: None,
+                    })
+                    .unwrap();
+            }
+            let mut state = AppState::for_tcp(host);
+            // Force cache hits throughout the test, including between users.
+            state.projection_gate = Arc::new(crate::http::projection_gate::ProjectionGate::new(
+                4,
+                Duration::from_secs(60),
+            ));
+            let app = crate::http::router(state);
+            let mut scopes = Vec::new();
+            for credential in ["session-a", "session-b", "rotated-session-a"] {
+                let roster =
+                    authenticated_json(app.clone(), credential, "/api/agents/snapshot").await;
+                let projection = authenticated_json(
+                    app.clone(),
+                    credential,
+                    "/api/agents/web/projection-snapshot",
+                )
+                .await;
+                let reads =
+                    authenticated_json(app.clone(), credential, "/api/agents/brief-read-states")
+                        .await;
+                let read = reads
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|read| read["agent_id"] == "web")
+                    .unwrap();
+                let scope = roster["visibility_scope_id"].as_str().unwrap().to_string();
+                assert_eq!(scope, projection["visibility_scope_id"]);
+                assert_eq!(scope, read["visibility_scope_id"]);
+                assert_eq!(roster["runtime_id"], projection["runtime_id"]);
+                scopes.push(scope);
+            }
+            assert_ne!(scopes[0], scopes[1], "users must have isolated scopes");
+            assert_eq!(scopes[0], scopes[2], "credential rotation preserves scope");
         }
 
         async fn get_snapshot(state: AppState) -> (StatusCode, serde_json::Value) {

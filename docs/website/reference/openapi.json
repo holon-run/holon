@@ -216,7 +216,7 @@
               },
               "can_rename": {
                 "default": false,
-                "description": "True when this identity satisfies the backend rename guard (public,\n self-owned, not the configured default agent). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
+                "description": "True when this identity satisfies the backend rename guard (public\n and self-owned). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
                 "type": "boolean"
               },
               "delegated_from_task_id": {
@@ -388,7 +388,7 @@
               },
               "can_rename": {
                 "default": false,
-                "description": "True when this identity satisfies the backend rename guard (public,\n self-owned, not the configured default agent). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
+                "description": "True when this identity satisfies the backend rename guard (public\n and self-owned). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
                 "type": "boolean"
               },
               "delegated_from_task_id": {
@@ -1293,7 +1293,7 @@
               },
               "can_rename": {
                 "default": false,
-                "description": "True when this identity satisfies the backend rename guard (public,\n self-owned, not the configured default agent). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
+                "description": "True when this identity satisfies the backend rename guard (public\n and self-owned). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
                 "type": "boolean"
               },
               "delegated_from_task_id": {
@@ -1455,7 +1455,7 @@
           },
           "can_rename": {
             "default": false,
-            "description": "True when this identity satisfies the backend rename guard (public,\n self-owned, not the configured default agent). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
+            "description": "True when this identity satisfies the backend rename guard (public\n and self-owned). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
             "type": "boolean"
           },
           "delegated_from_task_id": {
@@ -1894,7 +1894,7 @@
                         },
                         "can_rename": {
                           "default": false,
-                          "description": "True when this identity satisfies the backend rename guard (public,\n self-owned, not the configured default agent). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
+                          "description": "True when this identity satisfies the backend rename guard (public\n and self-owned). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
                           "type": "boolean"
                         },
                         "delegated_from_task_id": {
@@ -2601,7 +2601,7 @@
                   },
                   "can_rename": {
                     "default": false,
-                    "description": "True when this identity satisfies the backend rename guard (public,\n self-owned, not the configured default agent). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
+                    "description": "True when this identity satisfies the backend rename guard (public\n and self-owned). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
                     "type": "boolean"
                   },
                   "delegated_from_task_id": {
@@ -3697,7 +3697,7 @@
                   },
                   "can_rename": {
                     "default": false,
-                    "description": "True when this identity satisfies the backend rename guard (public,\n self-owned, not the configured default agent). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
+                    "description": "True when this identity satisfies the backend rename guard (public\n and self-owned). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
                     "type": "boolean"
                   },
                   "delegated_from_task_id": {
@@ -4487,7 +4487,7 @@
                         },
                         "can_rename": {
                           "default": false,
-                          "description": "True when this identity satisfies the backend rename guard (public,\n self-owned, not the configured default agent). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
+                          "description": "True when this identity satisfies the backend rename guard (public\n and self-owned). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
                           "type": "boolean"
                         },
                         "delegated_from_task_id": {
@@ -18103,7 +18103,7 @@
   "info": {
     "description": "Generated baseline for Holon's current HTTP control-plane surface. It is intentionally conservative: many response bodies remain JSON placeholders until the success/error envelope contracts stabilize.",
     "title": "Holon HTTP control-plane API",
-    "version": "0.47.0"
+    "version": "0.48.0"
   },
   "openapi": "3.1.0",
   "paths": {

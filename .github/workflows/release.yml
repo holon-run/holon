@@ -493,6 +493,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
+          bash scripts/test-release-crate-publish-order.sh
           if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
             echo "CARGO_REGISTRY_TOKEN is not configured; skipping crates.io publish."
             exit 0
@@ -510,6 +511,8 @@ jobs:
           }
           publish_if_needed decision-core
           publish_if_needed decision-jev
+          publish_if_needed decision-clef
           publish_if_needed decision-openai
+          publish_if_needed decision-openai-decisions
           publish_if_needed decision-local-onnx
           cargo publish --locked

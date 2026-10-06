@@ -1,5 +1,6 @@
 import CoreData
 import Foundation
+import HolonClient
 
 /// One transaction covers the complete draft/outbox snapshot; no credentials are encoded.
 @MainActor
@@ -115,6 +116,22 @@ final class SendingStore {
         }
         for attachment in draft.attachments { try validate(attachment) }
         let entry = SendingEntry(requestID: UUID(), scope: scope, draft: draft)
+        let attachments = try draft.attachments.map { attachment in
+            let data = try Data(contentsOf: attachmentURL(attachment))
+            do {
+                return try HolonPromptAttachment(
+                    kind: attachment.contentType.hasPrefix("image/") ? .image : .file,
+                    name: attachment.name, mediaType: attachment.contentType, data: data)
+            } catch {
+                throw SendingFailure.rejected("Invalid prompt or attachment body exceeds the server limit.")
+            }
+        }
+        do {
+            _ = try HolonPromptRequest(clientRequestID: entry.requestID.uuidString,
+                                       text: draft.text, attachments: attachments)
+        } catch {
+            throw SendingFailure.rejected("Invalid prompt or attachment body exceeds the server limit.")
+        }
         var next = snapshot
         next.entries.append(entry)
         next.drafts[scope] = SendingDraft(modelID: draft.modelID)

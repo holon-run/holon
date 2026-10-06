@@ -3,6 +3,18 @@ import XCTest
 @testable import Holon
 
 final class SharedImportStoreTests: XCTestCase {
+    func testAttachmentByteCountsRejectCorruptAndOverBudgetRecords() throws {
+        for counts in [[Int.max], [Int.min], [-1], Array(repeating: Int.max, count: 10),
+                       Array(repeating: SharedImportStore.maxBytes, count: 10),
+                       [SharedImportStore.maxBytes, 1]] {
+            XCTAssertThrowsError(try SharedImportStore.validate(text: "", urls: [], attachmentBytes: counts)) {
+                XCTAssertEqual($0 as? SharedImportError, .limitExceeded)
+            }
+        }
+        XCTAssertNoThrow(try SharedImportStore.validate(text: "", urls: [],
+            attachmentBytes: [SharedImportStore.maxBytes - 1, 1]))
+    }
+
     func testSafeNamesUseUTF8BudgetAndPreserveWholeCharactersAndShortSuffixes() {
         let cases = [
             (String(repeating: "界", count: 100) + ".txt", String(repeating: "界", count: 83) + ".txt"),

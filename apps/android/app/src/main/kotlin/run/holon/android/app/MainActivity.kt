@@ -9,6 +9,7 @@ import androidx.activity.addCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.lifecycleScope
@@ -100,6 +101,7 @@ class MainActivity : ComponentActivity() {
         if (incoming.action == Intent.ACTION_VIEW) {
             if (incoming.data?.let(viewModel::handleOidcCallback) == true) return
             val shortcutId = incoming.getStringExtra(AgentShareShortcuts.EXTRA_SHORTCUT_ID) ?: return
+            ShortcutManagerCompat.reportShortcutUsed(this, shortcutId)
             lifecycleScope.launch {
                 val ready = viewModel.state.first { it.phase == AppPhase.Ready && it.session != null }
                 AgentShareShortcuts.target(ready.session!!.scopeKey, ready.agents, shortcutId)?.let(viewModel::openAgent)
