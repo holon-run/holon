@@ -19,6 +19,30 @@ class UiCopyTest {
     }
 
     @Test
+    fun `model chooser copy is translated for english`() {
+        assertEquals("Model", UiCopy.translate("模型", "en"))
+        assertEquals("Select model", UiCopy.translate("选择模型", "en"))
+        assertEquals("Active: ", UiCopy.translate("当前生效：", "en"))
+        assertEquals("Agent override", UiCopy.translate("Agent 自定义", "en"))
+        assertEquals("Auto · Runtime default", UiCopy.translate("Auto · 运行时默认", "en"))
+        assertEquals("Auto · Reset to runtime default", UiCopy.translate("Auto · 恢复运行时默认", "en"))
+        assertEquals("Refresh models", UiCopy.translate("刷新模型", "en"))
+        assertEquals("Search models", UiCopy.translate("搜索模型", "en"))
+        assertEquals("No model catalog yet. Refresh and try again.", UiCopy.translate("暂无模型目录，请刷新后重试", "en"))
+        assertEquals("Apply to this Agent", UiCopy.translate("应用到此 Agent", "en"))
+        assertEquals("Pending: ", UiCopy.translate("待应用：", "en"))
+        assertEquals("Currently unavailable", UiCopy.translate("当前不可用", "en"))
+        assertEquals("Default", UiCopy.translate("默认", "en"))
+        assertEquals(
+            "Model changes are saved to this Agent. Running tasks are not switched.",
+            UiCopy.translate("模型更改保存到此 Agent；运行中的任务不会被切换。", "en"),
+        )
+        assertEquals("Model updated", UiCopy.translate("模型已更新", "en"))
+        assertEquals("Restored the Auto model", UiCopy.translate("已恢复 Auto 模型", "en"))
+        assertEquals("Pending", UiCopy.translate("待处理", "en"))
+    }
+
+    @Test
     fun `chinese copy and agent content stay unchanged`() {
         assertEquals("工作项", UiCopy.translate("工作记录", "zh"))
         assertEquals("工作项", UiCopy.translate("工作记录", "zh-CN"))
