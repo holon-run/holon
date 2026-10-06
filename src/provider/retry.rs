@@ -476,13 +476,13 @@ pub(crate) fn classify_status_error_with_trace(
     let deterministic_error =
         is_known_deterministic_provider_error(detail.as_ref(), Some(body.as_str()));
     let classification = match status {
-        _ if deterministic_error => ProviderFailureClassification {
-            kind: ProviderFailureKind::ContractError,
-            disposition: RetryDisposition::FailFast,
-        },
         StatusCode::TOO_MANY_REQUESTS => ProviderFailureClassification {
             kind: ProviderFailureKind::RateLimited,
             disposition: RetryDisposition::Retryable,
+        },
+        _ if deterministic_error => ProviderFailureClassification {
+            kind: ProviderFailureKind::ContractError,
+            disposition: RetryDisposition::FailFast,
         },
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ProviderFailureClassification {
             kind: ProviderFailureKind::AuthError,
@@ -1206,6 +1206,33 @@ mod tests {
         assert_eq!(
             transport.classification.kind,
             ProviderFailureKind::RateLimited
+        );
+        assert_eq!(transport.retry_after, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn rate_limit_status_wins_over_deterministic_marker() {
+        let error = classify_status_error_with_trace(
+            "Provider request failed",
+            "response_status",
+            Some("openai"),
+            Some("openai/gpt-5.4"),
+            Some("https://example.com/v1/chat/completions"),
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many tokens per minute".into(),
+            None,
+            Some(Duration::from_secs(5)),
+        );
+        let transport = error
+            .downcast_ref::<ProviderTransportError>()
+            .expect("transport error");
+        assert_eq!(
+            transport.classification.kind,
+            ProviderFailureKind::RateLimited
+        );
+        assert_eq!(
+            transport.classification.disposition,
+            super::RetryDisposition::Retryable
         );
         assert_eq!(transport.retry_after, Some(Duration::from_secs(5)));
     }

@@ -229,6 +229,10 @@ fn classify_openai_chat_completion_error_with_streaming(
                 disposition: RetryDisposition::Retryable,
             }
         }
+        _ if error_type == "rate_limit_error" => ProviderFailureClassification {
+            kind: ProviderFailureKind::RateLimited,
+            disposition: RetryDisposition::Retryable,
+        },
         _ if deterministic_error => ProviderFailureClassification {
             kind: ProviderFailureKind::ContractError,
             disposition: RetryDisposition::FailFast,
