@@ -61,7 +61,7 @@ impl AgentMessageDeliveryService<'_> {
 
     pub(crate) fn prepare(
         request: AgentMessageSendRequest,
-        caller: AgentMessageCallerContext,
+        mut caller: AgentMessageCallerContext,
     ) -> Result<PreparedAgentMessageDelivery> {
         if request.target_agent_id.trim().is_empty() {
             bail!("agent message delivery requires a target agent");
@@ -70,11 +70,28 @@ impl AgentMessageDeliveryService<'_> {
             bail!("agent message delivery requires an idempotency key");
         }
 
+        caller.inherited_routing_context =
+            caller.inherited_routing_context.take().filter(|route| {
+                caller.caller_agent_id.as_deref() == Some(route.recipient_agent_id.as_str())
+                    && (request.forward
+                        || route.reply_to_agent_id.as_deref()
+                            == Some(request.target_agent_id.as_str())
+                        || route.sender_agent_id.as_deref()
+                            == Some(request.target_agent_id.as_str()))
+            });
+        if request.forward && caller.inherited_routing_context.is_none() {
+            bail!("forwarding requires routing context from the latest incoming agent message");
+        }
         let priority = request
             .requested_priority
             .clone()
             .unwrap_or(Priority::Normal);
         let inherited = caller.inherited_routing_context.as_ref();
+        let forwarded = inherited.filter(|route| {
+            request.forward
+                && route.reply_to_agent_id.as_deref() != Some(request.target_agent_id.as_str())
+                && route.sender_agent_id.as_deref() != Some(request.target_agent_id.as_str())
+        });
         let correlation_id = request
             .correlation_id
             .clone()
@@ -99,6 +116,7 @@ impl AgentMessageDeliveryService<'_> {
                 correlation_id: correlation_id.as_deref(),
                 causation_id: causation_id.as_deref(),
                 priority: &priority,
+                forward: request.forward,
                 caller: &caller,
             },
         )?;
@@ -121,17 +139,17 @@ impl AgentMessageDeliveryService<'_> {
             message_id: message.id.clone(),
             sender_agent_id: sender_agent_id.clone(),
             recipient_agent_id: request.target_agent_id.clone(),
-            reply_to_agent_id: inherited
+            reply_to_agent_id: forwarded
                 .and_then(|route| route.reply_to_agent_id.clone())
                 .or_else(|| sender_agent_id.clone()),
             correlation_id: correlation_id.clone(),
             in_reply_to_message_id: inherited.map(|route| route.message_id.clone()),
-            original_sender_agent_id: inherited
+            original_sender_agent_id: forwarded
                 .and_then(|route| route.original_sender_agent_id.clone())
-                .or_else(|| inherited.and_then(|route| route.sender_agent_id.clone())),
-            original_reply_to_agent_id: inherited
+                .or_else(|| forwarded.and_then(|route| route.sender_agent_id.clone())),
+            original_reply_to_agent_id: forwarded
                 .and_then(|route| route.original_reply_to_agent_id.clone())
-                .or_else(|| inherited.and_then(|route| route.reply_to_agent_id.clone())),
+                .or_else(|| forwarded.and_then(|route| route.reply_to_agent_id.clone())),
         });
         message.metadata = Some(serde_json::json!({
             "agent_message_delivery": {
@@ -261,6 +279,7 @@ struct DeliverySemanticRequest<'a> {
     correlation_id: Option<&'a str>,
     causation_id: Option<&'a str>,
     priority: &'a Priority,
+    forward: bool,
     caller: &'a AgentMessageCallerContext,
 }
 
@@ -315,6 +334,7 @@ mod tests {
             correlation_id: None,
             causation_id: None,
             requested_priority: None,
+            forward: false,
         }
     }
 
@@ -342,18 +362,17 @@ mod tests {
         let inherited = AgentMessageRoutingContext {
             message_id: "incoming-message".into(),
             sender_agent_id: Some("origin-agent".into()),
-            recipient_agent_id: "relay-agent".into(),
+            recipient_agent_id: "caller-agent".into(),
             reply_to_agent_id: Some("origin-agent".into()),
             correlation_id: Some("correlation-1".into()),
             in_reply_to_message_id: None,
             original_sender_agent_id: None,
             original_reply_to_agent_id: None,
         };
-        let prepared = AgentMessageDeliveryService::prepare(
-            request("final-agent", "forwarded-routing"),
-            caller(Some(inherited)),
-        )
-        .unwrap();
+        let mut request = request("final-agent", "forwarded-routing");
+        request.forward = true;
+        let prepared =
+            AgentMessageDeliveryService::prepare(request, caller(Some(inherited))).unwrap();
         let routing = prepared.message.routing_context.as_ref().unwrap();
 
         assert_eq!(routing.sender_agent_id.as_deref(), Some("caller-agent"));
@@ -376,6 +395,85 @@ mod tests {
 
         let lifecycle = crate::types::MessageLifecycleAuditEvent::from_message(&prepared.message);
         assert_eq!(lifecycle.routing_context.as_ref(), Some(routing));
+    }
+
+    #[test]
+    fn direct_response_targets_the_immediate_sender_instead_of_itself() {
+        let inherited = AgentMessageRoutingContext {
+            message_id: "incoming-message".into(),
+            sender_agent_id: Some("origin-agent".into()),
+            recipient_agent_id: "caller-agent".into(),
+            reply_to_agent_id: Some("origin-agent".into()),
+            correlation_id: Some("correlation-1".into()),
+            in_reply_to_message_id: None,
+            original_sender_agent_id: None,
+            original_reply_to_agent_id: None,
+        };
+        let prepared = AgentMessageDeliveryService::prepare(
+            request("origin-agent", "direct-response"),
+            caller(Some(inherited)),
+        )
+        .unwrap();
+        let routing = prepared.message.routing_context.as_ref().unwrap();
+
+        assert_eq!(routing.reply_to_agent_id.as_deref(), Some("caller-agent"));
+        assert_eq!(
+            routing.in_reply_to_message_id.as_deref(),
+            Some("incoming-message")
+        );
+        assert_eq!(routing.original_sender_agent_id, None);
+        assert_eq!(routing.original_reply_to_agent_id, None);
+    }
+
+    #[test]
+    fn direct_response_chain_targets_the_immediate_sender() {
+        let mut first_caller = caller(None);
+        first_caller.caller_agent_id = Some("agent-a".into());
+        let first =
+            AgentMessageDeliveryService::prepare(request("agent-b", "chain-a-to-b"), first_caller)
+                .unwrap();
+        let first_route = first.message.routing_context.clone().unwrap();
+
+        let mut second_caller = caller(Some(first_route));
+        second_caller.caller_agent_id = Some("agent-b".into());
+        let second =
+            AgentMessageDeliveryService::prepare(request("agent-a", "chain-b-to-a"), second_caller)
+                .unwrap();
+        let second_route = second.message.routing_context.unwrap();
+
+        assert_eq!(second_route.sender_agent_id.as_deref(), Some("agent-b"));
+        assert_eq!(second_route.recipient_agent_id, "agent-a");
+        assert_eq!(second_route.reply_to_agent_id.as_deref(), Some("agent-b"));
+        assert_eq!(
+            second_route.in_reply_to_message_id.as_deref(),
+            Some(first.message.id.as_str())
+        );
+    }
+
+    #[test]
+    fn unrelated_send_drops_inherited_route_without_forward_intent() {
+        let inherited = AgentMessageRoutingContext {
+            message_id: "incoming-message".into(),
+            sender_agent_id: Some("origin-agent".into()),
+            recipient_agent_id: "caller-agent".into(),
+            reply_to_agent_id: Some("origin-agent".into()),
+            correlation_id: Some("correlation-1".into()),
+            in_reply_to_message_id: None,
+            original_sender_agent_id: None,
+            original_reply_to_agent_id: None,
+        };
+        let prepared = AgentMessageDeliveryService::prepare(
+            request("unrelated-agent", "new-notification"),
+            caller(Some(inherited)),
+        )
+        .unwrap();
+        let routing = prepared.message.routing_context.as_ref().unwrap();
+
+        assert_eq!(routing.reply_to_agent_id.as_deref(), Some("caller-agent"));
+        assert_eq!(routing.correlation_id, None);
+        assert_eq!(routing.in_reply_to_message_id, None);
+        assert_eq!(routing.original_sender_agent_id, None);
+        assert_eq!(routing.original_reply_to_agent_id, None);
     }
 
     #[test]
@@ -406,6 +504,7 @@ mod tests {
                 correlation_id: None,
                 causation_id: None,
                 requested_priority: None,
+                forward: false,
             },
             caller.clone(),
         )

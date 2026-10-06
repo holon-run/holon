@@ -1,5 +1,6 @@
 //! Generic message/body/header rendering helpers and label functions.
 
+use super::budget::estimate_text_tokens;
 use crate::prompt::{PromptSection, PromptStability};
 use crate::tool::helpers::truncate_text;
 use crate::types::{
@@ -24,6 +25,45 @@ pub(super) fn message_routing_context(message: &MessageEnvelope) -> Option<Strin
         return None;
     }
     Some(render_routing_context(route))
+}
+
+pub(super) fn message_routing_context_compact(
+    message: &MessageEnvelope,
+    budget: usize,
+) -> Option<String> {
+    let route = message.routing_context.as_ref()?;
+    if route.message_id != message.id || route.recipient_agent_id != message.agent_id {
+        return None;
+    }
+    let value = |value: Option<&String>, max_chars| {
+        value
+            .map(|value| bounded_inline(&header_label_value(value), max_chars))
+            .unwrap_or_else(|| "none".into())
+    };
+    let render = |max_chars| {
+        format!(
+            "route: sender={} recipient={} reply={}",
+            value(route.sender_agent_id.as_ref(), max_chars),
+            value(Some(&route.recipient_agent_id), max_chars),
+            value(route.reply_to_agent_id.as_ref(), max_chars),
+        )
+    };
+    let max_chars = budget.saturating_mul(4);
+    if estimate_text_tokens(&render(max_chars)) <= budget {
+        return Some(render(max_chars));
+    }
+
+    let mut low = 0usize;
+    let mut high = max_chars;
+    while low < high {
+        let middle = (low + high).div_ceil(2);
+        if estimate_text_tokens(&render(middle)) <= budget {
+            low = middle;
+        } else {
+            high = middle.saturating_sub(1);
+        }
+    }
+    (low > 0).then(|| render(low))
 }
 
 fn render_routing_context(route: &AgentMessageRoutingContext) -> String {
@@ -332,5 +372,36 @@ mod tests {
         );
 
         assert!(message_reply_expectation_context(&message).is_none());
+    }
+
+    #[test]
+    fn compact_routing_context_shows_sender_recipient_and_reply_target() {
+        let mut message = MessageEnvelope::new(
+            "target",
+            crate::types::MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "agent_message".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            crate::types::Priority::Normal,
+            MessageBody::Text {
+                text: "forwarded message".into(),
+            },
+        );
+        message.routing_context = Some(AgentMessageRoutingContext {
+            message_id: message.id.clone(),
+            sender_agent_id: Some("relay-agent".into()),
+            recipient_agent_id: "target".into(),
+            reply_to_agent_id: Some("origin-agent".into()),
+            correlation_id: None,
+            in_reply_to_message_id: Some("incoming-message".into()),
+            original_sender_agent_id: Some("origin-agent".into()),
+            original_reply_to_agent_id: Some("origin-agent".into()),
+        });
+
+        let compact = message_routing_context_compact(&message, 48).unwrap();
+        assert!(compact.contains("sender=relay-agent"));
+        assert!(compact.contains("recipient=target"));
+        assert!(compact.contains("reply=origin-agent"));
     }
 }

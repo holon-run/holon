@@ -5326,6 +5326,7 @@ impl RuntimeHost {
                 correlation_id: Some(task.id.clone()),
                 causation_id: task.parent_message_id.clone(),
                 requested_priority: Some(Priority::Normal),
+                forward: false,
             },
             caller,
         )?;
@@ -7901,6 +7902,7 @@ mod tests {
                     correlation_id: None,
                     causation_id: None,
                     requested_priority: Some(Priority::Normal),
+                    forward: false,
                 },
                 AuthorityClass::RuntimeInstruction,
             )
@@ -9462,6 +9464,7 @@ mod tests {
                 correlation_id: Some(task_id.into()),
                 causation_id: None,
                 requested_priority: Some(Priority::Normal),
+                forward: false,
             },
             AgentMessageCallerContext {
                 caller_principal: format!("agent:{parent_agent_id}"),

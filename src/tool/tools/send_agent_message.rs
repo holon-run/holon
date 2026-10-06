@@ -21,6 +21,8 @@ pub(crate) const NAME: &str = crate::tool::names::SEND_AGENT_MESSAGE;
 pub(crate) struct SendAgentMessageArgs {
     pub agent_id: String,
     pub message: String,
+    #[serde(default)]
+    pub forward: bool,
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -63,6 +65,7 @@ pub(crate) async fn execute(
                 correlation_id: None,
                 causation_id: None,
                 requested_priority: Some(Priority::Normal),
+                forward: args.forward,
             },
             authority_class.clone(),
         )

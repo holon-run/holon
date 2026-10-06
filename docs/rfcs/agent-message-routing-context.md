@@ -29,11 +29,19 @@ text to override these fields.
 ## Forwarding semantics
 
 For a direct delivery, the immediate sender is also the default reply target.
-When an agent forwards an incoming message, the new message records the relay
-as `sender_agent_id`, retains the inherited trusted reply target, and records
-the incoming message as `in_reply_to_message_id`. The original sender and
-reply target are retained separately so a receiver can distinguish the relay
-from the route that should receive a response.
+A send to the trusted sender or reply target of the latest incoming message
+inherits that route and is treated as a direct response. A send to any other
+agent starts a new direct route unless the caller explicitly sets `forward`
+on `SendAgentMessage`.
+
+When an agent intentionally forwards an incoming message, the new message
+records the relay as `sender_agent_id`, retains the inherited trusted reply
+target, and records the incoming message as `in_reply_to_message_id`. The
+original sender and reply target are retained separately so a receiver can
+distinguish the relay from the route that should receive a response. The
+`forward` flag is an intent signal only; it cannot supply or override routing
+identities. Inherited routing is read only from the latest input in the active
+turn; an unrouted newer input stops inheritance.
 
 ## Projections
 

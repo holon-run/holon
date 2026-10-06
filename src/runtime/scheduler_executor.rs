@@ -3451,6 +3451,7 @@ mod tests {
                 correlation_id: None,
                 causation_id: None,
                 requested_priority: None,
+                forward: false,
             },
             caller.clone(),
         )

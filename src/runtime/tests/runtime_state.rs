@@ -2988,6 +2988,7 @@ async fn enqueue_lifecycle_delivery(
             correlation_id: None,
             causation_id: None,
             requested_priority: None,
+            forward: false,
         },
         crate::types::AgentMessageCallerContext {
             caller_principal: "runtime:agent-invocation".into(),

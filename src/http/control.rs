@@ -1215,6 +1215,7 @@ pub async fn control_prompt(
                 correlation_id: None,
                 causation_id: None,
                 requested_priority: Some(Priority::Interject),
+                forward: false,
             },
             crate::types::AgentMessageCallerContext {
                 caller_principal,

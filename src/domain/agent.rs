@@ -235,6 +235,8 @@ pub struct AgentMessageSendRequest {
     pub causation_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_priority: Option<Priority>,
+    #[serde(default)]
+    pub forward: bool,
 }
 
 /// Trusted runtime routing metadata for an agent-to-agent message.
