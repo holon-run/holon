@@ -34,6 +34,11 @@ def _set_text_size(simulator, category, phase):
         raise RuntimeError(f"系统字号核验失败：期望 {category}，实际 {actual}")
 
 
+def initialize_simulator_text_size(simulator):
+    """Establish a verified baseline on the harness-owned fresh simulator."""
+    _set_text_size(simulator, "large", "专用测试基线初始化")
+
+
 @contextmanager
 def simulator_text_size(simulator, category):
     original = _read_text_size(simulator)

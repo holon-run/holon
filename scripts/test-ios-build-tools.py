@@ -8,7 +8,9 @@ import tempfile
 import unittest
 from unittest.mock import call, patch
 
-from ios_simulator_text_size import MAXIMUM_TEXT_SIZE, simulator_text_size
+from ios_simulator_text_size import (
+    MAXIMUM_TEXT_SIZE, initialize_simulator_text_size, simulator_text_size,
+)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -124,6 +126,32 @@ class SimulatorTextSizeContracts(unittest.TestCase):
     def lifecycle(self, selected=MAXIMUM_TEXT_SIZE, restored="large"):
         return [self.result("large\n"), self.result(), self.result(selected + "\n"),
                 self.result(), self.result(restored + "\n")]
+
+    def test_initialize_dedicated_baseline_with_readback(self):
+        with patch("ios_simulator_text_size.subprocess.run",
+                   side_effect=[self.result(), self.result("large\n")]) as run:
+            initialize_simulator_text_size(UUID)
+            prefix = ["xcrun", "simctl", "ui", UUID, "content_size"]
+            self.assertEqual(run.call_args_list, [
+                call(prefix + ["large"], check=True, capture_output=True, text=True),
+                call(prefix, check=True, capture_output=True, text=True),
+            ])
+
+    def test_unverified_baseline_fails(self):
+        for actual in ("medium", "unknown", "unsupported", ""):
+            with self.subTest(actual=actual):
+                with patch("ios_simulator_text_size.subprocess.run",
+                           side_effect=[self.result(), self.result(actual)]) as run:
+                    with self.assertRaises(RuntimeError):
+                        initialize_simulator_text_size(UUID)
+                    self.assertEqual(run.call_count, 2)
+
+    def test_failed_baseline_configuration_is_not_success(self):
+        with patch("ios_simulator_text_size.subprocess.run",
+                   side_effect=subprocess.CalledProcessError(1, ["xcrun"])) as run:
+            with self.assertRaises(subprocess.CalledProcessError):
+                initialize_simulator_text_size(UUID)
+            self.assertEqual(run.call_count, 1)
 
     def test_set_readback_and_restore(self):
         with patch("ios_simulator_text_size.subprocess.run",

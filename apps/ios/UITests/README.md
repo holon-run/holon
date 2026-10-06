@@ -39,9 +39,14 @@ both profile HTTP permission and pairing HTTP permission.
 
 Two disconnected cases cover English/light and Simplified Chinese/dark with
 accessibility XXXL text. The harness sets and reads back the real simulator
-`simctl ui content_size` before each case and restores the original value even
-if configuration or XCTest fails. Do not replace this with an application-only
-launch override. Three diagnostic regressions cover control text shrinking from
+`simctl ui content_size`. It first explicitly initializes and verifies a `large`
+suite baseline on its fresh, owned simulator, whose unset initial category may
+be reported as `unknown`. This is fixture configuration, not an interpretation
+of `unknown` as `large`. Before each case it reads the baseline, sets and verifies
+the required size, then restores and verifies that baseline even if configuration
+or XCTest fails. Unreadable categories and failed readbacks still fail the suite.
+Do not replace this with an application-only launch override.
+Three diagnostic regressions cover control text shrinking from
 maximum to ordinary size, prepared text growing at runtime, and maximum-size
 viewport coverage. Each case runs separately with its required initial size.
 XCUITest accessibility audits run without ignored

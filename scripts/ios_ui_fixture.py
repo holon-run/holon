@@ -12,7 +12,9 @@ import threading
 import time
 import urllib.request
 
-from ios_simulator_text_size import MAXIMUM_TEXT_SIZE, simulator_text_size
+from ios_simulator_text_size import (
+    MAXIMUM_TEXT_SIZE, initialize_simulator_text_size, simulator_text_size,
+)
 
 binary, repo, mode = sys.argv[1:]
 with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
@@ -223,6 +225,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                            for method, _ in cases]
                 if any(path.exists() for path in bundles):
                     raise RuntimeError("Per-case xcresult paths must be unused")
+                initialize_simulator_text_size(simulator)
                 for (method, content_size), case_bundle in zip(cases, bundles):
                     with simulator_text_size(simulator, content_size):
                         test_env["TEST_RUNNER_HOLON_UI_CONTENT_SIZE"] = content_size
