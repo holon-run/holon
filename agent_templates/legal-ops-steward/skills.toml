@@ -1,0 +1,62 @@
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/ghx"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/sview"
+path = "skills/sview"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/agentinbox"
+path = "skills/agentinbox"
+
+[[skills]]
+kind = "github"
+repo = "anthropics/claude-for-legal"
+path = "commercial-legal/skills/cold-start-interview"
+ref = "4a6c651889c97cc9140580363c73e0eb17379c2b"
+
+[[skills]]
+kind = "github"
+repo = "anthropics/claude-for-legal"
+path = "commercial-legal/skills/review"
+ref = "4a6c651889c97cc9140580363c73e0eb17379c2b"
+
+[[skills]]
+kind = "github"
+repo = "anthropics/claude-for-legal"
+path = "commercial-legal/skills/amendment-history"
+ref = "4a6c651889c97cc9140580363c73e0eb17379c2b"
+
+[[skills]]
+kind = "github"
+repo = "anthropics/claude-for-legal"
+path = "commercial-legal/skills/renewal-tracker"
+ref = "4a6c651889c97cc9140580363c73e0eb17379c2b"
+
+[[skills]]
+kind = "github"
+repo = "anthropics/claude-for-legal"
+path = "legal-clinic/skills/research-start"
+ref = "4a6c651889c97cc9140580363c73e0eb17379c2b"
+
+[[skills]]
+kind = "github"
+repo = "anthropics/claude-for-legal"
+path = "regulatory-legal/skills/reg-feed-watcher"
+ref = "4a6c651889c97cc9140580363c73e0eb17379c2b"
+
+[[skills]]
+kind = "github"
+repo = "anthropics/claude-for-legal"
+path = "commercial-legal/skills/matter-workspace"
+ref = "4a6c651889c97cc9140580363c73e0eb17379c2b"
+
+[[skills]]
+kind = "github"
+repo = "anthropics/claude-for-legal"
+path = "commercial-legal/skills/stakeholder-summary"
+ref = "4a6c651889c97cc9140580363c73e0eb17379c2b"
