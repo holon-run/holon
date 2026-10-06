@@ -142,6 +142,86 @@ final class TransportTests: XCTestCase {
         XCTAssertEqual(attempts.requests.count, 1)
     }
 
+    func testWorkReadsPreserveOpenMetadataIdentityAndNonblockingOutput() async throws {
+        let raw = #"{"owner_agent_id":"other","status":"future","plan_artifact":{"execution_root_id":"removed"},"output_truncated":true}"#
+        let (sdk, exchange) = try client(Array(repeating: MockReply(body: Data(raw.utf8)), count: 5))
+        let expected = await sdk.identity
+        let list = try await sdk.workItems(agentID: "a/b", limit: 7)
+        let detail = try await sdk.workItem(agentID: "a/b", workItemID: "w #")
+        _ = try await sdk.tasks(agentID: "a/b")
+        _ = try await sdk.task(agentID: "a/b", taskID: "t")
+        let output = try await sdk.taskOutput(agentID: "a/b", taskID: "t")
+        XCTAssertEqual(list.identity, expected)
+        XCTAssertEqual(detail.value["owner_agent_id"], .string("other"))
+        XCTAssertEqual(detail.value["status"], .string("future"))
+        XCTAssertEqual(output.value["output_truncated"], .bool(true))
+        XCTAssertTrue(exchange.requests[0].url!.absoluteString.contains("/prefix/api/agents/a%2Fb/work-items"))
+        XCTAssertEqual(URLComponents(url: exchange.requests[4].url!, resolvingAgainstBaseURL: false)?
+            .queryItems, [URLQueryItem(name: "block", value: "false")])
+        XCTAssertTrue(exchange.requests.allSatisfy { $0.httpMethod == "GET" })
+    }
+
+    func testWorkspaceRootLocatorAndResolverEncoding() async throws {
+        let (sdk, exchange) = try client([
+            MockReply(body: Data(#"{"workspace":{"workspaces":[],"execution_roots":[{"id":"root"}]}}"#.utf8)),
+            MockReply(body: Data(#"{"type":"directory","entries":[]}"#.utf8)),
+            MockReply(body: Data(#"{"results":[{"status":"unresolved","reason":"removed"}]}"#.utf8)),
+            MockReply(body: Data([0, 255, 2]), contentType: "application/octet-stream")])
+        let workspaces = try await sdk.agentWorkspaces(agentID: "main")
+        XCTAssertNotNil(workspaces.value["execution_roots"])
+        _ = try await sdk.browseWorkspaceDirectory(workspaceID: "ws", executionRootID: "r+ &")
+        let reference = try await sdk.resolveFileReference(.workspaceURI("workspace://ws/a%20b?root=r%2B"))
+        XCTAssertNotNil(reference.value["results"])
+        let file = try await sdk.downloadWorkspaceArtifact(locator: "workspace://ws/a%20%23%25.bin?root=r%2B%20%26")
+        XCTAssertEqual(file.value.data, Data([0, 255, 2]))
+        XCTAssertEqual(file.identity, workspaces.identity)
+        let request = exchange.requests[3]
+        XCTAssertTrue(request.url!.absoluteString.contains("/prefix/api/workspaces/ws/files/a%20%23%25.bin"))
+        XCTAssertEqual(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
+            .first(where: { $0.name == "execution_root_id" })?.value, "r+ &")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-session")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "application/octet-stream")
+        XCTAssertEqual(exchange.requests[2].httpMethod, "POST")
+    }
+
+    func testBinaryBoundsTypesPermissionsAndRemovedRootAreObservable() async throws {
+        let (sdk, exchange) = try client([
+            MockReply(body: Data([1, 2, 3]), contentType: "application/octet-stream"),
+            MockReply(body: Data([1, 2, 3]), contentType: "application/octet-stream",
+                      headers: ["Content-Length": "3"]),
+            MockReply(body: Data("html".utf8), contentType: "text/html"),
+            MockReply(status: 403), MockReply(status: 404)])
+        for _ in 0..<2 {
+            do {
+                _ = try await sdk.downloadWorkspaceFile(workspaceID: "ws", path: "a", maximumBytes: 2)
+                XCTFail("Overflow must fail before returning bytes")
+            } catch { XCTAssertEqual(error as? HolonClientError, .streamLimitExceeded) }
+        }
+        do { _ = try await sdk.downloadWorkspaceFile(workspaceID: "ws", path: "a"); XCTFail() }
+        catch { XCTAssertEqual(error as? HolonClientError, .unexpectedContentType) }
+        for status in [403, 404] {
+            do {
+                _ = try await sdk.downloadWorkspaceFile(workspaceID: "ws", path: "a", executionRootID: "removed")
+                XCTFail()
+            } catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, status) }
+        }
+        for locator in ["https://other.test/a", "workspace://ws/../secret", "workspace://user@ws/a",
+                        "workspace://ws/a?root=1&root=2"] {
+            do { _ = try await sdk.downloadWorkspaceArtifact(locator: locator); XCTFail() }
+            catch { XCTAssertEqual(error as? HolonClientError, .invalidRequest) }
+        }
+        XCTAssertEqual(exchange.requests.count, 5)
+    }
+
+    func testBinaryIdentityReplacementNeverPublishesOldBytes() async throws {
+        let (sdk, _) = try client([MockReply(body: Data([1]), contentType: "application/octet-stream", delay: 0.2)])
+        let pending = Task { try await sdk.downloadWorkspaceFile(workspaceID: "ws", path: "a") }
+        try await Task.sleep(for: .milliseconds(30))
+        _ = try await sdk.bindIdentity(runtimeID: "new", userID: nil, visibilityScopeID: nil, credential: nil)
+        do { _ = try await pending.value; XCTFail("Old generation must not publish") }
+        catch { /* Cancellation or stale identity are both terminal, never a successful old response. */ }
+    }
+
     private func client(_ replies: [MockReply], credential: String? = "test-session",
                         maximumResponseBytes: Int = 16_777_216)
         throws -> (HolonClient, MockExchange) {

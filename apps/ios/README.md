@@ -31,9 +31,14 @@ The simulator uses local ad-hoc signing for its app-scoped Keychain entitlement;
 it does not require an Apple distribution identity or upload.
 
 Open `Holon.xcodeproj` and select the shared `Holon` scheme to run the app.
-No development team, production credentials, signing profile or App Group is
-committed. `run.holon.ios` is the local development Bundle ID, not a confirmed
-App Store identifier.
+No development team, production credentials or signing profile is committed.
+`run.holon.ios` and the configurable `HOLON_APP_GROUP` development placeholder
+`group.run.holon.ios` are not confirmed App Store or registered App Group identifiers.
+The app and `HolonShare` extension declare the same group, but only the app
+declares its app-scoped Keychain group; credentials are never shared with the extension.
+Configure a registered group and matching development profiles before physical-device
+sharing validation. An unavailable shared container disables import rather than
+falling back to a private path.
 
 ## Boundaries
 
@@ -115,3 +120,29 @@ Logout first deletes local credentials, then attempts remote revocation.
 Simulator probes do **not** certify physical-device LAN permissions, interactive
 OIDC browser login/callback delivery, background execution or App Group/share-extension signing. Those
 remain explicit validation gates, not assumed capabilities.
+
+## P5 capability alignment
+
+| Android capability | iOS implementation and deliberate boundary |
+| --- | --- |
+| Work items and active tasks | Separate read-only lists and native details; no task creation, input or stop controls |
+| Plans, result briefs and task output | Server plan metadata, linked brief navigation and explicitly truncated output; machine paths are not turned into locators |
+| Workspace directories and filtering | Server workspace/root identity, hidden-file and name filters; removed worktrees and denied references remain errors |
+| Images, Markdown, code and artifacts | Bounded native image/plain-text preview and explicit copy export/share; Markdown/code are readable source, not executable web content |
+| Diagnostics | Local enum/count allowlist only; export or confirm sending to the current Agent, without raw logs or identity/payload fields |
+| System sharing | A credential-free extension previews and stages text/links/files; the host confirms a target and queues an immutable request without replacing the editor draft or automatically sending |
+| Android Direct Share/background services | No platform-for-platform copy, background resident SSE, automatic outbox retry or push promise |
+
+Work and files use separate authenticated clients and lifecycle generations.
+Tab/deep navigation does not recreate reading or sending coordinators. Identity
+changes revoke old content and confirmations synchronously. Shared inputs have
+the same canonical text and limits as the sending queue: 64 KiB UTF-8 text including
+links/separators, at most 10 attachments and 20 MiB total attachment bytes.
+The staged UUID is preserved on durable enqueue, and the shared copy is consumed
+only after enqueue succeeds. Rejection leaves the original import recoverable.
+
+Hosted tests exercise staging cancellation, unreadable/oversized inputs, store
+reopen, identity revocation and independent enqueue. These are not share-sheet or
+physical-device entitlement tests. The real-daemon probe covers work/task list
+reads and explicit missing-record/file errors; successful populated work detail,
+task output and signed device sharing remain separate verification gates.

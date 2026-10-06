@@ -135,6 +135,51 @@ final class SendingStore {
         try commit(next)
     }
 
+    /// Explicit imports have their own immutable request and never replace an editor draft.
+    @discardableResult
+    func enqueueExternal(requestID: UUID, scope: SendingScope, text: String,
+                         attachments: [SendingPreparedAttachment]) throws -> SendingEntry {
+        guard text.utf8.count <= 64 * 1024, attachments.count <= 10,
+              attachments.reduce(Int64(0), { $0 + Int64($1.data.count) }) <= maximumAttachmentBytes else {
+            throw SendingFailure.rejected("Import exceeds its size limit.")
+        }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else {
+            throw SendingFailure.emptyDraft
+        }
+        let payload = SendingPayload(text: text, modelID: nil, attachments: attachments)
+        if let existing = snapshot.entries.first(where: { $0.requestID == requestID }) {
+            guard existing.scope == scope, existing.payload == payload else {
+                throw SendingFailure.rejected("An import already belongs to another target or payload.")
+            }
+            return existing
+        }
+        var copies: [SendingAttachment] = []
+        do {
+            for source in attachments {
+                guard !source.name.isEmpty, source.name.utf8.count <= 255,
+                      source.contentType.utf8.count <= 128,
+                      !source.contentType.contains("\r"), !source.contentType.contains("\n") else {
+                    throw SendingFailure.rejected("Invalid import metadata.")
+                }
+                let copy = SendingAttachment(id: UUID(), name: source.name,
+                                             byteCount: Int64(source.data.count),
+                                             contentType: source.contentType)
+                copies.append(copy)
+                try source.data.write(to: attachmentURL(copy), options: .atomic)
+            }
+            var entry = SendingEntry(requestID: requestID, scope: scope,
+                                     draft: SendingDraft(text: text, attachments: copies))
+            entry.payload = payload
+            var next = snapshot
+            next.entries.append(entry)
+            try commit(next)
+            return entry
+        } catch {
+            for copy in copies { try? FileManager.default.removeItem(at: attachmentURL(copy)) }
+            throw error
+        }
+    }
+
     func delete(requestID: UUID, scope: SendingScope) throws {
         var next = snapshot
         next.entries.removeAll { $0.requestID == requestID && $0.scope == scope }

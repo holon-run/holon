@@ -8,6 +8,34 @@ import FoundationNetworking
 
 // These are transport probes, not a production SDK or an automatic retry policy.
 final class LiveDaemonProbeTests: XCTestCase {
+    func testProductionSDKReadOnlyWorkAndFilesAgainstDaemon() async throws {
+        for key in ["HOLON_LIVE_BASE", "HOLON_LIVE_PROXY_BASE"] {
+            let sdk = try HolonClient(endpoint: HolonEndpoint(apiBaseURL: base(key)), networkID: key)
+            do {
+                let items = try await sdk.workItems(agentID: "main")
+                let tasks = try await sdk.tasks(agentID: "main")
+                XCTAssertEqual(items.identity, tasks.identity)
+                // Isolated fixture has no running work; do not invent successful detail/output fixtures.
+                let workspaces = try await sdk.agentWorkspaces(agentID: "main")
+                XCTAssertNotNil(workspaces.value["workspaces"])
+                for operation in 0..<4 {
+                    do {
+                        switch operation {
+                        case 0: _ = try await sdk.workItem(agentID: "main", workItemID: "missing")
+                        case 1: _ = try await sdk.task(agentID: "main", taskID: "missing")
+                        case 2: _ = try await sdk.taskOutput(agentID: "main", taskID: "missing")
+                        default:
+                            _ = try await sdk.downloadWorkspaceFile(workspaceID: "missing", path: "probe.txt",
+                                                                   executionRootID: "removed")
+                        }
+                        XCTFail("Missing records must remain explicit errors")
+                    } catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 404) }
+                }
+                await sdk.close()
+            } catch { await sdk.close(); throw error }
+        }
+    }
+
     func testProductionSDKWritesRemainSetupBlocked() async throws {
         let client = try HolonClient(endpoint: HolonEndpoint(apiBaseURL: base()), networkID: "write-probe")
         do {

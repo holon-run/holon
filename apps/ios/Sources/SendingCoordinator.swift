@@ -7,6 +7,12 @@ struct SendingAttachmentImportContext: Equatable {
     fileprivate let revision: Int
 }
 
+struct SendingExternalContext: Equatable {
+    fileprivate let scope: SendingScope
+    fileprivate let connectionRevision: Int
+    fileprivate let confirmationRevision: Int
+}
+
 @MainActor @Observable
 final class SendingCoordinator {
     private(set) var draft = SendingDraft()
@@ -22,6 +28,7 @@ final class SendingCoordinator {
     @ObservationIgnored private var partition: ReadingPartition?
     @ObservationIgnored private var revision = 0
     @ObservationIgnored private var connectionRevision = 0
+    @ObservationIgnored private var confirmationRevision = 0
     @ObservationIgnored private var attachmentRevision = 0
     @ObservationIgnored private var catalogRevision = 0
     @ObservationIgnored private var foreground = true
@@ -78,6 +85,7 @@ final class SendingCoordinator {
         cancelLocalSend()
         revision += 1
         connectionRevision += 1
+        confirmationRevision += 1
         attachmentRevision += 1
         catalogRevision += 1
         catalogTask?.cancel()
@@ -96,6 +104,7 @@ final class SendingCoordinator {
         let changed = foreground != value
         foreground = value
         if !value {
+            confirmationRevision += 1
             cancelLocalSend()
             revision += 1
             catalogRevision += 1
@@ -145,6 +154,31 @@ final class SendingCoordinator {
             reload()
             deliver(entry)
         } catch { self.error = error.localizedDescription; reload() }
+    }
+
+    func externalContext(agentID: String) -> SendingExternalContext? {
+        guard transport != nil, identity != nil, foreground, let partition,
+              !agentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return SendingExternalContext(scope: SendingScope(partition: partition, agentID: agentID),
+                                      connectionRevision: connectionRevision,
+                                      confirmationRevision: confirmationRevision)
+    }
+
+    /// Host confirmation queues an isolated request; imports are never background-auto-sent.
+    @discardableResult
+    func enqueueExternal(requestID: UUID, text: String, attachments: [SendingPreparedAttachment] = [],
+                         context: SendingExternalContext, sendNow: Bool = false) throws -> UUID {
+        guard foreground, transport != nil, identity != nil,
+              context.connectionRevision == connectionRevision,
+              context.confirmationRevision == confirmationRevision,
+              context.scope.partition == partition,
+              !sendNow || context.scope == scope else { throw SendingFailure.unavailable }
+        let entry = try store.enqueueExternal(requestID: requestID, scope: context.scope,
+                                              text: text, attachments: attachments)
+        error = nil
+        reload()
+        if sendNow, entry.state == .queued { deliver(entry) }
+        return entry.requestID
     }
 
     func canRetry(requestID: UUID) -> Bool {

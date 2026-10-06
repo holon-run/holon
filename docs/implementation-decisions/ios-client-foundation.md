@@ -128,6 +128,32 @@ Stopping targets a server-observed run ID and is not transport cancellation.
 Backgrounding cancels foreground operations without automatically retrying an
 unknown submission. Storage failure disables sending while preserving reading.
 
+P5 host-confirmed imports use separate immutable outbox requests, not a temporary
+replacement of the editor draft. The staged import UUID is the request ID:
+reprocessing the same target and payload returns the durable entry, while
+retargeting or modifying an already-enqueued import is rejected. An identity
+change or scene inactivity revokes outstanding host confirmations. Imports
+are queued without automatic sending; the user opens the destination Agent's
+queue and retries explicitly. Diagnostics may explicitly submit to the current
+Agent after confirmation. Neither path changes the current draft or selection.
+
+Diagnostics are an allowlist of local state enums and counts, not a redactor
+over arbitrary logs. Credentials, identity identifiers, URLs, server errors,
+conversation content and request IDs are never inputs to the exported report.
+
+Work and files own separate authenticated clients and generations; native tab
+navigation does not reconstruct the conversation or editor. A Work-to-Files
+transition uses server workspace/root metadata or an opaque server reference,
+never the plan's execution-host absolute path. File contents are displayed by
+bounded native text/image views without a WebView, script execution or a bridge.
+
+The share extension has no SDK dependency, network sending path or Keychain
+entitlement. Its shared container stores only validated text, links and managed
+attachment copies. The app and extension share an App Group placeholder, not
+credentials or authority. Registered entitlements and physical-device behavior
+are explicit gates; a missing container fails closed. Host enqueue reuses the
+same canonical text builder that validated the staged UTF-8 size.
+
 ## Evidence and outstanding gates
 
 The P0 test entrypoints cover shared handshake/roster/error/session fixtures,

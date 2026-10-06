@@ -175,6 +175,47 @@ public actor HolonClient {
         }
     }
 
+    /// Reference resolution is a read-only POST, not a runtime mutation.
+    public func resolveFileReference(_ reference: HolonFileReference)
+        async throws -> HolonResponse<JSONValue> {
+        let result = try await request(path: ["file-references", "resolve"], method: "POST",
+                                      body: .object(["references": .array([reference.payload])]))
+        return try decoded(result) { try JSONDecoder().decode(JSONValue.self, from: $0) }
+    }
+
+    internal func downloadBinary(path: [String], query: [String: String], maximumBytes: Int,
+                                 allowedContentTypes: Set<String>)
+        async throws -> HolonResponse<HolonDownloadedArtifact> {
+        guard maximumBytes > 0, !allowedContentTypes.isEmpty,
+              allowedContentTypes.allSatisfy({ !$0.isEmpty && !$0.contains("*") &&
+                  !$0.contains("\r") && !$0.contains("\n") }) else { throw HolonClientError.invalidRequest }
+        let captured = identity
+        try check(captured)
+        var request = try makeRequest(path: path, query: query)
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+        let (bytes, response) = try await session.bytes(for: request)
+        defer { bytes.task.cancel() }
+        try check(captured)
+        guard let http = response as? HTTPURLResponse else { throw HolonClientError.malformedResponse }
+        guard (200...299).contains(http.statusCode) else {
+            throw HolonHTTPFailure(statusCode: http.statusCode, apiError: nil, identity: captured)
+        }
+        guard let mime = http.mimeType?.lowercased(), allowedContentTypes.contains(mime) else {
+            throw HolonClientError.unexpectedContentType
+        }
+        guard response.expectedContentLength <= Int64(maximumBytes) else {
+            throw HolonClientError.streamLimitExceeded
+        }
+        var data = Data()
+        for try await byte in bytes {
+            try check(captured)
+            guard data.count < maximumBytes else { throw HolonClientError.streamLimitExceeded }
+            data.append(byte)
+        }
+        try check(captured)
+        return HolonResponse(identity: captured, value: HolonDownloadedArtifact(data: data, mediaType: mime))
+    }
+
     public func sendOperatorPrompt(agentID: String, request prompt: HolonPromptRequest)
         async throws -> HolonResponse<HolonPromptReceipt> {
         let result = try await request(path: ["control", "agents", agentID, "prompt"],
