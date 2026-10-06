@@ -56,18 +56,30 @@ function emptyFetchers(): LedgerHydrationFetchers {
   };
 }
 
+const pipelines = new Set<LedgerIngestionPipeline>();
+const ledgerHandles = new Set<EventLedger>();
+
+function createPipeline(
+  dependencies: ConstructorParameters<typeof LedgerIngestionPipeline>[0],
+): LedgerIngestionPipeline {
+  const pipeline = new LedgerIngestionPipeline(dependencies);
+  pipelines.add(pipeline);
+  return pipeline;
+}
+
 async function openLedgerHandle(): Promise<EventLedger> {
   const result = await EventLedger.open();
   if (result.kind !== "available") throw new Error("expected available ledger");
+  ledgerHandles.add(result.ledger);
   return result.ledger;
 }
 
 function deleteLedger(): Promise<void> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const request = indexedDB.deleteDatabase(LEDGER_DB_NAME);
     request.onsuccess = () => resolve();
-    request.onerror = () => resolve();
-    request.onblocked = () => resolve();
+    request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(new Error("ledger deletion blocked by an open handle"));
   });
 }
 
@@ -77,12 +89,18 @@ describe("ledger ingestion pipeline", () => {
   });
 
   afterEach(async () => {
+    // Stop retry timers and close every owned connection before deleting the
+    // shared database, including when a test fails before its explicit cleanup.
+    for (const pipeline of pipelines) pipeline.dispose();
+    pipelines.clear();
+    for (const ledger of ledgerHandles) ledger.close();
+    ledgerHandles.clear();
     vi.restoreAllMocks();
     await deleteLedger();
   });
 
   it("ingests self-contained events and advances ingestion and readiness together", async () => {
-    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    const pipeline = createPipeline({ fetchers: emptyFetchers() });
     expect(await pipeline.open()).toBe(true);
     const scope = makeScope();
 
@@ -114,7 +132,7 @@ describe("ledger ingestion pipeline", () => {
 
   it("publishes degraded durability after a failed ingestion transaction", async () => {
     const statuses: Array<{ durability: string; ingestedThroughSeq?: number }> = [];
-    const pipeline = new LedgerIngestionPipeline({
+    const pipeline = createPipeline({
       fetchers: emptyFetchers(),
       onStatus: (status) => statuses.push(status),
     });
@@ -167,7 +185,7 @@ describe("ledger ingestion pipeline", () => {
       .commit();
     ledger.close();
 
-    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    const pipeline = createPipeline({ fetchers: emptyFetchers() });
     await pipeline.open();
 
     expect(await pipeline.resume(scope)).toMatchObject({
@@ -178,7 +196,7 @@ describe("ledger ingestion pipeline", () => {
   });
 
   it("reloads the agent-scoped head instead of a sibling agent's runtime head", async () => {
-    const first = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    const first = createPipeline({ fetchers: emptyFetchers() });
     await first.open();
     const scope = makeScope({ agentId: "agent-low" });
     const sibling = makeScope({ agentId: "agent-high" });
@@ -187,7 +205,7 @@ describe("ledger ingestion pipeline", () => {
     await first.ingest(sibling, [envelope(1_000, { agent_id: sibling.agentId })]);
     first.dispose();
 
-    const reloaded = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    const reloaded = createPipeline({ fetchers: emptyFetchers() });
     await reloaded.open();
 
     expect(await reloaded.resume(scope)).toMatchObject({
@@ -202,7 +220,7 @@ describe("ledger ingestion pipeline", () => {
   });
 
   it("keeps the contiguous cursor behind out-of-order gaps", async () => {
-    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    const pipeline = createPipeline({ fetchers: emptyFetchers() });
     await pipeline.open();
     const scope = makeScope();
 
@@ -219,7 +237,7 @@ describe("ledger ingestion pipeline", () => {
   });
 
   it("treats live duplicate delivery as idempotent without cursor regression", async () => {
-    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    const pipeline = createPipeline({ fetchers: emptyFetchers() });
     await pipeline.open();
     const scope = makeScope();
 
@@ -245,7 +263,7 @@ describe("ledger ingestion pipeline", () => {
         };
       },
     };
-    const pipeline = new LedgerIngestionPipeline({ fetchers });
+    const pipeline = createPipeline({ fetchers });
     await pipeline.open();
     const scope = makeScope();
 
@@ -287,7 +305,7 @@ describe("ledger ingestion pipeline", () => {
         missingIds: ["brief-1"],
       }),
     };
-    const pipeline = new LedgerIngestionPipeline({ fetchers });
+    const pipeline = createPipeline({ fetchers });
     await pipeline.open();
     const scope = makeScope();
 
@@ -315,7 +333,7 @@ describe("ledger ingestion pipeline", () => {
         missingIds: [],
       }),
     };
-    const pipeline = new LedgerIngestionPipeline({ fetchers });
+    const pipeline = createPipeline({ fetchers });
     await pipeline.open();
     const scope = makeScope();
 
@@ -342,7 +360,7 @@ describe("ledger ingestion pipeline", () => {
         missingIds: [],
       }),
     };
-    const pipeline = new LedgerIngestionPipeline({ fetchers });
+    const pipeline = createPipeline({ fetchers });
     await pipeline.open();
     const scope = makeScope();
 
@@ -359,7 +377,7 @@ describe("ledger ingestion pipeline", () => {
   });
 
   it("keeps the strictest expected revision when a lower revision arrives late", async () => {
-    const pipeline = new LedgerIngestionPipeline({
+    const pipeline = createPipeline({
       fetchers: {
         fetchCanonicalRecords: async () => ({
           recordsById: { "brief-1": { record: { id: "brief-1" }, revision: 3 } },
@@ -391,7 +409,7 @@ describe("ledger ingestion pipeline", () => {
         missingIds: [],
       }),
     };
-    const pipeline = new LedgerIngestionPipeline({ fetchers });
+    const pipeline = createPipeline({ fetchers });
     await pipeline.open();
     const scope = makeScope();
 
@@ -405,7 +423,7 @@ describe("ledger ingestion pipeline", () => {
   });
 
   it("accepts the current envelope contract version", async () => {
-    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    const pipeline = createPipeline({ fetchers: emptyFetchers() });
     await pipeline.open();
     const scope = makeScope();
 
@@ -419,7 +437,7 @@ describe("ledger ingestion pipeline", () => {
   });
 
   it("blocks readiness on an unknown stream contract version", async () => {
-    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    const pipeline = createPipeline({ fetchers: emptyFetchers() });
     await pipeline.open();
     const scope = makeScope();
 
@@ -439,7 +457,7 @@ describe("ledger ingestion pipeline", () => {
     const fetchers: LedgerHydrationFetchers = {
       fetchCanonicalRecords: async () => ({ recordsById: {}, missingIds: ["brief-1"] }),
     };
-    const pipeline = new LedgerIngestionPipeline({ fetchers });
+    const pipeline = createPipeline({ fetchers });
     await pipeline.open();
     const scope = makeScope();
 
@@ -470,7 +488,7 @@ describe("ledger ingestion pipeline", () => {
           releaseFetch?.();
         }),
     };
-    const crashed = new LedgerIngestionPipeline({ fetchers: stalled });
+    const crashed = createPipeline({ fetchers: stalled });
     await crashed.open();
     await crashed.ingest(scope, [envelope(1), briefEvent(2, "brief-1")]);
     crashed.dispose();
@@ -478,7 +496,7 @@ describe("ledger ingestion pipeline", () => {
 
     // Phase 2: restart. The restart scan finds the pending job, and the
     // drain completes it with a working fetcher.
-    const resumed = new LedgerIngestionPipeline({
+    const resumed = createPipeline({
       fetchers: {
         fetchCanonicalRecords: async () => ({
           recordsById: { "brief-1": { record: { id: "brief-1" } } },
@@ -500,7 +518,7 @@ describe("ledger ingestion pipeline", () => {
 
   it("repairs a stale readiness cursor after another tab satisfied hydration", async () => {
     const scope = makeScope();
-    const first = new LedgerIngestionPipeline({
+    const first = createPipeline({
       fetchers: {
         fetchCanonicalRecords: async () => ({
           recordsById: {},
@@ -524,7 +542,7 @@ describe("ledger ingestion pipeline", () => {
       .commit();
     ledger.close();
 
-    const reloaded = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    const reloaded = createPipeline({ fetchers: emptyFetchers() });
     await reloaded.open();
     expect(await reloaded.resume(scope)).toMatchObject({
       ingestedThroughSeq: 3,
@@ -541,12 +559,12 @@ describe("ledger ingestion pipeline", () => {
 
   it("heals stored out-of-order stragglers across a restart", async () => {
     const scope = makeScope();
-    const first = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    const first = createPipeline({ fetchers: emptyFetchers() });
     await first.open();
     await first.ingest(scope, [envelope(1), envelope(2), envelope(4)]);
     first.dispose();
 
-    const second = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    const second = createPipeline({ fetchers: emptyFetchers() });
     await second.open();
     await second.resume(scope);
     const status = await second.ingest(scope, [envelope(3)]);
@@ -563,7 +581,7 @@ describe("ledger ingestion pipeline", () => {
         { recordKind: "brief" as const, recordId: "brief-1", record: { id: "brief-1" } },
       ],
     }));
-    const pipeline = new LedgerIngestionPipeline({
+    const pipeline = createPipeline({
       fetchers: {
         fetchCanonicalRecords: async () => ({ recordsById: {}, missingIds: ["brief-1"] }),
       },
@@ -595,7 +613,7 @@ describe("ledger ingestion pipeline", () => {
         { recordKind: "brief" as const, recordId: "brief-1", record: { id: "brief-1" } },
       ],
     }));
-    const pipeline = new LedgerIngestionPipeline({
+    const pipeline = createPipeline({
       fetchers: {
         // The brief was dropped from retention: never served, never
         // reported as anything but missing.
@@ -647,7 +665,7 @@ describe("ledger ingestion pipeline", () => {
         ],
       };
     });
-    const pipeline = new LedgerIngestionPipeline({
+    const pipeline = createPipeline({
       fetchers: {
         fetchCanonicalRecords: async () => ({ recordsById: {}, missingIds: ["brief-1"] }),
       },
@@ -685,7 +703,7 @@ describe("ledger ingestion pipeline", () => {
     const repairFetch = vi.fn(async () => {
       throw new Error("connection refused");
     });
-    const pipeline = new LedgerIngestionPipeline({
+    const pipeline = createPipeline({
       fetchers: {
         fetchCanonicalRecords: async () => ({ recordsById: {}, missingIds: ["brief-1"] }),
       },
@@ -720,7 +738,7 @@ describe("ledger ingestion pipeline", () => {
     // A null snapshot means repair is explicitly unavailable, not a
     // transient failure: the scope stays latched and no retry ladder runs.
     const repairFetch = vi.fn(async () => null);
-    const pipeline = new LedgerIngestionPipeline({
+    const pipeline = createPipeline({
       fetchers: {
         fetchCanonicalRecords: async () => ({ recordsById: {}, missingIds: ["brief-1"] }),
       },
@@ -753,7 +771,7 @@ describe("ledger ingestion pipeline", () => {
     const repairFetch = vi.fn(async () => {
       throw new Error("connection refused");
     });
-    const pipeline = new LedgerIngestionPipeline({
+    const pipeline = createPipeline({
       fetchers: {
         fetchCanonicalRecords: async () => ({ recordsById: {}, missingIds: ["brief-1"] }),
       },
@@ -797,7 +815,7 @@ describe("ledger ingestion pipeline", () => {
 
   it("reports sync_error when repair cannot explain the divergence", async () => {
     const statuses: string[] = [];
-    const pipeline = new LedgerIngestionPipeline({
+    const pipeline = createPipeline({
       fetchers: {
         fetchCanonicalRecords: async () => ({
           recordsById: { "brief-a": { record: { id: "brief-a" } } },
@@ -839,7 +857,7 @@ describe("ledger ingestion pipeline", () => {
   });
 
   it("reports sync_error when no repair source exists", async () => {
-    const pipeline = new LedgerIngestionPipeline({
+    const pipeline = createPipeline({
       fetchers: {
         fetchCanonicalRecords: async () => ({ recordsById: {}, missingIds: ["brief-1"] }),
       },
@@ -867,7 +885,7 @@ describe("ledger ingestion pipeline", () => {
       currentHandle = result.ledger;
       return result;
     };
-    const pipeline = new LedgerIngestionPipeline({
+    const pipeline = createPipeline({
       fetchers: emptyFetchers(),
       openLedger,
     });
@@ -894,7 +912,7 @@ describe("ledger ingestion pipeline", () => {
   });
 
   it("rejects a different event redelivered under the same canonical identity atomically", async () => {
-    const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
+    const pipeline = createPipeline({ fetchers: emptyFetchers() });
     await pipeline.open();
     const scope = makeScope();
 

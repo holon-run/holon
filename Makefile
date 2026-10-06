@@ -64,6 +64,41 @@ web-ci: ## Test and build the web GUI with one clean dependency install
 android-sdk-test: ## Compile and test the Android SDK foundation against generated wire models
 	$(GRADLE) --no-daemon -p $(ANDROID_DIR) :sdk:test
 
+.PHONY: ios-sdk-test ios-wire-check ios-app-test ios-app-build ios-contract-test ios-ui-test ios-ci ios-archive ios-build-tools-test
+ios-ci: ## Run all iOS SDK, daemon, application and UI gates sequentially
+	$(MAKE) ios-build-tools-test
+	$(MAKE) ios-wire-check
+	$(MAKE) ios-sdk-test
+	$(MAKE) ios-contract-test
+	$(MAKE) ios-app-build
+	$(MAKE) ios-app-test
+	$(MAKE) ios-ui-test
+
+ios-ui-test: ## Run the isolated simulator UI gate
+	./scripts/test-ios-ui.sh
+
+ios-archive: ## Prepare a local signed archive with an explicitly supplied team
+	./scripts/package-ios-archive.sh
+
+ios-build-tools-test: ## Test build/archive argument and exit-code contracts without Xcode
+	python3 scripts/test-ios-build-tools.py
+
+ios-contract-test: ## Probe Swift URLSession against an isolated real Rust daemon
+	./scripts/test-ios-contract.sh
+	./scripts/test-ios-send-contract.sh
+
+ios-sdk-test: ## Test the Swift client SDK against shared wire fixtures
+	swift test --package-path packages/client-sdk-swift
+
+ios-wire-check: ## Check generated Swift models against the pinned OpenAPI generator
+	cd $(OPENAPI_TOOLS_DIR) && npm ci && node generate-swift-wire.mjs --check
+
+ios-app-build: ## Build the iOS application for a local simulator without distribution signing
+	./scripts/test-ios-app.sh build
+
+ios-app-test: ## Run iOS application and platform tests on a local simulator
+	./scripts/test-ios-app.sh test
+
 android-sdk-integration-test: ## Test the Android SDK HTTP client against a real Holon daemon
 	cargo build --bin holon
 	$(GRADLE) --no-daemon -p $(ANDROID_DIR) :sdk:integrationTest \

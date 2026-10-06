@@ -1540,7 +1540,8 @@ async fn bootstrap_guard_middleware(
     ) || path.starts_with("/auth/session/")
         || matches!(
             path,
-            "/auth/pairing/redeem"
+            "/auth/pairing/issue"
+                | "/auth/pairing/redeem"
                 | "/auth/pairing/redeem/native"
                 | "/models/refresh"
                 | "/control/runtime/config"

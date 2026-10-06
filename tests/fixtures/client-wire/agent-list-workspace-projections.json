@@ -1,0 +1,57 @@
+[
+  {
+    "identity": {
+      "agent_id": "managed",
+      "is_default_agent": false,
+      "status": "active"
+    },
+    "model": {
+      "effective_model": "openai/gpt-5.6",
+      "runtime_default_model": "openai/gpt-5.6",
+      "source": "runtime_default"
+    },
+    "status": "awake_idle",
+    "active_workspace_entry": {
+      "access_mode": "exclusive_write",
+      "cwd": "/worktrees/managed",
+      "execution_root": "/worktrees/managed",
+      "execution_root_id": "root-managed",
+      "projection_kind": "git_worktree_root",
+      "projection_metadata": {
+        "original_branch": "main",
+        "original_cwd": "/repos/holon",
+        "worktree_branch": "feat/client",
+        "worktree_path": "/worktrees/managed",
+        "future_metadata_field": true
+      },
+      "workspace_anchor": "/repos/holon",
+      "workspace_id": "workspace-holon"
+    }
+  },
+  {
+    "identity": {
+      "agent_id": "existing",
+      "is_default_agent": false,
+      "status": "active"
+    },
+    "model": {
+      "effective_model": "openai/gpt-5.6",
+      "runtime_default_model": "openai/gpt-5.6",
+      "source": "runtime_default"
+    },
+    "status": "awake_idle",
+    "active_workspace_entry": {
+      "access_mode": "exclusive_write",
+      "cwd": "/worktrees/existing",
+      "execution_root": "/worktrees/existing",
+      "execution_root_id": "root-existing",
+      "projection_kind": "git_worktree_root",
+      "projection_metadata": {
+        "worktree_root": "/worktrees/existing",
+        "future_metadata_field": "retained"
+      },
+      "workspace_anchor": "/repos/holon",
+      "workspace_id": "workspace-holon"
+    }
+  }
+]

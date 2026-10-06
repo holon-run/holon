@@ -1,0 +1,6 @@
+"share.save" = "Save for later";
+"share.cancel" = "Cancel";
+"share.stageOnly" = "Save locally only. Open Holon later to confirm the connection and agent before sending.";
+"share.unavailable" = "Shared storage is unavailable. App Group signing and configuration are required. Nothing will be saved.";
+"share.invalid" = "Cannot preview: unreadable or unsupported content, or limits exceeded (20 input items, 10 file attachments, 64 KiB text including links, 20 MiB total files).";
+"share.saveFailed" = "Could not save. Shared storage may be full, locked, or unavailable.";

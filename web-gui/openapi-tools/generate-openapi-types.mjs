@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import openapiTS, { astToString } from "openapi-typescript";
+import { generateSwiftWire } from "./generate-swift-wire.mjs";
 
 const execFileAsync = promisify(execFile);
 const schemaUrl = new URL("../../docs/website/reference/openapi.json", import.meta.url);
@@ -299,3 +300,5 @@ if (check) {
     await writeFile(join(kotlinDirectory, name), contents);
   }
 }
+
+await generateSwiftWire(openapi, check);

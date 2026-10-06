@@ -1,0 +1,111 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 77;
+	objects = {
+        C00000000000000000000001 = { isa = PBXNativeTarget; name = HolonUITests; productName = HolonUITests; productType = "com.apple.product-type.bundle.ui-testing"; productReference = C00000000000000000000003; buildConfigurationList = C00000000000000000000004; buildPhases = (C00000000000000000000007, C00000000000000000000008, C00000000000000000000009); buildRules = (); dependencies = (A00000000000000000000060); fileSystemSynchronizedGroups = (C00000000000000000000002); };
+        C00000000000000000000002 = { isa = PBXFileSystemSynchronizedRootGroup; path = UITests; sourceTree = "<group>"; };
+        C00000000000000000000003 = { isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = HolonUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+        C00000000000000000000004 = { isa = XCConfigurationList; buildConfigurations = (C00000000000000000000005, C00000000000000000000006); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+        C00000000000000000000005 = { isa = XCBuildConfiguration; buildSettings = { GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = run.holon.ios.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_TARGET_NAME = Holon; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+        C00000000000000000000006 = { isa = XCBuildConfiguration; buildSettings = { GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = run.holon.ios.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_TARGET_NAME = Holon; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
+        C00000000000000000000007 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        C00000000000000000000008 = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        C00000000000000000000009 = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+
+		A00000000000000000000001 = {
+			isa = PBXProject;
+			attributes = { BuildIndependentTargetsInParallel = YES; LastUpgradeCheck = 2700; };
+			buildConfigurationList = A00000000000000000000010;
+			compatibilityVersion = "Xcode 16.0";
+			developmentRegion = en;
+			knownRegions = (en, "zh-Hans", Base);
+			mainGroup = A00000000000000000000002;
+			packageReferences = (A00000000000000000000030);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = A00000000000000000000003;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (C00000000000000000000001, A00000000000000000000020, A00000000000000000000021, B00000000000000000000001);
+		};
+		A00000000000000000000002 = {
+			isa = PBXGroup;
+			children = (C00000000000000000000002, A00000000000000000000004, A00000000000000000000005, A00000000000000000000006, B00000000000000000000002, B00000000000000000000003, A00000000000000000000003);
+			sourceTree = "<group>";
+		};
+		A00000000000000000000003 = {
+			isa = PBXGroup;
+			children = (C00000000000000000000003, A00000000000000000000007, A00000000000000000000008, B00000000000000000000004);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000004 = { isa = PBXFileSystemSynchronizedRootGroup; path = Sources; sourceTree = "<group>"; };
+		A00000000000000000000005 = { isa = PBXFileSystemSynchronizedRootGroup; path = Resources; sourceTree = "<group>"; };
+		A00000000000000000000006 = { isa = PBXFileSystemSynchronizedRootGroup; path = Tests; sourceTree = "<group>"; };
+		A00000000000000000000007 = { isa = PBXFileReference; explicitFileType = wrapper.application; path = Holon.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000008 = { isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = HolonTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000010 = { isa = XCConfigurationList; buildConfigurations = (A00000000000000000000011, A00000000000000000000012); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A00000000000000000000011 = { isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; ENABLE_TESTABILITY = YES; IPHONEOS_DEPLOYMENT_TARGET = 18.0; ONLY_ACTIVE_ARCH = YES; SDKROOT = iphoneos; HOLON_APP_GROUP = group.run.holon.ios; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_VERSION = 6.0; }; name = Debug; };
+		A00000000000000000000012 = { isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 18.0; SDKROOT = iphoneos; HOLON_APP_GROUP = group.run.holon.ios; SWIFT_VERSION = 6.0; SWIFT_COMPILATION_MODE = wholemodule; }; name = Release; };
+		A00000000000000000000020 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000040;
+			buildPhases = (A00000000000000000000050, A00000000000000000000051, A00000000000000000000052, B00000000000000000000005);
+			buildRules = ();
+			dependencies = (B00000000000000000000006);
+			fileSystemSynchronizedGroups = (A00000000000000000000004, A00000000000000000000005, B00000000000000000000002);
+			name = Holon;
+			packageProductDependencies = (A00000000000000000000031);
+			productName = Holon;
+			productReference = A00000000000000000000007;
+			productType = "com.apple.product-type.application";
+		};
+		A00000000000000000000021 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000041;
+			buildPhases = (A00000000000000000000053, A00000000000000000000054, A00000000000000000000055);
+			buildRules = ();
+			dependencies = (A00000000000000000000060);
+			fileSystemSynchronizedGroups = (A00000000000000000000006);
+			name = HolonTests;
+			productName = HolonTests;
+			productReference = A00000000000000000000008;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		A00000000000000000000030 = { isa = XCLocalSwiftPackageReference; relativePath = "../../packages/client-sdk-swift"; };
+		A00000000000000000000031 = { isa = XCSwiftPackageProductDependency; package = A00000000000000000000030; productName = HolonClient; };
+		A00000000000000000000032 = { isa = PBXBuildFile; productRef = A00000000000000000000031; };
+		A00000000000000000000040 = { isa = XCConfigurationList; buildConfigurations = (A00000000000000000000042, A00000000000000000000043); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A00000000000000000000041 = { isa = XCConfigurationList; buildConfigurations = (A00000000000000000000044, A00000000000000000000045); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A00000000000000000000042 = { isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_ENTITLEMENTS = Holon.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; ENABLE_PREVIEWS = YES; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = Info.plist; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = run.holon.ios; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_EMIT_LOC_STRINGS = YES; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+		A00000000000000000000043 = { isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_ENTITLEMENTS = Holon.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = Info.plist; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = run.holon.ios; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_EMIT_LOC_STRINGS = YES; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
+		A00000000000000000000044 = { isa = XCBuildConfiguration; buildSettings = { BUNDLE_LOADER = "$(TEST_HOST)"; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = run.holon.ios.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Holon.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Holon"; }; name = Debug; };
+		A00000000000000000000045 = { isa = XCBuildConfiguration; buildSettings = { BUNDLE_LOADER = "$(TEST_HOST)"; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = run.holon.ios.tests; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Holon.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Holon"; }; name = Release; };
+		A00000000000000000000050 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000051 = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000032); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000052 = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000053 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000054 = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000055 = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000060 = { isa = PBXTargetDependency; target = A00000000000000000000020; targetProxy = A00000000000000000000061; };
+		A00000000000000000000061 = { isa = PBXContainerItemProxy; containerPortal = A00000000000000000000001; proxyType = 1; remoteGlobalIDString = A00000000000000000000020; remoteInfo = Holon; };
+
+        B00000000000000000000001 = { isa = PBXNativeTarget; name = HolonShare; productName = HolonShare; productType = "com.apple.product-type.app-extension"; productReference = B00000000000000000000004; buildConfigurationList = B00000000000000000000010; buildPhases = (B00000000000000000000011, B00000000000000000000012, B00000000000000000000013); buildRules = (); dependencies = (); fileSystemSynchronizedGroups = (B00000000000000000000002, B00000000000000000000003); };
+        B00000000000000000000002 = { isa = PBXFileSystemSynchronizedRootGroup; path = Shared; sourceTree = "<group>"; };
+        B00000000000000000000003 = { isa = PBXFileSystemSynchronizedRootGroup; path = ShareExtension; sourceTree = "<group>"; exceptions = (B00000000000000000000014); };
+        B00000000000000000000014 = { isa = PBXFileSystemSynchronizedBuildFileExceptionSet; membershipExceptions = (Info.plist, Share.entitlements); target = B00000000000000000000001; };
+        B00000000000000000000004 = { isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; path = HolonShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+        B00000000000000000000005 = { isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = (B00000000000000000000007); name = "Embed App Extensions"; runOnlyForDeploymentPostprocessing = 0; };
+        B00000000000000000000007 = { isa = PBXBuildFile; fileRef = B00000000000000000000004; settings = { ATTRIBUTES = (RemoveHeadersOnCopy); }; };
+        B00000000000000000000006 = { isa = PBXTargetDependency; target = B00000000000000000000001; targetProxy = B00000000000000000000008; };
+        B00000000000000000000008 = { isa = PBXContainerItemProxy; containerPortal = A00000000000000000000001; proxyType = 1; remoteGlobalIDString = B00000000000000000000001; remoteInfo = HolonShare; };
+        B00000000000000000000010 = { isa = XCConfigurationList; buildConfigurations = (B00000000000000000000015, B00000000000000000000016); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+        B00000000000000000000011 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        B00000000000000000000012 = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        B00000000000000000000013 = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        B00000000000000000000015 = { isa = XCBuildConfiguration; buildSettings = { APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_ENTITLEMENTS = ShareExtension/Share.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = ShareExtension/Info.plist; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = run.holon.ios.share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+        B00000000000000000000016 = { isa = XCBuildConfiguration; buildSettings = { APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_ENTITLEMENTS = ShareExtension/Share.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = ShareExtension/Info.plist; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = run.holon.ios.share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
+	};
+	rootObject = A00000000000000000000001;
+}

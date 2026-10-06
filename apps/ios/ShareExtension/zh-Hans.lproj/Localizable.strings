@@ -1,0 +1,6 @@
+"share.save" = "保存到暂存";
+"share.cancel" = "取消";
+"share.stageOnly" = "仅本地暂存。请稍后打开 Holon，确认连接和 Agent 后再发送。";
+"share.unavailable" = "共享存储不可用，需要正确的 App Group 配置和签名。不会保存内容。";
+"share.invalid" = "无法预览：文件不可读、类型不支持，或超出限制（20 项输入、10 个文件附件、含链接文字 64 KiB、文件总量 20 MiB）。";
+"share.saveFailed" = "保存失败：共享存储可能已满、锁定或不可用。";

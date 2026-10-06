@@ -16,6 +16,11 @@ __pycache__/
 
 # Dependencies
 node_modules
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
 
 # Local runtime data
 .holon/
