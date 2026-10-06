@@ -986,9 +986,10 @@ mod tests {
 
     use super::{
         classify_status_error_with_trace, provider_fallback_disposition, provider_retry_delay,
-        ProviderFailureKind, ProviderRetryDelay, ProviderRetryDelaySource, ProviderTransportError,
+        set_provider_transport_quota_identity, ProviderFailureKind, ProviderRetryDelay,
+        ProviderRetryDelaySource, ProviderTransportError,
     };
-    use crate::provider::ProviderFallbackDisposition;
+    use crate::provider::{ProviderFallbackDisposition, ProviderQuotaIdentity};
 
     #[test]
     fn network_failures_defer_fallback_but_other_failures_remain_immediate() {
@@ -1226,6 +1227,56 @@ mod tests {
             ProviderFailureKind::RateLimited
         );
         assert_eq!(transport.retry_after, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn rate_limit_diagnostics_carry_redacted_quota_identity_and_round_trip() {
+        let identity = ProviderQuotaIdentity::exact("codex-account", "account-secret")
+            .expect("non-empty account should produce an identity");
+        let error = set_provider_transport_quota_identity(
+            classify_status_error_with_trace(
+                "OpenAI request failed",
+                "response_status",
+                Some("openai-codex"),
+                Some("openai-codex/gpt-5.3-codex-spark"),
+                Some("https://chatgpt.com/backend-api/codex/responses"),
+                StatusCode::TOO_MANY_REQUESTS,
+                r#"{"error":{"message":"rate limited"}}"#.into(),
+                None,
+                Some(Duration::from_secs(5)),
+            ),
+            identity.clone(),
+        );
+        let transport = error
+            .downcast_ref::<ProviderTransportError>()
+            .expect("transport error");
+        assert_eq!(
+            transport.status,
+            Some(StatusCode::TOO_MANY_REQUESTS.as_u16())
+        );
+        assert_eq!(transport.retry_after, Some(Duration::from_secs(5)));
+
+        let diagnostics = transport
+            .diagnostics
+            .as_ref()
+            .expect("rate limit should include transport diagnostics");
+        assert_eq!(diagnostics.provider.as_deref(), Some("openai-codex"));
+        assert_eq!(
+            diagnostics.status,
+            Some(StatusCode::TOO_MANY_REQUESTS.as_u16())
+        );
+        assert_eq!(diagnostics.quota_identity.as_ref(), Some(&identity));
+
+        let encoded = serde_json::to_value(diagnostics).expect("diagnostics should serialize");
+        assert_eq!(
+            encoded["quota_identity"],
+            serde_json::to_value(&identity).expect("identity should serialize")
+        );
+        assert!(!encoded.to_string().contains("account-secret"));
+
+        let decoded: crate::provider::ProviderTransportDiagnostics =
+            serde_json::from_value(encoded).expect("diagnostics should deserialize");
+        assert_eq!(decoded, *diagnostics);
     }
 
     #[test]
