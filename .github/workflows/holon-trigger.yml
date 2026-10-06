@@ -27,6 +27,12 @@ jobs:
     env:
       HOLON_JOB_TIMEOUT_MINUTES: 30
     steps:
+      - name: Capture Holon job deadline
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HOLON_JOB_DEADLINE_EPOCH=$(( $(date +%s) + HOLON_JOB_TIMEOUT_MINUTES * 60 ))" >> "$GITHUB_ENV"
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:

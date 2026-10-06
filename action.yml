@@ -46,7 +46,7 @@ inputs:
     required: false
     default: '35'
   timeout_seconds:
-    description: Cooperative solve timeout in seconds. When empty, derive it from HOLON_JOB_TIMEOUT_MINUTES with a 120-second grace period.
+    description: Cooperative solve timeout in seconds. When empty, derive it from the job deadline in HOLON_JOB_TIMEOUT_MINUTES with a 120-second grace period.
     required: false
     default: ''
   anthropic_auth_token:
@@ -130,6 +130,19 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Capture Holon job deadline
+      shell: bash
+      env:
+        JOB_TIMEOUT_MINUTES: ${{ env.HOLON_JOB_TIMEOUT_MINUTES }}
+      run: |
+        set -euo pipefail
+        if [ -n "${HOLON_JOB_DEADLINE_EPOCH:-}" ]; then
+          exit 0
+        fi
+        if [[ "$JOB_TIMEOUT_MINUTES" =~ ^[0-9]+$ ]] && [ "$JOB_TIMEOUT_MINUTES" -gt 0 ]; then
+          echo "HOLON_JOB_DEADLINE_EPOCH=$(( $(date +%s) + JOB_TIMEOUT_MINUTES * 60 ))" >> "$GITHUB_ENV"
+        fi
+
     - name: Set up GitHub CLI
       shell: bash
       run: |
@@ -393,6 +406,7 @@ runs:
         echo "Holon skipped: ${{ steps.context.outputs.reason }}"
 
     - name: Checkout Holon source
+      id: source
       if: inputs.build_from_source == 'true' && steps.context.outputs.should_run == 'true'
       shell: bash
       env:
@@ -407,7 +421,17 @@ runs:
           git -C "$src_dir" fetch --depth 1 origin "$HOLON_REF"
           git -C "$src_dir" checkout FETCH_HEAD
         fi
-        echo "HOLON_SOURCE_DIR=$src_dir" >> "$GITHUB_ENV"
+        source_commit="$(git -C "$src_dir" rev-parse HEAD)"
+        lock_hash="$(git -C "$src_dir" hash-object Cargo.lock)"
+        {
+          echo "HOLON_SOURCE_DIR=$src_dir"
+          echo "HOLON_SOURCE_COMMIT=$source_commit"
+          echo "HOLON_CARGO_LOCK_HASH=$lock_hash"
+        } >> "$GITHUB_ENV"
+        {
+          echo "commit=$source_commit"
+          echo "lock_hash=$lock_hash"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Set up Rust
       if: inputs.build_from_source == 'true' && steps.context.outputs.should_run == 'true'
@@ -421,9 +445,9 @@ runs:
           ~/.cargo/registry
           ~/.cargo/git
           ${{ runner.temp }}/holon-source/target
-        key: ${{ runner.os }}-holon-cargo-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-holon-cargo-${{ steps.source.outputs.lock_hash }}-${{ steps.source.outputs.commit }}
         restore-keys: |
-          ${{ runner.os }}-holon-cargo-
+          ${{ runner.os }}-holon-cargo-${{ steps.source.outputs.lock_hash }}-
 
     - name: Build Holon from source
       if: inputs.build_from_source == 'true' && steps.context.outputs.should_run == 'true'
@@ -619,10 +643,18 @@ runs:
         mkdir -p "$input_dir" "$output_dir" "$state_dir"
 
         timeout_seconds="$INPUT_TIMEOUT_SECONDS"
-        if [ -z "$timeout_seconds" ] && [ -n "${HOLON_JOB_TIMEOUT_MINUTES:-}" ] \
-          && [[ "$HOLON_JOB_TIMEOUT_MINUTES" =~ ^[0-9]+$ ]] \
-          && [ "$HOLON_JOB_TIMEOUT_MINUTES" -gt 2 ]; then
-          timeout_seconds=$((HOLON_JOB_TIMEOUT_MINUTES * 60 - 120))
+        if [ -z "$timeout_seconds" ]; then
+          now="$(date +%s)"
+          if [[ "${HOLON_JOB_DEADLINE_EPOCH:-}" =~ ^[0-9]+$ ]]; then
+            timeout_seconds=$((HOLON_JOB_DEADLINE_EPOCH - now - 120))
+          elif [ -n "${HOLON_JOB_TIMEOUT_MINUTES:-}" ] \
+            && [[ "$HOLON_JOB_TIMEOUT_MINUTES" =~ ^[0-9]+$ ]] \
+            && [ "$HOLON_JOB_TIMEOUT_MINUTES" -gt 2 ]; then
+            timeout_seconds=$((HOLON_JOB_TIMEOUT_MINUTES * 60 - 120))
+          fi
+          if [ -n "$timeout_seconds" ] && [ "$timeout_seconds" -lt 1 ]; then
+            timeout_seconds=1
+          fi
         fi
 
         template=""
