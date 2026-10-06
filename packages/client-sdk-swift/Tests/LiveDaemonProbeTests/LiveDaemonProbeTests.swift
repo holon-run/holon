@@ -1,4 +1,5 @@
 import Foundation
+import HolonClient
 import HolonWire
 import XCTest
 #if canImport(FoundationNetworking)
@@ -13,6 +14,59 @@ final class LiveDaemonProbeTests: XCTestCase {
             throw XCTSkip("Run make ios-contract-test to start the isolated daemon")
         }
         return url
+    }
+
+    func testProductionSDKBootstrapThroughRealPrefix() async throws {
+        for key in ["HOLON_LIVE_BASE", "HOLON_LIVE_PROXY_BASE"] {
+            let endpoint = try HolonEndpoint(apiBaseURL: base(key))
+            let client = try HolonClient(endpoint: endpoint, networkID: key)
+            do {
+                let handshake = try await client.handshake()
+                guard case .compatible(let server) =
+                        handshake.value.checkCompatibility(requiredCapabilities: ["agents.list"]) else {
+                    return XCTFail("Current daemon must be compatible with the production SDK")
+                }
+                XCTAssertEqual(server.defaultAgentId, "main")
+                let roster = try await client.listAgents()
+                XCTAssertEqual(roster.identity, handshake.identity)
+                XCTAssertEqual(roster.value.agents.map(\.id), ["main"])
+                await client.close()
+            } catch { await client.close(); throw error }
+        }
+    }
+
+    func testProductionSDKStreamEOFAndExplicitReopen() async throws {
+        let endpoint = try HolonEndpoint(apiBaseURL: base("HOLON_LIVE_PROXY_BASE"))
+        let client = try HolonClient(endpoint: endpoint, networkID: "isolated-proxy")
+        do {
+            for _ in 0..<2 {
+                let connection = try await client.openEventStream(path: ["events", "stream"])
+                var events = connection.makeAsyncIterator()
+                do { _ = try await events.next(); XCTFail("A closed stream must request recovery") }
+                catch { XCTAssertEqual(error as? HolonClientError, .streamEnded) }
+                connection.close()
+                _ = try await client.handshake()
+            }
+            await client.close()
+        } catch { await client.close(); throw error }
+    }
+
+    func testProductionSDKStreamCloseAndIdentityCancellation() async throws {
+        let endpoint = try HolonEndpoint(apiBaseURL: base())
+        let client = try HolonClient(endpoint: endpoint, networkID: "isolated")
+        do {
+            let connection = try await client.openEventStream(path: ["events", "stream"])
+            connection.close()
+            var events = connection.makeAsyncIterator()
+            do { _ = try await events.next(); XCTFail("Explicit close must end iteration") }
+            catch { XCTAssertTrue(error is CancellationError || (error as? URLError)?.code == .cancelled) }
+            let previous = await client.identity
+            let next = try await client.bindIdentity(runtimeID: "new-runtime", userID: nil,
+                                                      visibilityScopeID: nil, credential: nil)
+            XCTAssertNotEqual(previous, next)
+            _ = try await client.handshake()
+            await client.close()
+        } catch { await client.close(); throw error }
     }
 
     private func bootstrap(_ base: URL) async throws {

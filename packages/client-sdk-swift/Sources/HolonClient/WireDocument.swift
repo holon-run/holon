@@ -46,7 +46,19 @@ public struct WireDocument<Model: Decodable> {
 
     public init(data: Data, decoder: JSONDecoder? = nil) throws {
         let modelDecoder = decoder ?? JSONDecoder()
-        if decoder == nil { modelDecoder.dateDecodingStrategy = .iso8601 }
+        if decoder == nil {
+            // Rust chrono emits RFC3339 with optional fractional seconds.
+            modelDecoder.dateDecodingStrategy = .custom { decoder in
+                let container = try decoder.singleValueContainer()
+                let value = try container.decode(String.self)
+                let format = ISO8601DateFormatter()
+                format.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                if let date = format.date(from: value) { return date }
+                format.formatOptions = [.withInternetDateTime]
+                if let date = format.date(from: value) { return date }
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: "Expected RFC3339 date")
+            }
+        }
         model = try modelDecoder.decode(Model.self, from: data)
         raw = try JSONDecoder().decode(JSONValue.self, from: data)
     }

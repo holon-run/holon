@@ -1,0 +1,318 @@
+import Foundation
+import HolonClient
+import XCTest
+
+@MainActor
+final class TransportTests: XCTestCase {
+    private func fixture(_ name: String) throws -> Data {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        return try Data(contentsOf: root.appendingPathComponent("tests/fixtures/client-wire/\(name).json"))
+    }
+
+    private func client(_ replies: [MockReply], credential: String? = "test-session",
+                        maximumResponseBytes: Int = 16_777_216)
+        throws -> (HolonClient, MockExchange) {
+        let host = "\(UUID().uuidString.lowercased()).test"
+        let exchange = MockExchange(replies)
+        MockHTTP.register(exchange, host: host)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockHTTP.self]
+        let endpoint = try HolonEndpoint(apiBaseURL: URL(string: "https://\(host)/prefix/api")!)
+        let client = try HolonClient(endpoint: endpoint, networkID: "test",
+                                    credential: credential, configuration: config,
+                                    maximumResponseBytes: maximumResponseBytes)
+        addTeardownBlock {
+            await client.close()
+            MockHTTP.unregister(host: host)
+        }
+        return (client, exchange)
+    }
+
+    func testPrefixAndEscapedSegmentsAndQuery() throws {
+        let endpoint = try HolonEndpoint(apiBaseURL: URL(string: "https://example.test/proxy/api///")!)
+        let url = try endpoint.url(path: ["agents", "a/b #%", "conversation"],
+                                   query: ["cursor": "x+ y&z"])
+        XCTAssertEqual(url.path, "/proxy/api/agents/a/b #%/conversation")
+        XCTAssertTrue(url.absoluteString.contains("a%2Fb%20%23%25"))
+        XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value,
+                       "x+ y&z")
+        XCTAssertThrowsError(try endpoint.url(path: [".."]))
+        for value in ["file:///api", "https://user:pass@example.test/api",
+                      "https://example.test/api?token=secret", "https://example.test/api#fragment",
+                      "https://example.test/a/%2e%2e/api", "https://example.test/a%2fb/api"] {
+            XCTAssertThrowsError(try HolonEndpoint(apiBaseURL: URL(string: value)!))
+        }
+        XCTAssertThrowsError(try HolonEndpoint(apiBaseURL: URL(string: "http://192.168.1.10/api")!)) {
+            XCTAssertEqual($0 as? HolonClientError, .insecureHTTPRequiresConfirmation)
+        }
+        for value in ["http://localhost/api", "http://127.0.0.2/api", "http://[::1]/api"] {
+            XCTAssertNoThrow(try HolonEndpoint(apiBaseURL: URL(string: value)!))
+        }
+        XCTAssertNoThrow(try HolonEndpoint(apiBaseURL: URL(string: "http://192.168.1.10/api")!,
+                                          allowInsecureHTTP: true))
+    }
+
+    func testHandshakeAndRosterUseAuthenticatedSDKAndSharedFixtures() async throws {
+        let (sdk, exchange) = try client([MockReply(body: fixture("handshake-v1")),
+                                          MockReply(body: fixture("agent-list-future-enums"))])
+        let response = try await sdk.handshake()
+        let roster = try await sdk.listAgents()
+        XCTAssertEqual(response.identity, roster.identity)
+        XCTAssertEqual(roster.value.agents.count, 1)
+        XCTAssertEqual(exchange.requests.map { $0.url!.path }, ["/prefix/api/handshake", "/prefix/api/agents/list"])
+        XCTAssertEqual(exchange.requests.map { $0.value(forHTTPHeaderField: "Authorization") },
+                       ["Bearer test-session", "Bearer test-session"])
+    }
+
+    func testExplicitBoundedGETRetryAndNoDefaultRetry() async throws {
+        let (sdk, exchange) = try client([MockReply(status: 503, body: fixture("error-v1")),
+                                          MockReply(body: fixture("handshake-v1"))])
+        _ = try await sdk.handshake(retry: HolonRetryPolicy(maxAttempts: 2, baseDelay: 0))
+        XCTAssertEqual(exchange.requests.count, 2)
+        let (noRetry, failed) = try client([MockReply(status: 503, body: fixture("error-v1")),
+                                            MockReply(body: fixture("handshake-v1"))])
+        do { _ = try await noRetry.handshake(); XCTFail("Expected HTTP failure") }
+        catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 503) }
+        XCTAssertEqual(failed.requests.count, 1)
+        XCTAssertThrowsError(try HolonRetryPolicy(maxAttempts: 0))
+        XCTAssertThrowsError(try HolonRetryPolicy(maxAttempts: 9))
+        XCTAssertThrowsError(try HolonRetryPolicy(baseDelay: .infinity))
+    }
+
+    func testPermissionAndNetworkFailuresDoNotClearCredentials() async throws {
+        let (sdk, exchange) = try client([MockReply(status: 403, body: fixture("error-future-domain")),
+                                          MockReply(body: fixture("handshake-v1"))])
+        do { _ = try await sdk.handshake(retry: HolonRetryPolicy(maxAttempts: 2, baseDelay: 0)); XCTFail() }
+        catch {
+            let failure = try XCTUnwrap(error as? HolonHTTPFailure)
+            XCTAssertEqual(failure.statusCode, 403)
+            XCTAssertFalse(failure.apiError!.requiresSessionRenewal(statusCode: 403))
+        }
+        _ = try await sdk.handshake()
+        XCTAssertEqual(exchange.requests.count, 2)
+        XCTAssertEqual(exchange.requests.last?.value(forHTTPHeaderField: "Authorization"), "Bearer test-session")
+        let (network, lost) = try client([MockReply(error: .notConnectedToInternet),
+                                           MockReply(body: fixture("handshake-v1"))])
+        do { _ = try await network.handshake(); XCTFail() } catch { XCTAssertTrue(error is URLError) }
+        _ = try await network.handshake()
+        XCTAssertEqual(lost.requests.last?.value(forHTTPHeaderField: "Authorization"), "Bearer test-session")
+    }
+
+    func testSessionExchangeIsUnauthenticatedAndNeverImplicitlyInstallsCredential() async throws {
+        let (sdk, exchange) = try client([MockReply(body: fixture("session-response-v1")),
+                                          MockReply(body: fixture("handshake-v1"))], credential: "old")
+        _ = try await sdk.exchangeSession(credential: "bootstrap", nativeVerifier: "proof")
+        _ = try await sdk.handshake()
+        XCTAssertEqual(exchange.requests.first?.httpMethod, "POST")
+        XCTAssertEqual(exchange.requests.first?.url?.path, "/prefix/api/auth/session/exchange/native")
+        XCTAssertNil(exchange.requests.first?.value(forHTTPHeaderField: "Authorization"))
+        let body = try JSONDecoder().decode(JSONValue.self, from: XCTUnwrap(exchange.requests.first?.httpBody))
+        XCTAssertEqual(body["native_verifier"], .string("proof"))
+        XCTAssertEqual(exchange.requests.last?.value(forHTTPHeaderField: "Authorization"), "Bearer old")
+        let (failed, request) = try client([MockReply(status: 503, body: fixture("error-v1"))])
+        do { _ = try await failed.exchangeSession(credential: "bootstrap"); XCTFail() } catch {}
+        XCTAssertEqual(request.requests.count, 1)
+    }
+
+    func testChronoFractionalExpiryAndMissingExchangeCredential() async throws {
+        var document = try JSONDecoder().decode(JSONValue.self, from: fixture("session-response-v1"))
+        guard case .object(var fields) = document else { return XCTFail() }
+        fields["expires_at"] = .string("2030-01-01T00:00:00.123456789+00:00")
+        document = .object(fields)
+        let (sdk, _) = try client([MockReply(body: JSONEncoder().encode(document))])
+        let response = try await sdk.exchangeSession(credential: "bootstrap")
+        XCTAssertNotNil(response.value.expiresAt)
+        fields.removeValue(forKey: "credential")
+        let (missing, _) = try client([MockReply(body: JSONEncoder().encode(JSONValue.object(fields)))])
+        do { _ = try await missing.exchangeSession(credential: "bootstrap"); XCTFail() }
+        catch { XCTAssertEqual(error as? HolonClientError, .malformedResponse) }
+    }
+
+    func testIdentityChangeRejectsInflightOldResponse() async throws {
+        let (sdk, exchange) = try client([MockReply(body: fixture("handshake-v1"), delay: 2)])
+        let before = await sdk.identity
+        let pending = Task { try await sdk.handshake() }
+        for _ in 0..<100 where exchange.requests.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(exchange.requests.count, 1)
+        let after = try await sdk.bindIdentity(runtimeID: "r2", userID: "u2",
+                                               visibilityScopeID: "v2", credential: "new")
+        XCTAssertNotEqual(before, after)
+        do { _ = try await pending.value; XCTFail("Must reject an old generation") }
+        catch { XCTAssertEqual(error as? HolonClientError, .staleConnection) }
+    }
+
+    func testCancellationAndClosedClientDoNotRetry() async throws {
+        let (sdk, exchange) = try client([MockReply(body: fixture("handshake-v1"), delay: 2)])
+        let pending = Task { try await sdk.handshake(retry: HolonRetryPolicy(maxAttempts: 3, baseDelay: 0)) }
+        for _ in 0..<100 where exchange.requests.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+        pending.cancel()
+        do { _ = try await pending.value; XCTFail() }
+        catch { XCTAssertTrue(error is CancellationError || (error as? URLError)?.code == .cancelled) }
+        XCTAssertEqual(exchange.requests.count, 1)
+        await sdk.close()
+        do { _ = try await sdk.handshake(); XCTFail() }
+        catch { XCTAssertEqual(error as? HolonClientError, .closed) }
+    }
+
+    func testHTMLRedirectAndMalformedJSONAreNotRetried() async throws {
+        for reply in [MockReply(body: Data("<html>login</html>".utf8), contentType: "text/html"),
+                      MockReply(body: Data("broken".utf8)),
+                      MockReply(status: 302, body: Data(), headers: ["Location": "https://other.test/api"])] {
+            let (sdk, exchange) = try client([reply, MockReply(body: fixture("handshake-v1"))])
+            do { _ = try await sdk.handshake(retry: HolonRetryPolicy(maxAttempts: 2, baseDelay: 0)); XCTFail() }
+            catch { XCTAssertFalse(error is URLError) }
+            XCTAssertEqual(exchange.requests.count, 1)
+        }
+    }
+
+    func testResponseLimitFailsWithoutRetry() async throws {
+        let (sdk, exchange) = try client([MockReply(body: fixture("handshake-v1"))],
+                                         maximumResponseBytes: 8)
+        do { _ = try await sdk.handshake(retry: HolonRetryPolicy(maxAttempts: 2, baseDelay: 0)); XCTFail() }
+        catch { XCTAssertEqual(error as? HolonClientError, .streamLimitExceeded) }
+        XCTAssertEqual(exchange.requests.count, 1)
+    }
+
+    func testSSEConnectionRetryAndEOFRequireExplicitRecovery() async throws {
+        let text = "id: 8\nevent: future-control\ndata: 原文\n\n"
+        let (sdk, exchange) = try client([MockReply(status: 503, body: fixture("error-v1")),
+                                          MockReply(body: Data(text.utf8), contentType: "text/event-stream")])
+        let stream = try await sdk.openEventStream(
+            path: ["agents", "a/b", "events", "stream"], query: ["after_seq": "7"],
+            lastEventID: "epoch:7", retry: HolonRetryPolicy(maxAttempts: 2, baseDelay: 0))
+        defer { stream.close() }
+        var events = stream.makeAsyncIterator()
+        let event = try await events.next()
+        XCTAssertEqual(event?.value.event, "future-control")
+        XCTAssertEqual(event?.value.id, "8")
+        XCTAssertEqual(event?.value.data, "原文")
+        let identity = await sdk.identity
+        XCTAssertEqual(event?.identity, identity)
+        do { _ = try await events.next(); XCTFail() }
+        catch { XCTAssertEqual(error as? HolonClientError, .streamEnded) }
+        XCTAssertEqual(exchange.requests.count, 2, "EOF must not start a hidden reconnect")
+        XCTAssertEqual(exchange.requests.last?.value(forHTTPHeaderField: "Last-Event-ID"), "epoch:7")
+        XCTAssertEqual(exchange.requests.last?.value(forHTTPHeaderField: "Authorization"), "Bearer test-session")
+        XCTAssertEqual(exchange.requests.last?.value(forHTTPHeaderField: "Accept"), "text/event-stream")
+        XCTAssertTrue(exchange.requests.last!.url!.absoluteString.contains("a%2Fb"))
+    }
+
+    func testSSECRAndCRLFAtExactLimitsReachEOF() async throws {
+        for ending in ["\r", "\r\n"] {
+            let text = "data: a\(ending)\(ending)"
+            let (sdk, exchange) = try client([
+                MockReply(body: Data(text.utf8), contentType: "text/event-stream")
+            ])
+            let stream = try await sdk.openEventStream(
+                path: ["events", "stream"], maximumFrameBytes: text.utf8.count)
+            defer { stream.close() }
+            var events = stream.makeAsyncIterator()
+            let event = try await events.next()
+            XCTAssertEqual(event?.value.data, "a")
+            do { _ = try await events.next(); XCTFail() }
+            catch { XCTAssertEqual(error as? HolonClientError, .streamEnded) }
+            XCTAssertEqual(exchange.requests.count, 1)
+        }
+    }
+
+    func testSSECRLFTrailingLFOverflowDoesNotPublish() async throws {
+        let (sdk, _) = try client([
+            MockReply(body: Data("data: a\r\n\r\n".utf8), contentType: "text/event-stream")
+        ])
+        let stream = try await sdk.openEventStream(
+            path: ["events", "stream"], maximumFrameBytes: 10)
+        defer { stream.close() }
+        var events = stream.makeAsyncIterator()
+        do { _ = try await events.next(); XCTFail("Oversized frame must not publish an event") }
+        catch { XCTAssertEqual(error as? HolonClientError, .streamLimitExceeded) }
+    }
+
+    func testSSEOverflowAndWrongContentTypeAreObservable() async throws {
+        let (sdk, exchange) = try client([
+            MockReply(body: Data("data: 1\n\ndata: 2\n\ndata: 3\n\n".utf8), contentType: "text/event-stream")])
+        let stream = try await sdk.openEventStream(path: ["events", "stream"], bufferCapacity: 1)
+        defer { stream.close() }
+        try await Task.sleep(for: .milliseconds(50))
+        var events = stream.makeAsyncIterator()
+        _ = try await events.next()
+        do { _ = try await events.next(); XCTFail("Never silently drop frames") }
+        catch { XCTAssertEqual(error as? HolonClientError, .streamLimitExceeded) }
+        XCTAssertEqual(exchange.requests.count, 1)
+        let (html, failed) = try client([MockReply(body: Data("html".utf8), contentType: "text/html")])
+        do { _ = try await html.openEventStream(path: ["events", "stream"]); XCTFail() }
+        catch { XCTAssertEqual(error as? HolonClientError, .unexpectedContentType) }
+        XCTAssertEqual(failed.requests.count, 1)
+        do { _ = try await html.openEventStream(path: ["events", "stream"], lastEventID: "bad\nid"); XCTFail() }
+        catch { XCTAssertEqual(error as? HolonClientError, .invalidRequest) }
+        XCTAssertEqual(failed.requests.count, 1)
+    }
+}
+
+private struct MockReply: Sendable {
+    var status = 200
+    var body = Data()
+    var contentType = "application/json"
+    var headers: [String: String] = [:]
+    var delay: TimeInterval = 0
+    var error: URLError.Code? = nil
+}
+
+private final class MockExchange: @unchecked Sendable {
+    private let lock = NSLock()
+    private var replies: [MockReply]
+    private var captured: [URLRequest] = []
+    init(_ replies: [MockReply]) { self.replies = replies }
+    var requests: [URLRequest] { lock.withLock { captured } }
+    func reply(for request: URLRequest) -> MockReply {
+        var request = request
+        if request.httpBody == nil, let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var body = Data()
+            var buffer = [UInt8](repeating: 0, count: 1024)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                guard count > 0 else { break }
+                body.append(contentsOf: buffer.prefix(count))
+            }
+            request.httpBody = body
+        }
+        return lock.withLock {
+            captured.append(request)
+            return replies.isEmpty ? MockReply(status: 500) : replies.removeFirst()
+        }
+    }
+}
+
+private final class MockHTTP: URLProtocol, @unchecked Sendable {
+    private static let registryLock = NSLock()
+    nonisolated(unsafe) private static var registry: [String: MockExchange] = [:]
+    private let lock = NSLock()
+    private var stopped = false
+    static func register(_ exchange: MockExchange, host: String) {
+        registryLock.withLock { registry[host] = exchange }
+    }
+    static func unregister(host: String) { _ = registryLock.withLock { registry.removeValue(forKey: host) } }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let exchange = Self.registryLock.withLock { Self.registry[request.url!.host!]! }
+        let reply = exchange.reply(for: request)
+        DispatchQueue.global().asyncAfter(deadline: .now() + reply.delay) { [self] in
+            lock.withLock {
+                guard !stopped else { return }
+                if let error = reply.error { client?.urlProtocol(self, didFailWithError: URLError(error)); return }
+                var headers = reply.headers
+                headers["Content-Type"] = reply.contentType
+                let response = HTTPURLResponse(url: request.url!, statusCode: reply.status,
+                                               httpVersion: "HTTP/1.1", headerFields: headers)!
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: reply.body)
+                client?.urlProtocolDidFinishLoading(self)
+            }
+        }
+    }
+    override func stopLoading() { lock.withLock { stopped = true } }
+}

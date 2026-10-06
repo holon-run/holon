@@ -13,6 +13,6 @@ let package = Package(
         .target(name: "HolonWire", swiftSettings: [.swiftLanguageMode(.v5)]),
         .target(name: "HolonClient", dependencies: ["HolonWire"]),
         .testTarget(name: "HolonClientTests", dependencies: ["HolonClient", "HolonWire"]),
-        .testTarget(name: "LiveDaemonProbeTests", dependencies: ["HolonWire"]),
+        .testTarget(name: "LiveDaemonProbeTests", dependencies: ["HolonClient", "HolonWire"]),
     ]
 )
