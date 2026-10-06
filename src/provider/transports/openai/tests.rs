@@ -2,9 +2,10 @@ use super::{
     build_images_request, build_openai_codex_image_generation_request,
     build_openai_responses_request, chat_completions_url, choose_openai_codex_credential,
     consume_openai_sse_event, incremental_diagnostics, latest_openai_compaction_index,
-    native_web_search_diagnostics, openai_compaction_trigger_for_request_plan,
-    openai_compaction_trigger_for_window, openai_images_dialect,
-    openai_model_policy_for_runtime_config, openai_provider_window_compaction_candidate,
+    native_web_search_diagnostics, openai_codex_coarse_quota_identity,
+    openai_compaction_trigger_for_request_plan, openai_compaction_trigger_for_window,
+    openai_images_dialect, openai_model_policy_for_runtime_config,
+    openai_provider_window_compaction_candidate,
     parse_openai_codex_image_generation_response_items, parse_openai_images_response,
     plan_openai_responses_request, resolve_openai_codex_credential, CredentialStoreRefreshLock,
     OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiCompactionPolicy,
@@ -156,6 +157,38 @@ fn test_xai_oauth_config(credential: String) -> ProviderRuntimeConfig {
         context_management: Default::default(),
         builtin_web_search: None,
     }
+}
+
+#[test]
+fn codex_coarse_quota_identity_prefers_profile_then_external_then_default() {
+    let configured = test_openai_codex_config(None);
+    let configured_identity = openai_codex_coarse_quota_identity(&configured);
+
+    let mut profile_only = configured.clone();
+    profile_only.auth.external = None;
+    let profile_identity = openai_codex_coarse_quota_identity(&profile_only);
+    assert_eq!(configured_identity, profile_identity);
+
+    let mut external_only = configured.clone();
+    external_only.auth.profile = None;
+    let external_identity = openai_codex_coarse_quota_identity(&external_only);
+    assert_ne!(profile_identity, external_identity);
+
+    let mut default_scope = external_only;
+    default_scope.auth.external = None;
+    let default_identity = openai_codex_coarse_quota_identity(&default_scope);
+    assert_ne!(external_identity, default_identity);
+    assert_eq!(
+        configured_identity.confidence,
+        crate::provider::ProviderQuotaIdentityConfidence::Coarse
+    );
+
+    let mut different_route = profile_only;
+    different_route.route_provider = ProviderId::parse("openai").expect("valid provider id");
+    assert_ne!(
+        profile_identity,
+        openai_codex_coarse_quota_identity(&different_route)
+    );
 }
 
 #[test]

@@ -835,6 +835,30 @@ fn chat_completion_provider_classifies_rate_limit_errors() {
 }
 
 #[test]
+fn chat_completion_rate_limit_type_wins_over_deterministic_marker() {
+    use crate::provider::transports::classify_openai_chat_completion_error;
+
+    let error_json = json!({
+        "message": "too many tokens per minute",
+        "type": "rate_limit_error"
+    });
+
+    let error = classify_openai_chat_completion_error(
+        "test context",
+        &error_json,
+        reqwest::StatusCode::TOO_MANY_REQUESTS,
+        Some("openai/gpt-test"),
+        Some("https://example.com/v1/chat/completions"),
+        None,
+        None,
+    );
+    let classification = classify_provider_error(&error);
+
+    assert_eq!(classification.kind, ProviderFailureKind::RateLimited);
+    assert_eq!(classification.disposition, RetryDisposition::Retryable);
+}
+
+#[test]
 fn chat_completion_provider_classifies_auth_errors() {
     use crate::provider::transports::classify_openai_chat_completion_error;
 

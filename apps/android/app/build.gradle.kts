@@ -61,6 +61,14 @@ android {
         }
     }
 
+    bundle {
+        // In-app language switching (UiCopy) needs every locale in the installed APK;
+        // the app does not use Play Core on-demand language downloads.
+        language {
+            enableSplit = false
+        }
+    }
+
     buildFeatures {
         buildConfig = true
     }

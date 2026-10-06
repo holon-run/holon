@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Looper
 import androidx.core.content.FileProvider
+import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -497,12 +498,12 @@ internal class HolonViewModel(
             mutableState.update { state -> state.copy(error = "安全存储暂时不可用，请重试") }
             return null
         }
-        oidcPreferences.edit()
-            .putString("state", state)
-            .putString("base_url", baseUrl)
-            .putBoolean("allow_insecure_http", before.allowInsecureHttp)
-            .putLong("started_at", System.currentTimeMillis())
-            .apply()
+        oidcPreferences.edit {
+            putString("state", state)
+            putString("base_url", baseUrl)
+            putBoolean("allow_insecure_http", before.allowInsecureHttp)
+            putLong("started_at", System.currentTimeMillis())
+        }
         return nativeOidcLoginUrl(baseUrl, state, proof)
     }
 
@@ -524,7 +525,7 @@ internal class HolonViewModel(
             return true
         }
         val age = System.currentTimeMillis() - oidcPreferences.getLong("started_at", 0)
-        oidcPreferences.edit().clear().apply()
+        oidcPreferences.edit { clear() }
         runCatching { nativeProofStore.clear("oidc-login-proof") }
         if (uri.getQueryParameter("code_challenge_method") != "S256") {
             mutableState.update { it.copy(error = "daemon 不支持安全的原生浏览器登录，请升级 daemon") }

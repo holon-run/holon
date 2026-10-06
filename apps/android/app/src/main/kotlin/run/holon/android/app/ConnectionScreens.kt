@@ -6,7 +6,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 
 import android.content.Intent
-import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -54,6 +53,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 
 internal fun shouldShowSavedNetworks(addingNetwork: Boolean, profiles: List<NetworkProfile>): Boolean =
     !addingNetwork && profiles.isNotEmpty()
@@ -222,7 +222,7 @@ internal fun LoginScreen(state: HolonUiState, viewModel: ConnectionActions, addi
             OutlinedButton(
                 onClick = {
                     viewModel.startOidcLogin()?.let { url ->
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
                     }
                 },
                 enabled = !state.busy && (!isInsecureHttp || state.allowInsecureHttp),

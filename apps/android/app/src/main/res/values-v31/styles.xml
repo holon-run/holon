@@ -1,0 +1,7 @@
+<resources>
+    <!-- Android 12+ splash uses the adaptive launcher icon; keep the splash
+         background aligned with the icon background color. -->
+    <style name="Theme.Holon" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowSplashScreenBackground">@color/ic_launcher_background</item>
+    </style>
+</resources>

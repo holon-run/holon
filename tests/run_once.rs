@@ -1,4 +1,10 @@
-use std::{future::Future, sync::Arc};
+use std::{
+    future::Future,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -38,6 +44,7 @@ fn run_request(text: impl Into<String>) -> RunOnceRequest {
         create_agent: false,
         template: None,
         max_turns: None,
+        timeout_seconds: None,
         wait_for_tasks: true,
         workspace_root: None,
         cwd: None,
@@ -115,6 +122,81 @@ impl AgentProvider for TokenReportingProvider {
             request_diagnostics: None,
         })
     }
+}
+
+struct DelayedProvider {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl AgentProvider for DelayedProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            sleep(Duration::from_millis(1_300)).await;
+        }
+        Ok(ProviderTurnResponse {
+            blocks: vec![ModelBlock::Text {
+                text: if call == 0 {
+                    "initial result".into()
+                } else {
+                    "timeout follow-up result".into()
+                },
+            }],
+            stop_reason: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn run_once_injects_soft_timeout_follow_up_and_completes() -> Result<()> {
+    let test_config = test_config();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let host = RuntimeHost::new_with_provider(
+        test_config.config().clone(),
+        Arc::new(DelayedProvider {
+            calls: calls.clone(),
+        }),
+    )?;
+    let mut request = run_request("hello");
+    request.timeout_seconds = Some(1);
+
+    let response = run_once_with_host(host, request).await?;
+
+    eprintln!("soft-timeout response: {response:?}");
+    eprintln!("soft-timeout calls: {}", calls.load(Ordering::SeqCst));
+    assert_eq!(response.final_status, RunFinalStatus::Completed);
+    assert!(response.final_text.contains("timeout follow-up result"));
+    assert!(calls.load(Ordering::SeqCst) >= 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn run_once_does_not_inject_soft_timeout_after_max_turns() -> Result<()> {
+    let test_config = test_config();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let host = RuntimeHost::new_with_provider(
+        test_config.config().clone(),
+        Arc::new(DelayedProvider {
+            calls: calls.clone(),
+        }),
+    )?;
+    let mut request = run_request("hello");
+    request.max_turns = Some(1);
+    request.timeout_seconds = Some(1);
+
+    let response = run_once_with_host(host, request).await?;
+
+    assert_eq!(response.final_status, RunFinalStatus::Completed);
+    assert_eq!(response.final_text, "initial result");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    Ok(())
 }
 
 #[tokio::test]
