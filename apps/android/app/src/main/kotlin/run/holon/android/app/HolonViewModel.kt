@@ -12,6 +12,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewModelScope
+import java.net.URLEncoder
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +43,20 @@ import run.holon.android.sdk.HolonTaskSnapshot
 import run.holon.android.sdk.HolonTaskOutputSnapshot
 import run.holon.android.sdk.HolonWorkspace
 import run.holon.android.sdk.HolonWorkspaceDirectory
+
+internal fun nativeOidcLoginUrl(
+    baseUrl: String,
+    loginState: String,
+    proof: run.holon.android.sdk.NativeLoginProof,
+): String {
+    val query =
+        listOf(
+            "state" to loginState,
+            "code_challenge" to proof.challenge,
+            "code_challenge_method" to "S256",
+        ).joinToString("&") { (key, value) -> "$key=${URLEncoder.encode(value, "UTF-8")}" }
+    return "${baseUrl.trimEnd('/')}/auth/oidc/native/start?$query"
+}
 
 internal fun HolonHttpException.isStaleAgentEventCursor(): Boolean =
     statusCode == 404 && apiError?.code == "cursor_not_found"
@@ -488,13 +503,7 @@ internal class HolonViewModel(
             .putBoolean("allow_insecure_http", before.allowInsecureHttp)
             .putLong("started_at", System.currentTimeMillis())
             .apply()
-        return Uri.parse("${baseUrl.trimEnd('/')}/auth/oidc/native/start")
-            .buildUpon()
-            .appendQueryParameter("state", state)
-            .appendQueryParameter("code_challenge", proof.challenge)
-            .appendQueryParameter("code_challenge_method", "S256")
-            .build()
-            .toString()
+        return nativeOidcLoginUrl(baseUrl, state, proof)
     }
 
     fun handleOidcCallback(uri: Uri): Boolean {

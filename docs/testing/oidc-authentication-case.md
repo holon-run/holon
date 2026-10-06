@@ -25,9 +25,12 @@ It never reuses the running daemon, credentials, or user workspace.
 
 Coverage includes both upstream and app-to-Holon S256 PKCE, browser state
 binding, native callback interception without the verifier, non-consuming
-failed proofs, single-use/concurrent exchange, cookie/bearer authentication,
+failed proofs, ordinary exchange rejection even with the correct native
+verifier, single-use/concurrent exchange, cookie/bearer authentication,
 logout/revocation, invalid ID Token claims/signatures, and per-user observer
-scope/cache isolation across repeated logins. It does not replace real IdP,
+scope/cache isolation across repeated logins, including conversation summaries
+and shadow diagnostics. Rust router tests additionally cover activity snapshots
+and conversation stream scopes. It does not replace real IdP,
 Android keystore/browser/deep-link, or multi-app scheme-routing acceptance.
 
 ## Preconditions

@@ -518,6 +518,11 @@ pub async fn exchange_session(
     State(state): State<Arc<AppState>>,
     ApiJson(request): ApiJson<SessionExchangeRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    if request.native_verifier.is_some() {
+        return Err(auth_required(
+            "native login proof requires the native exchange endpoint",
+        ));
+    }
     let (session, cookie) = exchange_session_credential(State(state), ApiJson(request)).await?;
     Ok((
         StatusCode::OK,

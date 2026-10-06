@@ -404,6 +404,7 @@ class OidcAuthenticationE2E(unittest.TestCase):
         self.status(self.exchange(ticket), 401)
         self.status(self.exchange(ticket, secrets.token_urlsafe(48)), 401)
         self.status(self.exchange(ticket, native=False), 401)
+        self.status(self.exchange(ticket, verifier, native=False), 401)
         self.status(self.exchange(ticket, verifier), 200)
         self.status(self.exchange(ticket, verifier), 401)
 
@@ -470,6 +471,14 @@ class OidcAuthenticationE2E(unittest.TestCase):
             scope = roster["visibility_scope_id"]
             self.assertEqual(scope, projection["visibility_scope_id"])
             self.assertEqual(scope, read["visibility_scope_id"])
+            for endpoint in [
+                "/api/agents/oidc-e2e/conversation",
+                "/api/control/agents/oidc-e2e/conversation/shadow-diagnostics",
+            ]:
+                conversation = json.loads(self.status(self.request(
+                    endpoint, credential=credential,
+                ), 200)[2])
+                self.assertEqual(scope, conversation["visibility_scope_id"])
             scopes.append(scope)
         self.assertEqual(scopes[0], scopes[2])
         self.assertEqual(scopes[0], scopes[4])

@@ -1,5 +1,7 @@
 package run.holon.android.app
 
+import java.net.URI
+import java.net.URLDecoder
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -46,11 +48,25 @@ class HolonAppModelTest {
     @Test
     fun `native OIDC URL does not duplicate the API slash`() {
         val baseUrl = normalizeAddress("http://10.0.2.2:7878", allowInsecureHttp = true)
+        val proof = run.holon.android.sdk.NativeLoginProof.create()
+        val state = "login-state & encoded"
+        val url = URI(nativeOidcLoginUrl(baseUrl, state, proof))
+        val parameters =
+            url.rawQuery.split("&").associate {
+                val (key, value) = it.split("=", limit = 2)
+                key to URLDecoder.decode(value, "UTF-8")
+            }
 
         assertEquals(
             "http://10.0.2.2:7878/api/auth/oidc/native/start",
-            "${baseUrl.trimEnd('/')}/auth/oidc/native/start",
+            url.toString().substringBefore("?"),
         )
+        assertEquals(state, parameters["state"])
+        assertEquals(proof.challenge, parameters["code_challenge"])
+        assertEquals(false, parameters["state"].isNullOrBlank())
+        assertEquals(false, parameters["code_challenge"].isNullOrBlank())
+        assertEquals("S256", parameters["code_challenge_method"])
+        assertEquals(false, parameters.containsKey("native_verifier"))
     }
 
     @Test

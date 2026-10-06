@@ -36,6 +36,12 @@ projections, unread baselines, and read markers in IndexedDB. Unread is a local
 product state for one browser profile. It is derived from hydrated
 `brief_created` events and is not a server-owned fact.
 
+These browser-local projection markers are distinct from the authoritative
+Brief read-state API. That API stores a cursor per observer principal and
+Agent, intentionally sharing Brief read progress across clients of the same
+OIDC account. It does not identify physical devices or replace browser-local
+hydration and event-consumption markers.
+
 This design reuses the event ordering that is already implemented, supports
 both compact and verbose views, and makes roster discovery, retention gaps,
 epoch resets, authorization changes, and hydration failure explicit.
@@ -102,6 +108,9 @@ Finally, unread differs by browser profile. A marker associated with an account
 or authorization principal would merge reading performed on different devices.
 A marker associated with an SSE connection or tab would not survive reconnect.
 The service cannot infer a stable physical device identity from a request.
+
+This constraint applies to browser-local projection markers. Principal-scoped
+Brief read states explicitly choose account-wide progress, not device isolation.
 
 ## Goals
 
@@ -345,8 +354,9 @@ and a visibility policy generation. Credential rotation with unchanged
 entitlement should keep it stable. A principal, entitlement, or policy change
 must rotate it. Local unauthenticated mode uses a runtime-local public scope.
 
-In OIDC mode, roster snapshots, Agent projection snapshots, and Brief read
-states all resolve the same authenticated user principal. Snapshot coalescing,
+In OIDC mode, roster snapshots, Agent projection snapshots, conversation
+summaries, activities, streams and shadow diagnostics, and Brief read states
+all resolve the same authenticated user principal. Snapshot coalescing,
 fresh caches, and stale fallback are partitioned by that principal; no caller
 may receive another user's scope from a shared cache. Static-token deployments
 retain their shared control scope, including across token rotation.
@@ -1139,8 +1149,10 @@ add deltas only after measured scale requires them.
 
 ### Store Read Markers By Observer Principal
 
-This merges all devices for one principal and contradicts the desired
-per-browser unread behavior. It also cannot distinguish browser profiles.
+For browser-local projection markers, this merges all devices for one principal
+and contradicts the desired per-browser behavior. It also cannot distinguish
+browser profiles. This rejection does not apply to the separate Brief read-state
+API, whose authoritative account-wide cursor intentionally has shared semantics.
 
 ### Store Read Markers By Connection Or User-Agent
 
