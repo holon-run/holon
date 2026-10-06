@@ -372,6 +372,7 @@ impl BlockingClient {
             "expected a GitHub API URL"
         );
         let mut target = self.policy.api_base.clone();
+        // api_base replaces the origin, not the canonical GitHub API path.
         target.set_path(source.path());
         target.set_query(source.query());
         target.set_fragment(None);

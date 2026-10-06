@@ -139,6 +139,9 @@ Authentication is resolved once per operation, without a permanent token cache:
 - Skills and blocking template tarballs: `GITHUB_TOKEN`, then `GH_TOKEN`.
 - Async templates: an explicit credential profile, then `HOLON_GITHUB_TOKEN`,
   `GITHUB_TOKEN`, and `GH_TOKEN`.
+- A non-empty configured or environment token that is invalid as an HTTP header
+  stops credential fallback and selects anonymous access; lower-priority tokens
+  and `gh` are not tried.
 - Empty values are skipped. When no configured token is available, all three
   paths may use `gh auth token -h github.com`, non-interactively with a five-second
   deadline and child-process cleanup. Missing, unsuccessful, empty, or invalid
