@@ -16,36 +16,62 @@ struct DiagnosticView: View {
     @State private var outcome: String?
 
     var body: some View {
-        Section("diagnostics.title") {
+        ScrollView {
+            contents
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+        }
+        .accessibilityIdentifier("diagnostics.content")
+        .navigationTitle("diagnostics.title")
+        .onChange(of: connection.identity) { _, _ in
+            confirmation = nil
+            confirming = false
+            report = ""
+            outcome = nil
+        }
+    }
+
+    private var contents: some View {
+        VStack(alignment: .leading, spacing: 16) {
             Text("diagnostics.allowlist").font(.caption).foregroundStyle(.secondary)
             Button("diagnostics.prepare") { prepare() }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("diagnostics.prepare")
             if !report.isEmpty {
-                Text(report).font(.caption.monospaced()).textSelection(.enabled)
-                ShareLink(item: report) { Label("diagnostics.export", systemImage: "square.and.arrow.up") }
+                Text(report).font(.body.monospaced()).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("diagnostics.report")
+                ShareLink(item: report) {
+                    Label("diagnostics.export", systemImage: "square.and.arrow.up")
+                        .font(.body)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("diagnostics.export")
                 if let sender, let agentID = sender.selectedAgentID,
                    let context = sender.externalContext(agentID: agentID) {
                     Button("diagnostics.send") {
                         confirmation = DiagnosticConfirmation(requestID: UUID(), text: report, context: context)
                         confirming = true
                     }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("diagnostics.send")
                     .confirmationDialog("diagnostics.confirm", isPresented: $confirming) {
                         Button("diagnostics.confirmSend") { enqueue(sender: sender) }
+                            .accessibilityIdentifier("diagnostics.confirmSend")
                         Button("common.cancel", role: .cancel) { confirmation = nil }
                     } message: {
                         Text(reader.agents.first(where: { $0.id == agentID })?.name ?? agentID)
                         Text(connection.selectedProfile?.name ?? "")
                     }
                 } else {
-                    Text("diagnostics.chooseAgent").font(.caption)
+                    Text("diagnostics.chooseAgent")
+                        .font(.body)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("diagnostics.chooseAgent")
                 }
             }
             if let outcome { Text(LocalizedStringKey(outcome)).font(.caption) }
-        }
-        .onChange(of: connection.identity) { _, _ in
-            confirmation = nil
-            confirming = false
-            report = ""
-            outcome = nil
         }
     }
 

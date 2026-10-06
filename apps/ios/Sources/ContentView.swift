@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var pairingHTTP = false
     @State private var inputError = false
     @State private var anchor: UIWindow?
+    @FocusState private var pairingFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -44,6 +45,7 @@ struct ContentView: View {
                         .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                     Text("profiles.addressHelp").font(.caption).foregroundStyle(.secondary)
                     Toggle("connection.allowHTTP", isOn: $allowHTTP)
+                        .accessibilityIdentifier("profiles.allowHTTP")
                     Text("connection.httpWarning").font(.caption).foregroundStyle(.secondary)
                     Text("connection.localNetworkHelp").font(.caption).foregroundStyle(.secondary)
                     Button("profiles.add") { addProfile() }
@@ -85,9 +87,11 @@ struct ContentView: View {
                 Section("pairing.title") {
                     TextField("pairing.payload", text: $payload, axis: .vertical)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+                        .focused($pairingFocused)
                     Button("pairing.preview") {
                         do {
                             try coordinator.previewPairing(payload)
+                            pairingFocused = false
                             payload = ""
                             pairingHTTP = false
                         } catch { inputError = true }
@@ -96,6 +100,7 @@ struct ContentView: View {
                         Text("pairing.confirmHelp")
                         Text(verbatim: invitation.apiBaseURL.absoluteString).textSelection(.enabled)
                         Toggle("connection.allowHTTP", isOn: $pairingHTTP)
+                            .accessibilityIdentifier("pairing.allowHTTP")
                         Text("connection.httpWarning").font(.caption).foregroundStyle(.secondary)
                         Button("pairing.confirm") {
                             token = ""
@@ -125,6 +130,7 @@ struct ContentView: View {
     }
 
     private func clearInputs() {
+        pairingFocused = false
         token = ""
         payload = ""
         coordinator.cancelPairing()

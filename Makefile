@@ -64,7 +64,25 @@ web-ci: ## Test and build the web GUI with one clean dependency install
 android-sdk-test: ## Compile and test the Android SDK foundation against generated wire models
 	$(GRADLE) --no-daemon -p $(ANDROID_DIR) :sdk:test
 
-.PHONY: ios-sdk-test ios-wire-check ios-app-test ios-app-build ios-contract-test
+.PHONY: ios-sdk-test ios-wire-check ios-app-test ios-app-build ios-contract-test ios-ui-test ios-ci ios-archive ios-build-tools-test
+ios-ci: ## Run all iOS SDK, daemon, application and UI gates sequentially
+	$(MAKE) ios-build-tools-test
+	$(MAKE) ios-wire-check
+	$(MAKE) ios-sdk-test
+	$(MAKE) ios-contract-test
+	$(MAKE) ios-app-build
+	$(MAKE) ios-app-test
+	$(MAKE) ios-ui-test
+
+ios-ui-test: ## Run the isolated simulator UI gate
+	./scripts/test-ios-ui.sh
+
+ios-archive: ## Prepare a local signed archive with an explicitly supplied team
+	./scripts/package-ios-archive.sh
+
+ios-build-tools-test: ## Test build/archive argument and exit-code contracts without Xcode
+	python3 scripts/test-ios-build-tools.py
+
 ios-contract-test: ## Probe Swift URLSession against an isolated real Rust daemon
 	./scripts/test-ios-contract.sh
 	./scripts/test-ios-send-contract.sh

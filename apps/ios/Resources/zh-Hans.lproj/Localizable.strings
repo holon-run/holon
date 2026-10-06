@@ -9,6 +9,8 @@
 "connection.httpWarning" = "HTTP 不加密凭据或流量。请仅确认你信任的目标。";
 "connection.localNetworkHelp" = "连接附近的 runtime 时，iOS 可能请求本地网络权限。如已拒绝，请在系统设置中检查 Holon 的权限。";
 "connection.title" = "连接与身份";
+"tab.connection" = "连接";
+"tab.system" = "工具";
 "connection.status" = "状态";
 "connection.working" = "正在连接或登录";
 "connection.refresh" = "刷新连接";

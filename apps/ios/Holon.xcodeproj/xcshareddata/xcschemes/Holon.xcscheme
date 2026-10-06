@@ -9,6 +9,9 @@
   </BuildAction>
   <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES">
     <Testables>
+      <TestableReference skipped="NO" parallelizable="NO">
+        <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="C00000000000000000000001" BuildableName="HolonUITests.xctest" BlueprintName="HolonUITests" ReferencedContainer="container:Holon.xcodeproj"/>
+      </TestableReference>
       <TestableReference skipped="NO">
         <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A00000000000000000000021" BuildableName="HolonTests.xctest" BlueprintName="HolonTests" ReferencedContainer="container:Holon.xcodeproj"/>
       </TestableReference>

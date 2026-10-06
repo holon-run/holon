@@ -78,10 +78,10 @@ struct HolonApp: App {
                             .tag(ClientTab.files)
                         SystemExperienceView(connection: coordinator, reader: reader,
                                              sender: sender, imports: imports)
-                            .tabItem { Label("system.title", systemImage: "square.and.arrow.up") }
+                            .tabItem { Label("tab.system", systemImage: "square.and.arrow.up") }
                             .tag(ClientTab.system)
                         ContentView(coordinator: coordinator)
-                            .tabItem { Label("connection.title", systemImage: "network") }
+                            .tabItem { Label("tab.connection", systemImage: "network") }
                             .tag(ClientTab.connection)
                     }
                         .task { await coordinator.restore() }

@@ -15,6 +15,13 @@ on:
       - "apps/android/**"
       - "packages/client-sdk-swift/**"
       - "scripts/test-ios-contract.sh"
+      - "scripts/test-ios-send-contract.sh"
+      - "scripts/test-ios-app.sh"
+      - "scripts/test-ios-ui.sh"
+      - "scripts/ios_ui_fixture.py"
+      - "scripts/test-ios-build-tools.py"
+      - "scripts/package-ios-archive.sh"
+      - "apps/ios/**"
       - ".github/workflows/android-release.yml"
       - ".github/workflows/release.yml"
       - "scripts/*android-release*.sh"
@@ -56,6 +63,13 @@ on:
       - "apps/android/**"
       - "packages/client-sdk-swift/**"
       - "scripts/test-ios-contract.sh"
+      - "scripts/test-ios-send-contract.sh"
+      - "scripts/test-ios-app.sh"
+      - "scripts/test-ios-ui.sh"
+      - "scripts/ios_ui_fixture.py"
+      - "scripts/test-ios-build-tools.py"
+      - "scripts/package-ios-archive.sh"
+      - "apps/ios/**"
       - ".github/workflows/android-release.yml"
       - ".github/workflows/release.yml"
       - "scripts/*android-release*.sh"
@@ -115,6 +129,7 @@ jobs:
       web: ${{ steps.filter.outputs.web }}
       android: ${{ steps.filter.outputs.android }}
       swift_sdk: ${{ steps.filter.outputs.swift_sdk }}
+      ios_app: ${{ steps.filter.outputs.ios_app }}
       macos_app: ${{ steps.filter.outputs.macos_app }}
       macos_rust_check: ${{ steps.filter.outputs.macos_rust_check }}
     steps:
@@ -187,6 +202,24 @@ jobs:
               - 'docs/website/reference/openapi.json'
               - 'web-gui/openapi-tools/**'
               - 'scripts/test-ios-contract.sh'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
+            ios_app:
+              - 'apps/ios/**'
+              - 'packages/client-sdk-swift/**'
+              - 'tests/fixtures/client-wire/**'
+              - 'scripts/test-ios-contract.sh'
+              - 'scripts/test-ios-send-contract.sh'
+              - 'scripts/test-ios-app.sh'
+              - 'scripts/test-ios-ui.sh'
+              - 'scripts/ios_ui_fixture.py'
+              - 'scripts/test-ios-build-tools.py'
+              - 'scripts/package-ios-archive.sh'
+              - 'src/**'
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'build.rs'
               - 'Makefile'
               - '.github/workflows/ci.yml'
             macos_app:
@@ -263,6 +296,62 @@ jobs:
         run: make ios-wire-check
       - name: Test Swift client SDK
         run: make ios-sdk-test
+
+  ios-app:
+    name: iOS daemon, simulator and UI gates
+    runs-on: macos-latest
+    timeout-minutes: 60
+    needs: changes
+    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require Xcode and an available iOS 18+ simulator
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+          xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          phones = [d for runtime, values in devices.items()
+                    if ".iOS-" in runtime and int(runtime.split(".iOS-")[1].split("-")[0]) >= 18
+                    for d in values if d["name"].startswith("iPhone")]
+          if not phones:
+              sys.exit("An available iOS 18+ iPhone simulator is required")
+          import os
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write("IOS_SIMULATOR_ID=" + phones[0]["udid"] + "\n")'
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Test build tooling contracts
+        run: python3 scripts/test-ios-build-tools.py
+      - name: Test Swift against the real daemon
+        run: make ios-contract-test
+      - name: Build simulator application
+        run: make ios-app-build
+        env:
+          IOS_DERIVED_DATA_PATH: ${{ runner.temp }}/holon-ios-build
+          IOS_RESULT_BUNDLE_PATH: ${{ runner.temp }}/holon-ios-build.xcresult
+      - name: Test simulator application
+        run: make ios-app-test
+        env:
+          IOS_DERIVED_DATA_PATH: ${{ runner.temp }}/holon-ios-test
+          IOS_RESULT_BUNDLE_PATH: ${{ runner.temp }}/holon-ios-test.xcresult
+      - name: Test isolated simulator UI
+        run: make ios-ui-test
+        env:
+          IOS_DERIVED_DATA_PATH: ${{ runner.temp }}/holon-ios-ui
+          IOS_RESULT_BUNDLE_PATH: ${{ runner.temp }}/holon-ios-ui.xcresult
+      - name: Preserve application test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-app-results
+          # Authenticated UI activity can include the ephemeral pairing payload.
+          # Keep those bundles on the runner rather than publishing them.
+          path: |
+            ${{ runner.temp }}/holon-ios-build.xcresult
+            ${{ runner.temp }}/holon-ios-test.xcresult
+          if-no-files-found: ignore
 
   android:
     name: Android app

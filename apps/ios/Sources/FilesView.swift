@@ -60,8 +60,10 @@ struct FilesView: View {
         List {
             Section("files.reference") {
                 TextField("files.reference.placeholder", text: $reference)
+                    .accessibilityIdentifier("files.reference")
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                 Button("files.openReference") { coordinator.openReference(reference) }
+                    .accessibilityIdentifier("files.openReference")
                     .disabled(reference.isEmpty)
             }
             Section("files.workspaces") {
@@ -98,6 +100,7 @@ struct FilesView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Text(artifact.name).font(.headline)
                 FilesNativePreview(artifact: artifact)
+                    .accessibilityIdentifier("files.preview")
                 if artifact.truncated { Text("files.preview.truncated").foregroundStyle(.secondary) }
                 HStack {
                     Button("files.export") {

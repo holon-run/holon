@@ -1,0 +1,51 @@
+# Native UI smoke contract
+
+These tests drive the shipped app through XCUITest; they do not seed credentials,
+replace transports, or install production test hooks. Use a fresh, isolated
+simulator owned by the invoking harness. A simulator containing a prior logged-in
+installation is not the disconnected fixture.
+
+Run through the repository UI harness, or invoke:
+
+```sh
+xcodebuild test -project apps/ios/Holon.xcodeproj -scheme Holon \
+  -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+  -parallel-testing-enabled NO -only-testing:HolonUITests \
+  -resultBundlePath "$RESULT_BUNDLE" CODE_SIGNING_ALLOWED=NO
+```
+
+The harness must explicitly export the following `TEST_RUNNER_` variables to
+`xcodebuild`. Xcode forwards them into the test runner with that prefix removed.
+The runner reads `HOLON_UI_*`; ordinary shell `HOLON_UI_*` variables alone are
+not the forwarding contract. None are passed to the application environment.
+
+| Exported variable | Required fixture value |
+| --- | --- |
+| `TEST_RUNNER_HOLON_UI_ENDPOINT` | Complete isolated daemon API URL ending `/api` |
+| `TEST_RUNNER_HOLON_UI_PAIRING_CODE` | Fresh, single-use 64-hex pairing ticket |
+| `TEST_RUNNER_HOLON_UI_AGENT_ID` | Visible test agent with reading snapshot |
+| `TEST_RUNNER_HOLON_UI_WORK_ID` | Visible WorkItem belonging to that agent |
+| `TEST_RUNNER_HOLON_UI_TASK_ID` | Visible task belonging to that agent |
+| `TEST_RUNNER_HOLON_UI_READ_MARKER` | Literal text in a visible conversation turn |
+| `TEST_RUNNER_HOLON_UI_PLAN_MARKER` | Literal text beyond the truncated plan preview |
+| `TEST_RUNNER_HOLON_UI_TASK_MARKER` | Literal text in real task output |
+| `TEST_RUNNER_HOLON_UI_FILE_REFERENCE` | Resolvable fixture file reference |
+| `TEST_RUNNER_HOLON_UI_FILE_MARKER` | Literal text in that file's native preview |
+
+Missing authenticated fixture inputs fail the test; they never skip it. The
+fixture must accept the explicit message and return a received outbox receipt.
+The native login payload is derived from the supplied endpoint by replacing the
+final `/api` with `/login` and adding `#pair=<ticket>`. Tests explicitly operate
+both profile HTTP permission and pairing HTTP permission.
+
+Two disconnected cases cover English/light and Simplified Chinese/dark with
+accessibility XXXL text. XCUITest accessibility audits run without ignored
+findings or generated screenshot baselines. Screenshots are retained xcresult
+attachments. The authenticated workflow covers reading, sending/received,
+Work detail/full plan, task output, file preview and diagnostic-send confirmation.
+
+Real share-provider import, signed App Group interoperability, organization
+browser login, and physical-device local-network prompts are not covered here.
+Test activity logs may include the manually typed, ephemeral pairing payload:
+keep xcresult local/restricted; do not publish it as a sanitized diagnostic.
+Static parsing/project validation is not evidence these UI tests passed.

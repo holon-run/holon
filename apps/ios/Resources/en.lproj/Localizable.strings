@@ -9,6 +9,8 @@
 "connection.httpWarning" = "HTTP does not encrypt credentials or traffic. Confirm only a target you trust.";
 "connection.localNetworkHelp" = "iOS may request Local Network access for nearby runtimes. If access is denied, review Holon's permissions in Settings.";
 "connection.title" = "Connection and identity";
+"tab.connection" = "Connect";
+"tab.system" = "Tools";
 "connection.status" = "Status";
 "connection.working" = "Connecting or signing in";
 "connection.refresh" = "Refresh connection";

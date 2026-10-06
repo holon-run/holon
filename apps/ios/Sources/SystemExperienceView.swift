@@ -13,7 +13,12 @@ struct SystemExperienceView: View {
     var body: some View {
         NavigationStack {
             Form {
-                DiagnosticView(connection: connection, reader: reader, sender: sender)
+                Section("diagnostics.title") {
+                    NavigationLink("diagnostics.title") {
+                        DiagnosticView(connection: connection, reader: reader, sender: sender)
+                    }
+                    .accessibilityIdentifier("diagnostics.open")
+                }
                 Section("share.inbox") {
                     Text("share.hostHelp").font(.caption).foregroundStyle(.secondary)
                     Button("share.reload") { imports.reload() }

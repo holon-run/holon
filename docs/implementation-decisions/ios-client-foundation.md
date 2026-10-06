@@ -156,6 +156,16 @@ same canonical text builder that validated the staged UTF-8 size.
 
 ## Evidence and outstanding gates
 
+P6 release preparation lives in `apps/ios/RELEASE.md` (repository-root path).
+Version and build numbers remain build settings expanded by both bundle plists;
+release documentation does not introduce a second source of version truth.
+The observed standard UserDefaults preferences require an approved-reason
+review. No guessed privacy manifest is added: final API/dependency inventory,
+truthful manifest resources and archive inspection are release blockers.
+Local cleanup is best-effort deletion, not secure erasure; identity fencing is
+not a purge-all contract. Signing, physical-device App Group/LAN/login behavior
+and formal distribution remain separate acceptance gates.
+
 The P0 test entrypoints cover shared handshake/roster/error/session fixtures,
 future enums/open fields, SDK compilation and hosted simulator platform probes.
 They do not prove real-daemon HTTP/SSE/cancellation, native browser callback,

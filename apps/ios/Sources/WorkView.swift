@@ -24,12 +24,14 @@ struct WorkView: View {
                     state(coordinator.itemsState, empty: coordinator.items.isEmpty)
                     ForEach(coordinator.items) { item in
                         NavigationLink(value: WorkRoute.item(item.id)) { row(item) }
+                            .accessibilityIdentifier("work.item." + item.id)
                     }
                 }
                 Section("work.tasks") {
                     state(coordinator.tasksState, empty: coordinator.tasks.isEmpty)
                     ForEach(coordinator.tasks) { task in
                         NavigationLink(value: WorkRoute.task(task.id)) { row(task) }
+                            .accessibilityIdentifier("work.task." + task.id)
                     }
                 }
             }
@@ -112,6 +114,7 @@ struct WorkView: View {
                         if output.truncated { Text("work.truncated").foregroundStyle(.secondary) }
                         if let text = output.text {
                             Text(text).font(.system(.body, design: .monospaced)).textSelection(.enabled)
+                                .accessibilityIdentifier("work.output")
                         } else { Text("work.no_output") }
                     }
                 }
@@ -146,6 +149,7 @@ struct WorkView: View {
                     Button("work.open_plan") {
                         if let agent = coordinator.selectedAgentID { openPlan(agent, record.id, plan) }
                     }
+                    .accessibilityIdentifier("work.openPlan")
                 } else { Text("work.plan_unavailable") }
             } else if status != "missing" && status != "unreadable" {
                 Text("work.no_plan")

@@ -4,6 +4,16 @@
 	classes = {};
 	objectVersion = 77;
 	objects = {
+        C00000000000000000000001 = { isa = PBXNativeTarget; name = HolonUITests; productName = HolonUITests; productType = "com.apple.product-type.bundle.ui-testing"; productReference = C00000000000000000000003; buildConfigurationList = C00000000000000000000004; buildPhases = (C00000000000000000000007, C00000000000000000000008, C00000000000000000000009); buildRules = (); dependencies = (A00000000000000000000060); fileSystemSynchronizedGroups = (C00000000000000000000002); };
+        C00000000000000000000002 = { isa = PBXFileSystemSynchronizedRootGroup; path = UITests; sourceTree = "<group>"; };
+        C00000000000000000000003 = { isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = HolonUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+        C00000000000000000000004 = { isa = XCConfigurationList; buildConfigurations = (C00000000000000000000005, C00000000000000000000006); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+        C00000000000000000000005 = { isa = XCBuildConfiguration; buildSettings = { GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = run.holon.ios.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_TARGET_NAME = Holon; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+        C00000000000000000000006 = { isa = XCBuildConfiguration; buildSettings = { GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = run.holon.ios.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_TARGET_NAME = Holon; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
+        C00000000000000000000007 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        C00000000000000000000008 = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        C00000000000000000000009 = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+
 		A00000000000000000000001 = {
 			isa = PBXProject;
 			attributes = { BuildIndependentTargetsInParallel = YES; LastUpgradeCheck = 2700; };
@@ -17,16 +27,16 @@
 			productRefGroup = A00000000000000000000003;
 			projectDirPath = "";
 			projectRoot = "";
-			targets = (A00000000000000000000020, A00000000000000000000021, B00000000000000000000001);
+			targets = (C00000000000000000000001, A00000000000000000000020, A00000000000000000000021, B00000000000000000000001);
 		};
 		A00000000000000000000002 = {
 			isa = PBXGroup;
-			children = (A00000000000000000000004, A00000000000000000000005, A00000000000000000000006, B00000000000000000000002, B00000000000000000000003, A00000000000000000000003);
+			children = (C00000000000000000000002, A00000000000000000000004, A00000000000000000000005, A00000000000000000000006, B00000000000000000000002, B00000000000000000000003, A00000000000000000000003);
 			sourceTree = "<group>";
 		};
 		A00000000000000000000003 = {
 			isa = PBXGroup;
-			children = (A00000000000000000000007, A00000000000000000000008, B00000000000000000000004);
+			children = (C00000000000000000000003, A00000000000000000000007, A00000000000000000000008, B00000000000000000000004);
 			name = Products;
 			sourceTree = "<group>";
 		};
