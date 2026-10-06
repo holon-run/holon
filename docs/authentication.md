@@ -56,6 +56,18 @@ ingress, `/login`, and webhook routes retain their separate non-session
 credentials and are not treated as browser sessions. The Web GUI uses the
 Holon service's same origin for all API, SSE, and login requests.
 
+## Native OIDC login
+
+Native apps initiate `/auth/oidc/native/start` with a fresh random state and
+an S256 challenge derived from a locally retained, high-entropy PKCE verifier.
+`code_challenge_method` may be omitted or set to `S256`; explicit `plain` or
+other methods are rejected. The callback's `ticket` is a two-minute, single-use
+authorization code, not a bearer session. Redeeming it through
+`/auth/session/exchange/native` requires the matching `native_verifier`.
+Wrong or missing proof cannot consume the code, and ordinary session exchange
+cannot redeem it. Intercepting the custom-scheme callback therefore does not
+grant a session; expiry and atomic consumption prevent replay.
+
 ## Message attribution
 
 Operator messages created through the control plane (`POST

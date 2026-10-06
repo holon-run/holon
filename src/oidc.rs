@@ -494,6 +494,77 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_callback_interception_cannot_redeem_or_burn_code() -> Result<()> {
+        use crate::authentication::BootstrapCredentialRecord;
+        let temp = tempfile::tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            temp.path().join("runtime.sqlite"),
+            temp.path().join("runtime.lock"),
+        )?;
+        let now = Utc::now();
+        db.authentication().upsert_user(&AuthUserRecord {
+            user_id: "native-user".into(),
+            issuer: "https://issuer.example".into(),
+            subject: "native-user".into(),
+            display_name: None,
+            email: None,
+            created_at: now,
+            updated_at: now,
+            disabled_at: None,
+        })?;
+        let verifier = random_secret();
+        let code = random_secret();
+        db.authentication()
+            .insert_bootstrap_credential(&BootstrapCredentialRecord {
+                credential_digest: digest_secret(&code),
+                user_id: Some("native-user".into()),
+                scope: format!("native-session:{}", pkce_challenge(&verifier)),
+                created_at: now,
+                expires_at: now + chrono::Duration::minutes(2),
+                consumed_at: None,
+                revoked_at: None,
+            })?;
+        let config = AuthConfig::default();
+        // A same-scheme attacker sees the code but not the app's verifier.
+        assert!(exchange_bootstrap(&db, &config, &code, now).is_err());
+        for proof in [
+            None,
+            Some("short"),
+            Some("!"),
+            Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+        ] {
+            assert!(
+                exchange_bootstrap_with_native_verifier(&db, &config, &code, proof, now).is_err()
+            );
+        }
+        assert!(exchange_bootstrap_with_native_verifier(
+            &db,
+            &config,
+            &code,
+            Some(&verifier),
+            now + chrono::Duration::minutes(2)
+        )
+        .is_err());
+        assert!(
+            exchange_bootstrap_with_native_verifier(&db, &config, &code, Some(&verifier), now)
+                .is_ok()
+        );
+        assert!(
+            exchange_bootstrap_with_native_verifier(&db, &config, &code, Some(&verifier), now)
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pkce_matches_rfc7636_s256_vector() {
+        assert_eq!(
+            pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
     fn pkce_uses_base64url_without_padding() {
         let challenge = pkce_challenge("test-verifier");
         assert!(!challenge.contains('='));

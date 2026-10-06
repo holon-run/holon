@@ -415,6 +415,44 @@ mod tests {
     }
 
     #[test]
+    fn native_bootstrap_concurrent_redemption_has_one_winner() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            temp.path().join("runtime.sqlite"),
+            temp.path().join("runtime.lock"),
+        )?;
+        let now = Utc::now();
+        db.authentication()
+            .insert_bootstrap_credential(&BootstrapCredentialRecord {
+                credential_digest: "concurrent-native-code".into(),
+                user_id: None,
+                scope: "native-session:challenge".into(),
+                created_at: now,
+                expires_at: now + chrono::Duration::minutes(2),
+                consumed_at: None,
+                revoked_at: None,
+            })?;
+        let barrier = std::sync::Barrier::new(2);
+        let winners = std::thread::scope(|scope| {
+            let redeem = || {
+                barrier.wait();
+                db.authentication()
+                    .consume_bootstrap_credential_for_scopes(
+                        "concurrent-native-code",
+                        now,
+                        Some(&["native-session:challenge"]),
+                    )
+                    .map(|record| usize::from(record.is_some()))
+            };
+            let first = scope.spawn(redeem);
+            let second = scope.spawn(redeem);
+            Ok::<_, anyhow::Error>(first.join().unwrap()? + second.join().unwrap()?)
+        })?;
+        assert_eq!(winners, 1);
+        Ok(())
+    }
+
+    #[test]
     fn bootstrap_credential_is_consumed_once() -> Result<()> {
         let temp_dir = tempfile::tempdir()?;
         let db = RuntimeDb::open_and_migrate(

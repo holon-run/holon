@@ -230,11 +230,16 @@ pub async fn stream(
     let activity_limit = query
         .activity_limit
         .unwrap_or(MAX_CONVERSATION_CHANGE_ACTIVITIES);
-    let (scope_principal, scope_entitlement) = observer_sync::observer_scope_authority(&state);
+    let (scope_principal, scope_entitlement) =
+        match observer_sync::observer_principal_and_entitlement(&headers, &state) {
+            Ok(authority) => authority,
+            Err(error) => return auth_required(error.to_string()).into_response(),
+        };
     let host = state.host.clone();
     let mut live_rx = host.subscribe_events();
     let initial_agent_id = agent_id.clone();
     let initial_after = after.clone();
+    let initial_principal = scope_principal.clone();
     let read_timeout = state.conversation_read_limits.timeout;
     let recovery_started_at = std::time::Instant::now();
     let initial = match bounded_blocking_read(read_timeout, move || {
@@ -243,7 +248,7 @@ pub async fn stream(
             initial_after.as_deref(),
             event_limit,
             activity_limit,
-            scope_principal,
+            &initial_principal,
             scope_entitlement,
         )
     })
@@ -284,6 +289,7 @@ pub async fn stream(
                     let host = host.clone();
                     let agent_id_for_read = agent_id.clone();
                     let after = checkpoint.clone();
+                    let scope_principal = scope_principal.clone();
                     let recovery_started_at = std::time::Instant::now();
                     let batch = bounded_blocking_read(read_timeout, move || {
                         host.runtime_db().conversation().change_batch(
@@ -291,7 +297,7 @@ pub async fn stream(
                             Some(&after),
                             event_limit,
                             activity_limit,
-                            scope_principal,
+                            &scope_principal,
                             scope_entitlement,
                         )
                     })
@@ -572,7 +578,11 @@ pub async fn summary(
     let limit = query.limit.unwrap_or(CONVERSATION_SUMMARY_DEFAULT_LIMIT);
     let before = query.before;
     let host = state.host.clone();
-    let (scope_principal, scope_entitlement) = observer_sync::observer_scope_authority(&state);
+    let (scope_principal, scope_entitlement) =
+        match observer_sync::observer_principal_and_entitlement(&headers, &state) {
+            Ok(authority) => authority,
+            Err(error) => return auth_required(error.to_string()).into_response(),
+        };
     let snapshot = match tokio::time::timeout(
         limits.timeout,
         tokio::task::spawn_blocking(move || {
@@ -580,7 +590,7 @@ pub async fn summary(
                 &agent_id,
                 limit,
                 before.as_deref(),
-                scope_principal,
+                &scope_principal,
                 scope_entitlement,
             )
         }),
@@ -635,7 +645,11 @@ pub async fn activities(
     let limit = query.limit.unwrap_or(CONVERSATION_ACTIVITY_DEFAULT_LIMIT);
     let before = query.before;
     let host = state.host.clone();
-    let (scope_principal, scope_entitlement) = observer_sync::observer_scope_authority(&state);
+    let (scope_principal, scope_entitlement) =
+        match observer_sync::observer_principal_and_entitlement(&headers, &state) {
+            Ok(authority) => authority,
+            Err(error) => return auth_required(error.to_string()).into_response(),
+        };
     let snapshot = match tokio::time::timeout(
         limits.timeout,
         tokio::task::spawn_blocking(move || {
@@ -644,7 +658,7 @@ pub async fn activities(
                 &turn_id,
                 limit,
                 before.as_deref(),
-                scope_principal,
+                &scope_principal,
                 scope_entitlement,
             )
         }),
@@ -724,14 +738,18 @@ pub async fn shadow_diagnostics(
         .turn_limit
         .unwrap_or(CONVERSATION_SHADOW_DEFAULT_LIMIT);
     let host = state.host.clone();
-    let (scope_principal, scope_entitlement) = observer_sync::observer_scope_authority(&state);
+    let (scope_principal, scope_entitlement) =
+        match observer_sync::observer_principal_and_entitlement(&headers, &state) {
+            Ok(authority) => authority,
+            Err(error) => return auth_required(error.to_string()).into_response(),
+        };
     let diagnostics: ConversationShadowDiagnostics = match tokio::time::timeout(
         limits.timeout,
         tokio::task::spawn_blocking(move || {
             host.runtime_db().conversation().shadow_diagnostics(
                 &agent_id,
                 turn_limit,
-                scope_principal,
+                &scope_principal,
                 scope_entitlement,
             )
         }),
@@ -1413,6 +1431,99 @@ mod tests {
             serde_json::to_value(DetailCoverage::Unknown).unwrap(),
             serde_json::json!({"kind": "unknown"})
         );
+    }
+
+    #[tokio::test]
+    async fn oidc_conversation_scopes_match_roster_across_users_and_rotation() {
+        let (home, _) = test_host().await;
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.auth.mode = crate::authentication::AuthenticationMode::Oidc;
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        seed_conversation(&host);
+        let now = chrono::Utc::now();
+        for (user_id, credential) in [
+            ("user-a", "session-a"),
+            ("user-b", "session-b"),
+            ("user-a", "rotated-session-a"),
+        ] {
+            let authentication = host.runtime_db().authentication();
+            authentication
+                .upsert_user(&crate::authentication::AuthUserRecord {
+                    user_id: user_id.to_string(),
+                    issuer: "https://issuer.example".to_string(),
+                    subject: user_id.to_string(),
+                    display_name: None,
+                    email: None,
+                    created_at: now,
+                    updated_at: now,
+                    disabled_at: None,
+                })
+                .unwrap();
+            authentication
+                .create_session(&crate::authentication::AuthSessionRecord {
+                    session_digest: crate::authentication::digest_secret(credential),
+                    user_id: user_id.to_string(),
+                    auth_method: "oidc".to_string(),
+                    created_at: now,
+                    expires_at: None,
+                    last_seen_at: now,
+                    revoked_at: None,
+                })
+                .unwrap();
+        }
+        let state = AppState::for_tcp(host);
+        let mut scopes = Vec::new();
+        for (header, authorization) in [
+            ("authorization", "Bearer session-a"),
+            ("authorization", "Bearer session-b"),
+            ("authorization", "Bearer rotated-session-a"),
+            ("cookie", "holon_session=session-a"),
+        ] {
+            let headers = [(header, authorization)];
+            let (status, _, roster) =
+                get_with_headers(state.clone(), "/api/agents/snapshot", &headers).await;
+            assert_eq!(status, StatusCode::OK);
+            let scope = roster["visibility_scope_id"].as_str().unwrap();
+            for uri in [
+                "/api/agents/web/conversation",
+                "/api/agents/web/turns/turn-active/activities",
+                "/api/control/agents/web/conversation/shadow-diagnostics",
+            ] {
+                let (status, _, body) = get_with_headers(state.clone(), uri, &headers).await;
+                assert_eq!(status, StatusCode::OK, "{uri}");
+                assert_eq!(body["visibility_scope_id"], scope, "{uri}");
+            }
+            let response = crate::http::router(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/agents/web/conversation/stream")
+                        .header(header, authorization)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let stream = read_through_checkpoint(response).await;
+            let stream_scopes: Vec<_> = stream
+                .lines()
+                .filter_map(|line| line.strip_prefix("data: "))
+                .map(|data| serde_json::from_str::<Value>(data).unwrap())
+                .filter_map(|event| event["visibility_scope_id"].as_str().map(str::to_owned))
+                .collect();
+            assert!(
+                stream_scopes.len() >= 2,
+                "batch begin and checkpoint carry scope"
+            );
+            assert!(stream_scopes
+                .iter()
+                .all(|stream_scope| stream_scope == scope));
+            scopes.push(scope.to_owned());
+        }
+        assert_ne!(scopes[0], scopes[1]);
+        assert_eq!(scopes[0], scopes[2]);
+        assert_eq!(scopes[0], scopes[3]);
     }
 
     #[tokio::test]

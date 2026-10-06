@@ -23,8 +23,11 @@ class HolonHttpClientTest {
             val client = HolonHttpClient(server.url("/").toString(), bearerTokenProvider = BearerTokenProvider { "previous-session" })
             client.exchangeSession("ticket", "native-proof")
             val request = server.takeRequest()
+            assertEquals("POST", request.method)
+            assertEquals("/auth/session/exchange/native", request.path)
             assertNull(request.getHeader("Authorization"))
             val body = HolonWire.json.parseToJsonElement(request.body.readUtf8()).jsonObject
+            assertEquals("ticket", body["credential"]?.jsonPrimitive?.content)
             assertEquals("native-proof", body["native_verifier"]?.jsonPrimitive?.content)
         }
     }

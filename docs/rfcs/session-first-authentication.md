@@ -69,7 +69,9 @@ callback handler to enforce one-time use without persisting protocol secrets.
 
 The custom URI scheme is a delivery channel, not an application identity.
 Native login requires `state` and an S256 `code_challenge` at
-`/auth/oidc/native/start`. The application generates a fresh 32-byte random
+`/auth/oidc/native/start`. An omitted `code_challenge_method` means S256;
+an explicit method other than `S256` (including `plain`) is rejected.
+The application generates a fresh 32-byte random
 verifier and keeps it in platform secure storage for at most ten minutes.
 This proof is independent of the daemon-to-provider PKCE verifier.
 
