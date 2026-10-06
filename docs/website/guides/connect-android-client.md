@@ -25,7 +25,7 @@ Download official signed packages directly from the [Holon GitHub Releases](http
 Install the APK directly on your device:
 
 ```bash
-adb install holon-android-v0.47.0.apk
+adb install holon-android-v0.48.0.apk
 ```
 
 ### Build from Source
@@ -67,6 +67,17 @@ The app exchanges the single-use ticket at `/api/auth/pairing/redeem/native` for
 
 The app calls `/api/auth/session/exchange/native`, stores the resulting session credential in Android Keystore, and clears the input token from memory.
 
+### Option C: Sign in with OIDC (Single Sign-On)
+
+If your daemon runs with OIDC authentication enabled:
+
+1. Open the Holon app and enter the **API Base URL**.
+2. Tap **Sign in with SSO**.
+3. The app opens your system browser to complete identity provider sign-in.
+4. The browser redirects back to Holon via `run.holon.android://oidc/callback`.
+
+The app exchanges the one-time bootstrap ticket for a revocable session credential, encrypts it in Android Keystore for the current profile, and connects immediately.
+
 ## Managing Network Profiles
 
 The app supports saving multiple network profiles in **Settings** (such as *Home Tailscale*, *Office LAN*, and *USB Localhost*). Once saved, you can switch environments with a single tap without re-entering credentials.
@@ -74,6 +85,7 @@ The app supports saving multiple network profiles in **Settings** (such as *Home
 ## Mobile Features
 
 - **Conversation-First Reading & Local Cache:** Browse active agent threads with instant loading. Conversation history caches locally on the device, allowing you to review past turns and deliverables even with intermittent connectivity.
+- **Daily Navigation & Task Previews:** Jump across daily activity streams, inspect active background task status cards, and view live child-agent previews directly from the mobile timeline.
 - **Brief-First Summaries:** Prominently highlights completion briefs, active work items, and checklist progress so you can track outcomes without scrolling through full execution traces.
 - **Model Selection:** View and override the active model for any agent directly from the mobile interface.
 - **System Share Sheet Integration:** Share text, links, or documents from other Android apps directly into an agent's input composer.

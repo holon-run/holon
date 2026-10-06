@@ -1,9 +1,9 @@
 ---
 title: CLI reference
-summary: Holon's command-line interface — verified against holon --help (v0.47.0).
+summary: Holon's command-line interface — verified against holon --help (v0.48.0).
 order: 10
 ---
-<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.47.0. -->
+<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.48.0. -->
 
 # CLI Reference
 
@@ -16,7 +16,7 @@ For scripting guidance, stability levels, and support policy, see
 ## Command Tree
 
 ```text
-holon (v0.47.0)
+holon (v0.48.0)
 ├── context      Show the declared caller context
 ├── commands     Show machine-readable CLI command metadata
 ├── serve        Start HTTP control plane server

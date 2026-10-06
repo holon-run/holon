@@ -20,9 +20,8 @@ routes, and setting call guardrails.
 - A configured primary model for your agent.
 - For local decision inference: an installation with the `local-onnx` feature
   (included in official release binaries).
-- For remote decision inference: an API key or endpoint for a provider that
-  advertises Decision capability (such as TypeSafe Jev or an OpenAI-compatible
-  route).
+- For remote decision inference: an API key or endpoint for a provider offering
+  Decision capabilities (such as Cloudflare Clef, OpenAI Decisions, or TypeSafe Jev).
 
 ## Step 1: Choose a Decision Provider
 
@@ -30,8 +29,9 @@ Holon supports two provider architectures for decisions:
 
 1. **Local ONNX (zero-egress):** Runs a compact classifier entirely on your CPU
    using ONNX Runtime. No prompts or decisions leave your machine.
-2. **Remote Provider:** Sends structured decision queries to an external model
-   endpoint over HTTP (such as TypeSafe Jev or OpenAI-compatible endpoints).
+2. **Remote Provider:** Sends structured decision queries to an external HTTP
+   endpoint. Holon supports Cloudflare Clef (`cloudflare_clef`), OpenAI Decisions
+   (`openai_decisions`), and TypeSafe Jev (`jev`) protocols.
 
 For private environments or air-gapped tasks, choose the local ONNX provider.
 
@@ -55,13 +55,32 @@ holon config set decision.local_onnx.num_threads 2
 
 ### Option B: Use a Remote Provider
 
-Set the decision model route directly:
+Configure a remote route matching your provider's decision protocol:
+
+**TypeSafe Jev (`jev`):**
 
 ```bash
 holon config set decision.enabled true
 holon config set decision.model "typesafe@default/typesafe-ai/jev"
 ```
 
+**Cloudflare Clef (`cloudflare_clef`):**
+
+```bash
+holon config set decision.enabled true
+holon config set decision.model "cloudflare@default/clef-flash"
+```
+
+**OpenAI Decisions (`openai_decisions`):**
+
+```bash
+holon config set decision.enabled true
+holon config set decision.model "openai@default/decision-preview"
+```
+
+> **Transport Note:** The `openai_decisions` protocol targets the dedicated
+> `/v1/decisions` endpoint and requires the API-key-based `openai_responses`
+> transport. It cannot be used over OAuth-based Codex transports.
 You can also configure these settings visually in the Web GUI under **Settings**
 → **Decision Settings**.
 

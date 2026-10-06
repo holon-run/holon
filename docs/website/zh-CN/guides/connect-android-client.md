@@ -25,7 +25,7 @@ Holon 提供了专为移动端工作流设计的原生 Android 客户端。应�
 通过 `adb` 将 APK 安装到设备：
 
 ```bash
-adb install holon-android-v0.47.0.apk
+adb install holon-android-v0.48.0.apk
 ```
 
 ### 从源码编译
@@ -67,6 +67,17 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 客户端请求 `/api/auth/session/exchange/native` 兑换可撤销的会话凭据，存入 Android Keystore 并从内存中抹除原始 Token。
 
+### 方式三：OIDC 单点登录（SSO）
+
+若守护进程开启了 OIDC 认证：
+
+1. 打开 Holon 应用并输入 **API Base URL**。
+2. 点击 **通过 SSO 登录**。
+3. 应用调起系统浏览器完成身份提供商登录。
+4. 登录成功后，浏览器自动通过 `run.holon.android://oidc/callback` 重定向唤醒应用。
+
+应用将一次性 bootstrap 票据兑换为可撤销的会话凭据，存入当前网络配置对应的 Android Keystore 中并完成连接。
+
 ## 管理网络配置（Network Profiles）
 
 应用支持在**设置**中保存多个连接配置（例如“家中 Tailscale”、“办公室局域网”与“本机 USB”）。保存后可一键切换网络环境，无需重复输入地址和凭据。
@@ -74,6 +85,7 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 ## 移动端核心功能
 
 - **对话核心与本地历史缓存：** 会话历史在设备本地自动缓存，即使在弱网或重连状态下也能立即浏览既往对话与交付内容。
+- **日常导航与任务卡片：** 支持按天查看活动时间线，直观展示后台任务进度卡片，并可直接在移动端查看子 Agent 的实时状态预览。
 - **以 Brief 为先的工作区：** 优先突出最终完成简报、活动工作项与待办清单，无需查看冗长的执行细节即可确认成果。
 - **模型切换：** 在移动端直接查看并覆盖单个 Agent 所使用的模型。
 - **系统分享集成：** 支持从其他 Android 应用中通过系统分享面板将文本、链接或文档直接发送给指定的 Agent。

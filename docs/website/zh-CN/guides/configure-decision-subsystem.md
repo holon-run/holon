@@ -15,14 +15,14 @@ order: 36
 - 运行中的 Holon 守护进程（v0.45.0 或更高版本）。
 - 已为 Agent 配置好主对话模型。
 - 本地推理场景：包含 `local-onnx` feature 的安装（官方发布的发布包二进制已默认包含）。
-- 远程推理场景：支持 Decision 能力的提供商 API 凭据或端点（例如 TypeSafe Jev 或兼容 OpenAI 协议的端点）。
+- 远程推理场景：支持 Decision 能力的提供商 API 凭据或端点（例如 Cloudflare Clef、OpenAI Decisions 或 TypeSafe Jev）。
 
 ## 第一步：选择决策提供者
 
 Holon 的决策子系统支持两类架构：
 
 1. **本地 ONNX（零网络外发）：** 完全在本地 CPU 上运行精简分类模型，数据不离开你的机器。
-2. **远程提供者：** 通过 HTTP 向外部专用模型发送结构化查询（如 TypeSafe Jev 或 OpenAI 兼容端点）。
+2. **远程提供者：** 通过 HTTP 向外部专用模型发送结构化查询。Holon 原生支持 Cloudflare Clef（`cloudflare_clef`）、OpenAI Decisions（`openai_decisions`）与 TypeSafe Jev（`jev`）协议。
 
 对数据隐私或离线环境有要求的场景，推荐使用本地 ONNX 提供者。
 
@@ -46,12 +46,30 @@ holon config set decision.local_onnx.num_threads 2
 
 ### 方案 B：使用远程提供者
 
-直接设置决策模型的路由：
+按所选提供商对应的决策协议配置模型路由：
+
+**TypeSafe Jev（`jev`）：**
 
 ```bash
 holon config set decision.enabled true
 holon config set decision.model "typesafe@default/typesafe-ai/jev"
 ```
+
+**Cloudflare Clef（`cloudflare_clef`）：**
+
+```bash
+holon config set decision.enabled true
+holon config set decision.model "cloudflare@default/clef-flash"
+```
+
+**OpenAI Decisions（`openai_decisions`）：**
+
+```bash
+holon config set decision.enabled true
+holon config set decision.model "openai@default/decision-preview"
+```
+
+> **传输层说明：** `openai_decisions` 协议直接对接专用的 `/v1/decisions` 端点，且仅允许搭配基于 API Key 的 `openai_responses` 传输层使用，不可用于基于 OAuth 的 Codex 传输层。
 
 你也可以在 Web GUI 的 **设置** → **Decision 设置** 中直接可视化配置。
 
