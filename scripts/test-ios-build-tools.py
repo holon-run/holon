@@ -129,29 +129,39 @@ class SimulatorTextSizeContracts(unittest.TestCase):
 
     def test_initialize_dedicated_baseline_with_readback(self):
         with patch("ios_simulator_text_size.subprocess.run",
-                   side_effect=[self.result(), self.result("large\n")]) as run:
+                   side_effect=[self.result(), self.result(), self.result("large\n")]) as run:
             initialize_simulator_text_size(UUID)
             prefix = ["xcrun", "simctl", "ui", UUID, "content_size"]
             self.assertEqual(run.call_args_list, [
+                call(["xcrun", "simctl", "bootstatus", UUID, "-b"], check=True),
                 call(prefix + ["large"], check=True, capture_output=True, text=True),
                 call(prefix, check=True, capture_output=True, text=True),
             ])
+
+    def test_failed_boot_prevents_baseline_configuration(self):
+        with patch("ios_simulator_text_size.subprocess.run",
+                   side_effect=subprocess.CalledProcessError(149, ["xcrun"])) as run:
+            with self.assertRaises(subprocess.CalledProcessError):
+                initialize_simulator_text_size(UUID)
+            run.assert_called_once_with(
+                ["xcrun", "simctl", "bootstatus", UUID, "-b"], check=True,
+            )
 
     def test_unverified_baseline_fails(self):
         for actual in ("medium", "unknown", "unsupported", ""):
             with self.subTest(actual=actual):
                 with patch("ios_simulator_text_size.subprocess.run",
-                           side_effect=[self.result(), self.result(actual)]) as run:
+                           side_effect=[self.result(), self.result(), self.result(actual)]) as run:
                     with self.assertRaises(RuntimeError):
                         initialize_simulator_text_size(UUID)
-                    self.assertEqual(run.call_count, 2)
+                    self.assertEqual(run.call_count, 3)
 
     def test_failed_baseline_configuration_is_not_success(self):
         with patch("ios_simulator_text_size.subprocess.run",
-                   side_effect=subprocess.CalledProcessError(1, ["xcrun"])) as run:
+                   side_effect=[self.result(), subprocess.CalledProcessError(1, ["xcrun"])]) as run:
             with self.assertRaises(subprocess.CalledProcessError):
                 initialize_simulator_text_size(UUID)
-            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_count, 2)
 
     def test_set_readback_and_restore(self):
         with patch("ios_simulator_text_size.subprocess.run",

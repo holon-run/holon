@@ -36,6 +36,10 @@ def _set_text_size(simulator, category, phase):
 
 def initialize_simulator_text_size(simulator):
     """Establish a verified baseline on the harness-owned fresh simulator."""
+    subprocess.run(
+        ["xcrun", "simctl", "bootstatus", simulator, "-b"],
+        check=True,
+    )
     _set_text_size(simulator, "large", "专用测试基线初始化")
 
 

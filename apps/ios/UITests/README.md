@@ -39,8 +39,10 @@ both profile HTTP permission and pairing HTTP permission.
 
 Two disconnected cases cover English/light and Simplified Chinese/dark with
 accessibility XXXL text. The harness sets and reads back the real simulator
-`simctl ui content_size`. It first explicitly initializes and verifies a `large`
-suite baseline on its fresh, owned simulator, whose unset initial category may
+`simctl ui content_size`. It first uses `simctl bootstatus <UUID> -b` to boot its
+fresh, owned simulator if needed and wait until ready; failure stops the suite
+before text-size changes. It then explicitly initializes and verifies a `large`
+suite baseline on that simulator, whose unset initial category may
 be reported as `unknown`. This is fixture configuration, not an interpretation
 of `unknown` as `large`. Before each case it reads the baseline, sets and verifies
 the required size, then restores and verifies that baseline even if configuration
