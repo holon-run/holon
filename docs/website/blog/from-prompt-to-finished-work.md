@@ -199,4 +199,3 @@ Start with a task whose acceptance check you can name. Keep the workspace and pe
 ## Your next step
 
 Install Holon, configure a model provider, and create your first agent with the [getting started guide](/getting-started/first-agent). When the task needs to survive a disconnect or wait for a result, follow [Run a long-lived task](/guides/run-long-lived-task) and adapt the prompt above to your repository.
-
