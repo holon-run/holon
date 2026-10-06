@@ -3003,6 +3003,7 @@ async fn enqueue_lifecycle_delivery(
             current_turn_id: None,
             current_task_id: None,
             current_work_item_id: None,
+            inherited_routing_context: None,
         },
     )
     .unwrap();

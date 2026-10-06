@@ -5316,6 +5316,7 @@ impl RuntimeHost {
                 .map(str::to_string),
             current_task_id: Some(task.id.clone()),
             current_work_item_id: task.work_item_id.clone(),
+            inherited_routing_context: None,
         };
         let mut prepared = crate::runtime::AgentMessageDeliveryService::prepare(
             AgentMessageSendRequest {
@@ -9476,6 +9477,7 @@ mod tests {
                 current_turn_id: None,
                 current_task_id: Some(task_id.into()),
                 current_work_item_id: None,
+                inherited_routing_context: None,
             },
         )
         .unwrap();

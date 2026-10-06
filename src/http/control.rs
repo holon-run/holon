@@ -1228,6 +1228,7 @@ pub async fn control_prompt(
                 current_turn_id: None,
                 current_task_id: None,
                 current_work_item_id: None,
+                inherited_routing_context: None,
             },
         );
         let mut prepared = match preparation {

@@ -709,6 +709,7 @@ mod tests {
             current_turn_id: Some("turn-delivery".into()),
             current_task_id: Some("task-delivery".into()),
             current_work_item_id: Some("work-delivery".into()),
+            inherited_routing_context: None,
         }
     }
 
@@ -727,6 +728,7 @@ mod tests {
             current_turn_id: Some("turn-peer-delivery".into()),
             current_task_id: Some("task-peer-delivery".into()),
             current_work_item_id: Some("work-peer-delivery".into()),
+            inherited_routing_context: None,
         }
     }
 

@@ -14,7 +14,7 @@ use super::RuntimeHandle;
 use crate::types::{
     AgentMessageAdmissionEvidence, AgentMessageCallerContext, AgentMessageDeliveryOutcome,
     AgentMessageDeliveryReceipt, AgentMessageDeliveryRecord, AgentMessageDeliveryState,
-    AgentMessageSendRequest, MessageEnvelope, MessageKind, Priority,
+    AgentMessageRoutingContext, AgentMessageSendRequest, MessageEnvelope, MessageKind, Priority,
 };
 
 const DELIVERY_IDEMPOTENCY_NAMESPACE: &str = "agent_message_delivery";
@@ -74,6 +74,15 @@ impl AgentMessageDeliveryService<'_> {
             .requested_priority
             .clone()
             .unwrap_or(Priority::Normal);
+        let inherited = caller.inherited_routing_context.as_ref();
+        let correlation_id = request
+            .correlation_id
+            .clone()
+            .or_else(|| inherited.and_then(|route| route.correlation_id.clone()));
+        let causation_id = request
+            .causation_id
+            .clone()
+            .or_else(|| inherited.map(|route| route.message_id.clone()));
         let idempotency_scope = format!(
             "{DELIVERY_IDEMPOTENCY_NAMESPACE}:{}:{}",
             caller.caller_principal, request.target_agent_id
@@ -87,8 +96,8 @@ impl AgentMessageDeliveryService<'_> {
             &DeliverySemanticRequest {
                 target_agent_id: &request.target_agent_id,
                 content: &request.content,
-                correlation_id: request.correlation_id.as_deref(),
-                causation_id: request.causation_id.as_deref(),
+                correlation_id: correlation_id.as_deref(),
+                causation_id: causation_id.as_deref(),
                 priority: &priority,
                 caller: &caller,
             },
@@ -105,8 +114,25 @@ impl AgentMessageDeliveryService<'_> {
             request.content,
         )
         .with_admission(caller.delivery_surface, caller.admission_context);
-        message.correlation_id.clone_from(&request.correlation_id);
-        message.causation_id.clone_from(&request.causation_id);
+        message.correlation_id.clone_from(&correlation_id);
+        message.causation_id.clone_from(&causation_id);
+        let sender_agent_id = caller.caller_agent_id.clone();
+        message.routing_context = Some(AgentMessageRoutingContext {
+            message_id: message.id.clone(),
+            sender_agent_id: sender_agent_id.clone(),
+            recipient_agent_id: request.target_agent_id.clone(),
+            reply_to_agent_id: inherited
+                .and_then(|route| route.reply_to_agent_id.clone())
+                .or_else(|| sender_agent_id.clone()),
+            correlation_id: correlation_id.clone(),
+            in_reply_to_message_id: inherited.map(|route| route.message_id.clone()),
+            original_sender_agent_id: inherited
+                .and_then(|route| route.original_sender_agent_id.clone())
+                .or_else(|| inherited.and_then(|route| route.sender_agent_id.clone())),
+            original_reply_to_agent_id: inherited
+                .and_then(|route| route.original_reply_to_agent_id.clone())
+                .or_else(|| inherited.and_then(|route| route.reply_to_agent_id.clone())),
+        });
         message.metadata = Some(serde_json::json!({
             "agent_message_delivery": {
                 "delivery_id": delivery_id,
@@ -126,8 +152,9 @@ impl AgentMessageDeliveryService<'_> {
             message_id: Some(message.id.clone()),
             activation_id: None,
             turn_id: None,
-            correlation_id: request.correlation_id,
-            causation_id: request.causation_id,
+            correlation_id,
+            causation_id,
+            routing_context: message.routing_context.clone(),
             idempotency_scope,
             idempotency_key_digest,
             request_digest,
@@ -257,6 +284,100 @@ mod tests {
         MessageDeliverySurface, MessageOrigin,
     };
 
+    fn caller(
+        inherited_routing_context: Option<AgentMessageRoutingContext>,
+    ) -> AgentMessageCallerContext {
+        AgentMessageCallerContext {
+            caller_principal: "runtime:agent-message".into(),
+            caller_agent_id: Some("caller-agent".into()),
+            principal_kind: AgentMessagePrincipalKind::PeerAgent,
+            route: "agent_message".into(),
+            origin: MessageOrigin::System {
+                subsystem: "agent_message".into(),
+            },
+            authority_class: AuthorityClass::RuntimeInstruction,
+            delivery_surface: MessageDeliverySurface::RuntimeSystem,
+            admission_context: AdmissionContext::RuntimeOwned,
+            current_turn_id: Some("turn-caller".into()),
+            current_task_id: None,
+            current_work_item_id: None,
+            inherited_routing_context,
+        }
+    }
+
+    fn request(target_agent_id: &str, key: &str) -> AgentMessageSendRequest {
+        AgentMessageSendRequest {
+            target_agent_id: target_agent_id.into(),
+            content: MessageBody::Text {
+                text: "message body".into(),
+            },
+            client_idempotency_key: key.into(),
+            correlation_id: None,
+            causation_id: None,
+            requested_priority: None,
+        }
+    }
+
+    #[test]
+    fn direct_delivery_populates_trusted_reply_context() {
+        let prepared = AgentMessageDeliveryService::prepare(
+            request("target-agent", "direct-routing"),
+            caller(None),
+        )
+        .unwrap();
+        let routing = prepared.message.routing_context.as_ref().unwrap();
+
+        assert_eq!(routing.sender_agent_id.as_deref(), Some("caller-agent"));
+        assert_eq!(routing.recipient_agent_id, "target-agent");
+        assert_eq!(routing.reply_to_agent_id.as_deref(), Some("caller-agent"));
+        assert_eq!(routing.correlation_id, None);
+        assert_eq!(routing.in_reply_to_message_id, None);
+        assert_eq!(routing.original_sender_agent_id, None);
+        assert_eq!(routing.original_reply_to_agent_id, None);
+        assert_eq!(prepared.record.routing_context.as_ref(), Some(routing));
+    }
+
+    #[test]
+    fn forwarded_delivery_preserves_original_sender_and_reply_target() {
+        let inherited = AgentMessageRoutingContext {
+            message_id: "incoming-message".into(),
+            sender_agent_id: Some("origin-agent".into()),
+            recipient_agent_id: "relay-agent".into(),
+            reply_to_agent_id: Some("origin-agent".into()),
+            correlation_id: Some("correlation-1".into()),
+            in_reply_to_message_id: None,
+            original_sender_agent_id: None,
+            original_reply_to_agent_id: None,
+        };
+        let prepared = AgentMessageDeliveryService::prepare(
+            request("final-agent", "forwarded-routing"),
+            caller(Some(inherited)),
+        )
+        .unwrap();
+        let routing = prepared.message.routing_context.as_ref().unwrap();
+
+        assert_eq!(routing.sender_agent_id.as_deref(), Some("caller-agent"));
+        assert_eq!(routing.recipient_agent_id, "final-agent");
+        assert_eq!(routing.reply_to_agent_id.as_deref(), Some("origin-agent"));
+        assert_eq!(routing.correlation_id.as_deref(), Some("correlation-1"));
+        assert_eq!(
+            routing.in_reply_to_message_id.as_deref(),
+            Some("incoming-message")
+        );
+        assert_eq!(
+            routing.original_sender_agent_id.as_deref(),
+            Some("origin-agent")
+        );
+        assert_eq!(
+            routing.original_reply_to_agent_id.as_deref(),
+            Some("origin-agent")
+        );
+        assert_eq!(prepared.record.routing_context.as_ref(), Some(routing));
+
+        let lifecycle = crate::types::MessageLifecycleAuditEvent::from_message(&prepared.message);
+        assert_eq!(lifecycle.routing_context.as_ref(), Some(routing));
+    }
+
     #[test]
     fn dispatched_legacy_delivery_keeps_execution_bindings_for_replay() {
         let caller = AgentMessageCallerContext {
@@ -273,6 +394,7 @@ mod tests {
             current_turn_id: Some("turn-caller".into()),
             current_task_id: Some("task-caller".into()),
             current_work_item_id: Some("work-caller".into()),
+            inherited_routing_context: None,
         };
         let mut prepared = AgentMessageDeliveryService::prepare(
             AgentMessageSendRequest {

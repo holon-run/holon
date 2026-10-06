@@ -4720,6 +4720,7 @@ impl RuntimeHandle {
                 "source_refs": message.source_refs.clone(),
                 "correlation_id": message.correlation_id.clone(),
                 "causation_id": message.causation_id.clone(),
+                "routing_context": message.routing_context.clone(),
             }),
         )];
         let commit = {

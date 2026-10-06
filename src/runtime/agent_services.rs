@@ -66,6 +66,22 @@ impl AgentMessagingService<'_> {
             .ok_or_else(|| anyhow!("agent messaging requires a host bridge"))?;
         let caller_agent_id = self.runtime.agent_id().await?;
         let state = self.runtime.agent_state().await?;
+        let inherited_routing_context = state
+            .current_turn_id
+            .as_deref()
+            .map(|turn_id| {
+                self.runtime
+                    .inner
+                    .storage
+                    .read_messages_for_turn(turn_id, None)
+            })
+            .transpose()?
+            .and_then(|messages| {
+                messages
+                    .into_iter()
+                    .rev()
+                    .find_map(|message| message.routing_context)
+            });
         let principal_kind = bridge
             .canonical_relations_for_agent(&request.target_agent_id)
             .await?
@@ -100,6 +116,7 @@ impl AgentMessagingService<'_> {
             current_work_item_id: state
                 .current_turn_work_item_id
                 .or(state.current_work_item_id),
+            inherited_routing_context,
         };
         let prepared = crate::runtime::AgentMessageDeliveryService::prepare(request, caller)?;
         Ok(bridge.deliver_agent_message(&prepared).await?.receipt)

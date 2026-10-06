@@ -237,6 +237,28 @@ pub struct AgentMessageSendRequest {
     pub requested_priority: Option<Priority>,
 }
 
+/// Trusted runtime routing metadata for an agent-to-agent message.
+///
+/// The body is untrusted content; these values are populated by the runtime
+/// from the delivery caller and the currently handled message.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentMessageRoutingContext {
+    pub message_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_agent_id: Option<String>,
+    pub recipient_agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_sender_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_reply_to_agent_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct AgentMessageCallerContext {
     pub caller_principal: String,
@@ -254,6 +276,8 @@ pub struct AgentMessageCallerContext {
     pub current_task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited_routing_context: Option<AgentMessageRoutingContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -297,6 +321,8 @@ pub struct AgentMessageDeliveryRecord {
     pub correlation_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub causation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_context: Option<AgentMessageRoutingContext>,
     pub idempotency_scope: String,
     pub idempotency_key_digest: String,
     pub request_digest: String,
@@ -337,6 +363,8 @@ pub struct AgentMessageDeliveryReceipt {
     pub lifecycle_snapshot: AgentMessageAdmissionEvidence,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_context: Option<AgentMessageRoutingContext>,
 }
 
 impl AgentMessageDeliveryRecord {
@@ -354,6 +382,7 @@ impl AgentMessageDeliveryRecord {
             retryable: self.retryable,
             lifecycle_snapshot: self.admission_evidence.clone(),
             correlation_id: self.correlation_id.clone(),
+            routing_context: self.routing_context.clone(),
         }
     }
 }

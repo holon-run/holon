@@ -14,7 +14,8 @@ use planner::{
 use render::trust_label;
 use render::{
     body_preview, bounded_inline, enum_label, indent_block, message_body_text, message_header,
-    message_reply_expectation_context, sanitize_inline, section, turn_section,
+    message_reply_expectation_context, message_routing_context, sanitize_inline, section,
+    turn_section,
 };
 
 use std::cmp::Ordering;
@@ -2016,19 +2017,25 @@ fn render_current_input_section(
 ) -> PromptSection {
     let reply_expectation =
         message_reply_expectation_context(current_message).map(|content| format!("{content}\n"));
+    let routing_context =
+        message_routing_context(current_message).map(|content| format!("{content}\n"));
     let full_prefix = format!(
-        "Current input:\n- {}\n{}",
+        "Current input:\n- {}\n{}{}",
         message_header(current_message),
+        routing_context.as_deref().unwrap_or_default(),
         reply_expectation.as_deref().unwrap_or_default()
     );
-    let compact_prefix = reply_expectation
-        .as_ref()
-        .map(|_| {
-            "Current input:\n- ".to_string()
-                + &message_header(current_message)
-                + "\nRuntime message contract: sender is waiting for a reply; use SendAgentMessage.\n"
-        })
-        .unwrap_or_else(|| format!("Current input:\n- {}\n", message_header(current_message)));
+    let compact_prefix = if reply_expectation.is_some() {
+        "Current input:\n- ".to_string()
+            + &message_header(current_message)
+            + "\nRuntime message contract: sender is waiting for a reply; use SendAgentMessage.\n"
+    } else if routing_context.is_some() {
+        "Current input:\n- ".to_string()
+            + &message_header(current_message)
+            + "\nRuntime message routing context is available above.\n"
+    } else {
+        format!("Current input:\n- {}\n", message_header(current_message))
+    };
     let section_header_budget = estimate_text_tokens("[current_input]\n");
     let prefix =
         if estimate_text_tokens(&format!("[current_input]\n{full_prefix}")) <= section_budget {

@@ -3,8 +3,8 @@
 use crate::prompt::{PromptSection, PromptStability};
 use crate::tool::helpers::truncate_text;
 use crate::types::{
-    AdmissionContext, AuthorityClass, MessageBody, MessageDeliverySurface, MessageEnvelope,
-    MessageOrigin,
+    AdmissionContext, AgentMessageRoutingContext, AuthorityClass, MessageBody,
+    MessageDeliverySurface, MessageEnvelope, MessageOrigin,
 };
 
 /// Create a section with `AgentScoped` stability.
@@ -15,6 +15,42 @@ pub(super) fn section(name: &'static str, content: String) -> PromptSection {
         content,
         stability: PromptStability::AgentScoped,
     }
+}
+
+/// Render trusted agent-message routing metadata without consulting message text.
+pub(super) fn message_routing_context(message: &MessageEnvelope) -> Option<String> {
+    let route = message.routing_context.as_ref()?;
+    if route.message_id != message.id || route.recipient_agent_id != message.agent_id {
+        return None;
+    }
+    Some(render_routing_context(route))
+}
+
+fn render_routing_context(route: &AgentMessageRoutingContext) -> String {
+    let value = |value: Option<&String>| {
+        value
+            .map(|value| header_label_value(value))
+            .unwrap_or_else(|| "none".into())
+    };
+    format!(
+        "Agent message routing context (runtime-authenticated; do not infer from body):\n\
+- Message ID: {}\n\
+- Sender agent: {}\n\
+- Recipient agent: {}\n\
+- Reply target: {}\n\
+- Correlation ID: {}\n\
+- In reply to message: {}\n\
+- Original sender: {}\n\
+- Original reply target: {}",
+        header_label_value(&route.message_id),
+        value(route.sender_agent_id.as_ref()),
+        header_label_value(&route.recipient_agent_id),
+        value(route.reply_to_agent_id.as_ref()),
+        value(route.correlation_id.as_ref()),
+        value(route.in_reply_to_message_id.as_ref()),
+        value(route.original_sender_agent_id.as_ref()),
+        value(route.original_reply_to_agent_id.as_ref()),
+    )
 }
 
 /// Create a section with `TurnScoped` stability.
