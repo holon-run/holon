@@ -38,6 +38,7 @@ pub struct RunOnceRequest {
     pub create_agent: bool,
     pub template: Option<String>,
     pub max_turns: Option<u64>,
+    pub timeout_seconds: Option<u64>,
     pub wait_for_tasks: bool,
     pub workspace_root: Option<PathBuf>,
     pub cwd: Option<PathBuf>,
@@ -274,6 +275,10 @@ async fn run_once_with_host_inner(
     let mut candidate_completion: Option<CandidateCompletion> = None;
     let mut observed_new_task_ids = HashSet::<String>::new();
     let mut observed_terminal_final_text: Option<String> = None;
+    let run_started_at = Instant::now();
+    let mut timeout_warning_due = false;
+    let mut timeout_warning_sent = false;
+    let mut timeout_warning_turn_index = None;
 
     let final_candidate = loop {
         let state = session.runtime.agent_state().await?;
@@ -304,6 +309,13 @@ async fn run_once_with_host_inner(
         } else {
             None
         };
+        if !foreground_idle
+            && request
+                .timeout_seconds
+                .is_some_and(|seconds| run_started_at.elapsed() >= Duration::from_secs(seconds))
+        {
+            timeout_warning_due = true;
+        }
         let latest_terminal_final_text = state
             .last_turn_terminal
             .as_ref()
@@ -318,8 +330,56 @@ async fn run_once_with_host_inner(
             || poll_view.operator_visible_assistant_text_observed;
 
         let waiting_for_active_tasks = request.wait_for_tasks && !active_new_task_ids.is_empty();
+        if !timeout_warning_sent
+            && timeout_warning_due
+            && foreground_idle
+            && terminal_status.is_some()
+        {
+            let timeout_message = InboundRequest {
+                agent_id: session.agent_id.clone(),
+                kind: MessageKind::InternalFollowup,
+                priority: Priority::Interject,
+                origin: MessageOrigin::System {
+                    subsystem: "solve_timeout".into(),
+                },
+                authority_class: AuthorityClass::RuntimeInstruction,
+                body: MessageBody::Text {
+                    text: "The solve soft timeout has been reached. Stop starting new work, finish the current task, publish the best available summary and review/result artifacts, and then end the run.".into(),
+                },
+                delivery_surface: MessageDeliverySurface::RuntimeSystem,
+                admission_context: AdmissionContext::RuntimeOwned,
+                work_item_id: None,
+                metadata: None,
+                correlation_id: None,
+                causation_id: None,
+                trace_context: None,
+            };
+            session
+                .runtime
+                .enqueue(timeout_message.into_message())
+                .await?;
+            session.runtime.append_audit_event(
+                "solve_timeout_warning_injected",
+                serde_json::json!({
+                    "agent_id": session.agent_id,
+                    "timeout_seconds": request.timeout_seconds,
+                }),
+            )?;
+            timeout_warning_sent = true;
+            timeout_warning_turn_index = Some(state.turn_index);
+            candidate_completion = None;
+        }
+        let timeout_follow_up_terminal =
+            timeout_warning_turn_index.is_none_or(|warning_turn_index| {
+                state
+                    .last_turn_terminal
+                    .as_ref()
+                    .is_some_and(|record| record.turn_index > warning_turn_index)
+            });
         let candidate_status = if poll_view.runtime_error && foreground_idle {
             Some((RunFinalStatus::Failed, None))
+        } else if timeout_warning_sent && !timeout_follow_up_terminal {
+            None
         } else if (matches!(terminal_status, Some((RunFinalStatus::Failed, _)))
             && terminal_within_max_turns)
             || (terminal_final_text_observed

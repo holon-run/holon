@@ -210,6 +210,8 @@ pub enum Commands {
         model: Option<String>,
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         max_turns: Option<u64>,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout_seconds: Option<u64>,
         #[arg(
             long = "authority-class",
             alias = "trust",
