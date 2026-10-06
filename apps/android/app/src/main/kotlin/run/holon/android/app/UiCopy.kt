@@ -1,12 +1,16 @@
 package run.holon.android.app
 
+import android.annotation.SuppressLint
 import android.content.Context
+import androidx.core.content.edit
 import java.util.Locale
 
+// Holds only applicationContext and is retained for the app lifetime.
 /**
  * Source-keyed copy keeps the existing Compose call sites small while this client gains i18n.
  * Only app-authored UI strings call [ui]; Agent messages, briefs, tool output and file contents do not.
  */
+@SuppressLint("StaticFieldLeak")
 internal object UiCopy {
     private const val PREFS = "holon_ui_language"
     private const val LANGUAGE = "language"
@@ -25,9 +29,9 @@ internal object UiCopy {
 
     fun select(context: Context, language: String?) {
         require(language == null || language == "en" || language == "zh")
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().apply {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
             if (language == null) remove(LANGUAGE) else putString(LANGUAGE, language)
-        }.apply()
+        }
         preferredLanguage = language
     }
 
