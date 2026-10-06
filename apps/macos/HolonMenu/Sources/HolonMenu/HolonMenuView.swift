@@ -24,14 +24,14 @@ struct HolonMenuView: View {
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Web: \(viewModel.webAddressText)")
-                    Text("Polling: \(viewModel.isPolling ? "On" : "Off")")
+                    Text(L10n.format("Web: %@", viewModel.webAddressText))
+                    Text(L10n.format("Polling: %@", viewModel.isPolling ? L10n.text("On") : L10n.text("Off")))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .font(.caption)
             }
 
-            GroupBox("Local network") {
+            GroupBox(L10n.text("Local network")) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(viewModel.lanStateTitle)
                         .font(.headline)
@@ -39,27 +39,27 @@ struct HolonMenuView: View {
                         Text(lanURL.absoluteString)
                             .font(.caption2)
                             .textSelection(.enabled)
-                        Button("Disable LAN access") {
+                        Button(L10n.text("Disable LAN access")) {
                             Task { await viewModel.disableLAN() }
                         }
                     } else {
-                        Text("Explicitly expose Holon on this Mac's local network.")
+                        Text(L10n.text("Explicitly expose Holon on this Mac's local network."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         if viewModel.showLANConfirmation {
-                            Text("Holon will restart and listen on ALL IPv4 interfaces (0.0.0.0), including LAN, VPN, and potentially public interfaces. A private control token is required and will be prepared if needed. Use firewall rules to limit access.")
+                            Text(L10n.text("Holon will restart and listen on ALL IPv4 interfaces (0.0.0.0), including LAN, VPN, and potentially public interfaces. A private control token is required and will be prepared if needed. Use firewall rules to limit access."))
                                 .font(.caption)
                             HStack {
-                                Button("Enable") {
+                                Button(L10n.text("Enable")) {
                                     Task { await viewModel.enableLAN() }
                                 }
                                 .disabled(viewModel.isOperating)
-                                Button("Cancel") {
+                                Button(L10n.text("Cancel")) {
                                     viewModel.showLANConfirmation = false
                                 }
                             }
                         } else {
-                            Button("Enable LAN access…") {
+                            Button(L10n.text("Enable LAN access…")) {
                                 viewModel.requestLANAccess()
                             }
                             .disabled(viewModel.isOperating)
@@ -71,7 +71,7 @@ struct HolonMenuView: View {
                             .foregroundStyle(.red)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
-                        Button("Copy LAN error") {
+                        Button(L10n.text("Copy LAN error")) {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(error, forType: .string)
                         }
@@ -82,11 +82,11 @@ struct HolonMenuView: View {
 
             GroupBox("Tailscale") {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(viewModel.tailscaleStatus?.desiredTitle ?? "Checking…")
+                    Text(viewModel.tailscaleStatus?.desiredTitle ?? L10n.text("Checking…"))
                         .font(.headline)
-                    Text(viewModel.tailscaleStatus?.actualTitle ?? "Checking…")
+                    Text(viewModel.tailscaleStatus?.actualTitle ?? L10n.text("Checking…"))
                         .font(.headline)
-                    Text(viewModel.tailscaleStatus?.message ?? "Checking Tailscale status.")
+                    Text(viewModel.tailscaleStatus.map { L10n.text($0.message) } ?? L10n.text("Checking Tailscale status."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if let serveURL = viewModel.tailscaleStatus?.serveURL {
@@ -95,40 +95,40 @@ struct HolonMenuView: View {
                             .textSelection(.enabled)
                     }
                     if viewModel.tailscaleStatus?.hasDrift == true {
-                        Text("Desired and actual Serve state differ. Use the control below to retry manually.")
+                        Text(L10n.text("Desired and actual Serve state differ. Use the control below to retry manually."))
                             .font(.caption)
                         if viewModel.tailscaleStatus?.conflict == true {
-                            Text("Another Serve rule conflicts with Holon; resolve it before retrying.")
+                            Text(L10n.text("Another Serve rule conflicts with Holon; resolve it before retrying."))
                                 .font(.caption)
                         }
                     }
                     if viewModel.tailscaleStatus?.statusKnown == true,
                        viewModel.tailscaleStatus?.serving == true {
-                        Button("Disable Serve") {
+                        Button(L10n.text("Disable Serve")) {
                             Task { await viewModel.disableTailscaleServe() }
                         }
                         .disabled(viewModel.isOperating || viewModel.tailscaleStatus?.conflict == true)
                     } else if viewModel.tailscaleStatus?.statusKnown == true {
                         if viewModel.showTailscaleServeConfirmation {
-                            Text("Holon will expose its local web service over your tailnet. If authentication is missing, the app prepares a private token and may restart its managed daemon, preserving LAN and desktop settings. Externally managed daemons require manual authentication configuration. Your phone needs tailnet membership and ACL access.")
+                            Text(L10n.text("Holon will expose its local web service over your tailnet. If authentication is missing, the app prepares a private token and may restart its managed daemon, preserving LAN and desktop settings. Externally managed daemons require manual authentication configuration. Your phone needs tailnet membership and ACL access."))
                                 .font(.caption)
                             HStack {
-                                Button("Enable") {
+                                Button(L10n.text("Enable")) {
                                     Task { await viewModel.enableTailscaleServe() }
                                 }
                                 .disabled(viewModel.isOperating || viewModel.tailscaleStatus?.conflict == true)
-                                Button("Cancel") {
+                                Button(L10n.text("Cancel")) {
                                     viewModel.showTailscaleServeConfirmation = false
                                 }
                             }
                         } else {
-                            Button(viewModel.tailscaleStatus?.desiredEnabled == true ? "Restore Serve…" : "Enable Serve…") {
+                            Button(viewModel.tailscaleStatus?.desiredEnabled == true ? L10n.text("Restore Serve…") : L10n.text("Enable Serve…")) {
                                 viewModel.requestTailscaleServe()
                             }
                             .disabled(viewModel.isOperating || viewModel.tailscaleStatus?.conflict == true)
                         }
                         if viewModel.tailscaleStatus?.desiredEnabled == true {
-                            Button("Turn off desired Serve") {
+                            Button(L10n.text("Turn off desired Serve")) {
                                 Task { await viewModel.disableTailscaleServe() }
                             }
                             .disabled(viewModel.isOperating || viewModel.tailscaleStatus?.conflict == true)
@@ -140,7 +140,7 @@ struct HolonMenuView: View {
                             .foregroundStyle(.red)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
-                        Button("Copy Tailscale error") {
+                        Button(L10n.text("Copy Tailscale error")) {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(error, forType: .string)
                         }
@@ -149,45 +149,45 @@ struct HolonMenuView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            GroupBox("Pairing destination") {
+            GroupBox(L10n.text("Pairing destination")) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Toggle("Use LAN instead of Tailscale", isOn: $viewModel.preferLANPairing)
+                    Toggle(L10n.text("Use LAN instead of Tailscale"), isOn: $viewModel.preferLANPairing)
                     if let destination = viewModel.connectionURL {
                         Text(destination.absoluteString)
                             .font(.caption2)
                             .textSelection(.enabled)
                         if destination == viewModel.tailscaleStatus?.pairingOrigin {
-                            Text("Your phone must join this tailnet and have ACL access.")
+                            Text(L10n.text("Your phone must join this tailnet and have ACL access."))
                                 .font(.caption)
                         }
                     } else {
-                        Text("No valid remote origin. Enable LAN or Serve, or configure a custom origin in Settings.")
+                        Text(L10n.text("No valid remote origin. Enable LAN or Serve, or configure a custom origin in Settings."))
                             .font(.caption)
                     }
                 }
             }
 
             if let connectionURL = viewModel.connectionURL {
-                GroupBox("Connect from phone") {
+                GroupBox(L10n.text("Connect from phone")) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(connectionURL.scheme == "https"
-                             ? "Pair over Tailscale HTTPS when possible."
-                             : "Plain HTTP LAN pairing can be observed or redeemed first by someone on the same network. Prefer Tailscale HTTPS.")
+                             ? L10n.text("Pair over Tailscale HTTPS when possible.")
+                             : L10n.text("Plain HTTP LAN pairing can be observed or redeemed first by someone on the same network. Prefer Tailscale HTTPS."))
                             .font(.caption)
                         if let pairingURL = viewModel.pairingURL {
                             HolonQRCodeView(payload: pairingURL.absoluteString)
                                 .frame(maxWidth: .infinity)
                             Text(pairingURL.fragment == nil
-                                 ? "Open this URL and sign in normally."
-                                 : "One-time pairing code; expires after 2 minutes. Keep this QR private.")
+                                 ? L10n.text("Open this URL and sign in normally.")
+                                 : L10n.text("One-time pairing code; expires after 2 minutes. Keep this QR private."))
                                 .font(.caption2)
-                            Button("Hide pairing code") { viewModel.hidePairingCode() }
+                            Button(L10n.text("Hide pairing code")) { viewModel.hidePairingCode() }
                         } else {
-                            Button("Show connection QR…") {
+                            Button(L10n.text("Show connection QR…")) {
                                 Task { await viewModel.showPairingCode() }
                             }
                         }
-                        Text("Opens an authorized Web session. The Android app supports automatic QR pairing.")
+                        Text(L10n.text("Opens an authorized Web session. The Android app supports automatic QR pairing."))
                             .font(.caption2)
                     }
                 }
@@ -200,31 +200,31 @@ struct HolonMenuView: View {
             }
 
             HStack(spacing: 8) {
-                Button("Start") {
+                Button(L10n.text("Start")) {
                     Task { await viewModel.start() }
                 }
                 .disabled(viewModel.isOperating || viewModel.isRunning)
-                Button("Stop") {
+                Button(L10n.text("Stop")) {
                     Task { await viewModel.stop() }
                 }
                 .disabled(viewModel.isOperating || !viewModel.isRunning)
-                Button("Restart") {
+                Button(L10n.text("Restart")) {
                     Task { await viewModel.restart() }
                 }
                 .disabled(viewModel.isOperating || !viewModel.isRunning)
             }
 
             HStack(spacing: 8) {
-                Button("Open Web") {
+                Button(L10n.text("Open Web")) {
                     Task { await viewModel.openWeb() }
                 }
-                Button("Open Logs") {
+                Button(L10n.text("Open Logs")) {
                     Task { await viewModel.openLogs() }
                 }
             }
 
             Toggle(
-                "Launch Holon Menu App at Login",
+                L10n.text("Launch Holon Menu App at Login"),
                 isOn: Binding(
                     get: { viewModel.launchAtLoginEnabled },
                     set: { newValue in
@@ -234,11 +234,11 @@ struct HolonMenuView: View {
                 )
             )
 
-            Button("Check for Updates…") {
+            Button(L10n.text("Check for Updates…")) {
                 updater.checkForUpdates()
             }
 
-            Button("Install Command Line Tool…") {
+            Button(L10n.text("Install Command Line Tool…")) {
                 Task { await viewModel.installCommandLineTool() }
             }
 
@@ -257,9 +257,9 @@ struct HolonMenuView: View {
 
             Divider()
 
-            Button("Settings…", action: openSettings)
+            Button(L10n.text("Settings…"), action: openSettings)
 
-            Button("Quit Holon Menu App") {
+            Button(L10n.text("Quit Holon Menu App")) {
                 NSApplication.shared.terminate(nil)
             }
         }

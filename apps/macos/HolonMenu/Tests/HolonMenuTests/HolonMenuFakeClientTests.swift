@@ -7,7 +7,7 @@ final class HolonMenuFakeClientTests: XCTestCase {
 
         let initial = try await client.status()
         XCTAssertEqual(initial.state, .stopped)
-        XCTAssertEqual(initial.state.title, "Stopped")
+        XCTAssertEqual(initial.state.title(locale: Locale(identifier: "en")), "Stopped")
 
         let running = try await client.start()
         XCTAssertEqual(running.state, .running)

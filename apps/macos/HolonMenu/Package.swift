@@ -4,6 +4,7 @@ import PackageDescription
 
 let package = Package(
     name: "HolonMenu",
+    defaultLocalization: "en",
     platforms: [
         .macOS(.v13),
     ],

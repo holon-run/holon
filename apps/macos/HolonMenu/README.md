@@ -5,6 +5,17 @@ macOS menu bar control surface for Holon.
 ## Build and test
 
 - `xcodebuild -scheme HolonMenu -destination 'platform=macOS' test`
+- `make macos-menu-test` (the host-native CI test target)
+
+## Branding and languages
+
+- The app icon reuses `Sources/HolonMenu/Resources/holon-mark.png`; packaging
+  generates the full `.icns` size set with `scripts/generate-macos-app-icon.sh`.
+- English and Simplified Chinese follow macOS language preferences, including
+  per-app language preferences. English is the fallback for other languages.
+- Localized app text lives in the target's `Resources/*.lproj/Localizable.strings`.
+  New languages must also be declared in `Resources/Info.plist` and checked by
+  `scripts/verify-macos-menu-app.sh` so release bundles retain the translations.
 
 ## Runtime shape
 

@@ -18,25 +18,25 @@ enum HolonCLIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingHolonBinary:
-            return "Unable to locate the bundled holon CLI."
+            return L10n.text("Unable to locate the bundled holon CLI.")
         case .missingTailscaleBinary:
-            return "Unable to locate the Tailscale command-line tool."
+            return L10n.text("Unable to locate the Tailscale command-line tool.")
         case let .processFailed(command, terminationStatus, stderr):
             let renderedCommand = command.joined(separator: " ")
             if stderr.isEmpty {
-                return "holon command failed with exit status \(terminationStatus): \(renderedCommand)"
+                return L10n.format("holon command failed with exit status %@: %@", String(terminationStatus), renderedCommand)
             }
-            return "holon command failed with exit status \(terminationStatus): \(renderedCommand)\n\(stderr)"
+            return L10n.format("holon command failed with exit status %@: %@\n%@", String(terminationStatus), renderedCommand, stderr)
         case let .invalidJSON(output):
-            return "holon returned invalid JSON: \(output)"
+            return L10n.format("holon returned invalid JSON: %@", output)
         case let .invalidWebAddress(address):
-            return "holon returned an invalid web address: \(address)"
+            return L10n.format("holon returned an invalid web address: %@", address)
         case let .invalidLANTokenFile(path):
-            return "The control token file must be a nonempty, owner-only regular file: \(path)"
+            return L10n.format("The control token file must be a nonempty, owner-only regular file: %@", path)
         case let .loginItem(error):
-            return "Failed to update the login item: \(error.localizedDescription)"
+            return L10n.format("Failed to update the login item: %@", error.localizedDescription)
         case let .commandLineToolConflict(path):
-            return "A different holon command already exists at \(path). It was not replaced."
+            return L10n.format("A different holon command already exists at %@. It was not replaced.", path)
         case let .tailscaleServeConflict(reason):
             return reason
         case let .pairingFailed(reason):
@@ -254,14 +254,14 @@ final class HolonCLIClient: HolonDesiredStateClient {
 
     private func pairingURL(for destination: URL, status: HolonDaemonStatus) async throws -> URL {
         guard status.healthy, status.state == .running || status.state == .degraded else {
-            throw HolonCLIError.pairingFailed("Start the Holon daemon before pairing.")
+            throw HolonCLIError.pairingFailed(L10n.text("Start the Holon daemon before pairing."))
         }
         let local = loopbackURL(for: status.httpAddr)
         let (methodData, methodResponse) = try await networkSession.data(
             from: local.appendingPathComponent("api/auth/method")
         )
         guard (methodResponse as? HTTPURLResponse)?.statusCode == 200 else {
-            throw HolonCLIError.pairingFailed("Unable to determine the daemon authentication mode.")
+            throw HolonCLIError.pairingFailed(L10n.text("Unable to determine the daemon authentication mode."))
         }
         struct AuthMethod: Decodable { let mode: String }
         let mode = try JSONDecoder().decode(AuthMethod.self, from: methodData).mode
@@ -276,7 +276,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
             return url
         }
         guard mode == "local" else {
-            throw HolonCLIError.pairingFailed("Unsupported daemon authentication mode.")
+            throw HolonCLIError.pairingFailed(L10n.text("Unsupported daemon authentication mode."))
         }
         var request = URLRequest(url: local.appendingPathComponent("api/auth/pairing/issue"))
         request.httpMethod = "POST"
@@ -306,12 +306,12 @@ final class HolonCLIClient: HolonDesiredStateClient {
         }
         guard statusCode == 200 else {
             throw HolonCLIError.pairingFailed(
-                "Unable to issue a pairing code. Check daemon version and local token configuration."
+                L10n.text("Unable to issue a pairing code. Check daemon version and local token configuration.")
             )
         }
         struct Ticket: Decodable { let ticket: String }
         let ticket = try JSONDecoder().decode(Ticket.self, from: data).ticket
-        guard !ticket.isEmpty else { throw HolonCLIError.pairingFailed("Empty pairing code.") }
+        guard !ticket.isEmpty else { throw HolonCLIError.pairingFailed(L10n.text("Empty pairing code.")) }
         var components = URLComponents(url: destination, resolvingAgainstBaseURL: false)
         components?.path = "/login"
         components?.query = nil
@@ -388,7 +388,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
                   daemon.runtimeConfigFingerprint == created.runtimeConfigFingerprint,
                   try controlToken(homeDir: daemon.homeDir) == nil else {
                 throw HolonCLIError.tailscaleServeConflict(
-                    "This daemon is externally managed or its ownership is unknown, or existing credentials conflict with disabled control authentication; an explicit daemon configuration change is required."
+                    L10n.text("This daemon is externally managed or its ownership is unknown, or existing credentials conflict with disabled control authentication; an explicit daemon configuration change is required.")
                 )
             }
             var options = HolonDaemonLaunchOptions()
@@ -406,10 +406,10 @@ final class HolonCLIClient: HolonDesiredStateClient {
                   restarted.homeDir == daemon.homeDir,
                   restarted.healthy, restarted.controlConnectivity,
                   try await tailscaleStatus().controlAuthenticationAvailable == true else {
-                throw HolonCLIError.tailscaleServeConflict("Unable to verify restarted daemon authentication before enabling Serve.")
+                throw HolonCLIError.tailscaleServeConflict(L10n.text("Unable to verify restarted daemon authentication before enabling Serve."))
             }
         } else if network.controlAuthenticationAvailable == nil {
-            throw HolonCLIError.tailscaleServeConflict("Daemon authentication status is unknown. Configure or update the daemon before enabling Serve.")
+            throw HolonCLIError.tailscaleServeConflict(L10n.text("Daemon authentication status is unknown. Configure or update the daemon before enabling Serve."))
         }
         return try await tailscaleServeRequest(method: "POST", action: "enable")
     }
@@ -434,7 +434,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
         guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
             throw HolonCLIError.tailscaleServeConflict(
                 (try? JSONDecoder().decode(HolonServeErrorResponse.self, from: data).error)
-                    ?? "Unable to access daemon Tailscale Serve control. Check daemon version and local token configuration."
+                    ?? L10n.text("Unable to access daemon Tailscale Serve control. Check daemon version and local token configuration.")
             )
         }
         let payload = try decoder.decode(HolonTailscaleServeResponse.self, from: data)
@@ -501,11 +501,11 @@ final class HolonCLIClient: HolonDesiredStateClient {
             network = try await tailscaleStatus()
         } catch {
             throw HolonCLIError.tailscaleServeConflict(
-                "Unable to verify daemon authentication. Configure credentials in its launch settings before enabling LAN: \(error.localizedDescription)"
+                L10n.format("Unable to verify daemon authentication. Configure credentials in its launch settings before enabling LAN: %@", error.localizedDescription)
             )
         }
         guard let authenticated = network.controlAuthenticationAvailable else {
-            throw HolonCLIError.tailscaleServeConflict("Daemon authentication status is unknown. Configure or update the daemon before enabling LAN.")
+            throw HolonCLIError.tailscaleServeConflict(L10n.text("Daemon authentication status is unknown. Configure or update the daemon before enabling LAN."))
         }
         if !authenticated {
             try prepareRemoteAuthentication(&options, homeDir: currentStatus.homeDir)
@@ -658,7 +658,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
             }
         }
         throw HolonCLIError.invalidWebAddress(
-            "Unable to determine the Mac's local network address."
+            L10n.text("Unable to determine the Mac's local network address.")
         )
     }
 

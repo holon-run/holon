@@ -133,7 +133,7 @@ final class HolonMenuViewModel: ObservableObject {
         hidePairingCode()
         showLANConfirmation = false
         lanError = nil
-        activeOperation = "Enabling LAN access…"
+        activeOperation = L10n.text("Enabling LAN access…")
         defer { activeOperation = nil }
         do {
             lanURL = try await client.enableLAN()
@@ -147,7 +147,7 @@ final class HolonMenuViewModel: ObservableObject {
     func disableLAN() async {
         hidePairingCode()
         lanError = nil
-        activeOperation = "Disabling LAN access…"
+        activeOperation = L10n.text("Disabling LAN access…")
         defer { activeOperation = nil }
         do {
             status = try await client.disableLAN()
@@ -162,7 +162,7 @@ final class HolonMenuViewModel: ObservableObject {
         hidePairingCode()
         showTailscaleServeConfirmation = false
         tailscaleError = nil
-        activeOperation = "Updating Tailscale…"
+        activeOperation = L10n.text("Updating Tailscale…")
         defer { activeOperation = nil }
         do {
             tailscaleStatus = try await client.enableTailscaleServe()
@@ -175,7 +175,7 @@ final class HolonMenuViewModel: ObservableObject {
     func disableTailscaleServe() async {
         hidePairingCode()
         tailscaleError = nil
-        activeOperation = "Updating Tailscale…"
+        activeOperation = L10n.text("Updating Tailscale…")
         defer { activeOperation = nil }
         do {
             tailscaleStatus = try await client.disableTailscaleServe()
@@ -247,7 +247,7 @@ final class HolonMenuViewModel: ObservableObject {
         do {
             let destination = try await client.installCommandLineTool()
             commandLineToolMessage =
-                "Installed at \(destination.path). Add ~/.local/bin to PATH if needed."
+                L10n.format("Installed at %@. Add ~/.local/bin to PATH if needed.", destination.path)
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -273,24 +273,24 @@ final class HolonMenuViewModel: ObservableObject {
     }
 
     var stateTitle: String {
-        status?.state.title ?? "Unknown"
+        status?.state.title ?? L10n.text("Unknown")
     }
 
     var statusMessage: String {
-        status?.message ?? "Waiting for Holon status."
+        status.map { L10n.text($0.message) } ?? L10n.text("Waiting for Holon status.")
     }
 
     var webAddressText: String {
-        lanURL?.absoluteString ?? status?.webUrl ?? status?.httpAddr ?? "No web endpoint yet."
+        lanURL?.absoluteString ?? status?.webUrl ?? status?.httpAddr ?? L10n.text("No web endpoint yet.")
     }
 
     var lanStateTitle: String {
-        if lanURL != nil { return "LAN access is on" }
-        guard let address = status?.httpAddr else { return "LAN state unknown" }
+        if lanURL != nil { return L10n.text("LAN access is on") }
+        guard let address = status?.httpAddr else { return L10n.text("LAN state unknown") }
         if address.hasPrefix("127.0.0.1:") || address.hasPrefix("[::1]:") {
-            return "LAN access is off"
+            return L10n.text("LAN access is off")
         }
-        return "Listener: \(address) — LAN access unknown"
+        return L10n.format("Listener: %@ — LAN access unknown", address)
     }
 
     var connectionURL: URL? {
@@ -330,7 +330,7 @@ final class HolonMenuViewModel: ObservableObject {
 
     private func runOperation(_ operation: @escaping () async throws -> HolonDaemonStatus) async {
         hidePairingCode()
-        activeOperation = "Updating Holon…"
+        activeOperation = L10n.text("Updating Holon…")
         defer { activeOperation = nil }
         do {
             let updated = try await operation()

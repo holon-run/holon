@@ -8,10 +8,17 @@
     <string>Holon</string>
     <key>CFBundleExecutable</key>
     <string>HolonMenu</string>
+    <key>CFBundleIconFile</key>
+    <string>Holon.icns</string>
     <key>CFBundleIdentifier</key>
     <string>run.holon.menu</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>en</string>
+        <string>zh-Hans</string>
+    </array>
     <key>CFBundleName</key>
     <string>Holon</string>
     <key>CFBundlePackageType</key>

@@ -48,6 +48,7 @@ done < <(find "$swift_bin_path" -maxdepth 1 -type d -name '*HolonMenu*.bundle' -
 chmod 755 "$contents_dir/MacOS/HolonMenu" "$contents_dir/Resources/bin/holon"
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$contents_dir/MacOS/HolonMenu"
 
+"$repo_root/scripts/generate-macos-app-icon.sh" "$contents_dir/Resources/Holon.icns"
 cp "$package_dir/Resources/Info.plist" "$contents_dir/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$contents_dir/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" "$contents_dir/Info.plist"
