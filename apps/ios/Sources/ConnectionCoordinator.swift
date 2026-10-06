@@ -63,7 +63,11 @@ private actor SDKConnectionTransport: ConnectionTransport {
 @Observable @MainActor
 final class ConnectionCoordinator {
     private(set) var status: ConnectionStatus = .disconnected
-    private(set) var identity: HolonConnectionIdentity?
+    private(set) var identity: HolonConnectionIdentity? {
+        didSet {
+            if identity != oldValue { onIdentityChange?() }
+        }
+    }
     private(set) var supportsOIDC = false
     private(set) var pendingPairing: HolonPairingInvitation?
     private(set) var selectedProfile: ConnectionProfile?
@@ -74,12 +78,14 @@ final class ConnectionCoordinator {
     @ObservationIgnored private let proofStore: NativeLoginProofStore
     @ObservationIgnored private let makeTransport: @Sendable (ConnectionProfile) throws -> any ConnectionTransport
     @ObservationIgnored private let deadline: Duration
+    @ObservationIgnored var onIdentityChange: (() -> Void)?
     @ObservationIgnored private var transport: (any ConnectionTransport)?
     @ObservationIgnored private var epoch = UUID()
     @ObservationIgnored private var timeout: Task<Void, Never>?
     @ObservationIgnored private var browser: NativeBrowserAuthentication?
     @ObservationIgnored private var proof: NativeLoginProof?
     @ObservationIgnored private var exchangingTicket = false
+    @ObservationIgnored private var usesStoredSession = false
 
     init(store: ConnectionStore,
          proofStore: NativeLoginProofStore = .init(vault: .init(service: "run.holon.ios.proofs")),
@@ -92,6 +98,46 @@ final class ConnectionCoordinator {
         self.deadline = deadline
         self.makeTransport = makeTransport
         profiles = store.profiles
+    }
+
+    /// A separate foreground transport; credentials never enter the reading cache.
+    func makeReadingClient() async throws -> HolonClient {
+        guard status == .connected, let expected = identity, let profile = selectedProfile else {
+            throw HolonClientError.staleConnection
+        }
+        let stamp = epoch
+        let session = try store.session(for: profile)
+        if usesStoredSession && session == nil {
+            identity = nil
+            finish(.sessionExpired)
+            throw HolonClientError.staleConnection
+        }
+        if let session {
+            guard session.runtimeID == expected.runtimeID, session.userID == expected.userID,
+                  session.visibilityScopeID == expected.visibilityScopeID else {
+                throw HolonClientError.staleConnection
+            }
+        }
+        let client = try HolonClient(endpoint: profile.endpoint, networkID: expected.networkID)
+        do {
+            _ = try await client.bindIdentity(
+                runtimeID: expected.runtimeID, userID: expected.userID,
+                visibilityScopeID: expected.visibilityScopeID,
+                credential: session?.credential.isEmpty == false ? session?.credential : nil
+            )
+            guard current(stamp), identity == expected, status == .connected else {
+                throw HolonClientError.staleConnection
+            }
+            return client
+        } catch {
+            await client.close()
+            throw error
+        }
+    }
+
+    func handleReadingFailure(_ failure: HolonHTTPFailure, expectedIdentity: HolonConnectionIdentity) {
+        guard identity == expectedIdentity else { return }
+        handle(failure, stamp: epoch, authenticating: false)
     }
 
     func addProfile(name: String, apiBaseURL: URL, allowInsecureHTTP: Bool) throws -> ConnectionProfile {
@@ -402,6 +448,7 @@ final class ConnectionCoordinator {
             do { try store.saveSession(context, for: profile) }
             catch { finish(.storageError); return }
         }
+        usesStoredSession = credential != nil
         identity = bound
         finish(.connected)
     }

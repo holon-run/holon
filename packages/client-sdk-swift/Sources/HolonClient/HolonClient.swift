@@ -78,6 +78,52 @@ public actor HolonClient {
         try await read(path: ["auth", "session", "me"], decode: HolonCurrentUser.init)
     }
 
+    public func conversation(agentID: String, before: String? = nil, limit: Int = 60)
+        async throws -> HolonResponse<HolonConversationSnapshot> {
+        guard limit > 0 else { throw HolonClientError.invalidRequest }
+        var query = ["limit": String(limit)]
+        if let before { query["before"] = before }
+        return try await read(path: ["agents", agentID, "conversation"], query: query) {
+            let raw = try JSONDecoder().decode(JSONValue.self, from: $0)
+            guard case .object(var fields) = raw,
+                  raw["agent_id"] == nil || raw["agent_id"] == .string(agentID) else {
+                throw HolonClientError.malformedResponse
+            }
+            // The current server binds agent identity through the request path.
+            fields["agent_id"] = .string(agentID)
+            return try HolonConversationSnapshot(raw: .object(fields))
+        }
+    }
+
+    public func conversationActivities(agentID: String, turnID: String,
+                                       before: String? = nil, limit: Int = 60)
+        async throws -> HolonResponse<JSONValue> {
+        guard limit > 0 else { throw HolonClientError.invalidRequest }
+        var query = ["limit": String(limit)]
+        if let before { query["before"] = before }
+        return try await getJSON(path: ["agents", agentID, "turns", turnID, "activities"], query: query)
+    }
+
+    public func briefDetail(agentID: String, briefID: String) async throws -> HolonResponse<JSONValue> {
+        try await getJSON(path: ["agents", agentID, "briefs", briefID])
+    }
+
+    /// Only a confirmed server response advances read state; POST is never retried.
+    public func markBriefRead(agentID: String, readThroughEventSeq: Int64)
+        async throws -> HolonResponse<JSONValue> {
+        guard readThroughEventSeq >= 0 else { throw HolonClientError.invalidRequest }
+        let result = try await request(path: ["agents", agentID, "brief-read-cursor"], method: "POST",
+                                       body: .object(["read_through_event_seq": .integer(readThroughEventSeq)]))
+        return try decoded(result) {
+            let raw = try JSONDecoder().decode(JSONValue.self, from: $0)
+            guard case .object = raw["state"],
+                  raw["applied_read_through_event_seq"]?.conversationInt != nil else {
+                throw HolonClientError.malformedResponse
+            }
+            return raw
+        }
+    }
+
     /// Returns credentials to the caller; never persists or implicitly installs them.
     public func exchangeSession(credential: String, nativeVerifier: String? = nil)
         async throws -> HolonResponse<HolonSession> {

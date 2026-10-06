@@ -20,6 +20,29 @@ The SDK has no third-party runtime dependencies or generated HTTP client.
 and lossless error adapters. It is not a platform credential store or UI/sync
 coordinator.
 
+## Conversation reading
+
+`conversation`, `conversationActivities`, and `briefDetail` read the daemon's
+versioned conversation surface. `markBriefRead` posts once and returns only
+server-confirmed read state; transport errors never advance a local cursor.
+The current server omits `agent_id` in summary responses; `conversation` binds
+that field from its request path (and rejects any conflicting server field).
+`HolonConversationSnapshot` preserves open JSON while merging `turns` and
+`active_turns` by authoritative key/revision, not timestamps. Terminal turns
+cannot regress to active execution.
+
+`HolonConversationReducer` publishes only complete, scope-matching checkpoints.
+Old complete batches cannot roll back the live cursor. Unknown controls,
+incomplete/mismatched batches, reset/epoch changes, oversized batches, and
+unbounded history require explicit recovery rather than silent data loss.
+Activity/detail frames do not rewrite summary entities; callers invalidate
+their independently fetched detail caches when those frames arrive.
+`mergeConversationHistory` retains the live cursor and pending inputs, advances
+only the independent history pagination boundary, and requires matching identity
+and epoch. The terminal-turn budget defaults to 180; active turns are retained
+outside that window. `bootstrapRequired` means fetch an authoritative replacement,
+not trim reachable history. The reducer does not persist state or reopen streams.
+
 ## Transport ownership
 
 `HolonEndpoint` takes the **complete API base URL**, such as

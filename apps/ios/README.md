@@ -3,8 +3,10 @@
 Native SwiftUI remote client, targeting iOS 18+ on iPhone and iPad. This directory
 contains connection profiles, token/session login, offline QR invitation preview
 and confirmed redemption, native organization login, and scoped Keychain recovery.
-It is **not a finished client**: conversation reading, reliable sending,
-work/files and system sharing belong to later stages.
+The Agents tab provides foreground conversation reading, history, briefs and
+on-demand execution details, with identity-partitioned offline caching.
+It is **not a finished client**: reliable sending, work/files and system sharing
+belong to later stages.
 
 ## Local verification
 
@@ -45,6 +47,23 @@ App Store identifier.
   UI-independent wire/client layers and tests reading the shared fixture files.
 - English and Simplified Chinese resources are provided. Agent content must
   never be translated with the UI.
+- Reading has one roster stream and at most one selected conversation stream.
+  Scene inactivity cancels foreground work; returning rebuilds authoritative
+  snapshots. Historical pagination does not advance the live cursor. Identity
+  changes synchronously revoke the old view before another transport is bound.
+  Cached content is read-only, contains no credentials, and is accessible only
+  after network/runtime/user/visibility identity has been confirmed.
+- Briefs are primary content, operator input is preserved, and execution details
+  remain expandable rather than becoming another summary. Read-cursor failures
+  have their own status; only server confirmation counts as a successful read.
+  The manual read action uses an expanded, loaded brief visible in the viewport
+  and confirms that all earlier results, including unopened history, are covered
+  by the server's cumulative cursor. Agent/generation changes and hiding or
+  collapsing a brief revoke that confirmation, even if the brief is shown again.
+  The 80-entry brief cache evicts least-recently-used hidden content, not visible
+  briefs; capacity is not a lifetime loading quota.
+  List previews use bounded reads; unknown unread state is never
+  displayed as zero.
 
 Profiles require explicit HTTP confirmation, including loopback. HTTP itself
 does not encrypt credentials or traffic. Because targets are arbitrary user

@@ -16,6 +16,48 @@ final class LiveDaemonProbeTests: XCTestCase {
         return url
     }
 
+    func testProductionSDKConversationReadAgainstDaemon() async throws {
+        for key in ["HOLON_LIVE_BASE", "HOLON_LIVE_PROXY_BASE"] {
+            let client = try HolonClient(endpoint: HolonEndpoint(apiBaseURL: base(key)), networkID: key)
+            do {
+                let response = try await client.conversation(agentID: "main")
+                XCTAssertEqual(response.value.agentID, "main")
+                XCTAssertFalse(response.value.snapshotCursor.isEmpty)
+                XCTAssertEqual(response.value.raw["turns"], .array([]))
+                var reducer = HolonConversationReducer(snapshot: response.value)
+                // An untrusted read cannot turn a local read intent into confirmed read state.
+                if key == "HOLON_LIVE_BASE" {
+                    let stream = try await client.openEventStream(
+                        path: ["agents", "main", "conversation", "stream"],
+                        query: ["after": response.value.snapshotCursor])
+                    stream.close()
+                    do {
+                        _ = try await client.markBriefRead(agentID: "main", readThroughEventSeq: 0)
+                        XCTFail("Setup-blocked POST must not update read state")
+                    } catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 503) }
+                    do {
+                        _ = try await client.briefDetail(agentID: "main", briefID: "missing")
+                        XCTFail("Missing brief must remain an HTTP error")
+                    } catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 404) }
+                    do {
+                        _ = try await client.conversationActivities(agentID: "main", turnID: "missing")
+                        XCTFail("Missing turn must remain an HTTP error")
+                    } catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 404) }
+                }
+                // A reset never publishes an invented replacement snapshot.
+                var parser = try HolonSSEParser()
+                let bytes = Data("event: reset_required\ndata: {\"type\":\"reset_required\",\"reason\":\"future\"}\n\n".utf8)
+                for byte in bytes {
+                    if let event = try parser.append(byte) {
+                        XCTAssertThrowsError(try reducer.accept(event))
+                    }
+                }
+                XCTAssertEqual(reducer.snapshot, response.value)
+                await client.close()
+            } catch { await client.close(); throw error }
+        }
+    }
+
     func testNativePairingTicketIsSingleUse() async throws {
         // The harness issues a ticket through trusted local control admission,
         // without configuring a model provider. Anonymous TCP cannot issue one.
@@ -43,6 +85,13 @@ final class LiveDaemonProbeTests: XCTestCase {
             XCTAssertTrue(currentUser.value.ok)
             // Local sessions are attributed to the shared control principal.
             XCTAssertEqual(currentUser.value.userId, "control")
+            let conversation = try await client.conversation(agentID: "main")
+            XCTAssertEqual(conversation.value.agentID, "main")
+            // This isolated daemon has no model configuration: its setup gate rejects POST.
+            do {
+                _ = try await client.markBriefRead(agentID: "main", readThroughEventSeq: 0)
+                XCTFail("Setup-blocked POST must not produce confirmed read state")
+            } catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 503) }
             // Keep the revoked credential bound to verify server-side invalidation.
             try await client.revokeSession()
             do {

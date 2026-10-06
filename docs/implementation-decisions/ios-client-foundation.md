@@ -71,6 +71,39 @@ allow-listing does not weaken that handler check. The isolated-daemon probe
 issues over its trusted Unix socket, confirms anonymous TCP issuance is denied,
 and exercises single-use native redemption and session revocation in this mode.
 
+P3 gives foreground reading its own transport generation under the confirmed
+connection authority. An identity change synchronously clears the reading view
+before asynchronous replacement begins; reading failures can affect login only
+when their captured authority is still current. Scene inactivity cancels streams
+and requests, while foreground recovery starts from authoritative snapshots.
+Only one roster stream and one selected conversation stream have owners.
+
+Conversation state is a revision-aware projection, not a concatenated SSE log.
+The SDK publishes complete checkpoint batches, rejects unknown controls and
+invalid scope/epoch transitions, and keeps the history boundary separate from
+the live cursor. Brief content stays distinct from expandable execution detail.
+Complete batch commits also publish per-turn detail revisions: tool evidence can
+change without advancing the summary revision. Only older detail cache entries
+are invalidated; snapshot bootstrap discards detail caches across stream gaps.
+Read-cursor submission has an independent result state and requires server
+confirmation. Only an expanded, loaded brief visible in the scroll viewport
+can supply its actual event sequence. The manual confirmation explains that
+the server's cumulative cursor also covers earlier, unopened history, and is
+fenced to the exact Agent, epoch, reading generation and visibility authorization.
+Hiding or collapsing a brief revokes old confirmations without restarting streams.
+The 80-entry brief cache replaces least-recently-used hidden entries and protects
+visible content; a fully visible cache can admit more after content is hidden.
+Unread metadata is
+reloaded from the server after confirmation, not optimistically cleared.
+
+The P3 offline cache is a bounded, disposable atomic file in the app's Caches
+directory, partitioned by API base/network/runtime/user/visibility. This is a
+read-only snapshot cache, not an outbox transaction store: corruption, expiry
+or storage failure may discard it without losing a submission. P4's durable
+drafts/outbox still need their own transactional persistence. Authentication
+credentials and proof never enter the reading cache; cached content is not
+an authority for establishing a login identity.
+
 ## Evidence and outstanding gates
 
 The P0 test entrypoints cover shared handshake/roster/error/session fixtures,

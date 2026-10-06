@@ -172,6 +172,90 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(credentials, ["saved-session"])
     }
 
+    func testReadingClientRequiresConfirmedIdentityAndUsesAnIndependentGeneration() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        let c = coordinator(f, transport: CoordinatorTransport())
+        do {
+            _ = try await c.makeReadingClient()
+            XCTFail("A disconnected profile is not a reading authority")
+        } catch {
+            XCTAssertEqual(error as? HolonClientError, .staleConnection)
+        }
+        await c.connect(p)
+        let identity = try XCTUnwrap(c.identity)
+        let reader = try await c.makeReadingClient()
+        let readingIdentity = await reader.identity
+        XCTAssertEqual(readingIdentity.networkID, identity.networkID)
+        XCTAssertEqual(readingIdentity.runtimeID, identity.runtimeID)
+        XCTAssertEqual(readingIdentity.userID, identity.userID)
+        XCTAssertEqual(readingIdentity.visibilityScopeID, identity.visibilityScopeID)
+        XCTAssertNotEqual(readingIdentity.generation, identity.generation)
+        await reader.close()
+    }
+
+    func testReadingAuthorityIsRevokedSynchronouslyBeforeReauthentication() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        let transport = CoordinatorTransport()
+        let c = coordinator(f, transport: transport)
+        await c.connect(p)
+        var invalidated = false
+        c.onIdentityChange = { [weak c] in invalidated = c?.identity == nil }
+        await transport.block(.exchange)
+        let login = Task { await c.login(token: "new-token") }
+        await transport.waitUntilEntered()
+        XCTAssertTrue(invalidated)
+        XCTAssertNil(c.identity)
+        await transport.release()
+        await login.value
+        c.onIdentityChange = nil
+    }
+
+    func testReadingUnauthorizedFromAnOldAuthorityCannotRevokeNewSession() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        let c = coordinator(f, transport: CoordinatorTransport())
+        await c.connect(p)
+        let previous = try XCTUnwrap(c.identity)
+        await c.refresh()
+        let current = try XCTUnwrap(c.identity)
+        XCTAssertNotEqual(previous.generation, current.generation)
+        let failure = HolonHTTPFailure(statusCode: 401, identity: .init(networkID: "reading"))
+        c.handleReadingFailure(failure, expectedIdentity: previous)
+        XCTAssertEqual(c.identity, current)
+        XCTAssertEqual(c.status, .connected)
+        XCTAssertNotNil(try f.store.session(for: p))
+        c.handleReadingFailure(failure, expectedIdentity: current)
+        XCTAssertNil(c.identity)
+        XCTAssertEqual(c.status, .sessionExpired)
+        XCTAssertNil(try f.store.session(for: p))
+    }
+
+    func testExpiredStoredSessionCannotFallBackToAnonymousReading() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        let c = coordinator(f, transport: CoordinatorTransport())
+        await c.connect(p)
+        let session = try XCTUnwrap(f.store.session(for: p))
+        try f.store.saveSession(StoredSession(
+            credential: session.credential, runtimeID: session.runtimeID, userID: session.userID,
+            visibilityScopeID: session.visibilityScopeID, expiresAt: .distantPast
+        ), for: p)
+        do {
+            _ = try await c.makeReadingClient()
+            XCTFail("An expired session must require sign-in")
+        } catch {
+            XCTAssertEqual(error as? HolonClientError, .staleConnection)
+        }
+        XCTAssertNil(c.identity)
+        XCTAssertEqual(c.status, .sessionExpired)
+    }
+
     func testNewOIDCConnectionDoesNotAttemptUnauthenticatedHandshake() async throws {
         let f = try fixture()
         let p = try profile(f)

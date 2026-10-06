@@ -11,6 +11,27 @@ final class TransportTests: XCTestCase {
         return try Data(contentsOf: root.appendingPathComponent("tests/fixtures/client-wire/\(name).json"))
     }
 
+    func testConversationBindingAndConfirmedReadPOST() async throws {
+        var raw = try JSONDecoder().decode(JSONValue.self, from: fixture("mobile-conversation-v2"))
+        if case .object(var fields) = raw { fields.removeValue(forKey: "agent_id"); raw = .object(fields) }
+        let (sdk, exchange) = try client([
+            MockReply(body: JSONEncoder().encode(raw)),
+            MockReply(body: Data(#"{"state":{},"applied_read_through_event_seq":42,"future":true}"#.utf8))])
+        let snapshot = try await sdk.conversation(agentID: "bound-agent", before: "opaque+cursor", limit: 10)
+        XCTAssertEqual(snapshot.value.agentID, "bound-agent")
+        let read = try await sdk.markBriefRead(agentID: "bound-agent", readThroughEventSeq: 42)
+        XCTAssertEqual(read.value["future"], .bool(true))
+        XCTAssertEqual(exchange.requests.last?.httpMethod, "POST")
+        XCTAssertEqual(exchange.requests.last?.url?.path, "/prefix/api/agents/bound-agent/brief-read-cursor")
+        XCTAssertEqual(URLComponents(url: exchange.requests[0].url!, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "before" })?.value, "opaque+cursor")
+        let (failed, attempts) = try client([MockReply(status: 503, body: fixture("error-v1")),
+                                           MockReply(body: Data(#"{"state":{},"applied_read_through_event_seq":42}"#.utf8))])
+        do { _ = try await failed.markBriefRead(agentID: "main", readThroughEventSeq: 42); XCTFail("Must fail") }
+        catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 503) }
+        XCTAssertEqual(attempts.requests.count, 1)
+    }
+
     private func client(_ replies: [MockReply], credential: String? = "test-session",
                         maximumResponseBytes: Int = 16_777_216)
         throws -> (HolonClient, MockExchange) {
