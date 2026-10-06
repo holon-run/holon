@@ -8,6 +8,35 @@ import FoundationNetworking
 
 // These are transport probes, not a production SDK or an automatic retry policy.
 final class LiveDaemonProbeTests: XCTestCase {
+    func testProductionSDKWritesRemainSetupBlocked() async throws {
+        let client = try HolonClient(endpoint: HolonEndpoint(apiBaseURL: base()), networkID: "write-probe")
+        do {
+            _ = try await client.modelCatalog()
+            _ = try await client.agentModel(agentID: "main")
+            let attachment = try HolonPromptAttachment(kind: .file, name: "probe.txt",
+                mediaType: "text/plain", data: Data("probe".utf8))
+            let prompt = try HolonPromptRequest(clientRequestID: "sdk-live-probe-stable",
+                                                text: "probe", attachments: [attachment])
+            do {
+                _ = try await client.sendOperatorPrompt(agentID: "main", request: prompt)
+                XCTFail("Setup-blocked prompt must not be accepted")
+            } catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 503) }
+            do {
+                _ = try await client.setAgentModel(agentID: "main",
+                    request: HolonAgentModelRequest(model: "vendor/probe"))
+                XCTFail("Setup-blocked model write must fail")
+            } catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 503) }
+            do {
+                _ = try await client.stopCurrentRun(agentID: "main", runID: "not-a-current-run")
+                XCTFail("Setup-blocked run abort must fail")
+            } catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 503) }
+            await client.close()
+        } catch {
+            await client.close()
+            throw error
+        }
+    }
+
     private func base(_ key: String = "HOLON_LIVE_BASE") throws -> URL {
         guard let value = ProcessInfo.processInfo.environment[key],
               let url = URL(string: value) else {

@@ -7,14 +7,17 @@ struct ReadingAgent: Identifiable, Equatable, Codable, Sendable {
     let preview: String
     let operatorPreview: String?
     let unreadCount: Int?
+    let currentRunID: String?
 
     init(id: String, name: String, preview: String,
-         operatorPreview: String? = nil, unreadCount: Int? = nil) {
+         operatorPreview: String? = nil, unreadCount: Int? = nil,
+         currentRunID: String? = nil) {
         self.id = id
         self.name = name
         self.preview = preview
         self.operatorPreview = operatorPreview
         self.unreadCount = unreadCount
+        self.currentRunID = currentRunID
     }
 }
 

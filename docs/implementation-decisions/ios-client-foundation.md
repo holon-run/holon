@@ -100,9 +100,33 @@ The P3 offline cache is a bounded, disposable atomic file in the app's Caches
 directory, partitioned by API base/network/runtime/user/visibility. This is a
 read-only snapshot cache, not an outbox transaction store: corruption, expiry
 or storage failure may discard it without losing a submission. P4's durable
-drafts/outbox still need their own transactional persistence. Authentication
+drafts/outbox use separate transactional persistence. Authentication
 credentials and proof never enter the reading cache; cached content is not
 an authority for establishing a login identity.
+
+P4 stores the complete draft/outbox snapshot in one Core Data SQLite entity in
+Application Support. Enqueue atomically persists the immutable request ID,
+prepared prompt payload and attachment references while clearing that draft,
+before the separate sending client can issue a POST. A failed save rolls back
+the snapshot; interrupted `sending` entries reopen as `unknown`. Explicit retry
+reuses the original ID and payload, and a late response is fenced by the active
+identity generation. Navigating away does not own or delete the queue.
+The task checks its scope/generation and cancellation before its first
+persistent mutation, so cancelling before it starts leaves the entry queued.
+Explicit retry uses current foreground authority and the active-request guard,
+not the last request's offline status; an unknown outcome is never auto-retried.
+
+Attachments are copied into app-managed storage, then prepared as inline base64
+for the existing control prompt route; there is no upload/reference API. Picker
+imports also bind the original scope and a draft-import generation. After a
+successful snapshot save, only copies whose final reference across every
+scope's drafts and queues was removed are deleted. Failed saves do not clean
+up; cleanup failures do not turn a durable save into a reported failure and may
+leave copies behind. This is not a historical orphan scan or cleanup retry.
+Model selection is a separate control request, not atomic with prompt acceptance.
+Stopping targets a server-observed run ID and is not transport cancellation.
+Backgrounding cancels foreground operations without automatically retrying an
+unknown submission. Storage failure disables sending while preserving reading.
 
 ## Evidence and outstanding gates
 
@@ -112,3 +136,12 @@ They do not prove real-daemon HTTP/SSE/cancellation, native browser callback,
 physical-device LAN privacy, share-extension signing or release distribution.
 Those gates remain tracked in the implementation plan and must be reported
 separately; an engineering scaffold is not client feature completion.
+
+P4's ready-daemon contract fixture uses an isolated local provider and temporary
+TCP control token. Pairing is issued through its trusted Unix socket. This
+checks real SDK writes, authentication rejection and acknowledgement-loss replay
+without production credentials; it is not real-provider, physical-device or
+distribution evidence. The provider holds a dedicated request with a bounded
+wait and signals when it starts; the probe must observe its real run ID,
+successfully stop it and verify that the active run disappears. A missing run
+or a conflict response cannot stand in for successful stop coverage.

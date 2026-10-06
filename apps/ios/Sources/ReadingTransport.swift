@@ -84,7 +84,8 @@ actor ReadingClientTransport: ReadingTransport {
                 throw HolonConversationError.malformedProtocol
             }
             return ReadingAgent(id: id, name: agent["name"]?.readingString ?? id,
-                                preview: String((entry["latest_brief"]?["preview"]?.readingString ?? "").prefix(240)))
+                                preview: String((entry["latest_brief"]?["preview"]?.readingString ?? "").prefix(240)),
+                                currentRunID: entry["agent"]?["current_run_id"]?.readingString)
         }
         var counts: [String: Int] = [:]
         do {
@@ -106,7 +107,8 @@ actor ReadingClientTransport: ReadingTransport {
             guard generation == rosterGeneration, rosterEpoch == epoch else { throw CancellationError() }
             enriched += batch.map {
                 ReadingAgent(id: $0.id, name: $0.name, preview: $0.preview,
-                             operatorPreview: previews[$0.id], unreadCount: counts[$0.id])
+                             operatorPreview: previews[$0.id], unreadCount: counts[$0.id],
+                             currentRunID: $0.currentRunID)
             }
         }
         _ = try await expected()

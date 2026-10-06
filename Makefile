@@ -67,6 +67,7 @@ android-sdk-test: ## Compile and test the Android SDK foundation against generat
 .PHONY: ios-sdk-test ios-wire-check ios-app-test ios-app-build ios-contract-test
 ios-contract-test: ## Probe Swift URLSession against an isolated real Rust daemon
 	./scripts/test-ios-contract.sh
+	./scripts/test-ios-send-contract.sh
 
 ios-sdk-test: ## Test the Swift client SDK against shared wire fixtures
 	swift test --package-path packages/client-sdk-swift

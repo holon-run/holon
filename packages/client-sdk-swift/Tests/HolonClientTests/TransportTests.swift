@@ -4,6 +4,116 @@ import XCTest
 
 @MainActor
 final class TransportTests: XCTestCase {
+    func testPromptStableIdentityPayloadAndUnknownReceipt() async throws {
+        let attachment = try HolonPromptAttachment(kind: .file, name: "note.txt",
+                                                   mediaType: "text/plain", data: Data("hello".utf8))
+        let prompt = try HolonPromptRequest(clientRequestID: "persisted-id", text: "",
+                                           attachments: [attachment])
+        let (sdk, exchange) = try client([
+            MockReply(status: 503, body: Data(#"{"ok":false}"#.utf8)),
+            MockReply(body: Data(#"{"ok":true,"agent_id":"main","message_id":"m","disposition":"duplicate","future":42}"#.utf8)),
+            MockReply(body: Data(#"{"ok":true,"agent_id":"main","message_id":"m","disposition":"future_state"}"#.utf8))])
+        do { _ = try await sdk.sendOperatorPrompt(agentID: "main", request: prompt); XCTFail() }
+        catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 503) }
+        XCTAssertEqual(exchange.requests.count, 1)
+        let receipt = try await sdk.sendOperatorPrompt(agentID: "main", request: prompt)
+        XCTAssertTrue(receipt.value.isAccepted)
+        XCTAssertEqual(receipt.value.raw["future"], .integer(42))
+        XCTAssertEqual(exchange.requests[0].httpBody, exchange.requests[1].httpBody)
+        let body = try JSONDecoder().decode(JSONValue.self, from: exchange.requests[1].httpBody!)
+        XCTAssertEqual(body, prompt.payload)
+        XCTAssertEqual(body["client_request_id"], .string("persisted-id"))
+        XCTAssertEqual(exchange.requests[1].url?.path, "/prefix/api/control/agents/main/prompt")
+        let unknown = try await sdk.sendOperatorPrompt(agentID: "main", request: prompt)
+        XCTAssertFalse(unknown.value.isAccepted)
+        XCTAssertEqual(unknown.value.disposition, "future_state")
+    }
+
+    func testPromptRejectionAndMalformedSuccessNeverRetry() async throws {
+        let prompt = try HolonPromptRequest(clientRequestID: "stable", text: "hello")
+        for reply in [
+            MockReply(status: 409, body: Data(#"{"ok":false,"code":"idempotency_conflict","retryable":false}"#.utf8)),
+            MockReply(body: Data(#"{"ok":false,"agent_id":"main","message_id":"m","disposition":"accepted"}"#.utf8)),
+            MockReply(body: Data(#"{"ok":true,"agent_id":"other","message_id":"m","disposition":"accepted"}"#.utf8)),
+            MockReply(body: Data(#"{"ok":true,"agent_id":"main","message_id":"m"}"#.utf8))] {
+            let (sdk, exchange) = try client([reply])
+            do { _ = try await sdk.sendOperatorPrompt(agentID: "main", request: prompt); XCTFail() }
+            catch { XCTAssertTrue(error is HolonHTTPFailure || error is HolonClientError) }
+            XCTAssertEqual(exchange.requests.count, 1)
+            XCTAssertEqual(prompt.clientRequestID, "stable")
+        }
+    }
+
+    func testLostPromptResponseRetainsRequestAndCredential() async throws {
+        let prompt = try HolonPromptRequest(clientRequestID: "durable-id", text: "immutable")
+        let (sdk, exchange) = try client([
+            MockReply(error: .networkConnectionLost),
+            MockReply(body: Data(#"{"ok":true,"agent_id":"main","message_id":"m","disposition":"duplicate"}"#.utf8))])
+        do { _ = try await sdk.sendOperatorPrompt(agentID: "main", request: prompt); XCTFail() }
+        catch { XCTAssertTrue(error is URLError) }
+        XCTAssertEqual(exchange.requests.count, 1)
+        _ = try await sdk.sendOperatorPrompt(agentID: "main", request: prompt)
+        XCTAssertEqual(exchange.requests[0].httpBody, exchange.requests[1].httpBody)
+        XCTAssertEqual(exchange.requests[1].value(forHTTPHeaderField: "Authorization"), "Bearer test-session")
+    }
+
+    func testModelAndStopFailuresNeverRetryOrConfirmWrongRun() async throws {
+        let (sdk, exchange) = try client([
+            MockReply(status: 503, body: Data(#"{"ok":false}"#.utf8)),
+            MockReply(status: 409, body: Data(#"{"ok":false,"code":"run_mismatch"}"#.utf8)),
+            MockReply(body: Data(#"{"ok":true,"aborted":true,"agent_id":"main","run_id":"new-run","mode":"stop_after_abort"}"#.utf8))])
+        do {
+            _ = try await sdk.setAgentModel(agentID: "main", request: HolonAgentModelRequest(model: "vendor/model"))
+            XCTFail()
+        } catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 503) }
+        XCTAssertEqual(exchange.requests.count, 1)
+        do { _ = try await sdk.stopCurrentRun(agentID: "main", runID: "observed"); XCTFail() }
+        catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 409) }
+        XCTAssertEqual(exchange.requests.count, 2)
+        do { _ = try await sdk.stopCurrentRun(agentID: "main", runID: "observed"); XCTFail() }
+        catch { XCTAssertEqual(error as? HolonClientError, .malformedResponse) }
+        XCTAssertEqual(exchange.requests.count, 3)
+    }
+
+    func testPromptAttachmentLimitsAndIDValidation() throws {
+        XCTAssertThrowsError(try HolonPromptRequest(clientRequestID: " ", text: "hello"))
+        XCTAssertThrowsError(try HolonPromptRequest(clientRequestID: String(repeating: "é", count: 101), text: "hello"))
+        XCTAssertThrowsError(try HolonPromptRequest(clientRequestID: "id", text: " "))
+        XCTAssertThrowsError(try HolonPromptAttachment(kind: .image, mediaType: "image/svg+xml", data: Data([1])))
+        XCTAssertThrowsError(try HolonPromptAttachment(kind: .file, mediaType: "text/plain", data: Data()))
+        XCTAssertThrowsError(try HolonPromptAttachment(kind: .file, mediaType: "text/plain",
+            data: Data(count: HolonPromptLimits.maximumAttachmentBytes + 1)))
+        let attachment = try HolonPromptAttachment(kind: .file, mediaType: "text/plain",
+                                                    data: Data(count: 13 * 1024 * 1024))
+        XCTAssertThrowsError(try HolonPromptRequest(clientRequestID: "id", text: "",
+                                                   attachments: [attachment, attachment]))
+    }
+
+    func testModelAndExplicitCurrentRunStopPaths() async throws {
+        let (sdk, exchange) = try client([
+            MockReply(body: Data(#"{"available_models":["vendor/model"],"future":true}"#.utf8)),
+            MockReply(body: Data(#"{"model":{"effective_model":"vendor/model","future":42}}"#.utf8)),
+            MockReply(body: Data(#"{"ok":true,"model":{"effective_model":"vendor@default/new","future":43}}"#.utf8)),
+            MockReply(body: Data(#"{"ok":true,"aborted":true,"agent_id":"main","run_id":"observed-run","mode":"stop_after_abort","future":true}"#.utf8))])
+        let catalog = try await sdk.modelCatalog()
+        XCTAssertEqual(catalog.value.raw["future"], .bool(true))
+        let state = try await sdk.agentModel(agentID: "main")
+        XCTAssertEqual(state.value.raw["future"], .integer(42))
+        let model = try HolonAgentModelRequest(model: "vendor/new", reasoningEffort: "high")
+        let updated = try await sdk.setAgentModel(agentID: "main", request: model)
+        XCTAssertEqual(updated.value.effectiveModel, .string("vendor@default/new"))
+        let stopped = try await sdk.stopCurrentRun(agentID: "main", runID: "observed-run")
+        XCTAssertEqual(stopped.value.runID, "observed-run")
+        XCTAssertEqual(exchange.requests.map { $0.url!.path }, [
+            "/prefix/api/models", "/prefix/api/agents/main",
+            "/prefix/api/control/agents/main/model", "/prefix/api/control/agents/main/current-run/abort"])
+        let stop = try JSONDecoder().decode(JSONValue.self, from: exchange.requests.last!.httpBody!)
+        XCTAssertEqual(stop["mode"], .string("stop_after_abort"))
+        XCTAssertEqual(stop["run_id"], .string("observed-run"))
+        XCTAssertEqual(exchange.requests[2].httpMethod, "POST")
+        XCTAssertEqual(exchange.requests[3].httpMethod, "POST")
+    }
+
     private func fixture(_ name: String) throws -> Data {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()

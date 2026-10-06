@@ -5,8 +5,10 @@ contains connection profiles, token/session login, offline QR invitation preview
 and confirmed redemption, native organization login, and scoped Keychain recovery.
 The Agents tab provides foreground conversation reading, history, briefs and
 on-demand execution details, with identity-partitioned offline caching.
-It is **not a finished client**: reliable sending, work/files and system sharing
-belong to later stages.
+Its conversation editor includes persistent drafts, local attachment staging,
+model selection, an explicit current-run stop and a durable sending queue.
+It is **not a finished client**: work/files and system sharing belong to later
+stages.
 
 ## Local verification
 
@@ -18,6 +20,7 @@ From the repository root:
 ```sh
 make ios-wire-check
 make ios-sdk-test
+make ios-contract-test
 make ios-app-test
 ```
 
@@ -64,6 +67,27 @@ App Store identifier.
   briefs; capacity is not a lifetime loading quota.
   List previews use bounded reads; unknown unread state is never
   displayed as zero.
+- Sending uses a separate authenticated client and a Core Data store in
+  Application Support. Drafts, managed attachments and queue entries are scoped
+  by API/network/runtime/user/visibility and Agent; identity changes synchronously
+  hide the old scope. A storage failure disables sending without disabling reading.
+  Picker imports bind the original scope and draft generation; late results cannot
+  enter a different identity, a revisited Agent or an already-enqueued draft.
+  Enqueue saves the immutable request ID and submission before any prompt POST.
+  Interrupted or response-lost submissions are unknown, not accepted: retry is
+  explicit and preserves the original ID and prepared payload. A last-request
+  offline status does not disable explicit retry with an active foreground
+  identity; it never causes automatic resend. Cancelling a not-yet-started send
+  leaves the durable entry queued and operable.
+- Attachments are size-checked local copies. The current control prompt API
+  accepts inline base64 attachments, not a separate upload/reference endpoint.
+  A successful save removes retired copies only after their last draft/queue
+  reference across all scopes disappears. Cleanup failures may leave copies;
+  failed saves preserve references, and no historical orphan scan is promised.
+  Model selection is a separate control request, not an atomic part of prompt
+  acceptance. A stop targets an observed run ID and is distinct from cancelling
+  a phone request. Neither background execution nor automatic unknown-outcome
+  retries are promised.
 
 Profiles require explicit HTTP confirmation, including loopback. HTTP itself
 does not encrypt credentials or traffic. Because targets are arbitrary user

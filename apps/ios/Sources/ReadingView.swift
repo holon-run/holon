@@ -3,6 +3,7 @@ import HolonClient
 
 struct ReadingView: View {
     @Bindable var reader: ReadingCoordinator
+    var sender: SendingCoordinator? = nil
 
     var body: some View {
         NavigationStack {
@@ -44,7 +45,7 @@ struct ReadingView: View {
                 get: { reader.selectedAgentID != nil },
                 set: { if !$0 { reader.selectAgent(nil) } }
             )) {
-                ConversationReadingView(reader: reader)
+                ConversationReadingView(reader: reader, sender: sender)
             }
         }
     }
@@ -52,6 +53,7 @@ struct ReadingView: View {
 
 private struct ConversationReadingView: View {
     @Bindable var reader: ReadingCoordinator
+    let sender: SendingCoordinator?
     @State private var visibleTurnID: String?
     @State private var readThroughToConfirm: ReadingReadConfirmation?
 
@@ -65,6 +67,13 @@ private struct ConversationReadingView: View {
         return byID.values.sorted {
             $0.index == $1.index ? $0.id < $1.id : $0.index < $1.index
         }
+    }
+
+    private var currentRunID: String? {
+        guard reader.status == .live,
+              let runID = reader.agents.first(where: { $0.id == reader.selectedAgentID })?.currentRunID,
+              !runID.isEmpty else { return nil }
+        return runID
     }
 
     var body: some View {
@@ -102,6 +111,13 @@ private struct ConversationReadingView: View {
         }
         .navigationTitle(Text(verbatim: reader.agents.first { $0.id == reader.selectedAgentID }?.name ?? "Holon"))
         .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .bottom) {
+            if let sender {
+                SendingView(sender: sender, currentRunID: currentRunID)
+            } else {
+                Text("status.storageError").font(.caption).padding()
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("reading.refresh") { Task { await reader.refresh() } }

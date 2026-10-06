@@ -102,6 +102,10 @@ final class ConnectionCoordinator {
 
     /// A separate foreground transport; credentials never enter the reading cache.
     func makeReadingClient() async throws -> HolonClient {
+        try await makeAuthenticatedClient()
+    }
+
+    func makeAuthenticatedClient() async throws -> HolonClient {
         guard status == .connected, let expected = identity, let profile = selectedProfile else {
             throw HolonClientError.staleConnection
         }
@@ -136,6 +140,10 @@ final class ConnectionCoordinator {
     }
 
     func handleReadingFailure(_ failure: HolonHTTPFailure, expectedIdentity: HolonConnectionIdentity) {
+        handleClientFailure(failure, expectedIdentity: expectedIdentity)
+    }
+
+    func handleClientFailure(_ failure: HolonHTTPFailure, expectedIdentity: HolonConnectionIdentity) {
         guard identity == expectedIdentity else { return }
         handle(failure, stamp: epoch, authenticating: false)
     }

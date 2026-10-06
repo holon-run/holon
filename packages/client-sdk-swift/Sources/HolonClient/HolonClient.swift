@@ -175,6 +175,56 @@ public actor HolonClient {
         }
     }
 
+    public func sendOperatorPrompt(agentID: String, request prompt: HolonPromptRequest)
+        async throws -> HolonResponse<HolonPromptReceipt> {
+        let result = try await request(path: ["control", "agents", agentID, "prompt"],
+                                       method: "POST", body: prompt.payload)
+        return try decoded(result) {
+            try HolonPromptReceipt(raw: JSONDecoder().decode(JSONValue.self, from: $0), agentID: agentID)
+        }
+    }
+
+    public func modelCatalog() async throws -> HolonResponse<HolonModelCatalog> {
+        try await read(path: ["models"]) {
+            try HolonModelCatalog(raw: JSONDecoder().decode(JSONValue.self, from: $0))
+        }
+    }
+
+    public func agentModel(agentID: String) async throws -> HolonResponse<HolonAgentModelState> {
+        try await read(path: ["agents", agentID]) {
+            let raw = try JSONDecoder().decode(JSONValue.self, from: $0)
+            guard let model = raw["model"] else { throw HolonClientError.malformedResponse }
+            return try HolonAgentModelState(raw: model)
+        }
+    }
+
+    public func setAgentModel(agentID: String, request model: HolonAgentModelRequest)
+        async throws -> HolonResponse<HolonAgentModelState> {
+        let result = try await request(path: ["control", "agents", agentID, "model"],
+                                       method: "POST", body: model.payload)
+        return try decoded(result) {
+            let raw = try JSONDecoder().decode(JSONValue.self, from: $0)
+            guard raw["ok"] == .bool(true), let state = raw["model"]
+            else { throw HolonClientError.malformedResponse }
+            return try HolonAgentModelState(raw: state)
+        }
+    }
+
+    /// Targets an observed run, never a lifecycle stop or a newer replacement run.
+    public func stopCurrentRun(agentID: String, runID: String)
+        async throws -> HolonResponse<HolonRunStopReceipt> {
+        guard !runID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { throw HolonClientError.invalidRequest }
+        let result = try await request(path: ["control", "agents", agentID, "current-run", "abort"],
+                                       method: "POST", body: .object([
+                                        "run_id": .string(runID), "mode": .string("stop_after_abort"),
+                                        "authority_class": .string("operator_instruction")]))
+        return try decoded(result) {
+            try HolonRunStopReceipt(raw: JSONDecoder().decode(JSONValue.self, from: $0),
+                                    agentID: agentID, runID: runID)
+        }
+    }
+
     private func read<T: Sendable>(
         path: [String], query: [String: String] = [:], retry: HolonRetryPolicy = .none,
         onRetry: (@Sendable (HolonRetryNotice) -> Void)? = nil,
@@ -187,7 +237,9 @@ public actor HolonClient {
     private func decoded<T: Sendable>(_ result: HolonResponse<Data>,
                                       using decode: (Data) throws -> T) throws -> HolonResponse<T> {
         do { return HolonResponse(identity: result.identity, value: try decode(result.value)) }
-        catch { throw HolonClientError.malformedResponse }
+        catch {
+            throw HolonClientError.malformedResponse
+        }
     }
 
     private func request(path: [String], query: [String: String] = [:],
@@ -337,7 +389,9 @@ public actor HolonClient {
         }
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONEncoder().encode(body)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            request.httpBody = try encoder.encode(body)
         }
         return request
     }

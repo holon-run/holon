@@ -81,3 +81,37 @@
 "reading.status.permissionDenied" = "权限不足";
 "reading.status.sessionExpired" = "会话已过期，请重新登录";
 "reading.status.incompatible" = "不支持此会话协议";
+
+/* Native sending editor */
+"sending.draft" = "草稿";
+"sending.queue" = "发送队列";
+"sending.stop" = "停止当前运行";
+"sending.stop.confirm" = "停止 Agent 当前运行？";
+"sending.stop.explanation" = "此操作停止服务端运行，不是取消本地 HTTP 请求。";
+"sending.text" = "消息正文";
+"sending.model" = "模型";
+"sending.model.default" = "服务端默认";
+"sending.attachments" = "附件";
+"sending.remove" = "移除附件";
+"sending.photo" = "选择照片";
+"sending.file" = "选择文件";
+"sending.limits" = "附件随消息内联发送。本地每文件上限 20 MiB；服务端可能有额外大小和类型限制。";
+"sending.error.explanation" = "导入或发送失败。请检查文件权限、可用性和大小；草稿已保留。";
+"sending.permission" = "文件权限不可用，请重新选择文件并授权。";
+"sending.photo.unavailable" = "照片不可用，请下载后重选或选择其他照片。";
+"sending.enqueue" = "加入发送队列";
+"sending.close" = "关闭";
+"sending.status.disconnected" = "未连接 · 可编辑草稿";
+"sending.status.ready" = "已连接";
+"sending.status.offline" = "离线 · 队列条目需要显式重试";
+"sending.status.sending" = "正在发送";
+"sending.state.queued" = "本地已排队";
+"sending.state.sending" = "正在发送";
+"sending.state.received" = "服务端已接收";
+"sending.state.failed" = "发送失败";
+"sending.state.unknown" = "接收状态未知";
+"sending.receipt.explanation" = "已接收仅表示服务端接受消息，不表示 Agent 已完成工作。";
+"sending.unknown.explanation" = "服务端可能已接受此消息。重试使用相同请求 ID 和固定载荷，请勿另建重复消息。";
+"sending.retry.same" = "以相同请求重试";
+"sending.retry" = "重试";
+"sending.delete" = "删除本地条目";

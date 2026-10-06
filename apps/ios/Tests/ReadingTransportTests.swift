@@ -12,7 +12,7 @@ private final class ReadingIdentityProtocol: URLProtocol, @unchecked Sendable {
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         let body: String
         if request.url!.path.hasSuffix("/agents/snapshot") {
-            body = #"{"runtime_id":"runtime","visibility_scope_id":"private","event_log_epoch":"epoch","agents":[{"agent":{"identity":{"agent_id":"A","name":"Agent A"}}}]}"#
+            body = #"{"runtime_id":"runtime","visibility_scope_id":"private","event_log_epoch":"epoch","agents":[{"agent":{"identity":{"agent_id":"A","name":"Agent A"},"current_run_id":"run-A"}}]}"#
         } else if request.url!.path.hasSuffix("/conversation") {
             body = #"{"runtime_id":"runtime","visibility_scope_id":"private","agent_id":"A","event_log_epoch":"epoch","snapshot_cursor":"live-1","snapshot_through_seq":7,"event_head_seq":7,"schema_version":1,"query_version":1,"has_more":false,"next_before_cursor":null,"turns":[],"active_turns":[],"pending_inputs":[]}"#
         } else {
@@ -44,6 +44,7 @@ final class ReadingTransportTests: XCTestCase {
         XCTAssertNotEqual(sdkIdentity.generation, authority.generation)
         let agents = try await transport.roster()
         XCTAssertEqual(agents.map(\.id), ["A"])
+        XCTAssertEqual(agents.first?.currentRunID, "run-A")
         let snapshot = try await transport.conversation(agentID: "A", before: nil)
         XCTAssertEqual(snapshot.eventLogEpoch, "epoch")
         let brief = try await transport.brief(agentID: "A", briefID: "brief")

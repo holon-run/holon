@@ -81,3 +81,37 @@
 "reading.status.permissionDenied" = "Permission denied";
 "reading.status.sessionExpired" = "Session expired · sign in again";
 "reading.status.incompatible" = "Unsupported conversation protocol";
+
+/* Native sending editor */
+"sending.draft" = "Draft";
+"sending.queue" = "Outbox";
+"sending.stop" = "Stop current run";
+"sending.stop.confirm" = "Stop the current agent run?";
+"sending.stop.explanation" = "This stops the server run, not just a local HTTP request.";
+"sending.text" = "Message text";
+"sending.model" = "Model";
+"sending.model.default" = "Server default";
+"sending.attachments" = "Attachments";
+"sending.remove" = "Remove attachment";
+"sending.photo" = "Choose photo";
+"sending.file" = "Choose file";
+"sending.limits" = "Attachments are sent inline. Local limit: 20 MiB per file; the server may impose additional size and type limits.";
+"sending.error.explanation" = "Import or send failed. Check file access, availability and size. Your draft is preserved.";
+"sending.permission" = "File permission unavailable. Choose the file again and grant access.";
+"sending.photo.unavailable" = "Photo unavailable. Download it or choose another photo.";
+"sending.enqueue" = "Add to outbox";
+"sending.close" = "Close";
+"sending.status.disconnected" = "Disconnected · draft only";
+"sending.status.ready" = "Connected";
+"sending.status.offline" = "Offline · queued items need explicit retry";
+"sending.status.sending" = "Sending";
+"sending.state.queued" = "Queued locally";
+"sending.state.sending" = "Sending";
+"sending.state.received" = "Received by server";
+"sending.state.failed" = "Failed";
+"sending.state.unknown" = "Receipt unknown";
+"sending.receipt.explanation" = "Received means the server accepted the message. It does not mean the agent completed its work.";
+"sending.unknown.explanation" = "The server may have accepted this message. Retry uses the same request ID and frozen payload; do not create a duplicate.";
+"sending.retry.same" = "Retry same request";
+"sending.retry" = "Retry";
+"sending.delete" = "Delete local entry";

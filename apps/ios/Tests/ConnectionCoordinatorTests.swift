@@ -195,6 +195,27 @@ final class ConnectionCoordinatorTests: XCTestCase {
         await reader.close()
     }
 
+    func testSendingClientLifetimeIsIndependentFromReadingClient() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        let c = coordinator(f, transport: CoordinatorTransport())
+        await c.connect(p)
+        let identity = try XCTUnwrap(c.identity)
+        let reader = try await c.makeReadingClient()
+        let sender = try await c.makeAuthenticatedClient()
+        let readingIdentity = await reader.identity
+        let sendingIdentity = await sender.identity
+        XCTAssertNotEqual(readingIdentity.generation, sendingIdentity.generation)
+        XCTAssertEqual(sendingIdentity.runtimeID, identity.runtimeID)
+        XCTAssertEqual(sendingIdentity.userID, identity.userID)
+        XCTAssertEqual(sendingIdentity.visibilityScopeID, identity.visibilityScopeID)
+        await reader.close()
+        let stillBound = await sender.identity
+        XCTAssertEqual(stillBound, sendingIdentity)
+        await sender.close()
+    }
+
     func testReadingAuthorityIsRevokedSynchronouslyBeforeReauthentication() async throws {
         let f = try fixture()
         let p = try profile(f)
