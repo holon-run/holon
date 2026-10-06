@@ -5,8 +5,8 @@ import android.content.Context
 import androidx.core.content.edit
 import java.util.Locale
 
-// Holds only applicationContext and is retained for the app lifetime.
 /**
+ * Holds only applicationContext and is retained for the app lifetime, so the StaticFieldLeak warning is a false positive.
  * Source-keyed copy keeps the existing Compose call sites small while this client gains i18n.
  * Only app-authored UI strings call [ui]; Agent messages, briefs, tool output and file contents do not.
  */
