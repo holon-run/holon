@@ -333,6 +333,7 @@ async fn run_once_with_host_inner(
         if !timeout_warning_sent
             && timeout_warning_due
             && foreground_idle
+            && !max_turns_hit
             && terminal_status.is_some()
         {
             let timeout_message = InboundRequest {

@@ -178,6 +178,28 @@ async fn run_once_injects_soft_timeout_follow_up_and_completes() -> Result<()> {
 }
 
 #[tokio::test]
+async fn run_once_does_not_inject_soft_timeout_after_max_turns() -> Result<()> {
+    let test_config = test_config();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let host = RuntimeHost::new_with_provider(
+        test_config.config().clone(),
+        Arc::new(DelayedProvider {
+            calls: calls.clone(),
+        }),
+    )?;
+    let mut request = run_request("hello");
+    request.max_turns = Some(1);
+    request.timeout_seconds = Some(1);
+
+    let response = run_once_with_host(host, request).await?;
+
+    assert_eq!(response.final_status, RunFinalStatus::Completed);
+    assert_eq!(response.final_text, "initial result");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn run_once_surfaces_structured_token_usage_when_provider_reports_it() -> Result<()> {
     let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
