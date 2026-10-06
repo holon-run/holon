@@ -1,163 +1,69 @@
 use super::super::*;
+use holon_model_client::{parse_response, ClientError, ContentPart};
 
 pub(crate) fn parse_chat_completion_response(response: Value) -> Result<ParsedOpenAiResponse> {
-    // Extract response ID
-    let response_id = response
-        .get("id")
-        .and_then(Value::as_str)
-        .map(ToString::to_string);
-
-    // Extract choices array
-    let choices = response
+    let raw_message = response
         .get("choices")
         .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .cloned()
         .ok_or_else(|| {
             invalid_response_error(
-                "OpenAI Chat Completions response did not contain choices array",
-                "missing choices",
+                "OpenAI Chat Completions choice did not contain message",
+                "missing message",
             )
         })?;
-
-    let first_choice = choices.first().ok_or_else(|| {
-        invalid_response_error(
-            "OpenAI Chat Completions choices array was empty",
-            "empty choices",
-        )
-    })?;
-
-    // Extract message from first choice
-    let message = first_choice.get("message").ok_or_else(|| {
-        invalid_response_error(
-            "OpenAI Chat Completions choice did not contain message",
-            "missing message",
-        )
-    })?;
-
-    // Parse message content
+    let parsed = parse_response(response).map_err(map_model_client_parse_error)?;
+    let response_id = parsed.id.clone();
     let mut blocks = Vec::new();
 
-    // Extract text content
-    if let Some(content) = message.get("content").and_then(Value::as_str) {
-        if !content.is_empty() {
-            blocks.push(ModelBlock::Text {
-                text: content.to_string(),
-            });
+    for content in parsed.message.content {
+        if let ContentPart::Text { text } = content {
+            if !text.is_empty() {
+                blocks.push(ModelBlock::Text { text });
+            }
         }
     }
 
-    // Extract tool calls
-    if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
-        for tool_call in tool_calls {
-            let id = tool_call.get("id").and_then(Value::as_str).ok_or_else(|| {
-                invalid_response_error(
-                    "OpenAI Chat Completions tool_call did not contain id",
-                    "missing tool_call_id",
-                )
-            })?;
-
-            let function = tool_call.get("function").ok_or_else(|| {
-                invalid_response_error(
-                    "OpenAI Chat Completions tool_call did not contain function",
-                    "missing function",
-                )
-            })?;
-
-            let name = function
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    invalid_response_error(
-                        "OpenAI Chat Completions function did not contain name",
-                        "missing function_name",
-                    )
-                })?;
-
-            let arguments_str = function
-                .get("arguments")
-                .and_then(Value::as_str)
-                .unwrap_or("{}");
-
-            let arguments = if arguments_str.trim().is_empty() {
-                json!({})
-            } else {
-                serde_json::from_str(arguments_str).map_err(|error| {
-                    invalid_response_error("invalid tool call arguments JSON", error)
-                })?
-            };
-
-            blocks.push(ModelBlock::ToolUse {
-                id: id.to_string(),
-                name: name.to_string(),
-                input: arguments,
-                kind: ModelToolCallKind::Function,
-                provider_data: None,
-            });
-        }
+    for tool_call in parsed.tool_calls {
+        blocks.push(ModelBlock::ToolUse {
+            id: tool_call.id,
+            name: tool_call.name,
+            input: tool_call.arguments,
+            kind: ModelToolCallKind::Function,
+            provider_data: None,
+        });
     }
 
-    // Allow valid minimal assistant messages that contain neither text nor tool calls.
-    // OpenAI Chat Completions can return empty/null content together with a finish_reason.
-    // In such cases, we return an empty blocks vector rather than an error.
-    if blocks.is_empty() {
-        // Check if we have a valid finish_reason before accepting empty blocks
-        let finish_reason = first_choice
-            .get("finish_reason")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-
-        if finish_reason.is_some() {
-            // Accept empty response when we have a finish_reason
-        } else {
-            return Err(invalid_response_error(
-                "OpenAI Chat Completions response contained no supported content",
-                "empty content",
-            ));
-        }
-    }
-
-    // Extract usage
-    let usage = response.get("usage").and_then(Value::as_object);
+    let usage = parsed.usage.as_ref();
     let cache_usage = usage.map(|usage| ProviderCacheUsage {
-        read_input_tokens: usage
-            .get("prompt_tokens_details")
-            .and_then(Value::as_object)
-            .and_then(|details| details.get("cached_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
+        read_input_tokens: usage.cached_input_tokens.unwrap_or(0),
         creation_input_tokens: 0,
     });
-
-    // Extract finish reason
-    let stop_reason = first_choice
-        .get("finish_reason")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-
-    // Build output items for continuation tracking
-    // Store the complete message object for proper continuation support
-    let output_items = vec![message.clone()];
 
     Ok(ParsedOpenAiResponse {
         response: ProviderTurnResponse {
             blocks,
-            stop_reason,
-            input_tokens: usage
-                .and_then(|usage| usage.get("prompt_tokens"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
-            output_tokens: usage
-                .and_then(|usage| usage.get("completion_tokens"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
+            stop_reason: parsed.finish_reason,
+            input_tokens: usage.map(|usage| usage.input_tokens).unwrap_or(0),
+            output_tokens: usage.map(|usage| usage.output_tokens).unwrap_or(0),
             cache_usage,
             provider_message_id: response_id.clone(),
             provider_request_id: None,
             request_diagnostics: None,
         },
         response_id,
-        output_items,
+        output_items: vec![raw_message],
         transport_timeline: None,
     })
+}
+
+fn map_model_client_parse_error(error: ClientError) -> anyhow::Error {
+    invalid_response_error(
+        "OpenAI Chat Completions response could not be parsed",
+        error.to_string(),
+    )
 }
 
 #[cfg(test)]
