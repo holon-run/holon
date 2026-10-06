@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, fmt, time::Duration};
 use thiserror::Error;
 
 #[cfg(feature = "openai-compatible")]
@@ -24,7 +24,7 @@ pub use openai_compatible::{parse_response, OpenAiCompatibleClient, OpenAiCompat
 /// The fields are intentionally opaque to the client. A host may use them for
 /// tracing, cancellation, route attribution, or request correlation without
 /// making those concerns part of the client contract.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct CallContext {
     pub request_id: Option<String>,
     pub turn_id: Option<String>,
@@ -32,6 +32,21 @@ pub struct CallContext {
     pub attempt_number: u32,
     pub timeout: Option<Duration>,
     pub headers: BTreeMap<String, String>,
+}
+
+impl fmt::Debug for CallContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let header_names = self.headers.keys().collect::<Vec<_>>();
+        formatter
+            .debug_struct("CallContext")
+            .field("request_id", &self.request_id)
+            .field("turn_id", &self.turn_id)
+            .field("route_identity", &self.route_identity)
+            .field("attempt_number", &self.attempt_number)
+            .field("timeout", &self.timeout)
+            .field("header_names", &header_names)
+            .finish()
+    }
 }
 
 /// A completion request independent of any one provider's route syntax.
@@ -62,12 +77,14 @@ impl CompletionRequest {
     }
 }
 
-/// A chat message. Tool calls are represented on [`CompletionResponse`] and
+/// A chat message. Assistant tool calls are represented on this message, and
 /// tool results are sent with the `Tool` role.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: Vec<ContentPart>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
 }
@@ -77,6 +94,7 @@ impl Message {
         Self {
             role,
             content: vec![ContentPart::Text { text: text.into() }],
+            tool_calls: Vec::new(),
             tool_call_id: None,
         }
     }
@@ -93,10 +111,20 @@ impl Message {
         Self::text(Role::Assistant, text)
     }
 
+    pub fn assistant_with_tool_calls(tool_calls: Vec<ToolCall>) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: Vec::new(),
+            tool_calls,
+            tool_call_id: None,
+        }
+    }
+
     pub fn tool(tool_call_id: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
             role: Role::Tool,
             content: vec![ContentPart::Text { text: text.into() }],
+            tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
         }
     }
@@ -273,4 +301,27 @@ pub enum ClientError {
     },
     #[error("provider response could not be decoded: {0}")]
     Decode(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CallContext;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn call_context_debug_redacts_header_values() {
+        let mut headers = BTreeMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer do-not-log-this-token".to_string(),
+        );
+        let context = CallContext {
+            headers,
+            ..Default::default()
+        };
+
+        let debug = format!("{context:?}");
+        assert!(debug.contains("Authorization"));
+        assert!(!debug.contains("do-not-log-this-token"));
+    }
 }

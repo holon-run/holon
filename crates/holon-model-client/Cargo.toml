@@ -20,3 +20,7 @@ thiserror = "2.0"
 
 [dev-dependencies]
 tokio = { version = "1.43", features = ["macros", "rt-multi-thread"] }
+
+[[example]]
+name = "minimal"
+required-features = ["openai-compatible"]

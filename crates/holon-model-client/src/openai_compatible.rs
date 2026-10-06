@@ -1,7 +1,6 @@
 use crate::{
-    CallContext, ClientError, CompletionRequest, CompletionResponse, ContentPart,
-    ContinuationState, Message, ModelClient, RequestExtensions, ResponseExtensions, ResponseFormat,
-    Role, ToolCall, Usage,
+    CallContext, ClientError, CompletionRequest, CompletionResponse, ContentPart, Message,
+    ModelClient, RequestExtensions, ResponseExtensions, ResponseFormat, Role, ToolCall, Usage,
 };
 use async_trait::async_trait;
 use reqwest::{
@@ -12,12 +11,25 @@ use serde_json::{json, Map, Value};
 use std::{collections::BTreeMap, time::Duration};
 
 /// Configuration for an OpenAI Chat Completions-compatible endpoint.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenAiCompatibleConfig {
     pub base_url: String,
     pub api_key: Option<String>,
     pub timeout: Duration,
     pub headers: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for OpenAiCompatibleConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let header_names = self.headers.keys().collect::<Vec<_>>();
+        formatter
+            .debug_struct("OpenAiCompatibleConfig")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[redacted]"))
+            .field("timeout", &self.timeout)
+            .field("header_names", &header_names)
+            .finish()
+    }
 }
 
 impl Default for OpenAiCompatibleConfig {
@@ -43,11 +55,12 @@ pub struct OpenAiCompatibleClient {
 
 impl std::fmt::Debug for OpenAiCompatibleClient {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let header_names = self.headers.keys().collect::<Vec<_>>();
         formatter
             .debug_struct("OpenAiCompatibleClient")
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "[redacted]"))
-            .field("headers", &self.headers)
+            .field("header_names", &header_names)
             .finish()
     }
 }
@@ -252,6 +265,12 @@ fn validate_request(request: &CompletionRequest) -> Result<(), ClientError> {
             "at least one message is required".to_string(),
         ));
     }
+    if request.continuation.is_some() {
+        return Err(ClientError::Unsupported(
+            "continuation is not supported by the OpenAI-compatible transport until request replay is implemented"
+                .to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -262,15 +281,39 @@ fn message_to_json(message: &Message) -> Result<Value, ClientError> {
         Value::String(role_name(message.role).to_string()),
     );
 
-    let content = if message.content.len() == 1 {
-        match &message.content[0] {
-            ContentPart::Text { text } => Value::String(text.clone()),
-            _ => Value::Array(message.content.iter().map(content_part_to_json).collect()),
-        }
-    } else {
-        Value::Array(message.content.iter().map(content_part_to_json).collect())
+    let content = match message.content.as_slice() {
+        [] => Value::Null,
+        [ContentPart::Text { text }] => Value::String(text.clone()),
+        _ => Value::Array(message.content.iter().map(content_part_to_json).collect()),
     };
     result.insert("content".to_string(), content);
+    if !message.tool_calls.is_empty() {
+        if message.role != Role::Assistant {
+            return Err(ClientError::InvalidRequest(
+                "tool calls require an assistant message".to_string(),
+            ));
+        }
+        let tool_calls = message
+            .tool_calls
+            .iter()
+            .map(|tool_call| {
+                let arguments = serde_json::to_string(&tool_call.arguments).map_err(|error| {
+                    ClientError::InvalidRequest(format!(
+                        "failed to serialize tool call arguments: {error}"
+                    ))
+                })?;
+                Ok(json!({
+                    "id": tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.name,
+                        "arguments": arguments,
+                    },
+                }))
+            })
+            .collect::<Result<Vec<_>, ClientError>>()?;
+        result.insert("tool_calls".to_string(), Value::Array(tool_calls));
+    }
     if let Some(tool_call_id) = &message.tool_call_id {
         result.insert(
             "tool_call_id".to_string(),
@@ -355,18 +398,23 @@ pub fn parse_response(value: Value) -> Result<CompletionResponse, ClientError> {
     let raw_message = choice
         .get("message")
         .ok_or_else(|| ClientError::Decode("response is missing message".to_string()))?;
-    let message = parse_message(raw_message)?;
+    let mut message = parse_message(raw_message)?;
     let tool_calls: Vec<ToolCall> = raw_message
         .get("tool_calls")
         .and_then(Value::as_array)
         .map(|calls| calls.iter().map(parse_tool_call).collect())
         .transpose()?
         .unwrap_or_default();
+    message.tool_calls = tool_calls.clone();
     let finish_reason = choice
         .get("finish_reason")
         .and_then(Value::as_str)
         .map(ToString::to_string);
-    if message.content.is_empty() && tool_calls.is_empty() && finish_reason.is_none() {
+    let has_supported_content = message.content.iter().any(|part| match part {
+        ContentPart::Text { text } => !text.is_empty(),
+        ContentPart::ImageUrl { .. } => true,
+    });
+    if !has_supported_content && tool_calls.is_empty() && finish_reason.is_none() {
         return Err(ClientError::Decode(
             "response contained no supported content".to_string(),
         ));
@@ -377,7 +425,7 @@ pub fn parse_response(value: Value) -> Result<CompletionResponse, ClientError> {
         .and_then(Value::as_str)
         .map(ToString::to_string);
     Ok(CompletionResponse {
-        continuation: id.clone().map(ContinuationState::response_id),
+        continuation: None,
         id,
         model: value
             .get("model")
@@ -412,7 +460,10 @@ fn parse_message(value: &Value) -> Result<Message, ClientError> {
         None => Role::Assistant,
     };
     let content = match value.get("content") {
-        Some(Value::String(text)) => vec![ContentPart::Text { text: text.clone() }],
+        Some(Value::String(text)) if !text.is_empty() => {
+            vec![ContentPart::Text { text: text.clone() }]
+        }
+        Some(Value::String(_)) => Vec::new(),
         Some(Value::Array(parts)) => parts
             .iter()
             .filter_map(|part| match part.get("type").and_then(Value::as_str) {
@@ -436,6 +487,7 @@ fn parse_message(value: &Value) -> Result<Message, ClientError> {
     Ok(Message {
         role,
         content,
+        tool_calls: Vec::new(),
         tool_call_id: value
             .get("tool_call_id")
             .and_then(Value::as_str)
@@ -452,8 +504,8 @@ fn parse_tool_call(value: &Value) -> Result<ToolCall, ClientError> {
         Some(Value::String(arguments)) => serde_json::from_str(arguments).map_err(|error| {
             ClientError::Decode(format!("invalid tool call arguments JSON: {error}"))
         })?,
+        Some(Value::Null) | None => json!({}),
         Some(arguments) => arguments.clone(),
-        None => json!({}),
     };
     let id = value
         .get("id")
@@ -504,7 +556,7 @@ fn role_name(role: Role) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ContentPart, ImageUrl, ToolDefinition};
+    use crate::{ContentPart, ContinuationState, ImageUrl, ToolDefinition};
 
     #[test]
     fn lowers_tools_extensions_and_multimodal_content() {
@@ -523,6 +575,7 @@ mod tests {
                             },
                         },
                     ],
+                    tool_calls: Vec::new(),
                     tool_call_id: None,
                 },
             ],
@@ -549,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_tool_calls_usage_and_continuation() {
+    fn parses_tool_calls_usage_without_unsupported_continuation_state() {
         let value = json!({
             "id": "chatcmpl-test",
             "model": "gpt-test",
@@ -578,10 +631,7 @@ mod tests {
 
         let response = parse_response(value).unwrap();
         assert_eq!(response.id.as_deref(), Some("chatcmpl-test"));
-        assert_eq!(
-            response.continuation.and_then(|state| state.response_id),
-            Some("chatcmpl-test".to_string())
-        );
+        assert!(response.continuation.is_none());
         assert_eq!(response.tool_calls[0].arguments["query"], "rust");
         assert_eq!(response.usage.unwrap().cached_input_tokens, Some(2));
     }
@@ -632,9 +682,126 @@ mod tests {
     }
 
     #[test]
+    fn parses_null_tool_call_arguments_as_an_empty_object() {
+        let response = parse_response(json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call-null-args",
+                        "type": "function",
+                        "function": {
+                            "name": "get_status",
+                            "arguments": null
+                        }
+                    }]
+                }
+            }]
+        }))
+        .unwrap();
+
+        assert_eq!(response.tool_calls[0].arguments, json!({}));
+    }
+
+    #[test]
+    fn rejects_empty_content_without_finish_reason_or_tool_calls() {
+        let error = parse_response(json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": ""
+                }
+            }]
+        }))
+        .unwrap_err();
+
+        assert!(
+            matches!(error, ClientError::Decode(message) if message.contains("no supported content"))
+        );
+    }
+
+    #[test]
+    fn rejects_continuation_until_request_replay_is_supported() {
+        let mut request = CompletionRequest::new("gpt-test", vec![Message::user("continue")]);
+        request.continuation = Some(ContinuationState::response_id("chatcmpl-test"));
+
+        let error = OpenAiCompatibleClient::build_request_body(&request).unwrap_err();
+        assert!(
+            matches!(error, ClientError::Unsupported(message) if message.contains("request replay"))
+        );
+    }
+
+    #[test]
+    fn preserves_assistant_tool_calls_for_tool_result_follow_up() {
+        let response = parse_response(json!({
+            "id": "chatcmpl-tool-roundtrip",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call-roundtrip",
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "arguments": "{\"query\":\"rust\"}"
+                        }
+                    }]
+                }
+            }]
+        }))
+        .unwrap();
+
+        let request = CompletionRequest::new(
+            "gpt-test",
+            vec![
+                response.message,
+                Message::tool("call-roundtrip", "{\"result\":\"ok\"}"),
+            ],
+        );
+        let body = OpenAiCompatibleClient::build_request_body(&request).unwrap();
+
+        assert_eq!(body["messages"][0]["role"], "assistant");
+        assert_eq!(body["messages"][0]["content"], Value::Null);
+        assert_eq!(
+            body["messages"][0]["tool_calls"][0]["function"]["arguments"],
+            "{\"query\":\"rust\"}"
+        );
+        assert_eq!(body["messages"][1]["role"], "tool");
+        assert_eq!(body["messages"][1]["tool_call_id"], "call-roundtrip");
+    }
+
+    #[test]
     fn rejects_empty_requests() {
         let request = CompletionRequest::new("", Vec::new());
         let error = OpenAiCompatibleClient::build_request_body(&request).unwrap_err();
         assert!(matches!(error, ClientError::InvalidRequest(_)));
+    }
+
+    #[test]
+    fn debug_redacts_api_keys_and_header_values() {
+        let mut headers = BTreeMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer do-not-log-this-header".to_string(),
+        );
+        let config = OpenAiCompatibleConfig {
+            api_key: Some("do-not-log-this-key".to_string()),
+            headers,
+            ..Default::default()
+        };
+
+        let config_debug = format!("{config:?}");
+        assert!(config_debug.contains("Authorization"));
+        assert!(!config_debug.contains("do-not-log-this-key"));
+        assert!(!config_debug.contains("do-not-log-this-header"));
+
+        let client = OpenAiCompatibleClient::new(config).unwrap();
+        let client_debug = format!("{client:?}");
+        assert!(client_debug.to_ascii_lowercase().contains("authorization"));
+        assert!(!client_debug.contains("do-not-log-this-key"));
+        assert!(!client_debug.contains("do-not-log-this-header"));
     }
 }
