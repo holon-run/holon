@@ -3439,6 +3439,7 @@ mod tests {
             current_turn_id: Some("turn-caller".into()),
             current_task_id: Some("task-caller".into()),
             current_work_item_id: Some("work-caller".into()),
+            inherited_routing_context: None,
         };
         let mut prepared = AgentMessageDeliveryService::prepare(
             AgentMessageSendRequest {
@@ -3450,6 +3451,7 @@ mod tests {
                 correlation_id: None,
                 causation_id: None,
                 requested_priority: None,
+                forward: false,
             },
             caller.clone(),
         )

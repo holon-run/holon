@@ -59,6 +59,8 @@ impl<'de> Deserialize<'de> for MessageEnvelope {
             metadata: Option<Value>,
             correlation_id: Option<String>,
             causation_id: Option<String>,
+            #[serde(default)]
+            routing_context: Option<AgentMessageRoutingContext>,
         }
 
         let compat = MessageEnvelopeCompat::deserialize(deserializer)?;
@@ -87,6 +89,7 @@ impl<'de> Deserialize<'de> for MessageEnvelope {
             metadata: compat.metadata,
             correlation_id: compat.correlation_id,
             causation_id: compat.causation_id,
+            routing_context: compat.routing_context,
         })
     }
 }
@@ -1939,6 +1942,8 @@ pub struct MessageEnvelope {
     pub metadata: Option<Value>,
     pub correlation_id: Option<String>,
     pub causation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_context: Option<AgentMessageRoutingContext>,
 }
 
 impl MessageEnvelope {
@@ -1971,6 +1976,7 @@ impl MessageEnvelope {
             metadata: None,
             correlation_id: None,
             causation_id: None,
+            routing_context: None,
         }
     }
 
@@ -4892,6 +4898,8 @@ pub struct MessageLifecycleAuditEvent {
     pub correlation_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub causation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_context: Option<AgentMessageRoutingContext>,
 }
 
 impl MessageLifecycleAuditEvent {
@@ -4913,6 +4921,7 @@ impl MessageLifecycleAuditEvent {
             admission_context: message.admission_context,
             correlation_id: message.correlation_id.clone(),
             causation_id: message.causation_id.clone(),
+            routing_context: message.routing_context.clone(),
         }
     }
 }

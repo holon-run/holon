@@ -36,6 +36,7 @@ import type {
   TimelineStateObjectRef,
   DisplayLevel,
   RuntimeMessageEnvelope,
+  RuntimeMessageRoutingContext,
   RuntimeBriefRecord,
   RuntimeCitation,
   RuntimeTranscriptEntry,
@@ -80,6 +81,7 @@ interface SessionItemDraft {
   kind: AgentTimelineItemKind;
   label: string;
   senderName?: string;
+  routingContext?: RuntimeMessageRoutingContext;
   body: string;
   timestamp: string;
   meta: string;
@@ -392,7 +394,7 @@ export function projectRuntimeEvent(
   messagesById?: Record<string, RuntimeMessageEnvelope>,
   transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>,
   briefRecordsById?: Record<string, RuntimeBriefRecord>,
-): (Pick<SessionItemDraft, "kind" | "label" | "senderName" | "body" | "citations" | "minDisplayLevel" | "detail" | "executionMeta" | "statusTrail"> & { timestamp?: string }) | undefined {
+): (Pick<SessionItemDraft, "kind" | "label" | "senderName" | "routingContext" | "body" | "citations" | "minDisplayLevel" | "detail" | "executionMeta" | "statusTrail"> & { timestamp?: string }) | undefined {
   if (eventType === "message_enqueued") {
     const message = messageEnvelopeProjection(payload, messagesById);
     if (message?.origin === "operator") {
@@ -400,6 +402,7 @@ export function projectRuntimeEvent(
         kind: "operator",
         label: "Operator input",
         senderName: message.senderName,
+        routingContext: message.routingContext,
         body: message.body || "Loading operator input…",
         minDisplayLevel: "info",
       };
@@ -410,6 +413,8 @@ export function projectRuntimeEvent(
       label: "Message queued",
       body: message?.body || readableText(payload) || "Runtime message queued.",
       minDisplayLevel: runtimeEventDisplayLevel(eventType),
+      routingContext: message?.routingContext,
+      detail: routingContextDetail(message?.routingContext),
     };
   }
 
@@ -1811,7 +1816,12 @@ function turnTriggerLabel(messageKind: string): string | undefined {
 function messageEnvelopeProjection(
   payload: Record<string, unknown> | undefined,
   messagesById?: Record<string, RuntimeMessageEnvelope>,
-): { origin: "operator" | "runtime"; body: string; senderName?: string } | undefined {
+): {
+  origin: "operator" | "runtime";
+  body: string;
+  senderName?: string;
+  routingContext?: RuntimeMessageRoutingContext;
+} | undefined {
   if (!payload) return undefined;
   const source = hydratedMessageForPayload(payload, messagesById) ?? payload;
   const origin = asRecord(source.origin);
@@ -1819,10 +1829,57 @@ function messageEnvelopeProjection(
   const senderName =
     originKind === "operator" ? stringField(origin, "actor_display_name")?.trim() || undefined : undefined;
   const body = asRecord(source.body);
+  const routingContext = messageRoutingContext(source.routing_context ?? payload.routing_context);
   return {
     origin: originKind === "operator" ? "operator" : "runtime",
     body: messageBodyText(body),
     senderName,
+    routingContext,
+  };
+}
+
+function messageRoutingContext(value: unknown): RuntimeMessageRoutingContext | undefined {
+  const record = asRecord(value);
+  const messageId = stringField(record, "message_id");
+  const recipientAgentId = stringField(record, "recipient_agent_id");
+  if (!messageId || !recipientAgentId) return undefined;
+  return {
+    message_id: messageId,
+    sender_agent_id: stringField(record, "sender_agent_id"),
+    recipient_agent_id: recipientAgentId,
+    reply_to_agent_id: stringField(record, "reply_to_agent_id"),
+    correlation_id: stringField(record, "correlation_id"),
+    in_reply_to_message_id: stringField(record, "in_reply_to_message_id"),
+    original_sender_agent_id: stringField(record, "original_sender_agent_id"),
+    original_reply_to_agent_id: stringField(record, "original_reply_to_agent_id"),
+  };
+}
+
+function routingContextDetail(
+  routingContext: RuntimeMessageRoutingContext | undefined,
+): AgentTimelineItemDetail | undefined {
+  if (!routingContext) return undefined;
+  const forwarded =
+    routingContext.original_sender_agent_id || routingContext.original_reply_to_agent_id;
+  return {
+    label: "Message routing",
+    text: compactJoin([
+      routingContext.sender_agent_id ? `sender: ${routingContext.sender_agent_id}` : "sender: unknown",
+      `recipient: ${routingContext.recipient_agent_id}`,
+      routingContext.reply_to_agent_id ? `reply: ${routingContext.reply_to_agent_id}` : undefined,
+      routingContext.correlation_id ? `correlation: ${routingContext.correlation_id}` : undefined,
+      routingContext.in_reply_to_message_id
+        ? `in reply to: ${routingContext.in_reply_to_message_id}`
+        : undefined,
+      forwarded ? "forwarded" : undefined,
+      routingContext.original_sender_agent_id
+        ? `original sender: ${routingContext.original_sender_agent_id}`
+        : undefined,
+      routingContext.original_reply_to_agent_id
+        ? `original reply target: ${routingContext.original_reply_to_agent_id}`
+        : undefined,
+    ]),
+    tone: "data",
   };
 }
 

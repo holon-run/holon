@@ -5316,6 +5316,7 @@ impl RuntimeHost {
                 .map(str::to_string),
             current_task_id: Some(task.id.clone()),
             current_work_item_id: task.work_item_id.clone(),
+            inherited_routing_context: None,
         };
         let mut prepared = crate::runtime::AgentMessageDeliveryService::prepare(
             AgentMessageSendRequest {
@@ -5325,6 +5326,7 @@ impl RuntimeHost {
                 correlation_id: Some(task.id.clone()),
                 causation_id: task.parent_message_id.clone(),
                 requested_priority: Some(Priority::Normal),
+                forward: false,
             },
             caller,
         )?;
@@ -7900,6 +7902,7 @@ mod tests {
                     correlation_id: None,
                     causation_id: None,
                     requested_priority: Some(Priority::Normal),
+                    forward: false,
                 },
                 AuthorityClass::RuntimeInstruction,
             )
@@ -9461,6 +9464,7 @@ mod tests {
                 correlation_id: Some(task_id.into()),
                 causation_id: None,
                 requested_priority: Some(Priority::Normal),
+                forward: false,
             },
             AgentMessageCallerContext {
                 caller_principal: format!("agent:{parent_agent_id}"),
@@ -9476,6 +9480,7 @@ mod tests {
                 current_turn_id: None,
                 current_task_id: Some(task_id.into()),
                 current_work_item_id: None,
+                inherited_routing_context: None,
             },
         )
         .unwrap();

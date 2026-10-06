@@ -662,10 +662,11 @@ mod tests {
             AgentLifecycleAttachment, AgentLifecycleAttachmentRecord, AgentMessageCallerContext,
             AgentMessageDeliveryError, AgentMessageDeliveryOutcome,
             AgentMessageDeliveryRejectionCode, AgentMessageDerivedGrant, AgentMessagePolicyRecord,
-            AgentMessagePolicyRule, AgentMessagePrincipalKind, AgentMessageSendRequest,
-            AgentOwnership, AgentPolicyEffect, AgentProfilePreset, AgentState, AgentStatus,
-            AgentVisibility, AuthorityClass, MessageBody, MessageDeliverySurface, MessageOrigin,
-            Priority, QueueEntryRecord, QueueEntryStatus,
+            AgentMessagePolicyRule, AgentMessagePrincipalKind, AgentMessageRoutingContext,
+            AgentMessageSendRequest, AgentOwnership, AgentPolicyEffect, AgentProfilePreset,
+            AgentState, AgentStatus, AgentVisibility, AuthorityClass, MessageBody,
+            MessageDeliverySurface, MessageEnvelope, MessageOrigin, Priority, QueueEntryRecord,
+            QueueEntryStatus,
         },
     };
     use tempfile::TempDir;
@@ -709,6 +710,7 @@ mod tests {
             current_turn_id: Some("turn-delivery".into()),
             current_task_id: Some("task-delivery".into()),
             current_work_item_id: Some("work-delivery".into()),
+            inherited_routing_context: None,
         }
     }
 
@@ -727,6 +729,7 @@ mod tests {
             current_turn_id: Some("turn-peer-delivery".into()),
             current_task_id: Some("task-peer-delivery".into()),
             current_work_item_id: Some("work-peer-delivery".into()),
+            inherited_routing_context: None,
         }
     }
 
@@ -738,7 +741,23 @@ mod tests {
             correlation_id: Some("correlation-delivery".into()),
             causation_id: Some("message-parent".into()),
             requested_priority: Some(Priority::Normal),
+            forward: false,
         }
+    }
+
+    fn routed_caller() -> AgentMessageCallerContext {
+        let mut caller = caller();
+        caller.inherited_routing_context = Some(AgentMessageRoutingContext {
+            message_id: "incoming-message".into(),
+            sender_agent_id: Some("origin-agent".into()),
+            recipient_agent_id: "caller-agent".into(),
+            reply_to_agent_id: Some("origin-agent".into()),
+            correlation_id: Some("correlation-incoming".into()),
+            in_reply_to_message_id: None,
+            original_sender_agent_id: None,
+            original_reply_to_agent_id: None,
+        });
+        caller
     }
 
     fn prepare(key: &str, text: &str) -> Result<crate::runtime::PreparedAgentMessageDelivery> {
@@ -945,6 +964,51 @@ mod tests {
                 .derived_grant,
             Some(AgentMessageDerivedGrant::PersistentIndependentPeerInvocation)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn routed_message_round_trips_through_message_repository_and_legacy_decode() -> Result<()> {
+        let (dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let mut request = request("routing-roundtrip", "forwarded payload");
+        request.forward = true;
+        let prepared = AgentMessageDeliveryService::prepare(request, routed_caller())?;
+        let expected = prepared
+            .message
+            .routing_context
+            .clone()
+            .context("prepared routing context missing")?;
+
+        db.transitions()
+            .commit_delivery_admission(&admission_command(&prepared), &prepared.record)?;
+        let stored = db
+            .messages()
+            .recent(Some("target-agent"), 10)?
+            .into_iter()
+            .find(|message| message.id == prepared.message.id)
+            .context("message repository did not persist routed message")?;
+        assert_eq!(stored.routing_context, Some(expected.clone()));
+
+        let database_path = dir.path().join("state/runtime.sqlite");
+        let lock_path = dir.path().join("state/runtime.lock");
+        drop(db);
+        let reopened = RuntimeDb::open_and_migrate(database_path, lock_path)?;
+        let replayed = reopened
+            .messages()
+            .recent(Some("target-agent"), 10)?
+            .into_iter()
+            .find(|message| message.id == prepared.message.id)
+            .context("routed message did not survive restart")?;
+        assert_eq!(replayed.routing_context, Some(expected));
+
+        let mut legacy = serde_json::to_value(&replayed)?;
+        legacy
+            .as_object_mut()
+            .expect("message payload must be an object")
+            .remove("routing_context");
+        let decoded: MessageEnvelope = serde_json::from_value(legacy)?;
+        assert_eq!(decoded.routing_context, None);
         Ok(())
     }
 

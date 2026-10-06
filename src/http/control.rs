@@ -1215,6 +1215,7 @@ pub async fn control_prompt(
                 correlation_id: None,
                 causation_id: None,
                 requested_priority: Some(Priority::Interject),
+                forward: false,
             },
             crate::types::AgentMessageCallerContext {
                 caller_principal,
@@ -1228,6 +1229,7 @@ pub async fn control_prompt(
                 current_turn_id: None,
                 current_task_id: None,
                 current_work_item_id: None,
+                inherited_routing_context: None,
             },
         );
         let mut prepared = match preparation {

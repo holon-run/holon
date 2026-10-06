@@ -58,6 +58,7 @@ export function renderDomainObject(
     kind: projection.kind,
     label: projection.label,
     senderName: projection.senderName,
+    routingContext: projection.routingContext,
     body: projection.body,
     timestamp: projection.timestamp || event.ts || obj.updatedAt,
     meta: eventMeta(eventType, payload, event.event_seq),

@@ -105,6 +105,81 @@ describe("reduceAgentSessionTimeline", () => {
     expect(timeline[1].senderName).toBeUndefined();
   });
 
+  it("projects trusted routing metadata for direct and forwarded agent messages", () => {
+    const direct = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "event-direct",
+            event_seq: 1,
+            type: "message_enqueued",
+            payload: {
+              message_id: "msg-direct",
+              origin: { kind: "system" },
+              body: { text: "direct" },
+              routing_context: {
+                message_id: "msg-direct",
+                sender_agent_id: "agent-a",
+                recipient_agent_id: "agent-b",
+                reply_to_agent_id: "agent-a",
+                correlation_id: "corr-direct",
+              },
+            },
+          }),
+        ],
+      },
+    });
+    const forwarded = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "event-forwarded",
+            event_seq: 2,
+            type: "message_enqueued",
+            payload: {
+              message_id: "msg-forwarded",
+              origin: { kind: "system" },
+              body: { text: "forwarded" },
+              routing_context: {
+                message_id: "msg-forwarded",
+                sender_agent_id: "relay-agent",
+                recipient_agent_id: "agent-c",
+                reply_to_agent_id: "agent-a",
+                in_reply_to_message_id: "msg-direct",
+                original_sender_agent_id: "agent-a",
+                original_reply_to_agent_id: "agent-a",
+              },
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(direct[0]).toMatchObject({
+      routingContext: {
+        sender_agent_id: "agent-a",
+        recipient_agent_id: "agent-b",
+        reply_to_agent_id: "agent-a",
+        correlation_id: "corr-direct",
+      },
+      detail: {
+        label: "Message routing",
+        text: expect.stringContaining("sender: agent-a"),
+      },
+    });
+    expect(forwarded[0]).toMatchObject({
+      routingContext: {
+        sender_agent_id: "relay-agent",
+        recipient_agent_id: "agent-c",
+        original_sender_agent_id: "agent-a",
+        original_reply_to_agent_id: "agent-a",
+      },
+      detail: {
+        text: expect.stringContaining("forwarded"),
+      },
+    });
+  });
+
   it("hydrates slim operator message events from the message cache", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {

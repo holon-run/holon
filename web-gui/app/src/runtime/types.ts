@@ -657,7 +657,19 @@ export interface RuntimeMessageEnvelope {
   agent_id?: string;
   origin?: unknown;
   body?: unknown;
+  routing_context?: RuntimeMessageRoutingContext | null;
   [key: string]: unknown;
+}
+
+export interface RuntimeMessageRoutingContext {
+  message_id: string;
+  sender_agent_id?: string | null;
+  recipient_agent_id: string;
+  reply_to_agent_id?: string | null;
+  correlation_id?: string | null;
+  in_reply_to_message_id?: string | null;
+  original_sender_agent_id?: string | null;
+  original_reply_to_agent_id?: string | null;
 }
 
 export interface RuntimeTranscriptEntry {
@@ -935,6 +947,7 @@ export interface AgentTimelineItem {
   label: string;
   /** Sender display name for user-attributed operator messages; absent for local control identity. */
   senderName?: string;
+  routingContext?: RuntimeMessageRoutingContext;
   body: string;
   timestamp: string;
   meta: string;
