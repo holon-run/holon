@@ -1,5 +1,6 @@
 package run.holon.android.app
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ShortcutManager
@@ -9,6 +10,7 @@ import androidx.core.content.IntentCompat
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
+import androidx.core.net.toUri
 import java.security.MessageDigest
 import java.util.UUID
 import run.holon.android.sdk.AgentSummary
@@ -29,6 +31,8 @@ internal data class PendingAgentShare(
     val sourceScopeKey: String? = null,
 )
 
+// EXTRA_SHORTCUT_ID is an inlined compile-time constant; reading it is safe below API 29.
+@SuppressLint("InlinedApi")
 internal fun incomingShare(context: Context, intent: Intent): PendingAgentShare? {
     if (intent.action != Intent.ACTION_SEND && intent.action != Intent.ACTION_SEND_MULTIPLE) return null
     val streams = buildList {
@@ -98,7 +102,7 @@ internal object AgentShareShortcuts {
                 .setIcon(IconCompat.createWithResource(context, R.drawable.ic_holon))
                 .setCategories(setOf(CATEGORY))
                 .setIntent(
-                    Intent(Intent.ACTION_VIEW, Uri.parse("holon://share/$shortcutId"), context, MainActivity::class.java)
+                    Intent(Intent.ACTION_VIEW, "holon://share/$shortcutId".toUri(), context, MainActivity::class.java)
                         .putExtra(EXTRA_SHORTCUT_ID, shortcutId),
                 )
                 .build()
