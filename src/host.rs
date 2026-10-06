@@ -2757,12 +2757,6 @@ impl RuntimeHost {
                 agent_id: agent_id.to_string(),
             });
         }
-        if agent_id == self.config().default_agent_id {
-            return Err(PublicAgentError::RenameForbidden {
-                agent_id: agent_id.to_string(),
-                reason: "the configured default agent cannot be renamed".into(),
-            });
-        }
         normalize_agent_name(requested_name).map_err(|error| PublicAgentError::InvalidName {
             agent_id: agent_id.to_string(),
             reason: error.to_string(),

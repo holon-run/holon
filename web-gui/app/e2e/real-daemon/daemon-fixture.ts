@@ -28,6 +28,8 @@ interface DaemonController {
 
 interface DaemonOptions {
   webDist: string;
+  /** Skip the normal default-agent bootstrap for empty-runtime onboarding tests. */
+  createInitialAgent?: boolean;
   /** Extra environment variables for the daemon process (e.g. provider overrides). */
   env?: Record<string, string>;
 }
@@ -143,6 +145,9 @@ async function createDaemon(
   const binary = path.resolve(
     process.env.HOLON_E2E_DAEMON_BIN ?? "../../target/debug/holon",
   );
+  // The test runner itself may be launched inside an agent process. Do not let
+  // that process identity become the daemon's default public Agent.
+  const { HOLON_AGENT_ID: _inheritedAgentId, ...inheritedEnv } = process.env;
   let child: ChildProcessWithoutNullStreams | undefined;
   let agentCreated = false;
   let stderrStream: WriteStream | undefined;
@@ -165,8 +170,9 @@ async function createDaemon(
       path.resolve(options.webDist),
     ], {
       env: {
-        ...process.env,
+        ...inheritedEnv,
         HOLON_HOME: home,
+        HOLON_AGENT_ID: DEFAULT_AGENT_ID,
         HOLON_MODEL: "openai/gpt-5.4",
         OPENAI_API_KEY: "e2e-provider-key",
         HOLON_OPENAI_BASE_URL: stubProvider.baseUrl,
@@ -181,7 +187,7 @@ async function createDaemon(
     stderrStream = createWriteStream(stderrPath, { flags: "a" });
     child.stderr.pipe(stderrStream);
     await waitForReady(baseUrl, controlToken, child);
-    if (!agentCreated) {
+    if (!agentCreated && options.createInitialAgent !== false) {
       const response = await fetch(
         `${baseUrl}/api/control/agents/${DEFAULT_AGENT_ID}/create`,
         {

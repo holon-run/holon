@@ -806,12 +806,15 @@ fn agent_rename_reports_detail_json_and_readable_errors() {
         "conflict stderr should stay readable: {conflict_stderr}"
     );
 
-    // The configured default agent keeps its identity.
-    let (default_stdout, default_stderr) =
-        run_failure_with_env(&home, &["agent", "rename", "main", "--name", "Nope"], &envs);
-    assert!(default_stdout.is_empty());
-    assert!(
-        default_stderr.contains("default agent cannot be renamed"),
-        "default-agent stderr should stay readable: {default_stderr}"
+    // The configured default agent is renameable while keeping its stable id.
+    let default_renamed = run_json_with_env(
+        &home,
+        &["agent", "rename", "main", "--name", "Default Renamed"],
+        &envs,
+    );
+    assert_eq!(default_renamed["identity"]["agent_id"], json!("main"));
+    assert_eq!(
+        default_renamed["identity"]["name"],
+        json!("Default Renamed")
     );
 }
