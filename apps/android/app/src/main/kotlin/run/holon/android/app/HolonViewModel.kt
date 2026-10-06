@@ -492,6 +492,7 @@ internal class HolonViewModel(
             .buildUpon()
             .appendQueryParameter("state", state)
             .appendQueryParameter("code_challenge", proof.challenge)
+            .appendQueryParameter("code_challenge_method", "S256")
             .build()
             .toString()
     }

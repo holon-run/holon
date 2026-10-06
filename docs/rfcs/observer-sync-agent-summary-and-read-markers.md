@@ -345,6 +345,12 @@ and a visibility policy generation. Credential rotation with unchanged
 entitlement should keep it stable. A principal, entitlement, or policy change
 must rotate it. Local unauthenticated mode uses a runtime-local public scope.
 
+In OIDC mode, roster snapshots, Agent projection snapshots, and Brief read
+states all resolve the same authenticated user principal. Snapshot coalescing,
+fresh caches, and stale fallback are partitioned by that principal; no caller
+may receive another user's scope from a shared cache. Static-token deployments
+retain their shared control scope, including across token rotation.
+
 `event_head_seq` is the greatest committed `event_seq` visible in the response
 read view. It comes from the Agent's committed `runtime_sequences` row, not an
 in-memory watcher, the allocator's next value, or an aggregate over retained
