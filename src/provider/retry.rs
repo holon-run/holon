@@ -472,7 +472,14 @@ pub(crate) fn classify_status_error_with_trace(
     trace: Option<&ProviderHttpTraceRequest>,
     retry_after: Option<Duration>,
 ) -> anyhow::Error {
+    let detail = extract_upstream_error_detail(&body);
+    let deterministic_error =
+        is_known_deterministic_provider_error(detail.as_ref(), Some(body.as_str()));
     let classification = match status {
+        _ if deterministic_error => ProviderFailureClassification {
+            kind: ProviderFailureKind::ContractError,
+            disposition: RetryDisposition::FailFast,
+        },
         StatusCode::TOO_MANY_REQUESTS => ProviderFailureClassification {
             kind: ProviderFailureKind::RateLimited,
             disposition: RetryDisposition::Retryable,
@@ -494,7 +501,6 @@ pub(crate) fn classify_status_error_with_trace(
             disposition: RetryDisposition::FailFast,
         },
     };
-    let detail = extract_upstream_error_detail(&body);
     let code = detail
         .as_ref()
         .and_then(|detail| detail.code.as_deref())
@@ -539,6 +545,44 @@ pub(crate) struct UpstreamErrorDetail {
     pub error_type: Option<String>,
     pub code: Option<String>,
     pub message: Option<String>,
+}
+
+pub(crate) fn is_known_deterministic_provider_error(
+    detail: Option<&UpstreamErrorDetail>,
+    raw_text: Option<&str>,
+) -> bool {
+    raw_text.is_some_and(is_known_deterministic_provider_error_text)
+        || detail.is_some_and(|detail| {
+            detail
+                .error_type
+                .as_deref()
+                .is_some_and(is_known_deterministic_provider_error_text)
+                || detail
+                    .code
+                    .as_deref()
+                    .is_some_and(is_known_deterministic_provider_error_text)
+                || detail
+                    .message
+                    .as_deref()
+                    .is_some_and(is_known_deterministic_provider_error_text)
+        })
+}
+
+pub(crate) fn is_known_deterministic_provider_error_text(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    [
+        "no user query found in messages",
+        "context_length_exceeded",
+        "context length exceeded",
+        "maximum context length",
+        "context window exceeded",
+        "context window is too small",
+        "prompt is too long",
+        "input is too long",
+        "too many tokens",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
 }
 
 pub(crate) fn extract_upstream_error_detail(body: &str) -> Option<UpstreamErrorDetail> {
@@ -1164,6 +1208,84 @@ mod tests {
             ProviderFailureKind::RateLimited
         );
         assert_eq!(transport.retry_after, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn deterministic_context_overflow_on_server_error_is_fail_fast() {
+        let error = classify_status_error_with_trace(
+            "Ollama request failed",
+            "response_status",
+            Some("ollama"),
+            Some("ollama/qwen3.8:latest"),
+            Some("http://localhost:11434/v1/chat/completions"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "context length exceeded: prompt is too long".into(),
+            None,
+            None,
+        );
+        let transport = error
+            .downcast_ref::<ProviderTransportError>()
+            .expect("transport error");
+        assert_eq!(
+            transport.classification.kind,
+            ProviderFailureKind::ContractError
+        );
+        assert_eq!(
+            transport.classification.disposition,
+            super::RetryDisposition::FailFast
+        );
+    }
+
+    #[test]
+    fn ollama_missing_user_query_on_server_error_is_fail_fast() {
+        let error = classify_status_error_with_trace(
+            "Ollama request failed",
+            "response_status",
+            Some("ollama"),
+            Some("ollama/qwen3.8:latest"),
+            Some("http://localhost:11434/v1/chat/completions"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "no user query found in messages".into(),
+            None,
+            None,
+        );
+        let transport = error
+            .downcast_ref::<ProviderTransportError>()
+            .expect("transport error");
+        assert_eq!(
+            transport.classification.kind,
+            ProviderFailureKind::ContractError
+        );
+        assert_eq!(
+            transport.classification.disposition,
+            super::RetryDisposition::FailFast
+        );
+    }
+
+    #[test]
+    fn generic_server_error_remains_retryable() {
+        let error = classify_status_error_with_trace(
+            "Provider request failed",
+            "response_status",
+            Some("ollama"),
+            Some("ollama/qwen3.8:latest"),
+            Some("http://localhost:11434/v1/chat/completions"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "temporary upstream failure".into(),
+            None,
+            None,
+        );
+        let transport = error
+            .downcast_ref::<ProviderTransportError>()
+            .expect("transport error");
+        assert_eq!(
+            transport.classification.kind,
+            ProviderFailureKind::ServerError
+        );
+        assert_eq!(
+            transport.classification.disposition,
+            super::RetryDisposition::Retryable
+        );
     }
 
     #[test]
