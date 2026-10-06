@@ -127,4 +127,10 @@ public struct HolonHTTPFailure: Error, Equatable, Sendable {
     public let statusCode: Int
     public let apiError: HolonAPIError?
     public let identity: HolonConnectionIdentity
+
+    public init(statusCode: Int, apiError: HolonAPIError? = nil, identity: HolonConnectionIdentity) {
+        self.statusCode = statusCode
+        self.apiError = apiError
+        self.identity = identity
+    }
 }

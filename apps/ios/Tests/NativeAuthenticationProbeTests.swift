@@ -53,15 +53,34 @@ final class NativeAuthenticationProbeTests: XCTestCase {
         try store.save(proof)
         let reopened = NativeLoginProofStore(vault: CredentialVault(service: vault.service))
         XCTAssertEqual(try reopened.load(apiBaseURL: base, state: proof.state), proof)
+        XCTAssertEqual(try reopened.loadPending(apiBaseURL: base), proof)
         XCTAssertNil(try reopened.load(apiBaseURL: URL(string: "https://holon.example/other/api/")!, state: proof.state))
         XCTAssertNil(try reopened.load(apiBaseURL: base, state: "other-state"))
         try store.remove(proof)
         XCTAssertNil(try reopened.load(apiBaseURL: base, state: proof.state))
+        XCTAssertNil(try reopened.loadPending(apiBaseURL: base))
         try store.save(proof)
         XCTAssertNil(try reopened.load(
             apiBaseURL: base, state: proof.state, now: proof.createdAt.addingTimeInterval(NativeLoginProof.lifetime)
         ))
         XCTAssertNil(try reopened.load(apiBaseURL: base, state: proof.state))
+    }
+
+    func testProofReplacementExpiryAndDescriptionsDoNotExposeSecrets() throws {
+        let store = NativeLoginProofStore(vault: .init(service: "run.holon.ios.proof-tests.\(UUID())"))
+        let first = try NativeLoginProof.make(apiBaseURL: base)
+        let second = try NativeLoginProof.make(apiBaseURL: base)
+        defer { try? store.remove(first); try? store.remove(second) }
+        try store.save(first)
+        try store.save(second)
+        XCTAssertNil(try store.load(apiBaseURL: base, state: first.state))
+        try store.remove(first)
+        XCTAssertEqual(try store.loadPending(apiBaseURL: base), second)
+        XCTAssertFalse(String(describing: second).contains(second.verifier))
+        XCTAssertFalse(String(reflecting: second).contains(second.state))
+        XCTAssertNil(try store.loadPending(apiBaseURL: base,
+                                           now: second.createdAt.addingTimeInterval(NativeLoginProof.lifetime)))
+        XCTAssertNil(try store.load(apiBaseURL: base, state: second.state))
     }
 
     func testBrowserPreparationAnchorEphemeralPolicyAndCancellation() throws {

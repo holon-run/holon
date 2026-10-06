@@ -14,6 +14,7 @@ binary="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$bina
 python3 - "$binary" "$PWD" <<'PY'
 import http.client
 import http.server
+import json
 import os
 import pathlib
 import socket
@@ -57,6 +58,26 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-contract-") as temporary:
             else:
                 raise RuntimeError("isolated daemon readiness timed out")
 
+            class LocalControlConnection(http.client.HTTPConnection):
+                def connect(self):
+                    self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    self.sock.settimeout(self.timeout)
+                    self.sock.connect(env["HOLON_SOCKET_PATH"])
+
+            # Pairing issuance requires existing admission, even on loopback.
+            # Use this isolated daemon's trusted local control transport.
+            control = LocalControlConnection("localhost", timeout=3)
+            try:
+                control.request("POST", "/api/auth/pairing/issue")
+                response = control.getresponse()
+                if response.status != 200:
+                    raise RuntimeError(f"local pairing issuance failed: {response.status}")
+                pairing = json.loads(response.read())
+                if not pairing.get("ticket") or not pairing.get("expires_at"):
+                    raise RuntimeError("local pairing issuance returned no ticket or expiry")
+            finally:
+                control.close()
+
             class PrefixProxy(http.server.BaseHTTPRequestHandler):
                 def log_message(self, *args):
                     pass
@@ -90,6 +111,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-contract-") as temporary:
             test_env = dict(os.environ)
             test_env.update(
                 HOLON_LIVE_BASE=base,
+                HOLON_LIVE_PAIRING_TICKET=pairing["ticket"],
                 HOLON_LIVE_PROXY_BASE=f"http://127.0.0.1:{proxy.server_port}/isolated/holon/api")
             print(f"真实隔离 daemon: {binary}; HTTP 与 prefix proxy 已就绪", flush=True)
             result = subprocess.run(

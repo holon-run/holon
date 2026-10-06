@@ -16,6 +16,43 @@ final class LiveDaemonProbeTests: XCTestCase {
         return url
     }
 
+    func testNativePairingTicketIsSingleUse() async throws {
+        // The harness issues a ticket through trusted local control admission,
+        // without configuring a model provider. Anonymous TCP cannot issue one.
+        let endpoint = try HolonEndpoint(apiBaseURL: base())
+        let transport = URLSession(configuration: .ephemeral)
+        defer { transport.invalidateAndCancel() }
+        var request = URLRequest(url: try endpoint.url(path: ["auth", "pairing", "issue"]))
+        request.httpMethod = "POST"
+        let (_, response) = try await transport.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 401)
+        let ticket = try XCTUnwrap(ProcessInfo.processInfo.environment["HOLON_LIVE_PAIRING_TICKET"])
+        let client = try HolonClient(endpoint: endpoint, networkID: "pairing")
+        do {
+            let session = try await client.redeemPairingTicket(ticket: ticket)
+            XCTAssertTrue(session.value.ok)
+            XCTAssertFalse(try XCTUnwrap(session.value.credential).isEmpty)
+            do {
+                _ = try await client.redeemPairingTicket(ticket: ticket)
+                XCTFail("A redeemed ticket must not be reusable")
+            } catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 401) }
+            try await client.bindIdentity(runtimeID: nil, userID: session.value.userId,
+                                          visibilityScopeID: nil,
+                                          credential: XCTUnwrap(session.value.credential))
+            let currentUser = try await client.currentUser()
+            XCTAssertTrue(currentUser.value.ok)
+            // Local sessions are attributed to the shared control principal.
+            XCTAssertEqual(currentUser.value.userId, "control")
+            // Keep the revoked credential bound to verify server-side invalidation.
+            try await client.revokeSession()
+            do {
+                _ = try await client.currentUser()
+                XCTFail("A logged-out session must no longer authenticate")
+            } catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 401) }
+            await client.close()
+        } catch { await client.close(); throw error }
+    }
+
     func testProductionSDKBootstrapThroughRealPrefix() async throws {
         for key in ["HOLON_LIVE_BASE", "HOLON_LIVE_PROXY_BASE"] {
             let endpoint = try HolonEndpoint(apiBaseURL: base(key))

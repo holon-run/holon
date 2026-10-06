@@ -66,9 +66,10 @@ final class PlatformFoundationTests: XCTestCase {
         XCTAssertEqual(records[0].value(forKey: "status") as? String, "unknown")
     }
 
-    func testPlatformNetworkPolicyDoesNotPermitArbitraryLoads() {
+    func testPlatformNetworkPolicyAllowsConfirmedUserSuppliedEndpoints() {
         let policy = Bundle.main.object(forInfoDictionaryKey: "NSAppTransportSecurity") as? [String: Any]
-        XCTAssertEqual(policy?["NSAllowsLocalNetworking"] as? Bool, true)
-        XCTAssertNotEqual(policy?["NSAllowsArbitraryLoads"] as? Bool, true)
+        XCTAssertEqual(policy?["NSAllowsArbitraryLoads"] as? Bool, true)
+        // Presence of this key would override arbitrary loads on current iOS.
+        XCTAssertNil(policy?["NSAllowsLocalNetworking"])
     }
 }

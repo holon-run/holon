@@ -97,9 +97,28 @@ public actor HolonClient {
         return response
     }
 
+    /// Redeems once without sending or installing an existing session credential.
+    public func redeemPairingTicket(ticket: String) async throws -> HolonResponse<HolonSession> {
+        guard ticket.utf8.count == 64,
+              ticket.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) ||
+                  (97...102).contains($0) }) else {
+            throw HolonClientError.invalidRequest
+        }
+        let result = try await request(path: ["auth", "pairing", "redeem", "native"],
+                                       method: "POST", body: .object(["ticket": .string(ticket)]),
+                                       authenticated: false)
+        let response = try decoded(result, using: HolonSession.init)
+        guard response.value.ok,
+              let credential = response.value.credential,
+              !credential.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw HolonClientError.malformedResponse
+        }
+        return response
+    }
+
     /// Permission and transport failures never clear the credential.
     public func revokeSession() async throws {
-        _ = try await request(path: ["auth", "session", "revoke"], method: "POST")
+        _ = try await request(path: ["auth", "session", "logout"], method: "POST")
     }
 
     public func getJSON(path: [String], query: [String: String] = [:],

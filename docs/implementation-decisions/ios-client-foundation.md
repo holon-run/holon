@@ -28,9 +28,16 @@ auth, storage or UI policy. Keychain holds scoped credentials; the initial
 hosted platform tests establish isolation/removal and Core Data transaction
 reopen/rollback before a production outbox schema is introduced.
 
-The initial app keeps arbitrary ATS loads disabled. A later cleartext transport
-slice must couple explicit user confirmation to the chosen network, not disable
-certificate validation. OIDC requires the separately planned allow-listed iOS
+The P0 app kept arbitrary ATS loads disabled. P2 supports user-selected HTTP
+addresses, including unknown IP literals and reverse proxies, with an explicit
+per-profile confirmation enforced before constructing a transport. Static ATS
+domain exceptions cannot enumerate these targets, so the app uses
+`NSAllowsArbitraryLoads` without `NSAllowsLocalNetworking` (the latter overrides
+the former). This removes ATS's additional restrictions, not default server trust
+evaluation: URLSession still validates HTTPS certificates and denies redirects.
+Organization login remains HTTPS-only. Store review will require an exception
+justification; signing and distribution are not authorized by this choice.
+OIDC requires the separately planned allow-listed iOS
 callback while preserving Android defaults; registering Android's scheme is not
 an acceptable workaround.
 
@@ -41,6 +48,28 @@ The browser adapter uses an ephemeral `ASWebAuthenticationSession` anchored to
 the caller's window; attempt IDs suppress callbacks from a cancelled session.
 Preparation/cancellation is testable without presenting UI. Interactive browser
 login and real provider callback delivery remain separate P2 acceptance gates.
+
+P2 stores small, secret-free network profiles and the selected profile ID in
+UserDefaults; Keychain stores session identity, credentials and pending proof
+locators. Profiles do not require database transactions or join the future
+conversation/outbox store. Session lookup binds profile ID, complete API base,
+runtime, user and visibility scope; every connection bootstrap revalidates these
+dimensions before exposing a new identity. No conversation cache is introduced
+by this authentication slice.
+
+A confirmed exchange is staged in Keychain by profile/API base until that
+bootstrap completes, so a transient post-login read failure or restart cannot
+discard a known session credential. A staged credential is not an identity and
+cannot select cached content. Promotion publishes the complete scope and deletes
+the staged record; logout/profile removal deletes both. Uncertain native exchange
+failures preserve bounded proof until explicit cancellation or expiry.
+
+Pairing issue/redeem routes are authentication setup and remain available while
+the daemon awaits model/provider configuration. Ticket issuance still requires
+trusted-local admission or an authenticated control token/session; bootstrap
+allow-listing does not weaken that handler check. The isolated-daemon probe
+issues over its trusted Unix socket, confirms anonymous TCP issuance is denied,
+and exercises single-use native redemption and session revocation in this mode.
 
 ## Evidence and outstanding gates
 

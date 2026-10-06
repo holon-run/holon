@@ -3,7 +3,7 @@ import Foundation
 import Security
 
 /// Pending login proof is bound to one API base URL, before an identity exists.
-struct NativeLoginProof: Codable, Equatable, Sendable {
+struct NativeLoginProof: Codable, Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
     static let callbackScheme = "run.holon.ios"
     static let lifetime: TimeInterval = 5 * 60
 
@@ -11,6 +11,9 @@ struct NativeLoginProof: Codable, Equatable, Sendable {
     let state: String
     let verifier: String
     let createdAt: Date
+
+    var description: String { "NativeLoginProof(<redacted>)" }
+    var debugDescription: String { description }
 
     enum Failure: Error {
         case randomGeneration(OSStatus)
@@ -98,7 +101,16 @@ struct NativeLoginProofStore {
     func save(_ proof: NativeLoginProof, now: Date = Date()) throws {
         guard proof.isValid(at: now) else { throw NativeLoginProof.Failure.invalidProof }
         _ = try proof.startURL()
-        try vault.write(try JSONEncoder().encode(proof), account: account(base: proof.apiBaseURL, state: proof.state))
+        let previous = try loadPending(apiBaseURL: proof.apiBaseURL, now: now)
+        let key = account(base: proof.apiBaseURL, state: proof.state)
+        try vault.write(try JSONEncoder().encode(proof), account: key)
+        do {
+            try vault.write(Data(proof.state.utf8), account: pendingAccount(base: proof.apiBaseURL))
+        } catch {
+            try vault.remove(account: key)
+            throw error
+        }
+        if let previous, previous.state != proof.state { try remove(previous) }
     }
 
     func load(apiBaseURL: URL, state: String, now: Date = Date()) throws -> NativeLoginProof? {
@@ -112,13 +124,36 @@ struct NativeLoginProofStore {
         return proof
     }
 
+    /// The restart locator is sensitive too: it never belongs in UserDefaults.
+    func loadPending(apiBaseURL: URL, now: Date = Date()) throws -> NativeLoginProof? {
+        let key = pendingAccount(base: apiBaseURL)
+        guard let data = try vault.read(account: key) else { return nil }
+        guard let state = String(data: data, encoding: .utf8),
+              let proof = try load(apiBaseURL: apiBaseURL, state: state, now: now) else {
+            try vault.remove(account: key)
+            return nil
+        }
+        return proof
+    }
+
     /// Remove after cancellation or confirmed exchange, not a lost HTTP response.
     func remove(_ proof: NativeLoginProof) throws {
         try vault.remove(account: account(base: proof.apiBaseURL, state: proof.state))
+        let key = pendingAccount(base: proof.apiBaseURL)
+        if try vault.read(account: key) == Data(proof.state.utf8) {
+            try vault.remove(account: key)
+        }
+    }
+
+    private func pendingAccount(base: URL) -> String {
+        "native-oidc-active/" + digest(base)
     }
 
     private func account(base: URL, state: String) -> String {
-        let digest = SHA256.hash(data: Data(base.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
-        return "native-oidc/\(digest)/\(state)"
+        "native-oidc/\(digest(base))/\(state)"
+    }
+
+    private func digest(_ base: URL) -> String {
+        SHA256.hash(data: Data(base.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 }
