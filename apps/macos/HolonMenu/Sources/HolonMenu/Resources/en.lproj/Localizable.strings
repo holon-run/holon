@@ -103,6 +103,9 @@
 "holon returned an invalid web address: %@" = "holon returned an invalid web address: %@";
 "holon returned invalid JSON: %@" = "holon returned invalid JSON: %@";
 "runtime is healthy" = "runtime is healthy";
+"runtime is healthy and idle" = "runtime is healthy and idle";
+"runtime is healthy and waiting" = "runtime is healthy and waiting";
+"runtime is healthy and processing work" = "runtime is healthy and processing work";
 "runtime is not running" = "runtime is not running";
 "runtime is already running" = "runtime is already running";
 "runtime process is alive, but the control surface is unavailable" = "runtime process is alive, but the control surface is unavailable";

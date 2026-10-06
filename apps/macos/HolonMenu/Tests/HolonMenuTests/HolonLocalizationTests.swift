@@ -26,6 +26,19 @@ final class HolonLocalizationTests: XCTestCase {
         XCTAssertEqual(HolonDaemonLifecycleState.versionMismatch.title(locale: Locale(identifier: "zh-Hans")), "版本不匹配")
     }
 
+    func testHealthyRuntimeActivityMessages() {
+        let messages = [
+            ("runtime is healthy and idle", "运行时运行正常，当前空闲"),
+            ("runtime is healthy and waiting", "运行时运行正常，正在等待"),
+            ("runtime is healthy and processing work", "运行时运行正常，正在处理任务")
+        ]
+        for (english, chinese) in messages {
+            XCTAssertEqual(L10n.text(english, locale: Locale(identifier: "en")), english)
+            XCTAssertEqual(L10n.text(english, locale: Locale(identifier: "zh-Hans")), chinese)
+            XCTAssertEqual(L10n.text(english, locale: Locale(identifier: "fr")), english)
+        }
+    }
+
     func testCatalogParityAndFormatArguments() throws {
         let resources = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

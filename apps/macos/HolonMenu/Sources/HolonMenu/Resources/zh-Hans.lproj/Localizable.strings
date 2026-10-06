@@ -103,6 +103,9 @@
 "holon returned an invalid web address: %@" = "holon 返回无效 Web 地址：%@";
 "holon returned invalid JSON: %@" = "holon 返回无效 JSON：%@";
 "runtime is healthy" = "运行时运行正常";
+"runtime is healthy and idle" = "运行时运行正常，当前空闲";
+"runtime is healthy and waiting" = "运行时运行正常，正在等待";
+"runtime is healthy and processing work" = "运行时运行正常，正在处理任务";
 "runtime is not running" = "运行时未运行";
 "runtime is already running" = "运行时已在运行";
 "runtime process is alive, but the control surface is unavailable" = "运行时进程仍在运行，但控制接口不可用";
