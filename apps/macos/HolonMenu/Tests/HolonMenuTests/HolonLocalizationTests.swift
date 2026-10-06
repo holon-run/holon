@@ -20,6 +20,31 @@ final class HolonLocalizationTests: XCTestCase {
         XCTAssertEqual(L10n.text("unknown diagnostic", locale: Locale(identifier: "zh-Hans")), "unknown diagnostic")
     }
 
+    func testLocalizedBundlePreservesResourceDirectorySpelling() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for (index, language) in ["zh-Hans", "zh-hans"].enumerated() {
+            let bundleURL = directory.appendingPathComponent("\(index).bundle", isDirectory: true)
+            for (name, value) in [("en", "Settings…"), (language, "设置…")] {
+                let localization = bundleURL.appendingPathComponent("\(name).lproj", isDirectory: true)
+                try FileManager.default.createDirectory(at: localization, withIntermediateDirectories: true)
+                try "\"Settings…\" = \"\(value)\";".write(
+                    to: localization.appendingPathComponent("Localizable.strings"),
+                    atomically: true, encoding: .utf8
+                )
+            }
+            let resources = try XCTUnwrap(Bundle(url: bundleURL))
+            let chinese = L10n.localizedBundle(for: Locale(identifier: "zh-Hans"), in: resources)
+            XCTAssertEqual(chinese.bundleURL.lastPathComponent, "\(language).lproj")
+            XCTAssertEqual(chinese.localizedString(forKey: "Settings…", value: nil, table: nil), "设置…")
+            let fallback = L10n.localizedBundle(for: Locale(identifier: "fr"), in: resources)
+            XCTAssertEqual(fallback.bundleURL.lastPathComponent, "en.lproj")
+            XCTAssertEqual(fallback.localizedString(forKey: "Settings…", value: nil, table: nil), "Settings…")
+        }
+    }
+
     func testActualLifecycleStateTitles() {
         XCTAssertEqual(HolonDaemonLifecycleState.running.title(locale: Locale(identifier: "en")), "Running")
         XCTAssertEqual(HolonDaemonLifecycleState.running.title(locale: Locale(identifier: "zh-Hans")), "运行中")
