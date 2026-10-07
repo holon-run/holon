@@ -1046,7 +1046,17 @@ class CaseHarness:
             if f"GET {state_path} returned 404" not in str(error):
                 raise
         self.request("POST", f"/api/control/agents/{agent_id}/create", {})
-        self.request("GET", state_path)
+        deadline = time.monotonic() + min(self.timeout_seconds, 30)
+        while True:
+            try:
+                self.request("GET", state_path)
+                return
+            except AssertionError as error:
+                if f"GET {state_path} returned 404" not in str(error):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.25)
 
     def wait_readiness(self) -> None:
         deadline = time.monotonic() + 90
