@@ -1680,17 +1680,17 @@ pub(super) fn provider_lineage_operator_message(
     side_effect_boundary_crossed: bool,
     failure: &str,
 ) -> String {
-    let prefix = if side_effect_boundary_crossed {
-        "Turn stopped after the active provider lineage failed"
-    } else {
-        "Turn stopped before provider output was accepted"
-    };
     let queued = if side_effect_boundary_crossed {
         "Queued recovery turn"
     } else {
         "Queued fallback turn"
     };
-    format!("{prefix}: {failure} {queued} on {fallback_ref}.")
+    let stopped = if side_effect_boundary_crossed {
+        "current turn stopped after the active provider lineage failed"
+    } else {
+        "current turn stopped before provider output was accepted"
+    };
+    format!("{queued} on {fallback_ref}; {stopped}: {failure}.")
 }
 
 pub(super) fn provider_recovery_delay_ms(fallback_attempt: usize, seed: &str) -> u64 {

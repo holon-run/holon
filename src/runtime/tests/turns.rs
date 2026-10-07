@@ -3662,6 +3662,9 @@ async fn provider_failure_before_output_defers_fallback_to_next_turn() {
     );
     assert!(deferred.data["error"]
         .as_str()
+        .is_some_and(|error| error.contains("current provider failed")));
+    assert!(!deferred.data["error"]
+        .as_str()
         .is_some_and(|error| error.contains("all configured providers failed")));
     assert!(deferred.data["operator_message"]
         .as_str()
