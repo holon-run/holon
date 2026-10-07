@@ -68,6 +68,16 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-contract-") as temporary:
             # Use this isolated daemon's trusted local control transport.
             control = LocalControlConnection("localhost", timeout=3)
             try:
+                control.request(
+                    "POST",
+                    "/api/control/agents/main/create",
+                    body=b"{}",
+                    headers={"Content-Type": "application/json"},
+                )
+                response = control.getresponse()
+                if response.status != 200:
+                    raise RuntimeError(f"legacy main fixture creation failed: {response.status}")
+                response.read()
                 control.request("POST", "/api/auth/pairing/issue")
                 response = control.getresponse()
                 if response.status != 200:

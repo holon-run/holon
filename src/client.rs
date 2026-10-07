@@ -439,6 +439,14 @@ impl LocalClient {
         self.get_json("/handshake").await
     }
 
+    pub async fn configured_default_agent_id(&self) -> Result<Option<String>> {
+        let response: Value = self.get_json("/").await?;
+        Ok(response
+            .get("default_agent")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned))
+    }
+
     pub async fn runtime_status(&self) -> Result<RuntimeStatusResponse> {
         self.get_control_json("/control/runtime/status").await
     }

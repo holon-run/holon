@@ -145,6 +145,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 finally:
                     connection.close()
 
+            local("POST", "/control/agents/main/create", {})
             work = local("POST", "/control/agents/main/work-items", {"objective": "IOS_POPULATED_WORK"})
             work_id = work["id"]
             plan = pathlib.Path(work["plan_artifact"]["path"])

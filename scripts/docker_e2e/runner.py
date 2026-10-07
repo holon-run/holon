@@ -329,6 +329,7 @@ class CaseHarness:
         control_token: str | None = None,
         previous_image: str | None = None,
         credential_delivery: str = "env",
+        bootstrap_agent_id: str | None = None,
     ) -> None:
         suffix = secrets.token_hex(4)
         self.case_id = case_id
@@ -360,6 +361,7 @@ class CaseHarness:
         self.tool_assertion_mode = tool_assertion_mode
         self.credential_delivery = credential_delivery
         self.previous_image = previous_image
+        self.bootstrap_agent_id = bootstrap_agent_id
         names = resource_names or {}
         self.volume = names.get("volume", f"holon-live-{case_id}-{suffix}")
         self.network = names.get("network", f"holon-live-{case_id}-{suffix}")
@@ -765,6 +767,7 @@ class CaseHarness:
         require(bool(port), "failed to resolve the container's published port")
         self.base_url = f"http://127.0.0.1:{port}"
         self.wait_readiness()
+        self.ensure_bootstrap_agent()
         if wait_idle:
             self.wait_agent_idle()
 
@@ -1028,6 +1031,32 @@ class CaseHarness:
         agent_id = urllib.parse.quote(self.agent_id, safe="")
         prefix = "/api/control/agents" if control else "/api/agents"
         return f"{prefix}/{agent_id}/{suffix}"
+
+    def ensure_bootstrap_agent(self) -> None:
+        if not self.bootstrap_agent_id:
+            return
+        agent_id = urllib.parse.quote(self.bootstrap_agent_id, safe="")
+        self.agent_id = self.bootstrap_agent_id
+        state_path = f"/api/agents/{agent_id}/state"
+        try:
+            self.request("GET", state_path)
+            self.agent_id = self.bootstrap_agent_id
+            return
+        except AssertionError as error:
+            if f"GET {state_path} returned 404" not in str(error):
+                raise
+        self.request("POST", f"/api/control/agents/{agent_id}/create", {})
+        deadline = time.monotonic() + min(self.timeout_seconds, 30)
+        while True:
+            try:
+                self.request("GET", state_path)
+                return
+            except AssertionError as error:
+                if f"GET {state_path} returned 404" not in str(error):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.25)
 
     def wait_readiness(self) -> None:
         deadline = time.monotonic() + 90
@@ -6328,6 +6357,7 @@ def main(argv: list[str] | None = None) -> int:
             tool_assertion_mode=profile.get("tool_assertion_mode", "strict"),
             previous_image=args.previous_image,
             credential_delivery=case.get("credential_delivery", "env"),
+            bootstrap_agent_id=case.get("bootstrap_agent_id", "main"),
         )
         control_tokens.append(harness.token)
         error_text = ""

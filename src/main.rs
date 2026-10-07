@@ -234,21 +234,21 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         Commands::Serve { options } => serve(config, options).await,
         Commands::Daemon { command } => handle_daemon_command(config, command).await,
         Commands::Prompt { text, agent } => {
-            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             let client = LocalClient::new(config)?;
+            let agent = resolve_agent_id(&client, agent).await?;
             let response = client.control_prompt(&agent, text).await?;
             print_json(&serde_json::to_value(response)?)
         }
         Commands::Tail { limit, agent } => {
-            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             let client = LocalClient::new(config)?;
+            let agent = resolve_agent_id(&client, agent).await?;
             print_json(&serde_json::to_value(
                 client.agent_briefs(&agent, limit).await?,
             )?)
         }
         Commands::Transcript { limit, agent } => {
-            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             let client = LocalClient::new(config)?;
+            let agent = resolve_agent_id(&client, agent).await?;
             print_json(&serde_json::to_value(
                 client.agent_transcript(&agent, limit).await?,
             )?)
@@ -276,7 +276,8 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
             handle_timer_command(&config, command).await
         }
         Commands::Control { action, agent } => {
-            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            let client = LocalClient::new(config.clone())?;
+            let agent = resolve_agent_id(&client, agent).await?;
             if action == ControlCommandAction::Abort {
                 return post_control_json(
                     &config,
@@ -379,6 +380,18 @@ async fn handle_memory_index_command(
             }
             Ok(())
         }
+    }
+}
+
+async fn resolve_agent_id(client: &LocalClient, agent: Option<String>) -> Result<String> {
+    if let Some(agent) = agent {
+        return Ok(agent);
+    }
+    match client.configured_default_agent_id().await? {
+        Some(agent) => Ok(agent),
+        None => Err(anyhow!(
+            "no default agent configured; create an agent first"
+        )),
     }
 }
 
@@ -923,12 +936,18 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     }
     let runtime_service = RuntimeServiceHandle::new_starting(&config)?;
     host.recover_orphaned_queue_claims_at_startup().await?;
-    let runtime = host.default_runtime().await?;
+    let runtime = if host.configured_default_agent_id()?.is_some() {
+        Some(host.default_runtime().await?)
+    } else {
+        None
+    };
     host.spawn_daemon_memory_indexer();
     host.spawn_daemon_runtime_db_retention();
     host.spawn_daemon_deletion_coordinator();
     spawn_stale_agent_template_remote_source_sync(&config, &host);
-    emit_first_run_intro(&config, &runtime).await;
+    if let Some(runtime) = runtime.as_ref() {
+        emit_first_run_intro(&config, runtime).await;
+    }
 
     let listener = TcpListener::bind(&config.http_addr)
         .await
@@ -3222,8 +3241,12 @@ async fn handle_events_command(config: &AppConfig, command: EventsCommands) -> R
             agent,
             offline,
         } => {
-            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             if offline {
+                let agent = agent.ok_or_else(|| {
+                    anyhow!(
+                        "--offline requires an explicit --agent when no configured default is available"
+                    )
+                })?;
                 anyhow::ensure!(
                     max_level.is_none(),
                     "--max-level is not supported with --offline"
@@ -3233,6 +3256,7 @@ async fn handle_events_command(config: &AppConfig, command: EventsCommands) -> R
                 )?)?);
             }
             let client = LocalClient::new(config.clone())?;
+            let agent = resolve_agent_id(&client, agent).await?;
             let page = client
                 .agent_events_page(
                     &agent,
@@ -3253,8 +3277,8 @@ async fn handle_events_command(config: &AppConfig, command: EventsCommands) -> R
             max_events,
             agent,
         } => {
-            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             let client = LocalClient::new(config.clone())?;
+            let agent = resolve_agent_id(&client, agent).await?;
             let mut stream = client
                 .stream_agent_events(
                     &agent,

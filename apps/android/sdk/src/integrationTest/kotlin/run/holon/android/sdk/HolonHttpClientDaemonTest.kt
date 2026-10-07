@@ -2,6 +2,8 @@ package run.holon.android.sdk
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.net.HttpURLConnection
+import java.net.URI
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 import org.junit.Test
@@ -39,6 +41,20 @@ class HolonHttpClientDaemonTest {
 
         try {
             val address = awaitDaemonAddress(process, log)
+            val createMain =
+                URI("http://$address/api/control/agents/main/create")
+                    .toURL()
+                    .openConnection() as HttpURLConnection
+            try {
+                createMain.requestMethod = "POST"
+                createMain.doOutput = true
+                createMain.setRequestProperty("Authorization", "Bearer $token")
+                createMain.setRequestProperty("Content-Type", "application/json")
+                createMain.outputStream.use { it.write("{}".toByteArray()) }
+                assertEquals(HttpURLConnection.HTTP_OK, createMain.responseCode)
+            } finally {
+                createMain.disconnect()
+            }
             val client =
                 HolonHttpClient(
                     baseUrl = "http://$address/api",

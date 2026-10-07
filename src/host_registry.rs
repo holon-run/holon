@@ -69,6 +69,37 @@ impl RuntimeRegistry {
         self.inner.config.store(Arc::new(config));
     }
 
+    pub(crate) fn restore_default_agent_selection(&self) -> Result<Option<String>> {
+        let config = self.config();
+        if self
+            .agent_identity_record(&config.default_agent_id)?
+            .is_some_and(|identity| identity.status == crate::types::AgentRegistryStatus::Active)
+        {
+            return Ok(Some(config.default_agent_id.clone()));
+        }
+
+        let fallback = self
+            .agent_identity_records()?
+            .into_iter()
+            .filter(|identity| {
+                identity.status == crate::types::AgentRegistryStatus::Active
+                    && identity.visibility == crate::types::AgentVisibility::Public
+            })
+            .min_by(|left, right| {
+                left.created_at
+                    .cmp(&right.created_at)
+                    .then_with(|| left.agent_id.cmp(&right.agent_id))
+            });
+        let Some(fallback) = fallback else {
+            return Ok(None);
+        };
+
+        let mut updated = (*config).clone();
+        updated.default_agent_id = fallback.agent_id.clone();
+        self.replace_config(updated);
+        Ok(Some(fallback.agent_id))
+    }
+
     pub(crate) fn agent_identity_record(
         &self,
         agent_id: &str,

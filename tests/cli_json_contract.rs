@@ -716,6 +716,9 @@ fn agent_delete_then_recreate_reports_incarnation_json() {
     let (_serve, addr) = spawn_local_serve(&home);
     let envs = [("HOLON_HTTP_ADDR", addr.as_str())];
 
+    // Preserve the legacy-install fixture: the configured `main` agent
+    // already exists, so the created agent is not selected as the default.
+    run_json_with_env(&home, &["agent", "create", "main"], &envs);
     let created = run_json_with_env(&home, &["agent", "create", "reborn-cli"], &envs);
     assert_eq!(created["identity"]["incarnation"], json!(1));
 
@@ -772,6 +775,9 @@ fn agent_rename_reports_detail_json_and_readable_errors() {
     let (_serve, addr) = spawn_local_serve(&home);
     let envs = [("HOLON_HTTP_ADDR", addr.as_str())];
 
+    // Preserve the legacy-install fixture so `main` remains the configured
+    // default while the named-agent rename contract is exercised.
+    run_json_with_env(&home, &["agent", "create", "main"], &envs);
     let created = run_json_with_env(&home, &["agent", "create", "rename-one"], &envs);
     assert_eq!(created["identity"]["agent_id"], json!("rename-one"));
 
