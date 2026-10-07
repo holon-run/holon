@@ -156,7 +156,7 @@ build: ## Build all Rust targets (cargo build --all-targets)
 
 all: web app-sdk build ## Build everything: web GUI, App SDK, then Rust
 
-test: ## Run library, binary, and integration tests serially (concurrent-proven binaries excluded; see test-concurrent)
+test: ## Run serial integration-test targets (concurrent-proven binaries excluded; see test-concurrent)
 	python3 scripts/ci_test_shards.py run serial
 
 test-shard: ## Run one CI test shard (SHARD=lib|control|cli|misc); lib uses 2 test threads
@@ -276,7 +276,7 @@ lint: ## Run clippy
 check: ## Quick local check (formatting + clippy + compile check)
 	RUSTFLAGS="-D warnings" cargo check --all-targets
 
-ci: web-ci conversation-sdk-ci fmt-check lint build snapshots-check test-resource-lint test ## Run the full CI checks locally
+ci: web-ci conversation-sdk-ci fmt-check lint build snapshots-check test-resource-lint test ## Run the local deterministic CI subset (platform, Docker, coverage, and live gates are separate)
 
 run:
 	cargo run -- serve
