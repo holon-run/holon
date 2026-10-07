@@ -79,5 +79,6 @@ does not impose or promise a universal period.
 Use HTTPS for remote hosts. The client permits user-confirmed HTTP hosts for
 local/self-hosted connections; HTTP does not provide transport encryption.
 Only send information appropriate for your host and its configured providers.
-The app is not directed at children. Questions about this policy or changes
-to it can be sent to **hello@holon.run**.
+The app is intended for adults aged 18 and over, not for children or teenagers
+under 18. This audience statement does not imply that the client verifies age.
+Questions about this policy or changes to it can be sent to **hello@holon.run**.
