@@ -557,6 +557,24 @@ fn role_name(role: Role) -> &'static str {
 mod tests {
     use super::*;
     use crate::{ContentPart, ContinuationState, ImageUrl, ToolDefinition};
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
+
+    fn test_server(response: &'static [u8], delay: Duration) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut request = [0_u8; 8192];
+            let _ = stream.read(&mut request);
+            thread::sleep(delay);
+            stream.write_all(response).expect("response");
+        });
+        format!("http://{address}/v1")
+    }
 
     #[test]
     fn lowers_tools_extensions_and_multimodal_content() {
@@ -702,6 +720,103 @@ mod tests {
         .unwrap();
 
         assert_eq!(response.tool_calls[0].arguments, json!({}));
+    }
+
+    #[tokio::test]
+    async fn contract_maps_success_and_http_errors_without_live_provider_access() {
+        let endpoint = test_server(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 127\r\nx-request-id: req-server\r\nConnection: close\r\n\r\n{\"id\":\"chatcmpl-test\",\"model\":\"gpt-test\",\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"hello\"}}]}",
+            Duration::ZERO,
+        );
+        let client = OpenAiCompatibleClient::new(OpenAiCompatibleConfig {
+            base_url: endpoint,
+            api_key: Some("test-token".into()),
+            ..Default::default()
+        })
+        .expect("client");
+        let mut context = CallContext {
+            request_id: Some("req-client".into()),
+            ..Default::default()
+        };
+        context
+            .headers
+            .insert("x-test-header".into(), "test-value".into());
+        let response = client
+            .complete(
+                &context,
+                CompletionRequest::new("gpt-test", vec![Message::user("hello")]),
+            )
+            .await
+            .expect("completion");
+        assert_eq!(response.id.as_deref(), Some("chatcmpl-test"));
+        assert_eq!(response.message.content, vec![ContentPart::text("hello")]);
+
+        let endpoint = test_server(
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 7\r\nx-request-id: req-error\r\nConnection: close\r\n\r\nfailure",
+            Duration::ZERO,
+        );
+        let client = OpenAiCompatibleClient::new(OpenAiCompatibleConfig {
+            base_url: endpoint,
+            ..Default::default()
+        })
+        .expect("client");
+        let error = client
+            .complete(
+                &CallContext::default(),
+                CompletionRequest::new("gpt-test", vec![Message::user("hello")]),
+            )
+            .await
+            .expect_err("http error");
+        assert!(matches!(
+            error,
+            ClientError::Http {
+                status: 503,
+                request_id: Some(request_id),
+                ..
+            } if request_id == "req-error"
+        ));
+    }
+
+    #[tokio::test]
+    async fn contract_classifies_decode_and_timeout_errors() {
+        let endpoint = test_server(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nnot json",
+            Duration::ZERO,
+        );
+        let client = OpenAiCompatibleClient::new(OpenAiCompatibleConfig {
+            base_url: endpoint,
+            ..Default::default()
+        })
+        .expect("client");
+        let error = client
+            .complete(
+                &CallContext::default(),
+                CompletionRequest::new("gpt-test", vec![Message::user("hello")]),
+            )
+            .await
+            .expect_err("decode error");
+        assert!(matches!(error, ClientError::Decode(_)));
+
+        let endpoint = test_server(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+            Duration::from_millis(200),
+        );
+        let client = OpenAiCompatibleClient::new(OpenAiCompatibleConfig {
+            base_url: endpoint,
+            ..Default::default()
+        })
+        .expect("client");
+        let error = client
+            .complete(
+                &CallContext {
+                    timeout: Some(Duration::from_millis(20)),
+                    ..Default::default()
+                },
+                CompletionRequest::new("gpt-test", vec![Message::user("hello")]),
+            )
+            .await
+            .expect_err("timeout");
+        assert!(matches!(error, ClientError::Transport(_)));
     }
 
     #[test]

@@ -31,6 +31,7 @@ fn required_env(names: &[&str]) -> Option<String> {
     }
 }
 
+#[ignore = "requires a live Jev endpoint and credentials"]
 #[tokio::test]
 async fn live_jev_official_decision_returns_select() -> Result<(), Box<dyn std::error::Error>> {
     let Some(api_key) = required_env(&["HOLON_LIVE_DECISION_JEV_API_KEY"]) else {

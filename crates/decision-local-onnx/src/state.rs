@@ -164,6 +164,7 @@ pub fn mark_entities(state: &str) -> String {
 /// contract: the tail is never truncated and the state head is trimmed
 /// from the front so the most recent context survives. Mirrors the
 /// trainer's `encode_decision` budget math.
+#[cfg(any(feature = "onnx", test))]
 pub(crate) fn assemble_question_tail(
     cls: i64,
     sep: i64,
