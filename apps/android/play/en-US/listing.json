@@ -1,0 +1,6 @@
+{
+  "language": "en-US",
+  "title": "Holon",
+  "shortDescription": "Connect to your Holon runtime and work with your AI agents on Android.",
+  "fullDescription": "Holon is the native Android client for your Holon runtime. Connect to a runtime you have access to, sign in, and continue working with your agents from your phone.\n\nBrowse agents and recent conversations, send prompts and attachments, and read agent briefs and artifacts. Follow active tasks and work items, and revisit cached conversations when you are offline. Messages queued while disconnected can be sent when your connection returns.\n\nShare text, links, images, and files from other Android apps, then preview the content and choose which agent should receive it.\n\nThe interface supports English and Simplified Chinese. Agent messages and files remain in their original language.\n\nA reachable Holon runtime and an authorized account are required. This app does not include a hosted runtime or an AI service subscription."
+}

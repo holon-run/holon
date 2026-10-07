@@ -1,0 +1,124 @@
+name: Android Play internal testing
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Published stable GitHub Release tag (vX.Y.Z); reuses its signed AAB.'
+        required: true
+        type: string
+      status:
+        description: 'draft saves a release; completed makes it available to internal testers only.'
+        required: true
+        default: draft
+        type: choice
+        options:
+          - draft
+          - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-play-internal
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    name: Upload signed AAB to internal testing
+    # Never expose Play credentials to PRs or arbitrary branch code.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check upload credentials
+        env:
+          PLAY_CREDENTIALS: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          RELEASE_STATUS: ${{ inputs.status }}
+        run: |
+          case "$RELEASE_STATUS" in
+            draft|completed) ;;
+            *) echo 'Only draft or completed internal releases are allowed.' >&2; exit 1 ;;
+          esac
+          test -n "$PLAY_CREDENTIALS" || {
+            echo 'Configure GOOGLE_PLAY_SERVICE_ACCOUNT_JSON before uploading.' >&2
+            exit 1
+          }
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Download and verify published Android bundle
+        id: bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION_INPUT" == v* ]] || { echo 'Expected a vX.Y.Z release tag.' >&2; exit 1; }
+          version_data="$(bash scripts/android-release-version.sh "$VERSION_INPUT")"
+          version_name="$(printf '%s\n' "$version_data" | sed -n 's/^version_name=//p')"
+          version_code="$(printf '%s\n' "$version_data" | sed -n 's/^version_code=//p')"
+          tag="v$version_name"
+          asset="holon-android-$tag"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" \
+            --jq '{draft, prerelease}' | jq -e '.draft == false and .prerelease == false'
+          commit="$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha)"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir dist/android \
+            --pattern "$asset.aab" --pattern "$asset.json" --pattern "$asset.sha256"
+          (
+            cd dist/android
+            for suffix in aab json; do
+              awk -v file="$asset.$suffix" '$2 == file { print }' "$asset.sha256" \
+                | sha256sum --check --strict -
+            done
+          )
+          expected_cert="$(tr -d '\r\n' < apps/android/signing/release-certificate.sha256)"
+          jq -e --arg version "$version_name" --argjson code "$version_code" \
+            --arg cert "$expected_cert" --arg commit "$commit" --arg aab "$asset.aab" \
+            '.package == "run.holon.android" and .version == $version and
+             .version_code == $code and .certificate_sha256 == $cert and
+             .commit == $commit and .aab == $aab' "dist/android/$asset.json"
+          aab="dist/android/$asset.aab"
+          verification="$("$JAVA_HOME/bin/jarsigner" -J-Duser.language=en -verify "$aab")"
+          [[ "$verification" == *'jar verified.'* ]] || { echo 'AAB integrity verification failed.' >&2; exit 1; }
+          actual_cert="$("$JAVA_HOME/bin/keytool" -printcert -rfc -jarfile "$aab" \
+            | openssl x509 -noout -fingerprint -sha256 \
+            | sed 's/.*=//' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          [[ "$actual_cert" == "$expected_cert" ]] || { echo 'AAB signing identity mismatch.' >&2; exit 1; }
+          {
+            echo "path=$aab"
+            echo "name=$tag"
+            echo "version_code=$version_code"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload to Google Play internal testing
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: run.holon.android
+          releaseFiles: ${{ steps.bundle.outputs.path }}
+          releaseName: ${{ steps.bundle.outputs.name }}
+          tracks: internal
+          status: ${{ inputs.status }}
+
+      - name: Record internal release
+        env:
+          RELEASE_TAG: ${{ steps.bundle.outputs.name }}
+          VERSION_CODE: ${{ steps.bundle.outputs.version_code }}
+          RELEASE_STATUS: ${{ inputs.status }}
+        run: |
+          {
+            echo '## Google Play internal testing'
+            echo "- Package: run.holon.android"
+            echo "- GitHub Release: $RELEASE_TAG"
+            echo "- versionCode: $VERSION_CODE"
+            echo "- Track: internal"
+            echo "- Status: $RELEASE_STATUS"
+            echo 'No production release was requested.'
+          } >> "$GITHUB_STEP_SUMMARY"

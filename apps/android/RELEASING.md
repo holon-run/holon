@@ -8,6 +8,10 @@ workflow builds, verifies, and attaches `holon-android-vX.Y.Z.apk`, `.aab`,
 and macOS app. GitHub Release is the durable download location; Actions artifacts
 are temporary build/test outputs. AABs are for store submission, not installation.
 
+Google Play uploads are a separate, manual
+[internal-testing workflow](./PLAY_PUBLISHING.md); GitHub releases do not
+automatically publish to Play.
+
 `versionName` follows the root Cargo version. `versionCode` is
 `major * 1_000_000 + minor * 1000 + patch`; minor/patch must be below 1000,
 major at most 2099, and the result positive. Stable versions only: prereleases
