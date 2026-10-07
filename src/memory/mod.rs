@@ -5,7 +5,6 @@ pub mod working;
 pub(crate) mod write_coordinator;
 
 pub use episode::refresh_episode_memory;
-pub(crate) use index::ensure_memory_indexes_fresh;
 pub(crate) use index::get_memory_snapshot;
 pub use index::{
     get_memory, memory_index_agent_ids_needing_backfill, memory_index_agent_ids_with_pending,

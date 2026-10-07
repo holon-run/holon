@@ -850,6 +850,7 @@ export function App() {
         {route === "search" ? (
           <SearchPage
             agents={bootstrap.agents}
+            selectedAgentId={selectedAgentId}
             search={search}
             loading={searchLoading}
             error={searchError}

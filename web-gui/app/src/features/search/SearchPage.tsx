@@ -10,6 +10,7 @@ import type { AgentSummary, MemorySourceContent, RuntimeSearchOptions, SearchRes
 
 interface SearchPageProps {
   agents: AgentSummary[];
+  selectedAgentId: string;
   search: SearchResponse | null;
   loading: boolean;
   error?: string;
@@ -49,6 +50,7 @@ const DEFAULT_LIMIT = 20;
 
 export function SearchPage({
   agents,
+  selectedAgentId,
   search,
   loading,
   error,
@@ -61,20 +63,21 @@ export function SearchPage({
 }: SearchPageProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState(() => search?.query ?? readInitialQuery());
-  const [agentId, setAgentId] = useState("all");
+  const [agentId, setAgentId] = useState(() => defaultSearchAgentId(selectedAgentId, agents));
   const [limit, setLimit] = useState(String(search?.limit || DEFAULT_LIMIT));
   const trimmedQuery = query.trim();
   const hasResults = Boolean(search?.results.length);
   const resultCount = search?.results.length ?? 0;
   const indexWarningKey = search ? searchIndexWarningKey(search) : undefined;
   const agentOptions = useMemo(() => [...agents].sort((left, right) => left.id.localeCompare(right.id)), [agents]);
+  const defaultAgentId = defaultSearchAgentId(selectedAgentId, agents);
 
   useEffect(() => {
     const initialQuery = readInitialQuery();
     if (!initialQuery || search || loading) return;
-    if (!canSearchSelection("all", agents)) return;
-    void onSearch(initialQuery, searchOptionsForSelection("all", agents, limit));
-  }, [agents, limit, loading, onSearch, search]);
+    if (!canSearchSelection(defaultAgentId, agents)) return;
+    void onSearch(initialQuery, searchOptionsForSelection(defaultAgentId, agents, limit));
+  }, [agents, defaultAgentId, limit, loading, onSearch, search]);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -480,6 +483,12 @@ export function searchOptionsForSelection(agentId: string, agents: AgentSummary[
     includeAllWorkspaces: agentId === "all",
     limit: numberFromInput(limit, DEFAULT_LIMIT),
   };
+}
+
+export function defaultSearchAgentId(selectedAgentId: string, agents: AgentSummary[]): string {
+  return selectedAgentId && agents.some((agent) => agent.id === selectedAgentId)
+    ? selectedAgentId
+    : "all";
 }
 
 export function canSearchSelection(agentId: string, agents: AgentSummary[]): boolean {
