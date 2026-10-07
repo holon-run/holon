@@ -81,7 +81,7 @@ Holon issues HttpOnly session cookies for browsers and session credentials for
 API clients. Configure how long sessions stay valid:
 
 ```bash
-# Idle session lifetime in seconds (default: 86400, or 24 hours)
+# Idle session lifetime in seconds (default: 604800, or 7 days)
 # Every user interaction refreshes this timer.
 holon config set auth.session.idle_ttl_seconds 43200
 

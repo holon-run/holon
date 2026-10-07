@@ -72,7 +72,7 @@ holon config set auth.oidc.redirect_uri "https://holon.example.com/api/auth/oidc
 Holon 会为浏览器颁发 HttpOnly Session Cookie，为 API 客户端颁发 Session 凭据。你可以按需配置会话的有效期：
 
 ```bash
-# 空闲超时时间（秒，默认 86400，即 24 小时）
+# 空闲超时时间（秒，默认 604800，即 7 天）
 # 每次用户发起请求或交互都会刷新该计时器。
 holon config set auth.session.idle_ttl_seconds 43200
 

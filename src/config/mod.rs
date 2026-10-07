@@ -405,16 +405,21 @@ impl AppConfig {
 
 fn materialize_auth_config(file: &AuthConfigFile) -> Result<AuthConfig> {
     let defaults = SessionPolicy::default();
+    let absolute_ttl_seconds = file
+        .session
+        .absolute_ttl_seconds
+        .and_then(|value| (value != 0).then_some(value))
+        .or(defaults.absolute_ttl_seconds);
+    // Clamp the derived idle default to an explicit absolute TTL so configs
+    // persisted before a default bump stay loadable.
+    let idle_ttl_seconds = file.session.idle_ttl_seconds.unwrap_or_else(|| {
+        absolute_ttl_seconds.map_or(defaults.idle_ttl_seconds, |absolute| {
+            defaults.idle_ttl_seconds.min(absolute)
+        })
+    });
     let session = SessionPolicy {
-        absolute_ttl_seconds: file
-            .session
-            .absolute_ttl_seconds
-            .and_then(|value| (value != 0).then_some(value))
-            .or(defaults.absolute_ttl_seconds),
-        idle_ttl_seconds: file
-            .session
-            .idle_ttl_seconds
-            .unwrap_or(defaults.idle_ttl_seconds),
+        absolute_ttl_seconds,
+        idle_ttl_seconds,
     };
     let oidc = file.oidc.as_ref().map(|oidc| OidcProviderConfig {
         issuer_url: oidc.issuer_url.clone(),

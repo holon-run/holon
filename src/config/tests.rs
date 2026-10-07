@@ -2800,6 +2800,35 @@ fn load_persisted_config_normalizes_zero_absolute_session_ttl_to_unlimited() {
 }
 
 #[test]
+fn load_persisted_config_clamps_default_idle_to_explicit_absolute_ttl() {
+    let home = tempdir().unwrap();
+    save_persisted_config_at(
+        &persisted_config_path(home.path()),
+        &HolonConfigFile {
+            auth: crate::config::AuthConfigFile {
+                session: crate::config::SessionConfigFile {
+                    absolute_ttl_seconds: Some(259_200),
+                    idle_ttl_seconds: None,
+                },
+                ..Default::default()
+            },
+            model: ModelConfigFile {
+                default: Some("anthropic/claude-sonnet-4-6".into()),
+                ..ModelConfigFile::default()
+            },
+            ..HolonConfigFile::default()
+        },
+    )
+    .unwrap();
+
+    let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    assert_eq!(config.auth.session.absolute_ttl_seconds, Some(259_200));
+    // An omitted idle TTL stays clamped to the explicit absolute TTL so a
+    // config persisted before the 7-day default keeps loading.
+    assert_eq!(config.auth.session.idle_ttl_seconds, 259_200);
+}
+
+#[test]
 fn load_persisted_config_reads_provider_entries() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.json");
