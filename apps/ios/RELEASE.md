@@ -51,20 +51,23 @@ authorization. An unsigned simulator build is not a signing check.
 
 | Surface | Current source evidence | Required release review |
 | --- | --- | --- |
-| Preferences | `Sources/ConnectionStore.swift` uses `UserDefaults.standard` for connection profiles and selection | Resolve the approved UserDefaults required-reason entry against Apple's current original reference; do not guess a reason code |
+| Preferences | `Sources/ConnectionStore.swift` uses `UserDefaults.standard` for connection profiles and selection; `HolonApp.swift` and `ConnectionSettings.swift` use default-store `AppStorage` for language | `Resources/PrivacyInfo.xcprivacy` declares UserDefaults reason `CA92.1` for app-only preferences; keep these values out of shared defaults suites |
 | Authentication | `Sources/CredentialVault.swift`, `Sources/NativeLoginProof.swift`: Keychain sessions and recovery proof; native browser login | Validate login, cancellation, logout and server revocation on device; explain administrator access |
 | Network | `Info.plist`: Local Network explanation and broad ATS exception; profile HTTP consent | Test LAN denial/recovery and HTTPS; justify broad ATS exception for arbitrary user-chosen daemons |
 | User content | Reading cache, drafts, queue, copied attachments and shared inbox | Document retention/deletion limits; assess daemon/operator processing and backups |
 | Diagnostics | `Sources/DiagnosticExport.swift`: allowlisted status/count report, explicit export/send | Review report and destinations; do not treat manual export as zero data transmission |
 | Permissions | No camera, microphone, photo-library or location purpose keys in the current plists | Re-audit if a feature or SDK begins requesting these permissions |
 
-**Privacy manifest is an unresolved release gate.** This slice deliberately
-adds no speculative `PrivacyInfo.xcprivacy`. Confirm the precise approved
-reason for the observed UserDefaults use, audit the final dependency/binary
-API inventory, then add truthful per-bundle manifests and target resources as
-needed. Inspect the archive's privacy report and actual bundled manifests.
-Do not declare unobserved file-timestamp, disk-space or uptime categories just
-because Foundation is linked. Absence of a manifest here is not an exemption.
+**Required-reason API evidence must match each submitted build.** The app's
+manifest is included by the existing synchronized `Resources` group; a hosted
+test checks its bundled UserDefaults declaration. `CA92.1` covers the observed
+app-only profile, selection and language preferences, not App Group defaults.
+The share extension and local Swift SDK currently have no observed required-reason
+API use; do not copy the app's declaration into them without corresponding use.
+Audit the final dependency/binary API inventory and inspect the archive's
+privacy report and actual bundled manifests before each submission. Do not
+declare unobserved file-timestamp, disk-space or uptime categories just because
+Foundation is linked. This manifest makes no data-collection or tracking claim.
 
 Apple's original references to consult:
 
