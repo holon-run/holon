@@ -16,7 +16,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build"
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {
     "@holon/api-sdk": "file:../api-sdk",
