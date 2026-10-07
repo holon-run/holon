@@ -8,7 +8,10 @@
 "connection.allowHTTP" = "允许此目标使用不安全的 HTTP";
 "connection.httpWarning" = "HTTP 不加密凭据或流量。请仅确认你信任的目标。";
 "connection.localNetworkHelp" = "连接附近的 runtime 时，iOS 可能请求本地网络权限。如已拒绝，请在系统设置中检查 Holon 的权限。";
-"connection.title" = "连接与身份";
+"connection.title" = "连接";
+"connection.add" = "添加连接";
+"connection.advanced" = "高级身份信息";
+"onboarding.returnConnection" = "返回原连接";
 "tab.connection" = "连接";
 "tab.system" = "工具";
 "connection.status" = "状态";
@@ -32,6 +35,9 @@
 "pairing.confirm" = "确认目标并配对";
 "pairing.cancel" = "取消配对";
 "settings.title" = "设置";
+"settings.connections" = "连接管理";
+"settings.utilities" = "文件与工具";
+"settings.sharing" = "分享导入";
 "settings.language" = "界面语言";
 "settings.system" = "跟随系统";
 "settings.english" = "English";
@@ -190,6 +196,7 @@
 "files.reference.placeholder" = "workspace:// 或其他服务端签发的引用";
 "files.openReference" = "打开引用";
 "files.close" = "关闭预览";
+"files.dismiss" = "关闭";
 "files.export" = "导出副本";
 "files.share" = "分享副本";
 "files.preview.downloadOnly" = "此文件类型不提供预览，可导出副本后在其他应用中打开。";

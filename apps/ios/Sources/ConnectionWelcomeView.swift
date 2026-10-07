@@ -3,6 +3,7 @@ import HolonClient
 
 struct ConnectionWelcomeView: View {
     @Bindable var coordinator: ConnectionCoordinator
+    var cancel: (() -> Void)? = nil
     @State private var step = Step.welcome
     @State private var scanning = false
     @State private var address = ""
@@ -44,6 +45,12 @@ struct ConnectionWelcomeView: View {
             .navigationTitle("onboarding.title")
             .background(WindowAnchorReader { anchor = $0 }.frame(width: 0, height: 0))
             .toolbar {
+                if let cancel {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("onboarding.returnConnection", action: cancel)
+                            .accessibilityIdentifier("onboarding.cancel")
+                    }
+                }
                 if step != .welcome {
                     ToolbarItem(placement: .topBarLeading) {
                         Button("action.back") { back() }
@@ -109,6 +116,8 @@ struct ConnectionWelcomeView: View {
                     SecureField("pairing.payload", text: $payload)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .privacySensitive().focused($payloadFocused)
+                        .submitLabel(.done)
+                        .onSubmit { payloadFocused = false }
                         .accessibilityIdentifier("onboarding.payload")
                     Button("pairing.preview") {
                         let submitted = payload

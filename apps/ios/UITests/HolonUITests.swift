@@ -94,7 +94,7 @@ final class HolonUITests: XCTestCase {
 
     private func openDiagnostics(_ app: XCUIApplication) {
         let open = app.buttons["diagnostics.open"]
-        XCTAssertTrue(open.waitForExistence(timeout: 10))
+        reveal(open, in: app, fullyVisible: true)
         open.tap()
         XCTAssertTrue(app.buttons["diagnostics.prepare"].waitForExistence(timeout: 10))
     }
@@ -111,7 +111,7 @@ final class HolonUITests: XCTestCase {
         let app = launch(language: "en", dark: false, large: true)
         defer { app.terminate() }
         XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 15))
-        app.tabBars.buttons["Tools"].tap()
+        app.tabBars.buttons["Settings"].tap()
         openDiagnostics(app)
         app.buttons["diagnostics.prepare"].tap()
         XCTAssertTrue(app.staticTexts["diagnostics.report"].waitForExistence(timeout: 10))
@@ -192,10 +192,11 @@ final class HolonUITests: XCTestCase {
         capture(app, name)
     }
 
-    func testPreparedDiagnosticsRespondToRuntimeTextSize() throws {
+    func testPreparedDiagnosticsRespondToRuntimeTextSize() async throws {
         let app = launch(language: "en", dark: false, large: false)
+        defer { app.terminate() }
         XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 15))
-        app.tabBars.buttons["Tools"].tap()
+        app.tabBars.buttons["Settings"].tap()
         openDiagnostics(app)
         app.buttons["diagnostics.prepare"].tap()
         let report = app.staticTexts["diagnostics.report"]
@@ -203,90 +204,91 @@ final class HolonUITests: XCTestCase {
         let chooseAgent = app.staticTexts["diagnostics.chooseAgent"]
         XCTAssertTrue(report.waitForExistence(timeout: 10))
         let elements = [report, export, chooseAgent]
-        let originalHeights = elements.map { $0.frame.height }
-        let originalReport = report.label
-
-        // Change the real system preference while the prepared view is alive.
-        let settings = openLargerTextSettings()
-        let largerSizes = settings.switches.firstMatch
-        XCTAssertTrue(largerSizes.waitForExistence(timeout: 10))
-        let wasEnabled = largerSizes.value as? String == "1"
-        if !wasEnabled { largerSizes.tap() }
-        let slider = settings.sliders.firstMatch
-        XCTAssertTrue(slider.waitForExistence(timeout: 10))
-        slider.adjust(toNormalizedSliderPosition: 1)
-        defer {
-            settings.activate()
-            slider.adjust(toNormalizedSliderPosition: 0.25)
-            if !wasEnabled { largerSizes.tap() }
-            settings.terminate()
-            app.terminate()
+        let originalHeights = elements.map { element in
+            reveal(element, in: app)
+            XCTAssertTrue(element.exists)
+            XCTAssertGreaterThan(element.frame.height, 0, "Runtime size requires a real baseline")
+            return element.frame.height
         }
-        app.activate()
+        let originalReport = report.label
+        capture(app, "prepared-diagnostics-runtime-ordinary-size")
+
+        // The fixture changes and reads back the system preference, not an app override.
+        XCTAssertEqual(app.state, .runningForeground)
+        try await changeSystemTextSize("accessibility-extra-extra-extra-large")
+        XCTAssertEqual(app.state, .runningForeground)
         XCTAssertEqual(report.label, originalReport)
         for (element, originalHeight) in zip(elements, originalHeights) {
             reveal(element, in: app)
+            let changed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                element.exists && element.frame.height > originalHeight
+            }, object: nil)
+            let result = await XCTWaiter.fulfillment(of: [changed], timeout: 10)
+            XCTAssertEqual(result, .completed)
             XCTAssertGreaterThan(element.frame.height, originalHeight,
                                  "\(element.identifier) must respond without regenerating the report")
         }
+        XCTAssertEqual(report.label, originalReport)
+        XCTAssertEqual(app.state, .runningForeground)
         capture(app, "prepared-diagnostics-runtime-accessibility-size")
     }
 
-    func testDiagnosticsControlsRespondToRuntimeTextSize() throws {
+    func testDiagnosticsControlsRespondToRuntimeTextSize() async throws {
         let app = launch(language: "en", dark: false, large: true)
         defer { app.terminate() }
         XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 15))
-        app.tabBars.buttons["Tools"].tap()
+        app.tabBars.buttons["Settings"].tap()
         openDiagnostics(app)
         let allowlist = app.staticTexts[
             "Only connection states and counts are included. Credentials, identities, addresses, message content and raw errors are excluded."]
         let prepare = app.buttons["diagnostics.prepare"]
         XCTAssertTrue(allowlist.waitForExistence(timeout: 10))
         let elements = [allowlist, prepare]
-        let maximumHeights = elements.map { $0.frame.height }
+        let maximumHeights = elements.map { element in
+            reveal(element, in: app)
+            XCTAssertTrue(element.exists)
+            XCTAssertGreaterThan(element.frame.height, 0, "Runtime size requires a real baseline")
+            return element.frame.height
+        }
         capture(app, "diagnostics-controls-maximum-size")
 
-        let settings = openLargerTextSettings()
-        let largerSizes = settings.switches.firstMatch
-        let slider = settings.sliders.firstMatch
-        XCTAssertTrue(largerSizes.waitForExistence(timeout: 10))
-        XCTAssertTrue(slider.waitForExistence(timeout: 10))
-        let wasEnabled = largerSizes.value as? String == "1"
-        let originalValue = try XCTUnwrap(slider.value as? String)
-        let originalPercentage = try XCTUnwrap(Double(originalValue.replacingOccurrences(of: "%", with: "")))
-        let originalPosition = CGFloat(originalPercentage / 100)
-        defer {
-            settings.activate()
-            if (largerSizes.value as? String == "1") != wasEnabled { largerSizes.tap() }
-            slider.adjust(toNormalizedSliderPosition: originalPosition)
-            settings.terminate()
-        }
-        if wasEnabled { largerSizes.tap() }
-        slider.adjust(toNormalizedSliderPosition: 0.5)
-        app.activate()
+        XCTAssertEqual(app.state, .runningForeground)
+        try await changeSystemTextSize("large")
+        XCTAssertEqual(app.state, .runningForeground)
         for (element, maximumHeight) in zip(elements, maximumHeights) {
+            XCTAssertTrue(element.exists)
+            let changed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                element.exists && element.frame.height > 0 && element.frame.height < maximumHeight
+            }, object: nil)
+            let result = await XCTWaiter.fulfillment(of: [changed], timeout: 10)
+            XCTAssertEqual(result, .completed)
             XCTAssertLessThan(element.frame.height, maximumHeight,
                               "\(element.label) must respond to the real system text size")
         }
+        XCTAssertEqual(app.state, .runningForeground)
         capture(app, "diagnostics-controls-ordinary-size")
     }
 
-    private func openLargerTextSettings() -> XCUIApplication {
-        let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
-        settings.launch()
-        capture(settings, "runtime-size-settings")
-        let accessibility = settings.staticTexts["Accessibility"].firstMatch
-        reveal(accessibility, in: settings, fullyVisible: true)
-        accessibility.tap()
-        let display = settings.cells["DISPLAY_AND_TEXT"].firstMatch
-        XCTAssertTrue(display.waitForExistence(timeout: 10))
-        reveal(display, in: settings, fullyVisible: true)
-        display.tap()
-        let largerText = settings.staticTexts["Larger Text"].firstMatch
-        XCTAssertTrue(largerText.waitForExistence(timeout: 10))
-        reveal(largerText, in: settings, fullyVisible: true)
-        largerText.tap()
-        return settings
+    private func changeSystemTextSize(_ category: String) async throws {
+        let url = try XCTUnwrap(URL(string: required("TEXT_SIZE_URL")))
+        XCTAssertEqual(url.scheme, "http")
+        XCTAssertEqual(url.host, "127.0.0.1")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 40
+        request.setValue("Bearer " + (try required("TEXT_SIZE_TOKEN")), forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["category": category])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let http = try XCTUnwrap(response as? HTTPURLResponse)
+        XCTAssertEqual(http.statusCode, 200, "Real system text-size setter and readback must succeed")
+        struct VerifiedSize: Decodable { let category: String }
+        let verified = try JSONDecoder().decode(VerifiedSize.self, from: data)
+        XCTAssertEqual(verified.category, category, "Acknowledgement must contain the actual system category")
+        let attachment = XCTAttachment(string: "Verified system content size: \(verified.category)")
+        attachment.name = "system-content-size-readback"
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     private func disconnected(language: String, dark: Bool, large: Bool) throws {
@@ -430,47 +432,59 @@ final class HolonUITests: XCTestCase {
         components.path = String(components.path.dropLast(4)) + "/login"
         components.fragment = "pair=" + code
         let app = launch(language: "en", dark: false, large: false)
-        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 15))
-        app.tabBars.buttons["Connect"].tap()
-        // Native profile creation proves the separate per-target HTTP permission UI.
-        let name = app.textFields["Network name"]
-        name.tap()
-        name.typeText("UI isolated daemon")
-        let address = app.textFields["Complete API base URL"]
-        address.tap()
-        address.typeText(endpoint)
-        let permission = app.switches["profiles.allowHTTP"]
-        reveal(permission, in: app)
-        XCTAssertEqual(permission.value as? String, "0")
-        // SwiftUI exposes both the labelled row and its native switch.
-        // Tapping the row's centre can hit only the multiline label.
-        permission.switches.firstMatch.tap()
-        XCTAssertEqual(permission.value as? String, "1")
-        let add = app.buttons["Add and connect"]
-        reveal(add, in: app)
-        add.tap()
-        let payload = app.textFields["Paste QR payload"]
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.tabBars.firstMatch.exists, "Identity must be confirmed before showing tabs")
+        let pasteEntry = app.staticTexts["onboarding.pasteEntry"]
+        reveal(pasteEntry, in: app)
+        pasteEntry.tap()
+        let payload = app.secureTextFields["onboarding.payload"]
         reveal(payload, in: app)
         payload.tap()
-        payload.typeText(components.string!)
-        let preview = app.buttons["Preview target"]
-        reveal(preview, in: app)
-        preview.tap()
+        payload.typeText(try XCTUnwrap(components.string))
+        payload.typeText("\n")
         let keyboardDismissed = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
         XCTAssertEqual(XCTWaiter.wait(for: [keyboardDismissed], timeout: 5), .completed)
-        // Preview has not authenticated; redemption requires a second explicit consent.
-        let pairPermission = app.switches["pairing.allowHTTP"]
-        reveal(pairPermission, in: app)
-        XCTAssertEqual(pairPermission.value as? String, "0")
-        pairPermission.switches.firstMatch.tap()
-        XCTAssertEqual(pairPermission.value as? String, "1")
-        let confirm = app.buttons["Confirm target and pair"]
+        app.buttons["onboarding.preview"].tap()
+        let target = app.staticTexts["onboarding.pairingTarget"]
+        XCTAssertTrue(target.waitForExistence(timeout: 10))
+        XCTAssertEqual(target.label, endpoint + "/")
+        XCTAssertFalse(app.tabBars.firstMatch.exists)
+        let confirm = app.buttons["onboarding.confirmPairing"]
+        XCTAssertFalse(confirm.isEnabled, "HTTP pairing requires explicit per-target consent")
+        let permission = app.switches["onboarding.pairingHTTP"]
+        reveal(permission, in: app)
+        XCTAssertEqual(permission.value as? String, "0")
+        permission.switches.firstMatch.tap()
+        XCTAssertEqual(permission.value as? String, "1")
         reveal(confirm, in: app)
+        XCTAssertTrue(confirm.isEnabled)
         confirm.tap()
-        XCTAssertTrue(app.tabBars.buttons["Agents"].isHittable)
+        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 30))
+        XCTAssertEqual(app.tabBars.buttons.count, 3)
+        for tab in ["Agents", "Work", "Settings"] {
+            XCTAssertTrue(app.tabBars.buttons[tab].exists)
+        }
+        XCTAssertTrue(app.tabBars.buttons["Agents"].isSelected, "Successful pairing defaults to Agents")
+        let manage = app.buttons["connection.manage"]
+        XCTAssertTrue(manage.waitForExistence(timeout: 10))
+        let originalHost = manage.label
+        manage.tap()
+        let add = app.buttons["connection.add"]
+        reveal(add, in: app)
+        add.tap()
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 10))
+        let cancel = app.buttons["onboarding.cancel"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 10))
+        cancel.tap()
+        XCTAssertTrue(add.waitForExistence(timeout: 10), "Cancel returns to existing connection management")
+        XCTAssertFalse(app.buttons["onboarding.scan"].exists)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.buttons["settings.connection"].waitForExistence(timeout: 10),
+                      "Back returns from connection management to the Settings home")
         app.tabBars.buttons["Agents"].tap()
-        XCTAssertTrue(app.tabBars.buttons["Agents"].isSelected)
+        XCTAssertTrue(manage.waitForExistence(timeout: 10))
+        XCTAssertEqual(manage.label, originalHost, "Cancelled onboarding preserves the original host")
         let connected = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label == %@", "Live"),
             object: app.staticTexts["reading.status"])
@@ -511,7 +525,12 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", planMarker))
             .firstMatch.waitForExistence(timeout: 30))
         capture(app, "full-plan")
-        app.tabBars.buttons["Work"].tap()
+        let dismissFiles = app.buttons["files.dismiss"]
+        XCTAssertTrue(dismissFiles.waitForExistence(timeout: 10))
+        dismissFiles.tap()
+        XCTAssertTrue(app.tabBars.buttons["Work"].isSelected)
+        XCTAssertTrue(openPlan.waitForExistence(timeout: 10))
+        XCTAssertFalse(dismissFiles.exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         let taskRow = app.buttons["work.task." + task]
         reveal(taskRow, in: app)
@@ -520,9 +539,13 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(output.waitForExistence(timeout: 30))
         XCTAssertTrue(output.label.contains(taskMarker))
         capture(app, "task-output")
-        app.tabBars.buttons["Files"].tap()
-        // Close the plan preview before opening the independently supplied artifact.
-        if app.buttons["Close preview"].exists { app.buttons["Close preview"].tap() }
+        app.tabBars.buttons["Settings"].tap()
+        for entry in ["settings.connection", "settings.files", "settings.tools", "diagnostics.open"] {
+            XCTAssertTrue(app.buttons[entry].exists)
+        }
+        let files = app.buttons["settings.files"]
+        reveal(files, in: app)
+        files.tap()
         let reference = app.textFields["files.reference"]
         XCTAssertTrue(reference.waitForExistence(timeout: 10))
         reference.tap()
@@ -531,7 +554,12 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", fileMarker))
             .firstMatch.waitForExistence(timeout: 30))
         capture(app, "file-preview")
-        app.tabBars.buttons["Tools"].tap()
+        let closePreview = app.buttons["Close preview"]
+        XCTAssertTrue(closePreview.waitForExistence(timeout: 10))
+        closePreview.tap()
+        XCTAssertTrue(reference.waitForExistence(timeout: 10))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.tabBars.buttons["Settings"].tap()
         openDiagnostics(app)
         app.buttons["diagnostics.prepare"].tap()
         XCTAssertTrue(app.staticTexts["diagnostics.report"].waitForExistence(timeout: 10))

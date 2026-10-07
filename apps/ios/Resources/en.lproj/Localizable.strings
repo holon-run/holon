@@ -8,7 +8,10 @@
 "connection.allowHTTP" = "Allow insecure HTTP for this target";
 "connection.httpWarning" = "HTTP does not encrypt credentials or traffic. Confirm only a target you trust.";
 "connection.localNetworkHelp" = "iOS may request Local Network access for nearby runtimes. If access is denied, review Holon's permissions in Settings.";
-"connection.title" = "Connection and identity";
+"connection.title" = "Connection";
+"connection.add" = "Add a connection";
+"connection.advanced" = "Advanced identity information";
+"onboarding.returnConnection" = "Return to previous connection";
 "tab.connection" = "Connect";
 "tab.system" = "Tools";
 "connection.status" = "Status";
@@ -32,6 +35,9 @@
 "pairing.confirm" = "Confirm target and pair";
 "pairing.cancel" = "Cancel pairing";
 "settings.title" = "Settings";
+"settings.connections" = "Connections";
+"settings.utilities" = "Files and tools";
+"settings.sharing" = "Shared imports";
 "settings.language" = "Interface language";
 "settings.system" = "System";
 "settings.english" = "English";
@@ -190,6 +196,7 @@
 "files.reference.placeholder" = "workspace:// or another server-issued reference";
 "files.openReference" = "Open reference";
 "files.close" = "Close preview";
+"files.dismiss" = "Close";
 "files.export" = "Export a copy";
 "files.share" = "Share a copy";
 "files.preview.downloadOnly" = "This file type is not previewed. Export a copy to open it elsewhere.";

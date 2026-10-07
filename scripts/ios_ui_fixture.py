@@ -13,7 +13,8 @@ import time
 import urllib.request
 
 from ios_simulator_text_size import (
-    MAXIMUM_TEXT_SIZE, initialize_simulator_text_size, simulator_text_size,
+    MAXIMUM_TEXT_SIZE, initialize_simulator_text_size, runtime_text_size_control,
+    simulator_text_size,
 )
 
 binary, repo, mode = sys.argv[1:]
@@ -218,10 +219,11 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 cases = [("testDisconnectedEnglishLight", "large"),
                          ("testDisconnectedChineseDarkAccessibilitySize", MAXIMUM_TEXT_SIZE),
                          ("testPairingPreviewStaysOfflineAndCanCancel", "large"),
+                         # Authenticate through shipped onboarding before diagnostics.
+                         ("testAuthenticatedNativeWorkflow", "large"),
                          ("testDiagnosticsControlsRespondToRuntimeTextSize", MAXIMUM_TEXT_SIZE),
                          ("testPreparedDiagnosticsRespondToRuntimeTextSize", "large"),
-                         ("testPreparedDiagnosticsViewportCoverage", MAXIMUM_TEXT_SIZE),
-                         ("testAuthenticatedNativeWorkflow", "large")]
+                         ("testPreparedDiagnosticsViewportCoverage", MAXIMUM_TEXT_SIZE)]
                 bundles = [bundle.with_name(bundle.stem + "-" + method + ".xcresult")
                            for method, _ in cases]
                 if any(path.exists() for path in bundles):
@@ -229,25 +231,29 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 initialize_simulator_text_size(simulator)
                 for (method, content_size), case_bundle in zip(cases, bundles):
                     with simulator_text_size(simulator, content_size):
-                        test_env["TEST_RUNNER_HOLON_UI_CONTENT_SIZE"] = content_size
-                        if method == "testAuthenticatedNativeWorkflow":
-                            # Tickets expire after two minutes. The preceding cases also
-                            # warm the build; issue only when redemption is about to run.
-                            ticket = local("POST", "/auth/pairing/issue")["ticket"]
-                            test_env["TEST_RUNNER_HOLON_UI_PAIRING_CODE"] = ticket
-                        result = subprocess.run(["xcodebuild", "-project", repo + "/apps/ios/Holon.xcodeproj",
-                            "-scheme", "Holon", "-destination", destination,
-                            "-parallel-testing-enabled", "NO",
-                            # Keep test failures and attachments, but avoid a blocking sysdiagnose.
-                            "-collect-test-diagnostics", "never",
-                            "-test-timeouts-enabled", "YES",
-                            "-default-test-execution-time-allowance", "600",
-                            "-maximum-test-execution-time-allowance", "600",
-                            "-derivedDataPath", derived,
-                            "-only-testing:HolonUITests/HolonUITests/" + method,
-                            "-resultBundlePath", str(case_bundle), "CODE_SIGN_IDENTITY=-", "test"], env=test_env)
-                        if result.returncode:
-                            raise RuntimeError(f"UI case {method} 失败（SDK 通过不能替代 UI）")
+                        # Stop and drain the control service before restoring the case baseline.
+                        with runtime_text_size_control(simulator) as (control_url, control_token):
+                            test_env["TEST_RUNNER_HOLON_UI_TEXT_SIZE_URL"] = control_url
+                            test_env["TEST_RUNNER_HOLON_UI_TEXT_SIZE_TOKEN"] = control_token
+                            test_env["TEST_RUNNER_HOLON_UI_CONTENT_SIZE"] = content_size
+                            if method == "testAuthenticatedNativeWorkflow":
+                                # Tickets expire after two minutes. The preceding cases also
+                                # warm the build; issue only when redemption is about to run.
+                                ticket = local("POST", "/auth/pairing/issue")["ticket"]
+                                test_env["TEST_RUNNER_HOLON_UI_PAIRING_CODE"] = ticket
+                            result = subprocess.run(["xcodebuild", "-project", repo + "/apps/ios/Holon.xcodeproj",
+                                "-scheme", "Holon", "-destination", destination,
+                                "-parallel-testing-enabled", "NO",
+                                # Keep test failures and attachments, but avoid a blocking sysdiagnose.
+                                "-collect-test-diagnostics", "never",
+                                "-test-timeouts-enabled", "YES",
+                                "-default-test-execution-time-allowance", "600",
+                                "-maximum-test-execution-time-allowance", "600",
+                                "-derivedDataPath", derived,
+                                "-only-testing:HolonUITests/HolonUITests/" + method,
+                                "-resultBundlePath", str(case_bundle), "CODE_SIGN_IDENTITY=-", "test"], env=test_env)
+                            if result.returncode:
+                                raise RuntimeError(f"UI case {method} 失败（SDK 通过不能替代 UI）")
             else:
                 print("4 项真实 SDK probes 已运行；SDK-only 未运行 UI", flush=True)
         finally:
