@@ -90,4 +90,8 @@ order: 4
   为什么死循环 while(true) 无法支撑生产级工作？类比操作系统从轮询到中断的演进，探讨长周期自主 Agent 的持久化等待、唤醒调度与因果状态内核架构。
   <!-- mdorigin:index kind=article -->
 
+- [当 AI 学会“优雅地等待”：聊聊长周期 Agent 的内核秘密](./event-driven-kernel-story.md)
+  为什么很多看似聪明的 Agent 一面对长任务就会崩溃或失忆？用打工人、咖啡厅取餐和任务看板的通俗故事，聊聊长周期 Agent 为什么必须从死循环走向事件驱动。
+  <!-- mdorigin:index kind=article -->
+
 <!-- INDEX:END -->
