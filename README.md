@@ -242,7 +242,7 @@ make build  # build Rust binary
 ## Development
 
 Use Node.js 24 LTS for Web GUI development. Run the local deterministic CI
-subset with `make`; platform, Docker, coverage, and provider-backed live gates
+subset with `make ci`; platform, Docker, coverage, and provider-backed live gates
 run in separate CI jobs:
 
 ```bash
