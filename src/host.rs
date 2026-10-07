@@ -4829,7 +4829,7 @@ impl RuntimeHost {
         Ok(None)
     }
 
-    fn ensure_default_agent_identity(&self) -> Result<AgentIdentityRecord> {
+    pub(crate) fn ensure_default_agent_identity(&self) -> Result<AgentIdentityRecord> {
         self.inner.registry.ensure_default_agent_identity()
     }
 
@@ -7065,6 +7065,17 @@ mod tests {
         config.user_home_dir = Some(home.path().to_path_buf());
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        host.ensure_default_agent_identity().unwrap();
+        (home, host)
+    }
+
+    fn empty_test_host() -> (tempfile::TempDir, RuntimeHost) {
+        let home = tempdir().unwrap();
+        write_test_model_config(home.path());
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.user_home_dir = Some(home.path().to_path_buf());
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
     }
 
@@ -7075,6 +7086,7 @@ mod tests {
         config.user_home_dir = Some(home.path().to_path_buf());
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        host.ensure_default_agent_identity().unwrap();
         (home, host)
     }
 
@@ -7844,6 +7856,7 @@ mod tests {
         let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        host.ensure_default_agent_identity().unwrap();
         let agent_id = host.config().default_agent_id.clone();
 
         let prompt = host
@@ -8122,13 +8135,13 @@ mod tests {
             .into_iter()
             .map(|summary| summary.identity.agent_id)
             .collect::<Vec<_>>();
-        assert!(!listed.contains(&host.config().default_agent_id));
+        assert!(listed.contains(&host.config().default_agent_id));
         assert!(listed.contains(&"release-bot".to_string()));
     }
 
     #[tokio::test]
     async fn first_public_named_agent_becomes_default_after_restart() {
-        let (home, host) = test_host();
+        let (home, host) = empty_test_host();
         let startup_config = host.config().as_ref().clone();
 
         let created = host
