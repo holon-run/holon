@@ -43,22 +43,21 @@ class AndroidTraceTest {
         recorder.record(scope, TraceLevel.INFO, "network", "second")
         recorder.record(scope, TraceLevel.ERROR, "network", "third")
 
-        val summary = recorder.summary(scope)
+        val summary = recorder.summary()
         assertEquals(2, summary.eventCount)
-        assertTrue(recorder.export(scope).readText().contains("holon.android.trace.v1"))
+        assertTrue(recorder.export().readText().contains("holon.android.trace.v1"))
     }
 
     @Test
     fun `export recreates missing export directory`() {
         val dir = Files.createTempDirectory("holon-trace-export-test").toFile()
         val recorder = TraceRecorder(dir)
-        val scope = TraceScope.Network("profile")
 
-        val first = recorder.export(scope)
+        val first = recorder.export()
         assertEquals("trace-exports", first.parentFile?.name)
         first.parentFile!!.deleteRecursively()
 
-        val second = recorder.export(scope)
+        val second = recorder.export()
         assertTrue(second.isFile)
         assertTrue(second.readText().contains("holon.android.trace.v1"))
     }
@@ -70,22 +69,85 @@ class AndroidTraceTest {
 
         recorder.record(TraceScope.Global, TraceLevel.INFO, "session", "session.login")
 
-        assertEquals(0, recorder.summary(TraceScope.Global).eventCount)
+        assertEquals(0, recorder.summary().eventCount)
     }
 
     @Test
-    fun `delete removes stored events for scope`() {
+    fun `delete removes stored events`() {
         val dir = Files.createTempDirectory("holon-trace-delete-test").toFile()
         val recorder = TraceRecorder(dir)
         val scope = TraceScope.Network("profile")
 
         recorder.record(scope, TraceLevel.INFO, "network", "network.deleted")
-        assertEquals(1, recorder.summary(scope).eventCount)
+        assertEquals(1, recorder.summary().eventCount)
 
-        recorder.delete(scope)
+        recorder.delete()
 
-        assertEquals(0, recorder.summary(scope).eventCount)
-        assertFalse(java.io.File(dir, "${scope.storageKey}.jsonl").exists())
+        assertEquals(0, recorder.summary().eventCount)
+        assertFalse(java.io.File(dir, "trace.jsonl").exists())
+    }
+
+    @Test
+    fun `deleteScope removes only the deleted network events`() {
+        val dir = Files.createTempDirectory("holon-trace-scope-delete-test").toFile()
+        val recorder = TraceRecorder(dir)
+        val first = TraceScope.Network("https://one.example")
+        val second = TraceScope.Network("https://two.example")
+
+        recorder.record(first, TraceLevel.INFO, "network", "first.event")
+        recorder.record(second, TraceLevel.INFO, "network", "second.event")
+
+        recorder.deleteScope(first)
+
+        val content = java.io.File(dir, "trace.jsonl").readText()
+        assertFalse(content.contains(first.storageKey))
+        assertTrue(content.contains(second.storageKey))
+        assertEquals(1, recorder.summary().eventCount)
+    }
+
+    @Test
+    fun `events from all scopes share one file with scope tags`() {
+        val dir = Files.createTempDirectory("holon-trace-shared-test").toFile()
+        val recorder = TraceRecorder(dir)
+        val first = TraceScope.Network("https://one.example")
+        val second = TraceScope.Network("https://two.example")
+
+        recorder.record(first, TraceLevel.INFO, "network", "first.event")
+        recorder.record(second, TraceLevel.INFO, "network", "second.event")
+        recorder.record(TraceScope.Global, TraceLevel.INFO, "session", "session.login.completed")
+
+        val content = java.io.File(dir, "trace.jsonl").readText()
+        assertTrue(content.contains("\"scope\":\"${first.storageKey}\""))
+        assertTrue(content.contains("\"scope\":\"${second.storageKey}\""))
+        assertTrue(content.contains("\"scope\":\"global\""))
+        assertEquals(3, recorder.summary().eventCount)
+        val export = recorder.export()
+        assertTrue(export.name.startsWith("holon-trace-"))
+        assertFalse(export.name.contains(first.storageKey))
+    }
+
+    @Test
+    fun `legacy scope files merge into shared store on init`() {
+        val dir = Files.createTempDirectory("holon-trace-merge-test").toFile()
+        val legacyScope = TraceScope.Network("https://legacy.example")
+        val legacyFile = java.io.File(dir, "${legacyScope.storageKey}.jsonl")
+        legacyFile.writeText(
+            listOf(
+                """{"timestamp":"2026-10-07T10:00:00.000Z","level":"INFO","category":"http","name":"legacy.first","scope":"${legacyScope.storageKey}"}""",
+                """{"timestamp":"2026-10-07T11:00:00.000Z","level":"INFO","category":"http","name":"legacy.second","scope":"${legacyScope.storageKey}"}""",
+            ).joinToString("\n", postfix = "\n"),
+        )
+
+        val recorder = TraceRecorder(dir)
+        recorder.record(TraceScope.Global, TraceLevel.INFO, "session", "session.login.completed")
+
+        val lines = java.io.File(dir, "trace.jsonl").readLines()
+        assertEquals(3, lines.size)
+        assertTrue(lines[0].contains("legacy.first"))
+        assertTrue(lines[1].contains("legacy.second"))
+        assertTrue(lines[2].contains("session.login.completed"))
+        assertFalse(legacyFile.exists())
+        assertEquals(3, recorder.summary().eventCount)
     }
 
     @Test
@@ -138,7 +200,7 @@ class AndroidTraceTest {
 
         TraceHttp.sseReconnectScheduled(recorder, scope, "agents/holon-android/events/stream", 2, 500)
 
-        val content = java.io.File(dir, "${scope.storageKey}.jsonl").readText()
+        val content = java.io.File(dir, "trace.jsonl").readText()
         assertTrue(content.contains("\"name\":\"http.request.started\""))
         assertTrue(content.contains("\"name\":\"http.request.completed\""))
         assertTrue(content.contains("\"statusCode\":\"200\""))

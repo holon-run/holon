@@ -69,7 +69,7 @@ internal class TraceRecorder private constructor(
 ) {
     constructor(
         context: Context,
-        maxEvents: Int = 1_000,
+        maxEvents: Int = 2_000,
         maxBytes: Long = 512 * 1024,
     ) : this(
         root = File(context.filesDir, "trace"),
@@ -80,7 +80,7 @@ internal class TraceRecorder private constructor(
 
     internal constructor(
         rootDirectory: File,
-        maxEvents: Int = 1_000,
+        maxEvents: Int = 2_000,
         maxBytes: Long = 512 * 1024,
     ) : this(
         root = rootDirectory,
@@ -89,11 +89,13 @@ internal class TraceRecorder private constructor(
         maxBytes = maxBytes,
     )
 
+    private val lock = Any()
+
     init {
         root.mkdirs()
         exports.mkdirs()
+        mergeLegacyScopeFiles()
     }
-    private val lock = Any()
 
     fun record(
         scope: TraceScope,
@@ -120,20 +122,16 @@ internal class TraceRecorder private constructor(
         synchronized(lock) {
             // Diagnostics must never break the business flow; drop the event when trace I/O fails.
             runCatching {
-                val file = fileFor(scope)
+                val file = storeFile
                 val lines = file.takeIf(File::isFile)?.readLines()?.toMutableList() ?: mutableListOf()
                 lines += event.toJsonLine()
-                while (lines.size > maxEvents || lines.sumOf { it.toByteArray().size + 1 } > maxBytes) {
-                    if (lines.isEmpty()) break
-                    lines.removeAt(0)
-                }
-                file.writeText(lines.joinToString("\n", postfix = "\n"))
+                file.writeText(bound(lines).joinToString("\n", postfix = "\n"))
             }
         }
     }
 
-    fun summary(scope: TraceScope): TraceSummary = synchronized(lock) {
-        val lines = fileFor(scope).takeIf(File::isFile)?.readLines().orEmpty()
+    fun summary(): TraceSummary = synchronized(lock) {
+        val lines = storeFile.takeIf(File::isFile)?.readLines().orEmpty()
         TraceSummary(
             eventCount = lines.size,
             oldestTimestamp = lines.firstOrNull()?.let { timestampFromJson(it) },
@@ -143,25 +141,65 @@ internal class TraceRecorder private constructor(
         )
     }
 
-    fun export(scope: TraceScope): File = synchronized(lock) {
+    fun export(): File = synchronized(lock) {
         exports.mkdirs()
         pruneExports()
-        val target = File(exports, "holon-trace-${scope.storageKey}-${UUID.randomUUID()}.jsonl")
-        val lines = fileFor(scope).takeIf(File::isFile)?.readLines().orEmpty()
+        val target = File(exports, "holon-trace-${UUID.randomUUID()}.jsonl")
+        val lines = storeFile.takeIf(File::isFile)?.readLines().orEmpty()
         target.bufferedWriter().use { writer ->
-            writer.appendLine("""{"schema":"holon.android.trace.v1","scope":"${scope.storageKey}","redacted":true}""")
+            writer.appendLine("""{"schema":"holon.android.trace.v1","redacted":true}""")
             lines.forEach(writer::appendLine)
         }
         target
     }
 
-    fun delete(scope: TraceScope) {
+    fun delete() {
         synchronized(lock) {
-            runCatching { fileFor(scope).delete() }
+            runCatching { storeFile.delete() }
         }
     }
 
-    private fun fileFor(scope: TraceScope): File = File(root, "${scope.storageKey}.jsonl")
+    fun deleteScope(scope: TraceScope) {
+        synchronized(lock) {
+            runCatching {
+                val file = storeFile.takeIf(File::isFile) ?: return
+                val kept = file.readLines().filterNot { it.contains("\"scope\":\"${scope.storageKey}\"") }
+                file.writeText(kept.joinToString("\n", postfix = "\n"))
+            }
+        }
+    }
+
+    // One shared ring buffer across scopes: each event line carries its scope,
+    // so a single trace keeps cross-network incidents analyzable together.
+    private val storeFile: File get() = File(root, "trace.jsonl")
+
+    private fun bound(lines: List<String>): List<String> {
+        var bounded = lines
+        while (bounded.size > maxEvents || bounded.sumOf { it.toByteArray().size + 1 } > maxBytes) {
+            if (bounded.isEmpty()) break
+            bounded = bounded.drop(1)
+        }
+        return bounded
+    }
+
+    // Fold legacy per-scope jsonl files into the shared store (ordered by
+    // timestamp) so evidence recorded before the single-file layout survives.
+    private fun mergeLegacyScopeFiles() {
+        synchronized(lock) {
+            runCatching {
+                val legacy = root.listFiles().orEmpty()
+                    .filter { file -> file.isFile && file.name.endsWith(".jsonl") && file.name != storeFile.name }
+                if (legacy.isEmpty()) return
+                val merged =
+                    (legacy.map(File::readLines) + listOfNotNull(storeFile.takeIf(File::isFile)?.readLines()))
+                        .flatten()
+                        .filter { it.isNotBlank() }
+                        .sortedBy { timestampFromJson(it) ?: 0L }
+                storeFile.writeText(bound(merged).joinToString("\n", postfix = "\n"))
+                legacy.forEach(File::delete)
+            }
+        }
+    }
 
     private fun pruneExports() {
         val files = exports.listFiles().orEmpty().filter(File::isFile).sortedByDescending(File::lastModified)

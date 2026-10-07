@@ -161,13 +161,12 @@ internal fun SettingsScreen(state: HolonUiState, viewModel: SettingsActions, onB
                     TextButton(onClick = { shareDiagnostics(context, state) }) {
                         Text(ui("分享脱敏诊断信息"))
                     }
-                    val traceScope = state.session?.networkId?.let(TraceScope::Network) ?: TraceScope.Global
-                    val traceSummary = viewModel.traceRecorder.summary(traceScope)
+                    val traceSummary = viewModel.traceRecorder.summary()
                     SettingsValue(
                         ui("Trace"),
                         "${traceSummary.eventCount} ${ui("条")} · ${traceSummary.bytes} B",
                     )
-                    TextButton(onClick = { shareTrace(context, viewModel.traceRecorder, traceScope) }) {
+                    TextButton(onClick = { shareTrace(context, viewModel.traceRecorder) }) {
                         Text(ui("导出并分享 Trace"))
                     }
                     TextButton(onClick = viewModel::shareTraceWithAgent) {
@@ -288,8 +287,8 @@ internal fun shareDiagnostics(context: Context, state: HolonUiState) {
     context.startActivity(Intent.createChooser(intent, ui("分享连接诊断")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
 }
 
-internal fun shareTrace(context: Context, recorder: TraceRecorder, scope: TraceScope) {
-    val file = recorder.export(scope)
+internal fun shareTrace(context: Context, recorder: TraceRecorder) {
+    val file = recorder.export()
     val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
     val intent =
         Intent(Intent.ACTION_SEND).apply {
