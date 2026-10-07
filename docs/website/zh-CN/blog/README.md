@@ -86,4 +86,8 @@ order: 4
   “给 Agent 一项真实的仓库任务，让它在 Prompt 结束后继续工作，并在回来时检查结果。”
   <!-- mdorigin:index kind=article -->
 
+- [从请求-响应到事件驱动：长周期 Agent 系统的内核设计](./event-driven-kernel.md)
+  为什么死循环 while(true) 无法支撑生产级工作？类比操作系统从轮询到中断的演进，探讨长周期自主 Agent 的持久化等待、唤醒调度与因果状态内核架构。
+  <!-- mdorigin:index kind=article -->
+
 <!-- INDEX:END -->
