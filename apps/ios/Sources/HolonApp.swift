@@ -12,9 +12,14 @@ struct HolonApp: App {
     @State private var files: FilesCoordinator
     @State private var imports: SharedImportCoordinator
     @State private var tab = ClientTab.reading
+    @State private var settingsPath: [SettingsDestination] = []
+    @State private var presentingFiles = false
+    @State private var addingConnection = false
+    @State private var previousProfile: ConnectionProfile?
+    @State private var returningConnection = false
 
     private enum ClientTab: Hashable {
-        case reading, work, files, system, connection
+        case reading, work, settings
     }
 
     init() {
@@ -56,35 +61,67 @@ struct HolonApp: App {
         WindowGroup {
             Group {
                 if let coordinator {
-                    TabView(selection: $tab) {
-                        ReadingView(reader: reader, sender: sender)
-                            .tabItem { Label("agents.title", systemImage: "bubble.left.and.bubble.right") }
-                            .tag(ClientTab.reading)
-                        WorkView(coordinator: work, openPlan: { agentID, workID, plan in
-                            files.selectAgent(agentID)
-                            if files.openPlan(agentID: agentID, workID: workID, plan: plan) {
-                                tab = .files
+                    Group {
+                        if coordinator.launchState == .restoring {
+                            ProgressView("onboarding.restoring")
+                        } else if coordinator.launchState == .connection || addingConnection {
+                            ConnectionWelcomeView(coordinator: coordinator, cancel: addingConnection ? {
+                                returnToPreviousConnection(coordinator)
+                            } : nil)
+                        } else {
+                            TabView(selection: $tab) {
+                                ReadingView(reader: reader, sender: sender, connection: coordinator) {
+                                    settingsPath = [.connections]
+                                    tab = .settings
+                                }
+                                    .tabItem { Label("agents.title", systemImage: "bubble.left.and.bubble.right") }
+                                    .tag(ClientTab.reading)
+                                WorkView(coordinator: work, openPlan: { agentID, workID, plan in
+                                    files.selectAgent(agentID)
+                                    if files.openPlan(agentID: agentID, workID: workID, plan: plan) {
+                                        presentingFiles = true
+                                    }
+                                }, openArtifact: { agentID, artifact in
+                                    files.selectAgent(agentID)
+                                    if files.openArtifact(agentID: agentID, artifact: artifact) {
+                                        presentingFiles = true
+                                    }
+                                })
+                                    .tabItem { Label("work.title", systemImage: "checklist") }
+                                    .tag(ClientTab.work)
+                                SettingsView(connection: coordinator, reader: reader, sender: sender,
+                                             files: files, imports: imports, path: $settingsPath) {
+                                    previousProfile = coordinator.selectedProfile
+                                    addingConnection = true
+                                }
+                                    .tabItem { Label("settings.title", systemImage: "gearshape") }
+                                    .tag(ClientTab.settings)
                             }
-                        }, openArtifact: { agentID, artifact in
-                            files.selectAgent(agentID)
-                            if files.openArtifact(agentID: agentID, artifact: artifact) {
-                                tab = .files
-                            }
-                        })
-                            .tabItem { Label("work.title", systemImage: "checklist") }
-                            .tag(ClientTab.work)
-                        FilesView(coordinator: files)
-                            .tabItem { Label("files.title", systemImage: "folder") }
-                            .tag(ClientTab.files)
-                        SystemExperienceView(connection: coordinator, reader: reader,
-                                             sender: sender, imports: imports)
-                            .tabItem { Label("tab.system", systemImage: "square.and.arrow.up") }
-                            .tag(ClientTab.system)
-                        ContentView(coordinator: coordinator)
-                            .tabItem { Label("tab.connection", systemImage: "network") }
-                            .tag(ClientTab.connection)
+                        }
                     }
                         .task { await coordinator.restore() }
+                        .onChange(of: coordinator.identity) { _, identity in
+                            settingsPath = []
+                            presentingFiles = false
+                            if identity != nil {
+                                tab = .reading
+                                addingConnection = false
+                                previousProfile = nil
+                            }
+                        }
+                        .sheet(isPresented: $presentingFiles, onDismiss: {
+                            files.dismissPreview()
+                        }) {
+                            NavigationStack {
+                                FilesView(coordinator: files)
+                                    .toolbar {
+                                        ToolbarItem(placement: .cancellationAction) {
+                                            Button("files.dismiss") { presentingFiles = false }
+                                                .accessibilityIdentifier("files.dismiss")
+                                        }
+                                    }
+                            }
+                        }
                         .task(id: coordinator.identity) { [coordinator] in
                             guard let identity = coordinator.identity,
                                   let profile = coordinator.selectedProfile else {
@@ -201,6 +238,25 @@ struct HolonApp: App {
                     coordinator?.sceneBecameInactive()
                 }
             }
+        }
+    }
+
+    private func returnToPreviousConnection(_ coordinator: ConnectionCoordinator) {
+        guard !returningConnection else { return }
+        coordinator.cancelLogin()
+        guard let profile = previousProfile,
+              coordinator.identity == nil || coordinator.selectedProfile?.id != profile.id else {
+            addingConnection = false
+            previousProfile = nil
+            return
+        }
+        returningConnection = true
+        Task {
+            await coordinator.connect(profile)
+            returningConnection = false
+            guard coordinator.selectedProfile?.id == profile.id else { return }
+            addingConnection = false
+            previousProfile = nil
         }
     }
 }

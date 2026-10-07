@@ -1,1 +1,2 @@
 "NSLocalNetworkUsageDescription" = "连接你在本地网络中选择的 Holon runtime。";
+"NSCameraUsageDescription" = "扫描 Holon 配对二维码以连接你的电脑。相机画面不会保存或上传。";

@@ -4,15 +4,36 @@ import HolonClient
 struct ReadingView: View {
     @Bindable var reader: ReadingCoordinator
     var sender: SendingCoordinator? = nil
+    let connection: ConnectionCoordinator
+    let manageConnection: () -> Void
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
+                    Button(action: manageConnection) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label {
+                                Text(verbatim: connection.selectedProfile?.name ?? "")
+                            } icon: {
+                                Image(systemName: "network")
+                            }
+                            Text(LocalizedStringKey("status." + connection.status.rawValue))
+                                .font(.subheadline).foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityIdentifier("connection.manage")
                     Text(LocalizedStringKey("reading.status." + reader.status.rawValue))
                         .accessibilityIdentifier("reading.status")
                     if reader.status == .syncing { ProgressView() }
-                    if reader.agents.isEmpty { Text("reading.emptyAgents") }
+                    if reader.agents.isEmpty {
+                        if reader.status == .live {
+                            Text("reading.noAgentsConnected")
+                            Button("connection.refresh") { Task { await reader.refresh() } }
+                        } else if reader.status != .syncing {
+                            Text("reading.emptyAgents")
+                        }
+                    }
                 }
                 Section("reading.recent") {
                     ForEach(reader.agents) { agent in

@@ -12,22 +12,20 @@ struct FilesView: View {
     @State private var exportDocument: FilesExportDocument?
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if let artifact = coordinator.prepared {
-                    preview(artifact)
-                } else {
-                    browser
-                }
+        Group {
+            if let artifact = coordinator.prepared {
+                preview(artifact)
+            } else {
+                browser
             }
-            .navigationTitle("files.title")
-            .overlay {
-                if coordinator.isLoading { ProgressView() }
-            }
-            .safeAreaInset(edge: .bottom) {
-                if let failure = coordinator.failure {
-                    Text(LocalizedStringKey(failure.key)).foregroundStyle(.red).padding()
-                }
+        }
+        .navigationTitle("files.title")
+        .overlay {
+            if coordinator.isLoading { ProgressView() }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if let failure = coordinator.failure {
+                Text(LocalizedStringKey(failure.key)).foregroundStyle(.red).padding()
             }
         }
         .sheet(item: $sharing) { item in

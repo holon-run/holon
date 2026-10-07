@@ -12,6 +12,14 @@ and build number to both targets; never hand-edit the generated bundle plists.
 Record the source revision, Xcode/SDK version and build inputs with each archive.
 Increment the build number for a new submitted build.
 
+The onboarding/three-tab candidate is `0.1.0 (2)`, with the same build number
+in the app and share extension's Debug and Release configurations. Build 1 is
+the previously installed internal TestFlight build, not this candidate's
+acceptance evidence. Check the submitted build list before uploading; keep
+export's `manageAppVersionAndBuildNumber` false so Apple tooling does not
+silently replace the recorded version inputs. An internal-only upload must set
+`testFlightInternalTestingOnly` true and is not an App Store release.
+
 The following is a template for an authorized **local** archive after the
 signing prerequisites below are satisfied, not a command run by this work:
 
@@ -56,7 +64,7 @@ authorization. An unsigned simulator build is not a signing check.
 | Network | `Info.plist`: Local Network explanation and broad ATS exception; profile HTTP consent | Test LAN denial/recovery and HTTPS; justify broad ATS exception for arbitrary user-chosen daemons |
 | User content | Reading cache, drafts, queue, copied attachments and shared inbox | Document retention/deletion limits; assess daemon/operator processing and backups |
 | Diagnostics | `Sources/DiagnosticExport.swift`: allowlisted status/count report, explicit export/send | Review report and destinations; do not treat manual export as zero data transmission |
-| Permissions | No camera, microphone, photo-library or location purpose keys in the current plists | Re-audit if a feature or SDK begins requesting these permissions |
+| Permissions | Main `Info.plist` and localized `InfoPlist.strings` declare camera use for connection QR scanning; `Sources/QRCodeScannerView.swift` uses local capture, without saving or uploading frames | Validate grant, denial/restriction, foreground/background and scanner dismissal on device; paste/manual connection must remain available |
 
 **Required-reason API evidence must match each submitted build.** The app's
 manifest is included by the existing synchronized `Resources` group; a hosted
@@ -96,6 +104,19 @@ declaration. Supply a public privacy policy that matches the actual deployment.
 - On signed physical devices validate app/extension group access, share-sheet
   invocation and host import; Local Network grant/denial; native browser
   callback; logout/revocation; accessibility and cleanup/storage errors.
+- For first connection, scan a fresh computer-generated pairing QR code on an
+  iPhone or iPad. Confirm destination preview makes no request, cancel leaves
+  credentials unchanged, confirmation redeems only once and success opens
+  Agents. Also check address-only codes, malformed/expired/already-used tickets
+  and explicit HTTP consent. Do not put tickets or session secrets in evidence.
+- Check camera permission grant and denial, return from background, repeated
+  recognition and leaving the scanner. Paste/manual connection must work after
+  denial; capture must stop when the scanner closes. Verify restored sessions,
+  empty connected rosters and Settings connection-add cancellation separately.
+- Run `make ios-ci` on a fresh dedicated simulator before archiving. Hosted
+  tests inspect matching app/share versions, icons, iPad orientations and the
+  bundled privacy manifest. Simulator camera fallback and UI success are not
+  substitutes for actual signed-device camera or App Group validation.
 - Archive inspection, authorized distribution signing/export, TestFlight and
   App Store review remain unverified. Existing local/simulator tests do not
   satisfy these gates. Keep release blocked until privacy and signing evidence

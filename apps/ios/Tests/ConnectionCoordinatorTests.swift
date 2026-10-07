@@ -160,6 +160,91 @@ final class ConnectionCoordinatorTests: XCTestCase {
         try XCTUnwrap(URL(string: "run.holon.ios://oidc/callback?state=\(state ?? proof.state)&ticket=\(String(repeating: "a", count: 64))&code_challenge_method=S256"))
     }
 
+    func testFreshLaunchWaitsForRestoreThenShowsConnection() async throws {
+        let f = try fixture()
+        let c = coordinator(f, transport: CoordinatorTransport())
+        XCTAssertEqual(c.launchState, .restoring)
+        await c.restore()
+        XCTAssertEqual(c.launchState, .connection)
+        XCTAssertNil(c.identity)
+        XCTAssertTrue(c.hasRestored)
+    }
+
+    func testSavedLaunchDoesNotExposeReadyBeforeIdentityIsConfirmed() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        try f.store.select(p.id)
+        let transport = CoordinatorTransport(gate: .user)
+        let c = coordinator(f, transport: transport)
+        let restoration = Task { await c.restore() }
+        await transport.waitUntilEntered()
+        XCTAssertEqual(c.launchState, .restoring)
+        XCTAssertNil(c.identity)
+        // A second appearance cannot prematurely finish the first restoration.
+        await c.restore()
+        XCTAssertEqual(c.launchState, .restoring)
+        await transport.release()
+        await restoration.value
+        XCTAssertEqual(c.launchState, .ready)
+        let identity = try XCTUnwrap(c.identity)
+        await c.restore()
+        XCTAssertEqual(c.identity, identity)
+        c.handleClientFailure(HolonHTTPFailure(statusCode: 503, identity: identity), expectedIdentity: identity)
+        XCTAssertEqual(c.launchState, .ready, "Transient offline state retains confirmed identity")
+        c.handleClientFailure(HolonHTTPFailure(statusCode: 401, identity: identity), expectedIdentity: identity)
+        XCTAssertEqual(c.launchState, .connection, "Revoked authority returns to sign-in")
+    }
+
+    func testBootstrapDeadlineReleasesLaunchScreenBeforeTransportReturns() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        try f.store.select(p.id)
+        let transport = CoordinatorTransport(gate: .user)
+        let c = coordinator(f, transport: transport, deadline: .milliseconds(30))
+        let restoration = Task { await c.restore() }
+        await transport.waitUntilEntered()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(c.status, .timedOut)
+        XCTAssertEqual(c.launchState, .connection)
+        XCTAssertNil(c.identity)
+        await transport.release()
+        await restoration.value
+        XCTAssertEqual(c.launchState, .connection)
+        XCTAssertNil(c.identity, "Late success cannot pass the expired bootstrap")
+    }
+
+    func testFailedSavedLaunchKeepsHostAndOffersRecoveryWithoutIdentity() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        try f.store.select(p.id)
+        let transport = CoordinatorTransport()
+        await transport.failBootstrap(.authenticationMode)
+        let c = coordinator(f, transport: transport)
+        await c.restore()
+        XCTAssertEqual(c.launchState, .connection)
+        XCTAssertEqual(c.status, .networkError)
+        XCTAssertEqual(c.selectedProfile, p)
+        XCTAssertNil(c.identity)
+    }
+
+    func testPairingCancellationIsOfflineAndDoesNotInstallAProfile() async throws {
+        let f = try fixture()
+        let transport = CoordinatorTransport()
+        let c = coordinator(f, transport: transport)
+        await c.restore()
+        try c.previewPairing("https://pair.test/login#pair=\(String(repeating: "a", count: 64))")
+        c.cancelPairing()
+        await c.confirmPairing(allowInsecureHTTP: false)
+        XCTAssertNil(c.pendingPairing)
+        XCTAssertTrue(c.profiles.isEmpty)
+        XCTAssertEqual(c.launchState, .connection)
+        let requests = await transport.redemptions
+        XCTAssertTrue(requests.isEmpty)
+    }
+
     func testSavedCredentialIsBoundBeforeHandshake() async throws {
         let f = try fixture()
         let p = try profile(f)
