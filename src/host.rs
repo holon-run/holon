@@ -748,6 +748,7 @@ impl RuntimeHost {
         let runtime_db =
             RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
         let registry = RuntimeRegistry::new(config, runtime_db.clone())?;
+        registry.restore_default_agent_selection()?;
         let (runtime_recovery_tx, runtime_recovery_rx) = mpsc::unbounded_channel();
         let host = Self {
             inner: Arc::new(HostInner {
@@ -789,7 +790,6 @@ impl RuntimeHost {
                 bootstrap_handoff_lock: AsyncMutex::new(()),
             }),
         };
-        host.ensure_default_agent_identity()?;
         host.ensure_legacy_public_agent_bootstraps()?;
         host.converge_private_child_identities()?;
         host.import_legacy_external_triggers()?;
@@ -798,6 +798,14 @@ impl RuntimeHost {
 
     pub fn config(&self) -> Arc<AppConfig> {
         self.inner.registry.config()
+    }
+
+    pub(crate) fn configured_default_agent_id(&self) -> Result<Option<String>> {
+        let configured = self.config().default_agent_id.clone();
+        Ok(self
+            .agent_identity_record(&configured)?
+            .filter(|identity| identity.status == AgentRegistryStatus::Active)
+            .map(|_| configured))
     }
 
     pub fn schedule_config_reload(&self) -> Result<u64> {
@@ -3104,6 +3112,8 @@ impl RuntimeHost {
         requested_name: Option<&str>,
         desired: AgentBootstrapDesiredState,
     ) -> Result<AgentCreateResult> {
+        let _bootstrap_handoff_guard = self.inner.bootstrap_handoff_lock.lock().await;
+        let had_default_agent = self.configured_default_agent_id()?.is_some();
         let (identity, created) = self
             .ensure_named_agent(
                 agent_id,
@@ -3113,6 +3123,11 @@ impl RuntimeHost {
                 desired,
             )
             .await?;
+        if created && !had_default_agent {
+            let mut config = (*self.config()).clone();
+            config.default_agent_id = identity.agent_id.clone();
+            self.inner.registry.replace_config(config);
+        }
         let bootstrap = self.reconcile_agent_bootstrap(agent_id).await?;
         let bootstrap_summary = bootstrap.summary();
         Ok(AgentCreateResult {
@@ -3252,7 +3267,9 @@ impl RuntimeHost {
         desired: AgentBootstrapDesiredState,
     ) -> Result<(AgentIdentityRecord, bool)> {
         self.validate_agent_id(agent_id)?;
-        if agent_id == self.config().default_agent_id {
+        if agent_id == self.config().default_agent_id
+            && self.agent_identity_record(agent_id)?.is_some()
+        {
             if existing_behavior == NamedAgentExistingBehavior::Reject {
                 return Err(named_agent_already_exists_error(agent_id));
             }
@@ -3797,8 +3814,13 @@ impl RuntimeHost {
         Box::pin(async move {
             self.ensure_runtime_recovery_coordinator();
             self.validate_agent_id(agent_id)?;
-            if agent_id == self.config().default_agent_id {
-                self.ensure_default_agent_identity()?;
+            if agent_id == self.config().default_agent_id
+                && self.agent_identity_record(agent_id)?.is_none()
+            {
+                return Err(anyhow!(
+                    "default agent {} has not been created yet",
+                    agent_id
+                ));
             }
             self.active_agent_identity(agent_id)
                 .map_err(anyhow::Error::new)?;
@@ -4027,7 +4049,6 @@ impl RuntimeHost {
     }
 
     pub async fn list_agents(&self) -> Result<Vec<AgentSummary>> {
-        self.ensure_default_agent_identity()?;
         let mut summaries = Vec::new();
         for identity in self.agent_identity_records()?.into_iter().filter(|record| {
             record.status == AgentRegistryStatus::Active
@@ -4048,7 +4069,6 @@ impl RuntimeHost {
         &self,
         parent_agent_id: Option<&str>,
     ) -> Result<Vec<AgentListEntry>> {
-        self.ensure_default_agent_identity()?;
         let mut entries = Vec::new();
         for identity in self.agent_identity_records()?.into_iter().filter(|record| {
             record.status == AgentRegistryStatus::Active
@@ -4081,7 +4101,6 @@ impl RuntimeHost {
     }
 
     pub async fn operator_agent_tree(&self) -> Result<AgentTreeProjection> {
-        self.ensure_default_agent_identity()?;
         let identities = self
             .agent_identity_records()?
             .into_iter()
@@ -4464,7 +4483,6 @@ impl RuntimeHost {
     pub async fn public_agent_activity_snapshots(
         &self,
     ) -> Result<Vec<PublicAgentActivitySnapshot>> {
-        self.ensure_default_agent_identity()?;
         let mut snapshots = Vec::new();
         for identity in self.agent_identity_records()?.into_iter().filter(|record| {
             record.status == AgentRegistryStatus::Active
@@ -4518,13 +4536,8 @@ impl RuntimeHost {
     ) -> Result<EffectivePrompt> {
         self.validate_agent_id(agent_id)?;
         let identity = if agent_id == self.config().default_agent_id {
-            self.ensure_default_agent_identity()?;
-            self.agent_identity_record(agent_id)?.ok_or_else(|| {
-                anyhow!(
-                    "default agent {} identity missing after initialization",
-                    agent_id
-                )
-            })?
+            self.agent_identity_record(agent_id)?
+                .ok_or_else(|| anyhow!("default agent {} has not been created yet", agent_id))?
         } else {
             self.agent_identity_record(agent_id)?.ok_or_else(|| {
                 anyhow!(
@@ -8088,8 +8101,37 @@ mod tests {
             .into_iter()
             .map(|summary| summary.identity.agent_id)
             .collect::<Vec<_>>();
-        assert!(listed.contains(&host.config().default_agent_id));
+        assert!(!listed.contains(&host.config().default_agent_id));
         assert!(listed.contains(&"release-bot".to_string()));
+    }
+
+    #[tokio::test]
+    async fn first_public_named_agent_becomes_default_after_restart() {
+        let (home, host) = test_host();
+        let startup_config = host.config().as_ref().clone();
+
+        let created = host
+            .create_public_named_agent("first-onboarding", None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(created.identity.agent_id, "first-onboarding");
+        assert_eq!(host.config().default_agent_id, "first-onboarding");
+        host.shutdown().await.unwrap();
+
+        let restarted =
+            RuntimeHost::new_with_provider(startup_config, Arc::new(StubProvider::new("done")))
+                .unwrap();
+        assert_eq!(restarted.config().default_agent_id, "first-onboarding");
+        let listed = restarted
+            .list_agents()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|summary| summary.identity.agent_id)
+            .collect::<Vec<_>>();
+        assert_eq!(listed, vec!["first-onboarding".to_string()]);
+        restarted.shutdown().await.unwrap();
+        drop(home);
     }
 
     #[tokio::test]

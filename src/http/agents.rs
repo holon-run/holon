@@ -57,9 +57,13 @@ pub async fn root(
         }
     }
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let default_agent = state
+        .host
+        .configured_default_agent_id()
+        .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
-        "default_agent": state.host.config().default_agent_id,
+        "default_agent": default_agent,
     }))
     .into_response())
 }
