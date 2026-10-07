@@ -1,3 +1,9 @@
+# Privacy and compliance preparation
+
+See [Play compliance evidence and release gates](PLAY_COMPLIANCE.md) before
+completing Console declarations. The policy pages and in-app link are prepared;
+their public URLs must be deployed and verified separately before submission.
+
 # Google Play internal testing
 
 The **Android Play internal testing** workflow is a separate, manual publishing
@@ -64,6 +70,8 @@ Before declaring the app store-ready, the account holder must supply or confirm:
 
 - The app icon, feature graphic and actual app screenshots. Do not upload
   automated visual-test fixtures as store screenshots.
+  Prepared English assets and capture provenance are in
+  [play/README.md](play/README.md); these assets have not been uploaded.
 - The public privacy-policy URL, data-safety answers and retention/deletion
   behavior, based on the app and the runtimes users connect to.
 - Content rating, target audience, ads and any other required declarations.

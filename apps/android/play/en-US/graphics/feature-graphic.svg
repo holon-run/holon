@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="500" viewBox="0 0 1024 500">
+  <rect width="1024" height="500" fill="#F5F7FA"/>
+  <circle cx="994" cy="60" r="240" fill="#E8F0FA"/>
+  <circle cx="986" cy="60" r="148" fill="none" stroke="#D4E4F8" stroke-width="2"/>
+  <!-- Android launcher mark, with no device frame or simulated UI. -->
+  <g transform="translate(70 76) scale(1.4)" fill="none" stroke-linejoin="miter">
+    <path d="M54 23.2 80.7 38.6 80.7 69.4 54 84.8 27.3 69.4 27.3 38.6Z"
+          stroke="#536171" stroke-width="5"/>
+    <path d="M54 33.8 71.5 43.9 71.5 64.1 54 74.2 36.5 64.1 36.5 43.9Z"
+          stroke="#2674C7" stroke-width="6"/>
+  </g>
+  <g font-family="sans-serif" fill="#253447">
+    <text x="252" y="186" font-size="72" font-weight="700">Holon</text>
+    <text x="88" y="306" font-size="38" font-weight="600">Your agents, wherever you are.</text>
+    <text x="90" y="365" font-size="26" fill="#536171">Connect to your own runtime.</text>
+  </g>
+</svg>

@@ -27,6 +27,8 @@ internal object UiCopy {
 
     fun preference(): String? = preferredLanguage
 
+    fun effectiveLanguage(): String = preferredLanguage ?: systemLanguage
+
     fun select(context: Context, language: String?) {
         require(language == null || language == "en" || language == "zh")
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
@@ -36,7 +38,7 @@ internal object UiCopy {
     }
 
     fun text(source: String): String {
-        val language = preferredLanguage ?: systemLanguage
+        val language = effectiveLanguage()
         val resource = coreCopyResources[source]
         val context = resourcesContext
         if (resource != null && context != null) {
@@ -372,7 +374,8 @@ internal object UiCopy {
         计划预览|Plan preview
         认证|Authentication
         设置|Settings
-        访问令牌不保存在设备上。|The access token is not stored on this device.
+        原始访问令牌不落盘；可撤销的会话凭据在设备上加密保存。|The original access token is not written to disk; revocable session credentials are stored encrypted on this device.
+        隐私政策|Privacy policy
         访问令牌（token）|Access token
         调整搜索或显示隐藏文件。|Change the filter or hidden-file setting.
         调整搜索词或筛选条件后再试。|Change your search or filters and try again.

@@ -71,6 +71,10 @@
   ],
   "footerNav": [
     {
+      "label": "Privacy",
+      "href": "/privacy"
+    },
+    {
       "label": "GitHub",
       "href": "https://github.com/holon-run/holon"
     },

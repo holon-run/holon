@@ -5,6 +5,16 @@ import org.junit.Test
 
 class UiCopyTest {
     @Test
+    fun `privacy and session storage copy is translated accurately`() {
+        assertEquals("Privacy policy", UiCopy.translate("隐私政策", "en"))
+        assertEquals("隐私政策", UiCopy.translate("隐私政策", "zh-CN"))
+        assertEquals(
+            "The original access token is not written to disk; revocable session credentials are stored encrypted on this device.",
+            UiCopy.translate("原始访问令牌不落盘；可撤销的会话凭据在设备上加密保存。", "en"),
+        )
+    }
+
+    @Test
     fun `english uses web gui terminology`() {
         assertEquals("Results", UiCopy.translate("结果", "en"))
         assertEquals("Work items", UiCopy.translate("工作记录", "en"))
