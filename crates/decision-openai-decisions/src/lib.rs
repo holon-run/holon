@@ -681,6 +681,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn contract_classifies_decode_errors() {
+        let endpoint = test_server(
+            Some(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nnot json"),
+            Duration::ZERO,
+        );
+        let provider = OpenAiDecisionsProvider::new(OpenAiDecisionsConfig::new(endpoint, "test"))
+            .expect("provider");
+        let result = provider
+            .decide(
+                request(BTreeMap::new()),
+                DecisionContext::with_timeout(Duration::from_secs(1)),
+            )
+            .await;
+        assert!(matches!(result, Err(DecisionError::Serialization(_))));
+    }
+
+    #[tokio::test]
     async fn rejects_oversized_request_before_http_call() {
         let provider = OpenAiDecisionsProvider::new(
             OpenAiDecisionsConfig::new("http://127.0.0.1:1", "test").with_max_request_bytes(1),

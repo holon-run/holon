@@ -522,6 +522,15 @@ mod tests {
     }
 
     fn test_server(response: &'static [u8], delay: Duration, require_auth: bool) -> String {
+        raw_test_server("200 OK", response, delay, require_auth)
+    }
+
+    fn raw_test_server(
+        status: &'static str,
+        response: &'static [u8],
+        delay: Duration,
+        require_auth: bool,
+    ) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
         let address = listener.local_addr().expect("address");
         thread::spawn(move || {
@@ -537,7 +546,7 @@ mod tests {
             assert!(request.contains("\"model\":\"clef\""));
             thread::sleep(delay);
             let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n",
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
                 response.len()
             );
             stream.write_all(header.as_bytes()).expect("write header");
@@ -689,6 +698,62 @@ mod tests {
         assert!(matches!(
             response.outcome,
             DecisionOutcome::Select { value } if value == serde_json::json!("billing")
+        ));
+    }
+
+    #[tokio::test]
+    async fn contract_classifies_http_and_decode_errors() {
+        let endpoint = raw_test_server(
+            "502 Bad Gateway",
+            br#"upstream failure"#,
+            Duration::ZERO,
+            false,
+        );
+        let provider =
+            ClefProvider::new(ClefConfig::new(endpoint, DEFAULT_MODEL)).expect("provider");
+        let error = provider
+            .decide(
+                request(None),
+                DecisionContext::with_timeout(Duration::from_secs(1)),
+            )
+            .await
+            .expect_err("http error");
+        assert!(matches!(error, DecisionError::Provider(message) if message.contains("502")));
+
+        let endpoint = test_server(br#"not json"#, Duration::ZERO, false);
+        let provider =
+            ClefProvider::new(ClefConfig::new(endpoint, DEFAULT_MODEL)).expect("provider");
+        let error = provider
+            .decide(
+                request(None),
+                DecisionContext::with_timeout(Duration::from_secs(1)),
+            )
+            .await
+            .expect_err("decode error");
+        assert!(matches!(error, DecisionError::Serialization(_)));
+    }
+
+    #[tokio::test]
+    async fn contract_propagates_cancellation() {
+        let endpoint = test_server(
+            br#"{"answers":{"decision":{"choice":"candidate_0"}}}"#,
+            Duration::from_millis(200),
+            false,
+        );
+        let provider =
+            ClefProvider::new(ClefConfig::new(endpoint, DEFAULT_MODEL)).expect("provider");
+        let context = DecisionContext::new();
+        let cancellation = context.cancellation_token();
+        let task = tokio::spawn({
+            let provider = provider;
+            let context = context.clone();
+            async move { provider.decide(request(None), context).await }
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        cancellation.cancel();
+        assert!(matches!(
+            task.await.expect("cancel task"),
+            Err(DecisionError::Cancelled)
         ));
     }
 

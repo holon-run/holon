@@ -519,6 +519,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn contract_classifies_http_and_decode_errors() {
+        let endpoint = test_server(
+            Some(
+                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 7\r\nConnection: close\r\n\r\nfailure",
+            ),
+            Duration::ZERO,
+        );
+        let provider = JevProvider::new(JevConfig::new(endpoint)).expect("provider");
+        let error = provider
+            .decide(
+                request(),
+                DecisionContext::with_timeout(Duration::from_secs(1)),
+            )
+            .await
+            .expect_err("http error");
+        assert!(matches!(
+            error,
+            DecisionError::Provider(message) if message.contains("503")
+        ));
+
+        let endpoint = test_server(
+            Some(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nnot json"),
+            Duration::ZERO,
+        );
+        let provider = JevProvider::new(JevConfig::new(endpoint)).expect("provider");
+        let error = provider
+            .decide(
+                request(),
+                DecisionContext::with_timeout(Duration::from_secs(1)),
+            )
+            .await
+            .expect_err("decode error");
+        assert!(matches!(error, DecisionError::Serialization(_)));
+    }
+
+    #[ignore = "requires a live Jev/Vercel endpoint and credentials"]
+    #[tokio::test]
     async fn calls_jev_through_vercel_gateway() {
         let Some(api_key) = std::env::var("HOLON_LIVE_DECISION_JEV_VERCEL_API_KEY")
             .or_else(|_| std::env::var("AI_GATEWAY_API_KEY"))

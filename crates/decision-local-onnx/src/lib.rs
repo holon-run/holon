@@ -641,6 +641,39 @@ mod tests {
         assert!(matches!(absolute, LocalOnnxError::InvalidManifest(_)));
     }
 
+    #[cfg(not(feature = "onnx"))]
+    #[test]
+    fn contract_reports_feature_disabled_without_network_or_model_inference() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        fs::write(directory.path().join(DEFAULT_MODEL), b"model").expect("model");
+        fs::write(directory.path().join(DEFAULT_TOKENIZER), b"{}").expect("tokenizer");
+        let provider = LocalOnnxProvider::new(LocalOnnxConfig {
+            model_dir: directory.path().into(),
+            variant: "q4f16".into(),
+            num_threads: 1,
+            checksum: None,
+        })
+        .expect("provider");
+        let request = DecisionRequest {
+            request_id: "req-local-onnx".into(),
+            input: Value::String("hello".into()),
+            candidates: vec![Value::String("world".into())],
+            schema: "choose one".into(),
+            schema_version: "1".into(),
+            metadata: Default::default(),
+            deadline_ms: None,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime");
+        let result = runtime.block_on(provider.decide(request, DecisionContext::new()));
+        assert!(matches!(
+            result,
+            Err(DecisionError::Provider(message)) if message.contains("support is not enabled")
+        ));
+    }
+
     #[cfg(feature = "onnx")]
     #[test]
     fn softmax_is_stable_and_normalized() {

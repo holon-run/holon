@@ -61,6 +61,7 @@ async fn run_live(
     Ok(())
 }
 
+#[ignore = "requires a live OpenAI-compatible endpoint and credentials"]
 #[tokio::test]
 async fn live_openai_compatible_decision_returns_valid_response(
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -74,6 +75,7 @@ async fn live_openai_compatible_decision_returns_valid_response(
     run_live(endpoint, model, api_key, "live-decision-openai").await
 }
 
+#[ignore = "requires a live OpenRouter endpoint and credentials"]
 #[tokio::test]
 async fn live_openrouter_openai_compatible_decision_returns_valid_response(
 ) -> Result<(), Box<dyn std::error::Error>> {

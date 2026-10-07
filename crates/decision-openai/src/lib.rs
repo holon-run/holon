@@ -403,6 +403,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn contract_classifies_http_and_decode_errors() {
+        let endpoint = test_server(
+            Some(
+                b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 7\r\nConnection: close\r\n\r\nlimited",
+            ),
+            Duration::ZERO,
+        );
+        let provider = OpenAiProvider::new(OpenAiConfig::new(endpoint, "test")).expect("provider");
+        let error = provider
+            .decide(
+                request(),
+                DecisionContext::with_timeout(Duration::from_secs(1)),
+            )
+            .await
+            .expect_err("http error");
+        assert!(matches!(
+            error,
+            DecisionError::Provider(message) if message.contains("429")
+        ));
+
+        let endpoint = test_server(
+            Some(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 48\r\nConnection: close\r\n\r\n{\"choices\":[{\"message\":{\"content\":\"not json\"}}]}",
+            ),
+            Duration::ZERO,
+        );
+        let provider = OpenAiProvider::new(OpenAiConfig::new(endpoint, "test")).expect("provider");
+        let error = provider
+            .decide(
+                request(),
+                DecisionContext::with_timeout(Duration::from_secs(1)),
+            )
+            .await
+            .expect_err("decode error");
+        assert!(matches!(error, DecisionError::Serialization(_)));
+    }
+
+    #[tokio::test]
     async fn rejects_oversized_request_before_http_call() {
         let provider = OpenAiProvider::new(
             OpenAiConfig::new("http://127.0.0.1:1", "test").with_max_request_bytes(1),
