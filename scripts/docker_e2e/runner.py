@@ -6357,6 +6357,7 @@ def main(argv: list[str] | None = None) -> int:
             tool_assertion_mode=profile.get("tool_assertion_mode", "strict"),
             previous_image=args.previous_image,
             credential_delivery=case.get("credential_delivery", "env"),
+            bootstrap_agent_id=case.get("bootstrap_agent_id", "main"),
         )
         control_tokens.append(harness.token)
         error_text = ""
