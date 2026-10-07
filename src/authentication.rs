@@ -58,7 +58,7 @@ impl Default for SessionPolicy {
     fn default() -> Self {
         Self {
             absolute_ttl_seconds: None,
-            idle_ttl_seconds: Duration::from_secs(24 * 60 * 60).as_secs(),
+            idle_ttl_seconds: Duration::from_secs(7 * 24 * 60 * 60).as_secs(),
         }
     }
 }

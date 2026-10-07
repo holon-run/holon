@@ -110,7 +110,7 @@ Holon supports session-based authentication for browser and Web UI clients along
 | `auth.oidc.client_secret_env` | string | unset | Environment variable containing the OIDC client secret |
 | `auth.oidc.redirect_uri` | string | unset | Callback redirect URI (e.g. `http://localhost:7878/api/auth/oidc/callback`) |
 | `auth.session.absolute_ttl_seconds` | positive_integer_or_null | unset (`null`) | Absolute session lifetime in seconds (`null` means unlimited) |
-| `auth.session.idle_ttl_seconds` | positive_integer | `86400` (24h) | Inactivity timeout in seconds before a session expires |
+| `auth.session.idle_ttl_seconds` | positive_integer | `604800` (7d) | Inactivity timeout in seconds before a session expires |
 
 For a step-by-step guide covering IdP setup and session audits, see [Configure OIDC authentication](/guides/configure-oidc-authentication.md).
 
