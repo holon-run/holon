@@ -3773,7 +3773,12 @@ async fn provider_recovery_budget_exhaustion_stops_the_lineage() {
         .await
         .unwrap();
 
-    assert!(outcome.is_none());
+    let outcome = outcome.expect("terminal outcome after recovery budget exhaustion");
+    assert_eq!(outcome.terminal_kind, TurnTerminalKind::Aborted);
+    assert!(outcome
+        .final_text
+        .starts_with("Provider recovery budget exhausted"));
+    assert!(!outcome.final_text.contains("current provider failed"));
     assert_eq!(runtime.inner.agent.lock().await.queue.len(), 0);
     let events = runtime.storage().read_recent_events(20).unwrap();
     let exhausted = events

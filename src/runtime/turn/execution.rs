@@ -466,7 +466,38 @@ impl RuntimeHandle {
                     "provider_attempt_timeline": timeline,
                 }),
             ))?;
-            return Ok(None);
+            let error_text = error.to_string();
+            let failure_text = error_text
+                .strip_prefix("current provider failed for this turn: ")
+                .unwrap_or(&error_text);
+            let final_text = format!(
+                "Provider recovery budget exhausted for this turn; no further fallback will be attempted: {}.",
+                provider_lineage_failure_text(failure_text)
+            );
+            let terminal = self
+                .persist_turn_terminal_record(
+                    TurnTerminalKind::Aborted,
+                    Some(final_text.clone()),
+                    None,
+                    duration_ms,
+                    None,
+                    persist_terminal,
+                )
+                .await?;
+            return Ok(Some(AgentLoopOutcome {
+                final_text,
+                final_citations: Vec::new(),
+                final_text_source_assistant_round_id: None,
+                turn_index: terminal.turn_index,
+                terminal,
+                should_sleep: false,
+                sleep_duration_ms: None,
+                allow_sleep_runnable_work_override: false,
+                terminal_kind: TurnTerminalKind::Aborted,
+                prepared_work_item_completion: None,
+                prepared_wait_for: None,
+                terminal_tool_executions: Vec::new(),
+            }));
         }
         let Ok(fallback_model) = ModelRouteRef::parse_compatible(fallback_ref) else {
             return Ok(None);

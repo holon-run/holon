@@ -1608,7 +1608,7 @@ impl AgentProvider for RecoveringContextLengthProvider {
 impl AgentProvider for DeferredFallbackProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Err(provider_turn_error(
-            "all configured providers failed for this turn: openai/gpt-5.4: retryable exhausted",
+            "current provider failed for this turn: openai/gpt-5.4: retryable exhausted",
             ProviderAttemptTimeline {
                 attempts: vec![ProviderAttemptRecord {
                     provider: "openai".into(),
@@ -1650,7 +1650,7 @@ impl AgentProvider for DeferredFallbackProvider {
 impl AgentProvider for DeferredNetworkFallbackProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Err(provider_turn_error(
-            "all configured providers failed for this turn: openai/gpt-5.4: retryable exhausted",
+            "current provider failed for this turn: openai/gpt-5.4: retryable exhausted",
             ProviderAttemptTimeline {
                 attempts: vec![ProviderAttemptRecord {
                     provider: "openai".into(),
@@ -1709,7 +1709,7 @@ impl AgentProvider for TextThenFailingFallbackProvider {
         }
 
         Err(provider_turn_error(
-            "all configured providers failed for this turn: openai/gpt-5.4: retryable exhausted",
+            "current provider failed for this turn: openai/gpt-5.4: retryable exhausted",
             ProviderAttemptTimeline {
                 attempts: vec![ProviderAttemptRecord {
                     provider: "openai".into(),
