@@ -261,9 +261,26 @@ Run the benchmark harness:
 
 ```bash
 cd benchmark
-npm install
+npm ci
 npm test
 ```
+
+For the fast fixture guardrail subset:
+
+```bash
+npm run guardrails
+```
+
+See the [benchmark plan](docs/benchmark-plan.md) for the implemented task,
+runner, verifier, and artifact contracts. Real-repo task manifests and suites
+are documented in [`benchmarks/README.md`](benchmarks/README.md), with commands
+for `validate-manifest`, `real`, and `suite`.
+
+The default [Benchmark CI workflow](.github/workflows/benchmark.yml) runs the
+Node harness tests and a stable Rust performance subset. It does not run
+real-repo suites; those remain explicitly authorized operator commands. The
+Rust performance job uploads `target/performance/` artifacts, while local
+Node runs write their results under `.benchmark-results/`.
 
 ## Community
 
