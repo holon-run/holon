@@ -212,6 +212,7 @@ structured delivery.
 - [Website docs](https://holon.run) — install, getting started, concepts, guides, reference
 - [Documentation layers](docs/website/concepts/documentation-layers.md)
 - [Architecture overview](docs/architecture-overview.md)
+- [Test duty matrix](docs/test-duty-matrix.md)
 - [RFCs](docs/rfcs/README.md)
 - [Implementation decisions](docs/implementation-decisions/README.md)
 - [Release process](docs/release.md)
@@ -240,8 +241,9 @@ make build  # build Rust binary
 
 ## Development
 
-Use Node.js 24 LTS for Web GUI development. Run the same full validation used
-by CI with `make`:
+Use Node.js 24 LTS for Web GUI development. Run the local deterministic CI
+subset with `make ci`; platform, Docker, coverage, and provider-backed live gates
+run in separate CI jobs:
 
 ```bash
 make ci
