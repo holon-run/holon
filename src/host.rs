@@ -800,7 +800,7 @@ impl RuntimeHost {
         self.inner.registry.config()
     }
 
-    pub(crate) fn configured_default_agent_id(&self) -> Result<Option<String>> {
+    pub fn configured_default_agent_id(&self) -> Result<Option<String>> {
         let configured = self.config().default_agent_id.clone();
         Ok(self
             .agent_identity_record(&configured)?
@@ -1996,6 +1996,12 @@ impl RuntimeHost {
     }
 
     pub async fn default_runtime(&self) -> Result<RuntimeHandle> {
+        if self
+            .agent_identity_record(&self.config().default_agent_id)?
+            .is_none()
+        {
+            self.ensure_default_agent_identity()?;
+        }
         self.activate_agent(
             &self.config().default_agent_id,
             RuntimeActivationReason::AgentLifecycle,
@@ -3112,22 +3118,25 @@ impl RuntimeHost {
         requested_name: Option<&str>,
         desired: AgentBootstrapDesiredState,
     ) -> Result<AgentCreateResult> {
-        let _bootstrap_handoff_guard = self.inner.bootstrap_handoff_lock.lock().await;
-        let had_default_agent = self.configured_default_agent_id()?.is_some();
-        let (identity, created) = self
-            .ensure_named_agent(
-                agent_id,
-                lineage_parent_agent_id,
-                NamedAgentExistingBehavior::Reject,
-                requested_name,
-                desired,
-            )
-            .await?;
-        if created && !had_default_agent {
-            let mut config = (*self.config()).clone();
-            config.default_agent_id = identity.agent_id.clone();
-            self.inner.registry.replace_config(config);
-        }
+        let (identity, created) = {
+            let _bootstrap_handoff_guard = self.inner.bootstrap_handoff_lock.lock().await;
+            let had_default_agent = self.configured_default_agent_id()?.is_some();
+            let (identity, created) = self
+                .ensure_named_agent(
+                    agent_id,
+                    lineage_parent_agent_id,
+                    NamedAgentExistingBehavior::Reject,
+                    requested_name,
+                    desired,
+                )
+                .await?;
+            if created && !had_default_agent {
+                let mut config = (*self.config()).clone();
+                config.default_agent_id = identity.agent_id.clone();
+                self.inner.registry.replace_config(config);
+            }
+            (identity, created)
+        };
         let bootstrap = self.reconcile_agent_bootstrap(agent_id).await?;
         let bootstrap_summary = bootstrap.summary();
         Ok(AgentCreateResult {
@@ -3817,10 +3826,22 @@ impl RuntimeHost {
             if agent_id == self.config().default_agent_id
                 && self.agent_identity_record(agent_id)?.is_none()
             {
-                return Err(anyhow!(
-                    "default agent {} has not been created yet",
-                    agent_id
-                ));
+                match reason {
+                    RuntimeActivationReason::StartupRecovery
+                    | RuntimeActivationReason::SchedulerDispatch
+                    | RuntimeActivationReason::Wake
+                    | RuntimeActivationReason::ExternalIngress
+                    | RuntimeActivationReason::ChildSupervision => {
+                        return Err(anyhow!(
+                            "default agent {} has not been created yet",
+                            agent_id
+                        ));
+                    }
+                    RuntimeActivationReason::OperatorControl
+                    | RuntimeActivationReason::AgentLifecycle => {
+                        self.ensure_default_agent_identity()?;
+                    }
+                }
             }
             self.active_agent_identity(agent_id)
                 .map_err(anyhow::Error::new)?;

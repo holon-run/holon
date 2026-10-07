@@ -923,12 +923,18 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     }
     let runtime_service = RuntimeServiceHandle::new_starting(&config)?;
     host.recover_orphaned_queue_claims_at_startup().await?;
-    let runtime = host.default_runtime().await?;
+    let runtime = if host.configured_default_agent_id()?.is_some() {
+        Some(host.default_runtime().await?)
+    } else {
+        None
+    };
     host.spawn_daemon_memory_indexer();
     host.spawn_daemon_runtime_db_retention();
     host.spawn_daemon_deletion_coordinator();
     spawn_stale_agent_template_remote_source_sync(&config, &host);
-    emit_first_run_intro(&config, &runtime).await;
+    if let Some(runtime) = runtime.as_ref() {
+        emit_first_run_intro(&config, runtime).await;
+    }
 
     let listener = TcpListener::bind(&config.http_addr)
         .await
