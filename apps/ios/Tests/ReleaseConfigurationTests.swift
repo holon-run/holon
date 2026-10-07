@@ -31,9 +31,27 @@ final class ReleaseConfigurationTests: XCTestCase {
         XCTAssertNotEqual(info["UIRequiresFullScreen"] as? Bool, true)
     }
 
-    private func packagedInfoDictionary() throws -> [String: Any] {
+    func testHostedAppAndEmbeddedShareExtensionHaveMatchingVersions() throws {
+        let info = try packagedInfoDictionary()
+        let version = try XCTUnwrap(info["CFBundleShortVersionString"] as? String)
+        let build = try XCTUnwrap(info["CFBundleVersion"] as? String)
+        XCTAssertFalse(version.isEmpty)
+        XCTAssertGreaterThan(Int(build) ?? 0, 0)
+
+        let plugins = Bundle.main.bundleURL.appendingPathComponent("PlugIns")
+        let extensions = try FileManager.default.contentsOfDirectory(
+            at: plugins, includingPropertiesForKeys: nil, options: .skipsHiddenFiles
+        ).filter { $0.pathExtension == "appex" }
+        XCTAssertEqual(extensions.count, 1)
+        let share = try XCTUnwrap(extensions.first)
+        let shareInfo = try packagedInfoDictionary(in: share)
+        XCTAssertEqual(shareInfo["CFBundleShortVersionString"] as? String, version)
+        XCTAssertEqual(shareInfo["CFBundleVersion"] as? String, build)
+    }
+
+    private func packagedInfoDictionary(in bundleURL: URL = Bundle.main.bundleURL) throws -> [String: Any] {
         // Bundle's runtime lookup resolves device qualifiers; inspect both variants as shipped.
-        let url = Bundle.main.bundleURL.appendingPathComponent("Info.plist")
+        let url = bundleURL.appendingPathComponent("Info.plist")
         let data = try Data(contentsOf: url)
         return try XCTUnwrap(
             PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any]

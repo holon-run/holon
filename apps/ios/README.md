@@ -1,21 +1,28 @@
 # Holon iOS
 
 Native SwiftUI remote client, targeting iOS 18+ on iPhone and iPad. This directory
-contains connection profiles, token/session login, offline QR invitation preview
-and confirmed redemption, native organization login, and scoped Keychain recovery.
+contains first-connection onboarding, camera QR scanning, connection profiles,
+token/session login, offline invitation preview and confirmed redemption,
+native organization login, and scoped Keychain recovery.
 The Agents tab provides foreground conversation reading, history, briefs and
 on-demand execution details, with identity-partitioned offline caching.
 Its conversation editor includes persistent drafts, local attachment staging,
 model selection, an explicit current-run stop and a durable sending queue.
-Work/files and system sharing are available as bounded client surfaces. It is
-**not distribution-ready**: see [release preparation](RELEASE.md) for privacy,
-signing, physical-device and review gates.
+The three tabs are Agents, Work and Settings. Files, sharing, connections and
+diagnostics remain available through Settings and work-artifact previews.
+Internal TestFlight delivery does not establish physical-device or App Store
+acceptance: see [release preparation](RELEASE.md) for the remaining gates.
 
 ## Using the client
 
-1. In Connections, add a named profile with the full daemon API base, for
-   example `https://example.com/proxy/api`. Select the profile, then use a
-   daemon-issued token or organization sign-in when the server offers OIDC.
+1. On first launch, use **Scan connection QR code**, paste a connection invitation,
+   or choose manual connection. Generate an invitation on your computer using
+   Holon's connection QR entry. For manual connection, supply the full daemon
+   API base, for example `https://example.com/proxy/api`, then authenticate with
+   a daemon-issued token or organization sign-in when the server offers OIDC.
+   After identity is confirmed, the app opens Agents. An empty agent roster is
+   not a login failure. Saved sessions are restored before choosing the screen;
+   failed recovery offers explicit retry and connection actions.
    A phone's loopback address points to the phone, not your development computer.
    For LAN access, use a reachable host and allow Local Network access in iOS
    Settings; check the daemon listener, firewall and proxy prefix if unreachable.
@@ -23,21 +30,26 @@ signing, physical-device and review gates.
    after accepting that credentials and content travel without encryption.
    This consent is not TLS verification bypass. Organization login requires
    HTTPS. Do not expose an unauthenticated daemon to make pairing easier.
-3. To pair, paste the invitation's `/login#pair=<ticket>` contents and preview.
+3. To pair, scan or paste the invitation's `/login#pair=<ticket>` contents.
    Check the displayed destination and HTTP warning before confirming redemption.
    Preview is offline; expiry and single use are enforced by the daemon.
-   There is no camera scan or invitation history in this client.
+   An address-only QR code still requires authentication. Camera denial or an
+   unavailable camera leaves paste and manual connection available; frames are
+   not saved or uploaded. There is no invitation history.
+   In **Settings → Connections**, add or switch saved hosts; cancelling an
+   added connection preserves the original host. Advanced authentication fields
+   remain in the connection manager rather than the first-launch screen.
 4. Select an agent to read conversations and briefs or edit a draft. Queueing
    is explicit; inspect the queue before retrying an unknown result. Unknown
    outcomes are not proof of failure: use the same-request retry rather than
    composing a duplicate. Stopping an observed run is separate from deleting
    a local queued request and does not retract already accepted server work.
 5. In the iOS share sheet choose Holon. The extension stages input locally;
-   it does not send to a daemon. Open the host's System share inbox, reload,
+   it does not send to a daemon. Open **Settings → Share inbox**, reload,
    inspect the preview and select the target agent before confirming queueing.
    Discard unwanted inbox entries. Missing App Group access fails closed.
    A queued item and its staged inbox source have independent lifecycles.
-6. In System diagnostics, prepare and inspect the allowlisted report before
+6. In **Settings → Diagnostics**, prepare and inspect the allowlisted report before
    using the system share action. Sending it to an agent requires a separate
    confirmation; it is not automatic telemetry. The report contains status
    enums, counts, schema/platform and creation time, not arbitrary logs,
@@ -70,10 +82,7 @@ runtime required by the repository's pinned OpenAPI Generator.
 From the repository root:
 
 ```sh
-make ios-wire-check
-make ios-sdk-test
-make ios-contract-test
-make ios-app-test
+make ios-ci
 ```
 
 `ios-app-test` builds the checked-in project and runs hosted XCTest platform
@@ -91,6 +100,14 @@ declares its app-scoped Keychain group; credentials are never shared with the ex
 Configure a registered group and matching development profiles before physical-device
 sharing validation. An unavailable shared container disables import rather than
 falling back to a private path.
+
+`ios-ci` also runs the full UI gate. Set `IOS_SIMULATOR_ID` to a dedicated fresh
+simulator: removing the app does not guarantee removal of its saved Keychain
+session. UI verification covers first connection, exactly three tabs, files,
+diagnostics and accessibility. The diagnostic font-size test changes and reads
+back the real simulator system preference without restarting Holon; it does not
+test navigation in Apple's Settings app. Camera recognition and permission
+lifecycles still require an iPhone or iPad.
 
 ## Boundaries
 
