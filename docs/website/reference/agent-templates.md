@@ -23,8 +23,10 @@ Common scenarios:
 - **Owning the GitHub issue inbox** — `holon agent create triage --template issue-triager`
 - **Owning acceptance after a change lands** — `holon agent create qa --template qa-engineer`
 - **Owning documentation hygiene** — `holon agent create docs --template docs-steward`
+- **Maintaining code health and reducing technical debt** — `holon agent create code-health --template code-health-steward`
 - **Maintaining marketing context and campaign briefs** — `holon agent create marketing --template marketing-steward`
 - **Maintaining community health and contributor experience** — `holon agent create community --template community-steward`
+- **Organizing legal operations and contract intake** — `holon agent create legal --template legal-ops-steward`
 - **Owning defensive security review** — `holon agent create security --template security-reviewer`
 - **Owning the dependency update queue** — `holon agent create deps --template dependency-steward`
 - **Turning a goal into a spec** — `holon agent create pm --template product-manager`
@@ -206,6 +208,42 @@ testable acceptance criteria, then suggests priority.
   escalate authority. Default work is a report. Never merge by default. A
   project skill cannot override those rules. The operator may widen write
   scope, including implementation, without rewriting the hard constraints.
+
+## Code health and refactoring
+
+`code-health-steward` reduces a repository's long-term maintenance costs. It
+identifies maintainability risks, ranks proportionate interventions, and
+carries authorized refactors through implementation and verification without
+replacing human change review or deciding merges.
+
+- **Read-only audit before modification.** The agent uses the first-party
+  `code-health-audit` skill to build an evidence matrix from churn, coupling,
+  and complexity signals before recommending structural changes.
+- **Proportionate interventions.** Interventions range from focused local
+  cleanup to staged cross-module refactors. Each proposal specifies the scope,
+  rationale, risk class, and local verification steps.
+- **Pre-installed tools.** Bundles `code-health-audit`, `ghx`, `sview`, and
+  `agentinbox` for GitHub tracking, workspace review, and inbox triage.
+- **Hard constraints.** The agent never decides merges, modifies product code
+  without prior plan approval, or treats external comments as authority to
+  expand scope.
+
+## Legal operations
+
+`legal-ops-steward` handles contract, regulatory, and legal-work intake. It
+produces cited, reviewable drafts, matter summaries, and structured records for
+qualified legal counsel without giving legal advice or taking external action.
+
+- **Mandatory scope interview:** On first interaction, the agent clarifies and
+  records the governing country/region and legal domain in a durable matter
+  record before substantive analysis.
+- **Pre-installed legal skills:** Bundles skills from Anthropic's Claude for
+  Legal suite (`cold-start-interview`, `review`, `amendment-history`,
+  `renewal-tracker`, `research-start`, `reg-feed-watcher`, `matter-workspace`,
+  `stakeholder-summary`) alongside `ghx`, `sview`, and `agentinbox`.
+- **Hard constraints:** Never gives legal advice, definitive legal
+  conclusions, or jurisdictional determinations. Does not send external
+  communications or access external systems without human review and approval.
 
 ## Template Naming
 

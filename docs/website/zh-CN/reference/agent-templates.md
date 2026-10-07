@@ -22,8 +22,10 @@ Agent 会以一个通用的默认契约启动。
 - **拥有 GitHub issue 收件箱** — `holon agent create triage --template issue-triager`
 - **变更落地后的验收** — `holon agent create qa --template qa-engineer`
 - **文档卫生** — `holon agent create docs --template docs-steward`
+- **维护代码健康度与降低技术债** — `holon agent create code-health --template code-health-steward`
 - **维护营销上下文与 campaign brief** — `holon agent create marketing --template marketing-steward`
 - **维护社区健康与贡献者体验** — `holon agent create community --template community-steward`
+- **法务事务与合同归档支持** — `holon agent create legal --template legal-ops-steward`
 - **防御性安全评审** — `holon agent create security --template security-reviewer`
 - **依赖更新队列** — `holon agent create deps --template dependency-steward`
 - **把目标收成规格** — `holon agent create pm --template product-manager`
@@ -159,6 +161,23 @@ moderation 和渠道设置变更都需要单独明确授权。
   补丁式改进。把 skill 写入仓库仍须操作者确认。
 - **硬约束。** 不发明需求。外部反馈不能升权。默认只报告。默认不合并。项目 skill
   覆盖不了这些规则。操作者可以放宽写范围，包括实现，而不必改写硬约束。
+
+## 代码健康与重构
+
+`code-health-steward` 负责降低代码仓库的长期维护成本。它主动识别可维护性风险，权衡并提出比例适度的改进建议，并在获得授权后推进重构落地与验证；它不替代人工代码评审，也不擅自决定合并。
+
+- **先审计后修改：** Agent 通过第一方 `code-health-audit` 技能，综合代码变更频率、耦合度与复杂度信号构建证据矩阵，不凭主观臆测提出改动。
+- **适度干预：** 从局部的聚焦清理到阶段性跨模块重构，改进方案明确说明改动范围、收益理由、风险等级与本地验证路径。
+- **预装工具：** 集成 `code-health-audit`、`ghx`、`sview` 与 `agentinbox`，覆盖工作区分析、GitHub 跟踪与异步收件箱分诊。
+- **硬性约束：** Agent 绝不擅自合并 PR，未经方案确认不得修改业务代码，也不允许外部评论越权扩大执行范围。
+
+## 法务事务支持
+
+`legal-ops-steward` 负责合同审核辅助、法规变动跟踪与法务事务梳理。它为专业法务或律师团队生成带引用、可复核的初稿与结构化台账，但不提供法律咨询，也不直接执行外部操作。
+
+- **首次范围确认访谈：** 在新工作区或新事务首次交互时，必须先明确并记录管辖国家/法域和所属法律领域，生成持久化的 `legal-scope.md` 台账后才开展实质性梳理。
+- **预装法务技能：** 预装 Anthropic Claude for Legal 系列技能（合同访谈、初审、修订历史、续约跟踪、研究起步、监管订阅、事项工作区、干系人摘要）以及 `ghx`、`sview`、`agentinbox`。
+- **严格硬性边界：** 严禁出具法律意见或确定性法律结论；未经人工审批不得发送对外通知或触发外部系统操作。
 
 ## 模板命名
 

@@ -110,6 +110,16 @@ docker run --rm \
 挂载到 `/workspace`；如果 Agent 需要额外开发工具链，可以基于该镜像派生项目镜像。
 当前发布镜像仅支持 Linux amd64。
 
+若想在尚未配置模型提供商时通过浏览器快速试用，可使用仓库内置的 Compose 入口：
+
+```bash
+docker compose up --build
+```
+
+Compose 会将 Holon 状态和工作区持久化到具名卷中，以 `HOLON_BOOTSTRAP=1` 启动，并将浏览器自动重定向到 <http://localhost:7878/settings>。在此配置模型提供商凭据和默认模型即可；在运行时确认默认提供商就绪前，任务和工具变更操作保持阻断。若要向本机以外的网络暴露端口，请务必设置 `HOLON_CONTROL_TOKEN`。
+
+如需在 Railway 上作为 Service 或 Template 部署，请参考 [Railway 部署说明](docs/deployment-railway.md)。它复用相同的 Docker 镜像与 bootstrap 引导流程，自动适配 Railway 注入的 `PORT`，并将运行时状态与工作区保存在同一个 Railway Volume 中。
+
 容器发布级 smoke，以及可选的真实 LLM workspace/WorkItem 验收用例，请参考
 [Docker 发布验收](docs/testing/docker-acceptance.md)。
 

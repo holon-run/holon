@@ -91,6 +91,7 @@ Agent 是透明的。
 |----------|-------|-------|
 | OpenAI | gpt-image-2 | 原生图像生成 |
 | Volcengine | doubao-seedream-5.0-lite | 经 Volcengine Ark plan 端点 |
+| xAI | grok-imagine-image-2.0 | 经 xAI OpenAI 兼容 Images API |
 
 > 当前支持图像生成的模型列表见[模型参考](/zh-CN/reference/models.md)。
 
@@ -109,6 +110,18 @@ holon config set providers.volcengine.plans.image-openai.endpoint image-openai
 ```bash
 holon config set image_generation.default "volcengine@image-openai/doubao-seedream-5.0-lite"
 ```
+
+## xAI Grok Imagine 设置
+
+xAI Grok Imagine 生图模型通过 xAI 的兼容 OpenAI Images API 暴露。因为它们是仅用于生图的模型，不参与对话轮次候选，所以需要显式配置默认生图路由：
+
+```bash
+holon config set image_generation.default "xai@grok-imagine-image-2.0"
+```
+
+受支持的模型包括 `grok-imagine-image`、`grok-imagine-image-2.0` 与 `grok-imagine-image-quality`。`xai` 提供商自动解析 `XAI_API_KEY` 或 Holon 托管的 xAI OAuth 授权配置。
+
+xAI 接口不接受 OpenAI 风格的 `size`、`background` 或 `output_format` 请求字段。Holon 运行时将 `size` 映射为 `1k` 级别最接近的宽高比（`1024x1024` 映射为 `1:1`，`1536x1024` 映射为 `3:2`，`1024x1536` 映射为 `2:3`）。若请求传入了不支持的 `background` 或 `output_format`，运行时会直接报错而不是静默忽略。保存文件时，运行时依据 xAI 返回的实际媒体类型匹配文件扩展名。
 
 ## 输出管理
 

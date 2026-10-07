@@ -3,7 +3,7 @@ title: 配置
 summary: Holon 的配置文件、配置键、凭据、环境变量与诊断。
 order: 15
 ---
-<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.47.0. -->
+<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.48.0. -->
 
 # 配置参考
 
@@ -61,6 +61,27 @@ holon config unset model.fallbacks
 - `provider/model` 是逻辑模型引用，供 `models.catalog` 使用。
 - `provider@endpoint/model` 是模型路由引用，供默认值、回退、视觉与图像生成选择以及
   Agent 覆盖使用。
+
+#### 模型编目覆盖（`models.catalog`）
+
+`models.catalog` 接收一个 JSON 对象，将逻辑模型引用（`provider/model`）映射到元数据覆盖对象。常见覆盖字段包括：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `capabilities.agent_turn` | 布尔值 | 模型是否可承载主要的 Agent 对话轮次 |
+| `capabilities.decision` | 布尔值 | 是否允许模型参与咨询决策（Advisory Decisions） |
+| `capabilities.image_input` | 布尔值 | 声明多模态视觉输入能力 |
+| `capabilities.image_generation` | 布尔值 | 声明图像生成能力 |
+| `capabilities.supports_reasoning` | 布尔值 | 是否启用推理强度（Reasoning Effort）调节 |
+| `decision_protocol` | 枚举 | 决策模型的通信协议：`jev`、`cloudflare_clef`、`openai_decisions` 或 `openai_compatible` |
+| `context_window_tokens` | 整数 | 模型上下文窗口总 Token 数 |
+| `prompt_budget_estimated_tokens` | 整数 | 自动压缩触发前的预留 Prompt 预算 |
+| `display_name` | 字符串 | 模型的用户界面显示名称 |
+
+```bash
+# 在模型编目中注册具备决策能力与通信协议的自定义模型
+holon config set models.catalog '{"cloudflare/clef-flash":{"decision_protocol":"cloudflare_clef","capabilities":{"decision":true}}}'
+```
 
 旧的 `provider/model` 选择值仍被接受，但所有新的写入都会带上 endpoint。用以下命令检查
 或显式重写现有配置与 Agent 状态：
