@@ -8,10 +8,12 @@ use super::{
     aggregate_attempt_token_usage,
     catalog::ProviderCandidate,
     provider_error_token_usage, provider_transport_diagnostics, provider_turn_error,
+    quota::ProviderQuotaCoordinator,
     retry::{
         classify_provider_error, format_provider_failure, provider_error_retry_after,
         provider_fallback_disposition, provider_max_attempts, provider_retry_delay,
-        provider_retry_jitter_seed, ProviderRetryDelay, RetryDisposition,
+        provider_retry_jitter_seed, provider_shared_account_admission_error, ProviderRetryDelay,
+        RetryDisposition,
     },
     AgentProvider, PromptContentBlock, ProviderAttemptOutcome, ProviderAttemptRecord,
     ProviderAttemptTimeline, ProviderBuiltinWebSearchCapability, ProviderContextManagementPolicy,
@@ -36,7 +38,8 @@ mod tests {
 
     use super::*;
     use crate::provider::{
-        ModelBlock, ProviderCacheUsage, ProviderNativeWebSearchKind, ProviderPromptFrame,
+        ModelBlock, ProviderCacheUsage, ProviderFallbackDisposition, ProviderNativeWebSearchKind,
+        ProviderPromptFrame, ProviderQuotaIdentity,
     };
 
     #[derive(Clone)]
@@ -203,10 +206,15 @@ mod tests {
     #[derive(Clone)]
     struct ScriptedProvider {
         script: Arc<Mutex<Vec<ScriptedFailure>>>,
+        quota_identity: Option<ProviderQuotaIdentity>,
     }
 
     #[async_trait]
     impl AgentProvider for ScriptedProvider {
+        fn quota_identity(&self) -> Option<ProviderQuotaIdentity> {
+            self.quota_identity.clone()
+        }
+
         async fn complete_turn(
             &self,
             _request: ProviderTurnRequest,
@@ -276,6 +284,23 @@ mod tests {
             resolved_image_input: false,
             provider: Arc::new(ScriptedProvider {
                 script: Arc::new(Mutex::new(script)),
+                quota_identity: None,
+            }),
+        }
+    }
+
+    fn scripted_candidate_with_identity(
+        model_ref: &str,
+        script: Vec<ScriptedFailure>,
+        quota_identity: ProviderQuotaIdentity,
+    ) -> ProviderCandidate {
+        ProviderCandidate {
+            model_ref: model_ref.into(),
+            provider_name: "openai".into(),
+            resolved_image_input: false,
+            provider: Arc::new(ScriptedProvider {
+                script: Arc::new(Mutex::new(script)),
+                quota_identity: Some(quota_identity),
             }),
         }
     }
@@ -434,6 +459,73 @@ mod tests {
             timeline.attempts[1].backoff_source.as_deref(),
             Some("server_error_exponential_backoff")
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_account_admission_timeout_preserves_recovery_lineage() {
+        let identity =
+            ProviderQuotaIdentity::coarse("fallback-test", "shared-account-admission-timeout");
+        let held = ProviderQuotaCoordinator::global()
+            .acquire(identity.clone())
+            .await
+            .expect("test should hold the shared account permit");
+        let provider = FallbackProvider {
+            candidates: vec![
+                scripted_candidate_with_identity(
+                    "openai/gpt-5.4",
+                    vec![ScriptedFailure::Succeed],
+                    identity.clone(),
+                ),
+                scripted_candidate("openai/gpt-5.4-mini", vec![ScriptedFailure::Succeed]),
+            ],
+        };
+
+        let task = tokio::spawn(async move {
+            provider
+                .complete_turn_with_diagnostics(plain_turn_request())
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished());
+        tokio::time::advance(super::super::quota::PROVIDER_QUOTA_ADMISSION_MAX_WAIT).await;
+
+        let error = task
+            .await
+            .expect("provider task should complete")
+            .expect_err("shared account admission should be bounded");
+        let timeline = crate::provider::provider_attempt_timeline(&error).expect("timeline");
+        assert_eq!(timeline.attempts.len(), 1);
+        assert_eq!(
+            timeline.attempts[0].failure_kind.as_deref(),
+            Some("rate_limited")
+        );
+        assert_eq!(
+            timeline.attempts[0].disposition.as_deref(),
+            Some("retryable")
+        );
+        assert_eq!(
+            timeline.attempts[0].outcome,
+            ProviderAttemptOutcome::RetriesExhausted
+        );
+        assert!(timeline.attempts[0].advanced_to_fallback);
+        assert_eq!(
+            timeline.pending_fallback_model_ref.as_deref(),
+            Some("openai/gpt-5.4-mini")
+        );
+        assert_eq!(
+            timeline.pending_fallback_disposition,
+            Some(ProviderFallbackDisposition::Immediate)
+        );
+        let diagnostics = timeline.attempts[0]
+            .transport_diagnostics
+            .as_ref()
+            .expect("shared account diagnostics");
+        assert_eq!(diagnostics.stage, "quota_admission");
+        assert_eq!(diagnostics.quota_identity.as_ref(), Some(&identity));
+        assert!(error
+            .to_string()
+            .contains("shared account provider quota is cooling down or busy"));
+        drop(held);
     }
 
     fn candidate(model_ref: &str, policy: ProviderContextManagementPolicy) -> ProviderCandidate {
@@ -784,8 +876,60 @@ impl AgentProvider for FallbackProvider {
                 request_for_model_attempt(&request, &requested_model_ref, &candidate.model_ref);
             let attempt_started_at = Utc::now();
             let attempt_started = std::time::Instant::now();
+            let quota_permit = if let Some(identity) = candidate.provider.quota_identity() {
+                match ProviderQuotaCoordinator::global()
+                    .acquire(identity.clone())
+                    .await
+                {
+                    Ok(permit) => Some(permit),
+                    Err(timeout) => {
+                        let error = provider_shared_account_admission_error(
+                            &candidate.provider_name,
+                            &candidate.model_ref,
+                            identity,
+                            timeout.waited,
+                        );
+                        let attempt_completed_at = Utc::now();
+                        let attempt_duration_ms = attempt_started.elapsed().as_millis() as u64;
+                        let classification = classify_provider_error(&error);
+                        let fallback_disposition =
+                            provider_fallback_disposition(classification.kind);
+                        let has_fallback = pending_fallback_model_ref.is_some();
+                        pending_fallback_disposition = pending_fallback_model_ref
+                            .as_ref()
+                            .map(|_| fallback_disposition);
+                        timeline.push(ProviderAttemptRecord {
+                            provider: candidate.provider_name.clone(),
+                            model_ref: candidate.model_ref.clone(),
+                            attempt,
+                            max_attempts,
+                            started_at: Some(attempt_started_at),
+                            completed_at: Some(attempt_completed_at),
+                            duration_ms: Some(attempt_duration_ms),
+                            failure_kind: Some(classification.kind.as_str().to_string()),
+                            disposition: Some(classification.disposition.as_str().to_string()),
+                            outcome: ProviderAttemptOutcome::RetriesExhausted,
+                            advanced_to_fallback: has_fallback,
+                            backoff_ms: None,
+                            backoff_source: None,
+                            token_usage: None,
+                            cache_usage: None,
+                            provider_message_id: None,
+                            provider_request_id: None,
+                            provider_http_trace_id: None,
+                            transport_diagnostics: provider_transport_diagnostics(&error).cloned(),
+                            transport_timeline: None,
+                        });
+                        last_error = Some(error);
+                        break;
+                    }
+                }
+            } else {
+                None
+            };
             match candidate.provider.complete_turn(attempt_request).await {
                 Ok(response) => {
+                    drop(quota_permit);
                     let attempt_completed_at = Utc::now();
                     let attempt_duration_ms = attempt_started.elapsed().as_millis() as u64;
                     timeline.push(ProviderAttemptRecord {
@@ -828,6 +972,12 @@ impl AgentProvider for FallbackProvider {
                     return Ok((response, Some(diagnostics)));
                 }
                 Err(error) => {
+                    if let Some(permit) = quota_permit {
+                        let classification = classify_provider_error(&error);
+                        if classification.kind == super::retry::ProviderFailureKind::RateLimited {
+                            permit.record_rate_limit(provider_error_retry_after(&error));
+                        }
+                    }
                     let attempt_completed_at = Utc::now();
                     let attempt_duration_ms = attempt_started.elapsed().as_millis() as u64;
                     let classification = classify_provider_error(&error);
