@@ -2,13 +2,25 @@ import { beforeAll, describe, expect, it } from "vitest";
 import i18next from "i18next";
 import en from "../../i18n/resources/en";
 
-import { canSearchSelection, formatSearchPreview, searchIndexWarningKey, searchOptionsForSelection } from "./SearchPage";
+import { canSearchSelection, defaultSearchAgentId, formatSearchPreview, searchIndexWarningKey, searchOptionsForSelection } from "./SearchPage";
 import type { AgentSummary, SearchResponse } from "../../runtime/types";
 
 beforeAll(() => {
   if (!i18next.isInitialized) {
     i18next.init({ lng: "en", resources: { en: { translation: en } } });
   }
+});
+
+describe("defaultSearchAgentId", () => {
+  const agents = [{ id: "alpha" }, { id: "beta" }] as AgentSummary[];
+
+  it("uses the selected agent when it is available", () => {
+    expect(defaultSearchAgentId("beta", agents)).toBe("beta");
+  });
+
+  it("keeps all agents when the selected agent is unavailable", () => {
+    expect(defaultSearchAgentId("missing", agents)).toBe("all");
+  });
 });
 
 describe("searchIndexWarningKey", () => {

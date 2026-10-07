@@ -811,12 +811,6 @@ impl RuntimeHandle {
         let storage = self.inner.storage.clone();
         let query = query.to_string();
         tokio::task::spawn_blocking(move || {
-            // Consume pending index entries so search results are not stale.
-            let _ = crate::memory::ensure_memory_indexes_fresh(
-                &storage,
-                active_workspace_id.as_deref(),
-                &[],
-            );
             crate::memory::search_memory_query(
                 &storage,
                 &query,
@@ -841,28 +835,9 @@ impl RuntimeHandle {
             .active_workspace_entry
             .map(|entry| entry.workspace_id);
         let storage = self.inner.storage.clone();
-        let agent_storages = self
-            .inner
-            .host_bridge
-            .as_ref()
-            .map(|bridge| {
-                agent_ids
-                    .iter()
-                    .map(|agent_id| bridge.agent_storage(agent_id))
-                    .collect::<Result<Vec<_>>>()
-            })
-            .transpose()?
-            .unwrap_or_default();
         let query = query.to_string();
         let agent_ids = agent_ids.to_vec();
         tokio::task::spawn_blocking(move || {
-            // Consume pending index entries from all relevant storages so that
-            // search results are not stale due to background indexer lag.
-            let _ = crate::memory::ensure_memory_indexes_fresh(
-                &storage,
-                active_workspace_id.as_deref(),
-                &agent_storages,
-            );
             crate::memory::search_memory_query_for_agent_storages(
                 &storage,
                 &query,
@@ -871,7 +846,7 @@ impl RuntimeHandle {
                 include_all_workspaces,
                 &agent_ids,
                 &[],
-                &agent_storages,
+                &[],
             )
         })
         .await?

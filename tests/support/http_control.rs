@@ -697,6 +697,22 @@ pub async fn runtime_search_route_returns_memory_search_results() -> Result<()> 
     );
     message.id = "msg-http-search-memory-v2".into();
     runtime.storage().append_message(&message)?;
+    holon::memory::rebuild_memory_index(runtime.storage(), None)?;
+    let mut pending_message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator:test".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "http memory search pending issue1879".into(),
+        },
+    );
+    pending_message.id = "msg-http-search-memory-pending-v2".into();
+    runtime.storage().append_message(&pending_message)?;
 
     let response = client
         .post(format!("{base}/api/search"))
@@ -768,6 +784,7 @@ pub async fn runtime_search_route_filters_memory_results_by_agent_ids() -> Resul
     );
     alpha_message.id = "msg-http-search-alpha".into();
     alpha.storage().append_message(&alpha_message)?;
+    holon::memory::rebuild_memory_index(alpha.storage(), None)?;
 
     let mut beta_message = MessageEnvelope::new(
         "beta",
@@ -784,6 +801,7 @@ pub async fn runtime_search_route_filters_memory_results_by_agent_ids() -> Resul
     );
     beta_message.id = "msg-http-search-beta".into();
     beta.storage().append_message(&beta_message)?;
+    holon::memory::rebuild_memory_index(beta.storage(), None)?;
 
     let (base, server) = spawn_server_for_host(host.clone()).await?;
     let client = reqwest::Client::new();

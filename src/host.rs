@@ -2306,21 +2306,14 @@ impl RuntimeHost {
             .read_agent()?
             .and_then(|agent| agent.active_workspace_entry)
             .map(|entry| entry.workspace_id);
-        let mut agent_storages = Vec::new();
         for agent_id in agent_ids {
             self.public_agent_identity(agent_id)
                 .map_err(anyhow::Error::new)?;
-            agent_storages.push(self.agent_storage_read_only(agent_id)?);
         }
         let query = query.to_string();
         let agent_ids = agent_ids.to_vec();
         let source_kinds = source_kinds.to_vec();
         tokio::task::spawn_blocking(move || {
-            let _ = crate::memory::ensure_memory_indexes_fresh(
-                &storage,
-                active_workspace_id.as_deref(),
-                &agent_storages,
-            );
             crate::memory::search_memory_query_for_agent_storages(
                 &storage,
                 &query,
@@ -2329,7 +2322,7 @@ impl RuntimeHost {
                 include_all_workspaces,
                 &agent_ids,
                 &source_kinds,
-                &agent_storages,
+                &[],
             )
         })
         .await?
@@ -6566,10 +6559,6 @@ impl RuntimeHostBridge {
     pub(crate) async fn wait_for_bootstrap_ready(&self) -> Result<()> {
         self.host()?.wait_for_bootstrap_ready().await;
         Ok(())
-    }
-
-    pub(crate) fn agent_storage(&self, agent_id: &str) -> Result<AppStorage> {
-        self.host()?.agent_storage(agent_id)
     }
 
     pub(crate) fn skills_registry(&self) -> Result<Arc<RwLock<SkillsRegistry>>> {
@@ -12121,7 +12110,7 @@ mod tests {
     async fn deletion_retry_deadline_bounds_real_index_lock_retries() {
         let (_home, host) = test_host();
         let default_storage = host.agent_storage(&host.config().default_agent_id).unwrap();
-        crate::memory::ensure_memory_indexes_fresh(&default_storage, None, &[]).unwrap();
+        crate::memory::rebuild_memory_index(&default_storage, None).unwrap();
         let index_path = crate::memory::index::memory_index_path(&default_storage);
         let blocker = rusqlite::Connection::open(index_path).unwrap();
         blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
@@ -12454,7 +12443,7 @@ mod tests {
             }])
             .unwrap();
         let default_storage = host.agent_storage(&parent_id).unwrap();
-        crate::memory::ensure_memory_indexes_fresh(&default_storage, None, &[]).unwrap();
+        crate::memory::rebuild_memory_index(&default_storage, None).unwrap();
         let index_path = crate::memory::index::memory_index_path(&default_storage);
         let index = rusqlite::Connection::open(index_path).unwrap();
         index
