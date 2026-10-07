@@ -30,6 +30,8 @@ default idle lifetime is 604,800 seconds (7 days), and activity refreshes the
 idle expiry. A finite absolute lifetime may still be configured; it must be
 positive and no shorter than the idle lifetime. For compatibility, persisted
 configuration using `0` for the absolute lifetime is normalized to `null`.
+When `idle_ttl_seconds` is omitted, the derived default is clamped to a
+shorter explicit absolute lifetime so existing configurations keep loading.
 
 `issuer_url` and OIDC endpoints must use HTTPS. A localhost callback may use
 HTTP for local development.

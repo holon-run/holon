@@ -106,7 +106,7 @@ Holon 控制平面支持基于 Cookie 的 Session 认证（适用于浏览器和
 | `auth.oidc.client_secret_env` | string | unset | 包含 OIDC 客户端密钥的环境变量名 |
 | `auth.oidc.redirect_uri` | string | unset | 回调重定向 URI（如 `http://localhost:7878/api/auth/oidc/callback`） |
 | `auth.session.absolute_ttl_seconds` | positive_integer_or_null | unset (`null`) | 绝对 Session 生命周期（秒，`null` 表示无绝对上限） |
-| `auth.session.idle_ttl_seconds` | positive_integer | `604800`（7天） | 空闲超时时间（秒），无交互超过该时长后 Session 失效 |
+| `auth.session.idle_ttl_seconds` | positive_integer | `604800`（7天） | 空闲超时时间（秒），无交互超过该时长后 Session 失效；未显式设置时收敛到更短的显式绝对 TTL |
 
 有关从 IdP 注册到会话验证的完整步骤，请参阅[配置 OIDC 身份认证](/zh-CN/guides/configure-oidc-authentication.md)。
 
