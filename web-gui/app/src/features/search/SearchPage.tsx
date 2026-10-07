@@ -63,7 +63,7 @@ export function SearchPage({
 }: SearchPageProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState(() => search?.query ?? readInitialQuery());
-  const [agentId, setAgentId] = useState("all");
+  const [agentId, setAgentId] = useState(() => defaultSearchAgentId(selectedAgentId, agents));
   const [limit, setLimit] = useState(String(search?.limit || DEFAULT_LIMIT));
   const trimmedQuery = query.trim();
   const hasResults = Boolean(search?.results.length);
@@ -71,12 +71,6 @@ export function SearchPage({
   const indexWarningKey = search ? searchIndexWarningKey(search) : undefined;
   const agentOptions = useMemo(() => [...agents].sort((left, right) => left.id.localeCompare(right.id)), [agents]);
   const defaultAgentId = defaultSearchAgentId(selectedAgentId, agents);
-
-  useEffect(() => {
-    if (agentId === "all" && defaultAgentId !== "all") {
-      setAgentId(defaultAgentId);
-    }
-  }, [agentId, defaultAgentId]);
 
   useEffect(() => {
     const initialQuery = readInitialQuery();
