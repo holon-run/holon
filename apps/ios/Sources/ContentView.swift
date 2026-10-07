@@ -149,7 +149,7 @@ struct ContentView: View {
     }
 }
 
-private struct WindowAnchorReader: UIViewRepresentable {
+struct WindowAnchorReader: UIViewRepresentable {
     let onChange: (UIWindow?) -> Void
 
     func makeUIView(context: Context) -> AnchorView {

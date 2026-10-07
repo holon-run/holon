@@ -291,25 +291,52 @@ final class HolonUITests: XCTestCase {
 
     private func disconnected(language: String, dark: Bool, large: Bool) throws {
         let app = launch(language: language, dark: dark, large: large)
-        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 15))
+        defer { app.terminate() }
         let chinese = language == "zh-Hans"
-        app.tabBars.buttons[chinese ? "连接" : "Connect"].tap()
-        let name = app.textFields[chinese ? "网络名称" : "Network name"]
-        XCTAssertTrue(name.waitForExistence(timeout: 10))
-        XCTAssertEqual(name.placeholderValue, chinese ? "网络名称" : "Network name")
-        capture(app, "\(language)-connection")
-        app.tabBars.buttons[chinese ? "工具" : "Tools"].tap()
-        openDiagnostics(app)
-        let prepare = app.buttons["diagnostics.prepare"]
-        XCTAssertTrue(prepare.waitForExistence(timeout: 10))
-        prepare.tap()
-        XCTAssertTrue(app.staticTexts["diagnostics.report"].waitForExistence(timeout: 10))
-        if !large {
-            try settlePreparedDiagnostics(app, prepare: prepare)
-        }
-        capture(app, "\(language)-diagnostics")
+        let scan = app.buttons["onboarding.scan"]
+        XCTAssertTrue(scan.waitForExistence(timeout: 15))
+        XCTAssertEqual(scan.label, chinese ? "扫码连接" : "Scan to connect")
+        XCTAssertFalse(app.tabBars.firstMatch.exists, "No empty content tabs before authentication")
+        capture(app, "\(language)-welcome")
         try audit(app, name: language)
-        app.terminate()
+        let manual = app.buttons["onboarding.manual"]
+        reveal(manual, in: app)
+        manual.tap()
+        let address = app.textFields["onboarding.address"]
+        XCTAssertTrue(address.waitForExistence(timeout: 10))
+        address.tap()
+        address.typeText("http://host.example.test:8787")
+        let permission = app.switches["onboarding.allowHTTP"]
+        reveal(permission, in: app)
+        XCTAssertEqual(permission.value as? String, "0")
+        let checkAddress = app.buttons["onboarding.checkAddress"]
+        reveal(checkAddress, in: app)
+        XCTAssertFalse(checkAddress.isEnabled)
+        app.buttons["onboarding.back"].tap()
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.tabBars.firstMatch.exists)
+    }
+
+    func testPairingPreviewStaysOfflineAndCanCancel() throws {
+        let app = launch(language: "en", dark: false, large: false)
+        defer { app.terminate() }
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
+        let pasteEntry = app.staticTexts["onboarding.pasteEntry"]
+        reveal(pasteEntry, in: app)
+        pasteEntry.tap()
+        let payload = app.secureTextFields["onboarding.payload"]
+        reveal(payload, in: app)
+        payload.tap()
+        payload.typeText("http://pair.example.test/login#pair=" + String(repeating: "a", count: 64))
+        app.buttons["onboarding.preview"].tap()
+        let target = app.staticTexts["onboarding.pairingTarget"]
+        XCTAssertTrue(target.waitForExistence(timeout: 10))
+        XCTAssertEqual(target.label, "http://pair.example.test/api/")
+        XCTAssertFalse(app.buttons["onboarding.confirmPairing"].isEnabled)
+        XCTAssertFalse(app.tabBars.firstMatch.exists)
+        app.buttons["onboarding.back"].tap()
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 10))
+        XCTAssertFalse(target.exists)
     }
 
     private func audit(_ app: XCUIApplication, name: String) throws {

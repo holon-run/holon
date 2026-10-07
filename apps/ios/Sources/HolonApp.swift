@@ -56,35 +56,46 @@ struct HolonApp: App {
         WindowGroup {
             Group {
                 if let coordinator {
-                    TabView(selection: $tab) {
-                        ReadingView(reader: reader, sender: sender)
-                            .tabItem { Label("agents.title", systemImage: "bubble.left.and.bubble.right") }
-                            .tag(ClientTab.reading)
-                        WorkView(coordinator: work, openPlan: { agentID, workID, plan in
-                            files.selectAgent(agentID)
-                            if files.openPlan(agentID: agentID, workID: workID, plan: plan) {
-                                tab = .files
+                    Group {
+                        if coordinator.launchState == .restoring {
+                            ProgressView("onboarding.restoring")
+                        } else if coordinator.launchState == .connection {
+                            ConnectionWelcomeView(coordinator: coordinator)
+                        } else {
+                            TabView(selection: $tab) {
+                                ReadingView(reader: reader, sender: sender)
+                                    .tabItem { Label("agents.title", systemImage: "bubble.left.and.bubble.right") }
+                                    .tag(ClientTab.reading)
+                                WorkView(coordinator: work, openPlan: { agentID, workID, plan in
+                                    files.selectAgent(agentID)
+                                    if files.openPlan(agentID: agentID, workID: workID, plan: plan) {
+                                        tab = .files
+                                    }
+                                }, openArtifact: { agentID, artifact in
+                                    files.selectAgent(agentID)
+                                    if files.openArtifact(agentID: agentID, artifact: artifact) {
+                                        tab = .files
+                                    }
+                                })
+                                    .tabItem { Label("work.title", systemImage: "checklist") }
+                                    .tag(ClientTab.work)
+                                FilesView(coordinator: files)
+                                    .tabItem { Label("files.title", systemImage: "folder") }
+                                    .tag(ClientTab.files)
+                                SystemExperienceView(connection: coordinator, reader: reader,
+                                                     sender: sender, imports: imports)
+                                    .tabItem { Label("tab.system", systemImage: "square.and.arrow.up") }
+                                    .tag(ClientTab.system)
+                                ContentView(coordinator: coordinator)
+                                    .tabItem { Label("tab.connection", systemImage: "network") }
+                                    .tag(ClientTab.connection)
                             }
-                        }, openArtifact: { agentID, artifact in
-                            files.selectAgent(agentID)
-                            if files.openArtifact(agentID: agentID, artifact: artifact) {
-                                tab = .files
-                            }
-                        })
-                            .tabItem { Label("work.title", systemImage: "checklist") }
-                            .tag(ClientTab.work)
-                        FilesView(coordinator: files)
-                            .tabItem { Label("files.title", systemImage: "folder") }
-                            .tag(ClientTab.files)
-                        SystemExperienceView(connection: coordinator, reader: reader,
-                                             sender: sender, imports: imports)
-                            .tabItem { Label("tab.system", systemImage: "square.and.arrow.up") }
-                            .tag(ClientTab.system)
-                        ContentView(coordinator: coordinator)
-                            .tabItem { Label("tab.connection", systemImage: "network") }
-                            .tag(ClientTab.connection)
+                        }
                     }
                         .task { await coordinator.restore() }
+                        .onChange(of: coordinator.identity) { _, identity in
+                            if identity != nil { tab = .reading }
+                        }
                         .task(id: coordinator.identity) { [coordinator] in
                             guard let identity = coordinator.identity,
                                   let profile = coordinator.selectedProfile else {

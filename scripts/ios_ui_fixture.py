@@ -217,6 +217,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 # Disconnected cases must run before authenticated installs credentials.
                 cases = [("testDisconnectedEnglishLight", "large"),
                          ("testDisconnectedChineseDarkAccessibilitySize", MAXIMUM_TEXT_SIZE),
+                         ("testPairingPreviewStaysOfflineAndCanCancel", "large"),
                          ("testDiagnosticsControlsRespondToRuntimeTextSize", MAXIMUM_TEXT_SIZE),
                          ("testPreparedDiagnosticsRespondToRuntimeTextSize", "large"),
                          ("testPreparedDiagnosticsViewportCoverage", MAXIMUM_TEXT_SIZE),

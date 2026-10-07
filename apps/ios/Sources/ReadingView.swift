@@ -12,7 +12,14 @@ struct ReadingView: View {
                     Text(LocalizedStringKey("reading.status." + reader.status.rawValue))
                         .accessibilityIdentifier("reading.status")
                     if reader.status == .syncing { ProgressView() }
-                    if reader.agents.isEmpty { Text("reading.emptyAgents") }
+                    if reader.agents.isEmpty {
+                        if reader.status == .live {
+                            Text("reading.noAgentsConnected")
+                            Button("connection.refresh") { Task { await reader.refresh() } }
+                        } else if reader.status != .syncing {
+                            Text("reading.emptyAgents")
+                        }
+                    }
                 }
                 Section("reading.recent") {
                     ForEach(reader.agents) { agent in

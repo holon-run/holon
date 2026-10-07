@@ -8,6 +8,10 @@ enum ConnectionStatus: String {
     case permissionDenied, networkError, storageError, loginFailed, timedOut
 }
 
+enum ConnectionLaunchState: Equatable {
+    case restoring, connection, ready
+}
+
 /// Authentication transport is separate from view lifetime and credential storage.
 protocol ConnectionTransport: Sendable {
     func authenticationMode() async throws -> String
@@ -69,6 +73,12 @@ final class ConnectionCoordinator {
         }
     }
     private(set) var supportsOIDC = false
+    private(set) var authenticationMode: String?
+    private(set) var hasRestored = false
+    var launchState: ConnectionLaunchState {
+        if !hasRestored { return .restoring }
+        return identity == nil ? .connection : .ready
+    }
     private(set) var pendingPairing: HolonPairingInvitation?
     private(set) var selectedProfile: ConnectionProfile?
     private(set) var profiles: [ConnectionProfile]
@@ -86,6 +96,7 @@ final class ConnectionCoordinator {
     @ObservationIgnored private var proof: NativeLoginProof?
     @ObservationIgnored private var exchangingTicket = false
     @ObservationIgnored private var usesStoredSession = false
+    @ObservationIgnored private var restorationStarted = false
 
     init(store: ConnectionStore,
          proofStore: NativeLoginProofStore = .init(vault: .init(service: "run.holon.ios.proofs")),
@@ -172,6 +183,9 @@ final class ConnectionCoordinator {
     }
 
     func restore() async {
+        guard !restorationStarted else { return }
+        restorationStarted = true
+        defer { hasRestored = true }
         guard selectedProfile == nil,
               let profile = profiles.first(where: { $0.id == store.selectedID }) else { return }
         await connect(profile)
@@ -210,6 +224,7 @@ final class ConnectionCoordinator {
             }
             let mode = try await client.authenticationMode()
             guard current(stamp) else { return }
+            authenticationMode = mode
             supportsOIDC = mode == "oidc" && profile.apiBaseURL.scheme == "https"
             if candidate == nil, mode == "oidc" {
                 finish(.needsLogin)
@@ -261,7 +276,7 @@ final class ConnectionCoordinator {
     func cancelPairing() { pendingPairing = nil }
 
     func confirmPairing(allowInsecureHTTP: Bool) async {
-        guard let invitation = pendingPairing else { return }
+        guard !isBusy, let invitation = pendingPairing else { return }
         do {
             let endpoint = try invitation.endpoint(allowInsecureHTTP: allowInsecureHTTP)
             // Do not bind an existing profile's credential to an imported target.
@@ -338,9 +353,9 @@ final class ConnectionCoordinator {
         identity = nil
         Task { await previous?.close() }
         do { try clearProof() }
-        catch { status = .storageError; return }
+        catch { finish(.storageError); return }
         if let selectedProfile { transport = try? makeTransport(selectedProfile) }
-        status = .needsLogin
+        finish(.needsLogin)
     }
 
     /// The system browser can make the app inactive; that is not login cancellation.
@@ -422,6 +437,7 @@ final class ConnectionCoordinator {
         guard current(stamp) else { return }
         let mode = try await client.authenticationMode()
         guard current(stamp) else { return }
+        authenticationMode = mode
         supportsOIDC = mode == "oidc" && profile.apiBaseURL.scheme == "https"
         let handshake = try await client.handshake()
         guard current(stamp) else { return }
@@ -499,6 +515,8 @@ final class ConnectionCoordinator {
         timeout?.cancel()
         timeout = nil
         status = state
+        // Release bootstrap even if a request does not return after close().
+        if restorationStarted { hasRestored = true }
     }
 
     private func armTimeout(stamp: UUID, duration: Duration? = nil) {
@@ -507,7 +525,7 @@ final class ConnectionCoordinator {
             do { try await Task.sleep(for: delay) } catch { return }
             guard let self, self.current(stamp) else { return }
             self.invalidate(preserveProof: self.exchangingTicket)
-            if self.status != .storageError { self.status = .timedOut }
+            self.finish(self.status == .storageError ? .storageError : .timedOut)
         }
     }
 
@@ -518,6 +536,7 @@ final class ConnectionCoordinator {
         timeout = nil
         identity = nil
         supportsOIDC = false
+        authenticationMode = nil
         let previous = transport
         transport = nil
         if closeTransport { Task { await previous?.close() } }

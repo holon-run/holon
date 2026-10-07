@@ -1,1 +1,2 @@
 "NSLocalNetworkUsageDescription" = "Connect to the Holon runtime you choose on your local network.";
+"NSCameraUsageDescription" = "Scan a Holon pairing QR code to connect to your computer. Camera images are not saved or uploaded.";
