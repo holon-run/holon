@@ -191,7 +191,7 @@ async fn build_fixture() -> Result<HttpFixture> {
     }
 
     let app = router(AppState::for_unix(host.clone()));
-    validate_json_array(&app, "/api/agents/list", EXTRA_AGENTS + 1).await?;
+    validate_json_array(&app, "/api/agents/list", EXTRA_AGENTS).await?;
     validate_json_array(
         &app,
         &format!("/api/agents/{default_agent_id}/work-items?limit={WORK_ITEMS}"),
