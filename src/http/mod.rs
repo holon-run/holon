@@ -1531,6 +1531,11 @@ async fn bootstrap_guard_middleware(
         .strip_prefix("/auth/")
         .and_then(|provider| provider.strip_suffix("/device/start"))
         .is_some_and(|provider| !provider.is_empty() && !provider.contains('/'));
+    let is_legacy_default_agent_create = state.uses_trusted_local_admission()
+        && path
+            .strip_prefix("/control/agents/")
+            .and_then(|agent_path| agent_path.strip_suffix("/create"))
+            .is_some_and(|agent_id| agent_id == state.host.config().default_agent_id);
     let setup_write = matches!(
         request_path,
         "/auth/session/exchange"
@@ -1548,7 +1553,8 @@ async fn bootstrap_guard_middleware(
                 | "/control/runtime/credentials"
         )
         || is_device_start
-        || path.starts_with("/control/runtime/credentials/");
+        || path.starts_with("/control/runtime/credentials/")
+        || is_legacy_default_agent_create;
     let is_mutation = !matches!(
         *request.method(),
         Method::GET | Method::HEAD | Method::OPTIONS

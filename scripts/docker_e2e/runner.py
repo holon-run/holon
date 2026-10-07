@@ -1036,15 +1036,17 @@ class CaseHarness:
         if not self.bootstrap_agent_id:
             return
         agent_id = urllib.parse.quote(self.bootstrap_agent_id, safe="")
-        agents = self.request("GET", "/api/agents/list")
-        if any(
-            entry.get("identity", {}).get("agent_id") == self.bootstrap_agent_id
-            for entry in agents
-        ):
+        self.agent_id = self.bootstrap_agent_id
+        state_path = f"/api/agents/{agent_id}/state"
+        try:
+            self.request("GET", state_path)
             self.agent_id = self.bootstrap_agent_id
             return
+        except AssertionError as error:
+            if f"GET {state_path} returned 404" not in str(error):
+                raise
         self.request("POST", f"/api/control/agents/{agent_id}/create", {})
-        self.agent_id = self.bootstrap_agent_id
+        self.request("GET", state_path)
 
     def wait_readiness(self) -> None:
         deadline = time.monotonic() + 90

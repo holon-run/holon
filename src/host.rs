@@ -3527,6 +3527,15 @@ impl RuntimeHost {
             return Ok(bootstrap);
         }
         if bootstrap.runtime.status != AgentBootstrapStepStatus::Succeeded {
+            // Legacy installations may explicitly recreate the configured
+            // default agent while provider setup is still in progress. The
+            // runtime task cannot finish bootstrap until the host releases
+            // its bootstrap provider, so waiting here would deadlock the
+            // setup request itself. Leave runtime bootstrap pending and let
+            // the normal activation/repair path resume after setup.
+            if self.bootstrap_mode_active() && agent_id == self.config().default_agent_id {
+                return Ok(bootstrap);
+            }
             let result = async {
                 let runtime = self
                     .activate_agent(agent_id, RuntimeActivationReason::AgentLifecycle)
