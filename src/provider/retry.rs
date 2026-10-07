@@ -305,6 +305,44 @@ pub(crate) fn provider_error_retry_after(error: &anyhow::Error) -> Option<Durati
         .and_then(|error| error.retry_after)
 }
 
+pub(crate) fn provider_shared_account_admission_error(
+    provider: &str,
+    model_ref: &str,
+    identity: super::ProviderQuotaIdentity,
+    waited: Duration,
+) -> anyhow::Error {
+    provider_transport_error_with_evidence(
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::RateLimited,
+            disposition: RetryDisposition::Retryable,
+        },
+        Some("shared_account_rate_limited"),
+        None,
+        Some(ProviderTransportDiagnostics {
+            stage: "quota_admission".into(),
+            streaming: None,
+            provider: Some(provider.into()),
+            model_ref: Some(model_ref.into()),
+            url: None,
+            status: None,
+            reqwest: None,
+            context_budget: None,
+            http_trace: None,
+            quota_identity: Some(identity),
+            source_chain: vec![format!(
+                "shared account quota admission wait exceeded after {} ms",
+                waited.as_millis()
+            )],
+        }),
+        None,
+        None,
+        format!(
+            "shared account provider quota is cooling down or busy; admission wait exceeded after {} ms",
+            waited.as_millis()
+        ),
+    )
+}
+
 pub(crate) fn provider_transport_error(
     classification: ProviderFailureClassification,
     status: Option<u16>,
@@ -962,20 +1000,29 @@ pub(crate) fn format_provider_failure(
     error: &anyhow::Error,
 ) -> String {
     let classification = classify_provider_error(error);
+    let transport_error = error.downcast_ref::<ProviderTransportError>();
     let status = error
         .downcast_ref::<ProviderTransportError>()
         .and_then(|error| error.status)
         .map(|status| format!(", status={status}"))
         .unwrap_or_default();
+    let shared_account_rate_limited = classification.kind == ProviderFailureKind::RateLimited
+        && (transport_error.and_then(|error| error.code.as_deref())
+            == Some("shared_account_rate_limited")
+            || transport_error
+                .and_then(|error| error.diagnostics.as_ref())
+                .and_then(|diagnostics| diagnostics.quota_identity.as_ref())
+                .is_some());
+    let kind = if shared_account_rate_limited {
+        "shared_account_rate_limited"
+    } else {
+        classification.kind.as_str()
+    };
     match classification.disposition {
         RetryDisposition::Retryable => format!(
             "{model_ref}: retries_exhausted after {attempts} attempts ({kind}{status}): {error}",
-            kind = classification.kind.as_str()
         ),
-        RetryDisposition::FailFast => format!(
-            "{model_ref}: fail_fast ({kind}{status}): {error}",
-            kind = classification.kind.as_str()
-        ),
+        RetryDisposition::FailFast => format!("{model_ref}: fail_fast ({kind}{status}): {error}",),
     }
 }
 

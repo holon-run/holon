@@ -18,6 +18,7 @@ mod catalog;
 mod diagnostics;
 mod fallback;
 mod http_trace;
+mod quota;
 mod registry;
 mod retry;
 pub mod test_support;
@@ -590,6 +591,10 @@ impl ToolResultBlock {
 pub trait AgentProvider: Send + Sync {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse>;
 
+    fn quota_identity(&self) -> Option<ProviderQuotaIdentity> {
+        None
+    }
+
     fn select_model_lineage(
         &self,
         _model_ref: &ModelRouteRef,
@@ -836,14 +841,14 @@ pub struct ProviderTransportDiagnostics {
     pub source_chain: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderQuotaIdentityConfidence {
     Exact,
     Coarse,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct ProviderQuotaIdentity {
     pub scope: String,
     pub confidence: ProviderQuotaIdentityConfidence,

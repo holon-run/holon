@@ -816,6 +816,10 @@ impl AgentProvider for OpenAiProvider {
 
 #[async_trait]
 impl AgentProvider for OpenAiCodexProvider {
+    fn quota_identity(&self) -> Option<ProviderQuotaIdentity> {
+        Some(self.quota_identity.clone())
+    }
+
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let model_ref = format!("{}/{}", self.provider_id, self.model);
         let credential = self
