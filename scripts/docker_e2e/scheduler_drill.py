@@ -508,6 +508,7 @@ def make_harness(
         keep=True,
         resource_names=resource_names(record),
         control_token=read_control_token(record["drill_run_id"]),
+        bootstrap_agent_id="main",
     )
 
 
@@ -517,6 +518,7 @@ def attach_running(harness: CaseHarness) -> None:
     port = result.stdout.strip().splitlines()[0].rsplit(":", 1)[-1]
     harness.base_url = f"http://127.0.0.1:{port}"
     harness.wait_readiness()
+    harness.ensure_bootstrap_agent()
 
 
 def wait_for_turn_after(

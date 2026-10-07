@@ -890,6 +890,7 @@ mod tests {
             let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
             let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done")))
                 .unwrap();
+            host.ensure_default_agent_identity().unwrap();
             host.create_named_agent("web", None).await.unwrap();
             (home, host)
         }

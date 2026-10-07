@@ -387,10 +387,12 @@ async fn resolve_agent_id(client: &LocalClient, agent: Option<String>) -> Result
     if let Some(agent) = agent {
         return Ok(agent);
     }
-    client
-        .configured_default_agent_id()
-        .await?
-        .ok_or_else(|| anyhow!("no default agent configured; create an agent first"))
+    match client.configured_default_agent_id().await? {
+        Some(agent) => Ok(agent),
+        None => Err(anyhow!(
+            "no default agent configured; create an agent first"
+        )),
+    }
 }
 
 async fn run_one_shot(

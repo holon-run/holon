@@ -329,6 +329,7 @@ class CaseHarness:
         control_token: str | None = None,
         previous_image: str | None = None,
         credential_delivery: str = "env",
+        bootstrap_agent_id: str | None = None,
     ) -> None:
         suffix = secrets.token_hex(4)
         self.case_id = case_id
@@ -360,6 +361,7 @@ class CaseHarness:
         self.tool_assertion_mode = tool_assertion_mode
         self.credential_delivery = credential_delivery
         self.previous_image = previous_image
+        self.bootstrap_agent_id = bootstrap_agent_id
         names = resource_names or {}
         self.volume = names.get("volume", f"holon-live-{case_id}-{suffix}")
         self.network = names.get("network", f"holon-live-{case_id}-{suffix}")
@@ -765,6 +767,7 @@ class CaseHarness:
         require(bool(port), "failed to resolve the container's published port")
         self.base_url = f"http://127.0.0.1:{port}"
         self.wait_readiness()
+        self.ensure_bootstrap_agent()
         if wait_idle:
             self.wait_agent_idle()
 
@@ -1028,6 +1031,20 @@ class CaseHarness:
         agent_id = urllib.parse.quote(self.agent_id, safe="")
         prefix = "/api/control/agents" if control else "/api/agents"
         return f"{prefix}/{agent_id}/{suffix}"
+
+    def ensure_bootstrap_agent(self) -> None:
+        if not self.bootstrap_agent_id:
+            return
+        agent_id = urllib.parse.quote(self.bootstrap_agent_id, safe="")
+        agents = self.request("GET", "/api/agents/list")
+        if any(
+            entry.get("identity", {}).get("agent_id") == self.bootstrap_agent_id
+            for entry in agents
+        ):
+            self.agent_id = self.bootstrap_agent_id
+            return
+        self.request("POST", f"/api/control/agents/{agent_id}/create", {})
+        self.agent_id = self.bootstrap_agent_id
 
     def wait_readiness(self) -> None:
         deadline = time.monotonic() + 90

@@ -168,7 +168,6 @@ async fn build_fixture() -> Result<HttpFixture> {
         r#"{"model":{"default":"openai/gpt-5.4"}}"#,
     )?;
     let config = AppConfig::load_with_home(Some(home.path().to_path_buf()))?;
-    let default_agent_id = config.default_agent_id.clone();
     let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done")))?;
 
     for index in 0..EXTRA_AGENTS {
@@ -176,6 +175,9 @@ async fn build_fixture() -> Result<HttpFixture> {
             .await?;
     }
 
+    let default_agent_id = host
+        .configured_default_agent_id()?
+        .context("HTTP benchmark fixture did not create a default agent")?;
     let runtime = host.get_or_create_agent(&default_agent_id).await?;
     for index in 0..WORK_ITEMS {
         runtime
