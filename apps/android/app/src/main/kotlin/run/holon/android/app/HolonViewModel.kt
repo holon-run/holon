@@ -1091,7 +1091,7 @@ internal class HolonViewModel(
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    val file = traceRecorder.export(TraceScope.Network(session.networkId))
+                    val file = traceRecorder.export()
                     val context = getApplication<Application>()
                     val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
                     PendingAgentShare(

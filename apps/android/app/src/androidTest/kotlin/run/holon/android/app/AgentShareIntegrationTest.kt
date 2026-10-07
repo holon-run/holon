@@ -36,7 +36,7 @@ class AgentShareIntegrationTest {
         )
         assertEquals(files, multiple?.files?.map(SharedFile::uri))
 
-        val trace = TraceRecorder(context).export(TraceScope.Global)
+        val trace = TraceRecorder(context).export()
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", trace)
         val singleFile = incomingShare(
             context,
