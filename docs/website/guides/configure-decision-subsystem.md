@@ -55,25 +55,43 @@ holon config set decision.local_onnx.num_threads 2
 
 ### Option B: Use a Remote Provider
 
-Configure a remote route matching your provider's decision protocol:
+Holon routes decision requests to a model only when the route explicitly advertises decision capability (`capabilities.decision: true`) and a recognized `decision_protocol` (`jev`, `cloudflare_clef`, `openai_decisions`, or `openai_compatible`).
 
 **TypeSafe Jev (`jev`):**
 
+TypeSafe's Jev model is registered in Holon's built-in catalog with decision capability enabled:
+
 ```bash
 holon config set decision.enabled true
-holon config set decision.model "typesafe@default/typesafe-ai/jev"
+holon config set decision.model "typesafe@default/jev-latest"
 ```
 
 **Cloudflare Clef (`cloudflare_clef`):**
 
+Because Cloudflare is not bundled in the default model catalog, configure the provider endpoint and register the model's decision capability under `models.catalog` before routing to it:
+
 ```bash
+# 1. Configure Cloudflare provider endpoint (CLOUDFLARE_API_KEY provides credentials)
+holon config set providers.cloudflare.transport openai_chat_completions
+holon config set providers.cloudflare.base_url "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1"
+
+# 2. Register the model with decision capability and cloudflare_clef protocol
+holon config set models.catalog '{"cloudflare/clef-flash":{"decision_protocol":"cloudflare_clef","capabilities":{"decision":true}}}'
+
+# 3. Route decision queries to the registered model
 holon config set decision.enabled true
 holon config set decision.model "cloudflare@default/clef-flash"
 ```
 
 **OpenAI Decisions (`openai_decisions`):**
 
+Dedicated OpenAI decision endpoints (such as `/v1/decisions`) use the `openai_decisions` wire protocol. Register the target model under `models.catalog` before pointing `decision.model` at it:
+
 ```bash
+# 1. Register the model with decision capability and openai_decisions protocol
+holon config set models.catalog '{"openai/decision-preview":{"decision_protocol":"openai_decisions","capabilities":{"decision":true}}}'
+
+# 2. Route decision queries to the registered model
 holon config set decision.enabled true
 holon config set decision.model "openai@default/decision-preview"
 ```
@@ -81,6 +99,7 @@ holon config set decision.model "openai@default/decision-preview"
 > **Transport Note:** The `openai_decisions` protocol targets the dedicated
 > `/v1/decisions` endpoint and requires the API-key-based `openai_responses`
 > transport. It cannot be used over OAuth-based Codex transports.
+
 You can also configure these settings visually in the Web GUI under **Settings**
 → **Decision Settings**.
 

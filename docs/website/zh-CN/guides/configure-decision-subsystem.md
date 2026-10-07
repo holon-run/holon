@@ -46,25 +46,43 @@ holon config set decision.local_onnx.num_threads 2
 
 ### 方案 B：使用远程提供者
 
-按所选提供商对应的决策协议配置模型路由：
+Holon 仅在目标路由显式声明决策能力（`capabilities.decision: true`）且指定受支持的 `decision_protocol`（`jev`、`cloudflare_clef`、`openai_decisions` 或 `openai_compatible`）时，才会向该模型分发决策请求。
 
 **TypeSafe Jev（`jev`）：**
 
+TypeSafe Jev 模型已内置于 Holon 模型编目中，默认已开启决策能力：
+
 ```bash
 holon config set decision.enabled true
-holon config set decision.model "typesafe@default/typesafe-ai/jev"
+holon config set decision.model "typesafe@default/jev-latest"
 ```
 
 **Cloudflare Clef（`cloudflare_clef`）：**
 
+由于 Cloudflare 未预置于内置模型编目中，在设置决策路由前，需先配置提供商端点，并在 `models.catalog` 中注册该模型的决策能力与协议：
+
 ```bash
+# 1. 配置 Cloudflare 提供商端点（凭据通过 CLOUDFLARE_API_KEY 环境变量提供）
+holon config set providers.cloudflare.transport openai_chat_completions
+holon config set providers.cloudflare.base_url "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1"
+
+# 2. 在模型编目中声明决策能力与 cloudflare_clef 协议
+holon config set models.catalog '{"cloudflare/clef-flash":{"decision_protocol":"cloudflare_clef","capabilities":{"decision":true}}}'
+
+# 3. 将决策请求路由至已注册的模型
 holon config set decision.enabled true
 holon config set decision.model "cloudflare@default/clef-flash"
 ```
 
 **OpenAI Decisions（`openai_decisions`）：**
 
+专用的 OpenAI 决策端点（如 `/v1/decisions`）采用 `openai_decisions` 传输协议。在指向该路由前，同样需先在 `models.catalog` 中注册：
+
 ```bash
+# 1. 在模型编目中声明决策能力与 openai_decisions 协议
+holon config set models.catalog '{"openai/decision-preview":{"decision_protocol":"openai_decisions","capabilities":{"decision":true}}}'
+
+# 2. 将决策请求路由至已注册的模型
 holon config set decision.enabled true
 holon config set decision.model "openai@default/decision-preview"
 ```

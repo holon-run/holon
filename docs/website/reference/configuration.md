@@ -65,6 +65,27 @@ Model metadata and executable selection use distinct identities:
 - `provider@endpoint/model` is a model route ref used by defaults, fallbacks,
   vision/image generation selections, and agent overrides.
 
+#### Model Catalog Overrides (`models.catalog`)
+
+`models.catalog` accepts a JSON object mapping logical model refs (`provider/model`) to override objects. Common override fields include:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `capabilities.agent_turn` | boolean | Whether the model can serve primary agent turns |
+| `capabilities.decision` | boolean | Opts the model into serving advisory decisions |
+| `capabilities.image_input` | boolean | Declares multimodal vision input capability |
+| `capabilities.image_generation` | boolean | Declares image generation capability |
+| `capabilities.supports_reasoning` | boolean | Enables reasoning effort options |
+| `decision_protocol` | enum | Wire protocol for decision models: `jev`, `cloudflare_clef`, `openai_decisions`, or `openai_compatible` |
+| `context_window_tokens` | integer | Total context window size in tokens |
+| `prompt_budget_estimated_tokens` | integer | Reserved prompt budget before auto-compaction |
+| `display_name` | string | Human-readable model label |
+
+```bash
+# Register a custom model with decision capability and protocol
+holon config set models.catalog '{"cloudflare/clef-flash":{"decision_protocol":"cloudflare_clef","capabilities":{"decision":true}}}'
+```
+
 Legacy `provider/model` selection values remain accepted, but all new writes
 include the endpoint. Inspect or explicitly rewrite existing config and agent
 state with:
