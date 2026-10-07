@@ -112,13 +112,22 @@ internal fun SettingsScreen(state: HolonUiState, viewModel: SettingsActions, onB
             item {
                 HolonSection(ui("当前身份")) {
                     SettingsValue(ui("用户"), state.session?.user?.displayName ?: state.session?.user?.userId.orEmpty())
-                    Text(ui("访问令牌不保存在设备上。"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(ui("原始访问令牌不落盘；可撤销的会话凭据在设备上加密保存。"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             item {
                 HolonSection(ui("关于")) {
+                    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
                     SettingsValue(ui("App"), BuildConfig.VERSION_NAME)
                     Text(ui("连接已有 Holon 主机的移动工作台。打开应用后同步最新状态。"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(onClick = {
+                        uriHandler.openUri(
+                            if (UiCopy.effectiveLanguage().startsWith("zh", ignoreCase = true)) "https://holon.run/zh-CN/privacy"
+                            else "https://holon.run/privacy",
+                        )
+                    }) {
+                        Text(ui("隐私政策"))
+                    }
                 }
             }
             item {
