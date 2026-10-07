@@ -3662,6 +3662,9 @@ async fn provider_failure_before_output_defers_fallback_to_next_turn() {
     );
     assert!(deferred.data["error"]
         .as_str()
+        .is_some_and(|error| error.contains("current provider failed")));
+    assert!(!deferred.data["error"]
+        .as_str()
         .is_some_and(|error| error.contains("all configured providers failed")));
     assert!(deferred.data["operator_message"]
         .as_str()
@@ -3770,7 +3773,12 @@ async fn provider_recovery_budget_exhaustion_stops_the_lineage() {
         .await
         .unwrap();
 
-    assert!(outcome.is_none());
+    let outcome = outcome.expect("terminal outcome after recovery budget exhaustion");
+    assert_eq!(outcome.terminal_kind, TurnTerminalKind::Aborted);
+    assert!(outcome
+        .final_text
+        .starts_with("Provider recovery budget exhausted"));
+    assert!(!outcome.final_text.contains("current provider failed"));
     assert_eq!(runtime.inner.agent.lock().await.queue.len(), 0);
     let events = runtime.storage().read_recent_events(20).unwrap();
     let exhausted = events

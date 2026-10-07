@@ -1097,10 +1097,12 @@ impl AgentProvider for FallbackProvider {
             .as_ref()
             .map(|error| format_provider_failure(&candidate.model_ref, max_attempts, error))
             .unwrap_or_else(|| format!("{}: provider failed", candidate.model_ref));
-        let source = anyhow!(
-            "all configured providers failed for this turn: {}",
-            error_summary
-        );
+        let source_prefix = if pending_fallback_model_ref.is_some() {
+            "current provider failed for this turn"
+        } else {
+            "all configured providers failed for this turn"
+        };
+        let source = anyhow!("{source_prefix}: {error_summary}");
         Err(provider_turn_error(
             source.to_string(),
             ProviderAttemptTimeline {

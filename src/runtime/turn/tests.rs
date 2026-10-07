@@ -3239,7 +3239,8 @@ fn provider_lineage_failure_text_non_empty_is_truncated() {
 #[test]
 fn operator_message_side_effect_crossed() {
     let msg = provider_lineage_operator_message("anthropic/claude-sonnet", true, "rate limited");
-    assert!(msg.contains("Turn stopped after the active provider lineage failed"));
+    assert!(msg.starts_with("Queued recovery turn"));
+    assert!(msg.contains("current turn stopped after the active provider lineage failed"));
     assert!(msg.contains("Queued recovery turn"));
     assert!(msg.contains("anthropic/claude-sonnet"));
     assert!(msg.contains("rate limited"));
@@ -3248,7 +3249,8 @@ fn operator_message_side_effect_crossed() {
 #[test]
 fn operator_message_no_side_effect() {
     let msg = provider_lineage_operator_message("openai/gpt-4", false, "context too long");
-    assert!(msg.contains("Turn stopped before provider output was accepted"));
+    assert!(msg.starts_with("Queued fallback turn"));
+    assert!(msg.contains("current turn stopped before provider output was accepted"));
     assert!(msg.contains("Queued fallback turn"));
     assert!(msg.contains("openai/gpt-4"));
     assert!(msg.contains("context too long"));

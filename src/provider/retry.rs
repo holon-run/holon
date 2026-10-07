@@ -422,6 +422,12 @@ pub(crate) fn classify_reqwest_transport_error_with_trace(
     let status = error.status().map(|status| status.as_u16());
     let source_chain = error_chain_messages(&error);
     let classification = classify_reqwest_transport_failure(stage, &error, &source_chain);
+    let message = format_reqwest_transport_error_message(
+        context,
+        stage,
+        classification.kind == ProviderFailureKind::Timeout,
+        error.to_string(),
+    );
     provider_transport_error(
         classification,
         status,
@@ -434,8 +440,27 @@ pub(crate) fn classify_reqwest_transport_error_with_trace(
             source_chain,
             trace,
         )),
-        format!("{context}: {error}"),
+        message,
     )
+}
+
+fn format_reqwest_transport_error_message(
+    context: &str,
+    stage: &str,
+    timed_out: bool,
+    raw_error: String,
+) -> String {
+    if timed_out {
+        let body_label = match stage {
+            "streaming_response_body" => Some("the streaming response body"),
+            "response_body" => Some("the response body"),
+            _ => None,
+        };
+        if let Some(body_label) = body_label {
+            return format!("{context}: timed out while reading {body_label}");
+        }
+    }
+    format!("{context}: {raw_error}")
 }
 
 fn classify_reqwest_transport_failure(
@@ -1465,6 +1490,49 @@ mod tests {
                 .downcast_ref::<ProviderTransportError>()
                 .and_then(|error| error.code.as_deref()),
             Some("non_persisted_item_id")
+        );
+    }
+
+    #[test]
+    fn gateway_entitlement_error_preserves_structured_type_and_message() {
+        let error = classify_status_error_with_trace(
+            "Vercel AI Gateway request failed",
+            "response_status",
+            Some("openai"),
+            Some("openai/gpt-5.4"),
+            Some("https://gateway.example/v1/chat/completions"),
+            StatusCode::FORBIDDEN,
+            r#"{"error":{"type":"no_providers_available","message":"Free tier users do not have access to this model","token":"must-not-leak"}}"#.into(),
+            None,
+            None,
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "Vercel AI Gateway request failed with status 403 Forbidden: type=no_providers_available, message=Free tier users do not have access to this model"
+        );
+        assert!(!error.to_string().contains("must-not-leak"));
+    }
+
+    #[test]
+    fn timeout_transport_summary_does_not_present_decode_wording_as_root_cause() {
+        assert_eq!(
+            super::format_reqwest_transport_error_message(
+                "Anthropic streaming response body failed",
+                "streaming_response_body",
+                true,
+                "error decoding response body".into(),
+            ),
+            "Anthropic streaming response body failed: timed out while reading the streaming response body"
+        );
+        assert_eq!(
+            super::format_reqwest_transport_error_message(
+                "Anthropic streaming response body failed",
+                "streaming_response_parse",
+                true,
+                "error decoding response body".into(),
+            ),
+            "Anthropic streaming response body failed: error decoding response body"
         );
     }
 
