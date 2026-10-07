@@ -107,6 +107,25 @@ final class HolonUITests: XCTestCase {
         try disconnected(language: "zh-Hans", dark: true, large: true)
     }
 
+    func testChineseDiagnosticsDarkAccessibilitySize() throws {
+        let app = launch(language: "zh-Hans", dark: true, large: true)
+        defer { app.terminate() }
+        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 15))
+        app.tabBars.buttons["设置"].tap()
+        openDiagnostics(app)
+        let allowlist = app.staticTexts[
+            "仅包含连接状态与数量，不包含凭据、身份、地址、消息内容或原始错误。"]
+        let prepare = app.buttons["diagnostics.prepare"]
+        for element in [allowlist, prepare] {
+            reveal(element, in: app, fullyVisible: true)
+            XCTAssertTrue(element.exists)
+            XCTAssertGreaterThan(element.frame.height, 0)
+        }
+        XCTAssertEqual(prepare.label, "生成诊断")
+        capture(app, "zh-Hans-maximum-diagnostics-controls")
+        try audit(app, name: "zh-Hans-maximum-diagnostics-controls")
+    }
+
     func testPreparedDiagnosticsViewportCoverage() throws {
         let app = launch(language: "en", dark: false, large: true)
         defer { app.terminate() }

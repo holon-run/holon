@@ -89,8 +89,8 @@ struct ConnectionWelcomeView: View {
             Section {
                 VStack(alignment: .leading, spacing: 12) {
                     Image(systemName: "network").font(.largeTitle).accessibilityHidden(true)
-                    Text("onboarding.welcome").font(.title2.bold())
-                    Text("onboarding.purpose").foregroundStyle(.secondary)
+                    LocalizedMultilineText(key: "onboarding.welcome", isHeading: true)
+                    LocalizedMultilineText(key: "onboarding.purpose")
                     Button("onboarding.scan", systemImage: "qrcode.viewfinder") {
                         pairingAttempt = false
                         scanning = true

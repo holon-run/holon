@@ -33,10 +33,13 @@ struct DiagnosticView: View {
 
     private var contents: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("diagnostics.allowlist").font(.caption).foregroundStyle(.secondary)
-            Button("diagnostics.prepare") { prepare() }
-                .buttonStyle(.bordered)
-                .accessibilityIdentifier("diagnostics.prepare")
+            LocalizedMultilineText(key: "diagnostics.allowlist")
+            Button { prepare() } label: {
+                Text("diagnostics.prepare").font(.body)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("diagnostics.prepare")
             if !report.isEmpty {
                 Text(report).font(.body.monospaced()).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)

@@ -16,10 +16,10 @@ _TEXT_SIZES = {
 }
 
 
-def _read_text_size(simulator):
+def _read_text_size(simulator, *, timeout=15):
     result = subprocess.run(
         ["xcrun", "simctl", "ui", simulator, "content_size"],
-        check=True, capture_output=True, text=True, timeout=15,
+        check=True, capture_output=True, text=True, timeout=timeout,
     )
     category = result.stdout.strip()
     if category not in _TEXT_SIZES:
@@ -45,8 +45,12 @@ def initialize_simulator_text_size(simulator):
     """Establish a verified baseline on the harness-owned fresh simulator."""
     subprocess.run(
         ["xcrun", "simctl", "bootstatus", simulator, "-b"],
-        check=True,
+        check=True, timeout=180,
     )
+    # Boot completion does not establish the first simctl UI service connection.
+    # Give cold startup its own budget; runtime changes keep their 15s deadline.
+    print(f"模拟器 {simulator}：等待系统字号服务就绪", flush=True)
+    _read_text_size(simulator, timeout=120)
     set_simulator_text_size(simulator, "large", "专用测试基线初始化")
 
 
