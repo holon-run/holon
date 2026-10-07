@@ -171,9 +171,11 @@ but read-only analysis tasks may only define success criteria:
 
 ### Real-repo manifests and suites
 
-Real-repo task manifests live under `benchmarks/tasks/*.yaml`; suites in
-`benchmarks/suites/*.yaml` select one or more manifests and runners. Their
-schema is validated by `benchmark/lib/manifest.mjs`. The executable entry
+New real-repo task manifests live under `benchmarks/tasks/*.yaml`; four
+legacy manifests remain under `benchmark/tasks/*.yaml` and should not be used
+for new work. Suites in `benchmarks/suites/*.yaml` select one or more
+manifests and runners. Their schema is validated by
+`benchmark/lib/manifest.mjs`. The executable entry
 points and manifest field contract are maintained in
 [`benchmarks/README.md`](../benchmarks/README.md).
 
