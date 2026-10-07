@@ -139,30 +139,55 @@ Use this mode for:
 - test-driven repair
 - follow-up refinement after a failed verification
 
-## Benchmark Task Format
+## Implemented Benchmark Task Formats
 
-Each benchmark task should be stored as a fixture file with a stable schema.
+The repository now has separate task formats for the fast local guardrail
+layer and real-repo comparisons:
 
-Suggested fields:
+### Local fixture tasks
 
-```yaml
-name: fix_runtime_status_bug
-mode: runtime
-workspace_fixture: fixtures/runtime-status-bug
-prompt: Fix the runtime status bug and verify the result.
-setup:
-  - cargo test --quiet
-verify:
-  - cargo test --quiet
-success_criteria:
-  - verify_exit_code: 0
-  - max_files_changed: 4
-  - required_brief_substring: fixed
-timeouts:
-  total_seconds: 180
+Fixture tasks are JSON files under `benchmark/tasks/`. The `fixture` command
+copies the task's `workspace.path` from `benchmark/fixtures/` into a temporary
+workspace before each run. A task can define setup and verification commands,
+but read-only analysis tasks may only define success criteria:
+
+```json
+{
+  "name": "fix-greeting-preserves-case",
+  "mode": "runtime",
+  "workspace": {
+    "type": "fixture",
+    "path": "greeting-bug"
+  },
+  "tool_profile": "coding",
+  "timeout_seconds": 180,
+  "setup": ["node test.js"],
+  "verify": ["node test.js"],
+  "success_criteria": {
+    "verify_exit_code": 0
+  }
+}
 ```
 
-The harness should copy the fixture into a temporary workspace before each run.
+### Real-repo manifests and suites
+
+Real-repo task manifests live under `benchmarks/tasks/*.yaml`; suites in
+`benchmarks/suites/*.yaml` select one or more manifests and runners. Their
+schema is validated by `benchmark/lib/manifest.mjs`. The executable entry
+points and manifest field contract are maintained in
+[`benchmarks/README.md`](../benchmarks/README.md).
+
+The current commands are:
+
+```bash
+node benchmark/run.mjs validate-manifest --manifest benchmarks/tasks/<task>.yaml
+node benchmark/run.mjs real --manifest /absolute/path/to/<task>.yaml --runner <runner>
+node benchmark/run.mjs suite --suite benchmarks/suites/<suite>.yaml --label <label>
+```
+
+The fixture command copies the fixture into a temporary workspace before each
+run; real-repo commands instead resolve the manifest repository and base
+revision according to the manifest contract.
 
 ## Suggested First Benchmark Corpus
 
@@ -312,9 +337,9 @@ these:
 If it cannot distinguish those outcomes, the corpus or metrics are not good
 enough yet.
 
-## Immediate Build Order
+## Original Build Order (historical)
 
-The recommended implementation order is:
+The initial implementation was planned in this order:
 
 1. define the benchmark fixture schema
 2. build a local workspace-fixture copier
@@ -324,7 +349,9 @@ The recommended implementation order is:
 6. add a small initial corpus
 7. establish the first baseline report
 
-Only after a baseline exists should prompt changes be evaluated.
+The runner, fixture corpus, artifact output, and first baseline now exist. Keep
+this list as historical context; current entry points and schema details are
+documented above and in `benchmarks/README.md`.
 
 ## Implemented First Wave
 

@@ -43,6 +43,13 @@ Repo-local layout:
 - `tasks/<task_id>.yaml`
 - `suites/<suite_id>.yaml`
 
+Manifest and suite validation is implemented in
+`benchmark/lib/manifest.mjs`. Task manifests require the repository, issue,
+base revision, benchmark mode, task kind, evaluation policy, budget, review,
+and metadata groups; suites require task references, runner definitions, PR
+policy, and timeout configuration. Use `validate-manifest` before a real-repo
+run when checking a new task.
+
 Use:
 
 ```bash
@@ -63,6 +70,13 @@ node benchmark/run.mjs suite --suite benchmarks/suites/deepseek-transport-pilot.
 This command uses paid provider traffic. Run it only with operator authorization
 and required credentials. The suite disables provider fallback and does not
 create PRs or change the default DeepSeek route.
+
+Node harness results are rooted at `.benchmark-results/`. Individual
+task/runner repetitions are stored below the selected label, and suite runs
+also emit `paired-summary.json` and `paired-summary.md`. The default CI
+workflow does not execute these real-repo commands or upload this directory;
+its benchmark job uploads the Rust performance JSON files under
+`target/performance/`.
 
 To push benchmark branches and create draft PRs, either:
 
