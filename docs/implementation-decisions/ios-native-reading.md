@@ -39,6 +39,10 @@ Near the bottom, new content follows the bottom edge; reviewing earlier content
 keeps its position and offers a latest/new-content action. Cumulative read state
 still requires explicit confirmation and the existing visible-brief/identity
 checks. There is no automatic read acknowledgement or background stream.
+The explicit20-turn presentation window uses a regular vertical stack with
+actual content heights. Final historical-scroll acceptance reproduced a native
+layout loop with lazy offscreen estimates; history remains bounded and paged,
+and brief fetching still requires viewport visibility.
 
 Long source files use explicit16KiB disk pages, not a lazy stack with estimated
 offscreen text heights. Previous/next, literal search and End remain available;

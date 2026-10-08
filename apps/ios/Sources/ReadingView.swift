@@ -147,7 +147,9 @@ struct ConversationReadingView: View {
         GeometryReader { geometry in
         ScrollViewReader { scroll in
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16) {
+            // The explicit turn window is bounded to20. Use its actual heights:
+            // lazy offscreen estimates can loop while scrolling rich results.
+            VStack(alignment: .leading, spacing: 16) {
                 if reader.status != .live {
                     Text(LocalizedStringKey("reading.status." + reader.status.rawValue))
                         .font(.caption).foregroundStyle(.secondary)
