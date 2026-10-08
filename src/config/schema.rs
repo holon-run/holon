@@ -169,6 +169,13 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "api.csrf.trusted_origins",
+            kind: "string_list",
+            description: "Additional exact HTTP origins trusted for cookie-authenticated unsafe requests. Same-origin requests are always trusted; wildcard is not allowed.",
+            default: json!([]),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "api.projection.max_leaders",
             kind: "positive_integer",
             description: "Maximum concurrent projection builds in the HTTP API projection gate. Additional distinct keys receive 429 projection_busy until a leader frees up.",
@@ -978,6 +985,7 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .max_age_seconds
             .map(|value| json!(value))
             .unwrap_or(Value::Null)),
+        "api.csrf.trusted_origins" => Ok(json!(config.api.csrf.trusted_origins)),
         "api.projection.max_leaders" => Ok(config
             .api
             .projection
@@ -1497,6 +1505,9 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         "api.cors.max_age_seconds" => {
             config.api.cors.max_age_seconds = Some(parse_positive_u64_key(key, raw_value)?);
         }
+        "api.csrf.trusted_origins" => {
+            config.api.csrf.trusted_origins = parse_string_list(raw_value)?;
+        }
         "api.projection.max_leaders" => {
             config.api.projection.max_leaders = Some(parse_positive_u64_key(key, raw_value)?);
         }
@@ -1928,6 +1939,7 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         _ => return Err(unknown_config_key(key)),
     }
     validate_api_cors_config(&config.api.cors)?;
+    validate_api_csrf_config(&config.api.csrf)?;
     super::resolve_runtime_db_retention_policy(config)?;
     Ok(())
 }
@@ -1954,6 +1966,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         }
         "api.cors.allow_credentials" => config.api.cors.allow_credentials = None,
         "api.cors.max_age_seconds" => config.api.cors.max_age_seconds = Some(600),
+        "api.csrf.trusted_origins" => config.api.csrf.trusted_origins.clear(),
         "api.projection.max_leaders" => config.api.projection.max_leaders = None,
         "api.projection.cache_ttl_ms" => config.api.projection.cache_ttl_ms = None,
         "model.default" => config.model.default = None,
@@ -2175,6 +2188,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         _ => return Err(unknown_config_key(key)),
     }
     validate_api_cors_config(&config.api.cors)?;
+    validate_api_csrf_config(&config.api.csrf)?;
     validate_api_projection_config(&config.api.projection)?;
     Ok(())
 }
@@ -2201,6 +2215,37 @@ pub fn validate_api_cors_config(cors: &ApiCorsConfigFile) -> Result<()> {
         header
             .parse::<HeaderName>()
             .with_context(|| format!("invalid api.cors.allowed_headers entry {header:?}"))?;
+    }
+    Ok(())
+}
+
+pub fn validate_api_csrf_config(csrf: &ApiCsrfConfigFile) -> Result<()> {
+    for origin in &csrf.trusted_origins {
+        if origin == "*" {
+            return Err(anyhow!(
+                "api.csrf.trusted_origins cannot contain wildcard *"
+            ));
+        }
+        validate_origin_value(origin)
+            .with_context(|| format!("invalid api.csrf.trusted_origins entry {origin:?}"))?;
+    }
+    Ok(())
+}
+
+fn validate_origin_value(origin: &str) -> Result<()> {
+    let parsed = url::Url::parse(origin)
+        .with_context(|| format!("origin {origin:?} must be an absolute URL"))?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host().is_none()
+        || parsed.username() != ""
+        || parsed.password().is_some()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(anyhow!(
+            "origin must use http/https and contain only scheme, host, and optional port"
+        ));
     }
     Ok(())
 }

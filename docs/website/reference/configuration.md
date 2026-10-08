@@ -156,6 +156,26 @@ holon config set api.cors.max_age_seconds 600
 Do not combine `api.cors.allow_credentials=true` with
 `api.cors.allowed_origins=["*"]`; Holon rejects that unsafe combination.
 
+### Cookie-authenticated unsafe requests
+
+Unsafe requests (`POST`, `PUT`, `PATCH`, and `DELETE`) authenticated by the
+browser's `holon_session` cookie must carry an allowed browser source. Holon
+accepts an `Origin` matching the request `Host` by scheme, host, and port, or
+an exact origin listed in `api.csrf.trusted_origins`. If `Origin` is absent,
+`Sec-Fetch-Site: same-origin` and same-origin `Referer` are accepted as
+fallbacks; otherwise the request is rejected with HTTP `403`.
+
+This guard is always enabled and is independent of CORS. It also covers the
+`/apps` boundary and browser session exchange/pairing redemption. Bearer
+requests, Unix-socket trusted-local requests, and native credential endpoints
+remain compatible. Trusted origins must be explicit `http://` or `https://`
+origins with an optional port; wildcard `*`, paths, queries, and forwarded
+proxy headers are not accepted.
+
+```bash
+holon config set api.csrf.trusted_origins '["https://admin.example:8443"]'
+```
+
 ### Projection Gate
 
 | Key | Type | Default | Description |

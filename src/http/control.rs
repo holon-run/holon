@@ -593,6 +593,7 @@ fn is_runtime_mutable_config_key(key: &str) -> bool {
             | "api.cors.allowed_headers"
             | "api.cors.allow_credentials"
             | "api.cors.max_age_seconds"
+            | "api.csrf.trusted_origins"
             | "model.default"
             | "model.fallbacks"
             | "vision.default"
@@ -1805,6 +1806,7 @@ mod tests {
         assert!(is_runtime_mutable_config_key("decision.enabled"));
         assert!(is_runtime_mutable_config_key("decision.model"));
         assert!(is_runtime_mutable_config_key("decision.local_onnx.preset"));
+        assert!(is_runtime_mutable_config_key("api.csrf.trusted_origins"));
         assert!(!is_runtime_mutable_config_key("runtime.scheduler"));
     }
 

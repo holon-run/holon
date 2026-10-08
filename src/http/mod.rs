@@ -918,6 +918,10 @@ pub fn router(state: AppState) -> Router {
         Arc::new(state.clone()),
         bootstrap_guard_middleware,
     ));
+    let api_routes = api_routes.layer(from_fn_with_state(
+        Arc::new(state.clone()),
+        origin_guard_middleware,
+    ));
     let app_routes = apps::router().layer(from_fn_with_state(
         Arc::new(state.clone()),
         session_auth_middleware,
@@ -925,6 +929,10 @@ pub fn router(state: AppState) -> Router {
     let app_routes = app_routes.layer(from_fn_with_state(
         Arc::new(state.clone()),
         bootstrap_guard_middleware,
+    ));
+    let app_routes = app_routes.layer(from_fn_with_state(
+        Arc::new(state.clone()),
+        origin_guard_middleware,
     ));
 
     Router::new()
@@ -1077,6 +1085,157 @@ fn api_cors_layer(config: &ApiCorsConfigFile) -> CorsLayer {
     }
 
     layer
+}
+
+const SEC_FETCH_SITE: HeaderName = HeaderName::from_static("sec-fetch-site");
+const REFERER: HeaderName = HeaderName::from_static("referer");
+const HOST: HeaderName = HeaderName::from_static("host");
+const ORIGIN: HeaderName = HeaderName::from_static("origin");
+
+async fn origin_guard_middleware(
+    State(state): State<Arc<AppState>>,
+    request: AxumRequest<Body>,
+    next: Next,
+) -> AxumResponse {
+    if origin_guard_allows(&request, &state) {
+        return next.run(request).await;
+    }
+
+    http_error(
+        StatusCode::FORBIDDEN,
+        HttpErrorEnvelope::new(
+            "csrf_origin_rejected",
+            "unsafe cookie-authenticated request has no permitted origin",
+        ),
+    )
+    .into_response()
+}
+
+fn origin_guard_allows(request: &AxumRequest<Body>, state: &AppState) -> bool {
+    if matches!(
+        *request.method(),
+        Method::GET | Method::HEAD | Method::OPTIONS
+    ) {
+        return true;
+    }
+    if state.uses_trusted_local_admission() {
+        return true;
+    }
+
+    let path = request.uri().path();
+    let api_path = path.strip_prefix("/api").unwrap_or(path);
+    let requires_origin = matches!(api_path, "/auth/session/exchange" | "/auth/pairing/redeem");
+    let has_cookie = cookie_session_credential(request.headers()).is_some();
+    if !requires_origin {
+        if !has_cookie {
+            return true;
+        }
+        if bearer_request_is_authorized(request.headers(), state) {
+            return true;
+        }
+    }
+
+    let Some(origin) = single_header_value(request.headers(), &ORIGIN) else {
+        if request
+            .headers()
+            .get(&SEC_FETCH_SITE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.eq_ignore_ascii_case("same-origin"))
+        {
+            return true;
+        }
+
+        let Some(referer) = single_header_value(request.headers(), &REFERER) else {
+            return false;
+        };
+        return origin_value_allowed(referer, request.headers(), state, true);
+    };
+    origin_value_allowed(origin, request.headers(), state, false)
+}
+
+fn single_header_value<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Option<&'a str> {
+    let mut values = headers.get_all(name).iter();
+    let value = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+    value.to_str().ok()
+}
+
+fn origin_value_allowed(
+    value: &str,
+    headers: &HeaderMap,
+    state: &AppState,
+    allow_referer_path: bool,
+) -> bool {
+    let Ok(mut origin) = url::Url::parse(value) else {
+        return false;
+    };
+    if !is_valid_http_source(&origin) || (!allow_referer_path && !is_valid_http_origin(&origin)) {
+        return false;
+    }
+    origin.set_path("/");
+    origin.set_query(None);
+    origin.set_fragment(None);
+    if origin_matches_request(&origin, headers) {
+        return true;
+    }
+    state
+        .host
+        .config()
+        .stored_config
+        .api
+        .csrf
+        .trusted_origins
+        .iter()
+        .filter_map(|trusted| url::Url::parse(trusted).ok())
+        .any(|trusted| origins_equal(&origin, &trusted))
+}
+
+fn is_valid_http_source(origin: &url::Url) -> bool {
+    matches!(origin.scheme(), "http" | "https")
+        && origin.host().is_some()
+        && origin.username().is_empty()
+        && origin.password().is_none()
+}
+
+fn is_valid_http_origin(origin: &url::Url) -> bool {
+    is_valid_http_source(origin)
+        && origin.path() == "/"
+        && origin.query().is_none()
+        && origin.fragment().is_none()
+}
+
+fn origins_equal(left: &url::Url, right: &url::Url) -> bool {
+    is_valid_http_origin(left)
+        && is_valid_http_origin(right)
+        && left.scheme().eq_ignore_ascii_case(right.scheme())
+        && left
+            .host_str()
+            .zip(right.host_str())
+            .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn origin_matches_request(origin: &url::Url, headers: &HeaderMap) -> bool {
+    let Some(host) = headers.get(&HOST).and_then(|value| value.to_str().ok()) else {
+        return false;
+    };
+    let Ok(request_host) = url::Url::parse(&format!("http://{host}")) else {
+        return false;
+    };
+    if !is_valid_http_origin(&request_host) {
+        return false;
+    }
+    let Some(origin_host) = origin.host_str() else {
+        return false;
+    };
+    let Some(request_host_value) = request_host.host_str() else {
+        return false;
+    };
+    origin_host.eq_ignore_ascii_case(request_host_value)
+        && origin.scheme().eq_ignore_ascii_case(request_host.scheme())
+        && origin.port_or_known_default() == request_host.port_or_known_default()
 }
 
 fn is_default_localhost_cors_origin(origin: &HeaderValue) -> bool {
@@ -1310,6 +1469,16 @@ fn bearer_session_credential(headers: &HeaderMap) -> Option<String> {
         return None;
     }
     Some(token.to_string())
+}
+
+fn bearer_request_is_authorized(headers: &HeaderMap, state: &AppState) -> bool {
+    let Some(credential) = bearer_session_credential(headers) else {
+        return false;
+    };
+    if state.host.config().control_token.as_deref() == Some(credential.as_str()) {
+        return true;
+    }
+    authenticate_session_credential(&credential, state).is_ok()
 }
 
 fn cookie_session_credential(headers: &HeaderMap) -> Option<String> {
@@ -2035,7 +2204,7 @@ pub async fn serve_unix(
 mod tests {
     use super::{
         add_retry_after_to_service_unavailable, auth_error_code, auth_required,
-        authenticate_session, error_response, if_none_match_satisfied,
+        authenticate_session, error_response, if_none_match_satisfied, origin_guard_allows,
         projection_gate_error_response, redact_request_path, router, session_credential,
         tailscale_serve, AppState, HttpErrorEnvelope, ProjectionGate, ProjectionGateError,
     };
@@ -2089,6 +2258,151 @@ mod tests {
         (home, host)
     }
 
+    #[test]
+    fn origin_guard_requires_a_permitted_source_for_cookie_writes() {
+        let (_home, host) = test_host();
+        let state = AppState::for_tcp(host);
+        let request = |uri: &str, origin: Option<&str>| {
+            let mut builder = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::HOST, "holon.example:8443")
+                .header(header::COOKIE, "holon_session=session");
+            if let Some(origin) = origin {
+                builder = builder.header(header::ORIGIN, origin);
+            }
+            builder.body(Body::empty()).unwrap()
+        };
+
+        assert!(!origin_guard_allows(
+            &request("/api/control/runtime/status", None),
+            &state
+        ));
+        assert!(!origin_guard_allows(
+            &request(
+                "/api/control/runtime/status",
+                Some("https://attacker.example")
+            ),
+            &state
+        ));
+        assert!(!origin_guard_allows(
+            &request("/apps/example", Some("https://holon.example")),
+            &state
+        ));
+        assert!(!origin_guard_allows(
+            &request(
+                "/api/control/runtime/status",
+                Some("https://holon.example:8443")
+            ),
+            &state
+        ));
+        assert!(origin_guard_allows(
+            &request(
+                "/api/control/runtime/status",
+                Some("http://holon.example:8443")
+            ),
+            &state
+        ));
+
+        let same_origin_fetch = Request::builder()
+            .method("POST")
+            .uri("/api/control/runtime/status")
+            .header(header::HOST, "holon.example:8443")
+            .header(header::COOKIE, "holon_session=session")
+            .header("sec-fetch-site", "same-origin")
+            .body(Body::empty())
+            .unwrap();
+        assert!(origin_guard_allows(&same_origin_fetch, &state));
+
+        let same_origin_referer = Request::builder()
+            .method("POST")
+            .uri("/api/control/runtime/status")
+            .header(header::HOST, "holon.example:8443")
+            .header(header::COOKIE, "holon_session=session")
+            .header(header::REFERER, "http://holon.example:8443/settings")
+            .body(Body::empty())
+            .unwrap();
+        assert!(origin_guard_allows(&same_origin_referer, &state));
+    }
+
+    #[test]
+    fn origin_guard_accepts_configured_origins_and_native_bearer_requests() {
+        let home = tempdir().unwrap();
+        fs::write(
+            home.path().join("config.json"),
+            r#"{
+                "api": {
+                    "csrf": {
+                        "trusted_origins": ["https://admin.example:8443"]
+                    }
+                },
+                "model": {"default": "openai/gpt-5.4"}
+            }"#,
+        )
+        .unwrap();
+        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        let state = AppState::for_tcp(host);
+
+        let trusted_origin = Request::builder()
+            .method("POST")
+            .uri("/api/control/runtime/status")
+            .header(header::HOST, "holon.example:7878")
+            .header(header::COOKIE, "holon_session=session")
+            .header(header::ORIGIN, "https://admin.example:8443")
+            .body(Body::empty())
+            .unwrap();
+        assert!(origin_guard_allows(&trusted_origin, &state));
+
+        let browser_exchange_without_source = Request::builder()
+            .method("POST")
+            .uri("/api/auth/session/exchange")
+            .header(header::AUTHORIZATION, "Bearer browser-credential")
+            .body(Body::empty())
+            .unwrap();
+        assert!(!origin_guard_allows(
+            &browser_exchange_without_source,
+            &state
+        ));
+
+        let native_exchange = Request::builder()
+            .method("POST")
+            .uri("/api/auth/session/exchange/native")
+            .header(header::AUTHORIZATION, "Bearer native-credential")
+            .body(Body::empty())
+            .unwrap();
+        assert!(origin_guard_allows(&native_exchange, &state));
+
+        let bearer_write = Request::builder()
+            .method("POST")
+            .uri("/api/control/runtime/status")
+            .header(header::AUTHORIZATION, "Bearer session-credential")
+            .body(Body::empty())
+            .unwrap();
+        assert!(origin_guard_allows(&bearer_write, &state));
+
+        let (_home, host) = control_token_test_host();
+        let state = AppState::for_tcp(host);
+        let valid_bearer_with_cookie = Request::builder()
+            .method("POST")
+            .uri("/api/control/runtime/status")
+            .header(header::AUTHORIZATION, "Bearer secret")
+            .header(header::COOKIE, "holon_session=session")
+            .body(Body::empty())
+            .unwrap();
+        assert!(origin_guard_allows(&valid_bearer_with_cookie, &state));
+
+        let invalid_bearer_with_cookie = Request::builder()
+            .method("POST")
+            .uri("/api/control/runtime/status")
+            .header(header::AUTHORIZATION, "Bearer invalid")
+            .header(header::COOKIE, "holon_session=session")
+            .body(Body::empty())
+            .unwrap();
+        assert!(!origin_guard_allows(&invalid_bearer_with_cookie, &state));
+    }
+
     #[tokio::test]
     async fn pairing_ticket_exchanges_once_for_a_session_cookie() {
         let (_home, host) = control_token_test_host();
@@ -2118,6 +2432,8 @@ mod tests {
                     Request::builder()
                         .method("POST")
                         .uri("/api/auth/pairing/redeem")
+                        .header(header::HOST, "localhost")
+                        .header(header::ORIGIN, "http://localhost")
                         .header(header::CONTENT_TYPE, "application/json")
                         .body(Body::from(
                             serde_json::json!({"ticket": ticket}).to_string(),
@@ -2131,6 +2447,64 @@ mod tests {
                 assert!(response.headers().contains_key(header::SET_COOKIE));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn native_auth_endpoints_do_not_set_browser_cookies() {
+        let (_home, host) = control_token_test_host();
+        let app = router(AppState::for_tcp(host));
+
+        let exchange = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/session/exchange/native")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"credential": "secret"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(exchange.status(), StatusCode::OK);
+        assert!(!exchange.headers().contains_key(header::SET_COOKIE));
+
+        let issue = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/pairing/issue")
+                    .header(header::AUTHORIZATION, "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(issue.status(), StatusCode::OK);
+        let body = to_bytes(issue.into_body(), 4096).await.unwrap();
+        let ticket = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["ticket"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let redeem = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/pairing/redeem/native")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"ticket": ticket}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(redeem.status(), StatusCode::OK);
+        assert!(!redeem.headers().contains_key(header::SET_COOKIE));
     }
 
     #[tokio::test]
@@ -2162,6 +2536,8 @@ mod tests {
                     Request::builder()
                         .method("POST")
                         .uri("/api/auth/pairing/redeem")
+                        .header(header::HOST, "localhost")
+                        .header(header::ORIGIN, "http://localhost")
                         .header(header::CONTENT_TYPE, "application/json")
                         .body(Body::from(
                             serde_json::json!({"ticket": ticket}).to_string(),
@@ -2347,7 +2723,9 @@ mod tests {
         for (body, content_type, expected_status, expected_code) in cases {
             let mut request = Request::builder()
                 .method("POST")
-                .uri("/api/auth/session/exchange");
+                .uri("/api/auth/session/exchange")
+                .header(header::HOST, "localhost")
+                .header(header::ORIGIN, "http://localhost");
             if let Some(content_type) = content_type {
                 request = request.header(header::CONTENT_TYPE, content_type);
             }
