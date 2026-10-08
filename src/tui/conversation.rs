@@ -851,6 +851,86 @@ mod tests {
     }
 
     #[test]
+    fn terminal_turn_without_result_preserves_typed_reason_as_static_notice() {
+        for (reason, notice) in [
+            (
+                json!({"kind": "reducer_only", "reason": "handled by reducer"}),
+                "No canonical result: reducer-only (handled by reducer)",
+            ),
+            (
+                json!({"kind": "aborted"}),
+                "No canonical result: turn aborted",
+            ),
+            (
+                json!({"kind": "interrupted"}),
+                "No canonical result: turn interrupted",
+            ),
+            (
+                json!({"kind": "tool_only_wait"}),
+                "No canonical result: tool-only wait",
+            ),
+        ] {
+            let mut model = model();
+            model.activities.insert("active".into(), vec![activity()]);
+            let mut terminal = turn(
+                "active",
+                2,
+                2,
+                json!({"kind": "terminal", "outcome": "completed"}),
+                vec![],
+            );
+            terminal.result =
+                serde_json::from_value(json!({"kind": "none", "reason": reason})).unwrap();
+            model.upsert_turn(terminal);
+            assert!(model.activities.is_empty());
+            assert!(model.briefs.is_empty());
+            let app = app(model);
+            assert_eq!(bodies(&app), ["operator prompt", notice]);
+            assert!(collect_chat_items(&app)
+                .iter()
+                .all(|cell| !matches!(cell, ConversationCell::ActiveActivity { .. })));
+        }
+    }
+
+    #[test]
+    fn completed_available_result_only_shows_brief_fetch_status_until_hydrated() {
+        let mut model = model();
+        model.upsert_turn(turn(
+            "active",
+            2,
+            2,
+            json!({"kind": "terminal", "outcome": "completed"}),
+            vec!["brief"],
+        ));
+        assert_eq!(
+            bodies(&app(model.clone())),
+            ["operator prompt", "Loading canonical result…"]
+        );
+        model
+            .brief_errors
+            .insert("brief".into(), "temporary failure".into());
+        assert_eq!(
+            bodies(&app(model.clone())),
+            ["operator prompt", "Canonical result unavailable; retrying"]
+        );
+        model.briefs.insert(
+            "brief".into(),
+            serde_json::from_value(json!({
+                "id": "brief", "agent_id": "default", "kind": "result",
+                "created_at": "2026-01-01T00:00:01Z", "text": "canonical result",
+                "attachments": null, "related_message_id": null, "related_task_id": null
+            }))
+            .unwrap(),
+        );
+        model.brief_errors.remove("brief");
+        let app = app(model);
+        assert_eq!(bodies(&app), ["operator prompt", "canonical result"]);
+        assert!(collect_chat_items(&app)
+            .iter()
+            .all(|cell| !matches!(cell, ConversationCell::ActiveActivity { .. })));
+    }
+
+    #[test]
     fn pending_inputs_follow_queue_time_and_preserve_assignment_state() {
         let mut model = model();
         for (id, timestamp, state) in [

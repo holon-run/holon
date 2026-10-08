@@ -17,7 +17,7 @@ pub(super) struct LocalCommandOutput {
 fn canonical_conversation_cells(
     model: &super::conversation::ConversationModel,
 ) -> Vec<ConversationCell> {
-    use crate::domain::conversation::{ExecutionState, ResultState};
+    use crate::domain::conversation::{ExecutionState, NoBriefReason, ResultState};
     let mut cells = Vec::new();
     let mut turns: Vec<_> = model.turns.values().collect();
     turns.sort_by(|a, b| a.key.cmp(&b.key));
@@ -102,6 +102,16 @@ fn canonical_conversation_cells(
                 (ResultState::Pending, crate::domain::conversation::TerminalOutcome::Completed) => {
                     Some("Awaiting canonical result".to_owned())
                 }
+                (ResultState::None { reason }, _) => Some(match reason {
+                    NoBriefReason::ReducerOnly { reason } => {
+                        format!("No canonical result: reducer-only ({reason})")
+                    }
+                    NoBriefReason::Aborted => "No canonical result: turn aborted".to_owned(),
+                    NoBriefReason::Interrupted => {
+                        "No canonical result: turn interrupted".to_owned()
+                    }
+                    NoBriefReason::ToolOnlyWait => "No canonical result: tool-only wait".to_owned(),
+                }),
                 (_, crate::domain::conversation::TerminalOutcome::Completed) => None,
                 _ => Some(format!("Turn ended: {outcome:?}")),
             };
