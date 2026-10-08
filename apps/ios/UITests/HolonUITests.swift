@@ -819,13 +819,18 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["2/2"].waitForExistence(timeout: 10))
         capture(app, "native-pdf-second-page")
         app.buttons["files.options"].tap(); app.buttons["Export a copy"].tap()
-        let exportPicker = app.navigationBars.buttons["Cancel"].firstMatch
-        XCTAssertTrue(exportPicker.waitForExistence(timeout: 15), "Export opens the native destination picker")
+        let exportName = app.textFields["DOCPicker.filenameTextField"]
+        XCTAssertTrue(exportName.waitForExistence(timeout: 15), "Export opens the native destination picker")
+        XCTAssertEqual(exportName.value as? String, "report")
+        let save = app.buttons["Save"].firstMatch
+        XCTAssertTrue(save.isHittable); XCTAssertTrue(save.isEnabled)
         let exportHierarchy = XCTAttachment(string: app.debugDescription)
         exportHierarchy.name = "native-export-picker-hierarchy"; exportHierarchy.lifetime = .keepAlways
         add(exportHierarchy)
         capture(app, "native-file-export-destination")
-        exportPicker.tap()
+        save.tap()
+        XCTAssertTrue(app.staticTexts["Copy saved."].waitForExistence(timeout: 15),
+                      "Native save must finish successfully, not only open a picker")
         XCTAssertTrue(app.buttons["files.options"].waitForExistence(timeout: 10))
         app.buttons["files.options"].tap(); app.buttons["Share a copy"].tap()
         XCTAssertTrue(app.otherElements["ActivityListView"].waitForExistence(timeout: 10), "Share hands the original file to the native system sheet")
