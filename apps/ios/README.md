@@ -4,12 +4,14 @@ Native SwiftUI remote client, targeting iOS 18+ on iPhone and iPad. This directo
 contains first-connection onboarding, camera QR scanning, connection profiles,
 token/session login, offline invitation preview and confirmed redemption,
 native organization login, and scoped Keychain recovery.
-The Agents tab provides foreground conversation reading, history, briefs and
-on-demand execution details, with identity-partitioned offline caching.
-Its conversation editor includes persistent drafts, local attachment staging,
-model selection, an explicit current-run stop and a durable sending queue.
-The three tabs are Agents, Work and Settings. Files, sharing, connections and
-diagnostics remain available through Settings and work-artifact previews.
+The searchable Agent home provides recent activity, reply/result filters and
+identity-partitioned offline caching, without global bottom tabs. Conversations
+show operator input and full Markdown briefs, with structured execution activity
+available by turn. The inline composer includes persistent drafts, local
+attachment staging, model selection, an explicit current-run stop and a durable
+sending queue. Work, tasks and files belong to the selected Agent and are opened
+from its conversation actions. Settings, sharing, connections and diagnostics
+remain secondary destinations.
 Internal TestFlight delivery does not establish physical-device or App Store
 acceptance: see [release preparation](RELEASE.md) for the remaining gates.
 
@@ -44,6 +46,18 @@ acceptance: see [release preparation](RELEASE.md) for the remaining gates.
    outcomes are not proof of failure: use the same-request retry rather than
    composing a duplicate. Stopping an observed run is separate from deleting
    a local queued request and does not retract already accepted server work.
+   Use the conversation actions to browse its Work, running tasks and files.
+   Work results render briefs directly; full plans open in the same file reader.
+   Earlier turns and execution activity have explicit paging controls. Returning
+   to latest is deliberate when you are reading historical content.
+   The file reader supports complete UTF-8 within its bounded download budget,
+   literal search, code highlighting, image zoom and passive PDF page previews.
+   Large Markdown is shown as paged source rather than an unbounded rich-text
+   document. Unsupported formats offer original-copy download/share. File and
+   relative Markdown links are resolved by the daemon with their authorized
+   execution root; host paths are never interpreted as device paths.
+   Photos, camera captures and document picks are staged in the current draft;
+   capturing/selecting alone does not send them. Only **Send** uploads input.
 5. In the iOS share sheet choose Holon. The extension stages input locally;
    it does not send to a daemon. Open **Settings → Share inbox**, reload,
    inspect the preview and select the target agent before confirming queueing.
