@@ -173,12 +173,14 @@ final class ReadingCoordinator {
     }
 
     @discardableResult
-    private func launch(_ body: @escaping @MainActor (Int) async -> Void) -> Task<Void, Never> {
+    private func launch(onFinish: (@MainActor (Int) -> Void)? = nil,
+                        _ body: @escaping @MainActor (Int) async -> Void) -> Task<Void, Never> {
         let id = UUID(), token = revision
         let task = Task { [weak self] in
-            guard let self, self.current(token) else { return }
+            guard let self else { return }
+            defer { self.tasks.removeValue(forKey: id); onFinish?(token) }
+            guard self.current(token) else { return }
             await body(token)
-            self.tasks.removeValue(forKey: id)
         }
         tasks[id] = task
         return task
@@ -487,13 +489,11 @@ final class ReadingCoordinator {
         let page = activities[turnID], epoch = snapshot?.eventLogEpoch, cacheRevision = activityCacheRevision
         expansionCount += 1; expanding.insert(key); loadingActivities.insert(activityID)
         failedActivities.remove(activityID)
-        let task = launch { [weak self] token in
+        let task = launch(onFinish: { [weak self] token in
+            guard let self, token == self.revision else { return }
+            self.expansionCount -= 1; self.expanding.remove(key); self.loadingActivities.remove(activityID)
+        }) { [weak self] token in
             guard let self else { return }
-            defer {
-                if self.current(token) {
-                    self.expansionCount -= 1; self.expanding.remove(key); self.loadingActivities.remove(activityID)
-                }
-            }
             do {
                 let detail = try await transport.activityDetail(agentID: agent, turnID: turnID, activity: activity)
                 guard self.current(token), self.snapshot?.eventLogEpoch == epoch,
@@ -541,15 +541,12 @@ final class ReadingCoordinator {
         let liveCursor = snapshot?.snapshotCursor
         let epoch = snapshot?.eventLogEpoch
         let previous = activities[id]
-        let task = launch { [weak self] token in
+        let task = launch(onFinish: { [weak self] token in
+            guard let self, token == self.revision else { return }
+            self.expansionCount -= 1; self.expanding.remove(key)
+            if !brief { self.loadingActivities.remove(id) }
+        }) { [weak self] token in
             guard let self else { return }
-            defer {
-                if self.current(token) {
-                    self.expansionCount -= 1
-                    self.expanding.remove(key)
-                    if !brief { self.loadingActivities.remove(id) }
-                }
-            }
             do {
                 let value = try await (brief ? transport.brief(agentID: agentID, briefID: id) :
                     transport.activities(agentID: agentID, turnID: id, before: before))

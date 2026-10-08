@@ -601,6 +601,38 @@ final class ReadingCoordinatorTests: XCTestCase {
         coordinator.disconnect()
     }
 
+    func testCancelledHeldDetailAndPageReleaseSharedExpansionSlots() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.enablePagedActivities()
+        await coordinator.loadActivities("turn")
+        await fake.setGate(.expansions)
+        let detail = Task { await coordinator.loadActivityDetail(turnID: "turn", activityID: "tool:60") }
+        let page = Task { await coordinator.loadOlderActivities("turn") }
+        try await wait { await fake.expansionCalls == 3 }
+        detail.cancel(); page.cancel()
+        await fake.releaseExpansions()
+        await detail.value; await page.value
+        XCTAssertTrue(coordinator.loadingActivities.isEmpty)
+        XCTAssertNil(coordinator.activityDetails["tool:60"])
+        await coordinator.loadBrief("brief")
+        XCTAssertNotNil(coordinator.briefs["brief"], "Cancelled requests must not exhaust the shared budget")
+        coordinator.disconnect()
+    }
+
+    func testExpansionCancelledBeforeChildStartsReleasesReservation() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.enablePagedActivities()
+        await coordinator.loadActivities("turn")
+        let detail = Task { await coordinator.loadActivityDetail(turnID: "turn", activityID: "tool:60") }
+        let page = Task { await coordinator.loadOlderActivities("turn") }
+        detail.cancel(); page.cancel()
+        await detail.value; await page.value
+        XCTAssertTrue(coordinator.loadingActivities.isEmpty)
+        await coordinator.loadBrief("brief")
+        XCTAssertNotNil(coordinator.briefs["brief"])
+        coordinator.disconnect()
+    }
+
     func testLateOlderActivityResponseCannotWriteIntoAnotherAgent() async throws {
         let (coordinator, fake, _) = try await start()
         await fake.enablePagedActivities()

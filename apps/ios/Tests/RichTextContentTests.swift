@@ -51,6 +51,14 @@ final class RichTextContentTests: XCTestCase {
         XCTAssertEqual(literal.runs.compactMap(\.link).map(\.absoluteString), ["workspace://w/a.?root=r.", "workspace://w/b.?root=r."])
     }
 
+    func testCheckboxOnlyChangesAListItemPrefixNotBoldOrInlineCodeText() throws {
+        let content = try HolonMarkdownParser().attributedString(for: "- Ordinary **[x] literal** remains.\n- `[x] code` remains.\n- [ ] **Real** task\n- [x] Done")
+        let text = String(content.characters)
+        XCTAssertTrue(text.contains("Ordinary [x] literal remains."))
+        XCTAssertTrue(text.contains("[x] code remains."))
+        XCTAssertTrue(text.contains("☐ Real task")); XCTAssertTrue(text.contains("☑ Done"))
+    }
+
     func testUnsafeSchemesCredentialsAndNonlocalFileHostsFailClosed() {
         for link in ["javascript:alert(1)", "data:text/html,test", "file://remote/tmp/a", "file:///tmp/a?secret=x",
                      "https://user:password@example.com", "holon-path:///a?query=1", "./relative.md"] {

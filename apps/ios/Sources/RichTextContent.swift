@@ -82,15 +82,16 @@ struct HolonMarkdownParser: MarkupParser {
             }
         }
         // Foundation retains GFM task markers as text. Change only native list-item prefixes.
+        var seenListItems: Set<Int> = []
         let taskMarkers = content.runs.compactMap { run -> (Int, Bool)? in
-            let listItem = run.presentationIntent?.components.contains {
+            guard let item = run.presentationIntent?.components.first(where: {
                 if case .listItem = $0.kind { return true }; return false
-            } == true
+            }), seenListItems.insert(item.identity).inserted else { return nil }
             let code = run.presentationIntent?.components.contains {
                 if case .codeBlock = $0.kind { return true }; return false
             } == true || run.inlinePresentationIntent?.contains(.code) == true
             let value = String(content[run.range].characters)
-            guard listItem, !code, value.hasPrefix("[x] ") || value.hasPrefix("[X] ") || value.hasPrefix("[ ] ") else { return nil }
+            guard !code, value.hasPrefix("[x] ") || value.hasPrefix("[X] ") || value.hasPrefix("[ ] ") else { return nil }
             return (content.characters.distance(from: content.startIndex, to: run.range.lowerBound), !value.hasPrefix("[ ] "))
         }
         for (offset, checked) in taskMarkers.reversed() {
