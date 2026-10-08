@@ -120,6 +120,7 @@ struct ConversationReadingView: View {
     @State private var visibleTurnIDs: [String] = []
     @State private var userScrolling = false
     @State private var scrollRequest: ScrollRequest?
+    @State private var scrollPosition = ScrollPosition(idType: String.self)
 
     private var turnIDs: [String] { turns.map(\.id) }
     private var turnRange: Range<Int> { ConversationTurnWindow.range(ids: turnIDs, endingAt: historyEndTurnID) }
@@ -146,7 +147,6 @@ struct ConversationReadingView: View {
 
     var body: some View {
         GeometryReader { geometry in
-        ScrollViewReader { scroll in
         ScrollView {
             // The explicit turn window is bounded to20. Use its actual heights:
             // lazy offscreen estimates can loop while scrolling rich results.
@@ -210,6 +210,7 @@ struct ConversationReadingView: View {
             .padding(.vertical, 16)
             .scrollTargetLayout()
         }
+        .scrollPosition($scrollPosition)
         .defaultScrollAnchor(.bottom, for: .initialOffset)
         .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.1) { ids in
             visibleTurnIDs = ids
@@ -242,13 +243,12 @@ struct ConversationReadingView: View {
         }
         .task(id: scrollRequest) {
             guard let request = scrollRequest else { return }
-            // Wait for the new ForEach window to commit before resolving its IDs.
-            await Task.yield()
-            guard !Task.isCancelled, scrollRequest == request else { return }
+            // Keep the ID/edge as native position state so the new window's
+            // committed layout resolves it, rather than a one-shot proxy read.
             switch request {
             case .top(let id):
-                if visibleTurns.contains(where: { $0.id == id }) { scroll.scrollTo(id, anchor: .top) }
-            case .latest: scroll.scrollTo("conversation-tail", anchor: .bottom)
+                if visibleTurns.contains(where: { $0.id == id }) { scrollPosition.scrollTo(id: id, anchor: .top) }
+            case .latest: scrollPosition.scrollTo(edge: .bottom)
             }
             scrollRequest = nil
         }
@@ -313,7 +313,6 @@ struct ConversationReadingView: View {
             Button("reading.cancel", role: .cancel) { readThroughToConfirm = nil }
         } message: {
             Text("reading.cumulativeReadNotice")
-        }
         }
         }
     }

@@ -47,6 +47,8 @@ Opening older/newer windows explicitly suspends tail following, including when
 the newer window reaches the latest turn. Brief hydration must not override
 that top-of-window request using the previous viewport's near-bottom value.
 Following resumes only through Latest or a user scroll ending at the live tail.
+ID/edge navigation uses native bound ScrollPosition, not a one-shot proxy call
+before the replacement window's layout has committed.
 
 Long source files use explicit16KiB disk pages, not a lazy stack with estimated
 offscreen text heights. Previous/next, literal search and End remain available;
