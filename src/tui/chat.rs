@@ -14,6 +14,230 @@ pub(super) struct LocalCommandOutput {
     pub(super) is_error: bool,
 }
 
+fn canonical_conversation_cells(
+    model: &super::conversation::ConversationModel,
+) -> Vec<ConversationCell> {
+    use crate::domain::conversation::{ExecutionState, ResultState};
+    let mut cells = Vec::new();
+    let mut turns: Vec<_> = model.turns.values().collect();
+    turns.sort_by(|a, b| a.key.cmp(&b.key));
+    for turn in turns {
+        for input in &turn.inputs {
+            if input.presentation_class.unwrap_or(turn.presentation_class)
+                == crate::domain::conversation::PresentationClass::Operator
+            {
+                cells.push(ConversationCell::UserMessage {
+                    created_at: turn.started_at,
+                    body: conversation_input_text(&input.preview),
+                    status: None,
+                });
+            } else {
+                cells.push(canonical_notice(
+                    turn.started_at,
+                    format!(
+                        "{:?}",
+                        input.presentation_class.unwrap_or(turn.presentation_class)
+                    )
+                    .to_lowercase(),
+                    conversation_input_text(&input.preview),
+                ));
+            }
+        }
+        if matches!(turn.execution, ExecutionState::Active) {
+            cells.push(ConversationCell::ActiveActivity {
+                created_at: turn.started_at,
+                speaker: "assistant".into(),
+                body: "Working…".into(),
+            });
+            if let Some(activities) = model.activities.get(&turn.turn_id) {
+                for activity in activities {
+                    // Inputs already appear above, not twice in the active details.
+                    if matches!(
+                        activity,
+                        crate::domain::conversation::ConversationActivity::Operator(_)
+                    ) {
+                        continue;
+                    }
+                    let body = conversation_activity_text(activity);
+                    if body.trim().is_empty() {
+                        continue;
+                    }
+                    cells.push(ConversationCell::ActiveActivity {
+                        created_at: turn.started_at,
+                        speaker: match activity {
+                            crate::domain::conversation::ConversationActivity::Tool(_) => "tool",
+                            crate::domain::conversation::ConversationActivity::Error(_) => "error",
+                            _ => "assistant",
+                        }
+                        .into(),
+                        body,
+                    });
+                }
+            }
+        }
+        for id in &turn.brief_ids {
+            if let Some(brief) = model.briefs.get(id) {
+                cells.push(canonical_notice(
+                    brief.created_at,
+                    "Holon".into(),
+                    brief.text.clone(),
+                ));
+            } else {
+                cells.push(canonical_notice(
+                    turn.completed_at.unwrap_or(turn.started_at),
+                    "system".into(),
+                    if model.brief_errors.contains_key(id) {
+                        "Canonical result unavailable; retrying".into()
+                    } else {
+                        "Loading canonical result…".into()
+                    },
+                ));
+            }
+        }
+        if let ExecutionState::Terminal { outcome } = &turn.execution {
+            let notice = match (&turn.result, outcome) {
+                (ResultState::Unavailable { .. }, _) => {
+                    Some("Canonical result unavailable".to_owned())
+                }
+                (ResultState::Pending, crate::domain::conversation::TerminalOutcome::Completed) => {
+                    Some("Awaiting canonical result".to_owned())
+                }
+                (_, crate::domain::conversation::TerminalOutcome::Completed) => None,
+                _ => Some(format!("Turn ended: {outcome:?}")),
+            };
+            if let Some(body) = notice {
+                cells.push(canonical_notice(
+                    turn.completed_at.unwrap_or(turn.started_at),
+                    "system".into(),
+                    body,
+                ));
+            }
+        }
+    }
+    let mut pending: Vec<_> = model.inputs.values().collect();
+    pending.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.message_id.cmp(&b.message_id))
+    });
+    for input in pending {
+        let created_at = input.created_at.parse().unwrap_or_default();
+        let assigning = input.state == crate::domain::conversation::PendingInputState::Assigning;
+        if input.presentation_class == crate::domain::conversation::PresentationClass::Operator {
+            cells.push(ConversationCell::UserMessage {
+                created_at,
+                body: conversation_input_text(&input.preview),
+                status: Some(if assigning {
+                    OperatorMessageStatus::Processing
+                } else {
+                    OperatorMessageStatus::Queued
+                }),
+            });
+        } else {
+            cells.push(canonical_notice(
+                created_at,
+                format!("{:?}", input.presentation_class).to_lowercase(),
+                format!(
+                    "{}: {}",
+                    if assigning { "Assigning" } else { "Queued" },
+                    conversation_input_text(&input.preview)
+                ),
+            ));
+        }
+    }
+    cells
+}
+
+fn canonical_notice(
+    created_at: DateTime<chrono::Utc>,
+    speaker: String,
+    body: String,
+) -> ConversationCell {
+    ConversationCell::SystemNotice {
+        created_at,
+        event_seq: 0,
+        speaker,
+        body,
+        display_kind: ConversationDisplayKind::Narrative,
+        group_id: None,
+        header_hint: None,
+    }
+}
+
+fn conversation_input_text(preview: &str) -> String {
+    if let Some(text) = serde_json::from_str::<MessageBody>(preview)
+        .ok()
+        .and_then(|body| render_operator_message_body(&body))
+    {
+        return text;
+    }
+    // The canonical preview may end inside a JSON escape after byte truncation.
+    if let Some(encoded) = preview.strip_prefix("{\"type\":\"text\",\"text\":\"") {
+        let boundaries: Vec<_> = encoded
+            .char_indices()
+            .map(|(index, _)| index)
+            .chain(std::iter::once(encoded.len()))
+            .rev()
+            .take(7)
+            .collect();
+        for end in boundaries {
+            if let Ok(text) = serde_json::from_str::<String>(&format!("\"{}\"", &encoded[..end])) {
+                return format!("{text}…");
+            }
+        }
+    }
+    preview.to_owned()
+}
+
+fn conversation_activity_text(
+    activity: &crate::domain::conversation::ConversationActivity,
+) -> String {
+    let summary = &super::conversation::activity_item(activity).summary;
+    if !matches!(
+        activity,
+        crate::domain::conversation::ConversationActivity::Assistant(_)
+    ) {
+        return summary.clone();
+    }
+    let Some(object) = summary.trim_start().strip_prefix('{') else {
+        return summary.clone();
+    };
+    let provider_envelope = [
+        "blocks",
+        "role",
+        "type",
+        "data",
+        "active_model",
+        "checkpoint",
+        "signature",
+        "thinking",
+    ]
+    .iter()
+    .any(|key| {
+        object
+            .trim_start()
+            .strip_prefix(format!("\"{key}\"").as_str())
+            .is_some_and(|tail| tail.trim_start().starts_with(':'))
+    });
+    if !provider_envelope {
+        return summary.clone();
+    }
+    // Older daemons return transcript envelopes; only visible text is displayable.
+    serde_json::from_str::<Value>(summary)
+        .ok()
+        .and_then(|value| {
+            value.get("blocks")?.as_array().map(|blocks| {
+                blocks
+                    .iter()
+                    .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+                    .filter_map(|block| block.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            })
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ChatScrollState {
     follow_tail: bool,
@@ -153,6 +377,48 @@ pub(super) struct CachedChatText {
 }
 
 pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
+    if let Some(model) = &app.conversation {
+        let mut cells = canonical_conversation_cells(model);
+        let represented: std::collections::BTreeSet<_> = model
+            .inputs
+            .keys()
+            .chain(
+                model
+                    .turns
+                    .values()
+                    .flat_map(|turn| turn.inputs.iter().map(|input| &input.message_id)),
+            )
+            .collect();
+        for message in &app.optimistic_operator_messages {
+            if message.agent_id == model.agent_id && !represented.contains(&message.message_id) {
+                cells.push(ConversationCell::UserMessage {
+                    created_at: message.created_at,
+                    body: render_operator_message_body(&message.body).unwrap_or_default(),
+                    status: Some(message.status.clone()),
+                });
+            }
+        }
+        for output in &app.local_command_outputs {
+            cells.push(ConversationCell::SystemNotice {
+                created_at: output.created_at,
+                event_seq: 0,
+                speaker: if output.is_error {
+                    "command error"
+                } else {
+                    "command"
+                }
+                .into(),
+                body: output.body.clone(),
+                display_kind: ConversationDisplayKind::Narrative,
+                group_id: None,
+                header_hint: Some(output.title.clone()),
+            });
+        }
+        return cells;
+    }
+    if app.conversation_task.is_some() {
+        return Vec::new();
+    }
     let mut cells = Vec::new();
     let mut durable_operator_message_bodies = std::collections::BTreeMap::new();
     let mut projected_cell_keys = std::collections::BTreeSet::new();
@@ -186,10 +452,10 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
             );
         }
 
-        let level = app.display_mode.display_level();
+        let level = OperatorDisplayMode::Info.display_level();
         let agent_speaker = selected_agent_id.unwrap_or("agent");
         let events: Vec<ProjectionEventRecord> = projection
-            .presentation_events(app.display_mode)
+            .presentation_events(OperatorDisplayMode::Info)
             .into_iter()
             .filter(is_presentation_reducer_event)
             .collect();
@@ -858,9 +1124,11 @@ fn active_activity_item(
         return None;
     }
 
-    let hidden_events = if app.display_mode == crate::operator_event::OperatorDisplayMode::Info {
+    let hidden_events = if OperatorDisplayMode::Info
+        == crate::operator_event::OperatorDisplayMode::Info
+    {
         projection
-            .map(|projection| projection.live_working_activity_events(app.display_mode))
+            .map(|projection| projection.live_working_activity_events(OperatorDisplayMode::Info))
             .unwrap_or_default()
     } else {
         Vec::new()

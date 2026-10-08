@@ -412,6 +412,21 @@ impl LocalClient {
         self.get_json("/agents/list").await
     }
 
+    pub(crate) async fn public_agent_roster(&self) -> Result<Vec<AgentListEntry>> {
+        let snapshot: crate::http::observer_sync::AgentRosterSnapshot =
+            self.get_json("/agents/snapshot").await?;
+        anyhow::ensure!(
+            snapshot.contract_version == 1,
+            "unsupported public roster contract version: {}",
+            snapshot.contract_version
+        );
+        Ok(snapshot
+            .agents
+            .into_iter()
+            .map(|entry| entry.agent)
+            .collect())
+    }
+
     pub async fn list_agent_entries_for_parent(
         &self,
         parent_agent_id: &str,
@@ -1048,12 +1063,23 @@ impl LocalClient {
         request: EventStreamRequest,
     ) -> Result<LocalEventStream> {
         let path = event_stream_path(agent_id, &request)?;
+        self.open_read_stream(&path, true).await
+    }
 
+    pub async fn stream_read_path(&self, path: &str) -> Result<LocalEventStream> {
+        self.open_read_stream(&api_path(path), false).await
+    }
+
+    async fn open_read_stream(
+        &self,
+        path: &str,
+        runtime_contract: bool,
+    ) -> Result<LocalEventStream> {
         #[cfg(unix)]
         if self.remote.is_none() && self.config.socket_path.exists() {
             let stream = match tokio::time::timeout(
                 self.network.connect_timeout,
-                self.stream_unix_events(&path, false),
+                self.stream_unix_events(path, false, runtime_contract),
             )
             .await
             {
@@ -1069,7 +1095,8 @@ impl LocalClient {
             });
         }
 
-        self.stream_http_events(&path, self.remote.is_some()).await
+        self.stream_http_events(path, self.remote.is_some(), runtime_contract)
+            .await
     }
 
     pub async fn agent_events_page(
@@ -1196,6 +1223,7 @@ impl LocalClient {
         &self,
         path: &str,
         include_control_auth: bool,
+        runtime_contract: bool,
     ) -> Result<LocalEventStream> {
         let request = RequestSpec::get(path);
         let builder = self
@@ -1212,7 +1240,11 @@ impl LocalClient {
             unreachable!("decode_or_error returns Ok only for successful responses");
         }
         Ok(LocalEventStream {
-            contract_version: event_contract_version_from_headers(response.headers())?,
+            contract_version: if runtime_contract {
+                event_contract_version_from_headers(response.headers())?
+            } else {
+                0
+            },
             transport: EventStreamTransport::Http(response),
             frame_buffer: Vec::new(),
             idle_timeout: self.network.stream_idle_timeout,
@@ -1323,6 +1355,7 @@ impl LocalClient {
         &self,
         path: &str,
         include_control_auth: bool,
+        runtime_contract: bool,
     ) -> Result<UnixEventStream> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::UnixStream;
@@ -1363,7 +1396,7 @@ impl LocalClient {
         stream.write_all(raw.as_bytes()).await?;
         stream.flush().await?;
 
-        let mut response = read_unix_response_head(&mut stream)
+        let mut response = read_unix_response_head(&mut stream, runtime_contract)
             .await
             .with_context(|| format!("failed to parse unix-socket response for {path}"))?;
         if !(200..300).contains(&response.status_code) {
@@ -1478,6 +1511,28 @@ enum HttpMethod {
 }
 
 impl LocalEventStream {
+    /// Read projected SSE JSON without assuming a runtime-event envelope.
+    pub async fn next_json(&mut self) -> Result<Value> {
+        loop {
+            while let Some(frame) = take_next_sse_frame(&mut self.frame_buffer)? {
+                let data = std::str::from_utf8(&frame)?
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data:"))
+                    .map(str::trim_start)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !data.is_empty() {
+                    return serde_json::from_str(&data).context("invalid projected SSE JSON");
+                }
+            }
+            let chunk = tokio::time::timeout(self.idle_timeout, self.read_body_chunk())
+                .await
+                .context("projected stream idle timeout")??
+                .ok_or_else(|| anyhow!("projected stream ended"))?;
+            self.frame_buffer.extend_from_slice(&chunk);
+        }
+    }
+
     pub async fn next_event(&mut self) -> Result<AgentStreamEvent> {
         loop {
             while let Some(frame) = take_next_sse_frame(&mut self.frame_buffer)? {
@@ -1789,6 +1844,7 @@ fn parse_sse_frame(frame: &[u8], contract_version: u32) -> Result<Option<AgentSt
 #[cfg(unix)]
 async fn read_unix_response_head(
     stream: &mut tokio::net::UnixStream,
+    runtime_contract: bool,
 ) -> Result<ParsedHttpResponseHead> {
     use tokio::io::AsyncReadExt;
 
@@ -1841,12 +1897,16 @@ async fn read_unix_response_head(
     Ok(ParsedHttpResponseHead {
         status_code,
         chunked,
-        contract_version: validate_event_contract_version(contract_version.ok_or_else(|| {
-            anyhow!(
-                "event stream response is missing {}",
-                crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER
-            )
-        })?)?,
+        contract_version: if runtime_contract && (200..300).contains(&status_code) {
+            validate_event_contract_version(contract_version.ok_or_else(|| {
+                anyhow!(
+                    "event stream response is missing {}",
+                    crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER
+                )
+            })?)?
+        } else {
+            0
+        },
         body,
     })
 }

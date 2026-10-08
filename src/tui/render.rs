@@ -444,12 +444,6 @@ fn slash_argument_hint_lines(
 
     match spec.arg_hint {
         SlashArgHint::None => {}
-        SlashArgHint::Values(values) => {
-            lines.push(Line::from(vec![
-                Span::styled("  args: ", Style::default().add_modifier(Modifier::DIM)),
-                Span::raw(values.join("  ")),
-            ]));
-        }
         SlashArgHint::Agent => {
             lines.push(Line::from(vec![
                 Span::styled("  args: ", Style::default().add_modifier(Modifier::DIM)),

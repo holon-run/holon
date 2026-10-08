@@ -93,7 +93,6 @@ and `Enter` to select. Press `Esc` to dismiss.
 | `/clear-status` | Clear local status line |
 | `/onboard` | Configure the runtime default model through daemon config |
 | `/vim` | Toggle vim composer editing |
-| `/display <mode>` | Set or reset chat display mode (`info`, `verbose`, `debug`, `3`–`5`, or `reset`) |
 
 ### Skills Commands
 
@@ -138,17 +137,26 @@ holon config providers list
 holon config models list
 ```
 
-## Display Modes
+## Conversation
 
-Use `/display <mode>` to control how much internal detail appears in the chat
-view:
+The agent picker lists public agents, like the Web GUI. Private subagents are
+not fetched as part of the default roster.
 
-| Mode | What you see |
-|------|-------------|
-| `info` | User-facing responses only |
-| `verbose` | Includes tool calls and intermediate steps |
-| `debug` | Full internal traces, events, and diagnostics |
-| `3`–`5` | Numeric verbosity levels (3 = info, 4 = verbose, 5 = debug) |
+One conversation page combines operator inputs, Briefs, and the current turn's
+execution activity. While a turn is running, its details update live. Once the
+turn reaches a terminal state, those details disappear and the result Briefs
+remain. A Brief received before execution finishes does not hide active work.
+Turns without a Brief show a safe result/status notice instead of an invented
+response.
+
+Briefs and terminal status notices are static, not "Working" indicators.
+If execution finishes before result delivery, the page keeps an awaiting-result
+notice. Failed Brief reads retry with capped backoff even when the stream is
+otherwise idle.
+
+History loads turn summaries rather than verbose event history. Use `/events`
+for separate raw-event inspection. There is no `/display` command or verbosity
+level to select for the conversation.
 
 ## Remote Connection
 
@@ -201,13 +209,11 @@ target key to open the corresponding overlay:
 
 Press `Esc` to cancel the prefix and continue typing.
 
-## Persistent Display State
+## Previous Display Preferences
 
-The TUI remembers your last display mode and restores it on restart. Display
-mode is stored per agent under `~/.holon/state/tui/` in `local.json` (or
-`remote-<hash>.json` for remote connections), so each agent maintains its own
-preference. This applies to the chat display mode (info, verbose, debug) set
-via `/display <mode>`.
+Older versions stored per-agent display modes under `~/.holon/state/tui/`.
+Those preferences are no longer used: conversation detail visibility follows
+the canonical turn lifecycle, not a saved display level.
 
 ## Troubleshooting
 
