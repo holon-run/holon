@@ -61,6 +61,7 @@ private actor ReadingFakeTransport: ReadingTransport {
     private var pagedActivities = false
     private var activityFailure = false
     private var briefFailure = false
+    private var briefEncodedSize: Int?
     private var activityRevision: Int64 = 1
     private var activityBody = "first"
     private var overlapOlderActivity = false
@@ -95,6 +96,7 @@ private actor ReadingFakeTransport: ReadingTransport {
     func overlapNextOlderActivityPage() { overlapOlderActivity = true }
     func failNextActivityPage() { activityFailure = true }
     func failNextBrief() { briefFailure = true }
+    func setBriefEncodedSize(_ size: Int) { briefEncodedSize = size }
     func replaceEpoch() { liveEpoch = "replacement"; liveCursor = "replacement-cursor" }
     func isBlocked() -> Bool { blocked != nil }
     func release() { blocked?.resume(); blocked = nil }
@@ -145,8 +147,14 @@ private actor ReadingFakeTransport: ReadingTransport {
     func brief(agentID: String, briefID: String) async throws -> JSONValue {
         _ = await expansion("id", id: briefID)
         if briefFailure { briefFailure = false; throw Failure.offline }
-        return .object(["id": .string(briefID), "agent_id": .string(agentID),
-                        "created_event_seq": .integer(5)])
+        var fields: [String: JSONValue] = ["id": .string(briefID), "agent_id": .string(agentID),
+                        "created_event_seq": .integer(5)]
+        if let briefEncodedSize {
+            fields["text"] = .string("")
+            let overhead = try JSONEncoder().encode(JSONValue.object(fields)).count
+            fields["text"] = .string(String(repeating: "a", count: max(0, briefEncodedSize - overhead)))
+        }
+        return .object(fields)
     }
     func activities(agentID: String, turnID: String) async throws -> JSONValue {
         try await activities(agentID: agentID, turnID: turnID, before: nil)
@@ -541,6 +549,19 @@ final class ReadingCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.failedBriefs.isEmpty)
         XCTAssertTrue(coordinator.loadingBriefs.isEmpty)
         coordinator.disconnect()
+    }
+
+    func testBriefSizeBoundaryEndsLoadingWithExplicitFailureAboveLimit() async throws {
+        for bytes in [262_144, 262_145] {
+            let (coordinator, fake, _) = try await start()
+            await fake.setBriefEncodedSize(bytes)
+            await coordinator.loadBrief("brief")
+            XCTAssertTrue(coordinator.loadingBriefs.isEmpty)
+            XCTAssertEqual(coordinator.status, .live)
+            XCTAssertEqual(coordinator.briefs["brief"] != nil, bytes == 262_144)
+            XCTAssertEqual(coordinator.failedBriefs.contains("brief"), bytes > 262_144)
+            coordinator.disconnect()
+        }
     }
 
     func testActivityPagesMergeInStableOrderAndKeepCursorOutOfLiveResume() async throws {

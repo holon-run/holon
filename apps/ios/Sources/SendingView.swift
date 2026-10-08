@@ -178,11 +178,13 @@ struct SendingView: View {
     }
 
     private func selectPhoto() {
+        cameraErrorKey = nil; importError = nil
         photoContext = sender.attachmentImportContext
         photoImportID = nil
         showPhotos = photoContext != nil
     }
     private func selectFile() {
+        cameraErrorKey = nil; importError = nil
         fileContext = sender.attachmentImportContext
         showFiles = fileContext != nil
     }

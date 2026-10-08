@@ -22,6 +22,7 @@ from ios_simulator_text_size import (
 binary, repo, mode = sys.argv[1:]
 rich_acceptance = os.environ.get("IOS_RICH_ACCEPTANCE") == "1"
 lost_response_acceptance = os.environ.get("IOS_LOST_RESPONSE_ACCEPTANCE") == "1"
+history_acceptance = os.environ.get("IOS_HISTORY_ACCEPTANCE") == "1"
 with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
     root = pathlib.Path(temporary)
     # Do not inherit provider credentials, production paths or daemon settings.
@@ -78,6 +79,8 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     f"![Explicit image only](http://127.0.0.1:{provider.server_port}/must-not-auto-load.png)")
             if tool_calls:
                 text = f"IOS_RICH_ASSISTANT: read-only inspection batch {FakeProvider.rich_batches}."
+            elif history_acceptance:
+                text = "IOS_POPULATED_BRIEF: History fixture result."
             finish_reason = "tool_calls" if tool_calls else "stop"
             if request.get("stream"):
                 chunks = [
@@ -142,10 +145,16 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
             if length > 32 * 1024 * 1024:
                 self.send_error(413); return
             body = self.rfile.read(length) if length else None
-            upstream = http.client.HTTPConnection("127.0.0.1", port, timeout=15)
+            # Native foreground SSE can be quiet between heartbeats. The proxy
+            # must not manufacture unrelated offline failures during acceptance.
+            upstream = http.client.HTTPConnection("127.0.0.1", port,
+                                                  timeout=90 if self.command == "GET" else 15)
             try:
                 headers = {key: value for key, value in self.headers.items()
                            if key.lower() not in ("host", "connection", "transfer-encoding")}
+                # Parse the actual receipt rather than URLSession's compressed
+                # wire representation. Other responses remain transparent.
+                headers["Accept-Encoding"] = "identity"
                 upstream.request(self.command, self.path, body=body, headers=headers)
                 response = upstream.getresponse()
                 is_lost_prompt = (self.command == "POST" and self.path.endswith("/prompt")
@@ -157,12 +166,16 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     receipt = json.loads(data)
                     with lost_lock:
                         lost_receipts.append((json.loads(body)["client_request_id"], receipt))
+                        attempt = len(lost_receipts)
+                    delivered = release_lost_response.is_set()
+                    print(f"Lost-response attempt {attempt}: {receipt.get('disposition')}, delivered={delivered}", flush=True)
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Connection", "close")
                     self.end_headers()
-                    if release_lost_response.is_set():
-                        self.wfile.write(data)
+                    if delivered:
+                        self.wfile.write(data); self.wfile.flush()
                     # Until the runner explicitly releases it, accept on the real
                     # daemon but deliberately close with a truncated response body.
                     self.close_connection = True
@@ -177,7 +190,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     if not data:
                         break
                     self.wfile.write(data); self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError, socket.timeout):
+            except (BrokenPipeError, ConnectionResetError, socket.timeout, http.client.IncompleteRead):
                 pass  # Native backgrounding closes its foreground SSE connection.
             finally:
                 upstream.close()
@@ -288,6 +301,18 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
             workspace_id = next(w["workspace_id"] for w in state["workspace"]["workspaces"]
                                 if w.get("kind") == "agent_home" or w.get("workspace_id", "").startswith("agent_home"))
             rich_turn = None
+            if history_acceptance:
+                for number in range(25):
+                    marker = f"IOS_HISTORY_{number:03}"
+                    local("POST", f"/agents/{agent}/enqueue", {"text": marker})
+                    for attempt in range(200):
+                        history = local("GET", f"/agents/{agent}/conversation")
+                        if any(marker in json.dumps(turn) and turn.get("brief_ids")
+                               for turn in history.get("turns", [])):
+                            break
+                        time.sleep(.1)
+                    else:
+                        raise RuntimeError("history fixture turn did not finish")
             if rich_acceptance:
                 # All rich data lives in this temporary daemon, never a production Agent.
                 for number in range(90):
@@ -393,6 +418,8 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     cases.append(("testRichFilesAndActivityWorkflow", "large"))
                 if lost_response_acceptance:
                     cases.append(("testLostResponseAndProcessRecovery", "large"))
+                if history_acceptance:
+                    cases.append(("testConversationHistoryWindowPosition", "large"))
                 selected_cases = os.environ.get("IOS_UI_CASES")
                 if selected_cases:
                     requested = selected_cases.split(",")
@@ -416,6 +443,14 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                                 # warm the build; issue only when redemption is about to run.
                                 ticket = local("POST", "/auth/pairing/issue")["ticket"]
                                 test_env["TEST_RUNNER_HOLON_UI_PAIRING_CODE"] = ticket
+                            if method == "testConversationHistoryWindowPosition":
+                                history = local("GET", f"/agents/{agent}/conversation")
+                                turns = sorted(history["turns"], key=lambda turn: turn["key"]["turn_index"])
+                                if len(turns) <= 20:
+                                    raise RuntimeError("native history acceptance needs more than one window")
+                                older_end = max(20, len(turns) - 15)
+                                test_env["TEST_RUNNER_HOLON_UI_HISTORY_OLDER_TOP"] = turns[older_end - 20]["turn_id"]
+                                test_env["TEST_RUNNER_HOLON_UI_HISTORY_NEWER_TOP"] = turns[len(turns) - 20]["turn_id"]
                             result = subprocess.run(["xcodebuild", "-project", repo + "/apps/ios/Holon.xcodeproj",
                                 "-scheme", "Holon", "-destination", destination,
                                 "-parallel-testing-enabled", "NO",

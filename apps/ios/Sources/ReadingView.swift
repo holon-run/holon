@@ -106,6 +106,7 @@ struct ReadingView: View {
 }
 
 struct ConversationReadingView: View {
+    private enum ScrollRequest: Hashable { case top(String), latest }
     @Bindable var reader: ReadingCoordinator
     let sender: SendingCoordinator?
     var openReference: (String) -> Void
@@ -117,6 +118,7 @@ struct ConversationReadingView: View {
     @State private var historyEndTurnID: String?
     @State private var visibleTurnIDs: [String] = []
     @State private var userScrolling = false
+    @State private var scrollRequest: ScrollRequest?
 
     private var turnIDs: [String] { turns.map(\.id) }
     private var turnRange: Range<Int> { ConversationTurnWindow.range(ids: turnIDs, endingAt: historyEndTurnID) }
@@ -165,7 +167,7 @@ struct ConversationReadingView: View {
                                     historyEndTurnID = turnIDs[min(turnIDs.count - 1, index + 4)]
                                 }
                             }
-                            scroll.scrollTo(visibleTurns.first?.id ?? "conversation-tail", anchor: .top)
+                            if let first = visibleTurns.first { scrollRequest = .top(first.id) }
                         }
                     }
                         .disabled(reader.isLoadingHistory)
@@ -186,7 +188,7 @@ struct ConversationReadingView: View {
                 if turnRange.upperBound < turns.count {
                     Button("reading.newerTurns") {
                         historyEndTurnID = ConversationTurnWindow.newerEnd(ids: turnIDs, current: turnRange)
-                        scroll.scrollTo(visibleTurns.first?.id ?? "conversation-tail", anchor: .top)
+                        if let first = visibleTurns.first { scrollRequest = .top(first.id) }
                     }.accessibilityIdentifier("conversation.newer")
                 }
                 ForEach(reader.snapshot?.raw["pending_inputs"].viewArray ?? [], id: \.viewMessageID) { input in
@@ -228,20 +230,32 @@ struct ConversationReadingView: View {
             initializedAgent = agent
             if let saved = reader.readingPosition {
                 historyEndTurnID = ConversationTurnWindow.restoringEnd(ids: turnIDs, turnID: saved)
-                scroll.scrollTo(saved, anchor: .top)
-            } else { historyEndTurnID = nil; scroll.scrollTo("conversation-tail", anchor: .bottom) }
+                scrollRequest = .top(saved)
+            } else { historyEndTurnID = nil; scrollRequest = .latest }
+        }
+        .task(id: scrollRequest) {
+            guard let request = scrollRequest else { return }
+            // Wait for the new ForEach window to commit before resolving its IDs.
+            await Task.yield()
+            guard !Task.isCancelled, scrollRequest == request else { return }
+            switch request {
+            case .top(let id):
+                if visibleTurns.contains(where: { $0.id == id }) { scroll.scrollTo(id, anchor: .top) }
+            case .latest: scroll.scrollTo("conversation-tail", anchor: .bottom)
+            }
+            scrollRequest = nil
         }
         .onChange(of: latestContentKey) { _, _ in
-            if nearBottom, historyEndTurnID == nil { scroll.scrollTo("conversation-tail", anchor: .bottom) }
+            if nearBottom, historyEndTurnID == nil { scrollRequest = .latest }
             else { newContent = true }
         }
         .onChange(of: reader.snapshot?.eventLogEpoch) { old, new in
-            if old != nil, old != new { historyEndTurnID = nil }
+            if old != nil, old != new { historyEndTurnID = nil; scrollRequest = .latest }
         }
         .overlay(alignment: .bottomTrailing) {
             if !nearBottom || historyEndTurnID != nil {
                 Button {
-                    historyEndTurnID = nil; scroll.scrollTo("conversation-tail", anchor: .bottom); newContent = false
+                    historyEndTurnID = nil; scrollRequest = .latest; newContent = false
                     if let latest = turnIDs.last { reader.rememberPosition(turnID: latest) }
                 } label: {
                     Label(newContent ? "reading.newContent" : "reading.latest", systemImage: "arrow.down")
@@ -330,6 +344,7 @@ private struct ReadingTurnView: View {
             HStack {
                 if let date = turn.raw["started_at"].viewString.flatMap(ReadingPresentation.date) {
                     Text(date, format: .dateTime.month(.abbreviated).day().hour().minute())
+                        .accessibilityIdentifier("conversation.time." + turn.id)
                 }
                 Spacer()
                 if let status = ReadingPresentation.turnStatus(turn.raw) { Text(LocalizedStringKey(status)) }
@@ -407,7 +422,7 @@ private struct ReadingBriefView: View {
                     Button("work.details", systemImage: "checklist") { openWork?(workID) }.font(.caption)
                         .disabled(openWork == nil)
                 }
-            } else if reader.status == .live, !reader.failedBriefs.contains(briefID) {
+            } else if reader.loadingBriefs.contains(briefID) {
                 ProgressView("work.loading").font(.caption)
             } else {
                 Text("reading.detailUnavailable")

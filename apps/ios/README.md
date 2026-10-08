@@ -117,7 +117,7 @@ falling back to a private path.
 
 `ios-ci` also runs the full UI gate. Set `IOS_SIMULATOR_ID` to a dedicated fresh
 simulator: removing the app does not guarantee removal of its saved Keychain
-session. UI verification covers first connection, exactly three tabs, files,
+session. UI verification covers first connection, native Agent navigation, files,
 diagnostics and accessibility. The diagnostic font-size test changes and reads
 back the real simulator system preference without restarting Holon; it does not
 test navigation in Apple's Settings app. Camera recognition and permission
@@ -209,15 +209,15 @@ remain explicit validation gates, not assumed capabilities.
 | Android capability | iOS implementation and deliberate boundary |
 | --- | --- |
 | Work items and active tasks | Separate read-only lists and native details; no task creation, input or stop controls |
-| Plans, result briefs and task output | Server plan metadata, linked brief navigation and explicitly truncated output; machine paths are not turned into locators |
+| Plans, result briefs and task output | Full authorized plan reader, inline Markdown briefs and explicitly truncated task output; machine paths are not turned into locators |
 | Workspace directories and filtering | Server workspace/root identity, hidden-file and name filters; removed worktrees and denied references remain errors |
-| Images, Markdown, code and artifacts | Bounded native image/plain-text preview and explicit copy export/share; Markdown/code are readable source, not executable web content |
+| Images, Markdown, code and artifacts | Bounded complete UTF-8 reader, native Markdown/code highlighting, image/PDF raster preview and explicit copy export/share; no executable web content |
 | Diagnostics | Local enum/count allowlist only; export or confirm sending to the current Agent, without raw logs or identity/payload fields |
 | System sharing | A credential-free extension previews and stages text/links/files; the host confirms a target and queues an immutable request without replacing the editor draft or automatically sending |
 | Android Direct Share/background services | No platform-for-platform copy, background resident SSE, automatic outbox retry or push promise |
 
 Work and files use separate authenticated clients and lifecycle generations.
-Tab/deep navigation does not recreate reading or sending coordinators. Identity
+Native/deep navigation does not recreate reading or sending coordinators. Identity
 changes revoke old content and confirmations synchronously. Shared inputs have
 the same canonical text and limits as the sending queue: 64 KiB UTF-8 text including
 links/separators, at most 10 attachments and 20 MiB total attachment bytes.

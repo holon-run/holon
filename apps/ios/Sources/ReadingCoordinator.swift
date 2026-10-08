@@ -449,7 +449,11 @@ final class ReadingCoordinator {
         guard !waitingBriefs.contains(briefID), waitingBriefs.count < 16 else { return }
         let captured = revision
         waitingBriefs.insert(briefID)
-        defer { if captured == revision { waitingBriefs.remove(briefID) } }
+        loadingBriefs.insert(briefID)
+        failedBriefs.remove(briefID)
+        defer {
+            if captured == revision { waitingBriefs.remove(briefID); loadingBriefs.remove(briefID) }
+        }
         while expansionCount >= 2 {
             do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
             guard current(captured) else { return }
@@ -558,8 +562,12 @@ final class ReadingCoordinator {
                 let value = try await (brief ? transport.brief(agentID: agentID, briefID: id) :
                     transport.activities(agentID: agentID, turnID: id, before: before))
                 guard self.current(token), self.snapshot?.eventLogEpoch == epoch,
-                      brief || self.snapshot?.snapshotCursor == liveCursor,
-                      (try JSONEncoder().encode(value)).count <= (brief ? 262_144 : 4_194_304) else { return }
+                      brief || self.snapshot?.snapshotCursor == liveCursor else { return }
+                guard (try JSONEncoder().encode(value)).count <= (brief ? 262_144 : 4_194_304) else {
+                    if brief { self.failedBriefs.insert(id) }
+                    else { self.failedActivities.insert(id) }
+                    return
+                }
                 if brief {
                     self.cacheBrief(value, id: id)
                 } else {

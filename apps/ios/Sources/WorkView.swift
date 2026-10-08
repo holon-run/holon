@@ -28,7 +28,10 @@ struct WorkView: View {
                             .accessibilityIdentifier("work.item." + item.id)
                     }
                     if coordinator.items.count == coordinator.itemLimit {
-                        if coordinator.itemLimit < 400 { Button("work.loadMore") { coordinator.loadMoreItems() } }
+                        if coordinator.itemLimit < 400 {
+                            Button("work.loadMore") { coordinator.loadMoreItems() }
+                                .accessibilityIdentifier("work.moreItems")
+                        }
                         else { Text("work.windowLimit").font(.caption).foregroundStyle(.secondary) }
                     }
                 }
@@ -39,7 +42,10 @@ struct WorkView: View {
                             .accessibilityIdentifier("work.task." + task.id)
                     }
                     if coordinator.tasks.count == coordinator.taskLimit {
-                        if coordinator.taskLimit < 400 { Button("work.loadMore") { coordinator.loadMoreTasks() } }
+                        if coordinator.taskLimit < 400 {
+                            Button("work.loadMore") { coordinator.loadMoreTasks() }
+                                .accessibilityIdentifier("work.moreTasks")
+                        }
                         else { Text("work.windowLimit").font(.caption).foregroundStyle(.secondary) }
                     }
                 }

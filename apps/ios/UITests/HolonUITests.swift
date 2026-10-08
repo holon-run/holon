@@ -494,7 +494,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertFalse(app.tabBars.firstMatch.exists, "Agent home has no global bottom tabs")
         let manage = app.buttons["connection.manage"]
         XCTAssertTrue(manage.waitForExistence(timeout: 10))
-        let originalHost = manage.label
+        let originalHost = manage.label.components(separatedBy: ",").first ?? manage.label
         manage.tap()
         let add = app.buttons["connection.add"]
         reveal(add, in: app)
@@ -509,7 +509,8 @@ final class HolonUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(manage.waitForExistence(timeout: 10), "One back returns to Agent home")
         XCTAssertTrue(manage.waitForExistence(timeout: 10))
-        XCTAssertEqual(manage.label, originalHost, "Cancelled onboarding preserves the original host")
+        XCTAssertEqual(manage.label.components(separatedBy: ",").first, originalHost,
+                       "Cancelled onboarding preserves the original host independently of live/offline status")
         let agentButton = app.buttons["agent." + agent]
         XCTAssertTrue(agentButton.waitForExistence(timeout: 30))
         agentButton.tap()
@@ -542,12 +543,12 @@ final class HolonUITests: XCTestCase {
         app.buttons["conversation.more"].tap()
         app.buttons["conversation.work"].tap()
         let item = app.buttons["work.item." + work]
-        if !item.waitForExistence(timeout: 5), ProcessInfo.processInfo.environment["HOLON_UI_RICH_TURN_ID"] != nil {
-            let more = app.buttons["Show more work"].firstMatch
+        if ProcessInfo.processInfo.environment["HOLON_UI_RICH_TURN_ID"]?.isEmpty == false {
+            let more = app.buttons["work.moreItems"]
             reveal(more, in: app); more.tap()
-            reveal(item, in: app)
         }
-        XCTAssertTrue(item.waitForExistence(timeout: 30))
+        reveal(item, in: app)
+        XCTAssertTrue(item.waitForExistence(timeout: 10))
         item.tap()
         let openPlan = app.buttons["work.openPlan"]
         reveal(openPlan, in: app)
@@ -627,8 +628,13 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(lastAgent.waitForExistence(timeout: 15)); lastAgent.tap()
         XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.waitForExistence(timeout: 15))
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 10), "One native back returns to the list")
-        search.tap(); search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "ios-fixture-agent-089".count) + agent + "\n")
+        XCTAssertTrue(lastAgent.waitForExistence(timeout: 10), "One native back returns to the filtered Agent list")
+        XCTAssertTrue(search.exists)
+        XCTAssertFalse(app.buttons["conversation.more"].exists)
+        search.tap()
+        let clearSearch = search.buttons["Clear text"]
+        XCTAssertTrue(clearSearch.waitForExistence(timeout: 10)); clearSearch.tap()
+        search.typeText(agent + "\n")
         let agentRow = app.buttons["agent." + agent]
         XCTAssertTrue(agentRow.waitForExistence(timeout: 15)); agentRow.tap()
         app.buttons["sending.options"].tap(); app.buttons["Take photo"].tap()
@@ -705,6 +711,30 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.exists)
         capture(app, "restored-confirmed-conversation")
         app.terminate()
+    }
+
+    func testConversationHistoryWindowPosition() throws {
+        let app = launch(language: "en", dark: false, large: false)
+        defer { app.terminate() }
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
+        let older = app.buttons["conversation.older"]
+        reveal(older, in: app); older.tap()
+        func assertTop(_ id: String) {
+            let timestamp = app.staticTexts["conversation.time." + id]
+            let visible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: timestamp)
+            XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 20), .completed)
+            let top = app.navigationBars.firstMatch.frame.maxY
+            XCTAssertGreaterThanOrEqual(timestamp.frame.minY, top - 2)
+            XCTAssertLessThanOrEqual(timestamp.frame.minY, top + 50,
+                "Window navigation must position its first turn, not just change the underlying range")
+        }
+        assertTop(try required("HISTORY_OLDER_TOP"))
+        capture(app, "native-older-turn-window-position")
+        let newer = app.buttons["conversation.newer"]
+        reveal(newer, in: app); newer.tap()
+        assertTop(try required("HISTORY_NEWER_TOP"))
+        capture(app, "native-newer-turn-window-position")
     }
 
     func testLostResponseAndProcessRecovery() async throws {
