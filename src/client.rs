@@ -912,7 +912,7 @@ impl LocalClient {
     pub async fn clear_agent_timezone(&self, agent_id: &str) -> Result<Value> {
         self.post_control_json(
             &format!("/control/agents/{agent_id}/timezone/clear"),
-            &ClearAgentModelRequest {
+            &crate::http::ClearAgentTimezoneRequest {
                 authority_class: Some(AuthorityClass::OperatorInstruction),
             },
         )

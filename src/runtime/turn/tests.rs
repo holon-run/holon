@@ -2594,6 +2594,7 @@ fn terminal_checkpoint_from_state_preserves_existing_source_turn() {
 fn checkpoint_resume_round_carries_runtime_follow_up_prompt() {
     let round = build_checkpoint_resume_round(
             3,
+            "runtime time: checkpoint".into(),
             vec![ModelBlock::Text {
                 text: "Progress checkpoint:\n- current user goal: fix issue\n- next goal-aligned action: apply patch".into(),
             }],
@@ -2604,6 +2605,10 @@ fn checkpoint_resume_round_carries_runtime_follow_up_prompt() {
         );
 
     assert_eq!(round.round, 3);
+    assert_eq!(
+        round.inference_time.as_deref(),
+        Some("runtime time: checkpoint")
+    );
     assert_eq!(round.tool_calls.len(), 0);
     assert_eq!(round.follow_up_user_texts.len(), 1);
     assert!(round.follow_up_user_texts[0]
@@ -2612,6 +2617,60 @@ fn checkpoint_resume_round_carries_runtime_follow_up_prompt() {
     assert!(round.follow_up_user_texts[0].contains("synthesize them"));
     assert!(round.follow_up_user_texts[0].contains("Do not claim"));
     assert!(round.estimated_tokens > 0);
+}
+
+#[test]
+fn checkpoint_resume_replays_inference_time_before_assistant_response() {
+    let checkpoint_time = "runtime time: checkpoint";
+    let next_time = "runtime time: continuation";
+    let TurnLocalProjectionOutcome::Projection(first) =
+        project_with_inference_time(&[], 10_000, checkpoint_time)
+    else {
+        panic!("checkpoint request projection");
+    };
+    let round = build_checkpoint_resume_round(
+        1,
+        checkpoint_time.into(),
+        vec![ModelBlock::Text {
+            text: "checkpoint response".into(),
+        }],
+        vec!["checkpoint response".into()],
+    );
+    assert_eq!(
+        estimate_round_tokens(&round),
+        round.estimated_tokens + estimate_text_tokens(checkpoint_time)
+    );
+    let TurnLocalProjectionOutcome::Projection(next) =
+        project_with_inference_time(&[round], 10_000, next_time)
+    else {
+        panic!("checkpoint continuation projection");
+    };
+    assert!(next.conversation.len() > first.conversation.len());
+    for (old, replayed) in first.conversation.iter().zip(&next.conversation) {
+        assert_eq!(format!("{old:?}"), format!("{replayed:?}"));
+    }
+    let checkpoint_time_index = next
+        .conversation
+        .iter()
+        .position(|message| is_inference_time_message(message, checkpoint_time))
+        .expect("checkpoint inference time must be replayed");
+    assert!(matches!(
+        next.conversation.get(checkpoint_time_index + 1),
+        Some(ConversationMessage::AssistantBlocks(_))
+    ));
+    for time in [checkpoint_time, next_time] {
+        assert_eq!(
+            next.conversation
+                .iter()
+                .filter(|message| is_inference_time_message(message, time))
+                .count(),
+            1
+        );
+    }
+    assert!(next
+        .conversation
+        .last()
+        .is_some_and(|message| is_inference_time_message(message, next_time)));
 }
 
 #[test]

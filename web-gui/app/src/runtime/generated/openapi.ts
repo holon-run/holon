@@ -4250,6 +4250,10 @@ export interface components {
         ClearAgentModelRequest: {
             [key: string]: unknown;
         };
+        /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
+        ClearAgentTimezoneRequest: {
+            [key: string]: unknown;
+        };
         /** CompleteWorkItemRequest */
         CompleteWorkItemRequest: {
             /** @enum {string|null} */
@@ -11116,7 +11120,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ClearAgentModelRequest"];
+                "application/json": components["schemas"]["ClearAgentTimezoneRequest"];
             };
         };
         responses: {

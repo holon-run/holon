@@ -554,6 +554,11 @@ pub struct SetAgentTimezoneRequest {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct ClearAgentTimezoneRequest {
+    pub authority_class: Option<AuthorityClass>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateAgentRequest {
     pub authority_class: Option<AuthorityClass>,

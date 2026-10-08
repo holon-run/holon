@@ -83,6 +83,10 @@ The authenticated control routes are
 `POST /api/control/agents/{agent_id}/timezone/clear`. Set accepts an IANA
 `timezone` string and rejects invalid values with HTTP 400 before writing;
 clear removes only that agent's override and restores runtime/UTC fallback.
+Successful mutations append `agent_timezone_set` or `agent_timezone_cleared`
+audit events with the target agent, resulting timezone, admission context, and
+declared `provided_trust`. The declaration is recorded, not used for authorization;
+unauthorized or invalid requests do not emit these mutation events.
 
 Use fixed clock samples for UTC/local midnight, year changes, IANA offsets and
 DST, plus invalid configuration and old-state compatibility. Verify consecutive

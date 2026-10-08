@@ -3576,6 +3576,7 @@ impl TurnExecution<'_> {
             if tool_calls.is_empty() && checkpoint_recorded_this_round {
                 completed_rounds.push(build_checkpoint_resume_round(
                     round,
+                    inference_time.clone(),
                     completed_round_assistant_blocks,
                     text_blocks,
                 ));
@@ -3650,6 +3651,7 @@ impl TurnExecution<'_> {
                     if combined_text.is_empty() {
                         completed_rounds.push(build_checkpoint_resume_round(
                             round,
+                            inference_time.clone(),
                             completed_round_assistant_blocks,
                             text_blocks,
                         ));

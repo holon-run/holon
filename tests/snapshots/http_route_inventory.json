@@ -2218,7 +2218,7 @@
         "required": true
       }
     ],
-    "request_schema": "ClearAgentModelRequest",
+    "request_schema": "ClearAgentTimezoneRequest",
     "request_strict": false,
     "response_content_types": [
       "application/json"

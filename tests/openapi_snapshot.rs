@@ -10,6 +10,23 @@
 const SNAPSHOT_PATH: &str = "docs/website/reference/openapi.json";
 
 #[test]
+fn timezone_clear_uses_a_dedicated_request_schema() {
+    let openapi = holon::openapi::generate_openapi_json();
+    for (resource, request) in [
+        ("timezone", "ClearAgentTimezoneRequest"),
+        ("model", "ClearAgentModelRequest"),
+    ] {
+        let path = format!("/api/control/agents/{{agent_id}}/{resource}/clear");
+        assert_eq!(
+            openapi["paths"][&path]["post"]["requestBody"]["content"]["application/json"]["schema"]
+                ["$ref"],
+            format!("#/components/schemas/{request}")
+        );
+        assert!(openapi["components"]["schemas"][request].is_object());
+    }
+}
+
+#[test]
 fn openapi_snapshot_matches_generated_schema() {
     let live = serde_json::to_string_pretty(&holon::openapi::generate_openapi_json())
         .expect("serialize generated OpenAPI");

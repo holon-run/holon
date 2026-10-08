@@ -5591,6 +5591,11 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "ClearAgentTimezoneRequest": {
+        "additionalProperties": true,
+        "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "type": "object"
+      },
       "CompleteWorkItemRequest": {
         "additionalProperties": false,
         "properties": {
@@ -23057,7 +23062,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ClearAgentModelRequest"
+                "$ref": "#/components/schemas/ClearAgentTimezoneRequest"
               }
             }
           },
