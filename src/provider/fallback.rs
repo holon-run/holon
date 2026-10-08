@@ -1086,6 +1086,7 @@ impl AgentProvider for FallbackProvider {
                             "provider turn failed; retrying"
                         );
                         let retry_started = std::time::Instant::now();
+                        drop(quota_permit);
                         sleep(backoff).await;
                         crate::diagnostics::record_provider_retry(retry_started.elapsed());
                         if classification.kind == super::retry::ProviderFailureKind::RateLimited {

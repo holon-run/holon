@@ -1148,7 +1148,7 @@ mod tests {
     }
 
     #[test]
-    fn retry_delay_skips_to_fallback_when_hint_exceeds_cap() {
+    fn retry_delay_caps_hint_before_retrying() {
         assert_eq!(
             provider_retry_delay(
                 1,
@@ -1156,7 +1156,10 @@ mod tests {
                 Some(Duration::from_secs(45)),
                 0
             ),
-            ProviderRetryDelay::SkipToFallback
+            ProviderRetryDelay::Wait {
+                backoff: Duration::from_secs(30),
+                source: ProviderRetryDelaySource::ServerRetryAfter
+            }
         );
     }
 
