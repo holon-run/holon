@@ -4,6 +4,14 @@ import XCTest
 @testable import Holon
 
 final class WorkModelsTests: XCTestCase {
+    func testBriefUsesCanonicalFullTextAndNeverFallsBackToRawJSON() {
+        let fullText = String(repeating: "正文\n", count: 20_000)
+        XCTAssertEqual(BriefPresentation.text(.object([
+            "text": .string(fullText), "body": .string("legacy")
+        ])), fullText)
+        XCTAssertEqual(BriefPresentation.text(.object(["body": .string("legacy")])), "legacy")
+        XCTAssertEqual(BriefPresentation.text(.object(["internal": .string("not a brief")])), "")
+    }
     func testOutputLocallyCapsAndRetainsServerTruncation() throws {
         let output = try WorkOutput(raw: .object(["task": .object([
             "output_preview": .string(String(repeating: "x", count: 40_000)),

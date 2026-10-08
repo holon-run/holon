@@ -1,6 +1,12 @@
 import Foundation
 import HolonClient
 
+enum BriefPresentation {
+    static func text(_ brief: JSONValue) -> String {
+        brief["text"]?.workString ?? brief["body"]?.workString ?? brief["content"]?.workString ?? ""
+    }
+}
+
 enum WorkLoadState: Equatable {
     case idle, loading, loaded, failed, disconnected, offline, incompatible
 }

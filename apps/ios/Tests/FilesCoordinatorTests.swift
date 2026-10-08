@@ -68,6 +68,24 @@ private actor FilesFakeTransport: FilesTransport {
 
 @MainActor
 final class FilesCoordinatorTests: XCTestCase {
+    func testReturningFromPlanRestoresRootLoadCancelledByPlan() async {
+        let transport = FilesFakeTransport()
+        let coordinator = FilesCoordinator()
+        coordinator.activate(transport: transport, identity: identity())
+        coordinator.selectAgent("A")
+        XCTAssertTrue(coordinator.openPlan(agentID: "A", workID: "work", plan: .object([
+            "owner_agent_id": .string("A"), "workspace_id": .string("ws"),
+            "relative_path": .string("work-items/work/plan.md")
+        ])))
+        await settle(coordinator)
+        XCTAssertNotNil(coordinator.prepared)
+        XCTAssertTrue(coordinator.workspaces.isEmpty)
+        coordinator.dismissPreview()
+        await settle(coordinator)
+        XCTAssertNil(coordinator.prepared)
+        XCTAssertEqual(coordinator.workspaces.map(\.workspaceID), ["ws"])
+    }
+
     func testPlanUsesServerRootAndRejectsOwnerAndAbsolutePath() async {
         let transport = FilesFakeTransport()
         let coordinator = FilesCoordinator()

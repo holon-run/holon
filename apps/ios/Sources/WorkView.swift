@@ -120,8 +120,7 @@ struct WorkView: View {
                 }
                 if let brief = coordinator.brief {
                     Section("work.brief") {
-                        Text(String((brief["body"]?.workString ?? brief["content"]?.workString
-                                     ?? brief.workDisplay).prefix(32_768)))
+                        Text(verbatim: BriefPresentation.text(brief))
                             .textSelection(.enabled)
                     }
                 }

@@ -54,6 +54,7 @@ private actor ReadingFakeTransport: ReadingTransport {
     private var readFailure = false
     private var liveCursor = "live-1"
     private var liveEpoch = "epoch"
+    private var currentRunID: String?
     private var briefIDs = ["brief"]
     private var detailRevision: Int64 = 1
     private var expansionWaiters: [CheckedContinuation<Void, Never>] = []
@@ -77,6 +78,7 @@ private actor ReadingFakeTransport: ReadingTransport {
     func setOffline(_ offline: Bool) { rosterFailure = offline }
     func failReads() { readFailure = true }
     func setBriefIDs(_ ids: [String]) { briefIDs = ids }
+    func setRunID(_ id: String?) { currentRunID = id }
     func setDetailRevision(_ revision: Int64) { detailRevision = revision }
     func replaceEpoch() { liveEpoch = "replacement"; liveCursor = "replacement-cursor" }
     func isBlocked() -> Bool { blocked != nil }
@@ -94,7 +96,8 @@ private actor ReadingFakeTransport: ReadingTransport {
         rosterCalls += 1
         if rosterFailure { throw Failure.offline }
         return ["A", "B"].map {
-            ReadingAgent(id: $0, name: $0, preview: "recent", operatorPreview: "operator", unreadCount: 2)
+            ReadingAgent(id: $0, name: $0, preview: "recent", operatorPreview: "operator", unreadCount: 2,
+                         currentRunID: currentRunID)
         }
     }
     func conversation(agentID: String, before: String?) async throws -> HolonConversationSnapshot {
@@ -243,6 +246,18 @@ final class ReadingCoordinatorTests: XCTestCase {
         XCTAssertEqual(reads, 0)
         coordinator.setForeground(true)
         try await wait { await fake.rosterCalls > previous && coordinator.status == .live }
+        coordinator.disconnect()
+    }
+
+    func testRosterPreservesValidRunControlAndRejectsUnboundedIDs() async throws {
+        let (coordinator, fake, _) = try await start()
+        for (value, expected) in [("run-123", "run-123"), ("", nil),
+                                  (String(repeating: "r", count: 513), nil)] {
+            await fake.setRunID(value)
+            await coordinator.refresh()
+            try await wait { coordinator.status == .live }
+            XCTAssertEqual(coordinator.agents.first?.currentRunID, expected)
+        }
         coordinator.disconnect()
     }
 

@@ -2,6 +2,12 @@ import XCTest
 @testable import Holon
 
 final class SendingPresentationTests: XCTestCase {
+    func testStatusKeysAreResolvedStringsNotLocalizedInterpolationPatterns() {
+        XCTAssertEqual(SendingPresentation.statusKey(.ready), "sending.status.ready")
+        XCTAssertEqual(SendingPresentation.statusKey(.offline), "sending.status.offline")
+        XCTAssertEqual(SendingPresentation.statusKey(.sending), "sending.status.sending")
+        XCTAssertEqual(SendingPresentation.statusKey(.disconnected), "sending.status.disconnected")
+    }
     func testReceiptNeverMeansAgentCompleted() {
         XCTAssertEqual(SendingPresentation.stateKey(.received), "sending.state.received")
         XCTAssertFalse(SendingPresentation.canRetry(.received))

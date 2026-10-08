@@ -166,7 +166,11 @@ final class FilesCoordinator {
         else { prepare(.workspace(directory.workspace, path: entry.path)) }
     }
 
-    func dismissPreview() { cancelOperation() }
+    func dismissPreview() {
+        cancelOperation()
+        // Opening a plan can supersede the root-list request. Restore that list on return.
+        if workspaces.isEmpty, let agentID = selectedAgentID { selectAgent(agentID) }
+    }
 
     private func prepare(_ source: FilesSource) {
         run { transport in

@@ -181,7 +181,10 @@ final class ReadingCoordinator {
                 ReadingAgent(id: $0.id, name: String($0.name.prefix(160)),
                              preview: String($0.preview.prefix(240)),
                              operatorPreview: $0.operatorPreview.map { String($0.prefix(240)) },
-                             unreadCount: $0.unreadCount)
+                             unreadCount: $0.unreadCount,
+                             currentRunID: $0.currentRunID.flatMap {
+                                 !$0.isEmpty && $0.utf8.count <= 512 ? $0 : nil
+                             })
             }
     }
 

@@ -4,6 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum SendingPresentation {
+    static func statusKey(_ status: SendingStatus) -> String { "sending.status." + status.rawValue }
     static func stateKey(_ state: SendingState) -> String { "sending.state.\(state.rawValue)" }
     static func canRetry(_ state: SendingState) -> Bool {
         state == .queued || state == .failed || state == .unknown
@@ -131,7 +132,7 @@ struct SendingView: View {
                     }
                 }
                 Section {
-                    Text(LocalizedStringKey("sending.status.\(sender.status.rawValue)"))
+                    Text(LocalizedStringKey(SendingPresentation.statusKey(sender.status)))
                     Button("sending.enqueue") { sender.enqueue() }
                         .disabled(sender.selectedAgentID == nil || !SendingPresentation.hasContent(sender.draft))
                         .accessibilityIdentifier("sending.enqueue")
