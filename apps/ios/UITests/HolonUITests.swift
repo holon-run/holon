@@ -92,6 +92,18 @@ final class HolonUITests: XCTestCase {
 
     private enum FixtureError: Error { case missingInput, invalidEndpoint }
 
+    private func openSettings(_ app: XCUIApplication) {
+        let settings = app.buttons["settings.open"]
+        for _ in 0..<6 {
+            if settings.waitForExistence(timeout: 3) { break }
+            let back = app.navigationBars.buttons.element(boundBy: 0)
+            XCTAssertTrue(back.waitForExistence(timeout: 10))
+            back.tap()
+        }
+        XCTAssertTrue(settings.waitForExistence(timeout: 10))
+        settings.tap()
+    }
+
     private func openDiagnostics(_ app: XCUIApplication) {
         let open = app.buttons["diagnostics.open"]
         reveal(open, in: app, fullyVisible: true)
@@ -110,8 +122,7 @@ final class HolonUITests: XCTestCase {
     func testChineseDiagnosticsDarkAccessibilitySize() throws {
         let app = launch(language: "zh-Hans", dark: true, large: true)
         defer { app.terminate() }
-        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 15))
-        app.tabBars.buttons["设置"].tap()
+        openSettings(app)
         openDiagnostics(app)
         let allowlist = app.staticTexts[
             "仅包含连接状态与数量，不包含凭据、身份、地址、消息内容或原始错误。"]
@@ -129,8 +140,7 @@ final class HolonUITests: XCTestCase {
     func testPreparedDiagnosticsViewportCoverage() throws {
         let app = launch(language: "en", dark: false, large: true)
         defer { app.terminate() }
-        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 15))
-        app.tabBars.buttons["Settings"].tap()
+        openSettings(app)
         openDiagnostics(app)
         app.buttons["diagnostics.prepare"].tap()
         XCTAssertTrue(app.staticTexts["diagnostics.report"].waitForExistence(timeout: 10))
@@ -185,7 +195,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(content.exists)
         let bounds = content.frame.intersection(app.windows.firstMatch.frame)
         let top = max(bounds.minY, app.navigationBars.firstMatch.frame.maxY)
-        let bottom = min(bounds.maxY, app.tabBars.firstMatch.frame.minY)
+        let bottom = app.tabBars.firstMatch.exists ? min(bounds.maxY, app.tabBars.firstMatch.frame.minY) : bounds.maxY
         XCTAssertGreaterThan(bottom, top)
         return CGRect(x: bounds.minX, y: top, width: bounds.width, height: bottom - top)
     }
@@ -196,7 +206,7 @@ final class HolonUITests: XCTestCase {
                         ("diagnostics.chooseAgent", app.staticTexts["diagnostics.chooseAgent"])]
         let detail = "content: \(app.scrollViews["diagnostics.content"].frame)\n"
             + "navigation: \(app.navigationBars.firstMatch.frame)\n"
-            + "tab: \(app.tabBars.firstMatch.frame)\nviewport: \(diagnosticsViewport(app))\n"
+            + "tab: \(app.tabBars.firstMatch.exists ? app.tabBars.firstMatch.frame : .zero)\nviewport: \(diagnosticsViewport(app))\n"
             + elements.map { identifier, element in
                 element.exists
                     ? "\(identifier): \(element.frame), hittable: \(element.isHittable)"
@@ -214,8 +224,7 @@ final class HolonUITests: XCTestCase {
     func testPreparedDiagnosticsRespondToRuntimeTextSize() async throws {
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
-        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 15))
-        app.tabBars.buttons["Settings"].tap()
+        openSettings(app)
         openDiagnostics(app)
         app.buttons["diagnostics.prepare"].tap()
         let report = app.staticTexts["diagnostics.report"]
@@ -255,8 +264,7 @@ final class HolonUITests: XCTestCase {
     func testDiagnosticsControlsRespondToRuntimeTextSize() async throws {
         let app = launch(language: "en", dark: false, large: true)
         defer { app.terminate() }
-        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 15))
-        app.tabBars.buttons["Settings"].tap()
+        openSettings(app)
         openDiagnostics(app)
         let allowlist = app.staticTexts[
             "Only connection states and counts are included. Credentials, identities, addresses, message content and raw errors are excluded."]
@@ -479,12 +487,8 @@ final class HolonUITests: XCTestCase {
         reveal(confirm, in: app)
         XCTAssertTrue(confirm.isEnabled)
         confirm.tap()
-        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 30))
-        XCTAssertEqual(app.tabBars.buttons.count, 3)
-        for tab in ["Agents", "Work", "Settings"] {
-            XCTAssertTrue(app.tabBars.buttons[tab].exists)
-        }
-        XCTAssertTrue(app.tabBars.buttons["Agents"].isSelected, "Successful pairing defaults to Agents")
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
+        XCTAssertFalse(app.tabBars.firstMatch.exists, "Agent home has no global bottom tabs")
         let manage = app.buttons["connection.manage"]
         XCTAssertTrue(manage.waitForExistence(timeout: 10))
         let originalHost = manage.label
@@ -499,24 +503,16 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(add.waitForExistence(timeout: 10), "Cancel returns to existing connection management")
         XCTAssertFalse(app.buttons["onboarding.scan"].exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.buttons["settings.connection"].waitForExistence(timeout: 10),
-                      "Back returns from connection management to the Settings home")
-        app.tabBars.buttons["Agents"].tap()
+        XCTAssertTrue(manage.waitForExistence(timeout: 10), "One back returns to Agent home")
         XCTAssertTrue(manage.waitForExistence(timeout: 10))
         XCTAssertEqual(manage.label, originalHost, "Cancelled onboarding preserves the original host")
-        let connected = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label == %@", "Live"),
-            object: app.staticTexts["reading.status"])
-        XCTAssertEqual(XCTWaiter.wait(for: [connected], timeout: 30), .completed)
         let agentButton = app.buttons["agent." + agent]
         XCTAssertTrue(agentButton.waitForExistence(timeout: 30))
         agentButton.tap()
         let read = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", readMarker)).firstMatch
         XCTAssertTrue(read.waitForExistence(timeout: 30))
         capture(app, "authenticated-reading")
-        let draft = app.buttons["sending.draft"]
-        draft.tap()
-        let editor = app.textViews["sending.text"]
+        let editor = app.descendants(matching: .any)["sending.text"].firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 10))
         editor.tap()
         editor.typeText("P6 native UI explicit operator message")
@@ -524,17 +520,18 @@ final class HolonUITests: XCTestCase {
         reveal(enqueue, in: app)
         XCTAssertTrue(enqueue.isEnabled)
         enqueue.tap()
-        app.buttons["Close"].tap()
         // Returning from the native editor is not evidence of server acceptance.
         // Outbox must expose a concrete accepted state.
         let queue = app.buttons["sending.queue"]
+        app.buttons["sending.options"].tap()
         XCTAssertTrue(queue.waitForExistence(timeout: 10))
         queue.tap()
         XCTAssertTrue(app.descendants(matching: .any)["sending.state.received"]
             .waitForExistence(timeout: 30))
         capture(app, "authenticated-outbox")
         app.buttons["Close"].tap()
-        app.tabBars.buttons["Work"].tap()
+        app.buttons["conversation.more"].tap()
+        app.buttons["conversation.work"].tap()
         let item = app.buttons["work.item." + work]
         XCTAssertTrue(item.waitForExistence(timeout: 30))
         item.tap()
@@ -547,7 +544,6 @@ final class HolonUITests: XCTestCase {
         let dismissFiles = app.buttons["files.dismiss"]
         XCTAssertTrue(dismissFiles.waitForExistence(timeout: 10))
         dismissFiles.tap()
-        XCTAssertTrue(app.tabBars.buttons["Work"].isSelected)
         XCTAssertTrue(openPlan.waitForExistence(timeout: 10))
         XCTAssertFalse(dismissFiles.exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()
@@ -558,11 +554,10 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(output.waitForExistence(timeout: 30))
         XCTAssertTrue(output.label.contains(taskMarker))
         capture(app, "task-output")
-        app.tabBars.buttons["Settings"].tap()
-        for entry in ["settings.connection", "settings.files", "settings.tools", "diagnostics.open"] {
-            XCTAssertTrue(app.buttons[entry].exists)
-        }
-        let files = app.buttons["settings.files"]
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["conversation.more"].tap()
+        let files = app.buttons["conversation.files"]
         reveal(files, in: app)
         files.tap()
         let reference = app.textFields["files.reference"]
@@ -578,7 +573,7 @@ final class HolonUITests: XCTestCase {
         closePreview.tap()
         XCTAssertTrue(reference.waitForExistence(timeout: 10))
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.tabBars.buttons["Settings"].tap()
+        app.buttons["conversation.more"].tap()
         openDiagnostics(app)
         app.buttons["diagnostics.prepare"].tap()
         XCTAssertTrue(app.staticTexts["diagnostics.report"].waitForExistence(timeout: 10))

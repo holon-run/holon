@@ -55,6 +55,7 @@ private actor ReadingFakeTransport: ReadingTransport {
     private var liveCursor = "live-1"
     private var liveEpoch = "epoch"
     private var currentRunID: String?
+    private var agentIDs = ["A", "B"]
     private var briefIDs = ["brief"]
     private var detailRevision: Int64 = 1
     private var expansionWaiters: [CheckedContinuation<Void, Never>] = []
@@ -79,6 +80,7 @@ private actor ReadingFakeTransport: ReadingTransport {
     func failReads() { readFailure = true }
     func setBriefIDs(_ ids: [String]) { briefIDs = ids }
     func setRunID(_ id: String?) { currentRunID = id }
+    func setAgentIDs(_ ids: [String]) { agentIDs = ids }
     func setDetailRevision(_ revision: Int64) { detailRevision = revision }
     func replaceEpoch() { liveEpoch = "replacement"; liveCursor = "replacement-cursor" }
     func isBlocked() -> Bool { blocked != nil }
@@ -95,7 +97,7 @@ private actor ReadingFakeTransport: ReadingTransport {
     func roster() async throws -> [ReadingAgent] {
         rosterCalls += 1
         if rosterFailure { throw Failure.offline }
-        return ["A", "B"].map {
+        return agentIDs.map {
             ReadingAgent(id: $0, name: $0, preview: "recent", operatorPreview: "operator", unreadCount: 2,
                          currentRunID: currentRunID)
         }
@@ -279,12 +281,29 @@ final class ReadingCoordinatorTests: XCTestCase {
         XCTAssertEqual(maximum, 2)
     }
 
-    func testAgentSwitchFencesLateSuccessAnd401() async throws {
-        for unauthorized in [false, true] {
+    func testExpandedRosterWindowEnrichesVisibleAgentsBeyondEighty() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.setAgentIDs((0..<120).map { "A\($0)" })
+        await coordinator.refresh()
+        XCTAssertEqual(coordinator.agents.count, 120)
+        await coordinator.loadVisiblePreviews(agentIDs: ["A0", "A1"])
+        await coordinator.loadVisiblePreviews(agentIDs: ["A80", "A119"])
+        XCTAssertEqual(coordinator.agents.first { $0.id == "A119" }?.operatorPreview, "new A119")
+        XCTAssertEqual(coordinator.agents.first { $0.id == "A0" }?.operatorPreview, "new A0")
+        let calls = await fake.expansionCalls
+        await coordinator.loadVisiblePreviews(agentIDs: ["A0", "A119"])
+        let unchanged = await fake.expansionCalls
+        XCTAssertEqual(unchanged, calls, "A viewport revisit does not refetch confirmed metadata")
+        coordinator.disconnect()
+    }
+
+    func testAgentSwitchFencesLateSuccessAndAuthenticationFailures() async throws {
+        for statusCode: Int? in [nil, 401, 403] {
             let authority = identity()
             let fake = ReadingFakeTransport(authority: authority)
-            await fake.setGate(.conversation("A"), failure: unauthorized ?
-                HolonHTTPFailure(statusCode: 401, identity: authority) : nil)
+            await fake.setGate(.conversation("A"), failure: statusCode.map {
+                HolonHTTPFailure(statusCode: $0, identity: authority)
+            })
             let coordinator = ReadingCoordinator(cache: ReadingCache(file: nil))
             var failures = 0
             coordinator.onConnectionFailure = { _ in failures += 1 }

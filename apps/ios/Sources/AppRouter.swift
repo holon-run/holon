@@ -52,4 +52,10 @@ final class AppRouter {
         let saved = Saved(partition: partition, agentID: agentID)
         if let data = try? JSONEncoder().encode(saved), data.count <= 4096 { preferences?.set(data, forKey: key) }
     }
+
+    func withdrawAgent() {
+        path.removeAll { $0.agentID != nil }
+        restoringAgent = nil
+        preferences?.removeObject(forKey: key)
+    }
 }

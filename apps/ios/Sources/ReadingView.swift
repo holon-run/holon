@@ -7,6 +7,7 @@ struct ReadingView: View {
     @State private var query = ""
     @State private var needsReply = false
     @State private var window = 80
+    @State private var visibleAgents: Set<String> = []
 
     private var matching: [ReadingAgent] {
         AgentSummaryPresentation.sorted(reader.agents, query: query, needsReply: needsReply)
@@ -63,6 +64,8 @@ struct ReadingView: View {
                             .padding(.vertical, 4)
                         }
                         .accessibilityIdentifier("agent." + agent.id)
+                        .onAppear { visibleAgents.insert(agent.id) }
+                        .onDisappear { visibleAgents.remove(agent.id) }
                     }
                     if matching.count > window {
                         Button("agents.more") { window += 80 }
@@ -86,8 +89,9 @@ struct ReadingView: View {
                 }
             }
             .onChange(of: query) { _, _ in window = 80 }
-            .task(id: "\(reader.rosterRevision)|\(reader.status.rawValue)|\(query)|\(window)|\(needsReply)") {
-                await reader.loadVisiblePreviews(agentIDs: Array(matching.prefix(window).map(\.id)))
+            .task(id: "\(reader.rosterRevision)|\(reader.status.rawValue)|\(visibleAgents.sorted().joined(separator: "|"))") {
+                do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+                await reader.loadVisiblePreviews(agentIDs: visibleAgents.sorted())
             }
     }
 }
@@ -177,6 +181,8 @@ struct ConversationReadingView: View {
                     Button("reading.markRead") { readThroughToConfirm = reader.readConfirmationForVisibleBriefs }
                         .disabled(reader.readThroughForVisibleBriefs == nil)
                     NavigationLink(value: AppRoute.tools) { Label("settings.sharing", systemImage: "square.and.arrow.up") }
+                    NavigationLink(value: AppRoute.diagnostics) { Label("diagnostics.title", systemImage: "stethoscope") }
+                        .accessibilityIdentifier("diagnostics.open")
                 } label: { Image(systemName: "ellipsis.circle").accessibilityLabel(Text("conversation.more")) }
                 .accessibilityIdentifier("conversation.more")
             }

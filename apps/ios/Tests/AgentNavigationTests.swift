@@ -20,6 +20,14 @@ final class AgentNavigationTests: XCTestCase {
         XCTAssertNil(router.agentID)
         XCTAssertTrue(router.path.isEmpty)
     }
+    func testPermissionWithdrawalRemovesAgentDestinationsAndStaleBookmark() {
+        let router = AppRouter(preferences: nil)
+        router.activate(partition())
+        router.path = [.conversation("A"), .work("A"), .workDetail("A", .item("work"))]
+        router.withdrawAgent()
+        XCTAssertTrue(router.path.isEmpty)
+        XCTAssertNil(router.agentID)
+    }
     func testRestorationRequiresExactAuthorityAndRosterMembership() {
         let suite = "HolonNavigationTests." + UUID().uuidString
         let preferences = UserDefaults(suiteName: suite)!

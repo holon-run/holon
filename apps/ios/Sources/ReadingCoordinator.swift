@@ -44,6 +44,7 @@ final class ReadingCoordinator {
     @ObservationIgnored private var briefRecency: [String] = []
     @ObservationIgnored private var visibilityRevision = 0
     @ObservationIgnored private var previewTask: Task<Void, Never>?
+    @ObservationIgnored private var previewedAgentIDs: Set<String> = []
 
     init() { cache = ReadingCache() }
     init(cache: ReadingCache) { self.cache = cache }
@@ -113,6 +114,7 @@ final class ReadingCoordinator {
     private func stop() {
         previewTask?.cancel()
         previewTask = nil
+        previewedAgentIDs = []
         revision += 1
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
@@ -199,7 +201,9 @@ final class ReadingCoordinator {
         previewTask?.cancel()
         guard let transport, status == .live else { return }
         let token = revision, roster = rosterRevision
-        let ids = Array(agentIDs.prefix(80)).filter { id in agents.contains { $0.id == id } }
+        let ids = Array(agentIDs.filter { id in
+            !previewedAgentIDs.contains(id) && agents.contains { $0.id == id }
+        }.prefix(80))
         let task = Task { [weak self] in
             guard let self else { return }
             do {
@@ -215,6 +219,7 @@ final class ReadingCoordinator {
                         if let index = self.agents.firstIndex(where: { $0.id == id }) {
                             self.agents[index].operatorPreview = value?.text
                             self.agents[index].operatorAt = value?.createdAt
+                            self.previewedAgentIDs.insert(id)
                         }
                         if let id = remaining.next() {
                             group.addTask { (id, try await transport.operatorPreview(agentID: id)) }
@@ -241,6 +246,7 @@ final class ReadingCoordinator {
                 guard self.current(token) else { return }
                 self.agents = self.boundedRoster(roster)
                 self.rosterRevision &+= 1
+                self.previewedAgentIDs = []
                 if let agentID = self.selectedAgentID {
                     let value = try await transport.conversation(agentID: agentID, before: nil)
                     guard self.current(token) else { return }
@@ -341,6 +347,7 @@ final class ReadingCoordinator {
                 guard self.current(token) else { return }
                 self.agents = self.boundedRoster(value)
                 self.rosterRevision &+= 1
+                self.previewedAgentIDs = []
                 self.persist()
             } catch {
                 if self.current(token) { self.failed(error, token: token, recover: true) }

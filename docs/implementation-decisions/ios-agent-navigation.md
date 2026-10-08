@@ -9,8 +9,8 @@ bookmark can restore only after authentication and authoritative roster membersh
 are revalidated in the exact API/network/runtime/user/visibility partition.
 
 The roster remains the membership/status authority. Publish it before fetching
-operator previews, enrich only a displayed window (80 reads per window, at most
-two concurrently), and fence those responses to the snapshot generation. Search
+operator previews, enrich only appearing rows (at most 80 missing reads per
+viewport update and two concurrently), and fence responses to the snapshot generation. Search
 uses the complete body-bounded roster; list pagination is a rendering budget,
 not silent membership truncation. Offline roster caching remains disposable and
 bounded separately from live membership.

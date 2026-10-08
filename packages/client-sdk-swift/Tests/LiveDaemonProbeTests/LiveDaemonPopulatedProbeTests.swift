@@ -31,9 +31,9 @@ final class LiveDaemonPopulatedProbeTests: XCTestCase {
     func testPopulatedWorkDetailAndPlan() async throws {
         let sdk = try await client()
         let id = try environment("HOLON_UI_WORK_ID")
-        let list = try await sdk.workItems(agentID: "main")
+        let list = try await sdk.workItems(agentID: environment("HOLON_UI_AGENT_ID"))
         XCTAssertTrue(try text(list.value).contains(id))
-        let detail = try await sdk.workItem(agentID: "main", workItemID: id)
+        let detail = try await sdk.workItem(agentID: environment("HOLON_UI_AGENT_ID"), workItemID: id)
         XCTAssertTrue(try text(detail.value).contains("IOS_POPULATED_PLAN"))
         XCTAssertTrue(try text(detail.value).contains("completed"))
         let planPath = try XCTUnwrap(detail.value["plan_artifact"]?["path"])
@@ -62,16 +62,16 @@ final class LiveDaemonPopulatedProbeTests: XCTestCase {
     func testPopulatedTaskAndOutput() async throws {
         let sdk = try await client()
         let id = try environment("HOLON_UI_TASK_ID")
-        let list = try await sdk.tasks(agentID: "main")
+        let list = try await sdk.tasks(agentID: environment("HOLON_UI_AGENT_ID"))
         XCTAssertTrue(try text(list.value).contains(id))
-        let detail = try await sdk.task(agentID: "main", taskID: id)
+        let detail = try await sdk.task(agentID: environment("HOLON_UI_AGENT_ID"), taskID: id)
         XCTAssertTrue(try text(detail.value).contains("command_task"))
-        let output = try await sdk.taskOutput(agentID: "main", taskID: id)
+        let output = try await sdk.taskOutput(agentID: environment("HOLON_UI_AGENT_ID"), taskID: id)
         XCTAssertTrue(try text(output.value).contains("IOS_POPULATED_OUTPUT"))
     }
     func testPopulatedBrief() async throws {
         let sdk = try await client()
-        let conversation = try await sdk.conversation(agentID: "main")
+        let conversation = try await sdk.conversation(agentID: environment("HOLON_UI_AGENT_ID"))
         XCTAssertTrue(try text(conversation.value.raw).contains("IOS_POPULATED_BRIEF"))
     }
 }

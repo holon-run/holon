@@ -89,6 +89,9 @@ struct HolonApp: App {
                             router.restore(agents: agents, authoritative: reader.status == .live)
                         }
                         .onChange(of: reader.status) { _, status in
+                            if status == .permissionDenied || status == .sessionExpired {
+                                router.withdrawAgent()
+                            }
                             router.restore(agents: reader.agents, authoritative: status == .live)
                         }
                         .onChange(of: router.path) { _, _ in

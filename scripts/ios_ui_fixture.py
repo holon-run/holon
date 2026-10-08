@@ -145,17 +145,18 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 finally:
                     connection.close()
 
-            local("POST", "/control/agents/main/create", {})
-            work = local("POST", "/control/agents/main/work-items", {"objective": "IOS_POPULATED_WORK"})
+            agent = "holon-tester"
+            local("POST", f"/control/agents/{agent}/create", {})
+            work = local("POST", f"/control/agents/{agent}/work-items", {"objective": "IOS_POPULATED_WORK"})
             work_id = work["id"]
             plan = pathlib.Path(work["plan_artifact"]["path"])
             if not plan.resolve().is_relative_to(root.resolve()):
                 raise RuntimeError("plan escapes fixture root")
             plan.write_text("# IOS_POPULATED_PLAN\n\n" + "Real isolated work plan.\n" * 500
                             + "\nIOS_POPULATED_FULL_PLAN\n")
-            local("POST", "/agents/main/enqueue", {"text": "IOS_POPULATED_BRIEF: Produce the isolated fixture reading brief."})
+            local("POST", f"/agents/{agent}/enqueue", {"text": "IOS_POPULATED_BRIEF: Produce the isolated fixture reading brief."})
             for attempt in range(150):
-                conversation = local("GET", "/agents/main/conversation")
+                conversation = local("GET", f"/agents/{agent}/conversation")
                 if "IOS_POPULATED_BRIEF" in json.dumps(conversation):
                     break
                 time.sleep(.1)
@@ -164,7 +165,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
             # The deterministic provider returns a real brief; wait for the run to settle.
             for attempt in range(150):
                 try:
-                    completed = local("POST", f"/control/agents/main/work-items/{work_id}/complete",
+                    completed = local("POST", f"/control/agents/{agent}/work-items/{work_id}/complete",
                                       {"report_text": "IOS_POPULATED_BRIEF: isolated work completed."})
                     break
                 except RuntimeError as error:
@@ -174,19 +175,19 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
             else:
                 raise RuntimeError("work completion timed out")
             file_path = "ios-populated.txt"
-            workspace = root / "holon" / "agents" / "main"
+            workspace = root / "holon" / "agents" / agent
             (workspace / file_path).write_text("IOS_POPULATED_FILE\n")
-            task = local("POST", "/control/agents/main/tasks", {
+            task = local("POST", f"/control/agents/{agent}/tasks", {
                 "summary": "IOS_POPULATED_TASK",
                 "cmd": "printf 'IOS_POPULATED_OUTPUT\\n'; while :; do sleep 30; done",
                 "workdir": str(root), "login": False, "yield_time_ms": 1})
             task_id = task["id"]
-            state = local("GET", "/agents/main/state")
+            state = local("GET", f"/agents/{agent}/state")
             workspace_id = next(w["workspace_id"] for w in state["workspace"]["workspaces"]
                                 if w.get("kind") == "agent_home" or w.get("workspace_id", "").startswith("agent_home"))
             test_env = dict(os.environ)
             test_env.update(HOLON_UI_BASE_URL=base, HOLON_UI_PAIRING_TICKET=pairing["ticket"],
-                HOLON_UI_AGENT_ID="main", HOLON_UI_WORK_ID=work_id, HOLON_UI_TASK_ID=task["id"],
+                HOLON_UI_AGENT_ID=agent, HOLON_UI_WORK_ID=work_id, HOLON_UI_TASK_ID=task["id"],
                 HOLON_UI_FILE_PATH=file_path, HOLON_UI_WORKSPACE_ID=workspace_id,
                 HOLON_UI_BRIEF_MARKER="IOS_POPULATED_BRIEF")
             print("真实隔离 populated daemon 已就绪；临时凭据不输出", flush=True)
@@ -197,7 +198,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
             if mode != "--sdk-only":
                 runner_inputs = {
                     "ENDPOINT": base,
-                    "AGENT_ID": "main", "WORK_ID": work_id, "TASK_ID": task["id"],
+                    "AGENT_ID": agent, "WORK_ID": work_id, "TASK_ID": task["id"],
                     "READ_MARKER": "IOS_POPULATED_BRIEF", "PLAN_MARKER": "IOS_POPULATED_FULL_PLAN",
                     "TASK_MARKER": "IOS_POPULATED_OUTPUT",
                     "FILE_REFERENCE": str(workspace / file_path), "FILE_MARKER": "IOS_POPULATED_FILE"}
@@ -261,7 +262,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
         finally:
             try:
                 if task_id is not None:
-                    local("POST", f"/control/agents/main/tasks/{task_id}/stop", {})
+                    local("POST", f"/control/agents/{agent}/tasks/{task_id}/stop", {})
             finally:
                 release_held_run.set()
                 provider.shutdown()
