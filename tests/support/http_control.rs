@@ -3880,6 +3880,7 @@ pub async fn control_prompt_local_credentials_keep_control_identity() -> Result<
 
     let exchange = client
         .post(format!("{base}/api/auth/session/exchange"))
+        .header(reqwest::header::ORIGIN, &base)
         .json(&serde_json::json!({ "credential": "secret" }))
         .send()
         .await?;
