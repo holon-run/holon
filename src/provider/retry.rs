@@ -13,6 +13,7 @@ use super::{
 use crate::types::TokenUsage;
 
 pub(crate) const PROVIDER_MAX_RETRIES: usize = 2;
+pub(crate) const PROVIDER_RATE_LIMIT_MAX_RETRIES: usize = 3;
 const PROVIDER_RETRY_BASE_BACKOFF_MS: u64 = 200;
 const PROVIDER_SERVER_ERROR_RETRY_BASE_BACKOFF_MS: u64 = 2_000;
 const PROVIDER_RETRY_JITTER_MAX_PERCENT: u64 = 25;
@@ -154,6 +155,7 @@ pub(crate) fn provider_retry_policy_json() -> Value {
     json!({
         "max_retries_per_provider": PROVIDER_MAX_RETRIES,
         "max_attempts_per_provider": provider_max_attempts(),
+        "max_rate_limit_retries": PROVIDER_RATE_LIMIT_MAX_RETRIES,
         "base_backoff_ms": PROVIDER_RETRY_BASE_BACKOFF_MS,
         "server_error_base_backoff_ms": PROVIDER_SERVER_ERROR_RETRY_BASE_BACKOFF_MS,
         "server_error_jitter_max_percent": PROVIDER_RETRY_JITTER_MAX_PERCENT,

@@ -13,6 +13,7 @@ use super::{
         classify_provider_error, format_provider_failure, provider_error_retry_after,
         provider_fallback_disposition, provider_max_attempts, provider_retry_delay,
         provider_retry_jitter_seed, ProviderRetryDelay, RetryDisposition,
+        PROVIDER_RATE_LIMIT_MAX_RETRIES,
     },
     AgentProvider, PromptContentBlock, ProviderAttemptOutcome, ProviderAttemptRecord,
     ProviderAttemptTimeline, ProviderBuiltinWebSearchCapability, ProviderContextManagementPolicy,
@@ -398,6 +399,58 @@ mod tests {
         assert_eq!(
             timeline.attempts[1].outcome,
             ProviderAttemptOutcome::Succeeded
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn persistent_rate_limit_retries_are_bounded_before_fallback() {
+        let provider = FallbackProvider {
+            candidates: vec![
+                scripted_candidate(
+                    "openai/gpt-5.4",
+                    vec![
+                        ScriptedFailure::Fail {
+                            retry_after: Some(std::time::Duration::from_secs(3_600)),
+                        },
+                        ScriptedFailure::Fail {
+                            retry_after: Some(std::time::Duration::from_secs(3_600)),
+                        },
+                        ScriptedFailure::Fail {
+                            retry_after: Some(std::time::Duration::from_secs(3_600)),
+                        },
+                        ScriptedFailure::Fail {
+                            retry_after: Some(std::time::Duration::from_secs(3_600)),
+                        },
+                    ],
+                ),
+                scripted_candidate("openai/gpt-5.4-mini", vec![ScriptedFailure::Succeed]),
+            ],
+        };
+
+        let task = tokio::spawn(async move {
+            provider
+                .complete_turn_with_diagnostics(plain_turn_request())
+                .await
+                .expect_err("persistent rate limits must terminate the current turn")
+        });
+        tokio::task::yield_now().await;
+        for _ in 0..PROVIDER_RATE_LIMIT_MAX_RETRIES {
+            tokio::time::advance(std::time::Duration::from_secs(30)).await;
+            tokio::task::yield_now().await;
+        }
+        let error = task.await.expect("provider task should complete");
+        let timeline = crate::provider::provider_attempt_timeline(&error).expect("timeline");
+        assert_eq!(timeline.attempts.len(), PROVIDER_RATE_LIMIT_MAX_RETRIES + 1);
+        assert!(timeline.attempts[..PROVIDER_RATE_LIMIT_MAX_RETRIES]
+            .iter()
+            .all(|attempt| attempt.outcome == ProviderAttemptOutcome::Retrying));
+        assert_eq!(
+            timeline.attempts.last().expect("final attempt").outcome,
+            ProviderAttemptOutcome::RetriesExhausted
+        );
+        assert_eq!(
+            timeline.pending_fallback_model_ref.as_deref(),
+            Some("openai/gpt-5.4-mini")
         );
     }
 
@@ -900,6 +953,7 @@ impl AgentProvider for FallbackProvider {
         let last_error;
         let pending_fallback_disposition;
         let mut attempt = 1;
+        let mut rate_limit_retries = 0;
         let mut shared_account_retry = false;
         loop {
             let attempt_request =
@@ -978,10 +1032,11 @@ impl AgentProvider for FallbackProvider {
                     }
                     let attempt_completed_at = Utc::now();
                     let attempt_duration_ms = attempt_started.elapsed().as_millis() as u64;
+                    let rate_limit_retry_available = classification.kind
+                        == super::retry::ProviderFailureKind::RateLimited
+                        && rate_limit_retries < PROVIDER_RATE_LIMIT_MAX_RETRIES;
                     let should_retry = classification.disposition == RetryDisposition::Retryable
-                        && (attempt < max_attempts
-                            || classification.kind
-                                == super::retry::ProviderFailureKind::RateLimited);
+                        && (attempt < max_attempts || rate_limit_retry_available);
                     let retry_delay = if should_retry {
                         Some(provider_retry_delay(
                             attempt,
@@ -1033,6 +1088,9 @@ impl AgentProvider for FallbackProvider {
                         let retry_started = std::time::Instant::now();
                         sleep(backoff).await;
                         crate::diagnostics::record_provider_retry(retry_started.elapsed());
+                        if classification.kind == super::retry::ProviderFailureKind::RateLimited {
+                            rate_limit_retries = rate_limit_retries.saturating_add(1);
+                        }
                         attempt = attempt.saturating_add(1);
                         continue;
                     }
