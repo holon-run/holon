@@ -53,6 +53,15 @@ private final class FilesPlanProtocol: URLProtocol, @unchecked Sendable {
                 url.path.hasSuffix("/work-items/work/plan.md") ? 200 : 409
             type = "text/markdown"
             body = "# Full plan"
+        } else if query.contains(where: { $0.name == "meta" && $0.value == "true" }) {
+            status = root == "canonical_root:agent_home:A" ? 200 : 409
+            type = "application/json"
+            body = """
+            {"type":"file","kind":"file","workspace_id":"agent_home:A",
+             "execution_root_id":"canonical_root:agent_home:A","root_kind":"canonical_root",
+             "path":"work-items/work/plan.md","absolute_path":"/server/home/work-items/work/plan.md",
+             "size":11,"mime_type":"text/markdown"}
+            """
         } else {
             status = root == nil ? 200 : 409
             type = "application/json"

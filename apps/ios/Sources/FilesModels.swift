@@ -2,7 +2,7 @@ import Foundation
 import CryptoKit
 import HolonClient
 
-struct FilesWorkspace: Identifiable, Equatable, Sendable {
+struct FilesWorkspace: Identifiable, Hashable, Sendable {
     let workspaceID: String
     let executionRootID: String?
     let name: String
@@ -13,6 +13,9 @@ struct FilesEntry: Identifiable, Equatable, Sendable {
     let name: String
     let path: String
     let isDirectory: Bool
+    var size: Int64? = nil
+    var modified: Date? = nil
+    var mediaType: String? = nil
     var id: String { path }
 }
 
@@ -21,25 +24,63 @@ struct FilesDirectory: Equatable, Sendable {
     let path: String
     let entries: [FilesEntry]
 
-    func filtered(query: String, showHidden: Bool) -> [FilesEntry] {
+    func filtered(query: String, showHidden: Bool, sort: FilesSort = .name) -> [FilesEntry] {
         entries.filter {
             (showHidden || !$0.name.hasPrefix(".")) &&
                 (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query))
         }.sorted {
             if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
+            if sort == .modified, $0.modified != $1.modified { return ($0.modified ?? .distantPast) > ($1.modified ?? .distantPast) }
             return $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
     }
 }
 
-enum FilesSource: Equatable, Sendable {
+enum FilesSort: String, CaseIterable { case name, modified }
+
+enum FilesSource: Hashable, Sendable {
     case workspace(FilesWorkspace, path: String)
     // A reference is opaque server input, never a device URL.
     case reference(String)
+    case relative(String, base: HolonFileLocation)
+}
+
+struct FilesPlanLocator: Hashable, Sendable {
+    let owner: String
+    let workID: String
+    let workspaceID: String
+    let executionRootID: String?
+    let path: String
+
+    init?(agentID: String, workID: String, plan: JSONValue) {
+        guard !agentID.isEmpty, plan["owner_agent_id"]?.workString == agentID,
+              !workID.isEmpty, !workID.contains("/"), !workID.contains("\\"), !workID.contains("\0"),
+              workID != ".", workID != "..", workID.utf8.count <= 512,
+              let workspace = plan["workspace_id"]?.workString, !workspace.isEmpty,
+              let path = plan["relative_path"]?.workString, path == "work-items/\(workID)/plan.md",
+              plan["execution_root_id"]?.workString != "" else { return nil }
+        owner = agentID; self.workID = workID; workspaceID = workspace
+        executionRootID = plan["execution_root_id"]?.workString; self.path = path
+    }
+    var payload: JSONValue {
+        .object(["owner_agent_id": .string(owner), "workspace_id": .string(workspaceID),
+                 "relative_path": .string(path), "execution_root_id": executionRootID.map(JSONValue.string) ?? .null])
+    }
+}
+
+enum FilesRequest: Hashable, Sendable {
+    case source(FilesSource), plan(FilesPlanLocator)
+}
+
+/// Metadata only; byte caches are discarded whenever authority or visibility changes.
+struct FilesReadingPosition: Equatable, Sendable {
+    var page = 0
+    var renderMarkdown = true
+    var wrap = true
 }
 
 enum FilesFailure: Error, Equatable, Sendable {
-    case forbidden, deleted, unsupported, tooLarge, unavailable, invalidReference
+    case forbidden, deleted, rootUnavailable, offline, unsupported, tooLarge, unavailable, invalidReference, invalidText
 
     var key: String {
         switch self {
@@ -49,16 +90,20 @@ enum FilesFailure: Error, Equatable, Sendable {
         case .tooLarge: "files.error.tooLarge"
         case .unavailable: "files.error.unavailable"
         case .invalidReference: "files.error.invalidReference"
+        case .rootUnavailable: "files.error.rootUnavailable"
+        case .offline: "files.error.offline"
+        case .invalidText: "files.error.invalidText"
         }
     }
 }
 
 enum FilesPreviewKind: Equatable, Sendable {
-    case text, image, downloadOnly
+    case text, image, pdf, downloadOnly
 
     static func classify(mediaType: String, name: String) -> Self {
         let type = mediaType.lowercased().split(separator: ";").first.map(String.init) ?? ""
         let ext = (name as NSString).pathExtension.lowercased()
+        if type == "application/pdf" { return .pdf }
         // Never create a WebView, execute markup, or let SVG load network resources.
         if ["image/png", "image/jpeg", "image/gif", "image/webp", "image/heic"].contains(type) {
             return .image
@@ -76,6 +121,7 @@ struct FilesDownload: Sendable {
     let data: Data
     let mediaType: String
     let name: String
+    var location: HolonFileLocation? = nil
 }
 
 struct FilesPrepared: Identifiable, Equatable {
@@ -85,6 +131,9 @@ struct FilesPrepared: Identifiable, Equatable {
     let kind: FilesPreviewKind
     let text: String?
     let truncated: Bool
+    let byteCount: Int
+    let mediaType: String
+    let location: HolonFileLocation?
 }
 
 /// No shared fallback partition; opaque directory names never include credentials.
@@ -133,7 +182,8 @@ final class FilesCache {
             try protected.setResourceValues(values)
             let text = kind == .text ? Self.textPreview(download.data) : nil
             return FilesPrepared(id: UUID(), url: url, name: name, kind: kind,
-                                 text: text, truncated: kind == .text && download.data.count > Self.maximumTextBytes)
+                                 text: text, truncated: kind == .text && download.data.count > Self.maximumTextBytes,
+                                 byteCount: download.data.count, mediaType: download.mediaType, location: download.location)
         } catch {
             try? FileManager.default.removeItem(at: url)
             throw error

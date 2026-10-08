@@ -6,9 +6,48 @@ public struct HolonDownloadedArtifact: Sendable {
     public let mediaType: String
 }
 
+public struct HolonDownloadProgress: Equatable, Sendable {
+    public let receivedBytes: Int
+    public let totalBytes: Int?
+    public init(receivedBytes: Int, totalBytes: Int?) {
+        self.receivedBytes = receivedBytes; self.totalBytes = totalBytes
+    }
+}
+
+/// The complete server-issued base identity. Relative paths are resolved by the server, not joined locally.
+public struct HolonFileLocation: Hashable, Sendable {
+    public let workspaceID: String
+    public let executionRootID: String
+    public let path: String
+    public let absolutePath: String
+    public let rootKind: String
+
+    public init(raw: JSONValue) throws {
+        func text(_ key: String) -> String? {
+            guard case .string(let value) = raw[key], !value.isEmpty,
+                  value.utf8.count <= 16_384, !value.contains("\0") else { return nil }
+            return value
+        }
+        guard let workspace = text("workspace_id"), let root = text("execution_root_id"),
+              let path = text("path"), !path.hasPrefix("/"), !path.contains("\\"),
+              path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              let absolute = text("absolute_path"), absolute.hasPrefix("/"),
+              raw["kind"] == .string("file"), let kind = text("root_kind"),
+              ["canonical_root", "git_worktree_root"].contains(kind) else { throw HolonClientError.malformedResponse }
+        workspaceID = workspace; executionRootID = root; self.path = path; absolutePath = absolute; rootKind = kind
+    }
+
+    public var payload: JSONValue {
+        .object(["workspace_id": .string(workspaceID), "execution_root_id": .string(executionRootID),
+                 "path": .string(path), "absolute_path": .string(absolutePath), "kind": .string("file"),
+                 "root_kind": .string(rootKind)])
+    }
+}
+
 public enum HolonFileReference: Sendable {
     case absolutePath(String)
     case workspaceURI(String)
+    case relativePath(String, baseFile: HolonFileLocation)
 
     var payload: JSONValue {
         switch self {
@@ -16,6 +55,8 @@ public enum HolonFileReference: Sendable {
             return .object(["type": .string("absolute_path"), "absolute_path": .string(path)])
         case .workspaceURI(let uri):
             return .object(["type": .string("workspace_uri"), "workspace_uri": .string(uri)])
+        case .relativePath(let path, let base):
+            return .object(["type": .string("relative_path"), "relative_path": .string(path), "base_file": base.payload])
         }
     }
 }
@@ -65,13 +106,24 @@ extension HolonClient {
     public func downloadWorkspaceFile(workspaceID: String, path: String, executionRootID: String? = nil,
                                       maximumBytes: Int = 16_777_216,
                                       allowedContentTypes: Set<String> = ["application/octet-stream", "text/plain",
-                                          "text/markdown", "application/pdf", "image/png", "image/jpeg", "image/webp"])
+                                          "text/markdown", "application/pdf", "image/png", "image/jpeg", "image/webp"],
+                                      progress: (@Sendable (HolonDownloadProgress) -> Void)? = nil)
         async throws -> HolonResponse<HolonDownloadedArtifact> {
         guard !path.isEmpty else { throw HolonClientError.invalidRequest }
         var query = Self.rootQuery(executionRootID)
         query["download"] = "true"
         return try await downloadBinary(path: Self.workspaceFilePath(workspaceID, path), query: query,
-                                        maximumBytes: maximumBytes, allowedContentTypes: allowedContentTypes)
+                                        maximumBytes: maximumBytes, allowedContentTypes: allowedContentTypes, progress: progress)
+    }
+
+    public func workspaceFileMetadata(workspaceID: String, path: String, executionRootID: String? = nil)
+        async throws -> HolonResponse<JSONValue> {
+        guard !path.isEmpty else { throw HolonClientError.invalidRequest }
+        var query = Self.rootQuery(executionRootID)
+        query["meta"] = "true"
+        let response = try await getJSON(path: Self.workspaceFilePath(workspaceID, path), query: query)
+        guard response.value["type"] == .string("file") else { throw HolonClientError.malformedResponse }
+        return response
     }
 
     public func downloadWorkspaceArtifact(locator: String, maximumBytes: Int = 16_777_216,

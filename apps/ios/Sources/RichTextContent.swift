@@ -3,7 +3,7 @@ import Textual
 
 /// A host file reference stays opaque until the authorized server resolver reads it.
 enum RichTextLink: Equatable {
-    case external(URL), reference(String), unsupported
+    case external(URL), reference(String), relative(String), unsupported
 
     static func classify(_ url: URL) -> Self {
         let value = url.absoluteString
@@ -32,6 +32,11 @@ enum RichTextLink: Equatable {
                   let path = components.percentEncodedPath.removingPercentEncoding,
                   path.hasPrefix("/"), !path.contains("\0") else { return .unsupported }
             return .reference(path)
+        case nil, "holon-relative":
+            guard components.host == nil, components.query == nil,
+                  let path = components.percentEncodedPath.removingPercentEncoding,
+                  !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\"), !path.contains("\0") else { return .unsupported }
+            return .relative(path)
         default: return .unsupported
         }
     }
@@ -43,11 +48,19 @@ enum RichTextLink: Equatable {
         components.path = path
         return components.url
     }
+
+    static func literalRelativeURL(_ path: String) -> URL? {
+        guard path.hasPrefix("./") || path.hasPrefix("../"), path.utf8.count <= 16_384,
+              !path.contains("\0"), !path.contains("\\") else { return nil }
+        var components = URLComponents(); components.scheme = "holon-relative"; components.path = path
+        return components.url
+    }
 }
 
 /// Foundation parses Markdown; this adapter only controls links and passive attachments.
 @MainActor
 struct HolonMarkdownParser: MarkupParser {
+    var allowsRelativePaths = false
     func attributedString(for input: String) throws -> AttributedString {
         var content = try AttributedString(markdown: input, options: .init(allowsExtendedAttributes: false))
         for run in Array(content.runs) {
@@ -64,7 +77,10 @@ struct HolonMarkdownParser: MarkupParser {
                 let text = String(content[run.range].characters)
                 if let url = URL(string: text), case .reference = RichTextLink.classify(url) {
                     content[run.range].link = url
-                } else { content[run.range].link = RichTextLink.literalPathURL(text) }
+                } else {
+                    content[run.range].link = RichTextLink.literalPathURL(text) ??
+                        (allowsRelativePaths ? RichTextLink.literalRelativeURL(text) : nil)
+                }
             } else if run.link == nil {
                 let text = String(content[run.range].characters)
                 let pattern = try NSRegularExpression(pattern: "(?:workspace|file)://[^\\s<>\"')\\]]+")
@@ -110,10 +126,11 @@ struct HolonMarkdownParser: MarkupParser {
 struct RichTextContent: View {
     let text: String
     var openReference: ((String) -> Void)? = nil
+    var openRelative: ((String) -> Void)? = nil
     @State private var unsupportedLink = false
 
     var body: some View {
-        StructuredText(text, parser: HolonMarkdownParser())
+        StructuredText(text, parser: HolonMarkdownParser(allowsRelativePaths: openRelative != nil))
             .textual.structuredTextStyle(.gitHub)
             .textual.textSelection(.enabled)
             .textual.overflowMode(.wrap)
@@ -125,6 +142,9 @@ struct RichTextContent: View {
                 case .reference(let reference):
                     if let openReference { openReference(reference) }
                     else { unsupportedLink = true }
+                    return .handled
+                case .relative(let path):
+                    if let openRelative { openRelative(path) } else { unsupportedLink = true }
                     return .handled
                 case .unsupported: unsupportedLink = true; return .handled
                 }

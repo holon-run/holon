@@ -4,6 +4,17 @@ import XCTest
 @testable import Holon
 
 final class WorkModelsTests: XCTestCase {
+    func testWorkShowsCurrentStepAndLocalizedStateWithoutChangingUnknownContract() throws {
+        let record = try WorkRecord(raw: .object(["id": .string("work"), "state": .string("open"), "todo_list": .array([
+            .object(["text": .string("Done"), "state": .string("completed")]),
+            .object(["text": .string("Later"), "state": .string("pending")]),
+            .object(["text": .string("Now"), "state": .string("in_progress")])
+        ])]))
+        XCTAssertEqual(record.nextStep, "Now"); XCTAssertFalse(record.completed)
+        XCTAssertEqual(record.stateKey, "work.state.pending")
+        let unknown = try WorkRecord(raw: .object(["id": .string("work"), "state": .string("future")]))
+        XCTAssertEqual(unknown.state, "future"); XCTAssertEqual(unknown.stateKey, "work.state.unknown")
+    }
     func testBriefUsesCanonicalFullTextAndNeverFallsBackToRawJSON() {
         let fullText = String(repeating: "正文\n", count: 20_000)
         XCTAssertEqual(BriefPresentation.text(.object([

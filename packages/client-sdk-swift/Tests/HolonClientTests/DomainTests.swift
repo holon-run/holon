@@ -3,6 +3,18 @@ import HolonClient
 import XCTest
 
 final class DomainTests: XCTestCase {
+    func testServerFileLocationRetainsCompleteRelativeReferenceBaseAndRejectsUnknownRoots() throws {
+        let fields: [String: JSONValue] = ["workspace_id": .string("w"), "execution_root_id": .string("r"),
+            "path": .string("docs/readme.md"), "absolute_path": .string("/host/docs/readme.md"),
+            "kind": .string("file"), "root_kind": .string("git_worktree_root")]
+        let location = try HolonFileLocation(raw: .object(fields))
+        XCTAssertEqual(location.payload, .object(fields))
+        for (key, value) in [("root_kind", "future-root"), ("path", "../readme.md"),
+                             ("kind", "directory"), ("absolute_path", "relative.md"), ("execution_root_id", "")] {
+            var invalid = fields; invalid[key] = .string(value)
+            XCTAssertThrowsError(try HolonFileLocation(raw: .object(invalid)))
+        }
+    }
     private func fixture(_ name: String) throws -> Data {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()

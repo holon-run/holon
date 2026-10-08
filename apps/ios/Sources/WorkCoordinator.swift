@@ -14,6 +14,10 @@ final class WorkCoordinator {
     private(set) var output: WorkOutput?
     private(set) var brief: JSONValue?
     private(set) var route: WorkRoute?
+    private(set) var itemLimit = 50
+    private(set) var taskLimit = 50
+    private(set) var briefFailed = false
+    private(set) var outputFailed = false
     var onConnectionFailure: ((HolonHTTPFailure) -> Void)?
 
     @ObservationIgnored private var transport: (any WorkTransport)?
@@ -23,8 +27,11 @@ final class WorkCoordinator {
     @ObservationIgnored private var detailRevision = 0
     @ObservationIgnored private var pending: [Task<Void, Never>] = []
     @ObservationIgnored private var detailTask: Task<Void, Never>?
+    @ObservationIgnored private var outputTask: Task<Void, Never>?
+    @ObservationIgnored private var detailVisible = false
+    @ObservationIgnored private let outputRefreshInterval: Duration
 
-    init() {}
+    init(outputRefreshInterval: Duration = .seconds(3)) { self.outputRefreshInterval = outputRefreshInterval }
 
     func activate(client: HolonClient, identity: HolonConnectionIdentity) {
         activate(transport: WorkClientTransport(client: client, authority: identity), identity: identity)
@@ -78,6 +85,14 @@ final class WorkCoordinator {
     }
 
     func refresh() { cancel(); reload() }
+    func loadMoreItems() { guard itemLimit < 400 else { return }; itemLimit = min(400, itemLimit * 2); refresh() }
+    func loadMoreTasks() { guard taskLimit < 400 else { return }; taskLimit = min(400, taskLimit * 2); refresh() }
+    func setDetailVisible(_ value: Bool, route expected: WorkRoute? = nil) {
+        if !value, let expected, route != expected { return }
+        detailVisible = value
+        if !value { outputTask?.cancel(); outputTask = nil }
+        else { startOutputRefresh() }
+    }
 
     private func cancel() {
         revision &+= 1
@@ -86,6 +101,7 @@ final class WorkCoordinator {
         pending.removeAll()
         detailTask?.cancel()
         detailTask = nil
+        outputTask?.cancel(); outputTask = nil
     }
 
     private func clear() {
@@ -96,6 +112,7 @@ final class WorkCoordinator {
         brief = nil
         route = nil
         detailState = .idle
+        itemLimit = 50; taskLimit = 50; detailVisible = false; briefFailed = false; outputFailed = false
     }
 
     private func valid(_ generation: Int, _ authority: HolonConnectionIdentity,
@@ -115,12 +132,13 @@ final class WorkCoordinator {
             return
         }
         let generation = revision
+        let itemLimit = itemLimit, taskLimit = taskLimit
         itemsState = .loading
         tasksState = .loading
         pending.append(Task { [weak self] in
             guard let self, self.valid(generation, authority, agent) else { return }
             do {
-                let result = try await transport.items(agentID: agent)
+                let result = try await transport.items(agentID: agent, limit: itemLimit)
                 guard self.valid(generation, authority, agent) else { return }
                 self.items = result
                 self.itemsState = .loaded
@@ -133,7 +151,7 @@ final class WorkCoordinator {
         pending.append(Task { [weak self] in
             guard let self, self.valid(generation, authority, agent) else { return }
             do {
-                let result = try await transport.tasks(agentID: agent)
+                let result = try await transport.tasks(agentID: agent, limit: taskLimit)
                 guard self.valid(generation, authority, agent) else { return }
                 self.tasks = result
                 self.tasksState = .loaded
@@ -148,11 +166,13 @@ final class WorkCoordinator {
 
     func open(_ route: WorkRoute) {
         detailTask?.cancel()
+        outputTask?.cancel(); outputTask = nil
         detailRevision &+= 1
         self.route = route
         detail = nil
         output = nil
         brief = nil
+        briefFailed = false; outputFailed = false
         guard foreground, let transport, let authority = identity,
               let agent = selectedAgentID else {
             detailState = transport == nil ? .disconnected : .offline
@@ -171,6 +191,16 @@ final class WorkCoordinator {
                     guard self.valid(generation, authority, agent),
                           self.detailRevision == operation else { return }
                     self.detail = result
+                    if let id = result.briefID {
+                        do {
+                            let value = try await transport.brief(agentID: agent, id: id)
+                            guard self.valid(generation, authority, agent), self.detailRevision == operation else { return }
+                            self.brief = value
+                        } catch {
+                            guard self.valid(generation, authority, agent), self.detailRevision == operation else { return }
+                            self.briefFailed = true; self.failure(error, authority: authority)
+                        }
+                    }
                 case .task(let id):
                     let result = try await transport.task(agentID: agent, id: id)
                     guard self.valid(generation, authority, agent),
@@ -187,12 +217,40 @@ final class WorkCoordinator {
                     self.brief = result
                 }
                 self.detailState = .loaded
+                self.startOutputRefresh()
             } catch {
                 guard self.valid(generation, authority, agent),
                       self.detailRevision == operation else { return }
                 self.detailState = .failed
                 self.failure(error, authority: authority)
             }
+        }
+    }
+
+    /// Visible task output only. Three failed refreshes stop the loop until explicit retry.
+    private func startOutputRefresh() {
+        guard outputTask == nil, detailVisible, foreground, case .task(let id) = route,
+              let detail, ["running", "active", "queued", "pending"].contains(detail.state),
+              let transport, let authority = identity, let agent = selectedAgentID else { return }
+        let generation = revision, operation = detailRevision
+        outputTask = Task { [weak self] in
+            var failures = 0
+            while let self, self.valid(generation, authority, agent), self.detailRevision == operation, self.detailVisible {
+                do {
+                    try await Task.sleep(for: self.outputRefreshInterval)
+                    let record = try await transport.task(agentID: agent, id: id)
+                    let output = try await transport.output(agentID: agent, id: id)
+                    guard self.valid(generation, authority, agent), self.detailRevision == operation, self.detailVisible else { return }
+                    self.detail = record; self.output = output; self.outputFailed = false; failures = 0
+                    if !["running", "active", "queued", "pending"].contains(record.state) { break }
+                } catch {
+                    guard self.valid(generation, authority, agent), self.detailRevision == operation, self.detailVisible else { return }
+                    self.outputFailed = true; self.failure(error, authority: authority); failures += 1
+                    if failures >= 3 { break }
+                }
+            }
+            guard let self, self.revision == generation, self.detailRevision == operation else { return }
+            self.outputTask = nil
         }
     }
 

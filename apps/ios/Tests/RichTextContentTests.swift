@@ -62,12 +62,23 @@ final class RichTextContentTests: XCTestCase {
 
     func testUnsafeSchemesCredentialsAndNonlocalFileHostsFailClosed() {
         for link in ["javascript:alert(1)", "data:text/html,test", "file://remote/tmp/a", "file:///tmp/a?secret=x",
-                     "https://user:password@example.com", "holon-path:///a?query=1", "./relative.md"] {
+                     "https://user:password@example.com", "holon-path:///a?query=1", "relative.md?query=1"] {
             XCTAssertEqual(RichTextLink.classify(URL(string: link)!), .unsupported, link)
         }
         XCTAssertEqual(RichTextLink.classify(URL(string: "file://localhost/tmp/a%20b.md#L1")!), .reference("/tmp/a b.md"))
         XCTAssertEqual(RichTextLink.classify(URL(string: "workspace://w/a.md?root=r#L1")!), .reference("workspace://w/a.md?root=r"))
         if case .external = RichTextLink.classify(URL(string: "http://example.com")!) {} else { XCTFail("HTTP remains a supported external link") }
+    }
+
+    func testRelativeReferencesRequireAReaderBaseAndDecodeOnlyOnce() throws {
+        XCTAssertEqual(RichTextLink.classify(URL(string: "../notes%2520.md#L2")!), .relative("../notes%20.md"))
+        let path = "../notes%20#1?.md"
+        XCTAssertEqual(RichTextLink.classify(try XCTUnwrap(RichTextLink.literalRelativeURL(path))), .relative(path))
+        XCTAssertNil(RichTextLink.literalRelativeURL("bare.md"))
+        let input = "`../notes.md`\n\n```\n../literal.md\n```"
+        XCTAssertTrue(try HolonMarkdownParser().attributedString(for: input).runs.compactMap(\.link).isEmpty)
+        XCTAssertEqual(try HolonMarkdownParser(allowsRelativePaths: true).attributedString(for: input)
+            .runs.compactMap(\.link).map(RichTextLink.classify), [.relative("../notes.md")])
     }
 
     func testAttachmentDoesNotTreatUnknownPayloadAsAHostPath() {

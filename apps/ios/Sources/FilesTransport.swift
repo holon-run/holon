@@ -6,7 +6,16 @@ protocol FilesTransport: Sendable {
     func workspaces(agentID: String) async throws -> [FilesWorkspace]
     func directory(workspace: FilesWorkspace, path: String) async throws -> FilesDirectory
     func download(source: FilesSource, maximumBytes: Int) async throws -> FilesDownload
+    func download(source: FilesSource, maximumBytes: Int,
+                  progress: (@Sendable (HolonDownloadProgress) -> Void)?) async throws -> FilesDownload
     func close() async
+}
+
+extension FilesTransport {
+    func download(source: FilesSource, maximumBytes: Int,
+                  progress: (@Sendable (HolonDownloadProgress) -> Void)?) async throws -> FilesDownload {
+        try await download(source: source, maximumBytes: maximumBytes)
+    }
 }
 
 /// This independent SDK client never adopts a rebound generation, including a same-user rebind.
@@ -86,7 +95,10 @@ actor FilesClientTransport: FilesTransport {
                   !name.contains("/"), !name.contains("\\"), !name.contains("\0"),
                   name != ".", name != ".." else { throw FilesFailure.invalidReference }
             return FilesEntry(name: name, path: path.isEmpty ? name : path + "/" + name,
-                              isDirectory: entry["type"] == .string("directory"))
+                              isDirectory: entry["type"] == .string("directory"),
+                              size: entry["size"]?.readingInteger.flatMap { $0 >= 0 ? $0 : nil },
+                              modified: entry["modified"]?.readingInteger.flatMap { $0 >= 0 ? Date(timeIntervalSince1970: Double($0)) : nil },
+                              mediaType: entry["mime_type"]?.filesString)
         }
         let resolvedWorkspace = FilesWorkspace(workspaceID: workspace.workspaceID,
                                               executionRootID: returnedRoot, name: workspace.name)
@@ -94,6 +106,11 @@ actor FilesClientTransport: FilesTransport {
     }
 
     func download(source: FilesSource, maximumBytes: Int) async throws -> FilesDownload {
+        try await download(source: source, maximumBytes: maximumBytes, progress: nil)
+    }
+
+    func download(source: FilesSource, maximumBytes: Int,
+                  progress: (@Sendable (HolonDownloadProgress) -> Void)?) async throws -> FilesDownload {
         let workspace: FilesWorkspace
         let path: String
         switch source {
@@ -108,16 +125,29 @@ actor FilesClientTransport: FilesTransport {
             let input: HolonFileReference = reference.hasPrefix("/") ? .absolutePath(reference) : .workspaceURI(reference)
             let raw = try await request { try await $0.resolveFileReference(input) }
             (workspace, path) = try Self.resolved(raw)
+        case .relative(let relative, let base):
+            let raw = try await request { try await $0.resolveFileReference(.relativePath(relative, baseFile: base)) }
+            (workspace, path) = try Self.resolved(raw)
         }
         do {
+            let metadata = try await request {
+                try await $0.workspaceFileMetadata(workspaceID: workspace.workspaceID, path: path,
+                                                  executionRootID: workspace.executionRootID)
+            }
+            let location = try HolonFileLocation(raw: metadata)
+            guard location.workspaceID == workspace.workspaceID, location.path == path,
+                  workspace.executionRootID == nil || location.executionRootID == workspace.executionRootID else {
+                throw FilesFailure.invalidReference
+            }
+            if let size = metadata["size"]?.readingInteger, size > Int64(maximumBytes) { throw FilesFailure.tooLarge }
             let artifact = try await request {
                 try await $0.downloadWorkspaceFile(workspaceID: workspace.workspaceID, path: path,
-                    executionRootID: workspace.executionRootID, maximumBytes: maximumBytes,
-                    allowedContentTypes: Self.contentTypes)
+                    executionRootID: location.executionRootID, maximumBytes: maximumBytes,
+                    allowedContentTypes: Self.contentTypes, progress: progress)
             }
             guard artifact.data.count <= maximumBytes else { throw FilesFailure.tooLarge }
             return FilesDownload(data: artifact.data, mediaType: artifact.mediaType,
-                                 name: (path as NSString).lastPathComponent)
+                                 name: (path as NSString).lastPathComponent, location: location)
         } catch HolonClientError.streamLimitExceeded {
             throw FilesFailure.tooLarge
         } catch HolonClientError.unexpectedContentType {
@@ -133,7 +163,8 @@ actor FilesClientTransport: FilesTransport {
         guard result["status"] == .string("resolved") else {
             switch result["reason"]?.filesString {
             case "forbidden", "permission_denied", "not_authorized": throw FilesFailure.forbidden
-            case "not_found", "missing", "deleted", "execution_root_not_found", "root_removed": throw FilesFailure.deleted
+            case "execution_root_not_found", "root_removed": throw FilesFailure.rootUnavailable
+            case "not_found", "missing", "deleted": throw FilesFailure.deleted
             case "unsupported", "unsupported_reference": throw FilesFailure.unsupported
             default: throw FilesFailure.invalidReference
             }

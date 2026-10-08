@@ -12,7 +12,6 @@ struct HolonApp: App {
     @State private var files: FilesCoordinator
     @State private var imports: SharedImportCoordinator
     @State private var router = AppRouter()
-    @State private var presentingFiles = false
     @State private var addingConnection = false
     @State private var previousProfile: ConnectionProfile?
     @State private var returningConnection = false
@@ -79,7 +78,6 @@ struct HolonApp: App {
                                     ReadingPartition(apiBaseURL: $0.apiBaseURL, identity: value)
                                 }
                             })
-                            presentingFiles = false
                             if identity != nil {
                                 addingConnection = false
                                 previousProfile = nil
@@ -97,18 +95,8 @@ struct HolonApp: App {
                         .onChange(of: router.path) { _, _ in
                             reader.selectAgent(router.agentID)
                             router.remember()
-                        }
-                        .sheet(isPresented: $presentingFiles, onDismiss: {
-                            files.dismissPreview()
-                        }) {
-                            NavigationStack {
-                                FilesView(coordinator: files)
-                                    .toolbar {
-                                        ToolbarItem(placement: .cancellationAction) {
-                                            Button("files.dismiss") { presentingFiles = false }
-                                                .accessibilityIdentifier("files.dismiss")
-                                        }
-                                    }
+                            if case .file = router.path.last {} else if files.request != nil {
+                                files.dismissPreview()
                             }
                         }
                         .task(id: coordinator.identity) { [coordinator] in
@@ -238,7 +226,7 @@ struct HolonApp: App {
                 ConversationReadingView(reader: reader, sender: sender?.selectedAgentID == agent ? sender : nil,
                     openReference: { reference in
                         guard files.selectedAgentID == agent else { return }
-                        files.openReference(reference); presentingFiles = true
+                        router.path.append(.file(agent, .source(.reference(reference))))
                     }, openWork: { workID in router.path.append(.workDetail(agent, .item(workID))) })
                     .id(agent)
             } else { ProgressView("reading.loadingConversation") }
@@ -249,16 +237,24 @@ struct HolonApp: App {
                 return nil
             }(), openReference: { reference in
                 guard files.selectedAgentID == agent else { return }
-                files.openReference(reference); presentingFiles = true
+                router.path.append(.file(agent, .source(.reference(reference))))
             }, openPlan: { agent, workID, plan in
-                if files.openPlan(agentID: agent, workID: workID, plan: plan) { presentingFiles = true }
+                if files.selectedAgentID == agent, let locator = FilesPlanLocator(agentID: agent, workID: workID, plan: plan) {
+                    router.path.append(.file(agent, .plan(locator)))
+                }
             }, openArtifact: { agent, artifact in
-                if files.openArtifact(agentID: agent, artifact: artifact) { presentingFiles = true }
+                if let request = files.artifactRequest(agentID: agent, artifact: artifact) { router.path.append(.file(agent, request)) }
             })
             } else { ProgressView("work.loading") }
         case .files(let agent):
-            if files.selectedAgentID == agent { FilesView(coordinator: files) }
+            if files.selectedAgentID == agent {
+                FilesView(coordinator: files, openFile: { router.path.append(.file(agent, $0)) })
+            }
             else { ProgressView("work.loading") }
+        case .file(let agent, let request):
+            if files.selectedAgentID == agent {
+                FileReaderView(coordinator: files, request: request, openFile: { router.path.append(.file(agent, $0)) })
+            } else { ProgressView("work.loading") }
         case .settings:
             SettingsView(connection: connection)
         case .connections:

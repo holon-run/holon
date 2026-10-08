@@ -5,6 +5,21 @@ import XCTest
 
 @MainActor
 final class BinaryRedirectTests: XCTestCase {
+    func testBinaryProgressIsBoundedMonotoneAndReportsFinalOriginalBytes() async throws {
+        let ready = expectation(description: "Progress source listening")
+        let source = try BinaryHTTPFixture(response: "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 131073\r\nConnection: close\r\n\r\n" + String(repeating: "x", count: 131_073), ready: ready)
+        defer { source.stop() }; await fulfillment(of: [ready], timeout: 3)
+        let port = try XCTUnwrap(source.port), progress = BinaryProgressCapture()
+        let client = try HolonClient(endpoint: HolonEndpoint(apiBaseURL: URL(string: "http://127.0.0.1:\(port)/api")!), networkID: "progress")
+        let reply = try await client.downloadWorkspaceFile(workspaceID: "w", path: "file.txt", progress: { progress.add($0) })
+        XCTAssertEqual(reply.value.data.count, 131_073)
+        let values = progress.values
+        XCTAssertEqual(values.first?.receivedBytes, 0); XCTAssertEqual(values.last?.receivedBytes, 131_073)
+        XCTAssertTrue(values.allSatisfy { $0.totalBytes == 131_073 && $0.receivedBytes <= 131_073 })
+        XCTAssertEqual(values.map(\.receivedBytes), values.map(\.receivedBytes).sorted())
+        XCTAssertLessThanOrEqual(values.count, 5)
+        await client.close()
+    }
     func testRealCrossOriginRedirectNeverSendsCredentialToDestination() async throws {
         let destinationReady = expectation(description: "Destination listening")
         let destination = try BinaryHTTPFixture(response: "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx",
@@ -31,6 +46,13 @@ final class BinaryRedirectTests: XCTestCase {
         XCTAssertTrue(source.requests[0].contains("/prefix/api/workspaces/ws/files/a?download=true"))
         XCTAssertEqual(destination.requests.count, 0, "No request or credential may reach the second origin")
     }
+}
+
+private final class BinaryProgressCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var captured: [HolonDownloadProgress] = []
+    var values: [HolonDownloadProgress] { lock.withLock { captured } }
+    func add(_ value: HolonDownloadProgress) { lock.withLock { captured.append(value) } }
 }
 
 /// Loopback-only HTTP fixture exercises URLSession's real redirect delegate.

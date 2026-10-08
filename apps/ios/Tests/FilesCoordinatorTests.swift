@@ -14,6 +14,8 @@ private actor FilesFakeTransport: FilesTransport {
     private var pendingFailure: FilesFailure?
     private var workspaceList: [FilesWorkspace]?
     private var directoryResult: FilesDirectory?
+    private var location: HolonFileLocation?
+    func setLocation(_ value: HolonFileLocation) { location = value }
 
     func setWorkspaces(_ value: [FilesWorkspace]) { workspaceList = value }
     func setDirectory(_ value: FilesDirectory) { directoryResult = value }
@@ -61,13 +63,66 @@ private actor FilesFakeTransport: FilesTransport {
             }
         }
         if let pendingFailure { throw pendingFailure }
-        return FilesDownload(data: Data("private".utf8), mediaType: "text/plain", name: "private.txt")
+        return FilesDownload(data: Data("private".utf8), mediaType: "text/plain", name: "private.txt", location: location)
     }
     func close() {}
 }
 
 @MainActor
 final class FilesCoordinatorTests: XCTestCase {
+    func testForegroundResumesOriginalResolvedRootAndReadingMetadata() async throws {
+        let transport = FilesFakeTransport(), coordinator = FilesCoordinator()
+        let location = try HolonFileLocation(raw: .object([
+            "workspace_id": .string("ws"), "execution_root_id": .string("original-root"),
+            "path": .string("private.txt"), "absolute_path": .string("/original/private.txt"),
+            "root_kind": .string("git_worktree_root"), "kind": .string("file")
+        ]))
+        await transport.setLocation(location)
+        coordinator.activate(transport: transport, identity: identity()); coordinator.selectAgent("A")
+        await settle(coordinator)
+        let request = FilesRequest.source(.reference("/original/private.txt"))
+        coordinator.openRequest(request); await settle(coordinator)
+        let oldURL = try XCTUnwrap(coordinator.prepared?.url)
+        let position = FilesReadingPosition(page: 8, renderMarkdown: false, wrap: false)
+        coordinator.rememberPosition(position, for: request)
+        coordinator.setForeground(false)
+        XCTAssertNil(coordinator.prepared); XCTAssertFalse(FileManager.default.fileExists(atPath: oldURL.path))
+        coordinator.setForeground(true); await settle(coordinator)
+        let sources = await transport.sources
+        XCTAssertEqual(sources.last, .workspace(.init(workspaceID: "ws", executionRootID: "original-root", name: "ws"), path: "private.txt"))
+        XCTAssertEqual(coordinator.readingPosition(for: request), position)
+        XCTAssertNotNil(coordinator.prepared)
+        coordinator.selectAgent("B"); XCTAssertEqual(coordinator.readingPosition(for: request), .init())
+        coordinator.disconnect()
+    }
+
+    func testForegroundRestoresFilteredDirectoryAndRejectsRemovedRoot() async {
+        let transport = FilesFakeTransport(), coordinator = FilesCoordinator()
+        let workspace = FilesWorkspace(workspaceID: "ws", executionRootID: "r", name: "Source")
+        coordinator.activate(transport: transport, identity: identity()); coordinator.selectAgent("A")
+        await settle(coordinator); coordinator.browse(workspace, path: "docs"); await settle(coordinator)
+        coordinator.query = "report"; coordinator.directoryPosition = "docs/report.md"; coordinator.sort = .modified
+        coordinator.setForeground(false); coordinator.setForeground(true); await settle(coordinator)
+        XCTAssertEqual(coordinator.directory?.path, "docs"); XCTAssertEqual(coordinator.query, "report")
+        XCTAssertEqual(coordinator.directoryPosition, "docs/report.md"); XCTAssertEqual(coordinator.sort, .modified)
+        await transport.setDirectory(.init(workspace: .init(workspaceID: "ws", executionRootID: "different", name: "Source"), path: "docs", entries: []))
+        coordinator.setForeground(false); coordinator.setForeground(true); await settle(coordinator)
+        XCTAssertEqual(coordinator.failure, .invalidReference); XCTAssertNil(coordinator.directory)
+        coordinator.disconnect()
+    }
+
+    func testCancelledDownloadRetainsRetryRequestButNotStaleBytes() async {
+        let transport = FilesFakeTransport(), coordinator = FilesCoordinator()
+        coordinator.activate(transport: transport, identity: identity())
+        await transport.block(); coordinator.openReference("/private.txt"); await transport.waitForEntry()
+        coordinator.cancelDownload(); await transport.release()
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertTrue(coordinator.cancelled); XCTAssertNil(coordinator.prepared)
+        XCTAssertEqual(coordinator.request, .source(.reference("/private.txt")))
+        coordinator.openReference("/private.txt"); await settle(coordinator)
+        XCTAssertNotNil(coordinator.prepared); XCTAssertFalse(coordinator.cancelled)
+        coordinator.disconnect()
+    }
     func testReturningFromPlanRestoresRootLoadCancelledByPlan() async {
         let transport = FilesFakeTransport()
         let coordinator = FilesCoordinator()

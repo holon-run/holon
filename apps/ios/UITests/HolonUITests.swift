@@ -545,11 +545,8 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", planMarker))
             .firstMatch.waitForExistence(timeout: 30))
         capture(app, "full-plan")
-        let dismissFiles = app.buttons["files.dismiss"]
-        XCTAssertTrue(dismissFiles.waitForExistence(timeout: 10))
-        dismissFiles.tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(openPlan.waitForExistence(timeout: 10))
-        XCTAssertFalse(dismissFiles.exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         let taskRow = app.buttons["work.task." + task]
         reveal(taskRow, in: app)
@@ -564,6 +561,8 @@ final class HolonUITests: XCTestCase {
         let files = app.buttons["conversation.files"]
         reveal(files, in: app)
         files.tap()
+        app.buttons["files.options"].tap()
+        app.buttons["Server reference"].tap()
         let reference = app.textFields["files.reference"]
         XCTAssertTrue(reference.waitForExistence(timeout: 10))
         reference.tap()
@@ -572,10 +571,8 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", fileMarker))
             .firstMatch.waitForExistence(timeout: 30))
         capture(app, "file-preview")
-        let closePreview = app.buttons["Close preview"]
-        XCTAssertTrue(closePreview.waitForExistence(timeout: 10))
-        closePreview.tap()
-        XCTAssertTrue(reference.waitForExistence(timeout: 10))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.navigationBars["Files"].waitForExistence(timeout: 10))
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.buttons["conversation.more"].tap()
         openDiagnostics(app)

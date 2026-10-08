@@ -2,12 +2,12 @@ import Foundation
 import Observation
 
 enum AppRoute: Hashable {
-    case conversation(String), work(String), workDetail(String, WorkRoute), files(String)
+    case conversation(String), work(String), workDetail(String, WorkRoute), files(String), file(String, FilesRequest)
     case settings, connections, tools, diagnostics
 
     var agentID: String? {
         switch self {
-        case .conversation(let id), .work(let id), .workDetail(let id, _), .files(let id): id
+        case .conversation(let id), .work(let id), .workDetail(let id, _), .files(let id), .file(let id, _): id
         default: nil
         }
     }
