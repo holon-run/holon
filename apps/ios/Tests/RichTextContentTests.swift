@@ -5,6 +5,28 @@ import UIKit
 
 @MainActor
 final class RichTextContentTests: XCTestCase {
+    func testAbsoluteMarkdownLinksDecodeOnceAndBarePathsStayLiteral() throws {
+        let content = try HolonMarkdownParser().attributedString(for:
+            "中文 👩🏽‍💻 [报告](/tmp/report%2520.md#L2)；打开：/tmp/结果%20.md。 HTTPS https://example.test/a.md\n\n`/tmp/with space#1?.md`\n\n```\n/tmp/source.md\n```")
+        XCTAssertEqual(content.runs.compactMap(\.link).map(RichTextLink.classify), [
+            .reference("/tmp/report%20.md"), .reference("/tmp/结果%20.md"),
+            .external(URL(string: "https://example.test/a.md")!), .reference("/tmp/with space#1?.md")
+        ])
+    }
+    func testBarePathBoundariesExcludeURLsAndExistingLinks() throws {
+        let content = try HolonMarkdownParser().attributedString(for:
+            "/tmp/a.txt and (/tmp/b.txt), x=/tmp/c.txt; https://example.test/a //remote/a x/tmp/not-path [label](/tmp/explicit.md)")
+        XCTAssertEqual(content.runs.compactMap(\.link).map(RichTextLink.classify), [
+            .reference("/tmp/a.txt"), .reference("/tmp/b.txt"), .reference("/tmp/c.txt"),
+            .external(URL(string: "https://example.test/a")!), .reference("/tmp/explicit.md")
+        ])
+    }
+    func testOperatorInputRemainsVerbatimWhilePathsAreInteractive() {
+        let input = "**literal**\n\n请查看：/tmp/a%20.md\nhttps://example.test/a"
+        let attributed = OperatorMessageText.attributed(input)
+        XCTAssertEqual(String(attributed.characters), input)
+        XCTAssertEqual(attributed.runs.compactMap(\.link).map(RichTextLink.classify), [.reference("/tmp/a%20.md")])
+    }
     func testNativeSelectionPreservesVerbatimBlocksAndDisablesActiveLinks() {
         let text = "# Result\n\nFirst paragraph.\n\nSecond paragraph.\n\n- one\n- two\n\n[Sibling](./note.txt)\n\n```swift\nlet x = 1\n```"
         let view = RichTextSelectionView.makeTextView(text: text)

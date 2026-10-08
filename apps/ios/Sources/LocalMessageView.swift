@@ -25,8 +25,9 @@ struct LocalMessageView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
         ForEach(LocalMessageProjection.visible(sender.entries, canonicalIDs: canonicalIDs)) { entry in
+            OperatorMessageBubble {
             VStack(alignment: .leading, spacing: 6) {
-                Text(verbatim: entry.draft.text).textSelection(.enabled)
+                OperatorMessageText(text: entry.draft.text)
                 ForEach(entry.draft.attachments) { attachment in
                     Label(attachment.name, systemImage: "paperclip").font(.caption)
                 }
@@ -34,7 +35,7 @@ struct LocalMessageView: View {
                     Text(LocalizedStringKey(SendingPresentation.stateKey(entry.state))).font(.caption).foregroundStyle(.secondary)
                         .accessibilityIdentifier("sending.state." + entry.state.rawValue)
                     if SendingPresentation.canRetry(entry.state) {
-                        Button(LocalizedStringKey(entry.state == .unknown ? "sending.retry.same" : "sending.retry")) {
+                        Button(LocalizedStringKey(entry.state == .queued ? "sending.send" : entry.state == .unknown ? "sending.retry.same" : "sending.retry")) {
                             sender.retry(requestID: entry.requestID)
                         }.disabled(!sender.canRetry(requestID: entry.requestID)).font(.caption)
                     }
@@ -42,9 +43,7 @@ struct LocalMessageView: View {
                 if entry.state == .unknown { Text("sending.unknown.explanation").font(.caption).foregroundStyle(.secondary) }
                 if let error = entry.error { Text(verbatim: error).font(.caption).foregroundStyle(.secondary) }
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+            }
             .accessibilityIdentifier("localMessage." + entry.requestID.uuidString)
         }
         }

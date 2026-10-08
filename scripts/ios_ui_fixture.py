@@ -26,6 +26,7 @@ rich_activity_acceptance = rich_acceptance and (
     or "testRichActivityWorkflow" in os.environ["IOS_UI_CASES"].split(","))
 lost_response_acceptance = os.environ.get("IOS_LOST_RESPONSE_ACCEPTANCE") == "1"
 history_acceptance = os.environ.get("IOS_HISTORY_ACCEPTANCE") == "1"
+share_acceptance = os.environ.get("IOS_SHARE_ACCEPTANCE") == "1"
 with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
     root = pathlib.Path(temporary)
     # Do not inherit provider credentials, production paths or daemon settings.
@@ -79,7 +80,9 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     "> Keep operator output separate from execution.\n\n"
                     "| File | Status |\n| --- | --- |\n| report.md | Ready |\n\n"
                     "```swift\nlet message = \"Hello Holon\"\n```\n\n"
-                    f"![Explicit image only](http://127.0.0.1:{provider.server_port}/must-not-auto-load.png)")
+                    f"![Explicit image only](http://127.0.0.1:{provider.server_port}/must-not-auto-load.png)\n\n"
+                    f"[Open fixture file]({root / 'holon' / 'agents' / 'holon-tester' / 'ios-populated.txt'})\n\n"
+                    f"File: {root / 'holon' / 'agents' / 'holon-tester' / 'ios-populated.txt'}")
             if tool_calls:
                 text = f"IOS_RICH_ASSISTANT: read-only inspection batch {FakeProvider.rich_batches}."
             elif history_acceptance:
@@ -161,7 +164,8 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 upstream.request(self.command, self.path, body=body, headers=headers)
                 response = upstream.getresponse()
                 is_lost_prompt = (self.command == "POST" and self.path.endswith("/prompt")
-                    and body and "IOS_LOST_RESPONSE_SEND" in json.loads(body).get("text", ""))
+                    and body and ("IOS_LOST_RESPONSE_SEND" in json.loads(body).get("text", "")
+                        or (share_acceptance and "IOS_SHARED_TEXT" in json.loads(body).get("text", ""))))
                 if is_lost_prompt:
                     data = response.read(1024 * 1024 + 1)
                     if response.status != 200 or len(data) > 1024 * 1024:
@@ -458,6 +462,10 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     cases.append(("testLostResponseAndProcessRecovery", "large"))
                 if history_acceptance:
                     cases.append(("testConversationHistoryWindowPosition", "large"))
+                if share_acceptance:
+                    cases.append(("testDirectAgentShareWorkflow", "large"))
+                    from ios_share_probe import install
+                    install(simulator, repo, root)
                 selected_cases = os.environ.get("IOS_UI_CASES")
                 if selected_cases:
                     requested = selected_cases.split(",")
@@ -482,7 +490,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                             test_env["TEST_RUNNER_HOLON_UI_TEXT_SIZE_TOKEN"] = control_token
                             test_env["TEST_RUNNER_HOLON_UI_CONTENT_SIZE"] = content_size
                             test_env["TEST_RUNNER_HOLON_UI_APPEARANCE"] = appearance
-                            if method == "testAuthenticatedNativeWorkflow":
+                            if method in {"testAuthenticatedNativeWorkflow", "testDirectAgentShareWorkflow"}:
                                 # Tickets expire after two minutes. The preceding cases also
                                 # warm the build; issue only when redemption is about to run.
                                 ticket = local("POST", "/auth/pairing/issue")["ticket"]
@@ -512,6 +520,21 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 print(f"{5 if rich_turn else 4} 项真实 SDK probes 已运行；SDK-only 未运行 UI", flush=True)
             if FakeProvider.image_requests:
                 raise RuntimeError("Markdown renderer made an unconfirmed external image request")
+            if share_acceptance and mode != "--sdk-only":
+                conversation = local("GET", f"/agents/{agent}/conversation?limit=60")
+                inputs = [value for turn in conversation["turns"] + conversation.get("active_turns", [])
+                          for value in turn.get("inputs", [])] + conversation.get("pending_inputs", [])
+                previews = json.dumps(inputs, ensure_ascii=False)
+                for marker in ["IOS_SHARED_TEXT", "https://example.test/holon-share", "shared-note"]:
+                    if marker not in previews:
+                        raise RuntimeError("Direct-share input missing from authoritative conversation: " + marker)
+                received_files = [path.read_bytes() for path in workspace.rglob("request-*") if path.is_file()]
+                if b"IOS_SHARED_FILE_BYTES" not in received_files:
+                    raise RuntimeError("Direct-share file bytes were not materialized by the daemon")
+                if not any(data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24 and
+                           struct.unpack(">II", data[16:24]) == (16, 16) for data in received_files):
+                    raise RuntimeError("Direct-share image bytes were not materialized by the daemon")
+                print("Direct-share acceptance: OS extension text, URL, image and file received by isolated Agent", flush=True)
             if lost_response_acceptance and mode != "--sdk-only":
                 if len(lost_receipts) < 2 or len({request for request, _ in lost_receipts}) != 1:
                     raise RuntimeError("response loss retry must retain one immutable UUID")
@@ -519,7 +542,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     raise RuntimeError("retry enqueued a duplicate message")
                 if lost_receipts[0][1]["disposition"] != "accepted" or lost_receipts[-1][1]["disposition"] != "duplicate":
                     raise RuntimeError("retry must receive the real daemon's duplicate receipt")
-                print("Lost-response acceptance: immutable UUID and one real message ID across process restart/explicit retry", flush=True)
+                print("Lost-response acceptance: immutable UUID and one real message ID across explicit retry", flush=True)
         finally:
             try:
                 if task_id is not None:

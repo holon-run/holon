@@ -158,7 +158,7 @@ final class SendingStore {
     /// Explicit imports have their own immutable request and never replace an editor draft.
     @discardableResult
     func enqueueExternal(requestID: UUID, scope: SendingScope, text: String,
-                         attachments: [SendingPreparedAttachment]) throws -> SendingEntry {
+                         attachments: [SendingPreparedAttachment], previousOutcomeUnknown: Bool = false) throws -> SendingEntry {
         guard text.utf8.count <= 64 * 1024, attachments.count <= 10,
               attachments.reduce(Int64(0), { $0 + Int64($1.data.count) }) <= maximumAttachmentBytes else {
             throw SendingFailure.rejected("Import exceeds its size limit.")
@@ -190,6 +190,7 @@ final class SendingStore {
             var entry = SendingEntry(requestID: requestID, scope: scope,
                                      draft: SendingDraft(text: text, attachments: copies))
             entry.payload = payload
+            if previousOutcomeUnknown { entry.state = .unknown }
             var next = snapshot
             next.entries.append(entry)
             try commit(next)

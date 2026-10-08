@@ -69,6 +69,7 @@ final class ConnectionCoordinator {
     private(set) var status: ConnectionStatus = .disconnected
     private(set) var identity: HolonConnectionIdentity? {
         didSet {
+            if identity == nil { try? sharingVault?.clear() }
             if identity != oldValue { onIdentityChange?() }
         }
     }
@@ -85,6 +86,7 @@ final class ConnectionCoordinator {
     var isBusy: Bool { status == .connecting }
 
     @ObservationIgnored private let store: ConnectionStore
+    @ObservationIgnored private let sharingVault: SharedSessionVault?
     @ObservationIgnored private let proofStore: NativeLoginProofStore
     @ObservationIgnored private let makeTransport: @Sendable (ConnectionProfile) throws -> any ConnectionTransport
     @ObservationIgnored private let deadline: Duration
@@ -99,12 +101,14 @@ final class ConnectionCoordinator {
     @ObservationIgnored private var restorationStarted = false
 
     init(store: ConnectionStore,
+         sharingVault: SharedSessionVault? = try? .configured(),
          proofStore: NativeLoginProofStore = .init(vault: .init(service: "run.holon.ios.proofs")),
          deadline: Duration = .seconds(30),
          makeTransport: @escaping @Sendable (ConnectionProfile) throws -> any ConnectionTransport = {
              try SDKConnectionTransport(profile: $0)
          }) {
         self.store = store
+        self.sharingVault = sharingVault
         self.proofStore = proofStore
         self.deadline = deadline
         self.makeTransport = makeTransport
@@ -473,6 +477,16 @@ final class ConnectionCoordinator {
             catch { finish(.storageError); return }
         }
         usesStoredSession = credential != nil
+        // Only authoritative, fully promoted sessions become extension capabilities.
+        if let sharingVault {
+            do {
+                try sharingVault.write(SharedSession(generation: UUID(), networkID: bound.networkID,
+                    connectionName: profile.name, apiBaseURL: profile.apiBaseURL,
+                    allowInsecureHTTP: profile.allowInsecureHTTP, runtimeID: scope.runtimeID,
+                    userID: user.userId, visibilityScopeID: scope.visibilityScopeID,
+                    credential: credential ?? "", expiresAt: expiresAt))
+            } catch { try? sharingVault.clear() }
+        }
         identity = bound
         finish(.connected)
     }

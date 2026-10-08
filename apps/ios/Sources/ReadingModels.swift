@@ -43,9 +43,12 @@ enum AgentSummaryPresentation {
         [agent.briefAt, agent.operatorAt].compactMap { $0 }.max()
     }
     static func preview(_ agent: ReadingAgent) -> String {
-        if let input = agent.operatorPreview,
-           agent.briefAt == nil || (agent.operatorAt.map { $0 > agent.briefAt! } == true) { return input }
+        if showsOperatorPreview(agent), let input = agent.operatorPreview { return input }
         return plainBriefPreview(agent.preview)
+    }
+    static func showsOperatorPreview(_ agent: ReadingAgent) -> Bool {
+        guard let input = agent.operatorPreview, !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return agent.briefAt == nil || agent.operatorAt.map { $0 > agent.briefAt! } == true
     }
     static func plainBriefPreview(_ text: String) -> String {
         let bounded = String(text.prefix(2_000))

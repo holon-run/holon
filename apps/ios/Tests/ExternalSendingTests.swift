@@ -20,6 +20,16 @@ private actor ExternalSendingTransport: SendingTransport {
 
 @MainActor
 final class ExternalSendingTests: XCTestCase {
+    func testUnknownExternalOutcomeStaysUnknownAfterDurableHostAdoption() throws {
+        let store = try makeStore()
+        let requestID = UUID()
+        let entry = try store.enqueueExternal(requestID: requestID, scope: scope(), text: "frozen",
+                                              attachments: [], previousOutcomeUnknown: true)
+        XCTAssertEqual(entry.state, .unknown)
+        XCTAssertEqual(entry.requestID, requestID)
+        XCTAssertEqual(try store.enqueueExternal(requestID: requestID, scope: scope(), text: "frozen",
+                                                attachments: []).state, .unknown)
+    }
     private let baseURL = URL(string: "https://example.test/api")!
     private func identity() -> HolonConnectionIdentity {
         HolonConnectionIdentity(networkID: "network-secret", runtimeID: "runtime-secret",

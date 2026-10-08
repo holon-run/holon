@@ -5,6 +5,7 @@ struct SystemExperienceView: View {
     let reader: ReadingCoordinator
     let sender: SendingCoordinator?
     @Bindable var imports: SharedImportCoordinator
+    var openAgent: ((String) -> Void)? = nil
     @Environment(\.scenePhase) private var scenePhase
     @State private var preview: SharedImportPayload?
     @State private var target = ""
@@ -20,19 +21,25 @@ struct SystemExperienceView: View {
                 ForEach(imports.pending) { payload in
                     Button {
                         preview = payload
-                        target = sender?.selectedAgentID ?? ""
+                        target = payload.delivery?.target.agentID ?? sender?.selectedAgentID ?? ""
                     } label: {
                         VStack(alignment: .leading) {
-                            Text(payload.text.isEmpty ? payload.urls.first?.absoluteString ?? "" : payload.text)
+                            Text(verbatim: payload.text.isEmpty ? payload.urls.first?.absoluteString ?? payload.attachments.first?.name ?? "" : payload.text)
                                 .lineLimit(2)
-                            Text("\(payload.attachments.count)").font(.caption)
+                            if !payload.attachments.isEmpty { Text("share.files \(payload.attachments.count)").font(.caption) }
                         }
                     }
+                    .accessibilityIdentifier("share.item." + payload.id.uuidString)
                     .swipeActions {
                         Button("share.discard", role: .destructive) { imports.discard(payload.id) }
                     }
                 }
                 if let outcome = imports.outcome { Text(LocalizedStringKey(outcome)).font(.caption) }
+                if let agent = imports.queuedAgentID, let openAgent {
+                    Button("share.openAgent") { openAgent(agent) }
+                        .disabled(reader.status != .live || !reader.agents.contains(where: { $0.id == agent }))
+                        .accessibilityIdentifier("share.openAgent")
+                }
             }
         }
         .navigationTitle("settings.sharing")
@@ -52,6 +59,9 @@ struct SystemExperienceView: View {
                             LabeledContent(attachment.name, value: ByteCountFormatter.string(
                                 fromByteCount: Int64(attachment.byteCount), countStyle: .file))
                         }
+                        if payload.delivery?.state == .unknown {
+                            Text("share.unknownReceipt").font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                     Section("share.destination") {
                         Text(connection.selectedProfile?.name ?? "")
@@ -59,6 +69,7 @@ struct SystemExperienceView: View {
                             Text("share.chooseAgent").tag("")
                             ForEach(reader.agents) { agent in Text(agent.name).tag(agent.id) }
                         }
+                        .disabled(payload.delivery != nil)
                         Text("share.queueHelp").font(.caption).foregroundStyle(.secondary)
                         Button("share.confirmQueue") {
                             guard let sender else { return }
@@ -66,11 +77,12 @@ struct SystemExperienceView: View {
                             confirming = imports.confirmation != nil
                         }
                         .disabled(sender?.externalContext(agentID: target) == nil)
+                        .accessibilityIdentifier("share.prepare")
                         .confirmationDialog("share.confirmDestination", isPresented: $confirming) {
                             Button("share.confirmQueue") {
-                                if let sender { imports.confirm(sender: sender) }
-                                preview = nil
+                                if let sender, imports.confirm(sender: sender) { preview = nil }
                             }
+                            .accessibilityIdentifier("share.confirm")
                             Button("common.cancel", role: .cancel) { imports.revokeConfirmation() }
                         } message: {
                             Text(reader.agents.first(where: { $0.id == target })?.name ?? target)

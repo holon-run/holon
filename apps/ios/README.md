@@ -62,11 +62,13 @@ acceptance: see [release preparation](RELEASE.md) for the remaining gates.
    execution root; host paths are never interpreted as device paths.
    Photos, camera captures and document picks are staged in the current draft;
    capturing/selecting alone does not send them. Only **Send** uploads input.
-5. In the iOS share sheet choose Holon. The extension stages input locally;
-   it does not send to a daemon. Open **Settings → Share inbox**, reload,
-   inspect the preview and select the target agent before confirming queueing.
-   Discard unwanted inbox entries. Missing App Group access fails closed.
-   A queued item and its staged inbox source have independent lifecycles.
+5. In the iOS share sheet choose Holon, search/select an Agent, inspect the
+   preview, then confirm **Send**. The extension sends on the active validated
+   connection and shows an explicit receipt; choosing a recipient is not a send.
+   **Save for later** remains available without login/network access. Pending
+   imports are visible on return and in **Settings → Share inbox**. Interrupted
+   requests retain their UUID and original destination, never a new target.
+   Discard unwanted imports. Missing App Group access fails closed.
 6. In **Settings → Diagnostics**, prepare and inspect the allowlisted report before
    using the system share action. Sending it to an agent requires a separate
    confirmation; it is not automatic telemetry. The report contains status
@@ -114,7 +116,10 @@ No development team, production credentials or signing profile is committed.
 `run.holon.ios` and the configurable `HOLON_APP_GROUP` development placeholder
 `group.run.holon.ios` are not confirmed App Store or registered App Group identifiers.
 The app and `HolonShare` extension declare the same group, but only the app
-declares its app-scoped Keychain group; credentials are never shared with the extension.
+declares its app-scoped Keychain group. A separate explicit App Group Keychain
+item exposes only the validated active session to the extension, not bootstrap
+tokens, pending proofs or other profiles. Logout/identity invalidation withdraws
+its credential-free authority fence before clearing that item.
 Configure a registered group and matching development profiles before physical-device
 sharing validation. An unavailable shared container disables import rather than
 falling back to a private path.
@@ -220,7 +225,7 @@ remain explicit validation gates, not assumed capabilities.
 | Workspace directories and filtering | Server workspace/root identity, hidden-file and name filters; removed worktrees and denied references remain errors |
 | Images, Markdown, code and artifacts | Bounded complete UTF-8 reader, native Markdown/code highlighting, image/PDF raster preview and explicit copy export/share; no executable web content |
 | Diagnostics | Local enum/count allowlist only; export or confirm sending to the current Agent, without raw logs or identity/payload fields |
-| System sharing | A credential-free extension previews and stages text/links/files; the host confirms a target and queues an immutable request without replacing the editor draft or automatically sending |
+| System sharing | Native searchable Agent picker, preview and explicit direct send using a narrow shared session; credential-free staging and immutable same-ID host recovery remain available |
 | Android Direct Share/background services | No platform-for-platform copy, background resident SSE, automatic outbox retry or push promise |
 
 Work and files use separate authenticated clients and lifecycle generations.

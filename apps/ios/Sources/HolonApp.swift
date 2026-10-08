@@ -43,7 +43,7 @@ struct HolonApp: App {
                 sending?.disconnect()
                 work?.disconnect()
                 files?.disconnect()
-                imports?.revokeConfirmation()
+                imports?.resetDestination()
             }
             _coordinator = State(initialValue: connection)
         } catch {
@@ -69,10 +69,31 @@ struct HolonApp: App {
                                         destination(route, connection: coordinator)
                                     }
                             }
+                            .safeAreaInset(edge: .top, spacing: 0) {
+                                if !imports.pending.isEmpty, router.path.last != .tools {
+                                    Button {
+                                        router.path.append(.tools)
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: "square.and.arrow.down")
+                                            Text("share.pending \(imports.pending.count)")
+                                            Spacer()
+                                            Image(systemName: "chevron.right").font(.caption)
+                                        }.font(.callout).padding(.horizontal, 16).frame(minHeight: 44)
+                                    }
+                                    .background(.bar)
+                                    .accessibilityIdentifier("share.inboxBanner")
+                                }
+                            }
                         }
                     }
                         .task { await coordinator.restore() }
                         .onChange(of: coordinator.identity) { _, identity in
+                            imports.activate(identity.flatMap { value in
+                                coordinator.selectedProfile.flatMap {
+                                    ReadingPartition(apiBaseURL: $0.apiBaseURL, identity: value)
+                                }
+                            })
                             router.activate(identity.flatMap { value in
                                 coordinator.selectedProfile.flatMap {
                                     ReadingPartition(apiBaseURL: $0.apiBaseURL, identity: value)
@@ -202,6 +223,7 @@ struct HolonApp: App {
                 }
             }
             .environment(\.locale, language == "system" ? .autoupdatingCurrent : Locale(identifier: language))
+            .task { imports.reload() }
             .onChange(of: scenePhase) { _, phase in
                 reader.setForeground(phase == .active)
                 sender?.setForeground(phase == .active)
@@ -263,7 +285,10 @@ struct HolonApp: App {
                 addingConnection = true
             }
         case .tools:
-            SystemExperienceView(connection: connection, reader: reader, sender: sender, imports: imports)
+            SystemExperienceView(connection: connection, reader: reader, sender: sender, imports: imports) { agent in
+                guard reader.status == .live, reader.agents.contains(where: { $0.id == agent }) else { return }
+                router.path = [.conversation(agent)]
+            }
         case .diagnostics:
             DiagnosticView(connection: connection, reader: reader, sender: sender)
         }

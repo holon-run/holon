@@ -61,7 +61,8 @@
 "agents.title" = "Agents";
 "reading.recent" = "Recent conversations";
 "reading.emptyAgents" = "Connect in Settings to browse agents. Pull to refresh if already connected.";
-"reading.loadingConversation" = "Waiting for a conversation snapshot…";
+"reading.loadingConversation" = "Loading messages…";
+"reading.inputPreview" = "Input:";
 "reading.emptyConversation" = "No conversation yet.";
 "reading.history" = "Load earlier turns";
 "reading.newerTurns" = "Read newer turns";
@@ -110,7 +111,7 @@
 "reading.read.failed" = "Read cursor not confirmed. Retry.";
 "reading.read.confirmed" = "Read cursor confirmed";
 "reading.status.disconnected" = "Not connected";
-"reading.status.syncing" = "Restoring authoritative state…";
+"reading.status.syncing" = "Syncing…";
 "reading.status.live" = "Live";
 "reading.status.offline" = "Offline · cached content is read-only";
 "reading.status.permissionDenied" = "Permission denied";
@@ -163,6 +164,9 @@
 "diagnostics.queued" = "Queued independently; your editor draft is unchanged. Check the Agent's sending queue for receipt.";
 "diagnostics.failed" = "Unable to enqueue. Recheck the connection and confirm again.";
 "share.inbox" = "Shared imports";
+"share.pending %lld" = "%lld shared items ready to import";
+"share.files %lld" = "%lld attachments";
+"share.openAgent" = "Open destination conversation";
 "share.hostHelp" = "The extension only saves a preview. Choose a connected destination here and confirm before queuing.";
 "share.reload" = "Reload shared imports";
 "share.unavailable" = "The shared container is unavailable. Configure and sign both targets with the same App Group.";
@@ -172,10 +176,10 @@
 "share.destination" = "Destination on this connection";
 "share.agent" = "Agent";
 "share.chooseAgent" = "Choose an Agent";
-"share.queueHelp" = "This queues a separate message without changing your draft or selection. Open the destination Agent's sending queue and retry explicitly.";
+"share.queueHelp" = "Import as a separate message without replacing your draft. Then open the destination conversation and choose Send.";
 "share.confirmQueue" = "Confirm and queue import";
 "share.confirmDestination" = "Confirm import destination";
-"share.queued" = "Queued independently. Open the destination Agent's sending queue and retry explicitly.";
+"share.queued" = "Imported. Open the destination conversation to send it.";
 "share.queuedRetained" = "Queued, but the shared copy could not be removed. Confirming this same import again will not create another request.";
 "share.reconfirm" = "Nothing new was queued. Recheck the connection, preview and destination, then confirm again.";
 "share.failed" = "The shared import could not be read or removed.";
@@ -343,3 +347,5 @@
 "sending.camera" = "Take photo";
 "sending.camera.unavailable" = "The camera is not available on this device. Choose a photo or file instead.";
 "sending.camera.permission" = "Camera access is denied. Enable it in iOS Settings or choose an existing photo.";
+"share.originalDestination" = "This request belongs to its original connection and Agent. Reconnect there to retry; it cannot be reassigned.";
+"share.unknownReceipt" = "The Agent may already have received this share. Retry uses the same request and original destination.";

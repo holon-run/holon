@@ -56,8 +56,18 @@ findings or generated screenshot baselines. Screenshots are retained xcresult
 attachments. The authenticated workflow covers reading, sending/received,
 Work detail/full plan, task output, file preview and diagnostic-send confirmation.
 
-Real share-provider import, signed App Group interoperability, organization
-browser login, and physical-device local-network prompts are not covered here.
+Set `IOS_SHARE_ACCEPTANCE=1` to add `testDirectAgentShareWorkflow` after onboarding.
+The harness builds a separate native sender app and drives the real system
+sheet/embedded extension for text, web URL, image and file, requiring the Agent's
+receipt, authoritative conversation inputs and materialized image/file bytes.
+CI enables this case. For the extension's lost-response gate, also set
+`IOS_LOST_RESPONSE_ACCEPTANCE=1 IOS_UI_CASES=testDirectAgentShareWorkflow`: the
+proxy discards the real daemon's initial receipt, then requires the explicit retry
+to return a duplicate receipt with the same UUID and message ID.
+Its fixture-only sender has no
+credentials or production hooks. Signed-device App Group interoperability,
+organization browser login and physical-device local-network prompts are not
+covered by simulator success.
 Test activity logs may include the manually typed, ephemeral pairing payload:
 keep xcresult local/restricted; do not publish it as a sanitized diagnostic.
 Static parsing/project validation is not evidence these UI tests passed.

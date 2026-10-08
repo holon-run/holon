@@ -148,15 +148,20 @@ final class ReadingMetadataTests: XCTestCase {
     }
 
     func testTurnInputsUseRealStartedAtWithoutInventedCreatedAt() throws {
-        let raw = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"turns":[{"presentation_class":"operator","started_at":"2026-01-01T00:00:00Z","inputs":[{"preview":"first"},{"preview":"latest"},{"presentation_class":"internal","preview":"hidden"}]}],"active_turns":[],"pending_inputs":[]}"#.utf8))
+        let raw = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"turns":[{"turn_id":"turn","key":{"turn_index":1},"presentation_class":"operator","started_at":"2026-01-01T00:00:00Z","inputs":[{"preview":"first"},{"preview":"latest"},{"presentation_class":"internal","preview":"hidden"}]}],"active_turns":[],"pending_inputs":[]}"#.utf8))
         XCTAssertEqual(ReadingClientTransport.operatorPreview(raw), "latest")
     }
 
     func testCompletedTurnDoesNotResurfaceItsOldOperatorInput() {
         let raw: JSONValue = .object(["turns": .array([.object([
+            "turn_id": .string("turn"), "key": .object(["turn_index": .integer(1)]),
             "presentation_class": .string("operator"), "started_at": .string("2026-01-01T00:00:00Z"),
             "brief_ids": .array([.string("result")]), "inputs": .array([.object(["preview": .string("old")])])
         ])])])
+        XCTAssertNil(ReadingClientTransport.operatorPreview(raw))
+    }
+    func testOlderTurnWithoutBriefCannotReplaceNewestCompletedResult() throws {
+        let raw = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"turns":[{"turn_id":"old","key":{"turn_index":1},"presentation_class":"operator","started_at":"2026-01-01T00:00:00Z","brief_ids":[],"inputs":[{"preview":"old"}]},{"turn_id":"new","key":{"turn_index":2},"brief_ids":["brief"],"inputs":[]}],"pending_inputs":[]}"#.utf8))
         XCTAssertNil(ReadingClientTransport.operatorPreview(raw))
     }
 }

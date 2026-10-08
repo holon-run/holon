@@ -8,7 +8,7 @@ struct SendingAttachmentImportContext: Equatable {
 }
 
 struct SendingExternalContext: Equatable {
-    fileprivate let scope: SendingScope
+    let scope: SendingScope
     fileprivate let connectionRevision: Int
     fileprivate let confirmationRevision: Int
 }
@@ -178,14 +178,16 @@ final class SendingCoordinator {
     /// Host confirmation queues an isolated request; imports are never background-auto-sent.
     @discardableResult
     func enqueueExternal(requestID: UUID, text: String, attachments: [SendingPreparedAttachment] = [],
-                         context: SendingExternalContext, sendNow: Bool = false) throws -> UUID {
+                         context: SendingExternalContext, sendNow: Bool = false,
+                         previousOutcomeUnknown: Bool = false) throws -> UUID {
         guard foreground, transport != nil, identity != nil,
               context.connectionRevision == connectionRevision,
               context.confirmationRevision == confirmationRevision,
               context.scope.partition == partition,
               !sendNow || context.scope == scope else { throw SendingFailure.unavailable }
         let entry = try store.enqueueExternal(requestID: requestID, scope: context.scope,
-                                              text: text, attachments: attachments)
+                                              text: text, attachments: attachments,
+                                              previousOutcomeUnknown: previousOutcomeUnknown)
         error = nil
         reload()
         if sendNow, entry.state == .queued { deliver(entry) }

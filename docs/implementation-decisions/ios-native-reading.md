@@ -10,7 +10,8 @@ The parser removes every image URL attribute and makes the alt text an explicit
 link. It does not enable emoji/math extensions or automatic resource loading.
 Only HTTP/HTTPS/mailto URLs go to the system. Workspace references and local-host
 file URIs go to Holon's authorized resolver, never the iPhone filesystem.
-Absolute paths are linked only in inline code; fenced source is not linked.
+Absolute Markdown links, inline paths and boundary-delimited bare paths share
+Android/Web classification; fenced source and existing links are not re-scanned.
 Literal paths preserve percent signs, fragments and question marks. Relative
 references require a complete server-issued base file location, not the active
 Agent's guessed working directory. Unsupported links fail visibly.

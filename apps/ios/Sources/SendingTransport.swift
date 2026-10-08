@@ -68,7 +68,7 @@ actor SendingClientTransport: SendingTransport {
         let prompt: HolonPromptRequest
         do {
             let attachments = try payload.attachments.map {
-                try HolonPromptAttachment(kind: $0.contentType.hasPrefix("image/") ? .image : .file,
+                try HolonPromptAttachment(kind: ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"].contains($0.contentType) ? .image : .file,
                                           name: $0.name, mediaType: $0.contentType, data: $0.data)
             }
             prompt = try HolonPromptRequest(clientRequestID: requestID.uuidString, text: payload.text,

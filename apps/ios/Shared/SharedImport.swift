@@ -13,6 +13,25 @@ struct SharedImportPayload: Codable, Equatable, Identifiable, Sendable {
     let text: String
     let urls: [URL]
     let attachments: [SharedImportAttachment]
+    var delivery: SharedShareDelivery? = nil
+}
+struct SharedShareTarget: Codable, Equatable, Sendable {
+    let networkID: String
+    let apiBaseURL: URL
+    let runtimeID: String
+    let userID: String
+    let visibilityScopeID: String
+    let agentID: String
+    init(session: SharedSession, agentID: String) {
+        networkID = session.networkID; apiBaseURL = session.apiBaseURL
+        runtimeID = session.runtimeID; userID = session.userID
+        visibilityScopeID = session.visibilityScopeID; self.agentID = agentID
+    }
+}
+struct SharedShareDelivery: Codable, Equatable, Sendable {
+    enum State: String, Codable, Sendable { case queued, unknown, accepted }
+    let target: SharedShareTarget
+    var state: State
 }
 struct SharedImportFile: Sendable {
     let name: String
@@ -23,7 +42,7 @@ enum SharedImportError: Error, Equatable {
     case unavailableAppGroup, limitExceeded, unreadableFile, invalidRecord, storageUnavailable
 }
 
-/// No credentials, destinations or external file paths are persisted here.
+/// No credentials or external file paths. Confirmed destinations are immutable.
 final class SharedImportStore: @unchecked Sendable {
     static let maxRecords = 20
     static let maxBytes = 20 * 1024 * 1024
@@ -151,6 +170,33 @@ final class SharedImportStore: @unchecked Sendable {
         return prefix + suffix
     }
     func load() throws -> [SharedImportPayload] { try locked { try loadUnlocked() } }
+    func prepareDelivery(id: UUID, target: SharedShareTarget) throws -> SharedImportPayload {
+        try locked {
+            guard var payload = try loadUnlocked().first(where: { $0.id == id }),
+                  payload.delivery == nil || payload.delivery?.target == target,
+                  payload.delivery?.state != .accepted else { throw SharedImportError.invalidRecord }
+            if payload.delivery == nil {
+                payload.delivery = SharedShareDelivery(target: target, state: .queued)
+                try persist(payload)
+            }
+            return payload
+        }
+    }
+    func markDelivery(id: UUID, target: SharedShareTarget, state: SharedShareDelivery.State) throws {
+        try locked {
+            guard var payload = try loadUnlocked().first(where: { $0.id == id }),
+                  payload.delivery?.target == target,
+                  payload.delivery?.state != .accepted || state == .accepted else {
+                throw SharedImportError.invalidRecord
+            }
+            payload.delivery?.state = state
+            try persist(payload)
+        }
+    }
+    private func persist(_ payload: SharedImportPayload) throws {
+        try JSONEncoder().encode(payload).write(to: root.appendingPathComponent(payload.id.uuidString)
+            .appendingPathComponent("record.json"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
     private func loadUnlocked() throws -> [SharedImportPayload] {
         try manager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).compactMap { directory in
             guard let id = UUID(uuidString: directory.lastPathComponent) else { return nil }

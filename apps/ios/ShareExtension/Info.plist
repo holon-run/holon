@@ -9,6 +9,8 @@
 <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
 <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
 <key>HolonSharedAppGroup</key><string>$(HOLON_APP_GROUP)</string>
+<key>NSLocalNetworkUsageDescription</key><string>Send shared content to the Holon Agent you choose on your local network.</string>
+<key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 <key>NSExtension</key><dict>
 <key>NSExtensionPointIdentifier</key><string>com.apple.share-services</string>
 <key>NSExtensionPrincipalClass</key><string>$(PRODUCT_MODULE_NAME).ShareViewController</string>
