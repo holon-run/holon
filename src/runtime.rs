@@ -1459,7 +1459,7 @@ pub(crate) enum TaskResultClaimRecoveryAuthority {
     RuntimeTerminatedBootstrap,
 }
 
-const TASK_RESULT_WAIT_BLOCKER: &str = "Waiting on a task result.";
+pub(crate) const TASK_RESULT_WAIT_BLOCKER: &str = "Waiting on a task result.";
 
 pub(crate) fn task_result_reentry_is_allowed(
     work_item: &WorkItemRecord,

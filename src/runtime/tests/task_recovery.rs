@@ -48,7 +48,13 @@ fn task_result_reentry_only_bypasses_derived_task_wait_blocker() {
         &wait
     ));
 
-    work_item.blocked_by = Some("Waiting on a task result.".into());
+    work_item.blocked_by = Some(TASK_RESULT_WAIT_BLOCKER.into());
+    assert!(task_result_reentry_is_allowed(
+        &work_item,
+        &work_item.id,
+        &wait
+    ));
+
     let operator_wait = WaitConditionRecord {
         kind: WaitConditionKind::Operator,
         ..wait.clone()
@@ -57,6 +63,20 @@ fn task_result_reentry_only_bypasses_derived_task_wait_blocker() {
         &work_item,
         &work_item.id,
         &operator_wait
+    ));
+
+    let pending_wait = task_wait(&work_item.id, WaitConditionStatus::Active);
+    assert!(!task_result_reentry_is_allowed(
+        &work_item,
+        &work_item.id,
+        &pending_wait
+    ));
+
+    let other_work_item_wait = task_wait("other-work-item", WaitConditionStatus::Resolved);
+    assert!(!task_result_reentry_is_allowed(
+        &work_item,
+        &work_item.id,
+        &other_work_item_wait
     ));
 
     work_item.state = WorkItemState::Completed;

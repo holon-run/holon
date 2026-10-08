@@ -2095,7 +2095,7 @@ fn waiting_reason_blocker(reason: crate::types::WaitingReason) -> &'static str {
     match reason {
         crate::types::WaitingReason::AwaitingOperatorInput => "Waiting on operator input.",
         crate::types::WaitingReason::AwaitingExternalChange => "Waiting on an external change.",
-        crate::types::WaitingReason::AwaitingTaskResult => "Waiting on a task result.",
+        crate::types::WaitingReason::AwaitingTaskResult => crate::runtime::TASK_RESULT_WAIT_BLOCKER,
         crate::types::WaitingReason::AwaitingTimer => "Waiting on a timer.",
     }
 }
