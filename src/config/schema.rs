@@ -171,7 +171,7 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         ConfigSchemaEntry {
             key: "api.csrf.trusted_origins",
             kind: "string_list",
-            description: "Additional exact HTTP origins trusted for cookie-authenticated unsafe requests. Same-origin requests are always trusted; wildcard is not allowed.",
+            description: "Exact HTTP origins that enable and restrict cookie-authenticated unsafe requests. An empty list disables the Origin guard; same-origin requests are always trusted; wildcard is not allowed.",
             default: json!([]),
             allowed_values: vec![],
         },

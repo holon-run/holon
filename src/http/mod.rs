@@ -1121,6 +1121,19 @@ fn origin_guard_allows(request: &AxumRequest<Body>, state: &AppState) -> bool {
     if state.uses_trusted_local_admission() {
         return true;
     }
+    // Cookie Origin protection is opt-in so reverse-proxy deployments work
+    // without requiring a deployment-specific public origin configuration.
+    if state
+        .host
+        .config()
+        .stored_config
+        .api
+        .csrf
+        .trusted_origins
+        .is_empty()
+    {
+        return true;
+    }
 
     let path = request.uri().path();
     let api_path = path.strip_prefix("/api").unwrap_or(path);
@@ -2259,7 +2272,7 @@ mod tests {
     }
 
     #[test]
-    fn origin_guard_requires_a_permitted_source_for_cookie_writes() {
+    fn origin_guard_is_disabled_by_default_for_cookie_writes() {
         let (_home, host) = test_host();
         let state = AppState::for_tcp(host);
         let request = |uri: &str, origin: Option<&str>| {
@@ -2274,22 +2287,22 @@ mod tests {
             builder.body(Body::empty()).unwrap()
         };
 
-        assert!(!origin_guard_allows(
+        assert!(origin_guard_allows(
             &request("/api/control/runtime/status", None),
             &state
         ));
-        assert!(!origin_guard_allows(
+        assert!(origin_guard_allows(
             &request(
                 "/api/control/runtime/status",
                 Some("https://attacker.example")
             ),
             &state
         ));
-        assert!(!origin_guard_allows(
+        assert!(origin_guard_allows(
             &request("/apps/example", Some("https://holon.example")),
             &state
         ));
-        assert!(!origin_guard_allows(
+        assert!(origin_guard_allows(
             &request(
                 "/api/control/runtime/status",
                 Some("https://holon.example:8443")
@@ -2323,6 +2336,17 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert!(origin_guard_allows(&same_origin_referer, &state));
+
+        let browser_exchange_without_source = Request::builder()
+            .method("POST")
+            .uri("/api/auth/session/exchange")
+            .header(header::AUTHORIZATION, "Bearer browser-credential")
+            .body(Body::empty())
+            .unwrap();
+        assert!(origin_guard_allows(
+            &browser_exchange_without_source,
+            &state
+        ));
     }
 
     #[test]
@@ -2355,6 +2379,16 @@ mod tests {
             .unwrap();
         assert!(origin_guard_allows(&trusted_origin, &state));
 
+        let untrusted_origin = Request::builder()
+            .method("POST")
+            .uri("/api/control/runtime/status")
+            .header(header::HOST, "holon.example:7878")
+            .header(header::COOKIE, "holon_session=session")
+            .header(header::ORIGIN, "https://attacker.example")
+            .body(Body::empty())
+            .unwrap();
+        assert!(!origin_guard_allows(&untrusted_origin, &state));
+
         let browser_exchange_without_source = Request::builder()
             .method("POST")
             .uri("/api/auth/session/exchange")
@@ -2382,7 +2416,7 @@ mod tests {
             .unwrap();
         assert!(origin_guard_allows(&bearer_write, &state));
 
-        let (_home, host) = control_token_test_host();
+        let (_home, host) = control_token_test_host_with_origin_guard();
         let state = AppState::for_tcp(host);
         let valid_bearer_with_cookie = Request::builder()
             .method("POST")
@@ -2795,6 +2829,28 @@ mod tests {
         fs::write(
             home.path().join("config.json"),
             r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.control_token = Some("secret".into());
+        config.control_auth_mode = ControlAuthMode::Required;
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        (home, host)
+    }
+
+    fn control_token_test_host_with_origin_guard() -> (tempfile::TempDir, RuntimeHost) {
+        let home = tempdir().unwrap();
+        fs::write(
+            home.path().join("config.json"),
+            r#"{
+                "api": {
+                    "csrf": {
+                        "trusted_origins": ["https://admin.example:8443"]
+                    }
+                },
+                "model": {"default": "openai/gpt-5.4"}
+            }"#,
         )
         .unwrap();
         let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
