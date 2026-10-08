@@ -511,9 +511,11 @@ final class HolonUITests: XCTestCase {
         agentButton.tap()
         let read = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", readMarker)).firstMatch
         XCTAssertTrue(read.waitForExistence(timeout: 30))
+        capture(app, "authenticated-reading")
+        XCTAssertFalse(read.frame.isEmpty, "Assert margins only on a laid-out, visible element")
+        XCTAssertTrue(read.isHittable)
         XCTAssertGreaterThanOrEqual(read.frame.minX, 12, "Conversation text must retain native horizontal margins")
         XCTAssertLessThanOrEqual(read.frame.maxX, app.windows.firstMatch.frame.maxX - 12)
-        capture(app, "authenticated-reading")
         let editor = app.descendants(matching: .any)["sending.text"].firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 10))
         editor.tap()

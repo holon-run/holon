@@ -167,6 +167,10 @@ struct ConversationReadingView: View {
             .padding(.vertical, 16)
         }
         .scrollPosition($position)
+        .onScrollGeometryChange(for: Bool.self) { abs($0.contentOffset.x) > 0.5 } action: { _, displaced in
+            // Native ID/edge positioning can retain a row's horizontal inset; this timeline is vertical only.
+            if displaced { position.scrollTo(x: 0) }
+        }
         .scrollDismissesKeyboard(.interactively)
         .onScrollGeometryChange(for: Bool.self) { geometry in
             geometry.contentSize.height - geometry.visibleRect.maxY < 100
@@ -245,7 +249,10 @@ struct ConversationReadingView: View {
 
     private var latestContentKey: String {
         let latest = turns.last
-        return "\(latest?.id ?? "")|\(latest?.raw["revision"].viewJSON ?? "")|\(reader.snapshot?.raw["pending_inputs"].viewJSON ?? "")|\(sender?.entries.count ?? 0)"
+        let loadedBriefs = latest?.raw["brief_ids"].viewArray.compactMap(\.viewString).map { id in
+            "\(id):\(reader.briefs[id].map { BriefPresentation.text($0).utf8.count } ?? -1)"
+        }.joined(separator: "|") ?? ""
+        return "\(latest?.id ?? "")|\(latest?.raw["revision"].viewJSON ?? "")|\(loadedBriefs)|\(reader.snapshot?.raw["pending_inputs"].viewJSON ?? "")|\(sender?.entries.count ?? 0)"
     }
 }
 
