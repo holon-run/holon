@@ -1,0 +1,58 @@
+import Foundation
+import XCTest
+@testable import Holon
+
+@MainActor
+final class RichTextContentTests: XCTestCase {
+    func testMarkdownKeepsStructureAndMixedLanguageText() throws {
+        let content = try HolonMarkdownParser().attributedString(for: "# Result\n\n**Ready** 中文\n\n- first\n- second\n\n> note\n\n```swift\nlet x = 1\n```")
+        XCTAssertTrue(String(content.characters).contains("Ready 中文"))
+        XCTAssertFalse(String(content.characters).contains("**Ready**"))
+        XCTAssertTrue(content.runs.contains { run in
+            run.presentationIntent?.components.contains { if case .header = $0.kind { return true }; return false } == true
+        })
+        XCTAssertTrue(content.runs.contains { run in
+            run.presentationIntent?.components.contains { if case .codeBlock = $0.kind { return true }; return false } == true
+        })
+    }
+
+    func testImagesArePassiveLinksAndNeverAttachmentRequests() throws {
+        let content = try HolonMarkdownParser().attributedString(for: "![Report](https://other.example/image.png)\n\n![Private](workspace://root/file.png)")
+        XCTAssertTrue(content.runs.allSatisfy { $0.imageURL == nil })
+        XCTAssertTrue(content.runs.contains { $0.link?.absoluteString == "https://other.example/image.png" })
+        XCTAssertTrue(content.runs.contains { $0.link?.scheme == "workspace" })
+    }
+
+    func testTablesAndTasksRemainReadableAndExplicitURIsAreLinkedOutsideCodeBlocks() throws {
+        let content = try HolonMarkdownParser().attributedString(for: "| File | State |\n| --- | --- |\n| a.md | Done |\n\n- [x] Complete\n- [ ] Next\n\nOpen workspace://w/report.md?root=r\n\n```\nworkspace://w/do-not-link.md?root=r\n```")
+        XCTAssertTrue(String(content.characters).contains("Complete"))
+        XCTAssertTrue(content.runs.contains { run in
+            run.presentationIntent?.components.contains { if case .table = $0.kind { return true }; return false } == true
+        })
+        XCTAssertEqual(content.runs.compactMap(\.link).map(\.absoluteString), ["workspace://w/report.md?root=r"])
+    }
+
+    func testLiteralInlinePathDoesNotDecodePercentOrLoseQueryLikeCharacters() throws {
+        let path = "/tmp/report%20#1?.md"
+        let content = try HolonMarkdownParser().attributedString(for: "Open `\(path)`\n\n```\n/tmp/do-not-link.md\n```")
+        let links = content.runs.compactMap(\.link)
+        XCTAssertEqual(links.count, 1)
+        XCTAssertEqual(RichTextLink.classify(try XCTUnwrap(links.first)), .reference(path))
+    }
+
+    func testUnsafeSchemesCredentialsAndNonlocalFileHostsFailClosed() {
+        for link in ["javascript:alert(1)", "data:text/html,test", "file://remote/tmp/a", "file:///tmp/a?secret=x",
+                     "https://user:password@example.com", "holon-path:///a?query=1", "./relative.md"] {
+            XCTAssertEqual(RichTextLink.classify(URL(string: link)!), .unsupported, link)
+        }
+        XCTAssertEqual(RichTextLink.classify(URL(string: "file://localhost/tmp/a%20b.md#L1")!), .reference("/tmp/a b.md"))
+        XCTAssertEqual(RichTextLink.classify(URL(string: "workspace://w/a.md?root=r#L1")!), .reference("workspace://w/a.md?root=r"))
+        if case .external = RichTextLink.classify(URL(string: "http://example.com")!) {} else { XCTFail("HTTP remains a supported external link") }
+    }
+
+    func testAttachmentDoesNotTreatUnknownPayloadAsAHostPath() {
+        XCTAssertNil(ReadingPresentation.attachmentReference(.object(["value": .string("/tmp/untyped")])) )
+        XCTAssertNil(ReadingPresentation.attachmentReference(.object(["uri": .string("https://example.com/report")])) )
+        XCTAssertEqual(ReadingPresentation.attachmentReference(.object(["uri": .string("workspace://w/report.md?root=r")])), "workspace://w/report.md?root=r")
+    }
+}

@@ -37,8 +37,14 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
     release_held_run = threading.Event()
 
     class FakeProvider(http.server.BaseHTTPRequestHandler):
+        image_requests = 0
+
         def log_message(self, *args):
             pass
+
+        def do_GET(self):
+            FakeProvider.image_requests += 1
+            self.send_error(403)
 
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
@@ -48,7 +54,12 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
             if "Explicit stop contract: hold this request." in json.dumps(request.get("messages", [])):
                 held_run_started.write_text("ready")
                 release_held_run.wait(timeout=15)
-            text = "IOS_POPULATED_BRIEF: isolated iOS contract fixture reply."
+            text = ("## Result\n\nIOS_POPULATED_BRIEF: isolated iOS contract fixture reply.\n\n"
+                    "**Ready** · 中英文混排\n\n- [x] Read result\n- [ ] Inspect files\n\n"
+                    "> Keep operator output separate from execution.\n\n"
+                    "| File | Status |\n| --- | --- |\n| report.md | Ready |\n\n"
+                    "```swift\nlet message = \"Hello Holon\"\n```\n\n"
+                    f"![Explicit image only](http://127.0.0.1:{provider.server_port}/must-not-auto-load.png)")
             if request.get("stream"):
                 chunks = [
                     {"id": "fixture-completion", "object": "chat.completion.chunk", "created": 1,
@@ -259,6 +270,8 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                                 raise RuntimeError(f"UI case {method} 失败（SDK 通过不能替代 UI）")
             else:
                 print("4 项真实 SDK probes 已运行；SDK-only 未运行 UI", flush=True)
+            if FakeProvider.image_requests:
+                raise RuntimeError("Markdown renderer made an unconfirmed external image request")
         finally:
             try:
                 if task_id is not None:

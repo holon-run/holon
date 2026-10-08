@@ -19,6 +19,9 @@ final class ReadingCoordinator {
     private(set) var briefs: [String: JSONValue] = [:]
     private(set) var visibleBriefIDs: Set<String> = []
     private(set) var activities: [String: JSONValue] = [:]
+    private(set) var activityDetails: [String: JSONValue] = [:]
+    private(set) var loadingActivities: Set<String> = []
+    private(set) var failedActivities: Set<String> = []
     private(set) var status: ReadingStatus = .disconnected
     private(set) var canLoadHistory = false
     private(set) var isLoadingHistory = false
@@ -41,6 +44,7 @@ final class ReadingCoordinator {
     @ObservationIgnored private var rosterRefreshPending = false
     @ObservationIgnored private var expansionCount = 0
     @ObservationIgnored private var expanding: Set<String> = []
+    @ObservationIgnored private var waitingBriefs: Set<String> = []
     @ObservationIgnored private var briefRecency: [String] = []
     @ObservationIgnored private var visibilityRevision = 0
     @ObservationIgnored private var previewTask: Task<Void, Never>?
@@ -124,6 +128,8 @@ final class ReadingCoordinator {
         rosterRefreshPending = false
         expansionCount = 0
         expanding.removeAll()
+        waitingBriefs.removeAll()
+        loadingActivities.removeAll()
         isLoadingHistory = false
         if readStatus == .pending { readStatus = .idle }
         reducer = nil
@@ -134,6 +140,8 @@ final class ReadingCoordinator {
         reducer = nil
         clearBriefCache()
         activities.removeAll()
+        activityDetails.removeAll()
+        failedActivities.removeAll()
         before = nil
         canLoadHistory = false
         readStatus = .idle
@@ -256,6 +264,7 @@ final class ReadingCoordinator {
                     }
                     // Summary revisions cannot prove detail freshness across a stream gap.
                     self.activities.removeAll()
+                    self.activityDetails.removeAll()
                     self.snapshot = value
                     self.reducer = HolonConversationReducer(snapshot: value, maximumTurns: 180)
                     self.before = value.nextBeforeCursor
@@ -294,6 +303,7 @@ final class ReadingCoordinator {
                         let commit = try reducer.acceptCommit(event)
                         self.reducer = reducer
                         if let commit {
+                            let previousActivities = self.activities
                             let updated = commit.snapshot
                             try self.validate(updated)
                             let previous = self.snapshot
@@ -315,6 +325,7 @@ final class ReadingCoordinator {
                                     return (self.activities[id]?["detail_revision"]?.readingInteger ?? -1) >= invalidated
                                 }
                             }
+                            if previousActivities != self.activities { self.activityDetails.removeAll() }
                             self.persist()
                         }
                     }
@@ -420,10 +431,64 @@ final class ReadingCoordinator {
     }
 
     func loadBrief(_ briefID: String) async {
-        if briefs[briefID] != nil { touchBrief(briefID) }
-        else { await expand(briefID, brief: true) }
+        if briefs[briefID] != nil { touchBrief(briefID); return }
+        guard !waitingBriefs.contains(briefID), waitingBriefs.count < 16 else { return }
+        let captured = revision
+        waitingBriefs.insert(briefID)
+        defer { if captured == revision { waitingBriefs.remove(briefID) } }
+        while expansionCount >= 2 {
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            guard current(captured) else { return }
+        }
+        guard current(captured) else { return }
+        await expand(briefID, brief: true)
     }
     func loadActivities(_ turnID: String) async { await expand(turnID, brief: false) }
+
+    func loadOlderActivities(_ turnID: String) async {
+        guard let page = activities[turnID], page["has_more"] == .bool(true),
+              let cursor = page["next_before_cursor"]?.readingString else { return }
+        await expand(turnID, brief: false, before: cursor)
+    }
+
+    func reloadActivities(_ turnID: String) async {
+        guard !loadingActivities.contains(turnID) else { return }
+        activities.removeValue(forKey: turnID)
+        await loadActivities(turnID)
+    }
+
+    func loadActivityDetail(turnID: String, activityID: String) async {
+        let key = "detail:" + activityID
+        guard foreground, status == .live, expansionCount < 2, !expanding.contains(key),
+              activityDetails[activityID] == nil, let transport, let agent = selectedAgentID,
+              let activity = ActivityPresentation.items(activities[turnID]).first(where: { $0.id == activityID }),
+              activity.detailID != nil else { return }
+        let page = activities[turnID], epoch = snapshot?.eventLogEpoch
+        expansionCount += 1; expanding.insert(key); loadingActivities.insert(activityID)
+        failedActivities.remove(activityID)
+        let task = launch { [weak self] token in
+            guard let self else { return }
+            defer {
+                if self.current(token) {
+                    self.expansionCount -= 1; self.expanding.remove(key); self.loadingActivities.remove(activityID)
+                }
+            }
+            do {
+                let detail = try await transport.activityDetail(agentID: agent, turnID: turnID, activity: activity)
+                guard self.current(token), self.snapshot?.eventLogEpoch == epoch,
+                      self.activities[turnID] == page,
+                      (try JSONEncoder().encode(detail)).count <= 1_048_576 else { return }
+                if self.activityDetails.count >= 8 { self.activityDetails.removeAll() }
+                self.activityDetails[activityID] = detail
+            } catch {
+                if self.current(token) {
+                    self.failedActivities.insert(activityID)
+                    self.failed(error, token: token, recover: false)
+                }
+            }
+        }
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+    }
 
     private func touchBrief(_ id: String) {
         briefRecency.removeAll { $0 == id }
@@ -440,38 +505,51 @@ final class ReadingCoordinator {
         touchBrief(id)
     }
 
-    private func expand(_ id: String, brief: Bool) async {
+    private func expand(_ id: String, brief: Bool, before: String? = nil) async {
         let key = (brief ? "brief:" : "turn:") + id
         guard foreground, status == .live, !id.isEmpty, id.utf8.count <= 512,
-              brief ? briefs[id] == nil : activities[id] == nil,
+              brief ? briefs[id] == nil : (before != nil || activities[id] == nil),
               expansionCount < 2, !expanding.contains(key),
               let agentID = selectedAgentID, let transport else { return }
         expansionCount += 1
         expanding.insert(key)
+        if !brief { loadingActivities.insert(id); failedActivities.remove(id) }
         let liveCursor = snapshot?.snapshotCursor
         let epoch = snapshot?.eventLogEpoch
+        let previous = activities[id]
         let task = launch { [weak self] token in
             guard let self else { return }
             defer {
                 if self.current(token) {
                     self.expansionCount -= 1
                     self.expanding.remove(key)
+                    if !brief { self.loadingActivities.remove(id) }
                 }
             }
             do {
                 let value = try await (brief ? transport.brief(agentID: agentID, briefID: id) :
-                    transport.activities(agentID: agentID, turnID: id))
+                    transport.activities(agentID: agentID, turnID: id, before: before))
                 guard self.current(token), self.snapshot?.eventLogEpoch == epoch,
                       brief || self.snapshot?.snapshotCursor == liveCursor,
-                      (try JSONEncoder().encode(value)).count <= 262_144 else { return }
+                      (try JSONEncoder().encode(value)).count <= (brief ? 262_144 : 4_194_304) else { return }
                 if brief {
                     self.cacheBrief(value, id: id)
                 } else {
-                    if self.activities.count >= 8 { self.activities.removeAll() }
-                    self.activities[id] = value
+                    guard let snapshot = self.snapshot else { return }
+                    try ActivityPresentation.validate(value, snapshot: snapshot, turnID: id)
+                    let page: JSONValue
+                    if let before, let previous {
+                        guard self.activities[id] == previous else { return }
+                        page = try ActivityPresentation.merging(value, into: previous, requestedCursor: before)
+                    } else { page = value }
+                    if self.activities[id] == nil && self.activities.count >= 8 { self.activities.removeAll() }
+                    self.activities[id] = page
                 }
             } catch {
-                if self.current(token) { self.failed(error, token: token, recover: false) }
+                if self.current(token) {
+                    if !brief { self.failedActivities.insert(id) }
+                    self.failed(error, token: token, recover: false)
+                }
             }
         }
         await withTaskCancellationHandler {

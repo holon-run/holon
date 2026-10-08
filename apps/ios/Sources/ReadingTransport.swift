@@ -12,6 +12,8 @@ protocol ReadingTransport: Sendable {
     func conversation(agentID: String, before: String?) async throws -> HolonConversationSnapshot
     func brief(agentID: String, briefID: String) async throws -> JSONValue
     func activities(agentID: String, turnID: String) async throws -> JSONValue
+    func activities(agentID: String, turnID: String, before: String?) async throws -> JSONValue
+    func activityDetail(agentID: String, turnID: String, activity: ReadingActivity) async throws -> JSONValue
     func markRead(agentID: String, through: Int64) async throws -> JSONValue
     func stream(agentID: String?, after: String?) async throws -> ReadingStream
     func close() async
@@ -19,6 +21,13 @@ protocol ReadingTransport: Sendable {
 
 extension ReadingTransport {
     func operatorPreview(agentID: String) async throws -> ReadingOperatorPreview? { nil }
+    func activities(agentID: String, turnID: String, before: String?) async throws -> JSONValue {
+        guard before == nil else { throw HolonClientError.invalidRequest }
+        return try await activities(agentID: agentID, turnID: turnID)
+    }
+    func activityDetail(agentID: String, turnID: String, activity: ReadingActivity) async throws -> JSONValue {
+        throw HolonClientError.invalidRequest
+    }
 }
 
 /// SDK identity is independently bound; original connection identity remains the UI authority.
@@ -212,7 +221,28 @@ actor ReadingClientTransport: ReadingTransport {
         try await request { try await $0.briefDetail(agentID: agentID, briefID: briefID) }
     }
     func activities(agentID: String, turnID: String) async throws -> JSONValue {
-        try await request { try await $0.conversationActivities(agentID: agentID, turnID: turnID, limit: 60) }
+        try await activities(agentID: agentID, turnID: turnID, before: nil)
+    }
+    func activities(agentID: String, turnID: String, before: String?) async throws -> JSONValue {
+        try await request { try await $0.conversationActivities(agentID: agentID, turnID: turnID, before: before, limit: 60) }
+    }
+    func activityDetail(agentID: String, turnID: String, activity: ReadingActivity) async throws -> JSONValue {
+        guard let id = activity.detailID else { throw HolonClientError.invalidRequest }
+        let segment = activity.kind == "tool" ? "tool-executions" : "transcript"
+        let raw = try await request { try await $0.getJSON(path: ["agents", agentID, segment, id]) }
+        guard raw["id"] == .string(id), raw["agent_id"] == .string(agentID),
+              (try JSONEncoder().encode(raw)).count <= 1_048_576 else { throw HolonClientError.malformedResponse }
+        if activity.kind == "tool" {
+            guard raw["turn_id"] == nil || raw["turn_id"] == .null || raw["turn_id"] == .string(turnID) else {
+                throw HolonClientError.malformedResponse
+            }
+        } else {
+            guard raw["kind"] == .string("assistant_round") || raw["kind"] == .string("subagent_assistant_round"),
+                  raw["data"]?["turn_id"] == nil || raw["data"]?["turn_id"] == .string(turnID) else {
+                throw HolonClientError.malformedResponse
+            }
+        }
+        return raw
     }
     func markRead(agentID: String, through: Int64) async throws -> JSONValue {
         try await request { try await $0.markBriefRead(agentID: agentID, readThroughEventSeq: through) }

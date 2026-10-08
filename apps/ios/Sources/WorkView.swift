@@ -4,6 +4,7 @@ import HolonClient
 struct WorkView: View {
     @Bindable var coordinator: WorkCoordinator
     var route: WorkRoute? = nil
+    var openReference: ((String) -> Void)? = nil
     var openPlan: (String, String, JSONValue) -> Void
     var openArtifact: (String, JSONValue) -> Void
 
@@ -105,8 +106,7 @@ struct WorkView: View {
                 }
                 if let brief = coordinator.brief {
                     Section("work.brief") {
-                        Text(verbatim: BriefPresentation.text(brief))
-                            .textSelection(.enabled)
+                        RichTextContent(text: BriefPresentation.text(brief), openReference: openReference)
                     }
                 }
             }

@@ -235,7 +235,11 @@ struct HolonApp: App {
         switch route {
         case .conversation(let agent):
             if reader.selectedAgentID == agent {
-                ConversationReadingView(reader: reader, sender: sender?.selectedAgentID == agent ? sender : nil)
+                ConversationReadingView(reader: reader, sender: sender?.selectedAgentID == agent ? sender : nil,
+                    openReference: { reference in
+                        guard files.selectedAgentID == agent else { return }
+                        files.openReference(reference); presentingFiles = true
+                    }, openWork: { workID in router.path.append(.workDetail(agent, .item(workID))) })
                     .id(agent)
             } else { ProgressView("reading.loadingConversation") }
         case .work(let agent), .workDetail(let agent, _):
@@ -243,7 +247,10 @@ struct HolonApp: App {
             WorkView(coordinator: work, route: {
                 if case .workDetail(_, let detail) = route { return detail }
                 return nil
-            }(), openPlan: { agent, workID, plan in
+            }(), openReference: { reference in
+                guard files.selectedAgentID == agent else { return }
+                files.openReference(reference); presentingFiles = true
+            }, openPlan: { agent, workID, plan in
                 if files.openPlan(agentID: agent, workID: workID, plan: plan) { presentingFiles = true }
             }, openArtifact: { agent, artifact in
                 if files.openArtifact(agentID: agent, artifact: artifact) { presentingFiles = true }

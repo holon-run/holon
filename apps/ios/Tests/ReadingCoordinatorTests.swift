@@ -58,6 +58,9 @@ private actor ReadingFakeTransport: ReadingTransport {
     private var agentIDs = ["A", "B"]
     private var briefIDs = ["brief"]
     private var detailRevision: Int64 = 1
+    private var pagedActivities = false
+    private var activityFailure = false
+    private(set) var activityCursors: [String?] = []
     private var expansionWaiters: [CheckedContinuation<Void, Never>] = []
     private var activeExpansions = 0
     private var connections: [UUID: (String, ReadingFakeStream)] = [:]
@@ -82,6 +85,8 @@ private actor ReadingFakeTransport: ReadingTransport {
     func setRunID(_ id: String?) { currentRunID = id }
     func setAgentIDs(_ ids: [String]) { agentIDs = ids }
     func setDetailRevision(_ revision: Int64) { detailRevision = revision }
+    func enablePagedActivities() { pagedActivities = true }
+    func failNextActivityPage() { activityFailure = true }
     func replaceEpoch() { liveEpoch = "replacement"; liveCursor = "replacement-cursor" }
     func isBlocked() -> Bool { blocked != nil }
     func release() { blocked?.resume(); blocked = nil }
@@ -135,8 +140,26 @@ private actor ReadingFakeTransport: ReadingTransport {
                         "created_event_seq": .integer(5)])
     }
     func activities(agentID: String, turnID: String) async throws -> JSONValue {
+        try await activities(agentID: agentID, turnID: turnID, before: nil)
+    }
+    func activities(agentID: String, turnID: String, before: String?) async throws -> JSONValue {
+        activityCursors.append(before)
         _ = await expansion("turn", id: turnID)
-        return .object(["turn_id": .string(turnID), "detail_revision": .integer(detailRevision)])
+        if activityFailure { activityFailure = false; throw Failure.offline }
+        let first = before == nil ? 60 : 0
+        let rows: [JSONValue] = pagedActivities ? (first..<(first + 60)).map { index in
+            let id = "tool:\(index)"
+            return .object(["id": .string(id), "kind": .string("tool"), "revision": .integer(1),
+                            "summary": .string("command \(index)"),
+                            "key": .object(["event_seq": .integer(Int64(index)), "activity_id": .string(id)])])
+        } : []
+        return .object(["turn_id": .string(turnID), "detail_revision": .integer(detailRevision),
+                        "turn": .object(["turn_id": .string(turnID)]),
+                        "runtime_id": .string("runtime"), "event_log_epoch": .string(liveEpoch),
+                        "visibility_scope_id": .string("private"), "schema_version": .integer(1),
+                        "query_version": .integer(1), "activities": .array(rows),
+                        "has_more": .bool(pagedActivities && before == nil),
+                        "next_before_cursor": pagedActivities && before == nil ? .string("older") : .null])
     }
     func operatorPreview(agentID: String) async throws -> ReadingOperatorPreview? {
         _ = await expansion("id", id: agentID)
@@ -472,16 +495,67 @@ final class ReadingCoordinatorTests: XCTestCase {
         let brief = Task { await coordinator.loadBrief("brief") }
         let activities = Task { await coordinator.loadActivities("turn") }
         try await wait { await fake.expansionCalls == 2 }
-        await coordinator.loadBrief("third")
+        let third = Task { await coordinator.loadBrief("third") }
         let calls = await fake.expansionCalls
         XCTAssertEqual(calls, 2)
         await fake.releaseExpansions()
         await brief.value
         await activities.value
+        await third.value
+        XCTAssertNotNil(coordinator.briefs["third"])
         XCTAssertNotNil(coordinator.briefs["brief"])
         XCTAssertNotNil(coordinator.activities["turn"])
         let maximum = await fake.maximumExpansions
         XCTAssertEqual(maximum, 2)
+        coordinator.disconnect()
+    }
+
+    func testActivityPagesMergeInStableOrderAndKeepCursorOutOfLiveResume() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.enablePagedActivities()
+        await coordinator.loadActivities("turn")
+        XCTAssertEqual(ActivityPresentation.items(coordinator.activities["turn"]).count, 60)
+        await coordinator.loadOlderActivities("turn")
+        let items = ActivityPresentation.items(coordinator.activities["turn"])
+        XCTAssertEqual(items.count, 120)
+        XCTAssertEqual(items.first?.sequence, 0); XCTAssertEqual(items.last?.sequence, 119)
+        XCTAssertEqual(coordinator.activities["turn"]?["has_more"], .bool(false))
+        XCTAssertEqual(coordinator.snapshot?.snapshotCursor, "live-1")
+        let cursors = await fake.activityCursors
+        XCTAssertEqual(cursors, [nil, "older"])
+        await coordinator.reloadActivities("turn")
+        XCTAssertEqual(ActivityPresentation.items(coordinator.activities["turn"]).count, 60)
+        coordinator.disconnect()
+    }
+
+    func testActivityPagingFailureKeepsCurrentWindowAndReloadResetsCursor() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.enablePagedActivities()
+        await coordinator.loadActivities("turn")
+        let original = coordinator.activities["turn"]
+        await fake.failNextActivityPage()
+        await coordinator.loadOlderActivities("turn")
+        XCTAssertEqual(coordinator.activities["turn"], original)
+        XCTAssertTrue(coordinator.failedActivities.contains("turn"))
+        await coordinator.reloadActivities("turn")
+        XCTAssertFalse(coordinator.failedActivities.contains("turn"))
+        let cursors = await fake.activityCursors
+        XCTAssertEqual(cursors, [nil, "older", nil])
+        coordinator.disconnect()
+    }
+
+    func testLateOlderActivityResponseCannotWriteIntoAnotherAgent() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.enablePagedActivities()
+        await coordinator.loadActivities("turn")
+        await fake.setGate(.expansions)
+        let older = Task { await coordinator.loadOlderActivities("turn") }
+        try await wait { await fake.expansionCalls == 2 }
+        coordinator.selectAgent("B")
+        try await wait { coordinator.snapshot?.agentID == "B" }
+        await fake.releaseExpansions(); await older.value
+        XCTAssertTrue(coordinator.activities.isEmpty)
+        XCTAssertEqual(coordinator.selectedAgentID, "B")
         coordinator.disconnect()
     }
 

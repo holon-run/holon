@@ -99,7 +99,12 @@ struct ReadingView: View {
 struct ConversationReadingView: View {
     @Bindable var reader: ReadingCoordinator
     let sender: SendingCoordinator?
-    @State private var visibleTurnID: String?
+    var openReference: (String) -> Void
+    var openWork: (String) -> Void
+    @State private var position = ScrollPosition(idType: String.self, edge: .bottom)
+    @State private var nearBottom = true
+    @State private var newContent = false
+    @State private var initializedAgent: String?
     @State private var readThroughToConfirm: ReadingReadConfirmation?
 
     private var turns: [ReadingTurnPresentation] {
@@ -144,6 +149,8 @@ struct ConversationReadingView: View {
                 LazyVStack(alignment: .leading, spacing: 20) {
                     ForEach(turns) { turn in
                         ReadingTurnView(turn: turn, reader: reader)
+                            .environment(\.holonOpenReference, openReference)
+                            .environment(\.holonOpenWork, openWork)
                             .id(turn.id)
                     }
                 }
@@ -151,13 +158,41 @@ struct ConversationReadingView: View {
                 if let sender {
                     LocalMessageView(sender: sender, canonicalIDs: LocalMessageProjection.canonicalIDs(reader.snapshot?.raw))
                 }
+                Color.clear.frame(height: 1).id("conversation-tail")
             }
             .padding()
         }
-        .scrollPosition(id: $visibleTurnID, anchor: .top)
-        .task(id: reader.snapshot?.agentID) { visibleTurnID = reader.readingPosition }
-        .onChange(of: visibleTurnID) { _, value in
-            if let value { reader.rememberPosition(turnID: value) }
+        .scrollPosition($position)
+        .scrollDismissesKeyboard(.interactively)
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            geometry.contentSize.height - geometry.visibleRect.maxY < 100
+        } action: { _, value in
+            nearBottom = value
+            if value { newContent = false }
+        }
+        .task(id: reader.snapshot?.agentID) {
+            guard let agent = reader.snapshot?.agentID, initializedAgent != agent else { return }
+            initializedAgent = agent
+            if let saved = reader.readingPosition { position.scrollTo(id: saved, anchor: .top) }
+            else { position.scrollTo(edge: .bottom) }
+        }
+        .onChange(of: position.viewID(type: String.self)) { _, value in
+            if let value, turns.contains(where: { $0.id == value }) { reader.rememberPosition(turnID: value) }
+        }
+        .onChange(of: latestContentKey) { _, _ in
+            if nearBottom { position.scrollTo(edge: .bottom) }
+            else { newContent = true }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if !nearBottom {
+                Button {
+                    position.scrollTo(edge: .bottom); newContent = false
+                } label: {
+                    Label(newContent ? "reading.newContent" : "reading.latest", systemImage: "arrow.down")
+                        .font(.caption).padding(10).background(.regularMaterial, in: Capsule())
+                }
+                .accessibilityIdentifier("conversation.latest").padding(12)
+            }
         }
         .navigationTitle(Text(verbatim: reader.agents.first { $0.id == reader.selectedAgentID }?.name ?? "Holon"))
         .navigationBarTitleDisplayMode(.inline)
@@ -202,6 +237,11 @@ struct ConversationReadingView: View {
             Text("reading.cumulativeReadNotice")
         }
     }
+
+    private var latestContentKey: String {
+        let latest = turns.last
+        return "\(latest?.id ?? "")|\(latest?.raw["revision"].viewJSON ?? "")|\(reader.snapshot?.raw["pending_inputs"].viewJSON ?? "")|\(sender?.entries.count ?? 0)"
+    }
 }
 
 private struct ReadingTurnPresentation: Identifiable {
@@ -222,44 +262,40 @@ private struct ReadingTurnView: View {
     let turn: ReadingTurnPresentation
     @Bindable var reader: ReadingCoordinator
     @State private var showActivities = false
+    @State private var fullActivities = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("reading.turn")
-                Text(verbatim: String(turn.index))
+                if let date = turn.raw["started_at"].viewString.flatMap(ReadingPresentation.date) {
+                    Text(date, format: .dateTime.month(.abbreviated).day().hour().minute())
+                }
                 Spacer()
-                Text(verbatim: turn.raw["execution"]?["outcome"].viewString ??
-                     turn.raw["execution"]?["kind"].viewString ?? "")
-                    .font(.caption).foregroundStyle(.secondary)
+                if let status = ReadingPresentation.turnStatus(turn.raw) { Text(LocalizedStringKey(status)) }
             }
+            .font(.caption2).foregroundStyle(.secondary)
             ForEach(turn.raw["inputs"].viewArray, id: \.viewMessageID) { input in
                 ReadingInputView(input: input, fallbackClass: turn.raw["presentation_class"].viewString)
             }
             ForEach(turn.raw["brief_ids"].viewArray.compactMap(\.viewString), id: \.self) { briefID in
                 ReadingBriefView(briefID: briefID, reader: reader)
             }
-            DisclosureGroup("reading.activities", isExpanded: $showActivities) {
-                if let detail = reader.activities[turn.id] {
-                    Text(verbatim: detail["coverage"]?["reason"].viewString ?? "")
-                        .font(.caption).foregroundStyle(.secondary)
-                    ForEach(Array(detail["activities"].viewArray.enumerated()), id: \.offset) { _, activity in
-                        DisclosureGroup {
-                            Text(verbatim: activity.viewJSON)
-                                .font(.caption.monospaced()).textSelection(.enabled)
-                        } label: {
-                            Text(verbatim: activity["kind"].viewString ??
-                                 activity["activity_id"].viewString ?? "Activity")
-                        }
-                    }
-                    if detail["has_more"] == .bool(true) { Text("reading.activitiesLimited").font(.caption) }
-                } else {
-                    Text("reading.detailUnavailable")
-                    Button("reading.retry") { Task { await reader.loadActivities(turn.id) } }
-                }
+            DisclosureGroup(isExpanded: $showActivities) {
+                TurnActivityView(turnID: turn.id, reader: reader)
+                Button("reading.fullProcess", systemImage: "arrow.up.left.and.arrow.down.right") { fullActivities = true }
+                    .font(.caption)
+            } label: {
+                Text("reading.activities").font(.caption).foregroundStyle(.secondary)
             }
-            .onChange(of: showActivities) { _, expanded in
-                if expanded { Task { await reader.loadActivities(turn.id) } }
+            .task(id: "\(showActivities)|\(reader.snapshot?.snapshotCursor ?? "")") {
+                if showActivities { await reader.loadActivities(turn.id) }
+            }
+            .sheet(isPresented: $fullActivities) {
+                NavigationStack {
+                    ScrollView { TurnActivityView(turnID: turn.id, reader: reader).padding() }
+                        .navigationTitle("reading.activities").navigationBarTitleDisplayMode(.inline)
+                        .toolbar { Button("files.dismiss") { fullActivities = false } }
+                }
             }
             Divider()
         }
@@ -287,19 +323,27 @@ private struct ReadingInputView: View {
 private struct ReadingBriefView: View {
     let briefID: String
     @Bindable var reader: ReadingCoordinator
-    @State private var expanded = true
     @State private var isVisible = false
+    @Environment(\.holonOpenReference) private var openReference
+    @Environment(\.holonOpenWork) private var openWork
 
     var body: some View {
-        DisclosureGroup("reading.brief", isExpanded: $expanded) {
+        VStack(alignment: .leading, spacing: 10) {
             if let brief = reader.briefs[briefID] {
-                Text(verbatim: brief["text"].viewString ?? "").textSelection(.enabled)
+                RichTextContent(text: BriefPresentation.text(brief), openReference: openReference)
                 ForEach(Array(brief["attachments"].viewArray.enumerated()), id: \.offset) { _, attachment in
-                    Label {
-                        Text(verbatim: attachment["name"].viewString ?? "")
-                    } icon: {
-                        Image(systemName: "paperclip")
+                    if let reference = ReadingPresentation.attachmentReference(attachment) {
+                        Button { openReference?(reference) } label: {
+                            Label(attachment["name"].viewString ?? "", systemImage: "doc")
+                                .font(.callout).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6)
+                        }.disabled(openReference == nil)
+                    } else {
+                        Label(attachment["name"].viewString ?? "", systemImage: "paperclip").font(.callout)
                     }
+                }
+                if let workID = brief["work_item_id"].viewString {
+                    Button("work.details", systemImage: "checklist") { openWork?(workID) }.font(.caption)
+                        .disabled(openWork == nil)
                 }
             } else {
                 Text("reading.detailUnavailable")
@@ -307,10 +351,6 @@ private struct ReadingBriefView: View {
             }
         }
         .task { await reader.loadBrief(briefID) }
-        .onChange(of: expanded) { _, value in
-            updateReadVisibility()
-            if value { Task { await reader.loadBrief(briefID) } }
-        }
         .onChange(of: reader.briefs[briefID]) { _, _ in updateReadVisibility() }
         .onScrollVisibilityChange(threshold: 0.5) { visible in
             isVisible = visible
@@ -320,11 +360,36 @@ private struct ReadingBriefView: View {
     }
 
     private func updateReadVisibility() {
-        reader.setBriefVisible(briefID, visible: isVisible && expanded)
+        reader.setBriefVisible(briefID, visible: isVisible)
     }
 }
 
 enum ReadingPresentation {
+    static func date(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    }
+
+    static func turnStatus(_ turn: JSONValue) -> String? {
+        switch turn["attention"]?["kind"]?.readingString {
+        case "waiting": return "reading.wait"
+        case "failed": return "reading.failedTurn"
+        case "interrupted": return "reading.interruptedTurn"
+        default: break
+        }
+        if turn["execution"]?["kind"] == .string("active") { return "reading.activeTurn" }
+        switch turn["execution"]?["outcome"]?.readingString {
+        case "aborted", "interrupted": return "reading.interruptedTurn"
+        case "provider_failed_needs_recovery", "baseline_over_budget": return "reading.failedTurn"
+        default: return nil
+        }
+    }
+
+    static func attachmentReference(_ attachment: JSONValue) -> String? {
+        guard let uri = attachment["uri"]?.readingString, let url = URL(string: uri) else { return nil }
+        if case .reference(let reference) = RichTextLink.classify(url) { return reference }
+        return nil
+    }
     /// Extract the text envelope without translating or rewriting agent content.
     static func operatorText(_ input: JSONValue) -> String {
         let preview = input["preview"].viewString ?? ""
@@ -339,6 +404,7 @@ enum ReadingPresentation {
 private extension Optional where Wrapped == JSONValue {
     var viewString: String? { self?.viewString }
     var viewArray: [JSONValue] { self?.viewArray ?? [] }
+    var viewJSON: String { self?.viewJSON ?? "" }
 }
 
 private extension JSONValue {
