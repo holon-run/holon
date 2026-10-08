@@ -28,6 +28,11 @@ actor FilesClientTransport: FilesTransport {
         "application/octet-stream", "application/pdf", "application/json", "application/xml",
         "application/javascript", "text/plain", "text/markdown", "text/x-markdown",
         "text/html", "text/css", "text/javascript", "text/xml", "text/csv",
+        "text/typescript", "text/x-typescript", "text/x-python", "text/x-rust", "text/x-swift",
+        "text/x-kotlin", "text/x-java-source", "text/x-c", "text/x-c++", "text/x-shellscript",
+        "text/x-sh", "text/x-script.python", "text/yaml", "text/x-yaml", "text/toml", "text/x-toml",
+        "application/x-yaml", "application/yaml", "application/toml", "application/x-toml",
+        "application/x-sh", "application/x-shellscript", "application/sql", "application/x-sql",
         "image/png", "image/jpeg", "image/webp", "image/gif", "image/heic", "image/svg+xml"
     ]
 
@@ -50,6 +55,7 @@ actor FilesClientTransport: FilesTransport {
     func validate() async throws { _ = try await expected() }
 
     private func request<T: Sendable>(
+        rootRead: Bool = false,
         _ body: @Sendable (HolonClient) async throws -> HolonResponse<T>
     ) async throws -> T {
         let identity = try await expected()
@@ -61,6 +67,8 @@ actor FilesClientTransport: FilesTransport {
             return response.value
         } catch let http as HolonHTTPFailure {
             guard http.identity == identity, try await expected() == identity else { throw CancellationError() }
+            // Direct workspace-file endpoints still use a legacy410 body without a machine code.
+            if rootRead, http.statusCode == 410 { throw FilesFailure.rootUnavailable }
             throw HolonHTTPFailure(statusCode: http.statusCode, apiError: http.apiError, identity: authority)
         }
     }
@@ -78,7 +86,7 @@ actor FilesClientTransport: FilesTransport {
     }
 
     func directory(workspace: FilesWorkspace, path: String) async throws -> FilesDirectory {
-        let raw = try await request {
+        let raw = try await request(rootRead: true) {
             try await $0.browseWorkspaceDirectory(workspaceID: workspace.workspaceID, path: path,
                                                 executionRootID: workspace.executionRootID)
         }
@@ -130,7 +138,7 @@ actor FilesClientTransport: FilesTransport {
             (workspace, path) = try Self.resolved(raw)
         }
         do {
-            let metadata = try await request {
+            let metadata = try await request(rootRead: true) {
                 try await $0.workspaceFileMetadata(workspaceID: workspace.workspaceID, path: path,
                                                   executionRootID: workspace.executionRootID)
             }
@@ -140,7 +148,7 @@ actor FilesClientTransport: FilesTransport {
                 throw FilesFailure.invalidReference
             }
             if let size = metadata["size"]?.readingInteger, size > Int64(maximumBytes) { throw FilesFailure.tooLarge }
-            let artifact = try await request {
+            let artifact = try await request(rootRead: true) {
                 try await $0.downloadWorkspaceFile(workspaceID: workspace.workspaceID, path: path,
                     executionRootID: location.executionRootID, maximumBytes: maximumBytes,
                     allowedContentTypes: Self.contentTypes, progress: progress)

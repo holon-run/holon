@@ -13,11 +13,16 @@ private actor WorkFakeTransport: WorkTransport {
     private var resultBrief = false
     private var briefError = false
     private var running = false
+    private var cancelling = false
+    private var startsCancelling = false
+    private var terminalOutputFailure = false
     private(set) var outputCalls = 0
     private(set) var limits: [Int] = []
     func setItemCount(_ value: Int) { itemCount = value }
     func useResultBrief(failing: Bool) { resultBrief = true; briefError = failing }
     func useRunningTask() { running = true }
+    func useCancellingTask(initial: Bool) { running = true; cancelling = true; startsCancelling = initial }
+    func loseTerminalOutput() { running = true; terminalOutputFailure = true }
     func holdItems() { blockItems = true }
     func breakTasks() { failTasks = true }
     func blocked() -> Bool { gate != nil }
@@ -43,10 +48,15 @@ private actor WorkFakeTransport: WorkTransport {
         try WorkRecord(raw: .object(["id": .string(id), "result_brief_id": resultBrief ? .string("result") : .null]))
     }
     func task(agentID: String, id: String) async throws -> WorkRecord {
-        try WorkRecord(raw: .object(["task_id": .string(id), "status": .string(running ? (outputCalls >= 2 ? "completed" : "running") : "future-state")]), task: true)
+        let status: String
+        if terminalOutputFailure { status = outputCalls > 0 ? "interrupted" : "running" }
+        else if cancelling { status = outputCalls >= 2 ? "cancelled" : (startsCancelling || outputCalls > 0 ? "cancelling" : "running") }
+        else { status = running ? (outputCalls >= 2 ? "completed" : "running") : "future-state" }
+        return try WorkRecord(raw: .object(["task_id": .string(id), "status": .string(status)]), task: true)
     }
     func output(agentID: String, id: String) async throws -> WorkOutput {
         outputCalls += 1
+        if terminalOutputFailure, outputCalls > 1 { throw WorkProtocolError.malformed }
         return try WorkOutput(raw: .object(["output_preview": .string("partial"),
                                      "output_truncated": .bool(true)]))
     }
@@ -58,6 +68,28 @@ private actor WorkFakeTransport: WorkTransport {
 
 @MainActor
 final class WorkCoordinatorTests: XCTestCase {
+    func testTerminalStatusIsPublishedEvenWhenFinalOutputIsUnavailable() async throws {
+        let transport = WorkFakeTransport(); await transport.loseTerminalOutput()
+        let coordinator = WorkCoordinator(outputRefreshInterval: .milliseconds(10)); coordinator.selectAgent("A")
+        coordinator.activate(transport: transport, identity: identity()); coordinator.open(.task("task-A"))
+        coordinator.setDetailVisible(true)
+        try await wait { coordinator.detail?.state == "interrupted" && coordinator.outputFailed }
+        XCTAssertEqual(coordinator.output?.text, "partial"); XCTAssertEqual(coordinator.detailState, .loaded)
+        let count = await transport.outputCalls; try await Task.sleep(for: .milliseconds(30))
+        let after = await transport.outputCalls; XCTAssertEqual(count, after); coordinator.disconnect()
+    }
+    func testCancellationRemainsRefreshingUntilTheTerminalCancelledState() async throws {
+        for initial in [false, true] {
+            let transport = WorkFakeTransport(); await transport.useCancellingTask(initial: initial)
+            let coordinator = WorkCoordinator(outputRefreshInterval: .milliseconds(10)); coordinator.selectAgent("A")
+            coordinator.activate(transport: transport, identity: identity()); coordinator.open(.task("task-A"))
+            coordinator.setDetailVisible(true)
+            try await wait { coordinator.detail?.state == "cancelled" }
+            let count = await transport.outputCalls; XCTAssertEqual(count, 3)
+            try await Task.sleep(for: .milliseconds(30)); let after = await transport.outputCalls
+            XCTAssertEqual(count, after); coordinator.disconnect()
+        }
+    }
     func testExplicitWorkWindowGrowsAndResetsOnAgentChange() async throws {
         let transport = WorkFakeTransport(); await transport.setItemCount(130)
         let coordinator = WorkCoordinator(); coordinator.selectAgent("A")

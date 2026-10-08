@@ -110,7 +110,7 @@ enum FilesPreviewKind: Equatable, Sendable {
         }
         if type.hasPrefix("text/") ||
             ["application/json", "application/xml", "application/javascript"].contains(type) ||
-            ["md", "swift", "rs", "kt", "py", "js", "ts", "txt", "log", "yaml", "yml"].contains(ext) {
+            ["md", "swift", "rs", "kt", "py", "js", "ts", "txt", "log", "yaml", "yml", "toml", "sh", "c", "h", "cpp", "java", "sql"].contains(ext) {
             return .text
         }
         return .downloadOnly

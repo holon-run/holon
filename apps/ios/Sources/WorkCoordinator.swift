@@ -230,23 +230,26 @@ final class WorkCoordinator {
     /// Visible task output only. Three failed refreshes stop the loop until explicit retry.
     private func startOutputRefresh() {
         guard outputTask == nil, detailVisible, foreground, case .task(let id) = route,
-              let detail, ["running", "active", "queued", "pending"].contains(detail.state),
+              let detail, detail.activeTask,
               let transport, let authority = identity, let agent = selectedAgentID else { return }
         let generation = revision, operation = detailRevision
         outputTask = Task { [weak self] in
             var failures = 0
             while let self, self.valid(generation, authority, agent), self.detailRevision == operation, self.detailVisible {
+                var terminal = false
                 do {
                     try await Task.sleep(for: self.outputRefreshInterval)
                     let record = try await transport.task(agentID: agent, id: id)
+                    guard self.valid(generation, authority, agent), self.detailRevision == operation, self.detailVisible else { return }
+                    self.detail = record; terminal = !record.activeTask
                     let output = try await transport.output(agentID: agent, id: id)
                     guard self.valid(generation, authority, agent), self.detailRevision == operation, self.detailVisible else { return }
-                    self.detail = record; self.output = output; self.outputFailed = false; failures = 0
-                    if !["running", "active", "queued", "pending"].contains(record.state) { break }
+                    self.output = output; self.outputFailed = false; failures = 0
+                    if terminal { break }
                 } catch {
                     guard self.valid(generation, authority, agent), self.detailRevision == operation, self.detailVisible else { return }
                     self.outputFailed = true; self.failure(error, authority: authority); failures += 1
-                    if failures >= 3 { break }
+                    if terminal || failures >= 3 { break }
                 }
             }
             guard let self, self.revision == generation, self.detailRevision == operation else { return }

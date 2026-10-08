@@ -34,9 +34,9 @@ struct FilesView: View {
                 }
             }
             if coordinator.isLoading { ProgressView("work.loading") }
-            if let failure = coordinator.failure {
+            if let failure = coordinator.failure ?? coordinator.browserFailure {
                 Text(LocalizedStringKey(failure.key)).foregroundStyle(.secondary)
-                Button("work.retry") { coordinator.selectAgent(coordinator.selectedAgentID) }
+                Button("work.retry") { coordinator.retryBrowser() }
             }
         }
         .scrollPosition(id: $coordinator.directoryPosition)

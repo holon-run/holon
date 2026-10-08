@@ -328,3 +328,5 @@
 "work.state.failed" = "Failed";
 "work.state.cancelled" = "Cancelled";
 "work.state.unknown" = "Other state";
+"work.state.cancelling" = "Cancelling";
+"work.state.interrupted" = "Interrupted";

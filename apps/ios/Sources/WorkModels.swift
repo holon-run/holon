@@ -30,7 +30,8 @@ struct WorkRecord: Identifiable, Equatable, Sendable {
     var nextStep: String? {
         (todos.first { $0["state"] == .string("in_progress") } ?? todos.first { $0["state"] != .string("completed") })?["text"]?.workString
     }
-    var completed: Bool { ["completed", "succeeded", "failed", "cancelled"].contains(state) }
+    var completed: Bool { ["completed", "succeeded", "failed", "cancelled", "interrupted"].contains(state) }
+    var activeTask: Bool { ["running", "active", "queued", "pending", "cancelling"].contains(state) }
     var stateKey: String {
         switch state {
         case "open", "queued", "pending": "work.state.pending"
@@ -38,6 +39,8 @@ struct WorkRecord: Identifiable, Equatable, Sendable {
         case "completed", "succeeded": "work.state.completed"
         case "failed": "work.state.failed"
         case "cancelled": "work.state.cancelled"
+        case "cancelling": "work.state.cancelling"
+        case "interrupted": "work.state.interrupted"
         default: "work.state.unknown"
         }
     }

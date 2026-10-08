@@ -10,6 +10,7 @@ final class FilesCoordinator {
     private(set) var selectedAgentID: String?
     private(set) var isLoading = false
     private(set) var failure: FilesFailure?
+    private(set) var browserFailure: FilesFailure?
     private(set) var request: FilesRequest?
     private(set) var preparedRequest: FilesRequest?
     private(set) var progress: HolonDownloadProgress?
@@ -59,6 +60,7 @@ final class FilesCoordinator {
         directory = nil
         request = nil; preparedRequest = nil; pins.removeAll(); positions.removeAll(); folder = nil
         directoryPosition = nil
+        browserFailure = nil
         failure = nil
         cache.clear()
         if let previous { Task { await previous.close() } }
@@ -77,21 +79,36 @@ final class FilesCoordinator {
             run { transport in
                 let roots = try await transport.workspaces(agentID: agent)
                 var restoredDirectory: FilesDirectory?
+                var directoryError: (any Error)?
                 if let (workspace, path) = restoreFolder {
-                    let result = try await transport.directory(workspace: workspace, path: path)
-                    guard result.workspace.workspaceID == workspace.workspaceID,
-                          result.workspace.executionRootID == workspace.executionRootID,
-                          result.path == path else { throw FilesFailure.invalidReference }
-                    restoredDirectory = result
+                    do {
+                        let result = try await transport.directory(workspace: workspace, path: path)
+                        guard result.workspace.workspaceID == workspace.workspaceID,
+                              result.workspace.executionRootID == workspace.executionRootID,
+                              result.path == path else { throw FilesFailure.invalidReference }
+                        restoredDirectory = result
+                    } catch {
+                        if let http = error as? HolonHTTPFailure, [401, 403].contains(http.statusCode) { throw error }
+                        directoryError = error
+                    }
                 }
                 var download: FilesDownload?
+                var fileError: (any Error)?
                 if let restoreRequest {
-                    let source = try await self.source(for: restoreRequest, transport: transport)
-                    download = try await self.download(source, transport: transport)
+                    do {
+                        let source = try await self.source(for: restoreRequest, transport: transport)
+                        download = try await self.download(source, transport: transport)
+                    } catch {
+                        if let http = error as? HolonHTTPFailure, [401, 403].contains(http.statusCode) { throw error }
+                        fileError = error
+                    }
                 }
                 return {
                     self.workspaces = roots; self.directory = restoredDirectory
+                    self.browserFailure = nil
+                    if let directoryError { self.report(directoryError); self.browserFailure = self.failure; self.failure = nil }
                     if let download, let restoreRequest { try self.store(download, request: restoreRequest) }
+                    if let fileError { self.report(fileError) }
                 }
             }
         }
@@ -104,6 +121,7 @@ final class FilesCoordinator {
         directory = nil
         workspaces = []
         query = ""
+        browserFailure = nil
         guard let agentID else { return }
         run { transport in
             let result = try await transport.workspaces(agentID: agentID)
@@ -114,6 +132,7 @@ final class FilesCoordinator {
     func browse(_ workspace: FilesWorkspace, path: String = "") {
         request = nil; directoryPosition = nil
         query = ""
+        browserFailure = nil
         directory = nil
         run { transport in
             let result = try await transport.directory(workspace: workspace, path: path)
@@ -124,6 +143,11 @@ final class FilesCoordinator {
             }
             return { self.directory = result; self.folder = (result.workspace, result.path) }
         }
+    }
+
+    func retryBrowser() {
+        if let (workspace, path) = folder { browse(workspace, path: path) }
+        else { selectAgent(selectedAgentID) }
     }
 
     func openReference(_ reference: String) {

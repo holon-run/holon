@@ -9,12 +9,14 @@ private final class FilesIdentityProtocol: URLProtocol, @unchecked Sendable {
     override func startLoading() {
         let root = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
             .queryItems?.first { $0.name == "execution_root_id" }?.value
-        let status = root == "denied" ? 403 : 200
+        let status = root == "denied" ? 403 : (root == "removed" ? 410 : 200)
         let body: String
         if request.url!.path.hasSuffix("/state") {
             body = #"{"workspace":{"workspaces":[{"workspace_id":"ws","execution_root_id":"source-root","repo_name":"Source"}]}}"#
         } else if status == 403 {
             body = #"{"error":{"code":"forbidden","message":"private"}}"#
+        } else if status == 410 {
+            body = #"{"error":"execution root removed","execution_root_id":"removed"}"#
         } else {
             body = #"{"type":"directory","workspace_id":"ws","execution_root_id":"source-root","path":"","entries":[{"name":"README.md","type":"file"},{"name":"docs","type":"directory"}]}"#
         }
@@ -81,6 +83,14 @@ private final class FilesPlanProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class FilesTransportTests: XCTestCase {
+    func testLegacyDirectFile410IsRootRemovalWithoutInventingAnErrorCode() async throws {
+        let (_, transport, _) = try await Self.fixture()
+        do {
+            _ = try await transport.directory(workspace: .init(workspaceID: "ws", executionRootID: "removed", name: "Source"), path: "")
+            XCTFail("Removed root")
+        } catch { XCTAssertEqual(error as? FilesFailure, .rootUnavailable) }
+        await transport.close()
+    }
     private static func fixture(protocolClass: URLProtocol.Type = FilesIdentityProtocol.self)
         async throws -> (HolonClient, FilesClientTransport, HolonConnectionIdentity) {
         let configuration = URLSessionConfiguration.ephemeral

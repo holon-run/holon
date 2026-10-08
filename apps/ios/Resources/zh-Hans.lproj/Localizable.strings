@@ -328,3 +328,5 @@
 "work.state.failed" = "失败";
 "work.state.cancelled" = "已取消";
 "work.state.unknown" = "其他状态";
+"work.state.cancelling" = "取消中";
+"work.state.interrupted" = "已中断";

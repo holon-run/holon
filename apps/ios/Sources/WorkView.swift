@@ -100,8 +100,12 @@ struct WorkView: View {
                     if coordinator.brief == nil, let result = record.raw["result_summary"]?.workString {
                         Section("work.brief") { RichTextContent(text: result, openReference: openReference) }
                     }
+                    if let brief = coordinator.brief {
+                        Section("work.brief") {
+                            RichTextContent(text: BriefPresentation.text(brief), openReference: openReference)
+                        }
+                    }
                     if case .item = route {
-                        plan(record)
                         if coordinator.briefFailed {
                             Text("work.briefError").foregroundStyle(.secondary)
                             Button("work.retry") { coordinator.open(route) }
@@ -117,6 +121,7 @@ struct WorkView: View {
                                 }
                             }
                         }
+                        plan(record)
                     }
                     Section {
                         DisclosureGroup("work.metadata") {
@@ -142,7 +147,7 @@ struct WorkView: View {
                         } else { Text("work.no_output") }
                     }
                 }
-                if let brief = coordinator.brief {
+                if coordinator.detail == nil, let brief = coordinator.brief {
                     Section("work.brief") {
                         RichTextContent(text: BriefPresentation.text(brief), openReference: openReference)
                     }

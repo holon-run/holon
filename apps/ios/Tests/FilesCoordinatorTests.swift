@@ -15,6 +15,8 @@ private actor FilesFakeTransport: FilesTransport {
     private var workspaceList: [FilesWorkspace]?
     private var directoryResult: FilesDirectory?
     private var location: HolonFileLocation?
+    private var directoryFailure: FilesFailure?
+    func failDirectory(_ value: FilesFailure) { directoryFailure = value }
     func setLocation(_ value: HolonFileLocation) { location = value }
 
     func setWorkspaces(_ value: [FilesWorkspace]) { workspaceList = value }
@@ -43,6 +45,7 @@ private actor FilesFakeTransport: FilesTransport {
     func directory(workspace: FilesWorkspace, path: String) async throws -> FilesDirectory {
         calls += 1
         roots.append(workspace.executionRootID)
+        if let directoryFailure { throw directoryFailure }
         if waits {
             await withCheckedContinuation { continuation in
                 gate = continuation
@@ -107,7 +110,31 @@ final class FilesCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.directoryPosition, "docs/report.md"); XCTAssertEqual(coordinator.sort, .modified)
         await transport.setDirectory(.init(workspace: .init(workspaceID: "ws", executionRootID: "different", name: "Source"), path: "docs", entries: []))
         coordinator.setForeground(false); coordinator.setForeground(true); await settle(coordinator)
-        XCTAssertEqual(coordinator.failure, .invalidReference); XCTAssertNil(coordinator.directory)
+        XCTAssertEqual(coordinator.browserFailure, .invalidReference); XCTAssertNil(coordinator.directory)
+        coordinator.disconnect()
+    }
+
+    func testRemovedOldBrowserRootCannotBlockAValidCurrentFileInAnotherRoot() async throws {
+        let transport = FilesFakeTransport(), coordinator = FilesCoordinator()
+        coordinator.activate(transport: transport, identity: identity()); coordinator.selectAgent("A")
+        await settle(coordinator)
+        coordinator.browse(.init(workspaceID: "project", executionRootID: "removed-worktree", name: "Project"))
+        await settle(coordinator)
+        let location = try HolonFileLocation(raw: .object([
+            "workspace_id": .string("home"), "execution_root_id": .string("live-home"), "path": .string("plan.md"),
+            "absolute_path": .string("/home/plan.md"), "kind": .string("file"), "root_kind": .string("canonical_root")
+        ]))
+        await transport.setLocation(location)
+        let request = FilesRequest.source(.reference("/home/plan.md"))
+        coordinator.openRequest(request); await settle(coordinator)
+        coordinator.rememberPosition(.init(page: 3), for: request)
+        await transport.failDirectory(.rootUnavailable)
+        coordinator.setForeground(false); coordinator.setForeground(true); await settle(coordinator)
+        XCTAssertNotNil(coordinator.prepared); XCTAssertNil(coordinator.failure)
+        XCTAssertEqual(coordinator.browserFailure, .rootUnavailable)
+        XCTAssertEqual(coordinator.readingPosition(for: request).page, 3)
+        let sources = await transport.sources
+        XCTAssertEqual(sources.last, .workspace(.init(workspaceID: "home", executionRootID: "live-home", name: "home"), path: "plan.md"))
         coordinator.disconnect()
     }
 

@@ -14,6 +14,9 @@ final class WorkModelsTests: XCTestCase {
         XCTAssertEqual(record.stateKey, "work.state.pending")
         let unknown = try WorkRecord(raw: .object(["id": .string("work"), "state": .string("future")]))
         XCTAssertEqual(unknown.state, "future"); XCTAssertEqual(unknown.stateKey, "work.state.unknown")
+        let interrupted = try WorkRecord(raw: .object(["id": .string("t"), "status": .string("interrupted")]))
+        XCTAssertTrue(interrupted.completed); XCTAssertFalse(interrupted.activeTask)
+        XCTAssertEqual(interrupted.stateKey, "work.state.interrupted")
     }
     func testBriefUsesCanonicalFullTextAndNeverFallsBackToRawJSON() {
         let fullText = String(repeating: "正文\n", count: 20_000)
