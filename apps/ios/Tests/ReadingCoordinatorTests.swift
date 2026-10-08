@@ -551,6 +551,58 @@ final class ReadingCoordinatorTests: XCTestCase {
         coordinator.disconnect()
     }
 
+    func testActivityReadWaitsForSharedBriefSlots() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.setGate(.expansions)
+        let first = Task { await coordinator.loadBrief("first") }
+        let second = Task { await coordinator.loadBrief("second") }
+        try await wait { await fake.expansionCalls == 2 }
+        let activity = Task { await coordinator.loadActivities("turn") }
+        try await wait { coordinator.loadingActivities.contains("turn") }
+        let calls = await fake.expansionCalls
+        XCTAssertEqual(calls, 2)
+        await fake.releaseExpansions()
+        await first.value; await second.value; await activity.value
+        XCTAssertNotNil(coordinator.activities["turn"])
+        XCTAssertTrue(coordinator.loadingActivities.isEmpty)
+        let maximum = await fake.maximumExpansions
+        XCTAssertEqual(maximum, 2)
+        coordinator.disconnect()
+    }
+
+    func testCancelledQueuedActivityReadClearsLoading() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.setGate(.expansions)
+        let first = Task { await coordinator.loadBrief("first") }
+        let second = Task { await coordinator.loadBrief("second") }
+        try await wait { await fake.expansionCalls == 2 }
+        let activity = Task { await coordinator.loadActivities("turn") }
+        try await wait { coordinator.loadingActivities.contains("turn") }
+        activity.cancel(); await activity.value
+        XCTAssertTrue(coordinator.loadingActivities.isEmpty)
+        XCTAssertNil(coordinator.activities["turn"])
+        await fake.releaseExpansions(); await first.value; await second.value
+        await coordinator.loadActivities("turn")
+        XCTAssertNotNil(coordinator.activities["turn"])
+        coordinator.disconnect()
+    }
+
+    func testNewActivityReaderTakesOverCancelledInlineRequest() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.setGate(.expansions)
+        let inline = Task { await coordinator.loadActivities("turn") }
+        try await wait { await fake.expansionCalls == 1 }
+        let fullScreen = Task { await coordinator.loadActivities("turn") }
+        inline.cancel()
+        await fake.releaseExpansions()
+        await inline.value; await fullScreen.value
+        XCTAssertNotNil(coordinator.activities["turn"])
+        XCTAssertTrue(coordinator.loadingActivities.isEmpty)
+        let calls = await fake.expansionCalls
+        XCTAssertEqual(calls, 2)
+        coordinator.disconnect()
+    }
+
     func testBriefSizeBoundaryEndsLoadingWithExplicitFailureAboveLimit() async throws {
         for bytes in [262_144, 262_145] {
             let (coordinator, fake, _) = try await start()

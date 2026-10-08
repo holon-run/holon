@@ -370,6 +370,7 @@ private struct ReadingTurnView: View {
             .sheet(isPresented: $fullActivities) {
                 NavigationStack {
                     ScrollView { TurnActivityView(turnID: turn.id, reader: reader).padding() }
+                        .task(id: reader.snapshot?.snapshotCursor) { await reader.loadActivities(turn.id) }
                         .navigationTitle("reading.activities").navigationBarTitleDisplayMode(.inline)
                         .toolbar { Button("files.dismiss") { fullActivities = false } }
                 }

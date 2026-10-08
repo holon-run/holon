@@ -137,6 +137,8 @@ struct RichTextContent: View {
             .font(.body)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // Keep fragment and selection measurements in one coordinate group.
+            .geometryGroup()
             .environment(\.openURL, OpenURLAction { url in
                 switch RichTextLink.classify(url) {
                 case .external: return .systemAction

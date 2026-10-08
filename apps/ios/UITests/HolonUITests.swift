@@ -640,13 +640,27 @@ final class HolonUITests: XCTestCase {
         app.buttons["sending.options"].tap(); app.buttons["Take photo"].tap()
         XCTAssertTrue(app.staticTexts["The camera is not available on this device. Choose a photo or file instead."].waitForExistence(timeout: 10))
         let activity = app.descendants(matching: .any)["activities." + turn].firstMatch
+        // This completed turn precedes the baseline's freshly sent messages.
+        for _ in 0..<30 {
+            if activity.exists { break }
+            let olderTurns = app.buttons["conversation.older"]
+            if olderTurns.exists && olderTurns.isHittable { olderTurns.tap() }
+            else { app.swipeDown() }
+        }
         reveal(activity, in: app); activity.tap()
         let fullProcess = app.buttons["Read full activity"].firstMatch
         reveal(fullProcess, in: app); fullProcess.tap()
         let older = app.buttons["activities.older"]
-        reveal(older, in: app)
-        XCTAssertTrue(older.isEnabled); older.tap()
         let firstBatch = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_RICH_ASSISTANT: read-only inspection batch 1.")).firstMatch
+        for _ in 0..<4 {
+            if firstBatch.exists { break }
+            for _ in 0..<20 {
+                if older.exists { break }
+                app.swipeDown()
+            }
+            reveal(older, in: app)
+            XCTAssertTrue(older.isEnabled); older.tap()
+        }
         reveal(firstBatch, in: app)
         capture(app, "rich-activity-paged-to-first-batch")
         app.buttons["Close"].tap()
@@ -719,6 +733,11 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
         if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
         let older = app.buttons["conversation.older"]
+        // The lazy older-window control is above the initial latest position.
+        for _ in 0..<40 {
+            if older.exists { break }
+            app.swipeDown()
+        }
         reveal(older, in: app); older.tap()
         func assertTop(_ id: String) {
             let timestamp = app.staticTexts["conversation.time." + id]

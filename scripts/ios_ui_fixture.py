@@ -318,7 +318,20 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 for number in range(90):
                     local("POST", f"/control/agents/ios-fixture-agent-{number:03}/create", {})
                 for number in range(55):
-                    local("POST", f"/control/agents/{agent}/work-items", {"objective": f"IOS_RICH_WORK_{number:03}"})
+                    item = local("POST", f"/control/agents/{agent}/work-items", {"objective": f"IOS_RICH_WORK_{number:03}"})
+                    # Keep the catalog large without fifty-five unfinished items
+                    # repeatedly scheduling turns during the native reader test.
+                    for attempt in range(150):
+                        try:
+                            local("POST", f"/control/agents/{agent}/work-items/{item['id']}/complete",
+                                  {"report_text": "Isolated catalog fixture completed."})
+                            break
+                        except RuntimeError as error:
+                            if "active" not in str(error) and "409" not in str(error):
+                                raise
+                            time.sleep(.1)
+                    else:
+                        raise RuntimeError("rich catalog work did not settle")
                 rich_files = workspace / "rich-files"
                 rich_files.mkdir()
                 for number in range(80):

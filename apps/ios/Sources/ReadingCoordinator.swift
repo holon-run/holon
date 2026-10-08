@@ -48,6 +48,7 @@ final class ReadingCoordinator {
     @ObservationIgnored private var expansionCount = 0
     @ObservationIgnored private var expanding: Set<String> = []
     @ObservationIgnored private var waitingBriefs: Set<String> = []
+    @ObservationIgnored private var waitingActivities: Set<String> = []
     @ObservationIgnored private var briefRecency: [String] = []
     @ObservationIgnored private var visibilityRevision = 0
     @ObservationIgnored private var previewTask: Task<Void, Never>?
@@ -138,6 +139,7 @@ final class ReadingCoordinator {
         expansionCount = 0
         expanding.removeAll()
         waitingBriefs.removeAll()
+        waitingActivities.removeAll()
         loadingActivities.removeAll()
         loadingBriefs.removeAll()
         isLoadingHistory = false
@@ -461,12 +463,38 @@ final class ReadingCoordinator {
         guard current(captured) else { return }
         await expand(briefID, brief: true)
     }
-    func loadActivities(_ turnID: String) async { await expand(turnID, brief: false) }
+    func loadActivities(_ turnID: String) async {
+        guard activities[turnID] == nil else { return }
+        await queueActivityRead(turnID)
+    }
+
+    private func queueActivityRead(_ turnID: String, before: String? = nil) async {
+        guard !turnID.isEmpty, turnID.utf8.count <= 512 else { return }
+        let captured = revision
+        // A full-screen reader can take over an inline read during presentation.
+        // Wait for that request to settle rather than dropping the new owner.
+        while waitingActivities.contains(turnID) || loadingActivities.contains(turnID) {
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            guard current(captured) else { return }
+        }
+        guard waitingActivities.count < 16 else { return }
+        waitingActivities.insert(turnID); loadingActivities.insert(turnID)
+        defer {
+            if captured == revision { waitingActivities.remove(turnID); loadingActivities.remove(turnID) }
+        }
+        while expansionCount >= 2 {
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            guard current(captured) else { return }
+        }
+        guard current(captured), !Task.isCancelled else { return }
+        if let before, activities[turnID]?["next_before_cursor"] != .string(before) { return }
+        await expand(turnID, brief: false, before: before)
+    }
 
     func loadOlderActivities(_ turnID: String) async {
         guard let page = activities[turnID], page["has_more"] == .bool(true),
               let cursor = page["next_before_cursor"]?.readingString else { return }
-        await expand(turnID, brief: false, before: cursor)
+        await queueActivityRead(turnID, before: cursor)
     }
 
     func reloadActivities(_ turnID: String) async {
