@@ -38,6 +38,11 @@ final class HolonUITests: XCTestCase {
             let keyboard = app.keyboards.firstMatch
             let top = navigation.exists ? max(window.minY, navigation.frame.maxY) : window.minY
             var bottom = tabs.exists ? min(window.maxY, tabs.frame.minY) : window.maxY
+            let composer = app.otherElements["sending.composer"].firstMatch
+            let editor = app.descendants(matching: .any)["sending.text"].firstMatch
+            if composer.exists && !composer.frame.isEmpty && editor.exists && editor.isHittable {
+                bottom = min(bottom, composer.frame.minY)
+            }
             if keyboard.exists {
                 bottom = min(bottom, keyboard.frame.minY)
                 // The keyboard's AX frame excludes its input assistant overlay.
@@ -49,7 +54,9 @@ final class HolonUITests: XCTestCase {
             guard bottom > top else { break }
             let viewport = CGRect(x: window.minX, y: top, width: window.width, height: bottom - top)
             if element.exists && element.isHittable
-                && (!fullyVisible || (!element.frame.isEmpty && viewport.contains(element.frame))) {
+                && !element.frame.isEmpty
+                && (fullyVisible ? viewport.contains(element.frame)
+                    : viewport.contains(CGPoint(x: element.frame.midX, y: element.frame.midY))) {
                 return
             }
             // Form rows are lazy; small drags load them without skipping the target.
@@ -871,6 +878,10 @@ final class HolonUITests: XCTestCase {
         capture(app, "native-older-turn-window-position")
         let newer = app.buttons["conversation.newer"]
         reveal(newer, in: app); newer.tap()
+        let positionHierarchy = XCTAttachment(string: app.debugDescription)
+        positionHierarchy.name = "native-window-position-controls"; positionHierarchy.lifetime = .keepAlways
+        add(positionHierarchy)
+        capture(app, "native-window-after-newer-tap")
         assertTop(try required("HISTORY_NEWER_TOP"))
         capture(app, "native-newer-turn-window-position")
     }

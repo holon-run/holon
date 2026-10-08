@@ -117,6 +117,8 @@ struct SendingView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(.bar)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("sending.composer")
         .background(attachmentHandlers)
         .sheet(isPresented: $showDraft) { draftEditor }
         .sheet(isPresented: $showQueue) { queue }
