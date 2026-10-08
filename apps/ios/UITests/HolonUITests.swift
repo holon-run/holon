@@ -111,6 +111,13 @@ final class HolonUITests: XCTestCase {
     private enum FixtureError: Error { case missingInput, invalidEndpoint }
 
     private func openSettings(_ app: XCUIApplication) {
+        // Bootstrap can briefly expose home before restoring the confirmed Agent.
+        // Wait for that route before looking for the home-only settings control.
+        if app.buttons["conversation.more"].waitForExistence(timeout: 30) {
+            let back = app.navigationBars.buttons.element(boundBy: 0)
+            XCTAssertTrue(back.waitForExistence(timeout: 10))
+            back.tap()
+        }
         let settings = app.buttons["settings.open"]
         for _ in 0..<6 {
             if settings.waitForExistence(timeout: 3) { break }
