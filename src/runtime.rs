@@ -1459,6 +1459,27 @@ pub(crate) enum TaskResultClaimRecoveryAuthority {
     RuntimeTerminatedBootstrap,
 }
 
+const TASK_RESULT_WAIT_BLOCKER: &str = "Waiting on a task result.";
+
+pub(crate) fn task_result_reentry_is_allowed(
+    work_item: &WorkItemRecord,
+    work_item_id: &str,
+    wait: &WaitConditionRecord,
+) -> bool {
+    if work_item.state != WorkItemState::Open || work_item.id != work_item_id {
+        return false;
+    }
+    match work_item.blocked_by.as_deref() {
+        None => true,
+        Some(TASK_RESULT_WAIT_BLOCKER) => {
+            wait.work_item_id.as_deref() == Some(work_item_id)
+                && wait.kind == crate::types::WaitConditionKind::Task
+                && wait.status == WaitConditionStatus::Resolved
+        }
+        Some(_) => false,
+    }
+}
+
 fn exact_task_result_claim_recovery(
     storage: &AppStorage,
     runtime_db: &RuntimeDb,
@@ -1597,14 +1618,17 @@ pub(crate) fn exact_task_result_claim_recovery_from_facts(
             reason: "task_result_work_item_revision_fence_missing",
         });
     };
-    if work_item.state != WorkItemState::Open || work_item.blocked_by.is_some() {
+    let Some(wait) = wait else {
+        return Ok(TaskResultClaimRecovery::MissingWait);
+    };
+    if work_item.state != WorkItemState::Open
+        || (work_item.blocked_by.is_some()
+            && !task_result_reentry_is_allowed(work_item, work_item_id, &wait))
+    {
         return Ok(TaskResultClaimRecovery::Ineligible {
             reason: "task_result_work_item_not_runnable",
         });
     }
-    let Some(wait) = wait else {
-        return Ok(TaskResultClaimRecovery::MissingWait);
-    };
     let (command, reason) = match work_item.revision.cmp(&expected_source_revision) {
         std::cmp::Ordering::Greater => (
             crate::domain::execution_protocol::ExecutionProtocolCommand::

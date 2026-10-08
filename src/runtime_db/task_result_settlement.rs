@@ -342,6 +342,46 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
+    pub(crate) fn wake_deferred_for_owner(
+        &self,
+        agent_id: &str,
+        work_item_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<usize> {
+        self.db.transaction(|tx| {
+            let mut statement = tx.prepare(
+                "SELECT payload_json
+                 FROM task_result_settlements
+                 WHERE agent_id = ?1
+                   AND work_item_id = ?2
+                   AND state != 'settled'
+                   AND next_recheck_at IS NOT NULL",
+            )?;
+            let records = statement
+                .query_map(params![agent_id, work_item_id], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .map(|row| {
+                    serde_json::from_str::<TaskResultSettlementRecord>(&row?).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let mut woken = 0;
+            for mut record in records {
+                record.next_recheck_at = Some(now);
+                record.updated_at = now;
+                defer_update_tx(tx, &record)?;
+                woken += 1;
+            }
+            Ok(woken)
+        })
+    }
+
     pub(crate) fn due_deferred(
         &self,
         agent_id: &str,
