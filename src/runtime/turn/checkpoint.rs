@@ -129,11 +129,13 @@ pub(super) fn turn_optional_id_matches(candidate: Option<&str>, turn_id: &str) -
 
 pub(super) fn build_checkpoint_resume_round(
     round: usize,
+    inference_time: String,
     assistant_blocks: Vec<ModelBlock>,
     text_blocks: Vec<String>,
 ) -> TurnRoundRecord {
     let continuation_text = CHECKPOINT_RESUME_PROMPT.to_string();
     TurnRoundRecord {
+        inference_time: Some(inference_time),
         round,
         estimated_tokens: build_round_estimated_tokens(
             &assistant_blocks,

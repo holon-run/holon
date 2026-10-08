@@ -1985,6 +1985,106 @@ pub async fn skill_library_reconcile_and_check_lock_file() -> Result<()> {
     Ok(())
 }
 
+pub async fn control_agent_timezone_validates_and_requires_token() -> Result<()> {
+    let mut config = TestConfigBuilder::new()
+        .with_control_token("secret")
+        .build_retained();
+    config.stored_config.runtime.timezone = Some("Asia/Tokyo".into());
+    let (host, base, server) = spawn_server_with_config(config).await?;
+    let client = reqwest::Client::new();
+    let path = format!("{base}/api/control/agents/default/timezone");
+    for (method, url) in [
+        (reqwest::Method::GET, path.clone()),
+        (reqwest::Method::POST, path.clone()),
+        (reqwest::Method::POST, format!("{path}/clear")),
+    ] {
+        let response = client
+            .request(method, url)
+            .json(&serde_json::json!({"timezone": "UTC"}))
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    }
+    let invalid = client
+        .post(&path)
+        .bearer_auth("secret")
+        .json(&serde_json::json!({"timezone": "Not/AZone"}))
+        .send()
+        .await?;
+    assert_eq!(invalid.status(), reqwest::StatusCode::BAD_REQUEST);
+    let initial: serde_json::Value = client
+        .get(&path)
+        .bearer_auth("secret")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(initial["effective_timezone"], "Asia/Tokyo");
+    let set: serde_json::Value = client
+        .post(&path)
+        .bearer_auth("secret")
+        .json(&serde_json::json!({
+            "timezone": "Asia/Shanghai",
+            "authority_class": holon::types::AuthorityClass::OperatorInstruction,
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(set["effective_timezone"], "Asia/Shanghai");
+    let clear: serde_json::Value = client
+        .post(format!("{path}/clear"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(clear["effective_timezone"], "Asia/Tokyo");
+    let runtime = host.get_operator_agent("default").await?;
+    let events: Vec<_> = runtime
+        .storage()
+        .read_recent_events(100)?
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.kind.as_str(),
+                "agent_timezone_set" | "agent_timezone_cleared"
+            )
+        })
+        .collect();
+    assert_eq!(events.len(), 2);
+    for event in &events {
+        assert_eq!(event.data["target_agent_id"], "default");
+        assert_eq!(
+            event.data["admission_context"],
+            serde_json::json!(holon::types::AdmissionContext::ControlAuthenticated)
+        );
+    }
+    let set_event = events
+        .iter()
+        .find(|event| event.kind == "agent_timezone_set")
+        .expect("timezone set audit");
+    assert_eq!(set_event.data["timezone_override"], "Asia/Shanghai");
+    assert_eq!(set_event.data["effective_timezone"], "Asia/Shanghai");
+    assert_eq!(
+        set_event.data["provided_trust"],
+        serde_json::json!(holon::types::AuthorityClass::OperatorInstruction)
+    );
+    let clear_event = events
+        .iter()
+        .find(|event| event.kind == "agent_timezone_cleared")
+        .expect("timezone clear audit");
+    assert!(clear_event.data["timezone_override"].is_null());
+    assert_eq!(clear_event.data["effective_timezone"], "Asia/Tokyo");
+    assert!(clear_event.data["provided_trust"].is_null());
+    server.abort();
+    Ok(())
+}
+
 pub async fn control_agent_model_override_set_and_clear_updates_status() -> Result<()> {
     let mut config = test_config();
     config.default_model =

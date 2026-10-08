@@ -17,7 +17,9 @@ use crate::tool::{
 
 use super::checkpoint::TurnLocalCheckpointMode;
 use super::checkpoint::{TurnLocalCheckpointRequest, TurnLocalCheckpointState};
-use super::reminders::{build_delta_checkpoint_prompt, push_runtime_reminder_message};
+use super::reminders::{
+    build_delta_checkpoint_prompt, push_inference_time_message, push_runtime_reminder_message,
+};
 use super::tool_summary::build_compacted_round_recap;
 use super::{
     TurnRoundRecord, COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT,
@@ -178,7 +180,13 @@ pub(crate) fn build_round_estimated_tokens(
 }
 
 pub(super) fn estimate_round_tokens(round: &TurnRoundRecord) -> usize {
-    round.estimated_tokens
+    round.estimated_tokens.saturating_add(
+        round
+            .inference_time
+            .as_deref()
+            .map(estimate_text_tokens)
+            .unwrap_or_default(),
+    )
 }
 
 pub(crate) fn estimate_tool_specs_tokens(available_tools: &[ToolSpec]) -> usize {
@@ -295,6 +303,7 @@ pub(super) fn estimate_projection_tokens(
 
 pub(super) fn exact_round_messages(round: &TurnRoundRecord) -> Vec<ConversationMessage> {
     let mut messages = Vec::new();
+    push_inference_time_message(&mut messages, round.inference_time.as_deref());
     messages.push(ConversationMessage::AssistantBlocks(
         round.assistant_blocks.clone(),
     ));
@@ -545,9 +554,11 @@ pub(super) fn compacted_round_messages(
     round: &TurnRoundRecord,
     tool_output_budget_estimated_tokens: usize,
 ) -> Option<(Vec<ConversationMessage>, ToolResultProjectionStats)> {
-    let mut messages = vec![ConversationMessage::AssistantBlocks(
+    let mut messages = Vec::new();
+    push_inference_time_message(&mut messages, round.inference_time.as_deref());
+    messages.push(ConversationMessage::AssistantBlocks(
         round.assistant_blocks.clone(),
-    )];
+    ));
     let mut stats = ToolResultProjectionStats::default();
     let mut projected_results = Vec::with_capacity(round.tool_results.len());
     if !round.tool_results.is_empty() {
@@ -611,14 +622,22 @@ pub(super) fn degraded_round_messages(
         .filter(|block| !matches!(block, ModelBlock::Text { .. }))
         .map(estimate_model_block_tokens)
         .sum();
-    let trimmable_available_tokens =
-        available_tokens.saturating_sub(non_trimmable_estimated_tokens);
+    let trimmable_available_tokens = available_tokens
+        .saturating_sub(non_trimmable_estimated_tokens)
+        .saturating_sub(
+            round
+                .inference_time
+                .as_deref()
+                .map(estimate_text_tokens)
+                .unwrap_or_default(),
+        );
     let available_chars = trimmable_available_tokens.saturating_mul(4);
     let per_item_char_limit =
         (available_chars / trimmable_count).max(DEGRADED_ROUND_MINIMUM_CONTENT_CHARS);
 
     let mut trimmed = false;
     let mut messages = Vec::new();
+    push_inference_time_message(&mut messages, round.inference_time.as_deref());
 
     let mut degraded_assistant = Vec::with_capacity(round.assistant_blocks.len());
     for block in &round.assistant_blocks {
@@ -710,6 +729,7 @@ fn rounds_have_identical_tool_calls(a: &TurnRoundRecord, b: &TurnRoundRecord) ->
 fn fold_repeated_tool_call_rounds(
     prompt_frame: &ProviderPromptFrame,
     runtime_reminder: Option<&str>,
+    current_time: Option<&str>,
     rounds: &[TurnRoundRecord],
     pre_compaction_estimated_tokens: usize,
     prompt_budget_estimated_tokens: usize,
@@ -764,6 +784,7 @@ fn fold_repeated_tool_call_rounds(
         )));
     }
 
+    push_inference_time_message(&mut conversation, current_time);
     let projected_estimated_tokens = estimate_projection_tokens(prompt_frame, &conversation);
     if projected_estimated_tokens > effective_budget_estimated_tokens {
         return None; // Folding wasn't enough; fall through to more aggressive compaction.
@@ -904,6 +925,7 @@ pub(super) fn build_turn_local_projection(
     )
 }
 
+#[cfg(test)]
 pub(super) fn build_turn_local_projection_with_runtime_reminder(
     prompt_frame: &ProviderPromptFrame,
     rounds: &[TurnRoundRecord],
@@ -916,10 +938,39 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
     tool_output_budget: usize,
     runtime_reminder: Option<&str>,
 ) -> TurnLocalProjectionOutcome {
+    build_turn_local_projection_with_time(
+        prompt_frame,
+        rounds,
+        available_tools,
+        checkpoint_state,
+        checkpoint_request_id,
+        request_prompt_budget,
+        compaction_trigger_budget,
+        keep_recent_budget,
+        tool_output_budget,
+        runtime_reminder,
+        None,
+    )
+}
+
+pub(super) fn build_turn_local_projection_with_time(
+    prompt_frame: &ProviderPromptFrame,
+    rounds: &[TurnRoundRecord],
+    available_tools: &[ToolSpec],
+    checkpoint_state: &TurnLocalCheckpointState,
+    checkpoint_request_id: Option<String>,
+    request_prompt_budget: usize,
+    compaction_trigger_budget: usize,
+    keep_recent_budget: usize,
+    tool_output_budget: usize,
+    runtime_reminder: Option<&str>,
+    current_time: Option<&str>,
+) -> TurnLocalProjectionOutcome {
     let tool_overhead_estimated_tokens = estimate_tool_specs_tokens(available_tools);
     let system_prompt_estimated_tokens = estimate_prompt_frame_tokens(prompt_frame);
     let context_attachment_estimated_tokens =
         estimate_prompt_blocks_tokens(&prompt_frame.context_blocks);
+    let current_time_estimated_tokens = current_time.map(estimate_text_tokens).unwrap_or_default();
     let runtime_reminder_estimated_tokens = runtime_reminder
         .map(estimate_text_tokens)
         .unwrap_or_default();
@@ -932,7 +983,8 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
         .min(hard_effective_budget_estimated_tokens);
     let estimated_baseline_tokens = system_prompt_estimated_tokens
         .saturating_add(context_attachment_estimated_tokens)
-        .saturating_add(runtime_reminder_estimated_tokens);
+        .saturating_add(runtime_reminder_estimated_tokens)
+        .saturating_add(current_time_estimated_tokens);
 
     let baseline_over_budget =
         |reason: &str,
@@ -958,6 +1010,8 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
         exact_conversation.extend(exact_round_messages(round));
     }
 
+    push_inference_time_message(&mut exact_conversation, current_time);
+
     let exact_estimated_tokens = estimate_projection_tokens(prompt_frame, &exact_conversation);
     let mut tool_bounded_conversation = vec![ConversationMessage::UserBlocks(
         prompt_frame.context_blocks.clone(),
@@ -980,6 +1034,7 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
         tool_bounded_conversation.extend(messages);
     }
     if tool_bounded_projection_available {
+        push_inference_time_message(&mut tool_bounded_conversation, current_time);
         let tool_bounded_estimated_tokens =
             estimate_projection_tokens(prompt_frame, &tool_bounded_conversation);
         if tool_bounded_estimated_tokens <= trigger_effective_budget_estimated_tokens {
@@ -1027,6 +1082,7 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
     let folded = fold_repeated_tool_call_rounds(
         prompt_frame,
         runtime_reminder,
+        current_time,
         rounds,
         exact_estimated_tokens,
         request_prompt_budget,
@@ -1063,6 +1119,7 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
     if let Some(last_round) = rounds.last() {
         minimum_viable_conversation.extend(exact_round_messages(last_round));
     }
+    push_inference_time_message(&mut minimum_viable_conversation, current_time);
     let minimum_projection_estimated_tokens =
         estimate_projection_tokens(prompt_frame, &minimum_viable_conversation);
     if minimum_projection_estimated_tokens > hard_effective_budget_estimated_tokens {
@@ -1077,6 +1134,7 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
                 )];
                 push_runtime_reminder_message(&mut compacted_conversation, runtime_reminder);
                 compacted_conversation.extend(compacted_messages);
+                push_inference_time_message(&mut compacted_conversation, current_time);
                 let compacted_projection_estimated_tokens =
                     estimate_projection_tokens(prompt_frame, &compacted_conversation);
                 if tool_stats.compacted_tool_results > 0
@@ -1142,6 +1200,7 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
             let (degraded_messages, _trimmed) =
                 degraded_round_messages(last_round, degraded_available_tokens);
             degraded_conversation.extend(degraded_messages);
+            push_inference_time_message(&mut degraded_conversation, current_time);
             let degraded_projection_estimated_tokens =
                 estimate_projection_tokens(prompt_frame, &degraded_conversation);
             if degraded_projection_estimated_tokens <= hard_effective_budget_estimated_tokens {
@@ -1244,6 +1303,7 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
             system_prompt_estimated_tokens
                 .saturating_add(context_attachment_estimated_tokens)
                 .saturating_add(runtime_reminder_estimated_tokens)
+                .saturating_add(current_time_estimated_tokens)
                 .saturating_add(exact_tail_tokens)
                 .saturating_add(checkpoint_estimated_tokens),
         );
@@ -1255,6 +1315,8 @@ pub(super) fn build_turn_local_projection_with_runtime_reminder(
         if let Some(checkpoint) = checkpoint_request.as_ref() {
             conversation.push(ConversationMessage::UserText(checkpoint.prompt.clone()));
         }
+
+        push_inference_time_message(&mut conversation, current_time);
 
         let projected_estimated_tokens = estimate_projection_tokens(prompt_frame, &conversation);
         let strict_fallback_applied = tail_start > preferred_tail_start;

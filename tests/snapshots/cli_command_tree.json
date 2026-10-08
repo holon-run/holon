@@ -288,6 +288,57 @@
     "aliases": []
   },
   {
+    "path": "agent.timezone",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "agent.timezone.clear",
+    "positionals": [
+      {
+        "name": "agent_id",
+        "value_name": "AGENT_ID",
+        "index": null,
+        "required": false
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "agent.timezone.get",
+    "positionals": [
+      {
+        "name": "agent_id",
+        "value_name": "AGENT_ID",
+        "index": null,
+        "required": false
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "agent.timezone.set",
+    "positionals": [
+      {
+        "name": "timezone",
+        "value_name": "TIMEZONE",
+        "index": null,
+        "required": true
+      },
+      {
+        "name": "agent_id",
+        "value_name": "AGENT_ID",
+        "index": null,
+        "required": false
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
     "path": "commands",
     "positionals": [],
     "flags": [],

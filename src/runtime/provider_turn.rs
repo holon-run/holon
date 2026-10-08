@@ -101,6 +101,16 @@ pub fn build_initial_provider_turn_request(
     )
 }
 
+/// Runtime-owned dynamic time follows all materialized input, never the
+/// stable prompt frame. Retrying this request reuses the same sampled text.
+pub(crate) fn append_inference_time(conversation: &mut Vec<ConversationMessage>, text: &str) {
+    conversation.push(ConversationMessage::UserBlocks(vec![PromptContentBlock {
+        text: text.to_string(),
+        stability: PromptStability::TurnScoped,
+        cache_breakpoint: false,
+    }]));
+}
+
 /// Builds a provider turn request from accumulated conversation state.
 ///
 /// This is used for subsequent turns in a multi-turn conversation where
@@ -403,6 +413,39 @@ mod tests {
                 .map(|tool| tool.name.as_str())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn inference_time_does_not_mutate_stable_frame_or_input() {
+        let prompt = fixture_prompt();
+        let mut request = build_provider_turn_request(&prompt, vec![], None, false);
+        let frame = request.prompt_frame.clone();
+        let ConversationMessage::UserBlocks(input) = &request.conversation[0] else {
+            panic!("input must be materialized context");
+        };
+        let input = input.clone();
+        append_inference_time(
+            &mut request.conversation,
+            "current_time: 2026-10-08T12:00:00+00:00\ntimezone: UTC",
+        );
+        assert_eq!(request.prompt_frame, frame);
+        assert_eq!(request.conversation.len(), 2);
+        let ConversationMessage::UserBlocks(preserved_input) = &request.conversation[0] else {
+            panic!("input was replaced");
+        };
+        assert_eq!(*preserved_input, input);
+        let ConversationMessage::UserBlocks(blocks) = request.conversation.last().unwrap() else {
+            panic!("time must be a typed dynamic content block");
+        };
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].stability, PromptStability::TurnScoped);
+        assert!(!blocks[0].cache_breakpoint);
+        let retry = request.clone();
+        assert_eq!(retry.prompt_frame, request.prompt_frame);
+        let ConversationMessage::UserBlocks(retry_time) = retry.conversation.last().unwrap() else {
+            panic!("retry lost runtime time");
+        };
+        assert_eq!(retry_time, blocks);
     }
 
     #[test]

@@ -2198,7 +2198,9 @@ fn last_cacheable_content_index(
 ) -> Option<usize> {
     match message {
         ConversationMessage::UserText(_) => Some(0),
-        ConversationMessage::UserBlocks(blocks) => (!blocks.is_empty()).then_some(blocks.len() - 1),
+        ConversationMessage::UserBlocks(blocks) => blocks.iter().rposition(|block| {
+            block.stability != PromptStability::TurnScoped || block.cache_breakpoint
+        }),
         ConversationMessage::UserImage { prompt, .. } => (!prompt.trim().is_empty()).then_some(0),
         ConversationMessage::AssistantBlocks(blocks) => match cache_strategy {
             AnthropicCacheStrategy::MessagesNative => {
@@ -3479,6 +3481,91 @@ mod tests {
     }
 
     #[test]
+    fn inference_time_is_after_history_and_outside_cache_boundary() {
+        for strategy in [
+            AnthropicCacheStrategy::MessagesNative,
+            AnthropicCacheStrategy::ClaudeCodePromptCache,
+        ] {
+            for cache_control in [false, true] {
+                let mut request = turn_scoped_tail_request();
+                request
+                    .conversation
+                    .push(ConversationMessage::UserBlocks(vec![PromptContentBlock {
+                        text: "current_time: 2026-10-08T23:59:59+08:00\ntimezone: Asia/Shanghai"
+                            .into(),
+                        stability: PromptStability::TurnScoped,
+                        cache_breakpoint: false,
+                    }]));
+                let system = build_anthropic_system(&request, strategy, cache_control);
+                let conversation = build_anthropic_wire_conversation(
+                    &request,
+                    can_mark_turn_scoped_context(&system, cache_control),
+                );
+                let marker =
+                    rolling_conversation_cache_marker(&conversation, strategy, cache_control);
+                if let Some((message_index, _)) = marker {
+                    assert!(message_index < conversation.len() - 1);
+                }
+                let messages = build_anthropic_messages(&conversation, marker, cache_control);
+                let time = &messages.last().unwrap().content[0];
+                assert!(time["text"].as_str().unwrap().contains("23:59:59+08:00"));
+                assert!(time.get("cache_control").is_none());
+                assert!(!system.to_string().contains("current_time"));
+                let payload = json!({ "system": system, "messages": messages });
+                let (system_markers, message_markers) = count_payload_cache_controls(&payload);
+                assert!(system_markers + message_markers <= 4);
+
+                request
+                    .conversation
+                    .push(ConversationMessage::AssistantBlocks(vec![
+                        ModelBlock::Text {
+                            text: "continue".into(),
+                        },
+                    ]));
+                request
+                    .conversation
+                    .push(ConversationMessage::UserText("next input".into()));
+                request
+                    .conversation
+                    .push(ConversationMessage::UserBlocks(vec![PromptContentBlock {
+                        text: "current_time: 2026-10-09T00:00:01+08:00\ntimezone: Asia/Shanghai"
+                            .into(),
+                        stability: PromptStability::TurnScoped,
+                        cache_breakpoint: false,
+                    }]));
+                let next_system = build_anthropic_system(&request, strategy, cache_control);
+                assert_eq!(next_system, system);
+                let next = build_anthropic_wire_conversation(
+                    &request,
+                    can_mark_turn_scoped_context(&next_system, cache_control),
+                );
+                assert_eq!(
+                    serde_json::to_value(build_anthropic_messages(
+                        &next[..conversation.len()],
+                        None,
+                        cache_control,
+                    ))
+                    .unwrap(),
+                    serde_json::to_value(build_anthropic_messages(
+                        &conversation,
+                        None,
+                        cache_control,
+                    ))
+                    .unwrap(),
+                );
+                let next_marker = rolling_conversation_cache_marker(&next, strategy, cache_control);
+                if let Some((message_index, _)) = next_marker {
+                    assert!(message_index < next.len() - 1);
+                }
+                let next_messages = build_anthropic_messages(&next, next_marker, cache_control);
+                assert!(next_messages.last().unwrap().content[0]
+                    .get("cache_control")
+                    .is_none());
+            }
+        }
+    }
+
+    #[test]
     fn turn_scoped_context_precedes_history_for_both_strategies() {
         let request = turn_scoped_tail_request();
         for strategy in [
@@ -4148,8 +4235,8 @@ mod tests {
     #[test]
     fn rolling_cache_marker_does_not_mutate_provider_conversation() {
         let conversation = vec![ConversationMessage::UserBlocks(vec![PromptContentBlock {
-            text: "turn scoped context".to_string(),
-            stability: PromptStability::TurnScoped,
+            text: "reusable agent context".to_string(),
+            stability: PromptStability::AgentScoped,
             cache_breakpoint: false,
         }])];
 

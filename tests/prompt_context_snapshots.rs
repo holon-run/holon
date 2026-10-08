@@ -121,11 +121,13 @@ fn render_context_snapshot_named(
     scenario_name: Option<&str>,
 ) -> Result<String> {
     storage.write_agent(session)?;
+    let mut current_message = current_message.clone();
+    current_message.created_at = "2024-01-02T03:04:05.123Z".parse()?;
     let prompt = build_effective_prompt(
         storage,
         session,
         &sample_execution(),
-        current_message,
+        &current_message,
         &test_config(),
         Path::new("/workspace"),
         Path::new("/tmp/agent-home"),
@@ -527,7 +529,7 @@ Recent turns:
 
 ## current_input
 Current input:
-- [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt]
+- [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt][message_created_at=2024-01-02T03:04:05.123Z UTC]
   Continue with the next prompt projection case."#
     );
     assert_snapshot(&rendered, &expected);
@@ -896,7 +898,7 @@ Continuation context:
 
 ## current_input
 Current input:
-- [task][task_rejoin][runtime_owned][runtime_instruction][TaskResult]
+- [task][task_rejoin][runtime_owned][runtime_instruction][TaskResult][message_created_at=2024-01-02T03:04:05.123Z UTC]
   Command task completed successfully: cargo test runtime_flow"#
     );
     assert_snapshot(&rendered, &expected);
@@ -992,7 +994,7 @@ Current input relation: current_input is the latest trusted operator input and t
 
 ## current_input
 Current input:
-- [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt]
+- [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt][message_created_at=2024-01-02T03:04:05.123Z UTC]
   Continue the prompt snapshot work and note any missing surfaces."#
     );
     assert_snapshot(&rendered, &expected);
@@ -1097,7 +1099,7 @@ Continuation context:
 
 ## current_input
 Current input:
-- [system][runtime_system][runtime_owned][runtime_instruction][SystemTick]
+- [system][runtime_system][runtime_owned][runtime_instruction][SystemTick][message_created_at=2024-01-02T03:04:05.123Z UTC]
   wake hint: github inbox updated"#
     );
     assert_snapshot(&rendered, &expected);
@@ -1147,7 +1149,7 @@ Current input relation: current_input is an internal-followup continuation, not 
 
 ## current_input
 Current input:
-- [system][runtime_system][runtime_owned][runtime_instruction][InternalFollowup]
+- [system][runtime_system][runtime_owned][runtime_instruction][InternalFollowup][message_created_at=2024-01-02T03:04:05.123Z UTC]
   This is the first run of Holon with a model provider configured."#
     );
     assert_snapshot(&rendered, &expected);
@@ -1205,7 +1207,7 @@ Current input relation: current_input is an external-event continuation, not a t
 
 ## current_input
 Current input:
-- [callback][http_callback_enqueue][external_trigger_capability][integration_signal][CallbackEvent]
+- [callback][http_callback_enqueue][external_trigger_capability][integration_signal][CallbackEvent][message_created_at=2024-01-02T03:04:05.123Z UTC]
   CI completed success for PR #465."#
     );
     assert_snapshot(&rendered, &expected);
@@ -1279,7 +1281,7 @@ Continuation context:
 
 ## current_input
 Current input:
-- [task][task_rejoin][runtime_owned][runtime_instruction][TaskResult]
+- [task][task_rejoin][runtime_owned][runtime_instruction][TaskResult][message_created_at=2024-01-02T03:04:05.123Z UTC]
   Command task completed successfully: cargo test runtime_flow"#
     );
     assert_snapshot(&rendered, &expected);
@@ -1404,7 +1406,7 @@ Current input relation: current_input is the latest trusted operator input and t
 
 ## current_input
 Current input:
-- [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt]
+- [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt][message_created_at=2024-01-02T03:04:05.123Z UTC]
   Continue with the snapshot expansion work."#
     );
     assert_snapshot(&rendered, &expected);
@@ -1489,7 +1491,7 @@ Current input relation: current_input is the latest trusted operator input and t
 
 ## current_input
 Current input:
-- [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt]
+- [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt][message_created_at=2024-01-02T03:04:05.123Z UTC]
   Continue testing without delta."#
     );
     assert_snapshot(&rendered, &expected);
@@ -1592,7 +1594,7 @@ Current input relation: current_input is an external-event continuation, not a t
 
 ## current_input
 Current input:
-- [callback][http_callback_enqueue][external_trigger_capability][integration_signal][CallbackEvent]
+- [callback][http_callback_enqueue][external_trigger_capability][integration_signal][CallbackEvent][message_created_at=2024-01-02T03:04:05.123Z UTC]
   CI pipeline completed successfully for commit abc123."#
     );
     assert_snapshot(&rendered, &expected);
@@ -1724,7 +1726,7 @@ Rate limit reset, ready to retry
 
 ## current_input
 Current input:
-- [system][runtime_system][runtime_owned][runtime_instruction][SystemTick]
+- [system][runtime_system][runtime_owned][runtime_instruction][SystemTick][message_created_at=2024-01-02T03:04:05.123Z UTC]
   wake hint: rate limit reset"#
     );
     assert_snapshot(&rendered, &expected);
@@ -1832,7 +1834,7 @@ Current input relation: current_input is the latest trusted operator input and t
 
 ## current_input
 Current input:
-- [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt]
+- [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt][message_created_at=2024-01-02T03:04:05.123Z UTC]
   Continue with the expanded coverage work after compaction."#
     );
     assert_snapshot(&rendered, &expected);
@@ -1964,7 +1966,7 @@ Continuation context:
 
 ## current_input
 Current input:
-- [task][task_rejoin][runtime_owned][runtime_instruction][TaskResult]
+- [task][task_rejoin][runtime_owned][runtime_instruction][TaskResult][message_created_at=2024-01-02T03:04:05.123Z UTC]
   Test task completed: 120 tests passed, 0 failed"#
     );
     assert_snapshot(&rendered, &expected);

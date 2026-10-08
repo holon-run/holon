@@ -935,10 +935,29 @@ pub enum AgentCommands {
         #[command(subcommand)]
         command: AgentModelCommands,
     },
+    /// Manage an agent's timezone override (operator mode only)
+    Timezone {
+        #[command(subcommand)]
+        command: AgentTimezoneCommands,
+    },
     /// Reset the external trigger callback for an agent (revoke old token + generate new)
     ResetCallback {
         #[arg(long)]
         agent: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AgentTimezoneCommands {
+    Get {
+        agent_id: Option<String>,
+    },
+    Set {
+        timezone: String,
+        agent_id: Option<String>,
+    },
+    Clear {
+        agent_id: Option<String>,
     },
 }
 

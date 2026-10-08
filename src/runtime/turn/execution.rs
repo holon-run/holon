@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::config::ModelRouteRef;
-use crate::prompt::EffectivePrompt;
+use crate::prompt::{time::RuntimeTime, EffectivePrompt};
 use crate::provider::{
     provider_attempt_timeline, provider_error_is_context_length_exceeded, AgentProvider,
     ModelBlock, ProviderAttemptOutcome, ProviderAttemptTimeline, ProviderFallbackDisposition,
@@ -21,7 +21,8 @@ use crate::provider::{
     PROVIDER_RECOVERY_MAX_BACKOFF_MS, PROVIDER_RECOVERY_MAX_FALLBACKS,
 };
 use crate::runtime::provider_turn::{
-    build_continuation_request, build_initial_provider_turn_request, build_provider_prompt_frame,
+    append_inference_time, build_continuation_request, build_initial_provider_turn_request,
+    build_provider_prompt_frame,
 };
 use crate::storage::to_json_value;
 use crate::tool::{ToolCall, ToolError, ToolSpec};
@@ -52,7 +53,7 @@ use super::context_management::{
     projection_fallback_reason as provider_projection_fallback_reason,
 };
 use super::projection::{
-    build_round_estimated_tokens, build_turn_local_projection_with_runtime_reminder,
+    build_round_estimated_tokens, build_turn_local_projection_with_time,
     normalize_provider_attempt_timing, provider_attempt_model_state, TurnLocalProjectionOutcome,
 };
 use super::reminders::{build_turn_budget_warning, round_invalidates_checkpoint_anchor};
@@ -1795,6 +1796,7 @@ impl TurnExecution<'_> {
             )
         };
         let identity = runtime.agent_identity_view().await?;
+        let time_timezone = runtime.current_time_timezone().await?;
         let (
             provider,
             available_tools,
@@ -1970,6 +1972,10 @@ impl TurnExecution<'_> {
                     .await?;
             }
 
+            // One sample per logical inference; request retries and budget
+            // reprojection below must not read the clock again.
+            let runtime_time = RuntimeTime::new(runtime.now(), time_timezone);
+            let inference_time = runtime_time.render();
             let provider_round_started = std::time::Instant::now();
             let (
                 response,
@@ -1988,12 +1994,13 @@ impl TurnExecution<'_> {
                 if round == 1 {
                     let request_build_started = std::time::Instant::now();
                     let request_build_started_at = chrono::Utc::now();
-                    let request = build_initial_provider_turn_request(
+                    let mut request = build_initial_provider_turn_request(
                         provider.as_ref(),
                         &effective_prompt,
                         available_tools.clone(),
                         native_web_search.clone(),
                     );
+                    append_inference_time(&mut request.conversation, &inference_time);
                     crate::diagnostics::record_provider_request_build(
                         request_build_started.elapsed(),
                     );
@@ -2006,6 +2013,11 @@ impl TurnExecution<'_> {
                     );
                     let mut context_management =
                         context_management_diagnostic(provider.as_ref(), &request);
+                    context_management["runtime_time"] = serde_json::json!({
+                        "current_time": runtime_time.current_time(),
+                        "timezone": runtime_time.timezone().to_string(),
+                        "sample_fingerprint": format!("sha256:{:x}", Sha256::digest(inference_time.as_bytes())),
+                    });
                     context_management["history_projection"] = projection_diagnostic(
                         &effective_prompt,
                         projection_selector,
@@ -2177,7 +2189,7 @@ impl TurnExecution<'_> {
                         available_tools.clone()
                     };
                     let projection = loop {
-                        match build_turn_local_projection_with_runtime_reminder(
+                        match build_turn_local_projection_with_time(
                             &prompt_frame,
                             &completed_rounds,
                             &request_tools,
@@ -2192,6 +2204,7 @@ impl TurnExecution<'_> {
                                 .resolved_policy
                                 .tool_output_truncation_estimated_tokens,
                             runtime_reminder.as_deref(),
+                            Some(&inference_time),
                         ) {
                             TurnLocalProjectionOutcome::Projection(projection) => break projection,
                             TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics)
@@ -2398,6 +2411,11 @@ impl TurnExecution<'_> {
                     );
                     let mut context_management =
                         context_management_diagnostic(provider.as_ref(), &request);
+                    context_management["runtime_time"] = serde_json::json!({
+                        "current_time": runtime_time.current_time(),
+                        "timezone": runtime_time.timezone().to_string(),
+                        "sample_fingerprint": format!("sha256:{:x}", Sha256::digest(inference_time.as_bytes())),
+                    });
                     context_management["history_projection"] = projection_diagnostic(
                         &effective_prompt,
                         projection_selector,
@@ -2864,6 +2882,7 @@ impl TurnExecution<'_> {
                         let corrective_blocks =
                             corrective_replay_blocks(&completed_round_assistant_blocks);
                         completed_rounds.push(TurnRoundRecord {
+                            inference_time: Some(inference_time.clone()),
                             round,
                             estimated_tokens: build_round_estimated_tokens(
                                 &corrective_blocks,
@@ -3016,6 +3035,7 @@ impl TurnExecution<'_> {
                                 }),
                             ))?;
                             completed_rounds.push(TurnRoundRecord {
+                                inference_time: Some(inference_time.clone()),
                                 round,
                                 estimated_tokens: build_round_estimated_tokens(
                                     &completed_round_assistant_blocks,
@@ -3099,6 +3119,7 @@ impl TurnExecution<'_> {
                         let corrective_blocks =
                             corrective_replay_blocks(&completed_round_assistant_blocks);
                         completed_rounds.push(TurnRoundRecord {
+                            inference_time: Some(inference_time.clone()),
                             round,
                             estimated_tokens: build_round_estimated_tokens(
                                 &corrective_blocks,
@@ -3335,6 +3356,7 @@ impl TurnExecution<'_> {
                             }),
                         ))?;
                         completed_rounds.push(TurnRoundRecord {
+                            inference_time: Some(inference_time.clone()),
                             round,
                             estimated_tokens: build_round_estimated_tokens(
                                 &completed_round_assistant_blocks,
@@ -3424,6 +3446,7 @@ impl TurnExecution<'_> {
                     .await?;
                 if !interjections.is_empty() {
                     let mut round_record = TurnRoundRecord {
+                        inference_time: Some(inference_time.clone()),
                         round,
                         estimated_tokens: build_round_estimated_tokens(
                             &completed_round_assistant_blocks,
@@ -3473,6 +3496,7 @@ impl TurnExecution<'_> {
                     let continuation_text =
                         "Output token limit hit. Continue exactly where you left off. Do not restart from the top, repeat analysis, or re-read context already provided. Finish the remaining report directly.".to_string();
                     completed_rounds.push(TurnRoundRecord {
+                        inference_time: Some(inference_time.clone()),
                         round,
                         estimated_tokens: build_round_estimated_tokens(
                             &completed_round_assistant_blocks,
@@ -3552,6 +3576,7 @@ impl TurnExecution<'_> {
             if tool_calls.is_empty() && checkpoint_recorded_this_round {
                 completed_rounds.push(build_checkpoint_resume_round(
                     round,
+                    inference_time.clone(),
                     completed_round_assistant_blocks,
                     text_blocks,
                 ));
@@ -3585,6 +3610,7 @@ impl TurnExecution<'_> {
                 );
                 let corrective_blocks = corrective_replay_blocks(&completed_round_assistant_blocks);
                 completed_rounds.push(TurnRoundRecord {
+                    inference_time: Some(inference_time.clone()),
                     round,
                     estimated_tokens: build_round_estimated_tokens(
                         &corrective_blocks,
@@ -3625,6 +3651,7 @@ impl TurnExecution<'_> {
                     if combined_text.is_empty() {
                         completed_rounds.push(build_checkpoint_resume_round(
                             round,
+                            inference_time.clone(),
                             completed_round_assistant_blocks,
                             text_blocks,
                         ));
@@ -4407,6 +4434,7 @@ impl TurnExecution<'_> {
             let terminal_wait_without_text =
                 all_tool_results_should_sleep && last_assistant_message.is_none();
             let round_record = TurnRoundRecord {
+                inference_time: Some(inference_time.clone()),
                 round,
                 estimated_tokens: build_round_estimated_tokens(
                     &completed_round_assistant_blocks,

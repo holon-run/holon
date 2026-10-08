@@ -6469,6 +6469,7 @@ impl RuntimeHost {
                 self.bridge(),
                 RuntimeModelCatalog::from_config(&config),
                 self.inner.event_bus.clone(),
+                config.stored_config.runtime.timezone.clone(),
             )?
         } else {
             RuntimeHandle::new_reconfigurable_with_host_bridge(

@@ -84,6 +84,14 @@ fn control_plane_post_commands_pretty_print_json_stdout() {
             "/api/control/agents/main/current-run/abort",
         ),
         (
+            &["agent", "timezone", "set", "Asia/Shanghai"],
+            "/api/control/agents/main/timezone",
+        ),
+        (
+            &["agent", "timezone", "clear", "worker"],
+            "/api/control/agents/worker/timezone/clear",
+        ),
+        (
             &["skills", "install", "demo"],
             "/api/control/agents/main/skills/install",
         ),
@@ -121,6 +129,35 @@ fn control_plane_post_commands_pretty_print_json_stdout() {
         let (output, actual_path) = run_with_mock_control_plane(args);
         assert_eq!(actual_path, *expected_path, "args: {args:?}");
         assert_pretty_json_stdout(output, expected_path);
+    }
+}
+
+#[test]
+fn timezone_commands_reject_agent_and_malformed_context_before_control_requests() {
+    let cases: &[&[&str]] = &[
+        &["agent", "timezone", "get"],
+        &["agent", "timezone", "set", "Asia/Shanghai", "other-agent"],
+        &["agent", "timezone", "clear", "other-agent"],
+    ];
+    for args in cases {
+        for malformed in [false, true] {
+            let (mut command, _home) = isolated_holon_command();
+            if malformed {
+                command.env("HOLON_CALLER_SOURCE_TASK_ID", "task-test");
+            } else {
+                command.env("HOLON_CALLER_AGENT_ID", "agent-test");
+            }
+            let output = command.args(*args).output().expect("run isolated holon");
+            let (stdout, stderr) = output_text(&output);
+            assert_eq!(output.status.code(), Some(1), "args: {args:?}, {stderr}");
+            assert!(stdout.is_empty(), "args: {args:?}, {stdout}");
+            let expected = if malformed {
+                "HOLON_CALLER_AGENT_ID is required"
+            } else {
+                "agent timezone commands require operator mode"
+            };
+            assert!(stderr.contains(expected), "args: {args:?}, {stderr}");
+        }
     }
 }
 

@@ -678,6 +678,14 @@ pub fn router(state: AppState) -> Router {
             "/control/agents/{agent_id}/model/clear",
             post(control::clear_agent_model),
         )
+        .route(
+            "/control/agents/{agent_id}/timezone",
+            get(control::get_agent_timezone).post(control::set_agent_timezone),
+        )
+        .route(
+            "/control/agents/{agent_id}/timezone/clear",
+            post(control::clear_agent_timezone),
+        )
         .route("/control/agents/{agent_id}/control", post(control::control))
         .route(
             "/control/agents/{agent_id}/current-run/abort",

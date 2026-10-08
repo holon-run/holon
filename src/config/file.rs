@@ -355,6 +355,12 @@ impl AgentTemplateRemoteSourceConfigFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RuntimeConfigFile {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::prompt::time::deserialize_optional_timezone"
+    )]
+    pub timezone: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -633,7 +639,8 @@ impl ImageGenerationConfigFile {
 
 impl RuntimeConfigFile {
     pub(crate) fn is_empty(&self) -> bool {
-        self.max_output_tokens.is_none()
+        self.timezone.is_none()
+            && self.max_output_tokens.is_none()
             && self.default_tool_output_tokens.is_none()
             && self.max_tool_output_tokens.is_none()
             && self.command_task_output_retention_bytes.is_none()

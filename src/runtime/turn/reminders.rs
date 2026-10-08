@@ -76,6 +76,16 @@ Keep this delta brief; it exists to preserve continuity after tool output compre
     )
 }
 
+/// Time snapshots are immutable request input, not regeneratable reminders.
+pub(super) fn push_inference_time_message(
+    conversation: &mut Vec<ConversationMessage>,
+    inference_time: Option<&str>,
+) {
+    if let Some(time) = inference_time {
+        crate::runtime::provider_turn::append_inference_time(conversation, time);
+    }
+}
+
 pub(super) fn push_runtime_reminder_message(
     conversation: &mut Vec<ConversationMessage>,
     runtime_reminder: Option<&str>,

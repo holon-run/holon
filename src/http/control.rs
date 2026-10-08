@@ -1092,6 +1092,106 @@ pub async fn detach_workspace(
     })))
 }
 
+pub async fn get_agent_timezone(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let timezone = runtime
+        .current_time_timezone()
+        .await
+        .map_err(error_response)?;
+    Ok(Json(
+        json!({"agent_id": agent_id, "effective_timezone": timezone.name()}),
+    ))
+}
+
+pub async fn set_agent_timezone(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<SetAgentTimezoneRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    crate::prompt::time::parse_timezone(&request.timezone)
+        .map_err(|err| bad_request(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let agent = runtime
+        .set_timezone_override(Some(request.timezone))
+        .await
+        .map_err(error_response)?;
+    let timezone = runtime
+        .current_time_timezone()
+        .await
+        .map_err(error_response)?;
+    runtime
+        .append_audit_event(
+            "agent_timezone_set",
+            json!({
+                "target_agent_id": agent_id,
+                "timezone_override": agent.timezone_override,
+                "effective_timezone": timezone.name(),
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+            }),
+        )
+        .map_err(error_response)?;
+    Ok(Json(
+        json!({"ok": true, "agent_id": agent_id, "timezone_override": agent.timezone_override, "effective_timezone": timezone.name()}),
+    ))
+}
+
+pub async fn clear_agent_timezone(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<ClearAgentTimezoneRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    runtime
+        .set_timezone_override(None)
+        .await
+        .map_err(error_response)?;
+    let timezone = runtime
+        .current_time_timezone()
+        .await
+        .map_err(error_response)?;
+    runtime
+        .append_audit_event(
+            "agent_timezone_cleared",
+            json!({
+                "target_agent_id": agent_id,
+                "timezone_override": null,
+                "effective_timezone": timezone.name(),
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+            }),
+        )
+        .map_err(error_response)?;
+    Ok(Json(
+        json!({"ok": true, "agent_id": agent_id, "timezone_override": null, "effective_timezone": timezone.name()}),
+    ))
+}
+
 pub async fn set_agent_model(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,

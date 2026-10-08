@@ -3732,6 +3732,7 @@ mod tests {
             MessageDeliverySurface::RuntimeSystem,
             AdmissionContext::RuntimeOwned,
         );
+        message.created_at = "2024-01-02T03:04:05.123Z".parse().unwrap();
         message.correlation_id = Some("task-1".into());
         message.metadata = Some(json!({
             "agent_message_delivery": {
@@ -3757,10 +3758,12 @@ mod tests {
             original_reply_to_agent_id: None,
         });
 
-        let compact = render_current_input_section(&message, 48, None);
+        let section_budget =
+            48 + estimate_text_tokens("[message_created_at=2024-01-02T03:04:05.123Z UTC]");
+        let compact = render_current_input_section(&message, section_budget, None);
 
         assert!(
-            estimate_section_tokens(&compact) <= 48,
+            estimate_section_tokens(&compact) <= section_budget,
             "tokens={} content={:?}",
             estimate_section_tokens(&compact),
             compact.content
@@ -3768,6 +3771,9 @@ mod tests {
         assert!(compact.content.contains("Reply: SendAgentMessage"));
         assert!(compact.content.contains("sender=sender"));
         assert!(compact.content.contains("reply=sender"));
+        assert!(compact
+            .content
+            .contains("message_created_at=2024-01-02T03:04:05.123Z UTC"));
     }
 
     #[test]

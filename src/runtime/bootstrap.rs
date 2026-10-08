@@ -252,7 +252,9 @@ fn model_route_reasoning_effort_override(
 /// Snapshot of config-derived runtime fields that can be hot-swapped at runtime.
 /// Stored behind an `ArcSwap` so that config reloads take effect on the next turn
 /// without disturbing an in-progress turn.
+#[derive(Clone)]
 pub(super) struct ConfigSnapshot {
+    pub default_timezone: Option<String>,
     pub user_home_dir: Option<PathBuf>,
     pub model_catalog: RuntimeModelCatalog,
     pub model_availability: Vec<ResolvedModelAvailability>,
@@ -290,6 +292,7 @@ impl ConfigSnapshot {
             ..ContextConfig::default()
         };
         Ok(Self {
+            default_timezone: config.stored_config.runtime.timezone.clone(),
             user_home_dir: config.user_home_dir.clone(),
             model_catalog,
             model_availability,
@@ -518,9 +521,10 @@ impl RuntimeHandle {
         host_bridge: RuntimeHostBridge,
         model_catalog: RuntimeModelCatalog,
         event_bus: EventBus,
+        default_timezone: Option<String>,
     ) -> Result<Self> {
         let base_context_config = context_config.clone();
-        Self::new_internal(
+        let runtime = Self::new_internal(
             agent_id,
             data_dir,
             initial_workspace,
@@ -540,7 +544,11 @@ impl RuntimeHandle {
             Some(host_bridge),
             Some(event_bus),
             Arc::new(SystemClock),
-        )
+        )?;
+        let mut snapshot = (**runtime.inner.config_snapshot.load()).clone();
+        snapshot.default_timezone = default_timezone;
+        runtime.inner.config_snapshot.store(Arc::new(snapshot));
+        Ok(runtime)
     }
 
     pub(crate) fn new_reconfigurable_with_host_bridge(
@@ -635,6 +643,9 @@ impl RuntimeHandle {
             })
             .unwrap_or_default();
         let config_snapshot = Arc::new(ConfigSnapshot {
+            default_timezone: provider_reconfig
+                .as_ref()
+                .and_then(|reconfig| reconfig.config.stored_config.runtime.timezone.clone()),
             user_home_dir,
             model_catalog: model_catalog.clone(),
             model_availability: model_availability.clone(),
@@ -931,6 +942,20 @@ impl RuntimeHandle {
             .await?;
         *self.inner.turn_fallback_model.write().await = fallback_model.cloned();
         Ok(())
+    }
+
+    pub(crate) async fn current_time_timezone(&self) -> Result<chrono_tz::Tz> {
+        let guard = self.inner.agent.lock().await;
+        let snapshot = self.inner.config_snapshot.load();
+        crate::prompt::time::resolve_timezone(
+            guard.state.timezone_override.as_deref(),
+            snapshot.default_timezone.as_deref(),
+        )
+    }
+
+    pub async fn set_timezone_override(&self, timezone: Option<String>) -> Result<AgentState> {
+        self.update_agent_state(|state| state.set_timezone(timezone.as_deref()))
+            .await
     }
 
     /// Hot-reload config-derived runtime fields from a new `AppConfig`.
