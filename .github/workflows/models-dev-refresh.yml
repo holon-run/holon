@@ -2,8 +2,8 @@ name: models.dev refresh
 
 on:
   schedule:
-    # Every Monday at 06:00 UTC
-    - cron: "0 6 * * 1"
+    # Every day at 04:30 Beijing time (20:30 UTC on the previous day)
+    - cron: "30 20 * * *"
   workflow_dispatch:
 
 permissions:
