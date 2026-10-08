@@ -700,14 +700,13 @@ final class HolonUITests: XCTestCase {
     func testPopulatedComposerMaximumTextSize() throws {
         let app = launch(language: "zh-Hans", dark: true, large: true)
         defer { app.terminate() }
-        let routeReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            app.buttons["conversation.more"].exists || app.buttons["settings.open"].exists
-        }, object: app)
-        XCTAssertEqual(XCTWaiter.wait(for: [routeReady], timeout: 30), .completed)
         // Earlier diagnostics cases intentionally return to home and clear
-        // the saved Agent route. Enter through the shipped row in that case.
-        if !app.buttons["conversation.more"].exists {
+        // the saved Agent route. Wait for confirmed restoration before treating
+        // the transient bootstrap home as a settled navigation destination.
+        if !app.buttons["conversation.more"].waitForExistence(timeout: 30) {
+            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 10))
             let agent = app.buttons["agent." + (try required("AGENT_ID"))]
+            XCTAssertTrue(agent.waitForExistence(timeout: 15))
             reveal(agent, in: app); agent.tap()
         }
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
