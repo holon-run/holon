@@ -5,6 +5,18 @@ import org.junit.Test
 
 class UiCopyTest {
     @Test
+    fun `background queue copy is localized without translating message content`() {
+        assertEquals("Background messages", UiCopy.translate("后台消息", "en"))
+        assertEquals("Tap a message for details", UiCopy.translate("点击消息查看详情", "en"))
+        assertEquals("Queued", UiCopy.translate("排队中", "en"))
+        assertEquals("Message details", UiCopy.translate("消息详情", "en"))
+        assertEquals("Expand messages", UiCopy.translate("展开消息", "en"))
+        assertEquals("Collapse messages", UiCopy.translate("收起消息", "en"))
+        assertEquals("后台消息", UiCopy.translate("后台消息", "zh-CN"))
+        assertEquals("child agent started: 请检查报告", UiCopy.translate("child agent started: 请检查报告", "en"))
+    }
+
+    @Test
     fun `privacy and session storage copy is translated accurately`() {
         assertEquals("Privacy policy", UiCopy.translate("隐私政策", "en"))
         assertEquals("隐私政策", UiCopy.translate("隐私政策", "zh-CN"))

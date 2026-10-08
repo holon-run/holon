@@ -6,6 +6,23 @@ import java.time.format.DateTimeFormatter
 import run.holon.android.sdk.HolonConversationTurn
 import run.holon.android.sdk.HolonConversationActivity
 import run.holon.android.sdk.HolonTurnInput
+import run.holon.android.sdk.HolonPendingInput
+
+internal data class PendingConversationInputs(
+    val operator: List<HolonPendingInput>,
+    val background: List<HolonPendingInput>,
+) {
+    val keys: List<String>
+        get() = operator.map { "pending:${it.messageId}" } +
+            if (background.isEmpty()) emptyList() else listOf("pending-background")
+}
+
+internal fun pendingConversationInputs(inputs: List<HolonPendingInput>): PendingConversationInputs {
+    val (operator, background) = inputs
+        .sortedWith(compareBy({ it.createdAt.orEmpty() }, { it.messageId }))
+        .partition { it.presentationClass == "operator" }
+    return PendingConversationInputs(operator, background)
+}
 
 internal sealed interface ConversationRow {
     val key: String

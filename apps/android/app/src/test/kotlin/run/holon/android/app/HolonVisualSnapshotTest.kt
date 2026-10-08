@@ -30,8 +30,29 @@ import run.holon.android.sdk.HolonLatestBrief
 import run.holon.android.sdk.HolonToolExecutionSnapshot
 import run.holon.android.sdk.HolonBrief
 import run.holon.android.sdk.HolonBriefAttachment
+import run.holon.android.sdk.HolonPendingInput
 
 class HolonVisualSnapshotTest {
+    @Test fun pendingBackgroundMessagesCollapsed() {
+        paparazzi.snapshot {
+            PreviewFrame {
+                OperatorInputText("请检查发布准备情况。", null, "Operator", ui("待处理"))
+                PendingMessagesCard(samplePendingInputs(), false, {}, {})
+                Text("结果和输入框仍有足够阅读空间。", style = MaterialTheme.typography.bodyMedium)
+                MessageComposer("", emptyList(), false, false, false, false, {}, {}, {}, {}, {}, {}, {})
+            }
+        }
+    }
+
+    @Test fun pendingBackgroundMessagesExpanded() {
+        paparazzi.snapshot {
+            PreviewFrame {
+                PendingMessagesCard(samplePendingInputs(), true, {}, {})
+                MessageComposer("", emptyList(), false, false, false, false, {}, {}, {}, {}, {}, {}, {})
+            }
+        }
+    }
+
     @Test fun fileFiltersAndActiveTasks() {
         paparazzi.snapshot {
             PreviewFrame {
@@ -242,6 +263,55 @@ class HolonVisualSnapshotTest {
             latestBrief = HolonLatestBrief("brief-$id", "2025-01-01T08:00:00Z", preview, 0),
         )
 }
+
+class HolonPendingEnglishVisualSnapshotTest {
+    private val originalTimeZone = TimeZone.getDefault()
+    @get:Rule
+    val paparazzi =
+        Paparazzi(
+            deviceConfig = DeviceConfig.PIXEL_5.copy(locale = "en"),
+            theme = "android:style/Theme.Material.Light.NoActionBar",
+        )
+
+    @Before fun setEnglishLocale() {
+        UiCopy.initialize(paparazzi.context)
+        UiCopy.select(paparazzi.context, "en")
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
+        org.junit.Assert.assertEquals("Background messages", ui("后台消息"))
+        org.junit.Assert.assertEquals("Queued", ui("排队中"))
+        org.junit.Assert.assertEquals("Message details", ui("消息详情"))
+        org.junit.Assert.assertEquals("No message preview", ui("暂无消息预览"))
+    }
+
+    @After fun restoreSettings() {
+        TimeZone.setDefault(originalTimeZone)
+        UiCopy.select(paparazzi.context, null)
+    }
+
+    @Test fun pendingBackgroundMessagesEnglishDarkLargeText() {
+        paparazzi.snapshot {
+            CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, 1.3f)) {
+                PreviewFrame(darkTheme = true) {
+                    PendingMessagesCard(samplePendingInputs(), true, {}, {})
+                    PendingMessagesCard(listOf(samplePendingInputs().first().copy(preview = "", createdAt = null, actorDisplayName = null)), false, {}, {})
+                }
+            }
+        }
+    }
+
+    @Test fun pendingMessageDetailsEnglish() {
+        paparazzi.snapshot {
+            PreviewFrame { PendingMessageDetails(samplePendingInputs()[2]) }
+        }
+    }
+}
+
+private fun samplePendingInputs() = listOf(
+    HolonPendingInput("child", "queued", "child agent started: 请独立检查 Android 客户端的排队消息、长文本阅读和输入框布局，完成后汇总测试结果。", "2026-10-08T08:30:00Z", "internal", "Holon QA"),
+    HolonPendingInput("status", "queued", "The build has completed. Unit tests and visual checks are running; the final report will include verification evidence and any remaining limitations.", "2026-10-08T08:31:00Z", "external", "Build Agent"),
+    HolonPendingInput("report", "queued", (1..9).joinToString("\n") { "Check $it: Review apps/android/app/src/main and preserve existing message ordering, original content and user input." }, "2026-10-08T08:32:00Z", "internal", "Review Agent"),
+    HolonPendingInput("legacy", "queued", "", null),
+)
 
 class HolonLargeTextVisualSnapshotTest {
     @get:Rule

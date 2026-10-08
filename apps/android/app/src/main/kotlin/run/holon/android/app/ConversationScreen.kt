@@ -408,13 +408,16 @@ internal fun ConversationTimeline(
     val latestBriefId = state.selectedAgent?.latestBrief?.briefId
     val latestBriefEventSeq = state.selectedAgent?.latestBrief?.createdEventSeq
     val agentId = state.selectedAgent?.id
+    val pending = pendingConversationInputs(snapshot?.pendingInputs.orEmpty())
+    var pendingExpanded by rememberSaveable(agentId) { mutableStateOf(false) }
+    var selectedPendingId by rememberSaveable(agentId) { mutableStateOf<String?>(null) }
     val tail = "conversation-tail"
     val itemKeys = buildList {
         if (state.hasOlderTurns) add("load-older-turns")
         addAll(rows.map(ConversationRow::key))
-        addAll(snapshot?.pendingInputs.orEmpty().map { "pending:${it.messageId}" })
+        addAll(pending.keys)
         addAll(state.outbox.map { "outbox:${it.requestId}" })
-        if (turns.isEmpty() && state.outbox.isEmpty()) add("empty")
+        if (turns.isEmpty() && state.outbox.isEmpty() && pending.keys.isEmpty()) add("empty")
         add(tail)
     }
     val contentRevision = listOf(snapshot?.snapshotCursor, state.briefs, state.briefLoads, state.conversationDetail, state.outbox)
@@ -498,12 +501,19 @@ internal fun ConversationTimeline(
                     }
                 }
             }
-            items(snapshot?.pendingInputs.orEmpty().sortedWith(compareBy({ it.createdAt.orEmpty() }, { it.messageId })), key = { "pending:${it.messageId}" }) { input ->
-                if (input.presentationClass == "operator") {
-                    OperatorInputText(input.preview, input.createdAt, input.actorDisplayName, ui("待处理"))
-                } else {
-                    Text(ui("${input.state}: ${input.preview}"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+            items(pending.operator, key = { "pending:${it.messageId}" }) { input ->
+                OperatorInputText(input.preview, input.createdAt, input.actorDisplayName, ui("待处理"))
+            }
+            if (pending.background.isNotEmpty()) item(key = "pending-background") {
+                PendingMessagesCard(
+                    inputs = pending.background,
+                    expanded = pendingExpanded,
+                    onToggle = {
+                        position.followLatest = false
+                        pendingExpanded = !pendingExpanded
+                    },
+                    onInput = { selectedPendingId = it.messageId },
+                )
             }
             items(state.outbox, key = { "outbox:${it.requestId}" }) { message ->
                 LocalMessageCard(message, retryEnabled = !state.enqueueing,
@@ -511,7 +521,7 @@ internal fun ConversationTimeline(
                     onEdit = { viewModel.editFailedMessage(message) },
                     onRemove = { viewModel.removeFailedMessage(message) })
             }
-            if (turns.isEmpty() && state.outbox.isEmpty()) item(key = "empty") {
+            if (turns.isEmpty() && state.outbox.isEmpty() && pending.keys.isEmpty()) item(key = "empty") {
                 EmptyPage(ui("开始会话"), ui("向 ${state.selectedAgent?.displayName} 说明你希望完成的工作。"))
             }
             item(key = tail) { Spacer(Modifier.height(4.dp)) }
@@ -526,6 +536,11 @@ internal fun ConversationTimeline(
                 color = MaterialTheme.colorScheme.secondaryContainer,
                 shadowElevation = 2.dp,
             ) { Text(ui("回到最新"), modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp), style = MaterialTheme.typography.labelLarge) }
+        }
+    }
+    pending.background.firstOrNull { it.messageId == selectedPendingId }?.let { input ->
+        ModalBottomSheet(onDismissRequest = { selectedPendingId = null }) {
+            PendingMessageDetails(input)
         }
     }
 }

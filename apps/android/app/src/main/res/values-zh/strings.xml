@@ -11,4 +11,13 @@
     <string name="outbox_unknown">结果未知</string>
     <string name="outbox_failed">发送失败</string>
     <string name="navigation_exit_again">再按一次返回桌面</string>
+    <string name="pending_background">后台消息</string>
+    <string name="pending_details_hint">点击消息查看详情</string>
+    <string name="pending_no_preview">暂无消息预览</string>
+    <string name="pending_details">消息详情</string>
+    <string name="pending_queued">排队中</string>
+    <string name="pending_expanded">已展开</string>
+    <string name="pending_collapsed">已折叠</string>
+    <string name="pending_expand">展开消息</string>
+    <string name="pending_collapse">收起消息</string>
 </resources>

@@ -63,6 +63,15 @@ internal object UiCopy {
         "结果未知" to R.string.outbox_unknown,
         "发送失败" to R.string.outbox_failed,
         "再按一次返回桌面" to R.string.navigation_exit_again,
+        "后台消息" to R.string.pending_background,
+        "点击消息查看详情" to R.string.pending_details_hint,
+        "暂无消息预览" to R.string.pending_no_preview,
+        "消息详情" to R.string.pending_details,
+        "排队中" to R.string.pending_queued,
+        "已展开" to R.string.pending_expanded,
+        "已折叠" to R.string.pending_collapsed,
+        "展开消息" to R.string.pending_expand,
+        "收起消息" to R.string.pending_collapse,
     )
 
     internal fun translate(source: String, language: String): String {
@@ -88,6 +97,15 @@ internal object UiCopy {
     private val english: Map<String, String> =
         """
         会话|Conversation
+        后台消息|Background messages
+        点击消息查看详情|Tap a message for details
+        暂无消息预览|No message preview
+        消息详情|Message details
+        排队中|Queued
+        已展开|Expanded
+        已折叠|Collapsed
+        展开消息|Expand messages
+        收起消息|Collapse messages
         复制结果|Copy result
         显示最近过程，更多内容可全屏查看|Showing recent activity. Open full screen for more.
         扫描连接二维码|Scan connection QR code

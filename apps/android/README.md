@@ -24,6 +24,11 @@ Task updates are foreground/event-driven; the refresh controls can also reload
 status and output. Read-receipt transport failures retry without error banners
 and remain available in the diagnostic trace.
 
+Pending background messages are grouped into a collapsed count card rather than
+long paragraphs in the conversation. Expand the card for two-line previews,
+then tap a message to read and copy the preview supplied by the runtime. Pending
+operator messages remain separate conversation bubbles.
+
 The Settings connection diagnostics section can export a redacted trace or send
 it directly to a selected Agent. Android's Share menu can also send text, links,
 images, and files to Holon. The app previews the content and asks which Agent
