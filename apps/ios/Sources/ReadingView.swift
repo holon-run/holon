@@ -112,6 +112,7 @@ struct ConversationReadingView: View {
     var openReference: (String) -> Void
     var openWork: (String) -> Void
     @State private var nearBottom = true
+    @State private var follow = ConversationFollowState()
     @State private var newContent = false
     @State private var initializedAgent: String?
     @State private var readThroughToConfirm: ReadingReadConfirmation?
@@ -156,6 +157,7 @@ struct ConversationReadingView: View {
                 }
                 if turnRange.lowerBound > 0 || reader.canLoadHistory {
                     Button("reading.history") {
+                        follow.reviewHistory()
                         Task {
                             let agent = reader.selectedAgentID
                             let epoch = reader.snapshot?.eventLogEpoch
@@ -189,6 +191,7 @@ struct ConversationReadingView: View {
                 }
                 if turnRange.upperBound < turns.count {
                     Button("reading.newerTurns") {
+                        follow.reviewHistory()
                         historyEndTurnID = ConversationTurnWindow.newerEnd(ids: turnIDs, current: turnRange)
                         if let first = visibleTurns.first { scrollRequest = .top(first.id) }
                     }.accessibilityIdentifier("conversation.newer")
@@ -215,6 +218,7 @@ struct ConversationReadingView: View {
             if phase == .interacting { userScrolling = true }
             if phase == .idle, userScrolling {
                 userScrolling = false
+                follow.userEndedScroll(nearBottom: nearBottom, newestWindow: historyEndTurnID == nil)
                 if let first = turnIDs.first(where: { visibleTurnIDs.contains($0) }) {
                     reader.rememberPosition(turnID: first)
                 }
@@ -231,9 +235,10 @@ struct ConversationReadingView: View {
             guard let agent = reader.snapshot?.agentID, initializedAgent != agent else { return }
             initializedAgent = agent
             if let saved = reader.readingPosition {
+                follow.reviewHistory()
                 historyEndTurnID = ConversationTurnWindow.restoringEnd(ids: turnIDs, turnID: saved)
                 scrollRequest = .top(saved)
-            } else { historyEndTurnID = nil; scrollRequest = .latest }
+            } else { follow.showLatest(); historyEndTurnID = nil; scrollRequest = .latest }
         }
         .task(id: scrollRequest) {
             guard let request = scrollRequest else { return }
@@ -248,15 +253,16 @@ struct ConversationReadingView: View {
             scrollRequest = nil
         }
         .onChange(of: latestContentKey) { _, _ in
-            if nearBottom, historyEndTurnID == nil { scrollRequest = .latest }
+            if follow.followsLatest, nearBottom, historyEndTurnID == nil { scrollRequest = .latest }
             else { newContent = true }
         }
         .onChange(of: reader.snapshot?.eventLogEpoch) { old, new in
-            if old != nil, old != new { historyEndTurnID = nil; scrollRequest = .latest }
+            if old != nil, old != new { follow.showLatest(); historyEndTurnID = nil; scrollRequest = .latest }
         }
         .overlay(alignment: .bottomTrailing) {
-            if !nearBottom || historyEndTurnID != nil {
+            if !nearBottom || historyEndTurnID != nil || !follow.followsLatest {
                 Button {
+                    follow.showLatest()
                     historyEndTurnID = nil; scrollRequest = .latest; newContent = false
                     if let latest = turnIDs.last { reader.rememberPosition(turnID: latest) }
                 } label: {

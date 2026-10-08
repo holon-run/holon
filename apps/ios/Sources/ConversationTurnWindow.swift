@@ -1,5 +1,16 @@
 import Foundation
 
+/// Window navigation is reading, even when the newer window includes the tail.
+struct ConversationFollowState {
+    private(set) var followsLatest = true
+
+    mutating func reviewHistory() { followsLatest = false }
+    mutating func showLatest() { followsLatest = true }
+    mutating func userEndedScroll(nearBottom: Bool, newestWindow: Bool) {
+        followsLatest = nearBottom && newestWindow
+    }
+}
+
 /// Bound native layout/accessibility work; authoritative history stays in the reader.
 enum ConversationTurnWindow {
     static let capacity = 20

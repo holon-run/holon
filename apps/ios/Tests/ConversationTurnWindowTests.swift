@@ -2,6 +2,23 @@ import XCTest
 @testable import Holon
 
 final class ConversationTurnWindowTests: XCTestCase {
+    func testNewerWindowDoesNotResumeTailFollowingDuringBriefHydration() {
+        var follow = ConversationFollowState()
+        XCTAssertTrue(follow.followsLatest)
+        follow.reviewHistory()
+        // Loading a newer window can include the tail while the old viewport
+        // still reports near-bottom. Neither event is user scroll intent.
+        XCTAssertFalse(follow.followsLatest)
+        follow.userEndedScroll(nearBottom: true, newestWindow: false)
+        XCTAssertFalse(follow.followsLatest)
+        follow.userEndedScroll(nearBottom: false, newestWindow: true)
+        XCTAssertFalse(follow.followsLatest)
+        follow.userEndedScroll(nearBottom: true, newestWindow: true)
+        XCTAssertTrue(follow.followsLatest)
+        follow.reviewHistory()
+        follow.showLatest()
+        XCTAssertTrue(follow.followsLatest)
+    }
     func testPagingKeepsOverlapAndMakesEveryTurnReachableWithoutGrowingLayout() {
         let ids = (0..<91).map { "turn-\($0)" }
         var end: String?
