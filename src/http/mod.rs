@@ -1117,11 +1117,14 @@ fn origin_guard_allows(request: &AxumRequest<Body>, state: &AppState) -> bool {
     let path = request.uri().path();
     let api_path = path.strip_prefix("/api").unwrap_or(path);
     let requires_origin = matches!(api_path, "/auth/session/exchange" | "/auth/pairing/redeem");
-    if !requires_origin && bearer_session_credential(request.headers()).is_some() {
-        return true;
-    }
-    if !requires_origin && cookie_session_credential(request.headers()).is_none() {
-        return true;
+    let has_cookie = cookie_session_credential(request.headers()).is_some();
+    if !requires_origin {
+        if !has_cookie {
+            return true;
+        }
+        if bearer_request_is_authorized(request.headers(), state) {
+            return true;
+        }
     }
 
     let Some(origin) = single_header_value(request.headers(), &ORIGIN) else {
@@ -1223,12 +1226,8 @@ fn origin_matches_request(origin: &url::Url, headers: &HeaderMap) -> bool {
         return false;
     };
     origin_host.eq_ignore_ascii_case(request_host_value)
-        && origin.port_or_known_default()
-            == request_host.port().or_else(|| match origin.scheme() {
-                "http" => Some(80),
-                "https" => Some(443),
-                _ => None,
-            })
+        && origin.scheme().eq_ignore_ascii_case(request_host.scheme())
+        && origin.port_or_known_default() == request_host.port_or_known_default()
 }
 
 fn is_default_localhost_cors_origin(origin: &HeaderValue) -> bool {
@@ -1462,6 +1461,16 @@ fn bearer_session_credential(headers: &HeaderMap) -> Option<String> {
         return None;
     }
     Some(token.to_string())
+}
+
+fn bearer_request_is_authorized(headers: &HeaderMap, state: &AppState) -> bool {
+    let Some(credential) = bearer_session_credential(headers) else {
+        return false;
+    };
+    if state.host.config().control_token.as_deref() == Some(credential.as_str()) {
+        return true;
+    }
+    authenticate_session_credential(&credential, state).is_ok()
 }
 
 fn cookie_session_credential(headers: &HeaderMap) -> Option<String> {
@@ -2272,10 +2281,17 @@ mod tests {
             &request("/apps/example", Some("https://holon.example")),
             &state
         ));
-        assert!(origin_guard_allows(
+        assert!(!origin_guard_allows(
             &request(
                 "/api/control/runtime/status",
                 Some("https://holon.example:8443")
+            ),
+            &state
+        ));
+        assert!(origin_guard_allows(
+            &request(
+                "/api/control/runtime/status",
+                Some("http://holon.example:8443")
             ),
             &state
         ));
@@ -2295,7 +2311,7 @@ mod tests {
             .uri("/api/control/runtime/status")
             .header(header::HOST, "holon.example:8443")
             .header(header::COOKIE, "holon_session=session")
-            .header(header::REFERER, "https://holon.example:8443/settings")
+            .header(header::REFERER, "http://holon.example:8443/settings")
             .body(Body::empty())
             .unwrap();
         assert!(origin_guard_allows(&same_origin_referer, &state));
@@ -2357,6 +2373,26 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert!(origin_guard_allows(&bearer_write, &state));
+
+        let (_home, host) = control_token_test_host();
+        let state = AppState::for_tcp(host);
+        let valid_bearer_with_cookie = Request::builder()
+            .method("POST")
+            .uri("/api/control/runtime/status")
+            .header(header::AUTHORIZATION, "Bearer secret")
+            .header(header::COOKIE, "holon_session=session")
+            .body(Body::empty())
+            .unwrap();
+        assert!(origin_guard_allows(&valid_bearer_with_cookie, &state));
+
+        let invalid_bearer_with_cookie = Request::builder()
+            .method("POST")
+            .uri("/api/control/runtime/status")
+            .header(header::AUTHORIZATION, "Bearer invalid")
+            .header(header::COOKIE, "holon_session=session")
+            .body(Body::empty())
+            .unwrap();
+        assert!(!origin_guard_allows(&invalid_bearer_with_cookie, &state));
     }
 
     #[tokio::test]
@@ -2403,6 +2439,64 @@ mod tests {
                 assert!(response.headers().contains_key(header::SET_COOKIE));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn native_auth_endpoints_do_not_set_browser_cookies() {
+        let (_home, host) = control_token_test_host();
+        let app = router(AppState::for_tcp(host));
+
+        let exchange = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/session/exchange/native")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"credential": "secret"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(exchange.status(), StatusCode::OK);
+        assert!(!exchange.headers().contains_key(header::SET_COOKIE));
+
+        let issue = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/pairing/issue")
+                    .header(header::AUTHORIZATION, "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(issue.status(), StatusCode::OK);
+        let body = to_bytes(issue.into_body(), 4096).await.unwrap();
+        let ticket = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["ticket"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let redeem = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/pairing/redeem/native")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"ticket": ticket}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(redeem.status(), StatusCode::OK);
+        assert!(!redeem.headers().contains_key(header::SET_COOKIE));
     }
 
     #[tokio::test]

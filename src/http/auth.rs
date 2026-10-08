@@ -186,7 +186,7 @@ pub async fn issue_pairing_ticket(
 async fn redeem_ticket(
     state: &AppState,
     ticket: &str,
-) -> Result<(crate::oidc::IssuedSession, String), (StatusCode, Json<Value>)> {
+) -> Result<crate::oidc::IssuedSession, (StatusCode, Json<Value>)> {
     if state.host.config().auth.mode != crate::authentication::AuthenticationMode::Local {
         return Err((
             StatusCode::FORBIDDEN,
@@ -205,15 +205,15 @@ async fn redeem_ticket(
         return Err(auth_required("invalid or expired pairing ticket"));
     }
     let session = issue_local_session(state, "pairing_ticket", Utc::now())?;
-    let cookie = session_cookie(state, &session.credential);
-    Ok((session, cookie))
+    Ok(session)
 }
 
 pub async fn redeem_pairing_ticket(
     State(state): State<Arc<AppState>>,
     ApiJson(request): ApiJson<PairingRedeemRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    let (session, cookie) = redeem_ticket(&state, &request.ticket).await?;
+    let session = redeem_ticket(&state, &request.ticket).await?;
+    let cookie = session_cookie(&state, &session.credential);
     Ok((
         [
             (
@@ -234,15 +234,9 @@ pub async fn redeem_pairing_ticket_native(
     State(state): State<Arc<AppState>>,
     ApiJson(request): ApiJson<PairingRedeemRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    let (session, cookie) = redeem_ticket(&state, &request.ticket).await?;
+    let session = redeem_ticket(&state, &request.ticket).await?;
     Ok((
-        [
-            (
-                SET_COOKIE,
-                HeaderValue::from_str(&cookie).map_err(|error| error_response(anyhow!(error)))?,
-            ),
-            (CACHE_CONTROL, HeaderValue::from_static("no-store")),
-        ],
+        [(CACHE_CONTROL, HeaderValue::from_static("no-store"))],
         Json(NativeSessionResponse {
             credential: session.credential,
             ok: true,
@@ -518,7 +512,7 @@ pub async fn complete_oidc_login(
 async fn exchange_session_credential(
     State(state): State<Arc<AppState>>,
     ApiJson(request): ApiJson<SessionExchangeRequest>,
-) -> Result<(crate::oidc::IssuedSession, String), (StatusCode, Json<Value>)> {
+) -> Result<crate::oidc::IssuedSession, (StatusCode, Json<Value>)> {
     if request.credential.trim().is_empty() {
         return Err(bad_request("credential must not be empty"));
     }
@@ -545,8 +539,7 @@ async fn exchange_session_credential(
             auth_required("bootstrap credential or native login proof is invalid or expired")
         })?
     };
-    let cookie = session_cookie(&state, &session.credential);
-    Ok((session, cookie))
+    Ok(session)
 }
 
 pub async fn exchange_session(
@@ -558,7 +551,8 @@ pub async fn exchange_session(
             "native login proof requires the native exchange endpoint",
         ));
     }
-    let (session, cookie) = exchange_session_credential(State(state), ApiJson(request)).await?;
+    let session = exchange_session_credential(State(state.clone()), ApiJson(request)).await?;
+    let cookie = session_cookie(&state, &session.credential);
     Ok((
         StatusCode::OK,
         [(
@@ -578,14 +572,9 @@ pub async fn exchange_session_native(
     State(state): State<Arc<AppState>>,
     ApiJson(request): ApiJson<SessionExchangeRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    let (session, cookie) = exchange_session_credential(State(state), ApiJson(request)).await?;
+    let session = exchange_session_credential(State(state), ApiJson(request)).await?;
     Ok((
         StatusCode::OK,
-        [(
-            SET_COOKIE,
-            HeaderValue::from_str(&cookie)
-                .map_err(|error| error_response(anyhow!("invalid session cookie: {error}")))?,
-        )],
         Json(NativeSessionResponse {
             credential: session.credential,
             ok: true,

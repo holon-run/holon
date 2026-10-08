@@ -3224,6 +3224,37 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     assert_eq!(persisted.api.cors.allow_credentials, Some(false));
     assert_eq!(persisted.api.cors.max_age_seconds, Some(120));
 
+    let valid_csrf_response = client
+        .patch(format!("http://{addr}/api/control/runtime/config"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({
+            "updates": [
+                {
+                    "key": "api.csrf.trusted_origins",
+                    "value": ["https://admin.example:8443"]
+                }
+            ]
+        }))
+        .send()
+        .await?;
+    assert!(
+        valid_csrf_response.status().is_success(),
+        "valid api.csrf update failed: {:?}",
+        valid_csrf_response.text().await?
+    );
+    let valid_csrf_payload: serde_json::Value = valid_csrf_response.json().await?;
+    assert_eq!(valid_csrf_payload["changed"], true);
+    assert_eq!(
+        valid_csrf_payload["results"][0]["effect"],
+        "accepted_reload_scheduled"
+    );
+
+    let persisted = load_persisted_config_at(&config.config_file_path)?;
+    assert_eq!(
+        persisted.api.csrf.trusted_origins,
+        vec!["https://admin.example:8443".to_string()]
+    );
+
     let valid_web_response = client
         .patch(format!("http://{addr}/api/control/runtime/config"))
         .bearer_auth("secret")
