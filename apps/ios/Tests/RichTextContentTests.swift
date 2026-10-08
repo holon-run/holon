@@ -52,10 +52,11 @@ final class RichTextContentTests: XCTestCase {
     }
 
     func testCheckboxOnlyChangesAListItemPrefixNotBoldOrInlineCodeText() throws {
-        let content = try HolonMarkdownParser().attributedString(for: "- Ordinary **[x] literal** remains.\n- `[x] code` remains.\n- [ ] **Real** task\n- [x] Done")
+        let content = try HolonMarkdownParser().attributedString(for: "- Ordinary **[x] literal** remains.\n- `[x] code` remains.\n- **[x] bold prefix** remains.\n- [[x] link prefix](https://example.com) remains.\n- [ ] **Real** task\n- [x] Done")
         let text = String(content.characters)
         XCTAssertTrue(text.contains("Ordinary [x] literal remains."))
         XCTAssertTrue(text.contains("[x] code remains."))
+        XCTAssertTrue(text.contains("[x] bold prefix remains.")); XCTAssertTrue(text.contains("[x] link prefix remains."))
         XCTAssertTrue(text.contains("☐ Real task")); XCTAssertTrue(text.contains("☑ Done"))
     }
 

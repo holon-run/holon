@@ -238,6 +238,12 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                          ("testDiagnosticsControlsRespondToRuntimeTextSize", MAXIMUM_TEXT_SIZE),
                          ("testPreparedDiagnosticsRespondToRuntimeTextSize", "large"),
                          ("testPreparedDiagnosticsViewportCoverage", MAXIMUM_TEXT_SIZE)]
+                selected_cases = os.environ.get("IOS_UI_CASES")
+                if selected_cases:
+                    requested = selected_cases.split(",")
+                    if not requested or len(set(requested)) != len(requested) or set(requested) - {method for method, _ in cases}:
+                        raise RuntimeError("IOS_UI_CASES must select known unique UI methods")
+                    cases = [(method, size) for method, size in cases if method in requested]
                 bundles = [bundle.with_name(bundle.stem + "-" + method + ".xcresult")
                            for method, _ in cases]
                 if any(path.exists() for path in bundles):

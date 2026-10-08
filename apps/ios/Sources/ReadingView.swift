@@ -127,6 +127,7 @@ struct ConversationReadingView: View {
     }
 
     var body: some View {
+        GeometryReader { geometry in
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if reader.status != .live {
@@ -161,9 +162,10 @@ struct ConversationReadingView: View {
                 }
                 Color.clear.frame(height: 1).id("conversation-tail")
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(width: max(0, geometry.size.width - 32), alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 16)
         }
-        .contentMargins(.all, 16, for: .scrollContent)
         .scrollPosition($position)
         .scrollDismissesKeyboard(.interactively)
         .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -237,6 +239,7 @@ struct ConversationReadingView: View {
             Button("reading.cancel", role: .cancel) { readThroughToConfirm = nil }
         } message: {
             Text("reading.cumulativeReadNotice")
+        }
         }
     }
 

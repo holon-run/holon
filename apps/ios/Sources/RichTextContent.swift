@@ -91,7 +91,9 @@ struct HolonMarkdownParser: MarkupParser {
                 if case .codeBlock = $0.kind { return true }; return false
             } == true || run.inlinePresentationIntent?.contains(.code) == true
             let value = String(content[run.range].characters)
-            guard !code, value.hasPrefix("[x] ") || value.hasPrefix("[X] ") || value.hasPrefix("[ ] ") else { return nil }
+            guard !code, run.inlinePresentationIntent == nil || run.inlinePresentationIntent?.isEmpty == true,
+                  run.link == nil, run.imageURL == nil,
+                  value.hasPrefix("[x] ") || value.hasPrefix("[X] ") || value.hasPrefix("[ ] ") else { return nil }
             return (content.characters.distance(from: content.startIndex, to: run.range.lowerBound), !value.hasPrefix("[ ] "))
         }
         for (offset, checked) in taskMarkers.reversed() {
