@@ -11,4 +11,13 @@
     <string name="outbox_unknown">Result unknown</string>
     <string name="outbox_failed">Failed to send</string>
     <string name="navigation_exit_again">Press Back again to exit</string>
+    <string name="pending_background">Background messages</string>
+    <string name="pending_details_hint">Tap a message for details</string>
+    <string name="pending_no_preview">No message preview</string>
+    <string name="pending_details">Message details</string>
+    <string name="pending_queued">Queued</string>
+    <string name="pending_expanded">Expanded</string>
+    <string name="pending_collapsed">Collapsed</string>
+    <string name="pending_expand">Expand messages</string>
+    <string name="pending_collapse">Collapse messages</string>
 </resources>
