@@ -18,6 +18,7 @@ Prefer one decision per file. Keep each note short and focused:
 
 Current decision notes:
 
+- [Core Protocol And Transition Navigation Boundary](./core-transition-navigation-boundary.md)
 - [Android Release Signing And Cadence](./android-release-signing-and-cadence.md)
 - [Workspace Test Migration Script Boundary](./workspace-test-migration-script-boundary.md)
 - [001 Anthropic Compatibility](./001-anthropic-compatibility.md)
