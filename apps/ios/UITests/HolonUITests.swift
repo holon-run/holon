@@ -31,7 +31,7 @@ final class HolonUITests: XCTestCase {
     private func reveal(_ element: XCUIElement, in app: XCUIApplication,
                         fullyVisible: Bool = false,
                         file: StaticString = #filePath, line: UInt = #line) {
-        for _ in 0..<40 {
+        func viewport() -> CGRect {
             let window = app.windows.firstMatch.frame
             let navigation = app.navigationBars.firstMatch
             let tabs = app.tabBars.firstMatch
@@ -51,12 +51,17 @@ final class HolonUITests: XCTestCase {
                     bottom = min(bottom, assistant.frame.minY)
                 }
             }
-            guard bottom > top else { break }
-            let viewport = CGRect(x: window.minX, y: top, width: window.width, height: bottom - top)
+            return CGRect(x: window.minX, y: top, width: window.width, height: max(0, bottom - top))
+        }
+        func contained(_ frame: CGRect, in viewport: CGRect) -> Bool {
+            !frame.isEmpty && (fullyVisible ? viewport.contains(frame)
+                : viewport.contains(CGPoint(x: frame.midX, y: frame.midY)))
+        }
+        for _ in 0..<40 {
+            let viewport = viewport()
+            guard viewport.height > 0 else { break }
             if element.exists && element.isHittable
-                && !element.frame.isEmpty
-                && (fullyVisible ? viewport.contains(element.frame)
-                    : viewport.contains(CGPoint(x: element.frame.midX, y: element.frame.midY))) {
+                && contained(element.frame, in: viewport) {
                 return
             }
             // Form rows are lazy; small drags load them without skipping the target.
@@ -83,14 +88,12 @@ final class HolonUITests: XCTestCase {
             start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow,
                         thenHoldForDuration: 0.1)
         }
-        if fullyVisible {
+        guard element.waitForExistence(timeout: 10), element.isHittable,
+              contained(element.frame, in: viewport()) else {
             capture(app, "unreachable-control")
-            XCTFail("Control must be fully visible before navigation", file: file, line: line)
+            XCTFail("Tap target must remain inside the unobscured viewport", file: file, line: line)
             return
         }
-        if !element.exists || !element.isHittable { capture(app, "unreachable-control") }
-        XCTAssertTrue(element.waitForExistence(timeout: 10), file: file, line: line)
-        XCTAssertTrue(element.isHittable, file: file, line: line)
     }
 
     private func required(_ key: String) throws -> String {
