@@ -33,7 +33,7 @@ atomically.
 | Queue | `commit_queue*`, `commit_queue_terminal*`, `commit_queue_with_wait_trigger`, `commit_queue_with_completion` | Queue mutation, message/transcript/Turn evidence, settlement, wait trigger | `src/runtime/tests/contracts/queue.rs`, `src/runtime/tests/runtime_state.rs` |
 | Delivery admission | `commit_delivery_admission` | Agent message delivery admission and receipt | `src/runtime_db/agent_message_delivery.rs` |
 | Task | `commit_task` and `commit_task_with_execution_protocol` | Task record, agent deletion, task-result settlement, queue, wait | `src/runtime/tests/contracts/task.rs` |
-| Scheduler recovery | `commit_scheduler_recovery` | Repair/startup commit, called from `src/runtime/repair.rs` | `src/runtime/tests/runtime_state.rs` |
+| Scheduler recovery | `commit_scheduler_recovery` | Repair/startup commit, called by `apply_scheduler_recovery_plan_with_options` in `src/runtime.rs` from scheduler-recovery CLI paths in `src/main.rs`; `src/runtime/repair.rs` is the separate scheduler-repair surface for Wait/Queue commits | `src/runtime/tests/runtime_state.rs` |
 | Startup recovery | `recover_interrupted_runtime_state_at_startup` | Orphaned-claim, interrupted-turn, and execution recovery report | `src/runtime/tests/runtime_state.rs` |
 | Execution protocol | `src/runtime_db/transitions/execution_protocol_repository.rs` | Prepared execution-protocol commands, authority fences, state persistence | `src/runtime_db/transitions/execution_protocol_fixture_repository.rs` (test-only) |
 
@@ -54,9 +54,10 @@ behavior can be covered in more than one file.
   `notify_scheduler`, queued messages, fault injection) are produced only after
   a successful commit; nothing observes them from inside the transaction.
 - `TransitionFaultPoint` is the test-only rollback observation seam
-  (`AfterValidation`, `AfterCanonicalWrites`, `AfterAuditWrites`,
-  `BeforeCommit`, and the post-commit points). Production paths pass
-  `fault: None`.
+  (`AfterValidation`, `AfterTerminalAgentStateWrite`,
+  `AfterTerminalTurnRecordWrite`, `AfterCanonicalWrites`, `AfterAuditWrites`,
+  `BeforeCommit`, `BeforeCacheUpdate`, `BeforeEventPublication`, and
+  `BeforeSchedulerNotification`). Production paths pass `fault: None`.
 - The seam does not decide `origin`, `trust`, `priority`, scheduling, or
   user-facing brief content. It persists a transition a higher layer has
   already decided and returns `TransitionCommit { applied, effects, delivery_receipt }`.
