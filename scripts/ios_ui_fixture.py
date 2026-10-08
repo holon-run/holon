@@ -21,6 +21,7 @@ from ios_simulator_text_size import (
 
 binary, repo, mode = sys.argv[1:]
 rich_acceptance = os.environ.get("IOS_RICH_ACCEPTANCE") == "1"
+lost_response_acceptance = os.environ.get("IOS_LOST_RESPONSE_ACCEPTANCE") == "1"
 with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
     root = pathlib.Path(temporary)
     # Do not inherit provider credentials, production paths or daemon settings.
@@ -115,6 +116,76 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
 
     provider = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeProvider)
     threading.Thread(target=provider.serve_forever, daemon=True).start()
+    proxy = None
+    release_lost_response = threading.Event()
+    lost_receipts = []
+    lost_lock = threading.Lock()
+    proxy_control_token = secrets.token_hex(32)
+
+    class LostResponseProxy(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass  # Never log session headers or pairing tickets.
+
+        def do_GET(self):
+            self.forward()
+
+        def do_POST(self):
+            if self.path == "/fixture/release-lost-response":
+                if self.headers.get("Authorization") != "Bearer " + proxy_control_token:
+                    self.send_error(403); return
+                release_lost_response.set()
+                self.send_response(204); self.end_headers(); return
+            self.forward()
+
+        def forward(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            if length > 32 * 1024 * 1024:
+                self.send_error(413); return
+            body = self.rfile.read(length) if length else None
+            upstream = http.client.HTTPConnection("127.0.0.1", port, timeout=15)
+            try:
+                headers = {key: value for key, value in self.headers.items()
+                           if key.lower() not in ("host", "connection", "transfer-encoding")}
+                upstream.request(self.command, self.path, body=body, headers=headers)
+                response = upstream.getresponse()
+                is_lost_prompt = (self.command == "POST" and self.path.endswith("/prompt")
+                    and body and "IOS_LOST_RESPONSE_SEND" in json.loads(body).get("text", ""))
+                if is_lost_prompt:
+                    data = response.read(1024 * 1024 + 1)
+                    if response.status != 200 or len(data) > 1024 * 1024:
+                        raise RuntimeError("lost-response fixture prompt was not accepted")
+                    receipt = json.loads(data)
+                    with lost_lock:
+                        lost_receipts.append((json.loads(body)["client_request_id"], receipt))
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    if release_lost_response.is_set():
+                        self.wfile.write(data)
+                    # Until the runner explicitly releases it, accept on the real
+                    # daemon but deliberately close with a truncated response body.
+                    self.close_connection = True
+                    return
+                self.send_response(response.status)
+                for key, value in response.getheaders():
+                    if key.lower() not in ("connection", "transfer-encoding"):
+                        self.send_header(key, value)
+                self.end_headers()
+                while True:
+                    data = response.read1(65_536)
+                    if not data:
+                        break
+                    self.wfile.write(data); self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, socket.timeout):
+                pass  # Native backgrounding closes its foreground SSE connection.
+            finally:
+                upstream.close()
+
+    if lost_response_acceptance:
+        proxy = http.server.ThreadingHTTPServer(("127.0.0.1", 0), LostResponseProxy)
+        proxy.daemon_threads = True
+        threading.Thread(target=proxy.serve_forever, daemon=True).start()
     home = root / "holon"
     home.mkdir()
     (home / "config.json").write_text(json.dumps({
@@ -287,6 +358,10 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     "READ_MARKER": "IOS_POPULATED_BRIEF", "PLAN_MARKER": "IOS_POPULATED_FULL_PLAN",
                     "TASK_MARKER": "IOS_POPULATED_OUTPUT",
                     "FILE_REFERENCE": str(workspace / file_path), "FILE_MARKER": "IOS_POPULATED_FILE"}
+                if proxy:
+                    runner_inputs.update(ENDPOINT=f"http://127.0.0.1:{proxy.server_port}/api",
+                        LOSS_CONTROL_URL=f"http://127.0.0.1:{proxy.server_port}/fixture/release-lost-response",
+                        LOSS_CONTROL_TOKEN=proxy_control_token)
                 if rich_turn:
                     runner_inputs.update(RICH_TURN_ID=rich_turn, RICH_DIRECTORY="rich-files")
                 for key, value in runner_inputs.items():
@@ -316,6 +391,8 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                          ("testPreparedDiagnosticsViewportCoverage", MAXIMUM_TEXT_SIZE)]
                 if rich_acceptance:
                     cases.append(("testRichFilesAndActivityWorkflow", "large"))
+                if lost_response_acceptance:
+                    cases.append(("testLostResponseAndProcessRecovery", "large"))
                 selected_cases = os.environ.get("IOS_UI_CASES")
                 if selected_cases:
                     requested = selected_cases.split(",")
@@ -356,12 +433,22 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 print("4 项真实 SDK probes 已运行；SDK-only 未运行 UI", flush=True)
             if FakeProvider.image_requests:
                 raise RuntimeError("Markdown renderer made an unconfirmed external image request")
+            if lost_response_acceptance and mode != "--sdk-only":
+                if len(lost_receipts) < 2 or len({request for request, _ in lost_receipts}) != 1:
+                    raise RuntimeError("response loss retry must retain one immutable UUID")
+                if len({receipt["message_id"] for _, receipt in lost_receipts}) != 1:
+                    raise RuntimeError("retry enqueued a duplicate message")
+                if lost_receipts[0][1]["disposition"] != "accepted" or lost_receipts[-1][1]["disposition"] != "duplicate":
+                    raise RuntimeError("retry must receive the real daemon's duplicate receipt")
+                print("Lost-response acceptance: immutable UUID and one real message ID across process restart/explicit retry", flush=True)
         finally:
             try:
                 if task_id is not None:
                     local("POST", f"/control/agents/{agent}/tasks/{task_id}/stop", {})
             finally:
                 release_held_run.set()
+                if proxy:
+                    proxy.shutdown(); proxy.server_close()
                 provider.shutdown()
                 provider.server_close()
                 daemon.terminate()

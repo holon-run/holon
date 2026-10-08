@@ -48,6 +48,7 @@ struct SendingView: View {
     @State private var fileContext: SendingAttachmentImportContext?
     @State private var photoImportID: UUID?
     @State private var importError: String?
+    @State private var cameraErrorKey: String?
     @State private var showCamera = false
     @State private var cameraContext: SendingAttachmentImportContext?
     @Environment(\.scenePhase) private var scenePhase
@@ -73,7 +74,9 @@ struct SendingView: View {
                     }
                 }
             }
-            if let error = importError ?? sender.error {
+            if let cameraErrorKey {
+                Text(LocalizedStringKey(cameraErrorKey)).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+            } else if let error = importError ?? sender.error {
                 Text(verbatim: error).font(.caption).foregroundStyle(.secondary).lineLimit(3)
             }
             HStack(alignment: .bottom, spacing: 10) {
@@ -128,6 +131,7 @@ struct SendingView: View {
                 do {
                     guard data.count <= 20 * 1024 * 1024 else { throw SendingFailure.oversizedAttachment("Photo") }
                     try data.write(to: url, options: [.atomic, .completeFileProtection])
+                    importError = nil; cameraErrorKey = nil
                     sender.stageAttachment(source: url, context: context, contentType: "image/jpeg")
                 } catch { importError = error.localizedDescription }
             }
@@ -144,6 +148,7 @@ struct SendingView: View {
             showDraft = false
             showQueue = false
             importError = nil
+            cameraErrorKey = nil
             photoContext = nil
             fileContext = nil
             showCamera = false; cameraContext = nil
@@ -182,15 +187,16 @@ struct SendingView: View {
         showFiles = fileContext != nil
     }
     private func selectCamera() {
+        importError = nil; cameraErrorKey = nil
         guard UIImagePickerController.isSourceTypeAvailable(.camera), let context = sender.attachmentImportContext else {
-            importError = String(localized: "sending.camera.unavailable"); return
+            cameraErrorKey = "sending.camera.unavailable"; return
         }
         cameraContext = context
         Task { @MainActor in
             let allowed = await AVCaptureDevice.requestAccess(for: .video)
             guard cameraContext == context, sender.attachmentImportContext == context else { return }
-            if allowed { showCamera = true }
-            else { cameraContext = nil; importError = String(localized: "sending.camera.permission") }
+            if allowed { importError = nil; cameraErrorKey = nil; showCamera = true }
+            else { cameraContext = nil; cameraErrorKey = "sending.camera.permission" }
         }
     }
 
@@ -306,6 +312,7 @@ struct SendingView: View {
                         Text(LocalizedStringKey(SendingPresentation.stateKey(entry.state)))
                             .accessibilityIdentifier("sending.state.\(entry.state.rawValue)")
                         Text(entry.requestID.uuidString).font(.caption2).textSelection(.enabled)
+                            .accessibilityIdentifier("sending.requestID." + entry.requestID.uuidString)
                         ForEach(entry.draft.attachments) { attachment in Text(attachment.name).font(.caption) }
                         if let error = entry.error { Text(error).font(.caption) }
                         if entry.state == .unknown { Text("sending.unknown.explanation").font(.caption) }
@@ -315,10 +322,12 @@ struct SendingView: View {
                                     sender.retry(requestID: entry.requestID)
                                 }
                                 .disabled(!sender.canRetry(requestID: entry.requestID))
+                                .accessibilityIdentifier("sending.retry." + entry.requestID.uuidString)
                             }
                             Button("sending.delete", role: .destructive) { sender.delete(requestID: entry.requestID) }
                                 .disabled(entry.state == .sending)
                         }
+                        .buttonStyle(.borderless)
                     }
                 }
             }

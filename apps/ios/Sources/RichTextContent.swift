@@ -135,6 +135,7 @@ struct RichTextContent: View {
             .textual.textSelection(.enabled)
             .textual.overflowMode(.wrap)
             .font(.body)
+            .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .environment(\.openURL, OpenURLAction { url in
                 switch RichTextLink.classify(url) {

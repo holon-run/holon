@@ -64,6 +64,7 @@
 "reading.loadingConversation" = "Waiting for a conversation snapshot…";
 "reading.emptyConversation" = "No conversation yet.";
 "reading.history" = "Load earlier turns";
+"reading.newerTurns" = "Read newer turns";
 "reading.turn" = "Turn";
 "reading.operator" = "Operator";
 "reading.brief" = "Brief";

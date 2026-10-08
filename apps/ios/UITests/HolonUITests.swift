@@ -63,11 +63,14 @@ final class HolonUITests: XCTestCase {
                     distance = frame.minY - viewport.minY - 8
                 }
             }
-            let magnitude = min(viewport.height * 0.3, max(32, abs(distance)))
+            let magnitude = min(viewport.height * 0.3, max(96, abs(distance)))
             let delta = distance < 0 ? -magnitude : magnitude
             let start = app.coordinate(withNormalizedOffset: .zero)
                 .withOffset(CGVector(dx: viewport.midX, dy: viewport.midY))
-            let end = start.withOffset(CGVector(dx: 0, dy: -delta))
+            // XCUI coordinates replace their offset rather than adding to it.
+            // Keep x fixed so revealing a row is a genuinely vertical gesture.
+            let end = app.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: viewport.midX, dy: viewport.midY - delta))
             start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow,
                         thenHoldForDuration: 0.1)
         }
@@ -500,6 +503,7 @@ final class HolonUITests: XCTestCase {
         let cancel = app.buttons["onboarding.cancel"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 10))
         cancel.tap()
+        reveal(add, in: app)
         XCTAssertTrue(add.waitForExistence(timeout: 10), "Cancel returns to existing connection management")
         XCTAssertFalse(app.buttons["onboarding.scan"].exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()
@@ -511,6 +515,7 @@ final class HolonUITests: XCTestCase {
         agentButton.tap()
         let read = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", readMarker)).firstMatch
         XCTAssertTrue(read.waitForExistence(timeout: 30))
+        reveal(read, in: app)
         capture(app, "authenticated-reading")
         XCTAssertFalse(read.frame.isEmpty, "Assert margins only on a laid-out, visible element")
         XCTAssertTrue(read.isHittable)
@@ -608,11 +613,10 @@ final class HolonUITests: XCTestCase {
         let directory = try required("RICH_DIRECTORY")
         let app = launch(language: "en", dark: false, large: false)
         // Existing credentials came only from the preceding shipped onboarding flow.
-        for _ in 0..<6 {
-            if app.buttons["settings.open"].exists { break }
-            let back = app.navigationBars.buttons.element(boundBy: 0)
-            XCTAssertTrue(back.waitForExistence(timeout: 20)); back.tap()
-        }
+        // Wait for confirmed route restoration, not the transient home while
+        // roster authority is still loading after launch.
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15))
         XCTAssertFalse(app.tabBars.firstMatch.exists)
         app.swipeDown()
@@ -700,6 +704,49 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30), "Process relaunch restores the confirmed Agent route")
         XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.exists)
         capture(app, "restored-confirmed-conversation")
+        app.terminate()
+    }
+
+    func testLostResponseAndProcessRecovery() async throws {
+        let marker = "IOS_LOST_RESPONSE_SEND"
+        let app = launch(language: "en", dark: false, large: false)
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        let editor = app.descendants(matching: .any)["sending.text"].firstMatch
+        editor.tap(); editor.typeText(marker)
+        app.buttons["sending.enqueue"].tap()
+        func openQueue() {
+            app.buttons["sending.options"].tap(); app.buttons["sending.queue"].tap()
+        }
+        openQueue()
+        let unknown = app.staticTexts["sending.state.unknown"]
+        XCTAssertTrue(unknown.waitForExistence(timeout: 30))
+        let row = app.cells.containing(.staticText, identifier: marker).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        let uuid = row.staticTexts.matching(NSPredicate(format:
+            "label MATCHES %@", "[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")).firstMatch.label
+        XCTAssertNotNil(UUID(uuidString: uuid))
+        capture(app, "lost-response-unknown-immutable-request")
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        openQueue()
+        XCTAssertTrue(unknown.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts[uuid].exists, "Process death retains the original UUID")
+        var request = URLRequest(url: try XCTUnwrap(URL(string: required("LOSS_CONTROL_URL"))))
+        request.httpMethod = "POST"
+        request.setValue("Bearer " + (try required("LOSS_CONTROL_TOKEN")), forHTTPHeaderField: "Authorization")
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 204)
+        let entry = app.cells.containing(.staticText, identifier: marker).firstMatch
+        let retry = app.buttons["sending.retry." + uuid]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        XCTAssertTrue(retry.isEnabled, "The original request must be explicitly retryable after restoration")
+        let queueGeometry = XCTAttachment(string: app.debugDescription)
+        queueGeometry.name = "lost-response-restored-queue-controls"
+        queueGeometry.lifetime = .keepAlways; add(queueGeometry)
+        reveal(retry, in: app); retry.tap()
+        XCTAssertTrue(entry.staticTexts["sending.state.received"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.staticTexts[uuid].exists)
+        capture(app, "lost-response-explicit-retry-received")
         app.terminate()
     }
 }

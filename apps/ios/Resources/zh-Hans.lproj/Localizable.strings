@@ -64,6 +64,7 @@
 "reading.loadingConversation" = "等待权威会话快照…";
 "reading.emptyConversation" = "暂无会话。";
 "reading.history" = "加载更早的 turn";
+"reading.newerTurns" = "查看后续 turn";
 "reading.turn" = "Turn";
 "reading.operator" = "Operator";
 "reading.brief" = "Brief";

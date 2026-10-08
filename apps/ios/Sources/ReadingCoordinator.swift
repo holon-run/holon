@@ -17,6 +17,8 @@ final class ReadingCoordinator {
     private(set) var selectedAgentID: String?
     private(set) var snapshot: HolonConversationSnapshot?
     private(set) var briefs: [String: JSONValue] = [:]
+    private(set) var loadingBriefs: Set<String> = []
+    private(set) var failedBriefs: Set<String> = []
     private(set) var visibleBriefIDs: Set<String> = []
     private(set) var activities: [String: JSONValue] = [:]
     private(set) var activityDetails: [String: JSONValue] = [:]
@@ -137,6 +139,7 @@ final class ReadingCoordinator {
         expanding.removeAll()
         waitingBriefs.removeAll()
         loadingActivities.removeAll()
+        loadingBriefs.removeAll()
         isLoadingHistory = false
         if readStatus == .pending { readStatus = .idle }
         reducer = nil
@@ -157,6 +160,8 @@ final class ReadingCoordinator {
 
     private func clearBriefCache() {
         briefs.removeAll()
+        failedBriefs.removeAll()
+        loadingBriefs.removeAll()
         briefRecency.removeAll()
         if !visibleBriefIDs.isEmpty { visibilityRevision += 1 }
         visibleBriefIDs.removeAll()
@@ -537,14 +542,16 @@ final class ReadingCoordinator {
               let agentID = selectedAgentID, let transport else { return }
         expansionCount += 1
         expanding.insert(key)
-        if !brief { loadingActivities.insert(id); failedActivities.remove(id) }
+        if brief { loadingBriefs.insert(id); failedBriefs.remove(id) }
+        else { loadingActivities.insert(id); failedActivities.remove(id) }
         let liveCursor = snapshot?.snapshotCursor
         let epoch = snapshot?.eventLogEpoch
         let previous = activities[id]
         let task = launch(onFinish: { [weak self] token in
             guard let self, token == self.revision else { return }
             self.expansionCount -= 1; self.expanding.remove(key)
-            if !brief { self.loadingActivities.remove(id) }
+            if brief { self.loadingBriefs.remove(id) }
+            else { self.loadingActivities.remove(id) }
         }) { [weak self] token in
             guard let self else { return }
             do {
@@ -577,7 +584,8 @@ final class ReadingCoordinator {
                 }
             } catch {
                 if self.current(token) {
-                    if !brief { self.failedActivities.insert(id) }
+                    if brief { self.failedBriefs.insert(id) }
+                    else { self.failedActivities.insert(id) }
                     self.failed(error, token: token, recover: false)
                 }
             }
@@ -670,7 +678,7 @@ final class ReadingCoordinator {
     }
 
     func rememberPosition(turnID: String) {
-        guard selectedAgentID != nil, turnID.utf8.count <= 512 else { return }
+        guard selectedAgentID != nil, turnID.utf8.count <= 512, readingPosition != turnID else { return }
         readingPosition = turnID
         persist()
     }

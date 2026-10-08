@@ -60,6 +60,7 @@ private actor ReadingFakeTransport: ReadingTransport {
     private var detailRevision: Int64 = 1
     private var pagedActivities = false
     private var activityFailure = false
+    private var briefFailure = false
     private var activityRevision: Int64 = 1
     private var activityBody = "first"
     private var overlapOlderActivity = false
@@ -93,6 +94,7 @@ private actor ReadingFakeTransport: ReadingTransport {
     func setActivityDetail(revision: Int64, body: String) { activityRevision = revision; activityBody = body }
     func overlapNextOlderActivityPage() { overlapOlderActivity = true }
     func failNextActivityPage() { activityFailure = true }
+    func failNextBrief() { briefFailure = true }
     func replaceEpoch() { liveEpoch = "replacement"; liveCursor = "replacement-cursor" }
     func isBlocked() -> Bool { blocked != nil }
     func release() { blocked?.resume(); blocked = nil }
@@ -142,6 +144,7 @@ private actor ReadingFakeTransport: ReadingTransport {
     }
     func brief(agentID: String, briefID: String) async throws -> JSONValue {
         _ = await expansion("id", id: briefID)
+        if briefFailure { briefFailure = false; throw Failure.offline }
         return .object(["id": .string(briefID), "agent_id": .string(agentID),
                         "created_event_seq": .integer(5)])
     }
@@ -507,6 +510,7 @@ final class ReadingCoordinatorTests: XCTestCase {
         let brief = Task { await coordinator.loadBrief("brief") }
         let activities = Task { await coordinator.loadActivities("turn") }
         try await wait { await fake.expansionCalls == 2 }
+        XCTAssertEqual(coordinator.loadingBriefs, ["brief"])
         let third = Task { await coordinator.loadBrief("third") }
         let calls = await fake.expansionCalls
         XCTAssertEqual(calls, 2)
@@ -516,9 +520,26 @@ final class ReadingCoordinatorTests: XCTestCase {
         await third.value
         XCTAssertNotNil(coordinator.briefs["third"])
         XCTAssertNotNil(coordinator.briefs["brief"])
+        XCTAssertTrue(coordinator.loadingBriefs.isEmpty)
+        XCTAssertTrue(coordinator.failedBriefs.isEmpty)
         XCTAssertNotNil(coordinator.activities["turn"])
         let maximum = await fake.maximumExpansions
         XCTAssertEqual(maximum, 2)
+        coordinator.disconnect()
+    }
+
+    func testBriefFailureIsSeparateFromLoadingAndClearsOnExplicitRetry() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.failNextBrief()
+        await coordinator.loadBrief("brief")
+        XCTAssertNil(coordinator.briefs["brief"])
+        XCTAssertEqual(coordinator.failedBriefs, ["brief"])
+        XCTAssertTrue(coordinator.loadingBriefs.isEmpty)
+        XCTAssertEqual(coordinator.status, .live)
+        await coordinator.loadBrief("brief")
+        XCTAssertNotNil(coordinator.briefs["brief"])
+        XCTAssertTrue(coordinator.failedBriefs.isEmpty)
+        XCTAssertTrue(coordinator.loadingBriefs.isEmpty)
         coordinator.disconnect()
     }
 

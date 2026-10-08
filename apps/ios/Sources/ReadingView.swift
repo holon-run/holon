@@ -110,11 +110,17 @@ struct ConversationReadingView: View {
     let sender: SendingCoordinator?
     var openReference: (String) -> Void
     var openWork: (String) -> Void
-    @State private var position = ScrollPosition(idType: String.self, edge: .bottom)
     @State private var nearBottom = true
     @State private var newContent = false
     @State private var initializedAgent: String?
     @State private var readThroughToConfirm: ReadingReadConfirmation?
+    @State private var historyEndTurnID: String?
+    @State private var visibleTurnIDs: [String] = []
+    @State private var userScrolling = false
+
+    private var turnIDs: [String] { turns.map(\.id) }
+    private var turnRange: Range<Int> { ConversationTurnWindow.range(ids: turnIDs, endingAt: historyEndTurnID) }
+    private var visibleTurns: ArraySlice<ReadingTurnPresentation> { turns[turnRange] }
 
     private var turns: [ReadingTurnPresentation] {
         guard let raw = reader.snapshot?.raw else { return [] }
@@ -137,15 +143,33 @@ struct ConversationReadingView: View {
 
     var body: some View {
         GeometryReader { geometry in
+        ScrollViewReader { scroll in
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            LazyVStack(alignment: .leading, spacing: 16) {
                 if reader.status != .live {
                     Text(LocalizedStringKey("reading.status." + reader.status.rawValue))
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if reader.canLoadHistory {
-                    Button("reading.history") { Task { await reader.loadHistory() } }
+                if turnRange.lowerBound > 0 || reader.canLoadHistory {
+                    Button("reading.history") {
+                        Task {
+                            let agent = reader.selectedAgentID
+                            let epoch = reader.snapshot?.eventLogEpoch
+                            if turnRange.lowerBound > 0 {
+                                historyEndTurnID = ConversationTurnWindow.olderEnd(ids: turnIDs, current: turnRange)
+                            } else {
+                                let previousFirst = turnIDs.first
+                                await reader.loadHistory()
+                                guard reader.selectedAgentID == agent, reader.snapshot?.eventLogEpoch == epoch else { return }
+                                if let previousFirst, let index = turnIDs.firstIndex(of: previousFirst), index > 0 {
+                                    historyEndTurnID = turnIDs[min(turnIDs.count - 1, index + 4)]
+                                }
+                            }
+                            scroll.scrollTo(visibleTurns.first?.id ?? "conversation-tail", anchor: .top)
+                        }
+                    }
                         .disabled(reader.isLoadingHistory)
+                        .accessibilityIdentifier("conversation.older")
                 }
                 if reader.isLoadingHistory { ProgressView() }
                 if reader.snapshot == nil {
@@ -153,15 +177,18 @@ struct ConversationReadingView: View {
                 } else if turns.isEmpty && reader.snapshot?.raw["pending_inputs"].viewArray.isEmpty == true {
                     Text("reading.emptyConversation")
                 }
-                LazyVStack(alignment: .leading, spacing: 20) {
-                    ForEach(turns) { turn in
-                        ReadingTurnView(turn: turn, reader: reader)
-                            .environment(\.holonOpenReference, openReference)
-                            .environment(\.holonOpenWork, openWork)
-                            .id(turn.id)
-                    }
+                ForEach(visibleTurns) { turn in
+                    ReadingTurnView(turn: turn, reader: reader)
+                        .environment(\.holonOpenReference, openReference)
+                        .environment(\.holonOpenWork, openWork)
+                        .id(turn.id)
                 }
-                .scrollTargetLayout()
+                if turnRange.upperBound < turns.count {
+                    Button("reading.newerTurns") {
+                        historyEndTurnID = ConversationTurnWindow.newerEnd(ids: turnIDs, current: turnRange)
+                        scroll.scrollTo(visibleTurns.first?.id ?? "conversation-tail", anchor: .top)
+                    }.accessibilityIdentifier("conversation.newer")
+                }
                 ForEach(reader.snapshot?.raw["pending_inputs"].viewArray ?? [], id: \.viewMessageID) { input in
                     ReadingInputView(input: input)
                         .accessibilityIdentifier("pending." + input.viewMessageID)
@@ -174,11 +201,20 @@ struct ConversationReadingView: View {
             .frame(width: max(0, geometry.size.width - 32), alignment: .leading)
             .padding(.horizontal, 16)
             .padding(.vertical, 16)
+            .scrollTargetLayout()
         }
-        .scrollPosition($position)
-        .onScrollGeometryChange(for: Bool.self) { abs($0.contentOffset.x) > 0.5 } action: { _, displaced in
-            // Native ID/edge positioning can retain a row's horizontal inset; this timeline is vertical only.
-            if displaced { position.scrollTo(x: 0) }
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.1) { ids in
+            visibleTurnIDs = ids
+        }
+        .onScrollPhaseChange { _, phase in
+            if phase == .interacting { userScrolling = true }
+            if phase == .idle, userScrolling {
+                userScrolling = false
+                if let first = turnIDs.first(where: { visibleTurnIDs.contains($0) }) {
+                    reader.rememberPosition(turnID: first)
+                }
+            }
         }
         .scrollDismissesKeyboard(.interactively)
         .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -190,20 +226,23 @@ struct ConversationReadingView: View {
         .task(id: reader.snapshot?.agentID) {
             guard let agent = reader.snapshot?.agentID, initializedAgent != agent else { return }
             initializedAgent = agent
-            if let saved = reader.readingPosition { position.scrollTo(id: saved, anchor: .top) }
-            else { position.scrollTo(edge: .bottom) }
-        }
-        .onChange(of: position.viewID(type: String.self)) { _, value in
-            if let value, turns.contains(where: { $0.id == value }) { reader.rememberPosition(turnID: value) }
+            if let saved = reader.readingPosition {
+                historyEndTurnID = ConversationTurnWindow.restoringEnd(ids: turnIDs, turnID: saved)
+                scroll.scrollTo(saved, anchor: .top)
+            } else { historyEndTurnID = nil; scroll.scrollTo("conversation-tail", anchor: .bottom) }
         }
         .onChange(of: latestContentKey) { _, _ in
-            if nearBottom { position.scrollTo(edge: .bottom) }
+            if nearBottom, historyEndTurnID == nil { scroll.scrollTo("conversation-tail", anchor: .bottom) }
             else { newContent = true }
         }
+        .onChange(of: reader.snapshot?.eventLogEpoch) { old, new in
+            if old != nil, old != new { historyEndTurnID = nil }
+        }
         .overlay(alignment: .bottomTrailing) {
-            if !nearBottom {
+            if !nearBottom || historyEndTurnID != nil {
                 Button {
-                    position.scrollTo(edge: .bottom); newContent = false
+                    historyEndTurnID = nil; scroll.scrollTo("conversation-tail", anchor: .bottom); newContent = false
+                    if let latest = turnIDs.last { reader.rememberPosition(turnID: latest) }
                 } label: {
                     Label(newContent ? "reading.newContent" : "reading.latest", systemImage: "arrow.down")
                         .font(.caption).padding(10).background(.regularMaterial, in: Capsule())
@@ -252,6 +291,7 @@ struct ConversationReadingView: View {
             Button("reading.cancel", role: .cancel) { readThroughToConfirm = nil }
         } message: {
             Text("reading.cumulativeReadNotice")
+        }
         }
         }
     }
@@ -367,12 +407,18 @@ private struct ReadingBriefView: View {
                     Button("work.details", systemImage: "checklist") { openWork?(workID) }.font(.caption)
                         .disabled(openWork == nil)
                 }
+            } else if reader.status == .live, !reader.failedBriefs.contains(briefID) {
+                ProgressView("work.loading").font(.caption)
             } else {
                 Text("reading.detailUnavailable")
                 Button("reading.retry") { Task { await reader.loadBrief(briefID) } }
             }
         }
-        .task { await reader.loadBrief(briefID) }
+        // Native accessibility can materialize offscreen lazy rows. Fetch/render only
+        // visible results so a long history cannot exhaust the detail queue on arrival.
+        .task(id: "\(isVisible)|\(reader.status.rawValue)") {
+            if isVisible { await reader.loadBrief(briefID) }
+        }
         .onChange(of: reader.briefs[briefID]) { _, _ in updateReadVisibility() }
         .onScrollVisibilityChange(threshold: 0.5) { visible in
             isVisible = visible
