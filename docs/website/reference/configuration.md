@@ -158,23 +158,26 @@ Do not combine `api.cors.allow_credentials=true` with
 
 ### Cookie-authenticated unsafe requests
 
-Unsafe requests (`POST`, `PUT`, `PATCH`, and `DELETE`) authenticated by the
-browser's `holon_session` cookie must carry an allowed browser source. Holon
-accepts an `Origin` matching the request `Host` by scheme, host, and port, or
-an exact origin listed in `api.csrf.trusted_origins`. If `Origin` is absent,
-`Sec-Fetch-Site: same-origin` and same-origin `Referer` are accepted as
-fallbacks; otherwise the request is rejected with HTTP `403`.
-
-This guard is always enabled and is independent of CORS. It also covers the
-`/apps` boundary and browser session exchange/pairing redemption. Bearer
-requests, Unix-socket trusted-local requests, and native credential endpoints
-remain compatible. Trusted origins must be explicit `http://` or `https://`
-origins with an optional port; wildcard `*`, paths, queries, and forwarded
-proxy headers are not accepted.
+Cookie Origin protection is disabled by default. This keeps browser sessions
+working through Tailscale Serve, HTTPS termination, reverse proxies, custom
+domains, and standalone Vite proxies without deployment-specific configuration.
+To opt into strict protection, set one or more exact origins:
 
 ```bash
 holon config set api.csrf.trusted_origins '["https://admin.example:8443"]'
 ```
+
+When the list is non-empty, unsafe requests (`POST`, `PUT`, `PATCH`, and
+`DELETE`) authenticated by the browser's `holon_session` cookie must carry an
+allowed browser source. Holon accepts an `Origin` matching the request `Host`
+by scheme, host, and port, or an exact configured origin. If `Origin` is absent,
+`Sec-Fetch-Site: same-origin` and same-origin `Referer` are accepted as
+fallbacks; otherwise the request is rejected with HTTP `403`. The guard is
+independent of CORS and also covers `/apps` plus browser session
+exchange/pairing redemption. Bearer requests, Unix-socket trusted-local
+requests, and native credential endpoints remain compatible. Trusted origins
+must be explicit `http://` or `https://` origins with an optional port;
+wildcard `*`, paths, queries, and forwarded proxy headers are not accepted.
 
 ### Projection Gate
 

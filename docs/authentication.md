@@ -51,13 +51,17 @@ stale Bearer token (for example a static control token cached by a browser
 before the deployment switched to OIDC) therefore cannot mask a valid session
 cookie.
 
-Unsafe requests authenticated by the `holon_session` cookie must include an
-allowed browser source. The HTTP boundary accepts a same-origin `Origin`
-(matching request scheme, host, and port), or an exact
-`api.csrf.trusted_origins` entry. When `Origin` is absent, same-origin
-`Sec-Fetch-Site` or `Referer` headers are accepted as browser fallbacks;
-otherwise the request is rejected with HTTP `403`. This check is independent
-of CORS and applies to both `/api` and `/apps`.
+Cookie Origin protection is disabled by default so browser sessions continue to
+work through Tailscale Serve, HTTPS termination, reverse proxies, custom
+domains, and standalone Vite proxies without deployment-specific configuration.
+To opt into strict protection, configure one or more exact
+`api.csrf.trusted_origins` values. Once the list is non-empty, unsafe requests
+authenticated by the `holon_session` cookie must include a same-origin `Origin`
+(matching request scheme, host, and port), or an exact configured origin. When
+`Origin` is absent, same-origin `Sec-Fetch-Site` or `Referer` headers are
+accepted as browser fallbacks; otherwise the request is rejected with HTTP
+`403`. The guard is independent of CORS and applies to both `/api` and `/apps`,
+including browser session exchange and pairing redemption.
 
 In OIDC mode, normal API, SSE, and Web requests require an active session.
 Missing, expired, revoked, or disabled-user sessions return HTTP `401` with the
