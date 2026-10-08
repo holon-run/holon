@@ -52,6 +52,8 @@ acceptance: see [release preparation](RELEASE.md) for the remaining gates.
    to latest is deliberate when you are reading historical content.
    The file reader supports complete UTF-8 within its bounded download budget,
    literal search, code highlighting, image zoom and passive PDF page previews.
+   Long text uses explicit bounded disk pages with previous/next and end actions,
+   so distant jumps do not depend on estimated offscreen text heights.
    Large Markdown is shown as paged source rather than an unbounded rich-text
    document. Unsupported formats offer original-copy download/share. File and
    relative Markdown links are resolved by the daemon with their authorized

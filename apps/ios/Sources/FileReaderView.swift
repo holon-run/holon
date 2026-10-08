@@ -17,7 +17,7 @@ struct FileReaderView: View {
         Group {
             if let artifact {
                 FilePreparedReader(artifact: artifact, position: $position, openFile: openFile)
-                    .id(artifact.id).accessibilityIdentifier("files.preview")
+                    .id(artifact.id)
             } else {
                 ContentUnavailableView {
                     Label("files.title", systemImage: "doc")
@@ -117,6 +117,7 @@ private struct FilePreparedReader: View {
                 Spacer()
                 if let location = artifact.location { Text(verbatim: location.workspaceID).lineLimit(1).truncationMode(.middle) }
             }.font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.vertical, 6)
+                .accessibilityIdentifier("files.preview")
             if let failure { Text(LocalizedStringKey(failure.key)).foregroundStyle(.secondary).padding(); Spacer() }
             else if let textReader {
                 FileTextContent(artifact: artifact, reader: textReader, position: $position, openFile: openFile)
@@ -152,7 +153,7 @@ private struct FileTextContent: View {
     @Binding var position: FilesReadingPosition
     var openFile: (FilesRequest) -> Void
     @State private var index: FileTextIndex?
-    @State private var visiblePage: Int?
+    @State private var scrollPosition = ScrollPosition(idType: Int.self)
     @State private var query = ""
     @State private var matches: [Int] = []
     @State private var matchNumber = 0
@@ -164,7 +165,6 @@ private struct FileTextContent: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ScrollViewReader { scroll in
             VStack(spacing: 0) {
                 if !renderMarkdown {
                     HStack {
@@ -173,21 +173,23 @@ private struct FileTextContent: View {
                             Text("\(matches.isEmpty ? 0 : matchNumber + 1)/\(matches.count)").font(.caption)
                             Button("files.nextMatch", systemImage: "chevron.down") {
                                 guard !matches.isEmpty else { return }
-                                position.atEnd = false
-                                matchNumber = (matchNumber + 1) % matches.count; visiblePage = matches[matchNumber]
+                                matchNumber = (matchNumber + 1) % matches.count
+                                selectPage(matches[matchNumber])
                             }.disabled(matches.isEmpty)
                         }
                         Button("files.end", systemImage: "arrow.down.to.line") {
                             jumpingToEnd = true
                             position.atEnd = true
-                            scroll.scrollTo("file-end", anchor: .bottom)
+                            position.page = max(0, (index?.pages.count ?? 1) - 1)
+                            scrollPosition.scrollTo(edge: .bottom)
                         }
                             .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
                             .accessibilityIdentifier("files.end")
+                            .disabled(index == nil || index?.pages.isEmpty == true)
                     }.padding(12).background(.bar)
                 }
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 0) {
                         if renderMarkdown, let text = artifact.text {
                             RichTextContent(text: text,
                                 openReference: { openFile(.source(.reference($0))) },
@@ -197,28 +199,31 @@ private struct FileTextContent: View {
                             if (artifact.name as NSString).pathExtension.lowercased() == "md", artifact.byteCount > 256 * 1024 {
                                 Text("files.largeMarkdownSource").font(.caption).foregroundStyle(.secondary).padding(.vertical, 8)
                             }
-                            ForEach(index.pages.indices, id: \.self) { page in
+                            if index.pages.indices.contains(position.page) {
+                                let page = position.page
                                 FileTextPage(reader: reader, page: page, width: max(1, geometry.size.width - 32), wrap: position.wrap,
                                     language: artifact.byteCount <= 1024 * 1024 ? FileCodePresentation.language(name: artifact.name) : nil,
                                     didLayout: {
-                                        // A lazy page initially has only a placeholder height. Re-anchor
+                                        // A disk page initially has only a placeholder height. Re-anchor
                                         // after the last page's real text has laid out, not at its start.
                                         if jumpingToEnd, page == index.pages.count - 1 {
-                                            scroll.scrollTo("file-end", anchor: .bottom)
+                                            scrollPosition.scrollTo(edge: .bottom)
                                             jumpingToEnd = false
                                         }
                                     })
                                     .id(page)
                             }
                             if index.pages.isEmpty { Text("files.emptyText").foregroundStyle(.secondary) }
-                            Text("files.endOfFile").font(.caption).foregroundStyle(.secondary)
-                                .padding(.vertical, 12).id("file-end")
-                                .accessibilityIdentifier("files.endOfFile")
+                            if position.page == index.pages.count - 1 {
+                                Text("files.endOfFile").font(.caption).foregroundStyle(.secondary)
+                                    .padding(.vertical, 12).accessibilityIdentifier("files.endOfFile")
+                            }
                         }
                     }.frame(width: max(1, geometry.size.width - 32), alignment: .leading).padding(.horizontal, 16)
-                        .scrollTargetLayout()
                 }
-                .scrollPosition(id: $visiblePage, anchor: .top)
+                // One bounded disk page avoids speculative lazy heights and
+                // competing scroll anchors when jumping to a distant page.
+                .scrollPosition($scrollPosition)
                 .onScrollPhaseChange { _, phase in
                     if phase == .interacting { jumpingToEnd = false; position.atEnd = false }
                 }
@@ -226,18 +231,31 @@ private struct FileTextContent: View {
                 HStack {
                     Text("files.completeText")
                     Spacer()
-                    if let index, !renderMarkdown { Text("\(min((visiblePage ?? 0) + 1, index.pages.count))/\(index.pages.count)") }
+                    if let index, !renderMarkdown, index.pages.count > 1 {
+                        Button("files.previousPage", systemImage: "chevron.left") { selectPage(position.page - 1) }
+                            .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).disabled(position.page == 0)
+                            .accessibilityIdentifier("files.previousTextPage")
+                        Text("\(position.page + 1)/\(index.pages.count)").monospacedDigit()
+                        Button("files.nextPage", systemImage: "chevron.right") { selectPage(position.page + 1) }
+                            .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                            .disabled(position.page + 1 >= index.pages.count)
+                            .accessibilityIdentifier("files.nextTextPage")
+                    }
                 }.font(.caption).foregroundStyle(.secondary).padding(8)
             }
             .onChange(of: index?.pages.count) { _, _ in
+                let last = max(0, (index?.pages.count ?? 1) - 1)
+                position.page = position.atEnd ? last : min(max(0, position.page), last)
                 if position.atEnd {
                     jumpingToEnd = true
-                    scroll.scrollTo("file-end", anchor: .bottom)
-                }
+                    scrollPosition.scrollTo(edge: .bottom)
+                } else { scrollPosition.scrollTo(edge: .top) }
             }
+            .onChange(of: position.page) { _, _ in
+                scrollPosition.scrollTo(edge: position.atEnd ? .bottom : .top)
             }
         }
-        .task { index = reader.index; visiblePage = position.page }
+        .task { index = reader.index }
         .task(id: query) {
             matches = []; matchNumber = 0
             guard !query.isEmpty else { return }
@@ -245,10 +263,17 @@ private struct FileTextContent: View {
                 try await Task.sleep(for: .milliseconds(250))
                 let result = try await reader.matches(query)
                 try Task.checkCancellation(); matches = result
-                if let first = result.first { position.atEnd = false; visiblePage = first }
+                if let first = result.first {
+                    selectPage(first)
+                }
             } catch {}
         }
-        .onChange(of: visiblePage) { _, page in if let page { position.page = page } }
+    }
+
+    private func selectPage(_ page: Int) {
+        guard let index, index.pages.indices.contains(page) else { return }
+        jumpingToEnd = false; position.atEnd = false; position.page = page
+        scrollPosition.scrollTo(edge: .top)
     }
 }
 

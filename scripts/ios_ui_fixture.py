@@ -21,6 +21,9 @@ from ios_simulator_text_size import (
 
 binary, repo, mode = sys.argv[1:]
 rich_acceptance = os.environ.get("IOS_RICH_ACCEPTANCE") == "1"
+rich_activity_acceptance = rich_acceptance and (
+    mode == "--sdk-only" or not os.environ.get("IOS_UI_CASES")
+    or "testRichActivityWorkflow" in os.environ["IOS_UI_CASES"].split(","))
 lost_response_acceptance = os.environ.get("IOS_LOST_RESPONSE_ACCEPTANCE") == "1"
 history_acceptance = os.environ.get("IOS_HISTORY_ACCEPTANCE") == "1"
 with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
@@ -61,7 +64,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 held_run_started.write_text("ready")
                 release_held_run.wait(timeout=15)
             tool_calls = None
-            if rich_acceptance and "IOS_RICH_ACTIVITIES" in json.dumps(request.get("messages", [])) and FakeProvider.rich_batches < 10:
+            if rich_activity_acceptance and "IOS_RICH_ACTIVITIES" in json.dumps(request.get("messages", [])) and FakeProvider.rich_batches < 10:
                 available = {tool.get("function", {}).get("name") for tool in request.get("tools", [])}
                 if "GetAgent" not in available:
                     self.send_error(500, "GetAgent must be a real supported read-only tool")
@@ -296,6 +299,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
             workspace_id = next(w["workspace_id"] for w in state["workspace"]["workspaces"]
                                 if w.get("kind") == "agent_home" or w.get("workspace_id", "").startswith("agent_home"))
             rich_turn = None
+            rich_additional_work = None
             if history_acceptance:
                 for number in range(25):
                     marker = f"IOS_HISTORY_{number:03}"
@@ -308,7 +312,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                         time.sleep(.1)
                     else:
                         raise RuntimeError("history fixture turn did not finish")
-            if rich_acceptance:
+            if rich_activity_acceptance:
                 # All rich data lives in this temporary daemon, never a production Agent.
                 for number in range(90):
                     local("POST", f"/control/agents/ios-fixture-agent-{number:03}/create", {})
@@ -327,6 +331,16 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                             time.sleep(.1)
                     else:
                         raise RuntimeError("rich catalog work did not settle")
+                initial_work = local("GET", f"/agents/{agent}/work-items?limit=50")
+                expanded_work = local("GET", f"/agents/{agent}/work-items?limit=100")
+                def work_ids(reply):
+                    return [item["id"] for item in (reply if isinstance(reply, list) else reply["items"])]
+                first_ids = set(work_ids(initial_work))
+                additional = [item for item in work_ids(expanded_work) if item not in first_ids]
+                if len(first_ids) != 50 or len(work_ids(expanded_work)) != 56 or not additional:
+                    raise RuntimeError("rich work acceptance requires a reachable fifty-to-fifty-six window")
+                rich_additional_work = additional[0]
+            if rich_acceptance:
                 rich_files = workspace / "rich-files"
                 rich_files.mkdir()
                 for number in range(80):
@@ -359,6 +373,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 pdf += b"".join(f"{offset:010} 00000 n \n".encode() for offset in offsets[1:])
                 pdf += f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
                 (rich_files / "report.pdf").write_bytes(pdf)
+            if rich_activity_acceptance:
                 local("POST", f"/agents/{agent}/enqueue", {"text": "IOS_RICH_ACTIVITIES: inspect the current Agent using read-only tools."})
                 for attempt in range(600):
                     conversation = local("GET", f"/agents/{agent}/conversation")
@@ -374,6 +389,8 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 if FakeProvider.rich_batches != 10 or not activities.get("has_more"):
                     raise RuntimeError("rich acceptance requires more than sixty real activities")
                 print("Rich fixture: 91 Agents, 56 WorkItems, 60 real tool calls, large UTF-8/code, PNG and two-page PDF", flush=True)
+            elif rich_acceptance:
+                print("Rich file fixture: 80 directory notes, large UTF-8/code, PNG and two-page PDF", flush=True)
             # The active output probe belongs to native acceptance, not the
             # potentially long catalog/history preparation phase.
             task = local("POST", f"/control/agents/{agent}/tasks", {
@@ -405,7 +422,10 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                         LOSS_CONTROL_URL=f"http://127.0.0.1:{proxy.server_port}/fixture/release-lost-response",
                         LOSS_CONTROL_TOKEN=proxy_control_token)
                 if rich_turn:
-                    runner_inputs.update(RICH_TURN_ID=rich_turn, RICH_DIRECTORY="rich-files")
+                    runner_inputs.update(RICH_TURN_ID=rich_turn)
+                    runner_inputs["RICH_ADDITIONAL_WORK_ID"] = rich_additional_work
+                if rich_acceptance:
+                    runner_inputs["RICH_DIRECTORY"] = "rich-files"
                 for key, value in runner_inputs.items():
                     test_env["TEST_RUNNER_HOLON_UI_" + key] = value
                 simulator = os.environ.get("IOS_SIMULATOR_ID")

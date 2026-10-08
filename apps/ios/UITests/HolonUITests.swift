@@ -638,6 +638,14 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(agentRow.waitForExistence(timeout: 15)); agentRow.tap()
         app.buttons["sending.options"].tap(); app.buttons["Take photo"].tap()
         XCTAssertTrue(app.staticTexts["The camera is not available on this device. Choose a photo or file instead."].waitForExistence(timeout: 10))
+        app.buttons["conversation.more"].tap(); app.buttons["conversation.work"].tap()
+        let moreWork = app.buttons["work.moreItems"]
+        reveal(moreWork, in: app); moreWork.tap()
+        let additionalWork = app.buttons["work.item." + (try required("RICH_ADDITIONAL_WORK_ID"))]
+        reveal(additionalWork, in: app)
+        XCTAssertTrue(additionalWork.isHittable, "Load more exposes a real item outside the first fifty")
+        capture(app, "rich-work-expanded-window")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
         let activity = app.descendants(matching: .any)["activities." + turn].firstMatch
         // This completed turn precedes the baseline's freshly sent messages.
         for _ in 0..<30 {
@@ -703,6 +711,13 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(lastNote.waitForExistence(timeout: 10)); XCTAssertTrue(lastNote.isHittable)
         XCTAssertEqual(lastNote.frame.minY, savedY, accuracy: 44, "Reader return preserves native directory position")
         func open(_ name: String) {
+            // Returning preserves the bottom-of-directory bookmark. Use the
+            // shipped filter to select an earlier file rather than scrolling away.
+            let filter = app.searchFields.firstMatch
+            XCTAssertTrue(filter.waitForExistence(timeout: 10)); filter.tap()
+            let clear = filter.buttons["Clear text"]
+            if clear.exists { clear.tap() }
+            filter.typeText(name + "\n")
             let row = app.buttons["files.entry." + directory + "/" + name]
             reveal(row, in: app); row.tap()
             XCTAssertTrue(app.descendants(matching: .any)["files.preview"].firstMatch.waitForExistence(timeout: 20))
@@ -713,6 +728,8 @@ final class HolonUITests: XCTestCase {
         // Do not swipe to rescue a failed End action; the real footer must be on-screen.
         let endVisible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: end)
         XCTAssertEqual(XCTWaiter.wait(for: [endVisible], timeout: 20), .completed)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_RICH_TEXT_END"))
+            .firstMatch.exists, "The final source bytes are loaded, not just a synthetic footer")
         XCTAssertGreaterThanOrEqual(end.frame.minX, 12)
         XCTAssertLessThanOrEqual(end.frame.maxX, app.windows.firstMatch.frame.maxX - 12)
         capture(app, "large-utf8-real-document-end")
@@ -722,6 +739,8 @@ final class HolonUITests: XCTestCase {
         open("source.ts"); app.buttons["files.end"].tap()
         let codeEnd = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: end)
         XCTAssertEqual(XCTWaiter.wait(for: [codeEnd], timeout: 30), .completed)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_RICH_CODE_END"))
+            .firstMatch.exists)
         capture(app, "large-typescript-real-document-end")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         open("report.md")
