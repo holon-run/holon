@@ -648,6 +648,9 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(additionalWork.isHittable, "Load more exposes a real item outside the first fifty")
         capture(app, "rich-work-expanded-window")
         app.navigationBars.buttons.element(boundBy: 0).tap()
+        // Work returns to the remembered reading position, which can precede
+        // this turn. Start at the shipped Latest action before seeking older.
+        if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
         let activity = app.descendants(matching: .any)["activities." + turn].firstMatch
         // This completed turn precedes the baseline's freshly sent messages.
         for _ in 0..<40 {
