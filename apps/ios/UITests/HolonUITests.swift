@@ -40,7 +40,10 @@ final class HolonUITests: XCTestCase {
             var bottom = tabs.exists ? min(window.maxY, tabs.frame.minY) : window.maxY
             let composer = app.otherElements["sending.composer"].firstMatch
             let editor = app.descendants(matching: .any)["sending.text"].firstMatch
-            if composer.exists && !composer.frame.isEmpty && editor.exists && editor.isHittable {
+            let targetID = element.exists ? element.identifier : ""
+            let insideComposer = !targetID.isEmpty && composer.exists
+                && composer.descendants(matching: .any).matching(identifier: targetID).count > 0
+            if !insideComposer && composer.exists && !composer.frame.isEmpty && editor.exists && editor.isHittable {
                 bottom = min(bottom, composer.frame.minY)
             }
             if keyboard.exists {
