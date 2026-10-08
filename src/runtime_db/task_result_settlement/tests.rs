@@ -201,6 +201,59 @@ fn mark_deferred_preserves_admission_state_on_recheck_rewrites() {
 }
 
 #[test]
+fn waking_deferred_owner_rechecks_all_unsettled_results_for_that_owner() {
+    let (_dir, db) = runtime_db();
+    let first = pending_record(0);
+    let mut other_owner = pending_record(1);
+    other_owner.work_item_id = Some("work-other".into());
+    insert(&db, &first);
+    insert(&db, &other_owner);
+
+    let deferred_at = Utc::now();
+    let next_recheck = deferred_at + Duration::minutes(5);
+    db.task_result_settlements()
+        .mark_deferred(
+            &first.message_id,
+            "owner_not_runnable",
+            deferred_at,
+            next_recheck,
+        )
+        .unwrap();
+    db.task_result_settlements()
+        .mark_deferred(
+            &other_owner.message_id,
+            "owner_not_runnable",
+            deferred_at,
+            next_recheck,
+        )
+        .unwrap();
+
+    let wake_at = deferred_at + Duration::minutes(1);
+    assert_eq!(
+        db.task_result_settlements()
+            .wake_deferred_for_owner("agent-a", "work-a", wake_at)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.task_result_settlements()
+            .latest_for_message(&first.message_id)
+            .unwrap()
+            .unwrap()
+            .next_recheck_at,
+        Some(wake_at)
+    );
+    assert_eq!(
+        db.task_result_settlements()
+            .latest_for_message(&other_owner.message_id)
+            .unwrap()
+            .unwrap()
+            .next_recheck_at,
+        Some(next_recheck)
+    );
+}
+
+#[test]
 fn active_admission_is_not_stolen_by_another_activation() {
     let (_dir, db) = runtime_db();
     let record = pending_record(0);

@@ -3593,6 +3593,12 @@ impl RuntimeHandle {
             },
             &execution_protocol,
         )?;
+        if blocker_cleared {
+            self.inner
+                .runtime_db
+                .task_result_settlements()
+                .wake_deferred_for_owner(&record.agent_id, &record.id, self.now())?;
+        }
         self.apply_transition_commit(commit).await;
         Ok(PickedWorkItem {
             previous_work_item: previous,
@@ -3647,6 +3653,7 @@ impl RuntimeHandle {
         let mut record = existing.clone();
         let mut wrote_item = false;
         let previous_objective = record.objective.clone();
+        let clear_blocker = blocked_by.as_ref().is_some_and(Option::is_none);
         let focus_release_reason = blocked_by
             .as_ref()
             .is_some_and(Option::is_some)
@@ -3762,6 +3769,12 @@ impl RuntimeHandle {
                 },
                 &execution_protocol,
             )?;
+            if clear_blocker {
+                self.inner
+                    .runtime_db
+                    .task_result_settlements()
+                    .wake_deferred_for_owner(&record.agent_id, &record.id, self.now())?;
+            }
             self.apply_transition_commit(commit).await;
         }
         Ok(record)

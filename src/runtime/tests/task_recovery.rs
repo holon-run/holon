@@ -1,5 +1,91 @@
 use super::super::*;
 use super::support::*;
+use crate::types::{WaitConditionKind, WakeSource};
+use chrono::Utc;
+
+fn task_wait(work_item_id: &str, status: WaitConditionStatus) -> WaitConditionRecord {
+    let now = Utc::now();
+    WaitConditionRecord {
+        id: "wait-1".into(),
+        agent_id: "default".into(),
+        work_item_id: Some(work_item_id.into()),
+        status,
+        kind: WaitConditionKind::Task,
+        source: None,
+        subject_ref: None,
+        waiting_for: "task-1".into(),
+        wake_sources: vec![WakeSource::TaskResult {
+            task_id: "task-1".into(),
+        }],
+        continuation: None,
+        created_at: now,
+        updated_at: now,
+        expires_at: None,
+        resolved_at: None,
+        cancelled_at: None,
+        turn_id: None,
+        trigger_message_id: Some("message-1".into()),
+        triggered_at: None,
+    }
+}
+
+#[test]
+fn task_result_reentry_only_bypasses_derived_task_wait_blocker() {
+    let mut work_item = WorkItemRecord::new("default", "rejoin", WorkItemState::Open);
+    work_item.id = "work-1".into();
+    let wait = task_wait(&work_item.id, WaitConditionStatus::Resolved);
+
+    assert!(task_result_reentry_is_allowed(
+        &work_item,
+        &work_item.id,
+        &wait
+    ));
+
+    work_item.blocked_by = Some("Waiting on operator input.".into());
+    assert!(!task_result_reentry_is_allowed(
+        &work_item,
+        &work_item.id,
+        &wait
+    ));
+
+    work_item.blocked_by = Some(TASK_RESULT_WAIT_BLOCKER.into());
+    assert!(task_result_reentry_is_allowed(
+        &work_item,
+        &work_item.id,
+        &wait
+    ));
+
+    let operator_wait = WaitConditionRecord {
+        kind: WaitConditionKind::Operator,
+        ..wait.clone()
+    };
+    assert!(!task_result_reentry_is_allowed(
+        &work_item,
+        &work_item.id,
+        &operator_wait
+    ));
+
+    let pending_wait = task_wait(&work_item.id, WaitConditionStatus::Active);
+    assert!(!task_result_reentry_is_allowed(
+        &work_item,
+        &work_item.id,
+        &pending_wait
+    ));
+
+    let other_work_item_wait = task_wait("other-work-item", WaitConditionStatus::Resolved);
+    assert!(!task_result_reentry_is_allowed(
+        &work_item,
+        &work_item.id,
+        &other_work_item_wait
+    ));
+
+    work_item.state = WorkItemState::Completed;
+    assert!(!task_result_reentry_is_allowed(
+        &work_item,
+        &work_item.id,
+        &wait
+    ));
+}
 
 #[tokio::test]
 async fn runtime_tracks_background_task() {
