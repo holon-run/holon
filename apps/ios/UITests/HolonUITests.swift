@@ -15,6 +15,8 @@ final class HolonUITests: XCTestCase {
         XCTAssertEqual(ProcessInfo.processInfo.environment["HOLON_UI_CONTENT_SIZE"],
                        large ? "accessibility-extra-extra-extra-large" : "large",
                        "The UI runner must configure and verify the system text size")
+        XCTAssertEqual(ProcessInfo.processInfo.environment["HOLON_UI_APPEARANCE"], dark ? "dark" : "light",
+                       "The UI runner must configure and verify the system appearance")
         app.launch()
         return app
     }
@@ -655,7 +657,7 @@ final class HolonUITests: XCTestCase {
             else { app.swipeDown() }
         }
         XCTAssertTrue(activity.isHittable); activity.tap()
-        let fullProcess = app.buttons["Read full activity"].firstMatch
+        let fullProcess = app.buttons["activities.full." + turn]
         reveal(fullProcess, in: app); fullProcess.tap()
         let fullReader = app.scrollViews["activities.fullReader"]
         XCTAssertTrue(fullReader.waitForExistence(timeout: 10))
@@ -690,6 +692,39 @@ final class HolonUITests: XCTestCase {
         capture(app, "rich-tool-detail")
         app.buttons["Close"].tap()
         app.terminate()
+    }
+
+    func testPopulatedComposerMaximumTextSize() throws {
+        let app = launch(language: "zh-Hans", dark: true, large: true)
+        defer { app.terminate() }
+        let routeReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.buttons["conversation.more"].exists || app.buttons["settings.open"].exists
+        }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [routeReady], timeout: 30), .completed)
+        // Earlier diagnostics cases intentionally return to home and clear
+        // the saved Agent route. Enter through the shipped row in that case.
+        if !app.buttons["conversation.more"].exists {
+            let agent = app.buttons["agent." + (try required("AGENT_ID"))]
+            reveal(agent, in: app); agent.tap()
+        }
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        let editor = app.descendants(matching: .any)["sending.text"].firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 15)); XCTAssertTrue(editor.isHittable)
+        editor.tap(); editor.typeText("IOS_ACCESSIBILITY_DRAFT")
+        let send = app.buttons["sending.enqueue"]
+        XCTAssertTrue(send.isHittable); XCTAssertTrue(send.isEnabled)
+        XCTAssertGreaterThanOrEqual(send.frame.height, 44)
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.exists)
+        var keyboardTop = keyboard.frame.minY
+        let assistant = app.otherElements["SystemInputAssistantView"].firstMatch
+        if assistant.exists && !assistant.frame.isEmpty { keyboardTop = min(keyboardTop, assistant.frame.minY) }
+        XCTAssertLessThanOrEqual(send.frame.maxY, keyboardTop + 2)
+        XCTAssertGreaterThan(editor.frame.minY, app.navigationBars.firstMatch.frame.maxY)
+        capture(app, "chinese-dark-maximum-composer-keyboard")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15), "One native back returns to Agents even with the keyboard open")
+        capture(app, "chinese-dark-maximum-agent-home")
     }
 
     func testRichFilesWorkflow() throws {
@@ -748,8 +783,8 @@ final class HolonUITests: XCTestCase {
         open("report.md")
         let relative = app.links["Open sibling"].firstMatch
         XCTAssertTrue(relative.waitForExistence(timeout: 20))
-        // Textual's selection text view owns physical touches while the link
-        // exposes a separate AX child. Tap its verified on-screen text bounds.
+        // Verify the actual text bounds; native file navigation cannot be
+        // substituted with a direct resolver call or an auxiliary button.
         XCTAssertGreaterThan(relative.frame.minY, app.navigationBars.firstMatch.frame.maxY)
         XCTAssertLessThan(relative.frame.maxY, app.windows.firstMatch.frame.maxY - 44)
         capture(app, "native-markdown-relative-file-link")
@@ -757,6 +792,18 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["IOS_RICH_NOTE_079\n"].waitForExistence(timeout: 20))
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(relative.waitForExistence(timeout: 15), "Relative links return to their source file")
+        let heading = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Native report")).firstMatch
+        heading.press(forDuration: 1)
+        let selectText = app.buttons["Select text"]
+        XCTAssertTrue(selectText.waitForExistence(timeout: 10)); selectText.tap()
+        let selection = app.staticTexts["reading.selectionText"]
+        XCTAssertTrue(selection.waitForExistence(timeout: 10))
+        XCTAssertTrue(selection.label.contains("Open sibling"))
+        selection.press(forDuration: 1)
+        XCTAssertTrue(app.buttons["Copy"].firstMatch.waitForExistence(timeout: 10), "Native range selection retains copy")
+        capture(app, "native-markdown-text-selection")
+        app.navigationBars.buttons["Close"].tap()
+        XCTAssertTrue(relative.waitForExistence(timeout: 10))
         app.navigationBars.buttons.element(boundBy: 0).tap()
         open("image.png")
         let raster = app.descendants(matching: .any)["files.raster"].firstMatch
@@ -769,8 +816,19 @@ final class HolonUITests: XCTestCase {
         app.buttons["files.nextPage"].tap()
         XCTAssertTrue(app.staticTexts["2/2"].waitForExistence(timeout: 10))
         capture(app, "native-pdf-second-page")
+        app.buttons["files.options"].tap(); app.buttons["Export a copy"].tap()
+        let exportPicker = app.navigationBars.buttons["Cancel"].firstMatch
+        XCTAssertTrue(exportPicker.waitForExistence(timeout: 15), "Export opens the native destination picker")
+        let exportHierarchy = XCTAttachment(string: app.debugDescription)
+        exportHierarchy.name = "native-export-picker-hierarchy"; exportHierarchy.lifetime = .keepAlways
+        add(exportHierarchy)
+        capture(app, "native-file-export-destination")
+        exportPicker.tap()
+        XCTAssertTrue(app.buttons["files.options"].waitForExistence(timeout: 10))
         app.buttons["files.options"].tap(); app.buttons["Share a copy"].tap()
         XCTAssertTrue(app.otherElements["ActivityListView"].waitForExistence(timeout: 10), "Share hands the original file to the native system sheet")
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "report.pdf")).firstMatch.exists,
+                      "Sharing preserves the original safe filename")
         capture(app, "native-original-file-share")
         app.terminate(); app.launch()
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30), "Process relaunch restores the confirmed Agent route")

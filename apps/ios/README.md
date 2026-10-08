@@ -12,6 +12,8 @@ attachment staging, model selection, an explicit current-run stop and a durable
 sending queue. Work, tasks and files belong to the selected Agent and are opened
 from its conversation actions. Settings, sharing, connections and diagnostics
 remain secondary destinations.
+Long-press rich text and choose **Select text** for native range selection/copy;
+Markdown links remain directly tappable in the normal reader.
 Internal TestFlight delivery does not establish physical-device or App Store
 acceptance: see [release preparation](RELEASE.md) for the remaining gates.
 
@@ -124,6 +126,9 @@ diagnostics and accessibility. The diagnostic font-size test changes and reads
 back the real simulator system preference without restarting Holon; it does not
 test navigation in Apple's Settings app. Camera recognition and permission
 lifecycles still require an iPhone or iPad.
+Light/dark cases also set and read back the simulator system appearance; launch
+arguments alone are not accepted as dark-mode evidence. Both preferences are
+restored after each case, including failed tests.
 
 ## Boundaries
 

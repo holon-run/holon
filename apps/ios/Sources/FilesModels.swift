@@ -174,7 +174,9 @@ final class FilesCache {
         guard let directory else { throw FilesFailure.forbidden }
         let kind = FilesPreviewKind.classify(mediaType: download.mediaType, name: download.name)
         let name = Self.safeName(download.name)
-        let url = directory.appendingPathComponent(UUID().uuidString + "-" + name)
+        // This random, scope-owned directory holds only the current artifact.
+        // Keep the sanitized filename for native save/share destinations.
+        let url = directory.appendingPathComponent(name)
         do {
             try download.data.write(to: url, options: [.atomic, .completeFileProtection])
             var values = URLResourceValues()

@@ -50,7 +50,12 @@ enum RichTextLink: Equatable {
     }
 
     static func literalRelativeURL(_ path: String) -> URL? {
-        guard path.hasPrefix("./") || path.hasPrefix("../"), path.utf8.count <= 16_384,
+        guard path.hasPrefix("./") || path.hasPrefix("../") else { return nil }
+        return relativeURL(path)
+    }
+
+    static func relativeURL(_ path: String) -> URL? {
+        guard !path.isEmpty, !path.hasPrefix("/"), path.utf8.count <= 16_384,
               !path.contains("\0"), !path.contains("\\") else { return nil }
         var components = URLComponents(); components.scheme = "holon-relative"; components.path = path
         return components.url
@@ -73,6 +78,13 @@ struct HolonMarkdownParser: MarkupParser {
                 return false
             } == true
             if blockCode { content[run.range].link = nil; continue }
+            if let link = run.link, link.scheme == nil {
+                // Give relative links an explicit app-routed scheme. This is
+                // still an opaque host reference, never a device file URL.
+                if case .relative(let path) = RichTextLink.classify(link) {
+                    content[run.range].link = RichTextLink.relativeURL(path)
+                } else { content[run.range].link = URL(string: "holon-unsupported:relative") }
+            }
             if run.link == nil, run.inlinePresentationIntent?.contains(.code) == true {
                 let text = String(content[run.range].characters)
                 if let url = URL(string: text), case .reference = RichTextLink.classify(url) {
@@ -128,11 +140,14 @@ struct RichTextContent: View {
     var openReference: ((String) -> Void)? = nil
     var openRelative: ((String) -> Void)? = nil
     @State private var unsupportedLink = false
+    @State private var selectingText = false
 
     var body: some View {
         StructuredText(text, parser: HolonMarkdownParser(allowsRelativePaths: openRelative != nil))
             .textual.structuredTextStyle(.gitHub)
-            .textual.textSelection(.enabled)
+            // Textual's UIKit selection overlay swallows link taps on iOS 26.
+            // Keep native links; range selection has its own system text surface.
+            .textual.textSelection(.disabled)
             .textual.overflowMode(.wrap)
             .font(.body)
             .fixedSize(horizontal: false, vertical: true)
@@ -155,5 +170,27 @@ struct RichTextContent: View {
             .alert("reading.linkUnavailable", isPresented: $unsupportedLink) {
                 Button("action.ok", role: .cancel) {}
             }
+            .contextMenu {
+                Button("reading.selectText", systemImage: "text.cursor") { selectingText = true }
+            }
+            .accessibilityAction(named: Text("reading.selectText")) { selectingText = true }
+            .sheet(isPresented: $selectingText) {
+                NavigationStack {
+                    ScrollView {
+                        Text(verbatim: Self.selectionText(text)).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding()
+                            .accessibilityIdentifier("reading.selectionText")
+                    }
+                    .navigationTitle("reading.selectText").navigationBarTitleDisplayMode(.inline)
+                    .toolbar { Button("files.dismiss") { selectingText = false } }
+                }
+            }
+            .onChange(of: text) { _, _ in selectingText = false }
+            .onDisappear { selectingText = false }
+    }
+
+    static func selectionText(_ text: String) -> String {
+        guard let content = try? HolonMarkdownParser().attributedString(for: text) else { return text }
+        return String(content.characters)
     }
 }

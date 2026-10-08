@@ -45,5 +45,10 @@ offscreen text heights. Previous/next, literal search and End remain available;
 End selects the actual last page before positioning its loaded text. Search
 context may append a bounded next-page prefix so split literals remain readable.
 The complete download/index keeps its16MiB budget and identity/root checks.
-Textual owns selection for rich content; plain source uses SwiftUI selection
-locally rather than adding a second selection layer over Markdown links.
+Native link interaction stays active in rich content. Simulator acceptance on
+iOS26.5 confirmed that Textual's UIKit selection overlay swallowed link taps;
+removing it restored actual relative-file navigation. Rich content therefore
+offers a context-menu/accessibility **Select text** action opening a native,
+non-linked range-selection surface. It is revoked when the source changes or
+disappears. Plain source keeps local SwiftUI selection. This adapter tradeoff
+does not alter file authorization or enable external resources.

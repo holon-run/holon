@@ -4,6 +4,12 @@ import XCTest
 
 @MainActor
 final class RichTextContentTests: XCTestCase {
+    func testNativeSelectionTextKeepsRenderedContentWithoutActiveLinks() {
+        let text = RichTextContent.selectionText("# Result\n\n**Ready** 中文\n\n[Sibling](./note.txt)\n\n```swift\nlet x = 1\n```")
+        XCTAssertTrue(text.contains("Result")); XCTAssertTrue(text.contains("Ready 中文"))
+        XCTAssertTrue(text.contains("Sibling")); XCTAssertTrue(text.contains("let x = 1"))
+        XCTAssertFalse(text.contains("**")); XCTAssertFalse(text.contains("./note.txt"))
+    }
     func testMarkdownKeepsStructureAndMixedLanguageText() throws {
         let content = try HolonMarkdownParser().attributedString(for: "# Result\n\n**Ready** 中文\n\n- first\n- second\n\n> note\n\n```swift\nlet x = 1\n```")
         XCTAssertTrue(String(content.characters).contains("Ready 中文"))
@@ -85,5 +91,15 @@ final class RichTextContentTests: XCTestCase {
         XCTAssertNil(ReadingPresentation.attachmentReference(.object(["value": .string("/tmp/untyped")])) )
         XCTAssertNil(ReadingPresentation.attachmentReference(.object(["uri": .string("https://example.com/report")])) )
         XCTAssertEqual(ReadingPresentation.attachmentReference(.object(["uri": .string("workspace://w/report.md?root=r")])), "workspace://w/report.md?root=r")
+    }
+
+    func testExplicitRelativeMarkdownLinksUseOpaqueRoutableScheme() throws {
+        let content = try HolonMarkdownParser(allowsRelativePaths: true).attributedString(for:
+            "[Sibling](./notes%2520.md#L2) and [Bare](notes.md) and [Invalid](relative.md?secret=x)")
+        let links = content.runs.compactMap(\.link)
+        XCTAssertEqual(links.map(\.scheme), ["holon-relative", "holon-relative", "holon-unsupported"])
+        XCTAssertEqual(links.map(RichTextLink.classify), [.relative("./notes%20.md"), .relative("notes.md"), .unsupported])
+        XCTAssertNil(RichTextLink.relativeURL("/absolute"))
+        XCTAssertNil(RichTextLink.relativeURL("../bad\\name"))
     }
 }

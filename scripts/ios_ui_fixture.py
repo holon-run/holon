@@ -16,7 +16,7 @@ import zlib
 
 from ios_simulator_text_size import (
     MAXIMUM_TEXT_SIZE, initialize_simulator_text_size, runtime_text_size_control,
-    simulator_text_size,
+    simulator_text_size, simulator_appearance,
 )
 
 binary, repo, mode = sys.argv[1:]
@@ -452,7 +452,8 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                          ("testPreparedDiagnosticsRespondToRuntimeTextSize", "large"),
                          ("testPreparedDiagnosticsViewportCoverage", MAXIMUM_TEXT_SIZE)]
                 if rich_acceptance:
-                    cases.extend([("testRichActivityWorkflow", "large"), ("testRichFilesWorkflow", "large")])
+                    cases.extend([("testRichActivityWorkflow", "large"), ("testRichFilesWorkflow", "large"),
+                                  ("testPopulatedComposerMaximumTextSize", MAXIMUM_TEXT_SIZE)])
                 if lost_response_acceptance:
                     cases.append(("testLostResponseAndProcessRecovery", "large"))
                 if history_acceptance:
@@ -469,12 +470,18 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     raise RuntimeError("Per-case xcresult paths must be unused")
                 initialize_simulator_text_size(simulator)
                 for (method, content_size), case_bundle in zip(cases, bundles):
-                    with simulator_text_size(simulator, content_size):
+                    appearance = "dark" if method in {
+                        "testDisconnectedChineseDarkAccessibilitySize",
+                        "testChineseDiagnosticsDarkAccessibilitySize",
+                        "testPopulatedComposerMaximumTextSize",
+                    } else "light"
+                    with simulator_text_size(simulator, content_size), simulator_appearance(simulator, appearance):
                         # Stop and drain the control service before restoring the case baseline.
                         with runtime_text_size_control(simulator) as (control_url, control_token):
                             test_env["TEST_RUNNER_HOLON_UI_TEXT_SIZE_URL"] = control_url
                             test_env["TEST_RUNNER_HOLON_UI_TEXT_SIZE_TOKEN"] = control_token
                             test_env["TEST_RUNNER_HOLON_UI_CONTENT_SIZE"] = content_size
+                            test_env["TEST_RUNNER_HOLON_UI_APPEARANCE"] = appearance
                             if method == "testAuthenticatedNativeWorkflow":
                                 # Tickets expire after two minutes. The preceding cases also
                                 # warm the build; issue only when redemption is about to run.

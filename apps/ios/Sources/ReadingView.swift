@@ -357,13 +357,15 @@ private struct ReadingTurnView: View {
                 ReadingBriefView(briefID: briefID, reader: reader)
             }
             DisclosureGroup(isExpanded: $showActivities) {
-                TurnActivityView(turnID: turn.id, reader: reader)
                 Button("reading.fullProcess", systemImage: "arrow.up.left.and.arrow.down.right") { fullActivities = true }
-                    .font(.caption)
+                    .font(.caption).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .accessibilityIdentifier("activities.full." + turn.id)
+                TurnActivityView(turnID: turn.id, reader: reader)
             } label: {
                 Text("reading.activities").font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .accessibilityIdentifier("activities." + turn.id)
             }
-            .accessibilityIdentifier("activities." + turn.id)
             .task(id: "\(showActivities)|\(reader.activityReadKey)") {
                 if showActivities, reader.status == .live { await reader.loadActivities(turn.id) }
             }

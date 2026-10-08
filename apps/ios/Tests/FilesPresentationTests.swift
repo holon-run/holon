@@ -95,6 +95,8 @@ final class FilesPresentationTests: XCTestCase {
         XCTAssertEqual(artifact.text, script)
         XCTAssertFalse(artifact.url.path.contains("user-secret"))
         XCTAssertFalse(artifact.name.contains("/"))
+        XCTAssertEqual(artifact.url.lastPathComponent, artifact.name,
+                       "Native copy/share keeps the safe file name, not a UUID prefix")
         XCTAssertTrue(cache.owns(artifact))
         XCTAssertThrowsError(try cache.prepare(FilesDownload(data: Data(count: FilesCache.maximumBytes + 1),
                                                             mediaType: "text/plain", name: "large"))) {

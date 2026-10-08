@@ -1,4 +1,4 @@
-"""Verified system text-size lifecycle for dedicated iOS UI simulators."""
+"""Verified system appearance/text-size lifecycle for dedicated UI simulators."""
 from contextlib import contextmanager
 import http.server
 import json
@@ -14,6 +14,40 @@ _TEXT_SIZES = {
     "accessibility-large", "accessibility-extra-large",
     "accessibility-extra-extra-large", MAXIMUM_TEXT_SIZE,
 }
+
+
+def _read_appearance(simulator):
+    result = subprocess.run(
+        ["xcrun", "simctl", "ui", simulator, "appearance"],
+        check=True, capture_output=True, text=True, timeout=15,
+    )
+    appearance = result.stdout.strip()
+    if appearance not in ("light", "dark"):
+        raise RuntimeError(f"无法读取可恢复的模拟器系统外观：{appearance!r}")
+    return appearance
+
+
+def _set_appearance(simulator, appearance):
+    if appearance not in ("light", "dark"):
+        raise ValueError("不支持的系统外观")
+    subprocess.run(
+        ["xcrun", "simctl", "ui", simulator, "appearance", appearance],
+        check=True, capture_output=True, text=True, timeout=15,
+    )
+    actual = _read_appearance(simulator)
+    print(f"模拟器 {simulator} 系统外观：{actual}", flush=True)
+    if actual != appearance:
+        raise RuntimeError(f"系统外观核验失败：期望 {appearance}，实际 {actual}")
+
+
+@contextmanager
+def simulator_appearance(simulator, appearance):
+    original = _read_appearance(simulator)
+    try:
+        _set_appearance(simulator, appearance)
+        yield appearance
+    finally:
+        _set_appearance(simulator, original)
 
 
 def _read_text_size(simulator, *, timeout=15):
