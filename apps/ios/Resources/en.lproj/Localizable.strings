@@ -298,6 +298,7 @@
 "files.shared" = "Copy shared.";
 "files.shareCancelled" = "Cancelled.";
 "files.search" = "Find in file";
+"files.searchContext" = "Search context includes the start of the next part.";
 "files.nextMatch" = "Next matching page";
 "files.end" = "Go to end";
 "files.largeMarkdownSource" = "Large Markdown file: showing complete source.";

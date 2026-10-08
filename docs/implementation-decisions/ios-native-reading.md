@@ -39,3 +39,11 @@ Near the bottom, new content follows the bottom edge; reviewing earlier content
 keeps its position and offers a latest/new-content action. Cumulative read state
 still requires explicit confirmation and the existing visible-brief/identity
 checks. There is no automatic read acknowledgement or background stream.
+
+Long source files use explicit16KiB disk pages, not a lazy stack with estimated
+offscreen text heights. Previous/next, literal search and End remain available;
+End selects the actual last page before positioning its loaded text. Search
+context may append a bounded next-page prefix so split literals remain readable.
+The complete download/index keeps its16MiB budget and identity/root checks.
+Textual owns selection for rich content; plain source uses SwiftUI selection
+locally rather than adding a second selection layer over Markdown links.

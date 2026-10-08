@@ -62,6 +62,30 @@ final class FileReaderTests: XCTestCase {
         XCTAssertNil(FileCodePresentation.language(name: "unknown.bin"))
     }
 
+    func testSplitSearchHitIsVisibleInBoundedPageContext() async throws {
+        let source = String(repeating: "a", count: FileTextIndex.pageBytes - 2) + "needle" + String(repeating: "b", count: 40_000)
+        let url = try file(Data(source.utf8)); defer { try? FileManager.default.removeItem(at: url) }
+        let reader = FileTextReader(url: url, index: try FileTextIndex.build(url: url))
+        let matches = try await reader.matches("needle")
+        XCTAssertEqual(matches, [0])
+        let context = try await reader.content(try XCTUnwrap(matches.first), searchQuery: "needle")
+        XCTAssertTrue(context.includesNextPage); XCTAssertTrue(context.text.contains("needle"))
+        XCTAssertLessThanOrEqual(context.text.utf8.count, 2 * FileTextIndex.pageBytes)
+        let normal = try await reader.content(0)
+        XCTAssertFalse(normal.includesNextPage); XCTAssertFalse(normal.text.contains("needle"))
+    }
+
+    func testSearchContextDoesNotAppendUnrelatedOrInvalidQueries() async throws {
+        let url = try file(Data(("needle" + String(repeating: "b", count: 40_000)).utf8))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let reader = FileTextReader(url: url, index: try FileTextIndex.build(url: url))
+        for query in ["needle", "absent", "", String(repeating: "b", count: 513)] {
+            let value = try await reader.content(0, searchQuery: query)
+            XCTAssertFalse(value.includesNextPage)
+            XCTAssertLessThanOrEqual(value.text.utf8.count, FileTextIndex.pageBytes)
+        }
+    }
+
     func testPDFRasterizationReachesEveryPageWithoutInteractiveActions() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".pdf")
         defer { try? FileManager.default.removeItem(at: url) }

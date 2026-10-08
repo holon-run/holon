@@ -203,6 +203,7 @@ private struct FileTextContent: View {
                                 let page = position.page
                                 FileTextPage(reader: reader, page: page, width: max(1, geometry.size.width - 32), wrap: position.wrap,
                                     language: artifact.byteCount <= 1024 * 1024 ? FileCodePresentation.language(name: artifact.name) : nil,
+                                    searchQuery: matches.contains(page) ? query : nil,
                                     didLayout: {
                                         // A disk page initially has only a placeholder height. Re-anchor
                                         // after the last page's real text has laid out, not at its start.
@@ -227,7 +228,6 @@ private struct FileTextContent: View {
                 .onScrollPhaseChange { _, phase in
                     if phase == .interacting { jumpingToEnd = false; position.atEnd = false }
                 }
-                .textSelection(.enabled)
                 HStack {
                     Text("files.completeText")
                     Spacer()
@@ -236,6 +236,7 @@ private struct FileTextContent: View {
                             .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).disabled(position.page == 0)
                             .accessibilityIdentifier("files.previousTextPage")
                         Text("\(position.page + 1)/\(index.pages.count)").monospacedDigit()
+                            .accessibilityIdentifier("files.textPageCount")
                         Button("files.nextPage", systemImage: "chevron.right") { selectPage(position.page + 1) }
                             .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
                             .disabled(position.page + 1 >= index.pages.count)
@@ -283,17 +284,27 @@ private struct FileTextPage: View {
     let width: CGFloat
     let wrap: Bool
     let language: String?
+    let searchQuery: String?
     var didLayout: () -> Void
     @State private var text: String?
     @State private var height: CGFloat = 80
     @State private var failed = false
+    @State private var includesNextPage = false
     var body: some View {
         Group {
             if let text {
-                if wrap {
-                    content(text).frame(width: width, alignment: .leading)
-                } else {
-                    ScrollView(.horizontal) { Text(verbatim: text).font(.system(.body, design: .monospaced)).fixedSize(horizontal: true, vertical: false) }
+                VStack(alignment: .leading) {
+                    if includesNextPage {
+                        Text("files.searchContext").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if wrap {
+                        content(text).frame(width: width, alignment: .leading)
+                    } else {
+                        ScrollView(.horizontal) {
+                            Text(verbatim: text).font(.system(.body, design: .monospaced))
+                                .fixedSize(horizontal: true, vertical: false).textSelection(.enabled)
+                        }
+                    }
                 }
             } else if failed { Text("files.error.unavailable") }
             else { Color.clear.frame(height: height).overlay(ProgressView()) }
@@ -302,15 +313,22 @@ private struct FileTextPage: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
             if text != nil { height = $0; didLayout() }
         }
-        .task {
-            do { let value = try await reader.page(page); try Task.checkCancellation(); text = value }
+        .task(id: searchQuery) {
+            text = nil; failed = false
+            do {
+                let value = try await reader.content(page, searchQuery: searchQuery)
+                try Task.checkCancellation(); includesNextPage = value.includesNextPage; text = value.text
+            }
             catch { if !Task.isCancelled { failed = true } }
         }
         .onDisappear { text = nil }
     }
     @ViewBuilder private func content(_ text: String) -> some View {
         if let language { RichTextContent(text: FileCodePresentation.markdownSource(text, language: language)) }
-        else { Text(verbatim: text).font(.system(.body, design: .monospaced)).frame(maxWidth: .infinity, alignment: .leading) }
+        else {
+            Text(verbatim: text).font(.system(.body, design: .monospaced))
+                .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+        }
     }
 }
 

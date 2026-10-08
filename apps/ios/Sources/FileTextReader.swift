@@ -62,6 +62,21 @@ actor FileTextReader {
         return text
     }
 
+    /// A split literal needs the next page's prefix, not an unbounded document.
+    func content(_ number: Int, searchQuery: String? = nil) throws -> FileTextPageContent {
+        let text = try page(number)
+        guard let query = searchQuery, !query.isEmpty, query.utf8.count <= 512,
+              text.range(of: query, options: .caseInsensitive) == nil,
+              index.pages.indices.contains(number + 1) else {
+            return .init(text: text, includesNextPage: false)
+        }
+        let next = String(try page(number + 1).prefix(512))
+        guard (String(text.suffix(512)) + next).range(of: query, options: .caseInsensitive) != nil else {
+            return .init(text: text, includesNextPage: false)
+        }
+        return .init(text: text + next, includesNextPage: true)
+    }
+
     /// Search does not promote contents to Markdown or keep unbounded match/result arrays.
     func matches(_ query: String) throws -> [Int] {
         guard !query.isEmpty, query.utf8.count <= 512 else { return [] }
@@ -78,6 +93,11 @@ actor FileTextReader {
         }
         return Array(Set(result)).sorted()
     }
+}
+
+struct FileTextPageContent: Sendable {
+    let text: String
+    let includesNextPage: Bool
 }
 
 enum FileCodePresentation {

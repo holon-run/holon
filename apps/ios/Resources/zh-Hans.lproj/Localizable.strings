@@ -298,6 +298,7 @@
 "files.shared" = "副本已分享。";
 "files.shareCancelled" = "已取消。";
 "files.search" = "在文件中查找";
+"files.searchContext" = "搜索上下文包含下一段的开头。";
 "files.nextMatch" = "下一个匹配页";
 "files.end" = "跳到末尾";
 "files.largeMarkdownSource" = "较大的 Markdown 文件：显示完整源码。";

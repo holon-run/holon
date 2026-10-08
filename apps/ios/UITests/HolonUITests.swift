@@ -648,13 +648,13 @@ final class HolonUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         let activity = app.descendants(matching: .any)["activities." + turn].firstMatch
         // This completed turn precedes the baseline's freshly sent messages.
-        for _ in 0..<30 {
-            if activity.exists { break }
+        for _ in 0..<40 {
+            if activity.exists && activity.isHittable { break }
             let olderTurns = app.buttons["conversation.older"]
             if olderTurns.exists && olderTurns.isHittable { olderTurns.tap() }
             else { app.swipeDown() }
         }
-        reveal(activity, in: app); activity.tap()
+        XCTAssertTrue(activity.isHittable); activity.tap()
         let fullProcess = app.buttons["Read full activity"].firstMatch
         reveal(fullProcess, in: app); fullProcess.tap()
         let fullReader = app.scrollViews["activities.fullReader"]
@@ -730,6 +730,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [endVisible], timeout: 20), .completed)
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_RICH_TEXT_END"))
             .firstMatch.exists, "The final source bytes are loaded, not just a synthetic footer")
+        XCTAssertEqual(app.staticTexts["files.textPageCount"].label, "42/42")
         XCTAssertGreaterThanOrEqual(end.frame.minX, 12)
         XCTAssertLessThanOrEqual(end.frame.maxX, app.windows.firstMatch.frame.maxX - 12)
         capture(app, "large-utf8-real-document-end")
@@ -741,11 +742,18 @@ final class HolonUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [codeEnd], timeout: 30), .completed)
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_RICH_CODE_END"))
             .firstMatch.exists)
+        XCTAssertEqual(app.staticTexts["files.textPageCount"].label, "41/41")
         capture(app, "large-typescript-real-document-end")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         open("report.md")
         let relative = app.links["Open sibling"].firstMatch
-        XCTAssertTrue(relative.waitForExistence(timeout: 20)); relative.tap()
+        XCTAssertTrue(relative.waitForExistence(timeout: 20))
+        // Textual's selection text view owns physical touches while the link
+        // exposes a separate AX child. Tap its verified on-screen text bounds.
+        XCTAssertGreaterThan(relative.frame.minY, app.navigationBars.firstMatch.frame.maxY)
+        XCTAssertLessThan(relative.frame.maxY, app.windows.firstMatch.frame.maxY - 44)
+        capture(app, "native-markdown-relative-file-link")
+        relative.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.staticTexts["IOS_RICH_NOTE_079\n"].waitForExistence(timeout: 20))
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(relative.waitForExistence(timeout: 15), "Relative links return to their source file")
