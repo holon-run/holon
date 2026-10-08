@@ -23,6 +23,9 @@ final class ReadingCoordinator {
     private(set) var activities: [String: JSONValue] = [:]
     private(set) var activityDetails: [String: JSONValue] = [:]
     private(set) var activityCacheRevision = 0
+    var activityReadKey: String {
+        "\(status.rawValue)|\(activityCacheRevision)|\(snapshot?.snapshotCursor ?? "")"
+    }
     private(set) var loadingActivities: Set<String> = []
     private(set) var failedActivities: Set<String> = []
     private(set) var status: ReadingStatus = .disconnected

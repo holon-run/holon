@@ -384,6 +384,8 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 HOLON_UI_AGENT_ID=agent, HOLON_UI_WORK_ID=work_id, HOLON_UI_TASK_ID=task["id"],
                 HOLON_UI_FILE_PATH=file_path, HOLON_UI_WORKSPACE_ID=workspace_id,
                 HOLON_UI_BRIEF_MARKER="IOS_POPULATED_BRIEF")
+            if rich_turn:
+                test_env["HOLON_UI_RICH_TURN_ID"] = rich_turn
             print("真实隔离 populated daemon 已就绪；临时凭据不输出", flush=True)
             result = subprocess.run(["swift", "test", "--package-path", repo + "/packages/client-sdk-swift",
                                      "--filter", "LiveDaemonPopulatedProbeTests"], env=test_env)

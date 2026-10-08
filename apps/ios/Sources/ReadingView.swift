@@ -364,13 +364,15 @@ private struct ReadingTurnView: View {
                 Text("reading.activities").font(.caption).foregroundStyle(.secondary)
             }
             .accessibilityIdentifier("activities." + turn.id)
-            .task(id: "\(showActivities)|\(reader.snapshot?.snapshotCursor ?? "")") {
-                if showActivities { await reader.loadActivities(turn.id) }
+            .task(id: "\(showActivities)|\(reader.activityReadKey)") {
+                if showActivities, reader.status == .live { await reader.loadActivities(turn.id) }
             }
             .sheet(isPresented: $fullActivities) {
                 NavigationStack {
                     ScrollView { TurnActivityView(turnID: turn.id, reader: reader).padding() }
-                        .task(id: reader.snapshot?.snapshotCursor) { await reader.loadActivities(turn.id) }
+                        .task(id: reader.activityReadKey) {
+                            if reader.status == .live { await reader.loadActivities(turn.id) }
+                        }
                         .navigationTitle("reading.activities").navigationBarTitleDisplayMode(.inline)
                         .toolbar { Button("files.dismiss") { fullActivities = false } }
                 }

@@ -60,6 +60,26 @@ final class ActivityPresentationTests: XCTestCase {
         XCTAssertEqual(current["client_window_trimmed"], .bool(true))
     }
 
+    func testActivityVersionsMatchKnownConversationVersions() throws {
+        for version: Int64 in [1, 2] {
+            let snapshot = try HolonConversationSnapshot(raw: .object([
+                "runtime_id": .string("runtime"), "visibility_scope_id": .string("private"),
+                "agent_id": .string("A"), "event_log_epoch": .string("epoch"),
+                "snapshot_cursor": .string("live"), "schema_version": .integer(version),
+                "query_version": .integer(version), "has_more": .bool(false),
+                "turns": .array([]), "active_turns": .array([]), "pending_inputs": .array([])]))
+            guard case .object(var fields) = page(0..<60, cursor: nil, more: false) else { return XCTFail() }
+            fields["schema_version"] = .integer(version); fields["query_version"] = .integer(version)
+            XCTAssertNoThrow(try ActivityPresentation.validate(.object(fields), snapshot: snapshot, turnID: "turn"))
+            for key in ["schema_version", "query_version"] {
+                for mismatch: Int64 in [0, version == 1 ? 2 : 1, 3] {
+                    var invalid = fields; invalid[key] = .integer(mismatch)
+                    XCTAssertThrowsError(try ActivityPresentation.validate(.object(invalid), snapshot: snapshot, turnID: "turn"))
+                }
+            }
+        }
+    }
+
     func testCursorAndDetailRevisionCannotBeMixedOrLooped() {
         let initial = page(60..<120, cursor: "60")
         XCTAssertThrowsError(try ActivityPresentation.merging(page(0..<60, cursor: "60"), into: initial, requestedCursor: "60"))

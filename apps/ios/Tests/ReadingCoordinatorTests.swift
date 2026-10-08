@@ -603,6 +603,25 @@ final class ReadingCoordinatorTests: XCTestCase {
         coordinator.disconnect()
     }
 
+    func testActivityReaderKeyChangesAfterQuietForegroundBootstrap() async throws {
+        let (coordinator, fake, _) = try await start()
+        await coordinator.loadActivities("turn")
+        let cursor = coordinator.snapshot?.snapshotCursor
+        let loadedKey = coordinator.activityReadKey
+        coordinator.setForeground(false)
+        XCTAssertNotEqual(coordinator.activityReadKey, loadedKey)
+        coordinator.setForeground(true)
+        try await wait { coordinator.status == .live }
+        XCTAssertEqual(coordinator.snapshot?.snapshotCursor, cursor)
+        XCTAssertNil(coordinator.activities["turn"])
+        XCTAssertNotEqual(coordinator.activityReadKey, loadedKey)
+        await coordinator.loadActivities("turn")
+        XCTAssertNotNil(coordinator.activities["turn"])
+        let calls = await fake.expansionCalls
+        XCTAssertEqual(calls, 2)
+        coordinator.disconnect()
+    }
+
     func testBriefSizeBoundaryEndsLoadingWithExplicitFailureAboveLimit() async throws {
         for bytes in [262_144, 262_145] {
             let (coordinator, fake, _) = try await start()
