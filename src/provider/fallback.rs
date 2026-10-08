@@ -12,8 +12,7 @@ use super::{
     retry::{
         classify_provider_error, format_provider_failure, provider_error_retry_after,
         provider_fallback_disposition, provider_max_attempts, provider_retry_delay,
-        provider_retry_jitter_seed, provider_shared_account_admission_error, ProviderRetryDelay,
-        RetryDisposition,
+        provider_retry_jitter_seed, ProviderRetryDelay, RetryDisposition,
     },
     AgentProvider, PromptContentBlock, ProviderAttemptOutcome, ProviderAttemptRecord,
     ProviderAttemptTimeline, ProviderBuiltinWebSearchCapability, ProviderContextManagementPolicy,
@@ -38,8 +37,8 @@ mod tests {
 
     use super::*;
     use crate::provider::{
-        ModelBlock, ProviderCacheUsage, ProviderFallbackDisposition, ProviderNativeWebSearchKind,
-        ProviderPromptFrame, ProviderQuotaIdentity,
+        ModelBlock, ProviderCacheUsage, ProviderNativeWebSearchKind, ProviderPromptFrame,
+        ProviderQuotaIdentity,
     };
 
     #[derive(Clone)]
@@ -357,8 +356,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn oversized_server_hint_skips_remaining_retries() {
+    #[tokio::test(start_paused = true)]
+    async fn oversized_rate_limit_hint_is_capped_and_retried() {
         let provider = FallbackProvider {
             candidates: vec![scripted_candidate(
                 "openai/gpt-5.4",
@@ -366,29 +365,40 @@ mod tests {
                     ScriptedFailure::Fail {
                         retry_after: Some(std::time::Duration::from_secs(45)),
                     },
-                    ScriptedFailure::Fail {
-                        retry_after: Some(std::time::Duration::from_secs(45)),
-                    },
+                    ScriptedFailure::Succeed,
                 ],
             )],
         };
 
-        let error = provider
-            .complete_turn(plain_turn_request())
-            .await
-            .expect_err("oversized hint should defer to fallback");
-        let timeline = crate::provider::provider_attempt_timeline(&error).expect("timeline");
-        assert_eq!(timeline.attempts.len(), 1);
+        let task = tokio::spawn(async move {
+            provider
+                .complete_turn_with_diagnostics(plain_turn_request())
+                .await
+                .expect("capped rate-limit retry should succeed")
+        });
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished());
+        tokio::time::advance(std::time::Duration::from_secs(30)).await;
+        let (_, diagnostics) = task.await.expect("provider task should complete");
+        let timeline = diagnostics.expect("timeline");
+        assert_eq!(timeline.attempts.len(), 2);
         assert_eq!(
             timeline.attempts[0].failure_kind.as_deref(),
             Some("rate_limited")
         );
         assert_eq!(
             timeline.attempts[0].outcome,
-            ProviderAttemptOutcome::RetriesExhausted
+            ProviderAttemptOutcome::Retrying
         );
-        assert_eq!(timeline.attempts[0].backoff_ms, None);
-        assert_eq!(timeline.attempts[0].backoff_source, None);
+        assert_eq!(timeline.attempts[0].backoff_ms, Some(30_000));
+        assert_eq!(
+            timeline.attempts[0].backoff_source.as_deref(),
+            Some("server_retry_after")
+        );
+        assert_eq!(
+            timeline.attempts[1].outcome,
+            ProviderAttemptOutcome::Succeeded
+        );
     }
 
     #[tokio::test]
@@ -462,13 +472,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn shared_account_admission_timeout_preserves_recovery_lineage() {
+    async fn shared_account_busy_does_not_block_initial_turn_request() {
         let identity =
-            ProviderQuotaIdentity::coarse("fallback-test", "shared-account-admission-timeout");
+            ProviderQuotaIdentity::coarse("fallback-test", "shared-account-initial-request");
         let held = ProviderQuotaCoordinator::global()
             .acquire(identity.clone())
-            .await
-            .expect("test should hold the shared account permit");
+            .await;
         let provider = FallbackProvider {
             candidates: vec![
                 scripted_candidate_with_identity(
@@ -486,46 +495,65 @@ mod tests {
                 .await
         });
         tokio::task::yield_now().await;
-        assert!(!task.is_finished());
-        tokio::time::advance(super::super::quota::PROVIDER_QUOTA_ADMISSION_MAX_WAIT).await;
-
-        let error = task
+        let (_, diagnostics) = task
             .await
             .expect("provider task should complete")
-            .expect_err("shared account admission should be bounded");
-        let timeline = crate::provider::provider_attempt_timeline(&error).expect("timeline");
+            .expect("initial request should not be intercepted");
+        let timeline = diagnostics.expect("timeline");
         assert_eq!(timeline.attempts.len(), 1);
         assert_eq!(
-            timeline.attempts[0].failure_kind.as_deref(),
-            Some("rate_limited")
+            timeline.attempts[0].outcome,
+            ProviderAttemptOutcome::Succeeded
         );
-        assert_eq!(
-            timeline.attempts[0].disposition.as_deref(),
-            Some("retryable")
-        );
+        assert_eq!(timeline.pending_fallback_model_ref, None);
+        drop(held);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limit_retries_in_current_turn_instead_of_fallback() {
+        let identity =
+            ProviderQuotaIdentity::coarse("fallback-test", "shared-account-current-turn");
+        let provider = FallbackProvider {
+            candidates: vec![
+                scripted_candidate_with_identity(
+                    "openai/gpt-5.4",
+                    vec![
+                        ScriptedFailure::Fail {
+                            retry_after: Some(std::time::Duration::from_secs(10)),
+                        },
+                        ScriptedFailure::Succeed,
+                    ],
+                    identity,
+                ),
+                scripted_candidate("openai/gpt-5.4-mini", vec![ScriptedFailure::Succeed]),
+            ],
+        };
+
+        let task = tokio::spawn(async move {
+            provider
+                .complete_turn_with_diagnostics(plain_turn_request())
+                .await
+                .expect("rate-limit retry should stay in the current turn")
+        });
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished());
+        tokio::time::advance(std::time::Duration::from_secs(10)).await;
+        let (_, diagnostics) = task.await.expect("provider task should complete");
+        let timeline = diagnostics.expect("timeline");
+        assert_eq!(timeline.attempts.len(), 2);
         assert_eq!(
             timeline.attempts[0].outcome,
-            ProviderAttemptOutcome::RetriesExhausted
-        );
-        assert!(timeline.attempts[0].advanced_to_fallback);
-        assert_eq!(
-            timeline.pending_fallback_model_ref.as_deref(),
-            Some("openai/gpt-5.4-mini")
+            ProviderAttemptOutcome::Retrying
         );
         assert_eq!(
-            timeline.pending_fallback_disposition,
-            Some(ProviderFallbackDisposition::Immediate)
+            timeline.attempts[1].outcome,
+            ProviderAttemptOutcome::Succeeded
         );
-        let diagnostics = timeline.attempts[0]
-            .transport_diagnostics
-            .as_ref()
-            .expect("shared account diagnostics");
-        assert_eq!(diagnostics.stage, "quota_admission");
-        assert_eq!(diagnostics.quota_identity.as_ref(), Some(&identity));
-        assert!(error
-            .to_string()
-            .contains("shared account provider quota is cooling down or busy"));
-        drop(held);
+        assert_eq!(
+            timeline.winning_model_ref.as_deref(),
+            Some("openai/gpt-5.4")
+        );
+        assert_eq!(timeline.pending_fallback_model_ref, None);
     }
 
     fn candidate(model_ref: &str, policy: ProviderContextManagementPolicy) -> ProviderCandidate {
@@ -869,63 +897,26 @@ impl AgentProvider for FallbackProvider {
             ));
         };
         let max_attempts = provider_max_attempts();
-        let mut last_error = None;
-        let mut pending_fallback_disposition = None;
-        for attempt in 1..=max_attempts {
+        let last_error;
+        let pending_fallback_disposition;
+        let mut attempt = 1;
+        let mut shared_account_retry = false;
+        loop {
             let attempt_request =
                 request_for_model_attempt(&request, &requested_model_ref, &candidate.model_ref);
             let attempt_started_at = Utc::now();
             let attempt_started = std::time::Instant::now();
-            let quota_permit = if let Some(identity) = candidate.provider.quota_identity() {
-                match ProviderQuotaCoordinator::global()
-                    .acquire(identity.clone())
-                    .await
-                {
-                    Ok(permit) => Some(permit),
-                    Err(timeout) => {
-                        let error = provider_shared_account_admission_error(
-                            &candidate.provider_name,
-                            &candidate.model_ref,
-                            identity,
-                            timeout.waited,
-                        );
-                        let attempt_completed_at = Utc::now();
-                        let attempt_duration_ms = attempt_started.elapsed().as_millis() as u64;
-                        let classification = classify_provider_error(&error);
-                        let fallback_disposition =
-                            provider_fallback_disposition(classification.kind);
-                        let has_fallback = pending_fallback_model_ref.is_some();
-                        pending_fallback_disposition = pending_fallback_model_ref
-                            .as_ref()
-                            .map(|_| fallback_disposition);
-                        timeline.push(ProviderAttemptRecord {
-                            provider: candidate.provider_name.clone(),
-                            model_ref: candidate.model_ref.clone(),
-                            attempt,
-                            max_attempts,
-                            started_at: Some(attempt_started_at),
-                            completed_at: Some(attempt_completed_at),
-                            duration_ms: Some(attempt_duration_ms),
-                            failure_kind: Some(classification.kind.as_str().to_string()),
-                            disposition: Some(classification.disposition.as_str().to_string()),
-                            outcome: ProviderAttemptOutcome::RetriesExhausted,
-                            advanced_to_fallback: has_fallback,
-                            backoff_ms: None,
-                            backoff_source: None,
-                            token_usage: None,
-                            cache_usage: None,
-                            provider_message_id: None,
-                            provider_request_id: None,
-                            provider_http_trace_id: None,
-                            transport_diagnostics: provider_transport_diagnostics(&error).cloned(),
-                            transport_timeline: None,
-                        });
-                        last_error = Some(error);
-                        break;
-                    }
-                }
+            let quota_identity = candidate.provider.quota_identity();
+            let quota_permit = if shared_account_retry {
+                quota_identity.clone().map(|identity| async move {
+                    ProviderQuotaCoordinator::global().acquire(identity).await
+                })
             } else {
                 None
+            };
+            let quota_permit = match quota_permit {
+                Some(acquire) => Some(acquire.await),
+                None => None,
             };
             match candidate.provider.complete_turn(attempt_request).await {
                 Ok(response) => {
@@ -972,22 +963,30 @@ impl AgentProvider for FallbackProvider {
                     return Ok((response, Some(diagnostics)));
                 }
                 Err(error) => {
-                    if let Some(permit) = quota_permit {
-                        let classification = classify_provider_error(&error);
-                        if classification.kind == super::retry::ProviderFailureKind::RateLimited {
-                            permit.record_rate_limit(provider_error_retry_after(&error));
+                    let classification = classify_provider_error(&error);
+                    let retry_after = provider_error_retry_after(&error);
+                    if classification.kind == super::retry::ProviderFailureKind::RateLimited {
+                        if let Some(permit) = quota_permit.as_ref() {
+                            permit.record_rate_limit(retry_after);
+                        } else if let Some(identity) = quota_identity {
+                            ProviderQuotaCoordinator::global()
+                                .record_rate_limit(identity, retry_after);
                         }
+                        shared_account_retry = true;
+                    } else {
+                        shared_account_retry = false;
                     }
                     let attempt_completed_at = Utc::now();
                     let attempt_duration_ms = attempt_started.elapsed().as_millis() as u64;
-                    let classification = classify_provider_error(&error);
                     let should_retry = classification.disposition == RetryDisposition::Retryable
-                        && attempt < max_attempts;
+                        && (attempt < max_attempts
+                            || classification.kind
+                                == super::retry::ProviderFailureKind::RateLimited);
                     let retry_delay = if should_retry {
                         Some(provider_retry_delay(
                             attempt,
                             classification.kind,
-                            provider_error_retry_after(&error),
+                            retry_after,
                             provider_retry_jitter_seed(
                                 &candidate.provider_name,
                                 &candidate.model_ref,
@@ -1034,7 +1033,7 @@ impl AgentProvider for FallbackProvider {
                         let retry_started = std::time::Instant::now();
                         sleep(backoff).await;
                         crate::diagnostics::record_provider_retry(retry_started.elapsed());
-                        last_error = Some(error);
+                        attempt = attempt.saturating_add(1);
                         continue;
                     }
                     pending_fallback_disposition = pending_fallback_model_ref

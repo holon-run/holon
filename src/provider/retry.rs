@@ -159,7 +159,7 @@ pub(crate) fn provider_retry_policy_json() -> Value {
         "server_error_jitter_max_percent": PROVIDER_RETRY_JITTER_MAX_PERCENT,
         "server_error_backoff_cap_ms": PROVIDER_RETRY_SERVER_HINT_CAP_MS,
         "server_hint_cap_ms": PROVIDER_RETRY_SERVER_HINT_CAP_MS,
-        "server_hint_semantics": "429/503 Retry-After at or below the cap extends the computed backoff; hints above the cap skip remaining retries and defer to fallback",
+        "server_hint_semantics": "429 Retry-After is capped and retried in the current provider turn; 503 hints above the cap skip remaining retries and defer to fallback",
         "retryable_failure_kinds": [
             ProviderFailureKind::Timeout.as_str(),
             ProviderFailureKind::Connection.as_str(),
@@ -262,6 +262,12 @@ pub(crate) fn provider_retry_delay(
             provider_server_error_retry_backoff(attempt, jitter_seed),
             ProviderRetryDelaySource::ServerErrorExponentialBackoff,
         )
+    } else if kind == ProviderFailureKind::RateLimited {
+        (
+            provider_retry_backoff(attempt)
+                .min(Duration::from_millis(PROVIDER_RETRY_SERVER_HINT_CAP_MS)),
+            ProviderRetryDelaySource::ComputedBackoff,
+        )
     } else {
         (
             provider_retry_backoff(attempt),
@@ -281,6 +287,12 @@ pub(crate) fn provider_retry_delay(
         };
     };
     if server_hint > Duration::from_millis(PROVIDER_RETRY_SERVER_HINT_CAP_MS) {
+        if kind == ProviderFailureKind::RateLimited {
+            return ProviderRetryDelay::Wait {
+                backoff: Duration::from_millis(PROVIDER_RETRY_SERVER_HINT_CAP_MS),
+                source: ProviderRetryDelaySource::ServerRetryAfter,
+            };
+        }
         return ProviderRetryDelay::SkipToFallback;
     }
     ProviderRetryDelay::Wait {
@@ -303,44 +315,6 @@ pub(crate) fn provider_error_retry_after(error: &anyhow::Error) -> Option<Durati
     error
         .downcast_ref::<ProviderTransportError>()
         .and_then(|error| error.retry_after)
-}
-
-pub(crate) fn provider_shared_account_admission_error(
-    provider: &str,
-    model_ref: &str,
-    identity: super::ProviderQuotaIdentity,
-    waited: Duration,
-) -> anyhow::Error {
-    provider_transport_error_with_evidence(
-        ProviderFailureClassification {
-            kind: ProviderFailureKind::RateLimited,
-            disposition: RetryDisposition::Retryable,
-        },
-        Some("shared_account_rate_limited"),
-        None,
-        Some(ProviderTransportDiagnostics {
-            stage: "quota_admission".into(),
-            streaming: None,
-            provider: Some(provider.into()),
-            model_ref: Some(model_ref.into()),
-            url: None,
-            status: None,
-            reqwest: None,
-            context_budget: None,
-            http_trace: None,
-            quota_identity: Some(identity),
-            source_chain: vec![format!(
-                "shared account quota admission wait exceeded after {} ms",
-                waited.as_millis()
-            )],
-        }),
-        None,
-        None,
-        format!(
-            "shared account provider quota is cooling down or busy; admission wait exceeded after {} ms",
-            waited.as_millis()
-        ),
-    )
 }
 
 pub(crate) fn provider_transport_error(
