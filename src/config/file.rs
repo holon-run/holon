@@ -142,13 +142,27 @@ impl XSearchConfigFile {
 pub struct ApiConfigFile {
     #[serde(default, skip_serializing_if = "ApiCorsConfigFile::is_empty")]
     pub cors: ApiCorsConfigFile,
+    #[serde(default, skip_serializing_if = "ApiCsrfConfigFile::is_empty")]
+    pub csrf: ApiCsrfConfigFile,
     #[serde(default, skip_serializing_if = "ApiProjectionConfigFile::is_empty")]
     pub projection: ApiProjectionConfigFile,
 }
 
 impl ApiConfigFile {
     pub fn is_empty(&self) -> bool {
-        self.cors.is_empty() && self.projection.is_empty()
+        self.cors.is_empty() && self.csrf.is_empty() && self.projection.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ApiCsrfConfigFile {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_origins: Vec<String>,
+}
+
+impl ApiCsrfConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.trusted_origins.is_empty()
     }
 }
 

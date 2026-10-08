@@ -179,6 +179,7 @@ impl AppConfig {
         let config_file_path = persisted_config_path(&home_dir);
         let stored_config = load_persisted_config_at(&config_file_path)?;
         validate_api_cors_config(&stored_config.api.cors)?;
+        validate_api_csrf_config(&stored_config.api.csrf)?;
         validate_api_projection_config(&stored_config.api.projection)?;
         let credential_store_path = credential_store_path(&home_dir);
         let credential_store =

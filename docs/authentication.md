@@ -51,6 +51,14 @@ stale Bearer token (for example a static control token cached by a browser
 before the deployment switched to OIDC) therefore cannot mask a valid session
 cookie.
 
+Unsafe requests authenticated by the `holon_session` cookie must include an
+allowed browser source. The HTTP boundary accepts a same-origin `Origin`
+(matching request scheme, host, and port), or an exact
+`api.csrf.trusted_origins` entry. When `Origin` is absent, same-origin
+`Sec-Fetch-Site` or `Referer` headers are accepted as browser fallbacks;
+otherwise the request is rejected with HTTP `403`. This check is independent
+of CORS and applies to both `/api` and `/apps`.
+
 In OIDC mode, normal API, SSE, and Web requests require an active session.
 Missing, expired, revoked, or disabled-user sessions return HTTP `401` with the
 `auth_required` error code. Bootstrap/session exchange, OIDC callback, callback

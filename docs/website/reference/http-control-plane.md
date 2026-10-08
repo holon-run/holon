@@ -40,6 +40,21 @@ Starting in v0.36.0, Holon supports a **session-first authentication** architect
 
 For step-by-step IdP registration and session configuration, see [Configure OIDC authentication](/guides/configure-oidc-authentication.md).
 
+### Browser write protection
+
+The `/api` and `/apps` boundaries apply an Origin/CSRF guard to unsafe
+requests that rely on the ambient `holon_session` cookie. The request `Origin`
+must match the request `Host` by scheme, host, and port, or match an exact
+entry in `api.csrf.trusted_origins`. Missing `Origin` is fail-closed unless
+the browser supplies `Sec-Fetch-Site: same-origin` or a same-origin `Referer`.
+
+The guard is separate from CORS: CORS controls whether a browser may read a
+response, while this check controls whether a cross-origin browser may submit a
+cookie-authenticated write. Bearer-authenticated requests and trusted Unix
+control requests retain their existing behavior. Browser session exchange and
+pairing redemption remain protected even before a session cookie exists;
+native credential endpoints do not require browser-origin headers.
+
 ```
 GET /api/handshake → { "auth": { "mode": "bearer" | "local", "required": bool } }
 GET /api/auth/method → { "mode": "local" | "oidc" }

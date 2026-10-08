@@ -822,6 +822,43 @@ fn api_cors_rejects_credentials_with_wildcard_origin() {
 }
 
 #[test]
+fn set_get_and_unset_round_trip_api_csrf_config() {
+    let mut config = HolonConfigFile::default();
+    set_config_key(
+        &mut config,
+        "api.csrf.trusted_origins",
+        r#"["https://admin.example:8443","http://localhost:7878"]"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        get_config_key(&config, "api.csrf.trusted_origins").unwrap(),
+        json!(["https://admin.example:8443", "http://localhost:7878"])
+    );
+
+    unset_config_key(&mut config, "api.csrf.trusted_origins").unwrap();
+    assert_eq!(
+        get_config_key(&config, "api.csrf.trusted_origins").unwrap(),
+        json!([])
+    );
+}
+
+#[test]
+fn api_csrf_rejects_wildcard_and_non_http_origins() {
+    for value in [
+        r#"["*"]"#,
+        r#"["ftp://admin.example"]"#,
+        r#"["https://admin.example/path"]"#,
+    ] {
+        let mut config = HolonConfigFile::default();
+        assert!(
+            set_config_key(&mut config, "api.csrf.trusted_origins", value).is_err(),
+            "invalid CSRF origin list should be rejected: {value}"
+        );
+    }
+}
+
+#[test]
 fn set_get_and_unset_round_trip_tool_output_budgets() {
     let mut config = HolonConfigFile::default();
     set_config_key(&mut config, "runtime.default_tool_output_tokens", "1500").unwrap();
