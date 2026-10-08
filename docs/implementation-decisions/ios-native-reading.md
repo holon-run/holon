@@ -49,6 +49,9 @@ that top-of-window request using the previous viewport's near-bottom value.
 Following resumes only through Latest or a user scroll ending at the live tail.
 ID/edge navigation uses native bound ScrollPosition, not a one-shot proxy call
 before the replacement window's layout has committed.
+The viewport identity follows the explicit historical window end. Switching
+windows resets its old offset with a top reading anchor; live updates within
+the same window keep the viewport and do not reset expansion/reading position.
 
 Long source files use explicit16KiB disk pages, not a lazy stack with estimated
 offscreen text heights. Previous/next, literal search and End remain available;
