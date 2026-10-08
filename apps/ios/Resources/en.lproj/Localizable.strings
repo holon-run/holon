@@ -70,7 +70,7 @@
 "reading.brief" = "Brief";
 "reading.activities" = "Turn activity";
 "reading.linkUnavailable" = "This link cannot be opened here. Relative files require a server-provided file location.";
-"reading.selectText" = "Select text";
+"reading.selectText" = "Select source text";
 "reading.fullProcess" = "Read full activity";
 "reading.fullAssistant" = "Full assistant text";
 "reading.noAssistantText" = "No text content. The original record remains available.";

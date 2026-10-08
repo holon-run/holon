@@ -1,5 +1,6 @@
 import SwiftUI
 import Textual
+import UIKit
 
 /// A host file reference stays opaque until the authorized server resolver reads it.
 enum RichTextLink: Equatable {
@@ -176,11 +177,7 @@ struct RichTextContent: View {
             .accessibilityAction(named: Text("reading.selectText")) { selectingText = true }
             .sheet(isPresented: $selectingText) {
                 NavigationStack {
-                    ScrollView {
-                        Text(verbatim: Self.selectionText(text)).textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading).padding()
-                            .accessibilityIdentifier("reading.selectionText")
-                    }
+                    RichTextSelectionView(text: text)
                     .navigationTitle("reading.selectText").navigationBarTitleDisplayMode(.inline)
                     .toolbar { Button("files.dismiss") { selectingText = false } }
                 }
@@ -189,8 +186,26 @@ struct RichTextContent: View {
             .onDisappear { selectingText = false }
     }
 
-    static func selectionText(_ text: String) -> String {
-        guard let content = try? HolonMarkdownParser().attributedString(for: text) else { return text }
-        return String(content.characters)
+}
+
+/// Select verbatim source without Markdown links, detectors or an editable draft.
+struct RichTextSelectionView: UIViewRepresentable {
+    let text: String
+    func makeUIView(context: Context) -> UITextView { Self.makeTextView(text: text) }
+    func updateUIView(_ view: UITextView, context: Context) {
+        if view.text != text { view.text = text }
+        view.font = .preferredFont(forTextStyle: .body)
+    }
+    static func makeTextView(text: String) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false; view.isSelectable = true
+        view.dataDetectorTypes = []
+        view.font = .preferredFont(forTextStyle: .body)
+        view.adjustsFontForContentSizeCategory = true
+        view.textColor = .label; view.backgroundColor = .systemBackground
+        view.textContainerInset = .init(top: 16, left: 12, bottom: 16, right: 12)
+        view.accessibilityIdentifier = "reading.selectionText"
+        view.text = text
+        return view
     }
 }

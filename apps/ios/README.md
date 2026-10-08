@@ -12,7 +12,7 @@ attachment staging, model selection, an explicit current-run stop and a durable
 sending queue. Work, tasks and files belong to the selected Agent and are opened
 from its conversation actions. Settings, sharing, connections and diagnostics
 remain secondary destinations.
-Long-press rich text and choose **Select text** for native range selection/copy;
+Long-press rich text and choose **Select source text** for native range selection/copy;
 Markdown links remain directly tappable in the normal reader.
 Internal TestFlight delivery does not establish physical-device or App Store
 acceptance: see [release preparation](RELEASE.md) for the remaining gates.

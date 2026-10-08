@@ -1,14 +1,18 @@
 import Foundation
 import XCTest
+import UIKit
 @testable import Holon
 
 @MainActor
 final class RichTextContentTests: XCTestCase {
-    func testNativeSelectionTextKeepsRenderedContentWithoutActiveLinks() {
-        let text = RichTextContent.selectionText("# Result\n\n**Ready** 中文\n\n[Sibling](./note.txt)\n\n```swift\nlet x = 1\n```")
-        XCTAssertTrue(text.contains("Result")); XCTAssertTrue(text.contains("Ready 中文"))
-        XCTAssertTrue(text.contains("Sibling")); XCTAssertTrue(text.contains("let x = 1"))
-        XCTAssertFalse(text.contains("**")); XCTAssertFalse(text.contains("./note.txt"))
+    func testNativeSelectionPreservesVerbatimBlocksAndDisablesActiveLinks() {
+        let text = "# Result\n\nFirst paragraph.\n\nSecond paragraph.\n\n- one\n- two\n\n[Sibling](./note.txt)\n\n```swift\nlet x = 1\n```"
+        let view = RichTextSelectionView.makeTextView(text: text)
+        XCTAssertEqual(view.text, text, "Do not flatten presentation intents and concatenate blocks")
+        XCTAssertFalse(view.isEditable); XCTAssertTrue(view.isSelectable)
+        XCTAssertTrue(view.dataDetectorTypes.isEmpty)
+        XCTAssertTrue(view.adjustsFontForContentSizeCategory)
+        XCTAssertFalse(view.attributedText.containsAttribute(.link))
     }
     func testMarkdownKeepsStructureAndMixedLanguageText() throws {
         let content = try HolonMarkdownParser().attributedString(for: "# Result\n\n**Ready** 中文\n\n- first\n- second\n\n> note\n\n```swift\nlet x = 1\n```")
@@ -101,5 +105,15 @@ final class RichTextContentTests: XCTestCase {
         XCTAssertEqual(links.map(RichTextLink.classify), [.relative("./notes%20.md"), .relative("notes.md"), .unsupported])
         XCTAssertNil(RichTextLink.relativeURL("/absolute"))
         XCTAssertNil(RichTextLink.relativeURL("../bad\\name"))
+    }
+}
+
+private extension NSAttributedString {
+    func containsAttribute(_ name: NSAttributedString.Key) -> Bool {
+        var found = false
+        enumerateAttribute(name, in: NSRange(location: 0, length: length)) { value, _, _ in
+            if value != nil { found = true }
+        }
+        return found
     }
 }

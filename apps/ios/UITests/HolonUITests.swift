@@ -794,14 +794,16 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(relative.waitForExistence(timeout: 15), "Relative links return to their source file")
         let heading = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Native report")).firstMatch
         heading.press(forDuration: 1)
-        let selectText = app.buttons["Select text"]
+        let selectText = app.buttons["Select source text"]
         XCTAssertTrue(selectText.waitForExistence(timeout: 10)); selectText.tap()
-        let selection = app.staticTexts["reading.selectionText"]
+        let selection = app.textViews["reading.selectionText"]
         XCTAssertTrue(selection.waitForExistence(timeout: 10))
-        XCTAssertTrue(selection.label.contains("Open sibling"))
-        selection.press(forDuration: 1)
-        XCTAssertTrue(app.buttons["Copy"].firstMatch.waitForExistence(timeout: 10), "Native range selection retains copy")
+        XCTAssertTrue((selection.value as? String)?.contains("[Open sibling](./note-079.txt)") == true)
+        selection.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 45, dy: 25)).press(forDuration: 1)
+        let copy = app.menuItems["Copy"].firstMatch
+        XCTAssertTrue(copy.waitForExistence(timeout: 10), "Native range selection retains copy")
         capture(app, "native-markdown-text-selection")
+        copy.tap()
         app.navigationBars.buttons["Close"].tap()
         XCTAssertTrue(relative.waitForExistence(timeout: 10))
         app.navigationBars.buttons.element(boundBy: 0).tap()

@@ -70,7 +70,7 @@
 "reading.brief" = "Brief";
 "reading.activities" = "本轮过程";
 "reading.linkUnavailable" = "这里无法打开此链接。相对路径需要服务端提供的文件位置。";
-"reading.selectText" = "选择文本";
+"reading.selectText" = "选择原文";
 "reading.fullProcess" = "连续查看过程";
 "reading.fullAssistant" = "完整 assistant 正文";
 "reading.noAssistantText" = "没有文字内容，可查看原始记录。";

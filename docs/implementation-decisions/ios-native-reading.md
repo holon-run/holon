@@ -48,7 +48,9 @@ The complete download/index keeps its16MiB budget and identity/root checks.
 Native link interaction stays active in rich content. Simulator acceptance on
 iOS26.5 confirmed that Textual's UIKit selection overlay swallowed link taps;
 removing it restored actual relative-file navigation. Rich content therefore
-offers a context-menu/accessibility **Select text** action opening a native,
-non-linked range-selection surface. It is revoked when the source changes or
+offers a context-menu/accessibility **Select source text** action opening a
+read-only native UITextView with the verbatim source and no link detectors.
+Flattening Foundation Markdown characters would concatenate blocks, so source
+selection deliberately retains Markdown and original separators. It is revoked when the source changes or
 disappears. Plain source keeps local SwiftUI selection. This adapter tradeoff
 does not alter file authorization or enable external resources.
