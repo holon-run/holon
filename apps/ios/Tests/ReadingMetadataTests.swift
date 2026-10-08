@@ -78,7 +78,9 @@ final class ReadingMetadataTests: XCTestCase {
             let agents = try await transport.roster()
             XCTAssertEqual(agents.first?.preview, "brief")
             XCTAssertEqual(agents.first?.unreadCount, mode == "unavailable" ? nil : 3)
-            XCTAssertEqual(agents.first?.operatorPreview, mode == "preview-unavailable" ? nil : "real operator")
+            XCTAssertNil(agents.first?.operatorPreview)
+            let preview = try await transport.operatorPreview(agentID: "A0")
+            XCTAssertEqual(preview?.text, mode == "preview-unavailable" ? nil : "real operator")
             await transport.close()
         }
     }
@@ -88,6 +90,7 @@ final class ReadingMetadataTests: XCTestCase {
             let transport = try await transport(mode)
             do {
                 _ = try await transport.roster()
+                _ = try await transport.operatorPreview(agentID: "A0")
                 XCTFail("Must not return stale-authority metadata")
             } catch let error as HolonHTTPFailure {
                 XCTAssertEqual(error.statusCode, mode == "expired" ? 401 : 403)
@@ -104,9 +107,8 @@ final class ReadingMetadataTests: XCTestCase {
         let transport = try await transport("bounded")
         let agents = try await transport.roster()
         let metrics = MetadataProtocol.metrics.snapshot()
-        XCTAssertEqual(agents.count, 80)
-        XCTAssertEqual(metrics.1 - before, 80)
-        XCTAssertLessThanOrEqual(metrics.0, 2)
+        XCTAssertEqual(agents.count, 81)
+        XCTAssertEqual(metrics.1 - before, 0, "Roster does not wait for per-Agent metadata")
         XCTAssertTrue(metrics.2.allSatisfy { $0 == "1" })
         XCTAssertNil(agents.last?.unreadCount)
         await transport.close()
@@ -148,5 +150,13 @@ final class ReadingMetadataTests: XCTestCase {
     func testTurnInputsUseRealStartedAtWithoutInventedCreatedAt() throws {
         let raw = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"turns":[{"presentation_class":"operator","started_at":"2026-01-01T00:00:00Z","inputs":[{"preview":"first"},{"preview":"latest"},{"presentation_class":"internal","preview":"hidden"}]}],"active_turns":[],"pending_inputs":[]}"#.utf8))
         XCTAssertEqual(ReadingClientTransport.operatorPreview(raw), "latest")
+    }
+
+    func testCompletedTurnDoesNotResurfaceItsOldOperatorInput() {
+        let raw: JSONValue = .object(["turns": .array([.object([
+            "presentation_class": .string("operator"), "started_at": .string("2026-01-01T00:00:00Z"),
+            "brief_ids": .array([.string("result")]), "inputs": .array([.object(["preview": .string("old")])])
+        ])])])
+        XCTAssertNil(ReadingClientTransport.operatorPreview(raw))
     }
 }

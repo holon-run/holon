@@ -156,6 +156,17 @@ final class SendingCoordinator {
         } catch { self.error = error.localizedDescription; reload() }
     }
 
+    /// A canonical receipt stays joined even when that input leaves the history window.
+    /// This marker is presentation metadata, never a read cursor or an execution result.
+    func observeCanonicalInputs(_ ids: Set<String>) {
+        for var entry in entries where entry.canonicalObserved != true {
+            guard let messageID = entry.messageID, ids.contains(messageID) else { continue }
+            entry.canonicalObserved = true
+            try? store.update(entry)
+        }
+        reload()
+    }
+
     func externalContext(agentID: String) -> SendingExternalContext? {
         guard transport != nil, identity != nil, foreground, let partition,
               !agentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }

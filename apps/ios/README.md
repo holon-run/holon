@@ -4,12 +4,16 @@ Native SwiftUI remote client, targeting iOS 18+ on iPhone and iPad. This directo
 contains first-connection onboarding, camera QR scanning, connection profiles,
 token/session login, offline invitation preview and confirmed redemption,
 native organization login, and scoped Keychain recovery.
-The Agents tab provides foreground conversation reading, history, briefs and
-on-demand execution details, with identity-partitioned offline caching.
-Its conversation editor includes persistent drafts, local attachment staging,
-model selection, an explicit current-run stop and a durable sending queue.
-The three tabs are Agents, Work and Settings. Files, sharing, connections and
-diagnostics remain available through Settings and work-artifact previews.
+The searchable Agent home provides recent activity, reply/result filters and
+identity-partitioned offline caching, without global bottom tabs. Conversations
+show operator input and full Markdown briefs, with structured execution activity
+available by turn. The inline composer includes persistent drafts, local
+attachment staging, model selection, an explicit current-run stop and a durable
+sending queue. Work, tasks and files belong to the selected Agent and are opened
+from its conversation actions. Settings, sharing, connections and diagnostics
+remain secondary destinations.
+Long-press rich text and choose **Select source text** for native range selection/copy;
+Markdown links remain directly tappable in the normal reader.
 Internal TestFlight delivery does not establish physical-device or App Store
 acceptance: see [release preparation](RELEASE.md) for the remaining gates.
 
@@ -44,6 +48,20 @@ acceptance: see [release preparation](RELEASE.md) for the remaining gates.
    outcomes are not proof of failure: use the same-request retry rather than
    composing a duplicate. Stopping an observed run is separate from deleting
    a local queued request and does not retract already accepted server work.
+   Use the conversation actions to browse its Work, running tasks and files.
+   Work results render briefs directly; full plans open in the same file reader.
+   Earlier turns and execution activity have explicit paging controls. Returning
+   to latest is deliberate when you are reading historical content.
+   The file reader supports complete UTF-8 within its bounded download budget,
+   literal search, code highlighting, image zoom and passive PDF page previews.
+   Long text uses explicit bounded disk pages with previous/next and end actions,
+   so distant jumps do not depend on estimated offscreen text heights.
+   Large Markdown is shown as paged source rather than an unbounded rich-text
+   document. Unsupported formats offer original-copy download/share. File and
+   relative Markdown links are resolved by the daemon with their authorized
+   execution root; host paths are never interpreted as device paths.
+   Photos, camera captures and document picks are staged in the current draft;
+   capturing/selecting alone does not send them. Only **Send** uploads input.
 5. In the iOS share sheet choose Holon. The extension stages input locally;
    it does not send to a daemon. Open **Settings → Share inbox**, reload,
    inspect the preview and select the target agent before confirming queueing.
@@ -103,11 +121,14 @@ falling back to a private path.
 
 `ios-ci` also runs the full UI gate. Set `IOS_SIMULATOR_ID` to a dedicated fresh
 simulator: removing the app does not guarantee removal of its saved Keychain
-session. UI verification covers first connection, exactly three tabs, files,
+session. UI verification covers first connection, native Agent navigation, files,
 diagnostics and accessibility. The diagnostic font-size test changes and reads
 back the real simulator system preference without restarting Holon; it does not
 test navigation in Apple's Settings app. Camera recognition and permission
 lifecycles still require an iPhone or iPad.
+Light/dark cases also set and read back the simulator system appearance; launch
+arguments alone are not accepted as dark-mode evidence. Both preferences are
+restored after each case, including failed tests.
 
 ## Boundaries
 
@@ -195,15 +216,15 @@ remain explicit validation gates, not assumed capabilities.
 | Android capability | iOS implementation and deliberate boundary |
 | --- | --- |
 | Work items and active tasks | Separate read-only lists and native details; no task creation, input or stop controls |
-| Plans, result briefs and task output | Server plan metadata, linked brief navigation and explicitly truncated output; machine paths are not turned into locators |
+| Plans, result briefs and task output | Full authorized plan reader, inline Markdown briefs and explicitly truncated task output; machine paths are not turned into locators |
 | Workspace directories and filtering | Server workspace/root identity, hidden-file and name filters; removed worktrees and denied references remain errors |
-| Images, Markdown, code and artifacts | Bounded native image/plain-text preview and explicit copy export/share; Markdown/code are readable source, not executable web content |
+| Images, Markdown, code and artifacts | Bounded complete UTF-8 reader, native Markdown/code highlighting, image/PDF raster preview and explicit copy export/share; no executable web content |
 | Diagnostics | Local enum/count allowlist only; export or confirm sending to the current Agent, without raw logs or identity/payload fields |
 | System sharing | A credential-free extension previews and stages text/links/files; the host confirms a target and queues an immutable request without replacing the editor draft or automatically sending |
 | Android Direct Share/background services | No platform-for-platform copy, background resident SSE, automatic outbox retry or push promise |
 
 Work and files use separate authenticated clients and lifecycle generations.
-Tab/deep navigation does not recreate reading or sending coordinators. Identity
+Native/deep navigation does not recreate reading or sending coordinators. Identity
 changes revoke old content and confirmations synchronously. Shared inputs have
 the same canonical text and limits as the sending queue: 64 KiB UTF-8 text including
 links/separators, at most 10 attachments and 20 MiB total attachment bytes.

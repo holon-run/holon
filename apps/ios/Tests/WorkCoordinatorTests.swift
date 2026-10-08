@@ -9,13 +9,32 @@ private actor WorkFakeTransport: WorkTransport {
     private var failTasks = false
     private(set) var calls = 0
     private(set) var closed = false
+    private var itemCount: Int?
+    private var resultBrief = false
+    private var briefError = false
+    private var running = false
+    private var cancelling = false
+    private var startsCancelling = false
+    private var terminalOutputFailure = false
+    private(set) var outputCalls = 0
+    private(set) var limits: [Int] = []
+    func setItemCount(_ value: Int) { itemCount = value }
+    func useResultBrief(failing: Bool) { resultBrief = true; briefError = failing }
+    func useRunningTask() { running = true }
+    func useCancellingTask(initial: Bool) { running = true; cancelling = true; startsCancelling = initial }
+    func loseTerminalOutput() { running = true; terminalOutputFailure = true }
     func holdItems() { blockItems = true }
     func breakTasks() { failTasks = true }
     func blocked() -> Bool { gate != nil }
     func release() { blockItems = false; gate?.resume(); gate = nil }
     func items(agentID: String) async throws -> [WorkRecord] {
+        try await items(agentID: agentID, limit: 50)
+    }
+    func items(agentID: String, limit: Int) async throws -> [WorkRecord] {
         calls += 1
+        limits.append(limit)
         if blockItems { await withCheckedContinuation { gate = $0 } }
+        if let itemCount { return try (0..<min(limit, itemCount)).map { try WorkRecord(raw: .object(["id": .string("work-\($0)")])) } }
         return [try WorkRecord(raw: .object(["id": .string("work-\(agentID)"),
                                            "objective": .string("Objective")]))]
     }
@@ -26,21 +45,91 @@ private actor WorkFakeTransport: WorkTransport {
                                            "status": .string("running")]), task: true)]
     }
     func item(agentID: String, id: String) async throws -> WorkRecord {
-        try WorkRecord(raw: .object(["id": .string(id)]))
+        try WorkRecord(raw: .object(["id": .string(id), "result_brief_id": resultBrief ? .string("result") : .null]))
     }
     func task(agentID: String, id: String) async throws -> WorkRecord {
-        try WorkRecord(raw: .object(["task_id": .string(id), "status": .string("future-state")]), task: true)
+        let status: String
+        if terminalOutputFailure { status = outputCalls > 0 ? "interrupted" : "running" }
+        else if cancelling { status = outputCalls >= 2 ? "cancelled" : (startsCancelling || outputCalls > 0 ? "cancelling" : "running") }
+        else { status = running ? (outputCalls >= 2 ? "completed" : "running") : "future-state" }
+        return try WorkRecord(raw: .object(["task_id": .string(id), "status": .string(status)]), task: true)
     }
     func output(agentID: String, id: String) async throws -> WorkOutput {
-        try WorkOutput(raw: .object(["output_preview": .string("partial"),
+        outputCalls += 1
+        if terminalOutputFailure, outputCalls > 1 { throw WorkProtocolError.malformed }
+        return try WorkOutput(raw: .object(["output_preview": .string("partial"),
                                      "output_truncated": .bool(true)]))
     }
-    func brief(agentID: String, id: String) async throws -> JSONValue { .object(["body": .string(id)]) }
+    func brief(agentID: String, id: String) async throws -> JSONValue {
+        if briefError { throw WorkProtocolError.malformed }; return .object(["body": .string(id)])
+    }
     func close() async { closed = true }
 }
 
 @MainActor
 final class WorkCoordinatorTests: XCTestCase {
+    func testTerminalStatusIsPublishedEvenWhenFinalOutputIsUnavailable() async throws {
+        let transport = WorkFakeTransport(); await transport.loseTerminalOutput()
+        let coordinator = WorkCoordinator(outputRefreshInterval: .milliseconds(10)); coordinator.selectAgent("A")
+        coordinator.activate(transport: transport, identity: identity()); coordinator.open(.task("task-A"))
+        coordinator.setDetailVisible(true)
+        try await wait { coordinator.detail?.state == "interrupted" && coordinator.outputFailed }
+        XCTAssertEqual(coordinator.output?.text, "partial"); XCTAssertEqual(coordinator.detailState, .loaded)
+        let count = await transport.outputCalls; try await Task.sleep(for: .milliseconds(30))
+        let after = await transport.outputCalls; XCTAssertEqual(count, after); coordinator.disconnect()
+    }
+    func testCancellationRemainsRefreshingUntilTheTerminalCancelledState() async throws {
+        for initial in [false, true] {
+            let transport = WorkFakeTransport(); await transport.useCancellingTask(initial: initial)
+            let coordinator = WorkCoordinator(outputRefreshInterval: .milliseconds(10)); coordinator.selectAgent("A")
+            coordinator.activate(transport: transport, identity: identity()); coordinator.open(.task("task-A"))
+            coordinator.setDetailVisible(true)
+            try await wait { coordinator.detail?.state == "cancelled" }
+            let count = await transport.outputCalls; XCTAssertEqual(count, 3)
+            try await Task.sleep(for: .milliseconds(30)); let after = await transport.outputCalls
+            XCTAssertEqual(count, after); coordinator.disconnect()
+        }
+    }
+    func testExplicitWorkWindowGrowsAndResetsOnAgentChange() async throws {
+        let transport = WorkFakeTransport(); await transport.setItemCount(130)
+        let coordinator = WorkCoordinator(); coordinator.selectAgent("A")
+        coordinator.activate(transport: transport, identity: identity())
+        try await wait { coordinator.itemsState == .loaded }; XCTAssertEqual(coordinator.items.count, 50)
+        coordinator.loadMoreItems(); try await wait { coordinator.itemsState == .loaded }
+        XCTAssertEqual(coordinator.items.count, 100)
+        coordinator.loadMoreItems(); try await wait { coordinator.itemsState == .loaded }
+        XCTAssertEqual(coordinator.items.count, 130); XCTAssertEqual(coordinator.itemLimit, 200)
+        let limits = await transport.limits; XCTAssertEqual(limits, [50, 100, 200])
+        coordinator.selectAgent("B"); XCTAssertEqual(coordinator.itemLimit, 50); coordinator.disconnect()
+    }
+
+    func testInlineBriefFailurePreservesWorkDetailsAndOffersSeparateRetryState() async throws {
+        let transport = WorkFakeTransport(); await transport.useResultBrief(failing: true)
+        let coordinator = WorkCoordinator(); coordinator.selectAgent("A")
+        coordinator.activate(transport: transport, identity: identity()); coordinator.open(.item("work-A"))
+        try await wait { coordinator.detailState == .loaded }
+        XCTAssertEqual(coordinator.detail?.id, "work-A"); XCTAssertTrue(coordinator.briefFailed); XCTAssertNil(coordinator.brief)
+        await transport.useResultBrief(failing: false); coordinator.open(.item("work-A"))
+        try await wait { coordinator.detailState == .loaded }
+        XCTAssertEqual(coordinator.brief?["body"], .string("result")); XCTAssertFalse(coordinator.briefFailed)
+        coordinator.disconnect()
+    }
+
+    func testTaskOutputRefreshRunsOnlyForVisibleForegroundDetailAndStopsAtCompletion() async throws {
+        let transport = WorkFakeTransport(); await transport.useRunningTask()
+        let coordinator = WorkCoordinator(outputRefreshInterval: .milliseconds(10)); coordinator.selectAgent("A")
+        coordinator.activate(transport: transport, identity: identity()); coordinator.open(.task("task-A"))
+        try await wait { coordinator.detailState == .loaded }; try await Task.sleep(for: .milliseconds(30))
+        let hidden = await transport.outputCalls; XCTAssertEqual(hidden, 1)
+        coordinator.setDetailVisible(true)
+        try await wait { coordinator.detail?.completed == true }
+        let terminal = await transport.outputCalls
+        try await Task.sleep(for: .milliseconds(40)); let after = await transport.outputCalls
+        XCTAssertEqual(after, terminal)
+        coordinator.setForeground(false); try await Task.sleep(for: .milliseconds(30))
+        let background = await transport.outputCalls; XCTAssertEqual(background, terminal)
+        coordinator.disconnect()
+    }
     private func identity(user: String = "user") -> HolonConnectionIdentity {
         HolonConnectionIdentity(networkID: "network", runtimeID: "runtime",
                                 userID: user, visibilityScopeID: "private")

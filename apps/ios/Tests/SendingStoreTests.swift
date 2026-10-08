@@ -48,6 +48,29 @@ final class SendingStoreTests: XCTestCase {
         XCTAssertThrowsError(try reopened.update(mutation))
     }
 
+    func testCanonicalJoinPersistsWithoutMutatingAcceptedRequest() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try FileManager.default.removeItem(at: folder) }
+        let scope = try scope()
+        let store = try makeStore(directory: folder)
+        try store.saveDraft(SendingDraft(text: "hello"), scope: scope)
+        var entry = try store.enqueue(scope)
+        entry.state = .received
+        entry.messageID = "canonical-message"
+        try store.update(entry)
+        entry.canonicalObserved = true
+        try store.update(entry)
+        var forbidden = entry
+        forbidden.state = .unknown
+        XCTAssertThrowsError(try store.update(forbidden))
+        forbidden = entry
+        forbidden.canonicalObserved = false
+        XCTAssertThrowsError(try store.update(forbidden))
+        let reopened = try makeStore(directory: folder)
+        XCTAssertEqual(reopened.entries(scope).first, entry)
+        XCTAssertTrue(LocalMessageProjection.visible(reopened.entries(scope), canonicalIDs: []).isEmpty)
+    }
+
     func testCompletePromptBudgetFailurePreservesDraftAndManagedReferences() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         addTeardownBlock { try FileManager.default.removeItem(at: folder) }

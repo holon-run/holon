@@ -15,6 +15,8 @@ final class HolonUITests: XCTestCase {
         XCTAssertEqual(ProcessInfo.processInfo.environment["HOLON_UI_CONTENT_SIZE"],
                        large ? "accessibility-extra-extra-extra-large" : "large",
                        "The UI runner must configure and verify the system text size")
+        XCTAssertEqual(ProcessInfo.processInfo.environment["HOLON_UI_APPEARANCE"], dark ? "dark" : "light",
+                       "The UI runner must configure and verify the system appearance")
         app.launch()
         return app
     }
@@ -29,13 +31,21 @@ final class HolonUITests: XCTestCase {
     private func reveal(_ element: XCUIElement, in app: XCUIApplication,
                         fullyVisible: Bool = false,
                         file: StaticString = #filePath, line: UInt = #line) {
-        for _ in 0..<40 {
+        func viewport() -> CGRect {
             let window = app.windows.firstMatch.frame
             let navigation = app.navigationBars.firstMatch
             let tabs = app.tabBars.firstMatch
             let keyboard = app.keyboards.firstMatch
             let top = navigation.exists ? max(window.minY, navigation.frame.maxY) : window.minY
             var bottom = tabs.exists ? min(window.maxY, tabs.frame.minY) : window.maxY
+            let composer = app.otherElements["sending.composer"].firstMatch
+            let editor = app.descendants(matching: .any)["sending.text"].firstMatch
+            let targetID = element.exists ? element.identifier : ""
+            let insideComposer = !targetID.isEmpty && composer.exists
+                && composer.descendants(matching: .any).matching(identifier: targetID).count > 0
+            if !insideComposer && composer.exists && !composer.frame.isEmpty && editor.exists && editor.isHittable {
+                bottom = min(bottom, composer.frame.minY)
+            }
             if keyboard.exists {
                 bottom = min(bottom, keyboard.frame.minY)
                 // The keyboard's AX frame excludes its input assistant overlay.
@@ -44,10 +54,17 @@ final class HolonUITests: XCTestCase {
                     bottom = min(bottom, assistant.frame.minY)
                 }
             }
-            guard bottom > top else { break }
-            let viewport = CGRect(x: window.minX, y: top, width: window.width, height: bottom - top)
+            return CGRect(x: window.minX, y: top, width: window.width, height: max(0, bottom - top))
+        }
+        func contained(_ frame: CGRect, in viewport: CGRect) -> Bool {
+            !frame.isEmpty && (fullyVisible ? viewport.contains(frame)
+                : viewport.contains(CGPoint(x: frame.midX, y: frame.midY)))
+        }
+        for _ in 0..<40 {
+            let viewport = viewport()
+            guard viewport.height > 0 else { break }
             if element.exists && element.isHittable
-                && (!fullyVisible || (!element.frame.isEmpty && viewport.contains(element.frame))) {
+                && contained(element.frame, in: viewport) {
                 return
             }
             // Form rows are lazy; small drags load them without skipping the target.
@@ -63,22 +80,23 @@ final class HolonUITests: XCTestCase {
                     distance = frame.minY - viewport.minY - 8
                 }
             }
-            let magnitude = min(viewport.height * 0.3, max(32, abs(distance)))
+            let magnitude = min(viewport.height * 0.3, max(96, abs(distance)))
             let delta = distance < 0 ? -magnitude : magnitude
             let start = app.coordinate(withNormalizedOffset: .zero)
                 .withOffset(CGVector(dx: viewport.midX, dy: viewport.midY))
-            let end = start.withOffset(CGVector(dx: 0, dy: -delta))
+            // XCUI coordinates replace their offset rather than adding to it.
+            // Keep x fixed so revealing a row is a genuinely vertical gesture.
+            let end = app.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: viewport.midX, dy: viewport.midY - delta))
             start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow,
                         thenHoldForDuration: 0.1)
         }
-        if fullyVisible {
+        guard element.waitForExistence(timeout: 10), element.isHittable,
+              contained(element.frame, in: viewport()) else {
             capture(app, "unreachable-control")
-            XCTFail("Control must be fully visible before navigation", file: file, line: line)
+            XCTFail("Tap target must remain inside the unobscured viewport", file: file, line: line)
             return
         }
-        if !element.exists || !element.isHittable { capture(app, "unreachable-control") }
-        XCTAssertTrue(element.waitForExistence(timeout: 10), file: file, line: line)
-        XCTAssertTrue(element.isHittable, file: file, line: line)
     }
 
     private func required(_ key: String) throws -> String {
@@ -91,6 +109,25 @@ final class HolonUITests: XCTestCase {
     }
 
     private enum FixtureError: Error { case missingInput, invalidEndpoint }
+
+    private func openSettings(_ app: XCUIApplication) {
+        // Bootstrap can briefly expose home before restoring the confirmed Agent.
+        // Wait for that route before looking for the home-only settings control.
+        if app.buttons["conversation.more"].waitForExistence(timeout: 30) {
+            let back = app.navigationBars.buttons.element(boundBy: 0)
+            XCTAssertTrue(back.waitForExistence(timeout: 10))
+            back.tap()
+        }
+        let settings = app.buttons["settings.open"]
+        for _ in 0..<6 {
+            if settings.waitForExistence(timeout: 3) { break }
+            let back = app.navigationBars.buttons.element(boundBy: 0)
+            XCTAssertTrue(back.waitForExistence(timeout: 10))
+            back.tap()
+        }
+        XCTAssertTrue(settings.waitForExistence(timeout: 10))
+        settings.tap()
+    }
 
     private func openDiagnostics(_ app: XCUIApplication) {
         let open = app.buttons["diagnostics.open"]
@@ -110,8 +147,7 @@ final class HolonUITests: XCTestCase {
     func testChineseDiagnosticsDarkAccessibilitySize() throws {
         let app = launch(language: "zh-Hans", dark: true, large: true)
         defer { app.terminate() }
-        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 15))
-        app.tabBars.buttons["设置"].tap()
+        openSettings(app)
         openDiagnostics(app)
         let allowlist = app.staticTexts[
             "仅包含连接状态与数量，不包含凭据、身份、地址、消息内容或原始错误。"]
@@ -129,8 +165,7 @@ final class HolonUITests: XCTestCase {
     func testPreparedDiagnosticsViewportCoverage() throws {
         let app = launch(language: "en", dark: false, large: true)
         defer { app.terminate() }
-        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 15))
-        app.tabBars.buttons["Settings"].tap()
+        openSettings(app)
         openDiagnostics(app)
         app.buttons["diagnostics.prepare"].tap()
         XCTAssertTrue(app.staticTexts["diagnostics.report"].waitForExistence(timeout: 10))
@@ -185,7 +220,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(content.exists)
         let bounds = content.frame.intersection(app.windows.firstMatch.frame)
         let top = max(bounds.minY, app.navigationBars.firstMatch.frame.maxY)
-        let bottom = min(bounds.maxY, app.tabBars.firstMatch.frame.minY)
+        let bottom = app.tabBars.firstMatch.exists ? min(bounds.maxY, app.tabBars.firstMatch.frame.minY) : bounds.maxY
         XCTAssertGreaterThan(bottom, top)
         return CGRect(x: bounds.minX, y: top, width: bounds.width, height: bottom - top)
     }
@@ -196,7 +231,7 @@ final class HolonUITests: XCTestCase {
                         ("diagnostics.chooseAgent", app.staticTexts["diagnostics.chooseAgent"])]
         let detail = "content: \(app.scrollViews["diagnostics.content"].frame)\n"
             + "navigation: \(app.navigationBars.firstMatch.frame)\n"
-            + "tab: \(app.tabBars.firstMatch.frame)\nviewport: \(diagnosticsViewport(app))\n"
+            + "tab: \(app.tabBars.firstMatch.exists ? app.tabBars.firstMatch.frame : .zero)\nviewport: \(diagnosticsViewport(app))\n"
             + elements.map { identifier, element in
                 element.exists
                     ? "\(identifier): \(element.frame), hittable: \(element.isHittable)"
@@ -214,8 +249,7 @@ final class HolonUITests: XCTestCase {
     func testPreparedDiagnosticsRespondToRuntimeTextSize() async throws {
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
-        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 15))
-        app.tabBars.buttons["Settings"].tap()
+        openSettings(app)
         openDiagnostics(app)
         app.buttons["diagnostics.prepare"].tap()
         let report = app.staticTexts["diagnostics.report"]
@@ -255,8 +289,7 @@ final class HolonUITests: XCTestCase {
     func testDiagnosticsControlsRespondToRuntimeTextSize() async throws {
         let app = launch(language: "en", dark: false, large: true)
         defer { app.terminate() }
-        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 15))
-        app.tabBars.buttons["Settings"].tap()
+        openSettings(app)
         openDiagnostics(app)
         let allowlist = app.staticTexts[
             "Only connection states and counts are included. Credentials, identities, addresses, message content and raw errors are excluded."]
@@ -479,15 +512,11 @@ final class HolonUITests: XCTestCase {
         reveal(confirm, in: app)
         XCTAssertTrue(confirm.isEnabled)
         confirm.tap()
-        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 30))
-        XCTAssertEqual(app.tabBars.buttons.count, 3)
-        for tab in ["Agents", "Work", "Settings"] {
-            XCTAssertTrue(app.tabBars.buttons[tab].exists)
-        }
-        XCTAssertTrue(app.tabBars.buttons["Agents"].isSelected, "Successful pairing defaults to Agents")
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
+        XCTAssertFalse(app.tabBars.firstMatch.exists, "Agent home has no global bottom tabs")
         let manage = app.buttons["connection.manage"]
         XCTAssertTrue(manage.waitForExistence(timeout: 10))
-        let originalHost = manage.label
+        let originalHost = manage.label.components(separatedBy: ",").first ?? manage.label
         manage.tap()
         let add = app.buttons["connection.add"]
         reveal(add, in: app)
@@ -496,27 +525,26 @@ final class HolonUITests: XCTestCase {
         let cancel = app.buttons["onboarding.cancel"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 10))
         cancel.tap()
+        reveal(add, in: app)
         XCTAssertTrue(add.waitForExistence(timeout: 10), "Cancel returns to existing connection management")
         XCTAssertFalse(app.buttons["onboarding.scan"].exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.buttons["settings.connection"].waitForExistence(timeout: 10),
-                      "Back returns from connection management to the Settings home")
-        app.tabBars.buttons["Agents"].tap()
+        XCTAssertTrue(manage.waitForExistence(timeout: 10), "One back returns to Agent home")
         XCTAssertTrue(manage.waitForExistence(timeout: 10))
-        XCTAssertEqual(manage.label, originalHost, "Cancelled onboarding preserves the original host")
-        let connected = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label == %@", "Live"),
-            object: app.staticTexts["reading.status"])
-        XCTAssertEqual(XCTWaiter.wait(for: [connected], timeout: 30), .completed)
+        XCTAssertEqual(manage.label.components(separatedBy: ",").first, originalHost,
+                       "Cancelled onboarding preserves the original host independently of live/offline status")
         let agentButton = app.buttons["agent." + agent]
         XCTAssertTrue(agentButton.waitForExistence(timeout: 30))
         agentButton.tap()
         let read = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", readMarker)).firstMatch
         XCTAssertTrue(read.waitForExistence(timeout: 30))
+        reveal(read, in: app)
         capture(app, "authenticated-reading")
-        let draft = app.buttons["sending.draft"]
-        draft.tap()
-        let editor = app.textViews["sending.text"]
+        XCTAssertFalse(read.frame.isEmpty, "Assert margins only on a laid-out, visible element")
+        XCTAssertTrue(read.isHittable)
+        XCTAssertGreaterThanOrEqual(read.frame.minX, 12, "Conversation text must retain native horizontal margins")
+        XCTAssertLessThanOrEqual(read.frame.maxX, app.windows.firstMatch.frame.maxX - 12)
+        let editor = app.descendants(matching: .any)["sending.text"].firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 10))
         editor.tap()
         editor.typeText("P6 native UI explicit operator message")
@@ -524,19 +552,25 @@ final class HolonUITests: XCTestCase {
         reveal(enqueue, in: app)
         XCTAssertTrue(enqueue.isEnabled)
         enqueue.tap()
-        app.buttons["Close"].tap()
         // Returning from the native editor is not evidence of server acceptance.
         // Outbox must expose a concrete accepted state.
         let queue = app.buttons["sending.queue"]
+        app.buttons["sending.options"].tap()
         XCTAssertTrue(queue.waitForExistence(timeout: 10))
         queue.tap()
         XCTAssertTrue(app.descendants(matching: .any)["sending.state.received"]
             .waitForExistence(timeout: 30))
         capture(app, "authenticated-outbox")
         app.buttons["Close"].tap()
-        app.tabBars.buttons["Work"].tap()
+        app.buttons["conversation.more"].tap()
+        app.buttons["conversation.work"].tap()
         let item = app.buttons["work.item." + work]
-        XCTAssertTrue(item.waitForExistence(timeout: 30))
+        if ProcessInfo.processInfo.environment["HOLON_UI_RICH_TURN_ID"]?.isEmpty == false {
+            let more = app.buttons["work.moreItems"]
+            reveal(more, in: app); more.tap()
+        }
+        reveal(item, in: app)
+        XCTAssertTrue(item.waitForExistence(timeout: 10))
         item.tap()
         let openPlan = app.buttons["work.openPlan"]
         reveal(openPlan, in: app)
@@ -544,12 +578,8 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", planMarker))
             .firstMatch.waitForExistence(timeout: 30))
         capture(app, "full-plan")
-        let dismissFiles = app.buttons["files.dismiss"]
-        XCTAssertTrue(dismissFiles.waitForExistence(timeout: 10))
-        dismissFiles.tap()
-        XCTAssertTrue(app.tabBars.buttons["Work"].isSelected)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(openPlan.waitForExistence(timeout: 10))
-        XCTAssertFalse(dismissFiles.exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         let taskRow = app.buttons["work.task." + task]
         reveal(taskRow, in: app)
@@ -558,13 +588,14 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(output.waitForExistence(timeout: 30))
         XCTAssertTrue(output.label.contains(taskMarker))
         capture(app, "task-output")
-        app.tabBars.buttons["Settings"].tap()
-        for entry in ["settings.connection", "settings.files", "settings.tools", "diagnostics.open"] {
-            XCTAssertTrue(app.buttons[entry].exists)
-        }
-        let files = app.buttons["settings.files"]
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["conversation.more"].tap()
+        let files = app.buttons["conversation.files"]
         reveal(files, in: app)
         files.tap()
+        app.buttons["files.options"].tap()
+        app.buttons["Server reference"].tap()
         let reference = app.textFields["files.reference"]
         XCTAssertTrue(reference.waitForExistence(timeout: 10))
         reference.tap()
@@ -573,12 +604,10 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", fileMarker))
             .firstMatch.waitForExistence(timeout: 30))
         capture(app, "file-preview")
-        let closePreview = app.buttons["Close preview"]
-        XCTAssertTrue(closePreview.waitForExistence(timeout: 10))
-        closePreview.tap()
-        XCTAssertTrue(reference.waitForExistence(timeout: 10))
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.tabBars.buttons["Settings"].tap()
+        XCTAssertTrue(app.navigationBars["Files"].waitForExistence(timeout: 10))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["conversation.more"].tap()
         openDiagnostics(app)
         app.buttons["diagnostics.prepare"].tap()
         XCTAssertTrue(app.staticTexts["diagnostics.report"].waitForExistence(timeout: 10))
@@ -598,6 +627,318 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts[
             "Queued independently; your editor draft is unchanged. Check the Agent's sending queue for receipt."
         ].waitForExistence(timeout: 10))
+        app.terminate()
+    }
+
+    func testRichActivityWorkflow() throws {
+        let agent = try required("AGENT_ID")
+        let turn = try required("RICH_TURN_ID")
+        let app = launch(language: "en", dark: false, large: false)
+        // Existing credentials came only from the preceding shipped onboarding flow.
+        // Wait for confirmed route restoration, not the transient home while
+        // roster authority is still loading after launch.
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.tabBars.firstMatch.exists)
+        app.swipeDown()
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 10)); search.tap()
+        search.typeText("ios-fixture-agent-089\n")
+        let lastAgent = app.buttons["agent.ios-fixture-agent-089"]
+        XCTAssertTrue(lastAgent.waitForExistence(timeout: 15)); lastAgent.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.waitForExistence(timeout: 15))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(lastAgent.waitForExistence(timeout: 10), "One native back returns to the filtered Agent list")
+        XCTAssertTrue(search.exists)
+        XCTAssertFalse(app.buttons["conversation.more"].exists)
+        search.tap()
+        let clearSearch = search.buttons["Clear text"]
+        XCTAssertTrue(clearSearch.waitForExistence(timeout: 10)); clearSearch.tap()
+        search.typeText(agent + "\n")
+        let agentRow = app.buttons["agent." + agent]
+        XCTAssertTrue(agentRow.waitForExistence(timeout: 15)); agentRow.tap()
+        app.buttons["sending.options"].tap(); app.buttons["Take photo"].tap()
+        XCTAssertTrue(app.staticTexts["The camera is not available on this device. Choose a photo or file instead."].waitForExistence(timeout: 10))
+        app.buttons["conversation.more"].tap(); app.buttons["conversation.work"].tap()
+        let moreWork = app.buttons["work.moreItems"]
+        reveal(moreWork, in: app); moreWork.tap()
+        let additionalWork = app.buttons["work.item." + (try required("RICH_ADDITIONAL_WORK_ID"))]
+        reveal(additionalWork, in: app)
+        XCTAssertTrue(additionalWork.isHittable, "Load more exposes a real item outside the first fifty")
+        capture(app, "rich-work-expanded-window")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        // Work returns to the remembered reading position, which can precede
+        // this turn. Start at the shipped Latest action before seeking older.
+        if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
+        let activity = app.descendants(matching: .any)["activities." + turn].firstMatch
+        // This completed turn precedes the baseline's freshly sent messages.
+        for _ in 0..<40 {
+            if activity.exists && activity.isHittable { break }
+            let olderTurns = app.buttons["conversation.older"]
+            if olderTurns.exists && olderTurns.isHittable { olderTurns.tap() }
+            else { app.swipeDown() }
+        }
+        XCTAssertTrue(activity.isHittable); activity.tap()
+        let fullProcess = app.buttons["activities.full." + turn]
+        reveal(fullProcess, in: app); fullProcess.tap()
+        let fullReader = app.scrollViews["activities.fullReader"]
+        XCTAssertTrue(fullReader.waitForExistence(timeout: 10))
+        let older = fullReader.buttons["activities.older"]
+        XCUIDevice.shared.press(.home); app.activate()
+        XCTAssertTrue(older.waitForExistence(timeout: 30),
+                      "Open activity reader reacquires detail after a quiet foreground bootstrap")
+        let firstBatch = fullReader.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_RICH_ASSISTANT: read-only inspection batch 1.")).firstMatch
+        for _ in 0..<4 {
+            if firstBatch.exists { break }
+            for _ in 0..<20 {
+                if older.exists { break }
+                fullReader.swipeDown()
+            }
+            reveal(older, in: app)
+            XCTAssertTrue(older.isEnabled); older.tap()
+        }
+        reveal(firstBatch, in: app)
+        capture(app, "rich-activity-paged-to-first-batch")
+        let assistant = fullReader.buttons["Full assistant text"].firstMatch
+        reveal(assistant, in: app); assistant.tap()
+        let rawRecord = fullReader.buttons["Raw record"].firstMatch
+        XCTAssertTrue(rawRecord.waitForExistence(timeout: 20)); rawRecord.tap()
+        XCTAssertTrue(fullReader.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "assistant_round"))
+            .firstMatch.waitForExistence(timeout: 20), "Canonical transcript detail was fetched, not the summary fallback")
+        capture(app, "rich-assistant-full-detail")
+        rawRecord.tap()
+        let tool = fullReader.buttons.containing(NSPredicate(format: "label CONTAINS %@", "GetAgent")).firstMatch
+        reveal(tool, in: app); tool.tap()
+        let input = fullReader.staticTexts["Input"].firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 20), "Canonical tool input is readable")
+        capture(app, "rich-tool-detail")
+        app.buttons["Close"].tap()
+        app.terminate()
+    }
+
+    func testPopulatedComposerMaximumTextSize() throws {
+        let app = launch(language: "zh-Hans", dark: true, large: true)
+        defer { app.terminate() }
+        // Earlier diagnostics cases intentionally return to home and clear
+        // the saved Agent route. Wait for confirmed restoration before treating
+        // the transient bootstrap home as a settled navigation destination.
+        if !app.buttons["conversation.more"].waitForExistence(timeout: 30) {
+            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 10))
+            let agent = app.buttons["agent." + (try required("AGENT_ID"))]
+            XCTAssertTrue(agent.waitForExistence(timeout: 15))
+            reveal(agent, in: app); agent.tap()
+        }
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        let editor = app.descendants(matching: .any)["sending.text"].firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 15)); XCTAssertTrue(editor.isHittable)
+        editor.tap(); editor.typeText("IOS_ACCESSIBILITY_DRAFT")
+        let send = app.buttons["sending.enqueue"]
+        XCTAssertTrue(send.isHittable); XCTAssertTrue(send.isEnabled)
+        XCTAssertGreaterThanOrEqual(send.frame.height, 44)
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.exists)
+        var keyboardTop = keyboard.frame.minY
+        let assistant = app.otherElements["SystemInputAssistantView"].firstMatch
+        if assistant.exists && !assistant.frame.isEmpty { keyboardTop = min(keyboardTop, assistant.frame.minY) }
+        XCTAssertLessThanOrEqual(send.frame.maxY, keyboardTop + 2)
+        XCTAssertGreaterThan(editor.frame.minY, app.navigationBars.firstMatch.frame.maxY)
+        capture(app, "chinese-dark-maximum-composer-keyboard")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15), "One native back returns to Agents even with the keyboard open")
+        capture(app, "chinese-dark-maximum-agent-home")
+    }
+
+    func testRichFilesWorkflow() throws {
+        let directory = try required("RICH_DIRECTORY")
+        let workspace = try required("WORKSPACE_ID")
+        let app = launch(language: "en", dark: false, large: false)
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        app.buttons["conversation.more"].tap(); app.buttons["conversation.files"].tap()
+        let home = app.buttons["files.workspace." + workspace].firstMatch
+        reveal(home, in: app); home.tap()
+        let folder = app.buttons["files.entry." + directory]
+        reveal(folder, in: app); folder.tap()
+        let lastNote = app.buttons["files.entry." + directory + "/note-079.txt"]
+        reveal(lastNote, in: app)
+        let savedY = lastNote.frame.minY
+        lastNote.tap()
+        XCTAssertTrue(app.staticTexts["IOS_RICH_NOTE_079\n"].waitForExistence(timeout: 20))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(lastNote.waitForExistence(timeout: 10)); XCTAssertTrue(lastNote.isHittable)
+        XCTAssertEqual(lastNote.frame.minY, savedY, accuracy: 44, "Reader return preserves native directory position")
+        func open(_ name: String) {
+            // Returning preserves the bottom-of-directory bookmark. Use the
+            // shipped filter to select an earlier file rather than scrolling away.
+            let filter = app.searchFields.firstMatch
+            XCTAssertTrue(filter.waitForExistence(timeout: 10)); filter.tap()
+            let clear = filter.buttons["Clear text"]
+            if clear.exists { clear.tap() }
+            filter.typeText(name + "\n")
+            let row = app.buttons["files.entry." + directory + "/" + name]
+            reveal(row, in: app); row.tap()
+            XCTAssertTrue(app.descendants(matching: .any)["files.preview"].firstMatch.waitForExistence(timeout: 20))
+        }
+        open("large-utf8.txt")
+        app.buttons["files.end"].tap()
+        let end = app.staticTexts["files.endOfFile"]
+        // Do not swipe to rescue a failed End action; the real footer must be on-screen.
+        let endVisible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: end)
+        XCTAssertEqual(XCTWaiter.wait(for: [endVisible], timeout: 20), .completed)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_RICH_TEXT_END"))
+            .firstMatch.exists, "The final source bytes are loaded, not just a synthetic footer")
+        XCTAssertEqual(app.staticTexts["files.textPageCount"].label, "42/42")
+        XCTAssertGreaterThanOrEqual(end.frame.minX, 12)
+        XCTAssertLessThanOrEqual(end.frame.maxX, app.windows.firstMatch.frame.maxX - 12)
+        capture(app, "large-utf8-real-document-end")
+        XCUIDevice.shared.press(.home); app.activate()
+        XCTAssertTrue(end.waitForExistence(timeout: 30)); XCTAssertTrue(end.isHittable, "Foreground reauthorization restores the last page")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        open("source.ts"); app.buttons["files.end"].tap()
+        let codeEnd = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: end)
+        XCTAssertEqual(XCTWaiter.wait(for: [codeEnd], timeout: 30), .completed)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_RICH_CODE_END"))
+            .firstMatch.exists)
+        XCTAssertEqual(app.staticTexts["files.textPageCount"].label, "41/41")
+        capture(app, "large-typescript-real-document-end")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        open("report.md")
+        let relative = app.links["Open sibling"].firstMatch
+        XCTAssertTrue(relative.waitForExistence(timeout: 20))
+        // Verify the actual text bounds; native file navigation cannot be
+        // substituted with a direct resolver call or an auxiliary button.
+        XCTAssertGreaterThan(relative.frame.minY, app.navigationBars.firstMatch.frame.maxY)
+        XCTAssertLessThan(relative.frame.maxY, app.windows.firstMatch.frame.maxY - 44)
+        capture(app, "native-markdown-relative-file-link")
+        relative.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(app.staticTexts["IOS_RICH_NOTE_079\n"].waitForExistence(timeout: 20))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(relative.waitForExistence(timeout: 15), "Relative links return to their source file")
+        let heading = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Native report")).firstMatch
+        heading.press(forDuration: 1)
+        let selectText = app.buttons["Select source text"]
+        XCTAssertTrue(selectText.waitForExistence(timeout: 10)); selectText.tap()
+        let selection = app.textViews["reading.selectionText"]
+        XCTAssertTrue(selection.waitForExistence(timeout: 10))
+        XCTAssertTrue((selection.value as? String)?.contains("[Open sibling](./note-079.txt)") == true)
+        selection.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 45, dy: 25)).press(forDuration: 1)
+        let copy = app.menuItems["Copy"].firstMatch
+        XCTAssertTrue(copy.waitForExistence(timeout: 10), "Native range selection retains copy")
+        capture(app, "native-markdown-text-selection")
+        copy.tap()
+        app.navigationBars.buttons["Close"].tap()
+        XCTAssertTrue(relative.waitForExistence(timeout: 10))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        open("image.png")
+        let raster = app.descendants(matching: .any)["files.raster"].firstMatch
+        XCTAssertTrue(raster.waitForExistence(timeout: 20)); XCTAssertTrue(raster.isHittable)
+        capture(app, "native-image-preview")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        open("report.pdf")
+        XCTAssertTrue(raster.waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts["1/2"].exists)
+        app.buttons["files.nextPage"].tap()
+        XCTAssertTrue(app.staticTexts["2/2"].waitForExistence(timeout: 10))
+        capture(app, "native-pdf-second-page")
+        app.buttons["files.options"].tap(); app.buttons["Export a copy"].tap()
+        let exportName = app.textFields["DOCPicker.filenameTextField"]
+        XCTAssertTrue(exportName.waitForExistence(timeout: 15), "Export opens the native destination picker")
+        XCTAssertEqual(exportName.value as? String, "report")
+        let save = app.buttons["Save"].firstMatch
+        XCTAssertTrue(save.isHittable); XCTAssertTrue(save.isEnabled)
+        let exportHierarchy = XCTAttachment(string: app.debugDescription)
+        exportHierarchy.name = "native-export-picker-hierarchy"; exportHierarchy.lifetime = .keepAlways
+        add(exportHierarchy)
+        capture(app, "native-file-export-destination")
+        save.tap()
+        XCTAssertTrue(app.staticTexts["Copy saved."].waitForExistence(timeout: 15),
+                      "Native save must finish successfully, not only open a picker")
+        XCTAssertTrue(app.buttons["files.options"].waitForExistence(timeout: 10))
+        app.buttons["files.options"].tap(); app.buttons["Share a copy"].tap()
+        XCTAssertTrue(app.otherElements["ActivityListView"].waitForExistence(timeout: 10), "Share hands the original file to the native system sheet")
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "report.pdf")).firstMatch.exists,
+                      "Sharing preserves the original safe filename")
+        capture(app, "native-original-file-share")
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30), "Process relaunch restores the confirmed Agent route")
+        XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.exists)
+        capture(app, "restored-confirmed-conversation")
+        app.terminate()
+    }
+
+    func testConversationHistoryWindowPosition() throws {
+        let app = launch(language: "en", dark: false, large: false)
+        defer { app.terminate() }
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
+        let older = app.buttons["conversation.older"]
+        // The lazy older-window control is above the initial latest position.
+        for _ in 0..<40 {
+            if older.exists { break }
+            app.swipeDown()
+        }
+        reveal(older, in: app); older.tap()
+        func assertTop(_ id: String) {
+            let timestamp = app.staticTexts["conversation.time." + id]
+            let visible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: timestamp)
+            XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 20), .completed)
+            let top = app.navigationBars.firstMatch.frame.maxY
+            XCTAssertGreaterThanOrEqual(timestamp.frame.minY, top - 2)
+            XCTAssertLessThanOrEqual(timestamp.frame.minY, top + 50,
+                "Window navigation must position its first turn, not just change the underlying range")
+        }
+        assertTop(try required("HISTORY_OLDER_TOP"))
+        capture(app, "native-older-turn-window-position")
+        let newer = app.buttons["conversation.newer"]
+        reveal(newer, in: app); newer.tap()
+        let positionHierarchy = XCTAttachment(string: app.debugDescription)
+        positionHierarchy.name = "native-window-position-controls"; positionHierarchy.lifetime = .keepAlways
+        add(positionHierarchy)
+        capture(app, "native-window-after-newer-tap")
+        assertTop(try required("HISTORY_NEWER_TOP"))
+        capture(app, "native-newer-turn-window-position")
+    }
+
+    func testLostResponseAndProcessRecovery() async throws {
+        let marker = "IOS_LOST_RESPONSE_SEND"
+        let app = launch(language: "en", dark: false, large: false)
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        let editor = app.descendants(matching: .any)["sending.text"].firstMatch
+        editor.tap(); editor.typeText(marker)
+        app.buttons["sending.enqueue"].tap()
+        func openQueue() {
+            app.buttons["sending.options"].tap(); app.buttons["sending.queue"].tap()
+        }
+        openQueue()
+        let unknown = app.staticTexts["sending.state.unknown"]
+        XCTAssertTrue(unknown.waitForExistence(timeout: 30))
+        let row = app.cells.containing(.staticText, identifier: marker).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        let uuid = row.staticTexts.matching(NSPredicate(format:
+            "label MATCHES %@", "[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")).firstMatch.label
+        XCTAssertNotNil(UUID(uuidString: uuid))
+        capture(app, "lost-response-unknown-immutable-request")
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        openQueue()
+        XCTAssertTrue(unknown.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts[uuid].exists, "Process death retains the original UUID")
+        var request = URLRequest(url: try XCTUnwrap(URL(string: required("LOSS_CONTROL_URL"))))
+        request.httpMethod = "POST"
+        request.setValue("Bearer " + (try required("LOSS_CONTROL_TOKEN")), forHTTPHeaderField: "Authorization")
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 204)
+        let entry = app.cells.containing(.staticText, identifier: marker).firstMatch
+        let retry = app.buttons["sending.retry." + uuid]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        XCTAssertTrue(retry.isEnabled, "The original request must be explicitly retryable after restoration")
+        let queueGeometry = XCTAttachment(string: app.debugDescription)
+        queueGeometry.name = "lost-response-restored-queue-controls"
+        queueGeometry.lifetime = .keepAlways; add(queueGeometry)
+        reveal(retry, in: app); retry.tap()
+        XCTAssertTrue(entry.staticTexts["sending.state.received"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.staticTexts[uuid].exists)
+        capture(app, "lost-response-explicit-retry-received")
         app.terminate()
     }
 }

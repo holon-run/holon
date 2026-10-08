@@ -13,7 +13,7 @@ import urllib.request
 
 from ios_simulator_text_size import (
     MAXIMUM_TEXT_SIZE, initialize_simulator_text_size, runtime_text_size_control,
-    set_simulator_text_size, simulator_text_size,
+    set_simulator_text_size, simulator_text_size, simulator_appearance,
 )
 
 
@@ -120,6 +120,48 @@ class BuildToolContracts(unittest.TestCase):
         Path(self.env["IOS_ARCHIVE_PATH"]).mkdir()
         self.run_tool("package-ios-archive.sh", expected=2)
         self.assertFalse(self.log.exists())
+
+
+class SimulatorAppearanceContracts(unittest.TestCase):
+    @staticmethod
+    def result(stdout=""):
+        return subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
+
+    def test_readback_and_restore_even_when_xcode_fails(self):
+        responses = [self.result("light"), self.result(), self.result("dark"),
+                     self.result(), self.result("light")]
+        with patch("ios_simulator_text_size.subprocess.run", side_effect=responses) as run:
+            with self.assertRaisesRegex(RuntimeError, "Xcode failed"):
+                with simulator_appearance(UUID, "dark") as appearance:
+                    self.assertEqual(appearance, "dark")
+                    raise RuntimeError("Xcode failed")
+            prefix = ["xcrun", "simctl", "ui", UUID, "appearance"]
+            self.assertEqual([item.args[0] for item in run.call_args_list],
+                             [prefix, prefix + ["dark"], prefix, prefix + ["light"], prefix])
+
+    def test_unreadable_original_does_not_mutate(self):
+        with patch("ios_simulator_text_size.subprocess.run", return_value=self.result("unknown")) as run:
+            with self.assertRaisesRegex(RuntimeError, "可恢复"):
+                with simulator_appearance(UUID, "dark"):
+                    self.fail("Unverified appearance must not run XCTest")
+            self.assertEqual(run.call_count, 1)
+
+    def test_mismatched_readback_fails_and_restores(self):
+        responses = [self.result("light"), self.result(), self.result("light"),
+                     self.result(), self.result("light")]
+        with patch("ios_simulator_text_size.subprocess.run", side_effect=responses) as run:
+            with self.assertRaisesRegex(RuntimeError, "核验失败"):
+                with simulator_appearance(UUID, "dark"):
+                    self.fail("Mismatched appearance must not run XCTest")
+            self.assertEqual(run.call_args_list[-2].args[0][-1], "light")
+
+    def test_failed_restore_is_not_success(self):
+        responses = [self.result("light"), self.result(), self.result("dark"),
+                     self.result(), self.result("dark")]
+        with patch("ios_simulator_text_size.subprocess.run", side_effect=responses):
+            with self.assertRaisesRegex(RuntimeError, "核验失败"):
+                with simulator_appearance(UUID, "dark"):
+                    pass
 
 
 class SimulatorTextSizeContracts(unittest.TestCase):

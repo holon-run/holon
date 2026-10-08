@@ -9,12 +9,14 @@ private final class FilesIdentityProtocol: URLProtocol, @unchecked Sendable {
     override func startLoading() {
         let root = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
             .queryItems?.first { $0.name == "execution_root_id" }?.value
-        let status = root == "denied" ? 403 : 200
+        let status = root == "denied" ? 403 : (root == "removed" ? 410 : 200)
         let body: String
         if request.url!.path.hasSuffix("/state") {
             body = #"{"workspace":{"workspaces":[{"workspace_id":"ws","execution_root_id":"source-root","repo_name":"Source"}]}}"#
         } else if status == 403 {
             body = #"{"error":{"code":"forbidden","message":"private"}}"#
+        } else if status == 410 {
+            body = #"{"error":"execution root removed","execution_root_id":"removed"}"#
         } else {
             body = #"{"type":"directory","workspace_id":"ws","execution_root_id":"source-root","path":"","entries":[{"name":"README.md","type":"file"},{"name":"docs","type":"directory"}]}"#
         }
@@ -53,6 +55,15 @@ private final class FilesPlanProtocol: URLProtocol, @unchecked Sendable {
                 url.path.hasSuffix("/work-items/work/plan.md") ? 200 : 409
             type = "text/markdown"
             body = "# Full plan"
+        } else if query.contains(where: { $0.name == "meta" && $0.value == "true" }) {
+            status = root == "canonical_root:agent_home:A" ? 200 : 409
+            type = "application/json"
+            body = """
+            {"type":"file","kind":"file","workspace_id":"agent_home:A",
+             "execution_root_id":"canonical_root:agent_home:A","root_kind":"canonical_root",
+             "path":"work-items/work/plan.md","absolute_path":"/server/home/work-items/work/plan.md",
+             "size":11,"mime_type":"text/markdown"}
+            """
         } else {
             status = root == nil ? 200 : 409
             type = "application/json"
@@ -72,6 +83,14 @@ private final class FilesPlanProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class FilesTransportTests: XCTestCase {
+    func testLegacyDirectFile410IsRootRemovalWithoutInventingAnErrorCode() async throws {
+        let (_, transport, _) = try await Self.fixture()
+        do {
+            _ = try await transport.directory(workspace: .init(workspaceID: "ws", executionRootID: "removed", name: "Source"), path: "")
+            XCTFail("Removed root")
+        } catch { XCTAssertEqual(error as? FilesFailure, .rootUnavailable) }
+        await transport.close()
+    }
     private static func fixture(protocolClass: URLProtocol.Type = FilesIdentityProtocol.self)
         async throws -> (HolonClient, FilesClientTransport, HolonConnectionIdentity) {
         let configuration = URLSessionConfiguration.ephemeral

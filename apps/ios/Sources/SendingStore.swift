@@ -142,9 +142,12 @@ final class SendingStore {
     func update(_ entry: SendingEntry) throws {
         guard let index = snapshot.entries.firstIndex(where: { $0.requestID == entry.requestID }) else { return }
         let old = snapshot.entries[index]
+        var receipt = entry
+        receipt.canonicalObserved = old.canonicalObserved
         guard old.scope == entry.scope, old.draft == entry.draft,
               old.payload == nil || old.payload == entry.payload,
-              old.state != .received || entry == old else {
+              old.canonicalObserved != true || entry.canonicalObserved == true,
+              old.state != .received || receipt == old else {
             throw SendingFailure.rejected("An immutable queued request cannot be changed.")
         }
         var next = snapshot

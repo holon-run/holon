@@ -23,7 +23,7 @@ final class FilesPresentationTests: XCTestCase {
         XCTAssertEqual(FilesPreviewKind.classify(mediaType: "application/javascript", name: "app.js"), .text)
         XCTAssertEqual(FilesPreviewKind.classify(mediaType: "text/markdown", name: "README.md"), .text)
         XCTAssertEqual(FilesPreviewKind.classify(mediaType: "image/svg+xml", name: "image.svg"), .downloadOnly)
-        XCTAssertEqual(FilesPreviewKind.classify(mediaType: "application/pdf", name: "artifact.pdf"), .downloadOnly)
+        XCTAssertEqual(FilesPreviewKind.classify(mediaType: "application/pdf", name: "artifact.pdf"), .pdf)
     }
 
     func testTextPreviewTrimsOnlyUTF8ScalarCrossingByteBudget() throws {
@@ -95,6 +95,8 @@ final class FilesPresentationTests: XCTestCase {
         XCTAssertEqual(artifact.text, script)
         XCTAssertFalse(artifact.url.path.contains("user-secret"))
         XCTAssertFalse(artifact.name.contains("/"))
+        XCTAssertEqual(artifact.url.lastPathComponent, artifact.name,
+                       "Native copy/share keeps the safe file name, not a UUID prefix")
         XCTAssertTrue(cache.owns(artifact))
         XCTAssertThrowsError(try cache.prepare(FilesDownload(data: Data(count: FilesCache.maximumBytes + 1),
                                                             mediaType: "text/plain", name: "large"))) {
@@ -122,7 +124,7 @@ final class FilesPresentationTests: XCTestCase {
         let (workspace, path) = try FilesClientTransport.resolved(raw)
         XCTAssertEqual(workspace.executionRootID, "source-root")
         XCTAssertEqual(path, "plan.md")
-        for (reason, expected) in [("forbidden", FilesFailure.forbidden), ("root_removed", .deleted),
+        for (reason, expected) in [("forbidden", FilesFailure.forbidden), ("root_removed", .rootUnavailable),
                                    ("unsupported_reference", .unsupported), ("ambiguous_root", .invalidReference)] {
             let result: JSONValue = .object(["results": .array([.object([
                 "status": .string("unresolved"), "reason": .string(reason)

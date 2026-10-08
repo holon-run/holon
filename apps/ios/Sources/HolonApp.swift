@@ -11,16 +11,10 @@ struct HolonApp: App {
     @State private var work: WorkCoordinator
     @State private var files: FilesCoordinator
     @State private var imports: SharedImportCoordinator
-    @State private var tab = ClientTab.reading
-    @State private var settingsPath: [SettingsDestination] = []
-    @State private var presentingFiles = false
+    @State private var router = AppRouter()
     @State private var addingConnection = false
     @State private var previousProfile: ConnectionProfile?
     @State private var returningConnection = false
-
-    private enum ClientTab: Hashable {
-        case reading, work, settings
-    }
 
     init() {
         let reading = ReadingCoordinator()
@@ -69,57 +63,40 @@ struct HolonApp: App {
                                 returnToPreviousConnection(coordinator)
                             } : nil)
                         } else {
-                            TabView(selection: $tab) {
-                                ReadingView(reader: reader, sender: sender, connection: coordinator) {
-                                    settingsPath = [.connections]
-                                    tab = .settings
-                                }
-                                    .tabItem { Label("agents.title", systemImage: "bubble.left.and.bubble.right") }
-                                    .tag(ClientTab.reading)
-                                WorkView(coordinator: work, openPlan: { agentID, workID, plan in
-                                    files.selectAgent(agentID)
-                                    if files.openPlan(agentID: agentID, workID: workID, plan: plan) {
-                                        presentingFiles = true
+                            NavigationStack(path: $router.path) {
+                                ReadingView(reader: reader, connection: coordinator)
+                                    .navigationDestination(for: AppRoute.self) { route in
+                                        destination(route, connection: coordinator)
                                     }
-                                }, openArtifact: { agentID, artifact in
-                                    files.selectAgent(agentID)
-                                    if files.openArtifact(agentID: agentID, artifact: artifact) {
-                                        presentingFiles = true
-                                    }
-                                })
-                                    .tabItem { Label("work.title", systemImage: "checklist") }
-                                    .tag(ClientTab.work)
-                                SettingsView(connection: coordinator, reader: reader, sender: sender,
-                                             files: files, imports: imports, path: $settingsPath) {
-                                    previousProfile = coordinator.selectedProfile
-                                    addingConnection = true
-                                }
-                                    .tabItem { Label("settings.title", systemImage: "gearshape") }
-                                    .tag(ClientTab.settings)
                             }
                         }
                     }
                         .task { await coordinator.restore() }
                         .onChange(of: coordinator.identity) { _, identity in
-                            settingsPath = []
-                            presentingFiles = false
+                            router.activate(identity.flatMap { value in
+                                coordinator.selectedProfile.flatMap {
+                                    ReadingPartition(apiBaseURL: $0.apiBaseURL, identity: value)
+                                }
+                            })
                             if identity != nil {
-                                tab = .reading
                                 addingConnection = false
                                 previousProfile = nil
                             }
                         }
-                        .sheet(isPresented: $presentingFiles, onDismiss: {
-                            files.dismissPreview()
-                        }) {
-                            NavigationStack {
-                                FilesView(coordinator: files)
-                                    .toolbar {
-                                        ToolbarItem(placement: .cancellationAction) {
-                                            Button("files.dismiss") { presentingFiles = false }
-                                                .accessibilityIdentifier("files.dismiss")
-                                        }
-                                    }
+                        .onChange(of: reader.agents) { _, agents in
+                            router.restore(agents: agents, authoritative: reader.status == .live)
+                        }
+                        .onChange(of: reader.status) { _, status in
+                            if status == .permissionDenied || status == .sessionExpired {
+                                router.withdrawAgent()
+                            }
+                            router.restore(agents: reader.agents, authoritative: status == .live)
+                        }
+                        .onChange(of: router.path) { _, _ in
+                            reader.selectAgent(router.agentID)
+                            router.remember()
+                            if case .file = router.path.last {} else if files.request != nil {
+                                files.dismissPreview()
                             }
                         }
                         .task(id: coordinator.identity) { [coordinator] in
@@ -238,6 +215,57 @@ struct HolonApp: App {
                     coordinator?.sceneBecameInactive()
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func destination(_ route: AppRoute, connection: ConnectionCoordinator) -> some View {
+        switch route {
+        case .conversation(let agent):
+            if reader.selectedAgentID == agent {
+                ConversationReadingView(reader: reader, sender: sender?.selectedAgentID == agent ? sender : nil,
+                    openReference: { reference in
+                        guard files.selectedAgentID == agent else { return }
+                        router.path.append(.file(agent, .source(.reference(reference))))
+                    }, openWork: { workID in router.path.append(.workDetail(agent, .item(workID))) })
+                    .id(agent)
+            } else { ProgressView("reading.loadingConversation") }
+        case .work(let agent), .workDetail(let agent, _):
+            if work.selectedAgentID == agent {
+            WorkView(coordinator: work, route: {
+                if case .workDetail(_, let detail) = route { return detail }
+                return nil
+            }(), openReference: { reference in
+                guard files.selectedAgentID == agent else { return }
+                router.path.append(.file(agent, .source(.reference(reference))))
+            }, openPlan: { agent, workID, plan in
+                if files.selectedAgentID == agent, let locator = FilesPlanLocator(agentID: agent, workID: workID, plan: plan) {
+                    router.path.append(.file(agent, .plan(locator)))
+                }
+            }, openArtifact: { agent, artifact in
+                if let request = files.artifactRequest(agentID: agent, artifact: artifact) { router.path.append(.file(agent, request)) }
+            })
+            } else { ProgressView("work.loading") }
+        case .files(let agent):
+            if files.selectedAgentID == agent {
+                FilesView(coordinator: files, openFile: { router.path.append(.file(agent, $0)) })
+            }
+            else { ProgressView("work.loading") }
+        case .file(let agent, let request):
+            if files.selectedAgentID == agent {
+                FileReaderView(coordinator: files, request: request, openFile: { router.path.append(.file(agent, $0)) })
+            } else { ProgressView("work.loading") }
+        case .settings:
+            SettingsView(connection: connection)
+        case .connections:
+            ContentView(coordinator: connection) {
+                previousProfile = connection.selectedProfile
+                addingConnection = true
+            }
+        case .tools:
+            SystemExperienceView(connection: connection, reader: reader, sender: sender, imports: imports)
+        case .diagnostics:
+            DiagnosticView(connection: connection, reader: reader, sender: sender)
         }
     }
 

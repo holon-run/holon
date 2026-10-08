@@ -31,9 +31,9 @@ final class LiveDaemonPopulatedProbeTests: XCTestCase {
     func testPopulatedWorkDetailAndPlan() async throws {
         let sdk = try await client()
         let id = try environment("HOLON_UI_WORK_ID")
-        let list = try await sdk.workItems(agentID: "main")
+        let list = try await sdk.workItems(agentID: environment("HOLON_UI_AGENT_ID"), limit: 100)
         XCTAssertTrue(try text(list.value).contains(id))
-        let detail = try await sdk.workItem(agentID: "main", workItemID: id)
+        let detail = try await sdk.workItem(agentID: environment("HOLON_UI_AGENT_ID"), workItemID: id)
         XCTAssertTrue(try text(detail.value).contains("IOS_POPULATED_PLAN"))
         XCTAssertTrue(try text(detail.value).contains("completed"))
         let planPath = try XCTUnwrap(detail.value["plan_artifact"]?["path"])
@@ -62,16 +62,54 @@ final class LiveDaemonPopulatedProbeTests: XCTestCase {
     func testPopulatedTaskAndOutput() async throws {
         let sdk = try await client()
         let id = try environment("HOLON_UI_TASK_ID")
-        let list = try await sdk.tasks(agentID: "main")
+        let list = try await sdk.tasks(agentID: environment("HOLON_UI_AGENT_ID"))
         XCTAssertTrue(try text(list.value).contains(id))
-        let detail = try await sdk.task(agentID: "main", taskID: id)
+        let detail = try await sdk.task(agentID: environment("HOLON_UI_AGENT_ID"), taskID: id)
         XCTAssertTrue(try text(detail.value).contains("command_task"))
-        let output = try await sdk.taskOutput(agentID: "main", taskID: id)
+        let output = try await sdk.taskOutput(agentID: environment("HOLON_UI_AGENT_ID"), taskID: id)
         XCTAssertTrue(try text(output.value).contains("IOS_POPULATED_OUTPUT"))
     }
     func testPopulatedBrief() async throws {
         let sdk = try await client()
-        let conversation = try await sdk.conversation(agentID: "main")
+        let conversation = try await sdk.conversation(agentID: environment("HOLON_UI_AGENT_ID"))
         XCTAssertTrue(try text(conversation.value.raw).contains("IOS_POPULATED_BRIEF"))
+    }
+
+    func testPopulatedActivityWireContract() async throws {
+        guard let turn = ProcessInfo.processInfo.environment["HOLON_UI_RICH_TURN_ID"] else {
+            throw XCTSkip("Requires the isolated rich activity fixture")
+        }
+        let sdk = try await client()
+        let agent = try environment("HOLON_UI_AGENT_ID")
+        let snapshot = try await sdk.conversation(agentID: agent)
+        let page = try await sdk.conversationActivities(agentID: agent, turnID: turn)
+        XCTAssertEqual(page.value["runtime_id"], .string(snapshot.value.runtimeID))
+        XCTAssertEqual(page.value["event_log_epoch"], .string(snapshot.value.eventLogEpoch))
+        XCTAssertEqual(page.value["visibility_scope_id"], .string(snapshot.value.visibilityScopeID))
+        XCTAssertEqual(page.value["schema_version"], snapshot.value.raw["schema_version"])
+        XCTAssertEqual(page.value["query_version"], snapshot.value.raw["query_version"])
+        XCTAssertEqual(page.value["turn"]?["turn_id"], .string(turn))
+        XCTAssertEqual(page.value["has_more"], .bool(true))
+        guard case .array(let items) = page.value["activities"],
+              case .integer(let revision) = page.value["detail_revision"],
+              case .string(let before) = page.value["next_before_cursor"] else {
+            return XCTFail("Activity page omitted typed pagination metadata")
+        }
+        XCTAssertEqual(items.count, 60); XCTAssertGreaterThanOrEqual(revision, 0)
+        XCTAssertFalse(before.isEmpty)
+        for item in items {
+            guard case .string(let id) = item["id"], case .string = item["kind"],
+                  case .integer(let seq) = item["key"]?["event_seq"],
+                  case .integer(let revision) = item["revision"],
+                  case .string = item["summary"] else {
+                return XCTFail("Activity item omitted typed identity, key or summary")
+            }
+            XCTAssertEqual(item["key"]?["activity_id"], .string(id))
+            XCTAssertGreaterThanOrEqual(seq, 0); XCTAssertGreaterThanOrEqual(revision, 0)
+        }
+        let older = try await sdk.conversationActivities(agentID: agent, turnID: turn, before: before)
+        XCTAssertEqual(older.value["detail_revision"], page.value["detail_revision"])
+        XCTAssertNotEqual(older.value["next_before_cursor"], .string(before))
+        XCTAssertTrue(try text(older.value).contains("IOS_RICH_ASSISTANT: read-only inspection batch 1."))
     }
 }

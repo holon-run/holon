@@ -1,6 +1,12 @@
 import Foundation
 import HolonClient
 
+enum BriefPresentation {
+    static func text(_ brief: JSONValue) -> String {
+        brief["text"]?.workString ?? brief["body"]?.workString ?? brief["content"]?.workString ?? ""
+    }
+}
+
 enum WorkLoadState: Equatable {
     case idle, loading, loaded, failed, disconnected, offline, incompatible
 }
@@ -20,6 +26,24 @@ struct WorkRecord: Identifiable, Equatable, Sendable {
     }
     var briefID: String? { raw["result_brief_id"]?.workString }
     var references: [JSONValue] { raw["work_refs"]?.workArray ?? [] }
+    var todos: [JSONValue] { raw["todo_list"]?.workArray ?? [] }
+    var nextStep: String? {
+        (todos.first { $0["state"] == .string("in_progress") } ?? todos.first { $0["state"] != .string("completed") })?["text"]?.workString
+    }
+    var completed: Bool { ["completed", "succeeded", "failed", "cancelled", "interrupted"].contains(state) }
+    var activeTask: Bool { ["running", "active", "queued", "pending", "cancelling"].contains(state) }
+    var stateKey: String {
+        switch state {
+        case "open", "queued", "pending": "work.state.pending"
+        case "completing", "running", "active": "work.state.active"
+        case "completed", "succeeded": "work.state.completed"
+        case "failed": "work.state.failed"
+        case "cancelled": "work.state.cancelled"
+        case "cancelling": "work.state.cancelling"
+        case "interrupted": "work.state.interrupted"
+        default: "work.state.unknown"
+        }
+    }
 
     init(raw: JSONValue, task: Bool = false) throws {
         guard case .object = raw,

@@ -2,6 +2,23 @@ import XCTest
 @testable import Holon
 
 final class ReleaseConfigurationTests: XCTestCase {
+    func testCameraPurposeAndPolishVocabularyAreLocalized() throws {
+        XCTAssertTrue((try packagedInfoDictionary()["NSCameraUsageDescription"] as? String)?.contains("Agent") == true)
+        for language in ["en", "zh-Hans"] {
+            let path = try XCTUnwrap(Bundle.main.path(forResource: language, ofType: "lproj"))
+            let bundle = try XCTUnwrap(Bundle(path: path))
+            for key in ["agents.filter.all", "agents.filter.reply", "agents.filter.newResults", "agents.filter.active",
+                        "sending.camera", "sending.camera.permission", "sending.camera.unavailable", "files.endOfFile"] {
+                let value = bundle.localizedString(forKey: key, value: nil, table: nil)
+                XCTAssertNotEqual(value, key, "\(language) must resolve \(key)")
+                XCTAssertFalse(value.isEmpty)
+            }
+            let purpose = bundle.localizedString(forKey: "NSCameraUsageDescription", value: nil, table: "InfoPlist")
+            XCTAssertNotEqual(purpose, "NSCameraUsageDescription")
+            XCTAssertTrue(purpose.contains("Agent"))
+        }
+    }
+
     func testHostedAppHasCompiledPrimaryIconsForPhoneAndPad() throws {
         let info = try packagedInfoDictionary()
         for key in ["CFBundleIcons", "CFBundleIcons~ipad"] {

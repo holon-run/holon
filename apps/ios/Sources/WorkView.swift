@@ -3,35 +3,50 @@ import HolonClient
 
 struct WorkView: View {
     @Bindable var coordinator: WorkCoordinator
+    var route: WorkRoute? = nil
+    var openReference: ((String) -> Void)? = nil
     var openPlan: (String, String, JSONValue) -> Void
     var openArtifact: (String, JSONValue) -> Void
-    @State private var path: [WorkRoute] = []
-    @State private var agentInput = ""
+    @State private var filter = "all"
 
     var body: some View {
-        NavigationStack(path: $path) {
+        Group {
+            if let route {
+                detail(route).onAppear { coordinator.open(route); coordinator.setDetailVisible(true) }
+                    .onDisappear { coordinator.setDetailVisible(false, route: route) }
+            } else {
             List {
-                Section {
-                    TextField("work.agent", text: $agentInput)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    Button("work.select_agent") {
-                        coordinator.selectAgent(agentInput.isEmpty ? nil : agentInput)
-                    }
-                    if let agent = coordinator.selectedAgentID { Text(agent).font(.caption) }
-                }
+                Picker("work.filter", selection: $filter) {
+                    Text("work.filter.all").tag("all")
+                    Text("work.filter.active").tag("active")
+                    Text("work.filter.completed").tag("completed")
+                }.pickerStyle(.segmented)
                 Section("work.items") {
                     state(coordinator.itemsState, empty: coordinator.items.isEmpty)
-                    ForEach(coordinator.items) { item in
-                        NavigationLink(value: WorkRoute.item(item.id)) { row(item) }
+                    ForEach(coordinator.items.filter { filter == "all" || ($0.completed == (filter == "completed")) }) { item in
+                        NavigationLink(value: AppRoute.workDetail(coordinator.selectedAgentID ?? "", .item(item.id))) { row(item) }
                             .accessibilityIdentifier("work.item." + item.id)
+                    }
+                    if coordinator.items.count == coordinator.itemLimit {
+                        if coordinator.itemLimit < 400 {
+                            Button("work.loadMore") { coordinator.loadMoreItems() }
+                                .accessibilityIdentifier("work.moreItems")
+                        }
+                        else { Text("work.windowLimit").font(.caption).foregroundStyle(.secondary) }
                     }
                 }
                 Section("work.tasks") {
                     state(coordinator.tasksState, empty: coordinator.tasks.isEmpty)
                     ForEach(coordinator.tasks) { task in
-                        NavigationLink(value: WorkRoute.task(task.id)) { row(task) }
+                        NavigationLink(value: AppRoute.workDetail(coordinator.selectedAgentID ?? "", .task(task.id))) { row(task) }
                             .accessibilityIdentifier("work.task." + task.id)
+                    }
+                    if coordinator.tasks.count == coordinator.taskLimit {
+                        if coordinator.taskLimit < 400 {
+                            Button("work.loadMore") { coordinator.loadMoreTasks() }
+                                .accessibilityIdentifier("work.moreTasks")
+                        }
+                        else { Text("work.windowLimit").font(.caption).foregroundStyle(.secondary) }
                     }
                 }
             }
@@ -39,22 +54,15 @@ struct WorkView: View {
             .toolbar {
                 Button("work.refresh", systemImage: "arrow.clockwise") { coordinator.refresh() }
             }
-            .navigationDestination(for: WorkRoute.self) { route in
-                detail(route)
-                    .onAppear { coordinator.open(route) }
             }
-        }
-        .onAppear { agentInput = coordinator.selectedAgentID ?? "" }
-        .onChange(of: coordinator.selectedAgentID) { _, id in
-            path = []
-            agentInput = id ?? ""
         }
     }
 
     private func row(_ record: WorkRecord) -> some View {
         VStack(alignment: .leading) {
             Text(record.title).lineLimit(3)
-            Text(record.state).font(.caption).foregroundStyle(.secondary)
+            if let step = record.nextStep { Text(step).font(.subheadline).foregroundStyle(.secondary).lineLimit(2) }
+            Text(LocalizedStringKey(record.stateKey)).font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -77,27 +85,40 @@ struct WorkView: View {
             state(coordinator.detailState)
             if coordinator.route == route {
                 if let record = coordinator.detail {
-                    Section("work.details") {
-                        Text(record.title).textSelection(.enabled)
-                        LabeledContent("work.status", value: record.state)
-                        ForEach(["readiness", "scheduling_state", "focus", "blocked_by", "result_summary"],
-                                id: \.self) { key in
-                            if let text = record.raw[key]?.workString {
-                                VStack(alignment: .leading) {
-                                    Text(LocalizedStringKey("work.\(key)")).font(.caption)
-                                    Text(text).textSelection(.enabled)
+                    Section("work.objective") {
+                        Text(verbatim: record.title).font(.headline).textSelection(.enabled)
+                        Text(LocalizedStringKey(record.stateKey)).font(.caption).foregroundStyle(.secondary)
+                        if let blocked = record.raw["blocked_by"]?.workString, !blocked.isEmpty {
+                            Label(blocked, systemImage: "pause.circle").foregroundStyle(.secondary)
+                        }
+                    }
+                    if !record.todos.isEmpty {
+                        Section("work.steps") {
+                            ForEach(Array(record.todos.enumerated()), id: \.offset) { _, todo in
+                                HStack(alignment: .top) {
+                                    Image(systemName: todo["state"] == .string("completed") ? "checkmark.circle" : "circle")
+                                        .foregroundStyle(.secondary)
+                                    Text(verbatim: todo["text"]?.workString ?? "").textSelection(.enabled)
                                 }
                             }
                         }
                     }
+                    if coordinator.brief == nil, let result = record.raw["result_summary"]?.workString {
+                        Section("work.brief") { RichTextContent(text: result, openReference: openReference) }
+                    }
+                    if let brief = coordinator.brief {
+                        Section("work.brief") {
+                            RichTextContent(text: BriefPresentation.text(brief), openReference: openReference)
+                        }
+                    }
                     if case .item = route {
-                        plan(record)
-                        if let id = record.briefID {
-                            NavigationLink("work.brief", value: WorkRoute.brief(id))
+                        if coordinator.briefFailed {
+                            Text("work.briefError").foregroundStyle(.secondary)
+                            Button("work.retry") { coordinator.open(route) }
                         }
                         if !record.references.isEmpty {
                             Section("work.artifacts") {
-                                ForEach(Array(record.references.prefix(20).enumerated()), id: \.offset) { _, ref in
+                                ForEach(Array(record.references.enumerated()), id: \.offset) { _, ref in
                                     Button {
                                         if let agent = coordinator.selectedAgentID { openArtifact(agent, ref) }
                                     } label: {
@@ -106,23 +127,35 @@ struct WorkView: View {
                                 }
                             }
                         }
+                        plan(record)
+                    }
+                    Section {
+                        DisclosureGroup("work.metadata") {
+                            ForEach(["readiness", "scheduling_state", "focus", "plan_status", "created_at", "updated_at"], id: \.self) { key in
+                                if let text = record.raw[key]?.workString {
+                                    LabeledContent(LocalizedStringKey("work.\(key)"), value: text)
+                                }
+                            }
+                            LabeledContent("work.id", value: record.id).textSelection(.enabled)
+                        }
                     }
                 }
                 if let output = coordinator.output {
                     Section("work.output") {
-                        LabeledContent("work.status", value: output.status)
                         if output.truncated { Text("work.truncated").foregroundStyle(.secondary) }
+                        if coordinator.outputFailed {
+                            Text("work.outputRefreshError").font(.caption).foregroundStyle(.secondary)
+                            Button("work.retry") { coordinator.open(route) }
+                        }
                         if let text = output.text {
                             Text(text).font(.system(.body, design: .monospaced)).textSelection(.enabled)
                                 .accessibilityIdentifier("work.output")
                         } else { Text("work.no_output") }
                     }
                 }
-                if let brief = coordinator.brief {
+                if coordinator.detail == nil, let brief = coordinator.brief {
                     Section("work.brief") {
-                        Text(String((brief["body"]?.workString ?? brief["content"]?.workString
-                                     ?? brief.workDisplay).prefix(32_768)))
-                            .textSelection(.enabled)
+                        RichTextContent(text: BriefPresentation.text(brief), openReference: openReference)
                     }
                 }
             }
@@ -140,10 +173,6 @@ struct WorkView: View {
             if status == "missing" { Text("work.plan_missing") }
             if status == "unreadable" { Text("work.plan_unreadable") }
             if let plan = record.plan {
-                if let preview = plan["preview"]?.workString {
-                    Text(preview).textSelection(.enabled)
-                    if plan["preview_complete"] != .bool(true) { Text("work.truncated") }
-                } else { Text("work.no_preview") }
                 if plan["workspace_id"]?.workString != nil,
                    plan["relative_path"]?.workString != nil {
                     Button("work.open_plan") {
@@ -151,6 +180,9 @@ struct WorkView: View {
                     }
                     .accessibilityIdentifier("work.openPlan")
                 } else { Text("work.plan_unavailable") }
+                if let preview = plan["preview"]?.workString {
+                    Text(verbatim: String(preview.prefix(16_384))).lineLimit(6).foregroundStyle(.secondary)
+                } else { Text("work.no_preview") }
             } else if status != "missing" && status != "unreadable" {
                 Text("work.no_plan")
             }

@@ -4,11 +4,18 @@ import HolonClient
 protocol WorkTransport: Sendable {
     func items(agentID: String) async throws -> [WorkRecord]
     func tasks(agentID: String) async throws -> [WorkRecord]
+    func items(agentID: String, limit: Int) async throws -> [WorkRecord]
+    func tasks(agentID: String, limit: Int) async throws -> [WorkRecord]
     func item(agentID: String, id: String) async throws -> WorkRecord
     func task(agentID: String, id: String) async throws -> WorkRecord
     func output(agentID: String, id: String) async throws -> WorkOutput
     func brief(agentID: String, id: String) async throws -> JSONValue
     func close() async
+}
+
+extension WorkTransport {
+    func items(agentID: String, limit: Int) async throws -> [WorkRecord] { try await items(agentID: agentID) }
+    func tasks(agentID: String, limit: Int) async throws -> [WorkRecord] { try await tasks(agentID: agentID) }
 }
 
 /// Owns an independent authenticated client; never binds or mutates UI authority.
@@ -58,23 +65,41 @@ actor WorkClientTransport: WorkTransport {
     }
 
     func items(agentID: String) async throws -> [WorkRecord] {
+        try await items(agentID: agentID, limit: 50)
+    }
+    func items(agentID: String, limit: Int) async throws -> [WorkRecord] {
+        guard (1...400).contains(limit) else { throw WorkProtocolError.malformed }
         let raw = try await request {
-            try await $0.workItems(agentID: agentID, limit: 50)
+            try await $0.workItems(agentID: agentID, limit: limit)
         }
         guard let values = raw.workArray ?? raw["items"]?.workArray else {
             throw WorkProtocolError.malformed
         }
-        return try values.prefix(50).map { try WorkRecord(raw: $0) }
+        return try records(values, agent: agentID, limit: limit, task: false)
     }
 
     func tasks(agentID: String) async throws -> [WorkRecord] {
+        try await tasks(agentID: agentID, limit: 50)
+    }
+    func tasks(agentID: String, limit: Int) async throws -> [WorkRecord] {
+        guard (1...400).contains(limit) else { throw WorkProtocolError.malformed }
         let raw = try await request {
-            try await $0.tasks(agentID: agentID, limit: 50)
+            try await $0.tasks(agentID: agentID, limit: limit)
         }
         guard let values = raw.workArray ?? raw["tasks"]?.workArray else {
             throw WorkProtocolError.malformed
         }
-        return try values.prefix(50).map { try WorkRecord(raw: $0, task: true) }
+        return try records(values, agent: agentID, limit: limit, task: true)
+    }
+
+    private func records(_ values: [JSONValue], agent: String, limit: Int, task: Bool) throws -> [WorkRecord] {
+        guard values.count <= limit, values.allSatisfy({ ownerMatches($0, agent: agent) }) else { throw WorkProtocolError.malformed }
+        let result = try values.map { try WorkRecord(raw: $0, task: task) }
+        guard Set(result.map(\.id)).count == result.count else { throw WorkProtocolError.malformed }
+        return result
+    }
+    private func ownerMatches(_ raw: JSONValue, agent: String) -> Bool {
+        ["agent_id", "owner_agent_id"].allSatisfy { raw[$0] == nil || raw[$0] == .string(agent) }
     }
 
     func item(agentID: String, id: String) async throws -> WorkRecord {
@@ -82,7 +107,7 @@ actor WorkClientTransport: WorkTransport {
             try await $0.workItem(agentID: agentID, workItemID: id)
         }
         let record = try WorkRecord(raw: raw)
-        guard record.id == id else { throw WorkProtocolError.malformed }
+        guard record.id == id, ownerMatches(raw, agent: agentID) else { throw WorkProtocolError.malformed }
         return record
     }
 
@@ -91,7 +116,7 @@ actor WorkClientTransport: WorkTransport {
             try await $0.task(agentID: agentID, taskID: id)
         }
         let record = try WorkRecord(raw: raw, task: true)
-        guard record.id == id else { throw WorkProtocolError.malformed }
+        guard record.id == id, ownerMatches(raw, agent: agentID) else { throw WorkProtocolError.malformed }
         return record
     }
 
@@ -106,7 +131,9 @@ actor WorkClientTransport: WorkTransport {
     }
 
     func brief(agentID: String, id: String) async throws -> JSONValue {
-        try await request { try await $0.briefDetail(agentID: agentID, briefID: id) }
+        let raw = try await request { try await $0.briefDetail(agentID: agentID, briefID: id) }
+        guard raw["brief_id"] == .string(id) || raw["id"] == .string(id), ownerMatches(raw, agent: agentID) else { throw WorkProtocolError.malformed }
+        return raw
     }
 
     func close() async {

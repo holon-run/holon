@@ -13,11 +13,21 @@ struct ReadingReadConfirmation: Equatable {
 @Observable @MainActor
 final class ReadingCoordinator {
     private(set) var agents: [ReadingAgent] = []
+    private(set) var rosterRevision = 0
     private(set) var selectedAgentID: String?
     private(set) var snapshot: HolonConversationSnapshot?
     private(set) var briefs: [String: JSONValue] = [:]
+    private(set) var loadingBriefs: Set<String> = []
+    private(set) var failedBriefs: Set<String> = []
     private(set) var visibleBriefIDs: Set<String> = []
     private(set) var activities: [String: JSONValue] = [:]
+    private(set) var activityDetails: [String: JSONValue] = [:]
+    private(set) var activityCacheRevision = 0
+    var activityReadKey: String {
+        "\(status.rawValue)|\(activityCacheRevision)|\(snapshot?.snapshotCursor ?? "")"
+    }
+    private(set) var loadingActivities: Set<String> = []
+    private(set) var failedActivities: Set<String> = []
     private(set) var status: ReadingStatus = .disconnected
     private(set) var canLoadHistory = false
     private(set) var isLoadingHistory = false
@@ -40,8 +50,18 @@ final class ReadingCoordinator {
     @ObservationIgnored private var rosterRefreshPending = false
     @ObservationIgnored private var expansionCount = 0
     @ObservationIgnored private var expanding: Set<String> = []
+    @ObservationIgnored private var waitingBriefs: Set<String> = []
+    @ObservationIgnored private var waitingActivities: Set<String> = []
     @ObservationIgnored private var briefRecency: [String] = []
     @ObservationIgnored private var visibilityRevision = 0
+    @ObservationIgnored private var previewTask: Task<Void, Never>?
+    @ObservationIgnored private var previewedAgentIDs: Set<String> = []
+    private struct DetailVersion: Equatable {
+        let turnID: String
+        let pageRevision: Int64
+        let activityRevision: Int64
+    }
+    @ObservationIgnored private var detailVersions: [String: DetailVersion] = [:]
 
     init() { cache = ReadingCache() }
     init(cache: ReadingCache) { self.cache = cache }
@@ -109,6 +129,9 @@ final class ReadingCoordinator {
     }
 
     private func stop() {
+        previewTask?.cancel()
+        previewTask = nil
+        previewedAgentIDs = []
         revision += 1
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
@@ -118,6 +141,10 @@ final class ReadingCoordinator {
         rosterRefreshPending = false
         expansionCount = 0
         expanding.removeAll()
+        waitingBriefs.removeAll()
+        waitingActivities.removeAll()
+        loadingActivities.removeAll()
+        loadingBriefs.removeAll()
         isLoadingHistory = false
         if readStatus == .pending { readStatus = .idle }
         reducer = nil
@@ -128,6 +155,8 @@ final class ReadingCoordinator {
         reducer = nil
         clearBriefCache()
         activities.removeAll()
+        clearActivityDetails()
+        failedActivities.removeAll()
         before = nil
         canLoadHistory = false
         readStatus = .idle
@@ -136,6 +165,8 @@ final class ReadingCoordinator {
 
     private func clearBriefCache() {
         briefs.removeAll()
+        failedBriefs.removeAll()
+        loadingBriefs.removeAll()
         briefRecency.removeAll()
         if !visibleBriefIDs.isEmpty { visibilityRevision += 1 }
         visibleBriefIDs.removeAll()
@@ -152,12 +183,14 @@ final class ReadingCoordinator {
     }
 
     @discardableResult
-    private func launch(_ body: @escaping @MainActor (Int) async -> Void) -> Task<Void, Never> {
+    private func launch(onFinish: (@MainActor (Int) -> Void)? = nil,
+                        _ body: @escaping @MainActor (Int) async -> Void) -> Task<Void, Never> {
         let id = UUID(), token = revision
         let task = Task { [weak self] in
-            guard let self, self.current(token) else { return }
+            guard let self else { return }
+            defer { self.tasks.removeValue(forKey: id); onFinish?(token) }
+            guard self.current(token) else { return }
             await body(token)
-            self.tasks.removeValue(forKey: id)
         }
         tasks[id] = task
         return task
@@ -177,12 +210,56 @@ final class ReadingCoordinator {
     private func boundedRoster(_ roster: [ReadingAgent]) -> [ReadingAgent] {
         var seen: Set<String> = []
         return roster.filter { !$0.id.isEmpty && $0.id.utf8.count <= 512 && seen.insert($0.id).inserted }
-            .prefix(80).map {
-                ReadingAgent(id: $0.id, name: String($0.name.prefix(160)),
-                             preview: String($0.preview.prefix(240)),
-                             operatorPreview: $0.operatorPreview.map { String($0.prefix(240)) },
-                             unreadCount: $0.unreadCount)
+            .map {
+                var agent = $0
+                agent.name = String(agent.name.prefix(160))
+                agent.preview = String(agent.preview.prefix(240))
+                agent.operatorPreview = agent.operatorPreview.map { String($0.prefix(240)) }
+                agent.currentRunID = agent.currentRunID.flatMap { !$0.isEmpty && $0.utf8.count <= 512 ? $0 : nil }
+                agent.posture = agent.posture.map { String($0.prefix(64)) }
+                agent.effectiveModel = agent.effectiveModel.map { String($0.prefix(512)) }
+                return agent
             }
+    }
+
+    /// Metadata never holds up roster publication. Only the displayed window is enriched,
+    /// at most two reads concurrently, and every result belongs to this exact snapshot.
+    func loadVisiblePreviews(agentIDs: [String]) async {
+        previewTask?.cancel()
+        guard let transport, status == .live else { return }
+        let token = revision, roster = rosterRevision
+        let ids = Array(agentIDs.filter { id in
+            !previewedAgentIDs.contains(id) && agents.contains { $0.id == id }
+        }.prefix(80))
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await withThrowingTaskGroup(of: (String, ReadingOperatorPreview?).self) { group in
+                    var remaining = ids.makeIterator()
+                    for _ in 0..<2 {
+                        if let id = remaining.next() {
+                            group.addTask { (id, try await transport.operatorPreview(agentID: id)) }
+                        }
+                    }
+                    while let (id, value) = try await group.next() {
+                        guard self.current(token), self.rosterRevision == roster else { group.cancelAll(); return }
+                        if let index = self.agents.firstIndex(where: { $0.id == id }) {
+                            self.agents[index].operatorPreview = value?.text
+                            self.agents[index].operatorAt = value?.createdAt
+                            self.previewedAgentIDs.insert(id)
+                        }
+                        if let id = remaining.next() {
+                            group.addTask { (id, try await transport.operatorPreview(agentID: id)) }
+                        }
+                    }
+                }
+                if self.current(token), self.rosterRevision == roster { self.persist() }
+            } catch {
+                if self.current(token), self.rosterRevision == roster { self.failed(error, token: token, recover: true) }
+            }
+        }
+        previewTask = task
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
     }
 
     @discardableResult
@@ -195,6 +272,8 @@ final class ReadingCoordinator {
                 let roster = try await transport.roster()
                 guard self.current(token) else { return }
                 self.agents = self.boundedRoster(roster)
+                self.rosterRevision &+= 1
+                self.previewedAgentIDs = []
                 if let agentID = self.selectedAgentID {
                     let value = try await transport.conversation(agentID: agentID, before: nil)
                     guard self.current(token) else { return }
@@ -204,6 +283,7 @@ final class ReadingCoordinator {
                     }
                     // Summary revisions cannot prove detail freshness across a stream gap.
                     self.activities.removeAll()
+                    self.clearActivityDetails()
                     self.snapshot = value
                     self.reducer = HolonConversationReducer(snapshot: value, maximumTurns: 180)
                     self.before = value.nextBeforeCursor
@@ -242,6 +322,7 @@ final class ReadingCoordinator {
                         let commit = try reducer.acceptCommit(event)
                         self.reducer = reducer
                         if let commit {
+                            let previousActivities = self.activities
                             let updated = commit.snapshot
                             try self.validate(updated)
                             let previous = self.snapshot
@@ -263,6 +344,7 @@ final class ReadingCoordinator {
                                     return (self.activities[id]?["detail_revision"]?.readingInteger ?? -1) >= invalidated
                                 }
                             }
+                            if previousActivities != self.activities { self.clearActivityDetails() }
                             self.persist()
                         }
                     }
@@ -294,6 +376,8 @@ final class ReadingCoordinator {
                 let value = try await transport.roster()
                 guard self.current(token) else { return }
                 self.agents = self.boundedRoster(value)
+                self.rosterRevision &+= 1
+                self.previewedAgentIDs = []
                 self.persist()
             } catch {
                 if self.current(token) { self.failed(error, token: token, recover: true) }
@@ -366,10 +450,109 @@ final class ReadingCoordinator {
     }
 
     func loadBrief(_ briefID: String) async {
-        if briefs[briefID] != nil { touchBrief(briefID) }
-        else { await expand(briefID, brief: true) }
+        if briefs[briefID] != nil { touchBrief(briefID); return }
+        guard !waitingBriefs.contains(briefID), waitingBriefs.count < 16 else { return }
+        let captured = revision
+        waitingBriefs.insert(briefID)
+        loadingBriefs.insert(briefID)
+        failedBriefs.remove(briefID)
+        defer {
+            if captured == revision { waitingBriefs.remove(briefID); loadingBriefs.remove(briefID) }
+        }
+        while expansionCount >= 2 {
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            guard current(captured) else { return }
+        }
+        guard current(captured) else { return }
+        await expand(briefID, brief: true)
     }
-    func loadActivities(_ turnID: String) async { await expand(turnID, brief: false) }
+    func loadActivities(_ turnID: String) async {
+        guard activities[turnID] == nil else { return }
+        await queueActivityRead(turnID)
+    }
+
+    private func queueActivityRead(_ turnID: String, before: String? = nil) async {
+        guard !turnID.isEmpty, turnID.utf8.count <= 512 else { return }
+        let captured = revision
+        // A full-screen reader can take over an inline read during presentation.
+        // Wait for that request to settle rather than dropping the new owner.
+        while waitingActivities.contains(turnID) || loadingActivities.contains(turnID) {
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            guard current(captured) else { return }
+        }
+        guard waitingActivities.count < 16 else { return }
+        waitingActivities.insert(turnID); loadingActivities.insert(turnID)
+        defer {
+            if captured == revision { waitingActivities.remove(turnID); loadingActivities.remove(turnID) }
+        }
+        while expansionCount >= 2 {
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            guard current(captured) else { return }
+        }
+        guard current(captured), !Task.isCancelled else { return }
+        if let before, activities[turnID]?["next_before_cursor"] != .string(before) { return }
+        await expand(turnID, brief: false, before: before)
+    }
+
+    func loadOlderActivities(_ turnID: String) async {
+        guard let page = activities[turnID], page["has_more"] == .bool(true),
+              let cursor = page["next_before_cursor"]?.readingString else { return }
+        await queueActivityRead(turnID, before: cursor)
+    }
+
+    func reloadActivities(_ turnID: String) async {
+        guard !loadingActivities.contains(turnID) else { return }
+        clearActivityDetails()
+        activities.removeValue(forKey: turnID)
+        await loadActivities(turnID)
+    }
+
+    private func clearActivityDetails() {
+        activityDetails.removeAll()
+        detailVersions.removeAll()
+        activityCacheRevision &+= 1
+    }
+
+    private func detailVersion(turnID: String, activity: ReadingActivity) -> DetailVersion {
+        DetailVersion(turnID: turnID, pageRevision: activities[turnID]?["detail_revision"]?.readingInteger ?? -1,
+                      activityRevision: activity.revision)
+    }
+
+    func loadActivityDetail(turnID: String, activityID: String) async {
+        let key = "detail:" + activityID
+        guard foreground, status == .live, expansionCount < 2, !expanding.contains(key),
+              let transport, let agent = selectedAgentID,
+              let activity = ActivityPresentation.items(activities[turnID]).first(where: { $0.id == activityID }),
+              activity.detailID != nil else { return }
+        let version = detailVersion(turnID: turnID, activity: activity)
+        guard activityDetails[activityID] == nil || detailVersions[activityID] != version else { return }
+        let page = activities[turnID], epoch = snapshot?.eventLogEpoch, cacheRevision = activityCacheRevision
+        expansionCount += 1; expanding.insert(key); loadingActivities.insert(activityID)
+        failedActivities.remove(activityID)
+        let task = launch(onFinish: { [weak self] token in
+            guard let self, token == self.revision else { return }
+            self.expansionCount -= 1; self.expanding.remove(key); self.loadingActivities.remove(activityID)
+        }) { [weak self] token in
+            guard let self else { return }
+            do {
+                let detail = try await transport.activityDetail(agentID: agent, turnID: turnID, activity: activity)
+                guard self.current(token), self.snapshot?.eventLogEpoch == epoch,
+                      self.activities[turnID] == page, self.activityCacheRevision == cacheRevision,
+                      (try JSONEncoder().encode(detail)).count <= 1_048_576 else { return }
+                if self.activityDetails.count >= 8 {
+                    self.activityDetails.removeAll(); self.detailVersions.removeAll()
+                }
+                self.activityDetails[activityID] = detail
+                self.detailVersions[activityID] = version
+            } catch {
+                if self.current(token) {
+                    self.failedActivities.insert(activityID)
+                    self.failed(error, token: token, recover: false)
+                }
+            }
+        }
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+    }
 
     private func touchBrief(_ id: String) {
         briefRecency.removeAll { $0 == id }
@@ -386,38 +569,64 @@ final class ReadingCoordinator {
         touchBrief(id)
     }
 
-    private func expand(_ id: String, brief: Bool) async {
+    private func expand(_ id: String, brief: Bool, before: String? = nil) async {
         let key = (brief ? "brief:" : "turn:") + id
         guard foreground, status == .live, !id.isEmpty, id.utf8.count <= 512,
-              brief ? briefs[id] == nil : activities[id] == nil,
+              brief ? briefs[id] == nil : (before != nil || activities[id] == nil),
               expansionCount < 2, !expanding.contains(key),
               let agentID = selectedAgentID, let transport else { return }
         expansionCount += 1
         expanding.insert(key)
+        if brief { loadingBriefs.insert(id); failedBriefs.remove(id) }
+        else { loadingActivities.insert(id); failedActivities.remove(id) }
         let liveCursor = snapshot?.snapshotCursor
         let epoch = snapshot?.eventLogEpoch
-        let task = launch { [weak self] token in
+        let previous = activities[id]
+        let task = launch(onFinish: { [weak self] token in
+            guard let self, token == self.revision else { return }
+            self.expansionCount -= 1; self.expanding.remove(key)
+            if brief { self.loadingBriefs.remove(id) }
+            else { self.loadingActivities.remove(id) }
+        }) { [weak self] token in
             guard let self else { return }
-            defer {
-                if self.current(token) {
-                    self.expansionCount -= 1
-                    self.expanding.remove(key)
-                }
-            }
             do {
                 let value = try await (brief ? transport.brief(agentID: agentID, briefID: id) :
-                    transport.activities(agentID: agentID, turnID: id))
+                    transport.activities(agentID: agentID, turnID: id, before: before))
                 guard self.current(token), self.snapshot?.eventLogEpoch == epoch,
-                      brief || self.snapshot?.snapshotCursor == liveCursor,
-                      (try JSONEncoder().encode(value)).count <= 262_144 else { return }
+                      brief || self.snapshot?.snapshotCursor == liveCursor else { return }
+                guard (try JSONEncoder().encode(value)).count <= (brief ? 262_144 : 4_194_304) else {
+                    if brief { self.failedBriefs.insert(id) }
+                    else { self.failedActivities.insert(id) }
+                    return
+                }
                 if brief {
                     self.cacheBrief(value, id: id)
                 } else {
-                    if self.activities.count >= 8 { self.activities.removeAll() }
-                    self.activities[id] = value
+                    guard let snapshot = self.snapshot else { return }
+                    try ActivityPresentation.validate(value, snapshot: snapshot, turnID: id)
+                    let page: JSONValue
+                    if let before, let previous {
+                        guard self.activities[id] == previous else { return }
+                        page = try ActivityPresentation.merging(value, into: previous, requestedCursor: before)
+                    } else { page = value }
+                    if self.activities[id] == nil && self.activities.count >= 8 {
+                        self.activities.removeAll(); self.clearActivityDetails()
+                    }
+                    self.activities[id] = page
+                    let items = ActivityPresentation.items(page)
+                    for activity in items where self.detailVersions[activity.id] != self.detailVersion(turnID: id, activity: activity) {
+                        self.activityDetails.removeValue(forKey: activity.id)
+                        self.detailVersions.removeValue(forKey: activity.id)
+                    }
+                    // An explicit reload may return identical revisions; expanded rows must read it again.
+                    self.activityCacheRevision &+= 1
                 }
             } catch {
-                if self.current(token) { self.failed(error, token: token, recover: false) }
+                if self.current(token) {
+                    if brief { self.failedBriefs.insert(id) }
+                    else { self.failedActivities.insert(id) }
+                    self.failed(error, token: token, recover: false)
+                }
             }
         }
         await withTaskCancellationHandler {
@@ -508,7 +717,7 @@ final class ReadingCoordinator {
     }
 
     func rememberPosition(turnID: String) {
-        guard selectedAgentID != nil, turnID.utf8.count <= 512 else { return }
+        guard selectedAgentID != nil, turnID.utf8.count <= 512, readingPosition != turnID else { return }
         readingPosition = turnID
         persist()
     }
