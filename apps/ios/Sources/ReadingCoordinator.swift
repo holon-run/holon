@@ -13,6 +13,7 @@ struct ReadingReadConfirmation: Equatable {
 @Observable @MainActor
 final class ReadingCoordinator {
     private(set) var agents: [ReadingAgent] = []
+    private(set) var rosterRevision = 0
     private(set) var selectedAgentID: String?
     private(set) var snapshot: HolonConversationSnapshot?
     private(set) var briefs: [String: JSONValue] = [:]
@@ -42,6 +43,7 @@ final class ReadingCoordinator {
     @ObservationIgnored private var expanding: Set<String> = []
     @ObservationIgnored private var briefRecency: [String] = []
     @ObservationIgnored private var visibilityRevision = 0
+    @ObservationIgnored private var previewTask: Task<Void, Never>?
 
     init() { cache = ReadingCache() }
     init(cache: ReadingCache) { self.cache = cache }
@@ -109,6 +111,8 @@ final class ReadingCoordinator {
     }
 
     private func stop() {
+        previewTask?.cancel()
+        previewTask = nil
         revision += 1
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
@@ -177,15 +181,53 @@ final class ReadingCoordinator {
     private func boundedRoster(_ roster: [ReadingAgent]) -> [ReadingAgent] {
         var seen: Set<String> = []
         return roster.filter { !$0.id.isEmpty && $0.id.utf8.count <= 512 && seen.insert($0.id).inserted }
-            .prefix(80).map {
-                ReadingAgent(id: $0.id, name: String($0.name.prefix(160)),
-                             preview: String($0.preview.prefix(240)),
-                             operatorPreview: $0.operatorPreview.map { String($0.prefix(240)) },
-                             unreadCount: $0.unreadCount,
-                             currentRunID: $0.currentRunID.flatMap {
-                                 !$0.isEmpty && $0.utf8.count <= 512 ? $0 : nil
-                             })
+            .map {
+                var agent = $0
+                agent.name = String(agent.name.prefix(160))
+                agent.preview = String(agent.preview.prefix(240))
+                agent.operatorPreview = agent.operatorPreview.map { String($0.prefix(240)) }
+                agent.currentRunID = agent.currentRunID.flatMap { !$0.isEmpty && $0.utf8.count <= 512 ? $0 : nil }
+                agent.posture = agent.posture.map { String($0.prefix(64)) }
+                agent.effectiveModel = agent.effectiveModel.map { String($0.prefix(512)) }
+                return agent
             }
+    }
+
+    /// Metadata never holds up roster publication. Only the displayed window is enriched,
+    /// at most two reads concurrently, and every result belongs to this exact snapshot.
+    func loadVisiblePreviews(agentIDs: [String]) async {
+        previewTask?.cancel()
+        guard let transport, status == .live else { return }
+        let token = revision, roster = rosterRevision
+        let ids = Array(agentIDs.prefix(80)).filter { id in agents.contains { $0.id == id } }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await withThrowingTaskGroup(of: (String, ReadingOperatorPreview?).self) { group in
+                    var remaining = ids.makeIterator()
+                    for _ in 0..<2 {
+                        if let id = remaining.next() {
+                            group.addTask { (id, try await transport.operatorPreview(agentID: id)) }
+                        }
+                    }
+                    while let (id, value) = try await group.next() {
+                        guard self.current(token), self.rosterRevision == roster else { group.cancelAll(); return }
+                        if let index = self.agents.firstIndex(where: { $0.id == id }) {
+                            self.agents[index].operatorPreview = value?.text
+                            self.agents[index].operatorAt = value?.createdAt
+                        }
+                        if let id = remaining.next() {
+                            group.addTask { (id, try await transport.operatorPreview(agentID: id)) }
+                        }
+                    }
+                }
+                if self.current(token), self.rosterRevision == roster { self.persist() }
+            } catch {
+                if self.current(token), self.rosterRevision == roster { self.failed(error, token: token, recover: true) }
+            }
+        }
+        previewTask = task
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
     }
 
     @discardableResult
@@ -198,6 +240,7 @@ final class ReadingCoordinator {
                 let roster = try await transport.roster()
                 guard self.current(token) else { return }
                 self.agents = self.boundedRoster(roster)
+                self.rosterRevision &+= 1
                 if let agentID = self.selectedAgentID {
                     let value = try await transport.conversation(agentID: agentID, before: nil)
                     guard self.current(token) else { return }
@@ -297,6 +340,7 @@ final class ReadingCoordinator {
                 let value = try await transport.roster()
                 guard self.current(token) else { return }
                 self.agents = self.boundedRoster(value)
+                self.rosterRevision &+= 1
                 self.persist()
             } catch {
                 if self.current(token) { self.failed(error, token: token, recover: true) }

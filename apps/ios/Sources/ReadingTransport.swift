@@ -8,12 +8,17 @@ struct ReadingStream: Sendable {
 
 protocol ReadingTransport: Sendable {
     func roster() async throws -> [ReadingAgent]
+    func operatorPreview(agentID: String) async throws -> ReadingOperatorPreview?
     func conversation(agentID: String, before: String?) async throws -> HolonConversationSnapshot
     func brief(agentID: String, briefID: String) async throws -> JSONValue
     func activities(agentID: String, turnID: String) async throws -> JSONValue
     func markRead(agentID: String, through: Int64) async throws -> JSONValue
     func stream(agentID: String?, after: String?) async throws -> ReadingStream
     func close() async
+}
+
+extension ReadingTransport {
+    func operatorPreview(agentID: String) async throws -> ReadingOperatorPreview? { nil }
 }
 
 /// SDK identity is independently bound; original connection identity remains the UI authority.
@@ -78,14 +83,17 @@ actor ReadingClientTransport: ReadingTransport {
             throw HolonConversationError.bootstrapRequired
         }
         rosterEpoch = epoch
-        let agents = try entries.prefix(80).map { entry in
+        let agents = try entries.map { entry in
             guard let agent = entry["agent"]?["identity"], let id = agent["agent_id"]?.readingString,
                   !id.isEmpty, id.utf8.count <= 512 else {
                 throw HolonConversationError.malformedProtocol
             }
             return ReadingAgent(id: id, name: agent["name"]?.readingString ?? id,
                                 preview: String((entry["latest_brief"]?["preview"]?.readingString ?? "").prefix(240)),
-                                currentRunID: entry["agent"]?["current_run_id"]?.readingString)
+                                currentRunID: entry["agent"]?["current_run_id"]?.readingString,
+                                posture: entry["agent"]?["scheduling_posture"]?["posture"]?.readingString,
+                                briefAt: entry["latest_brief"]?["created_at"]?.readingString.flatMap(Self.metadataDate),
+                                effectiveModel: entry["agent"]?["model"]?["effective_model"]?.readingString)
         }
         var counts: [String: Int] = [:]
         do {
@@ -93,23 +101,10 @@ actor ReadingClientTransport: ReadingTransport {
             counts = try Self.unreadCounts(states, agentIDs: Set(agents.map(\.id)),
                                            epoch: epoch, visibility: authority.visibilityScopeID!)
         } catch { try Self.requireMetadataRecovery(error) }
-        var enriched: [ReadingAgent] = []
-        for start in stride(from: 0, to: agents.count, by: 2) {
-            let batch = Array(agents[start..<min(start + 2, agents.count)])
-            let previews = try await withThrowingTaskGroup(of: (String, String?).self) { group in
-                for agent in batch {
-                    group.addTask { (agent.id, try await self.operatorPreview(agentID: agent.id, epoch: epoch)) }
-                }
-                var result: [String: String] = [:]
-                for try await (id, preview) in group { result[id] = preview }
-                return result
-            }
-            guard generation == rosterGeneration, rosterEpoch == epoch else { throw CancellationError() }
-            enriched += batch.map {
+        let enriched = agents.map {
                 ReadingAgent(id: $0.id, name: $0.name, preview: $0.preview,
-                             operatorPreview: previews[$0.id], unreadCount: counts[$0.id],
-                             currentRunID: $0.currentRunID)
-            }
+                             unreadCount: counts[$0.id], currentRunID: $0.currentRunID,
+                             posture: $0.posture, briefAt: $0.briefAt, effectiveModel: $0.effectiveModel)
         }
         _ = try await expected()
         guard generation == rosterGeneration else { throw CancellationError() }
@@ -145,7 +140,8 @@ actor ReadingClientTransport: ReadingTransport {
         return counts
     }
 
-    private func operatorPreview(agentID: String, epoch: String) async throws -> String? {
+    func operatorPreview(agentID: String) async throws -> ReadingOperatorPreview? {
+        guard let epoch = rosterEpoch else { throw HolonConversationError.bootstrapRequired }
         do {
             let snapshot = try await request { try await $0.conversation(agentID: agentID, limit: 1) }
             guard snapshot.eventLogEpoch == epoch, snapshot.agentID == agentID,
@@ -153,7 +149,7 @@ actor ReadingClientTransport: ReadingTransport {
                   snapshot.visibilityScopeID == authority.visibilityScopeID else {
                 throw HolonConversationError.bootstrapRequired
             }
-            return Self.operatorPreview(snapshot.raw)
+            return Self.operatorPreviewWithDate(snapshot.raw)
         } catch {
             if let failure = error as? HolonClientError, failure == .malformedResponse {
                 throw HolonConversationError.bootstrapRequired
@@ -164,6 +160,10 @@ actor ReadingClientTransport: ReadingTransport {
     }
 
     static func operatorPreview(_ raw: JSONValue) -> String? {
+        operatorPreviewWithDate(raw)?.text
+    }
+
+    static func operatorPreviewWithDate(_ raw: JSONValue) -> ReadingOperatorPreview? {
         var candidates: [(Date, Int, String)] = []
         func append(_ input: JSONValue, fallback: String?, startedAt: String? = nil) {
             guard (input["presentation_class"]?.readingString ?? fallback) == "operator",
@@ -180,6 +180,7 @@ actor ReadingClientTransport: ReadingTransport {
         for key in ["turns", "active_turns"] {
             if case .array(let turns) = raw[key] {
                 for turn in turns {
+                    if case .array(let ids) = turn["brief_ids"], !ids.isEmpty { continue }
                     if case .array(let inputs) = turn["inputs"] {
                         for input in inputs {
                             append(input, fallback: turn["presentation_class"]?.readingString,
@@ -192,7 +193,8 @@ actor ReadingClientTransport: ReadingTransport {
         if case .array(let inputs) = raw["pending_inputs"] {
             for input in inputs { append(input, fallback: nil) }
         }
-        return candidates.max { $0.0 == $1.0 ? $0.1 < $1.1 : $0.0 < $1.0 }?.2
+        return candidates.max { $0.0 == $1.0 ? $0.1 < $1.1 : $0.0 < $1.0 }
+            .map { ReadingOperatorPreview(text: $0.2, createdAt: $0.0) }
     }
 
     private static func metadataDate(_ value: String) -> Date? {

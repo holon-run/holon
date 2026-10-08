@@ -34,6 +34,8 @@ private struct SendingPhoto: Transferable {
 struct SendingView: View {
     let sender: SendingCoordinator
     var currentRunID: String? = nil
+    var commonModels: [String] = []
+    @FocusState private var focused: Bool
     @State private var showDraft = false
     @State private var showQueue = false
     @State private var showFiles = false
@@ -47,24 +49,64 @@ struct SendingView: View {
     @State private var importError: String?
 
     var body: some View {
-        HStack {
-            Button("sending.draft") { showDraft = true }
-                .accessibilityIdentifier("sending.draft")
-            Button { showQueue = true } label: {
-                Label("sending.queue", systemImage: "tray")
-                Text("\(sender.entries.count)")
+        VStack(alignment: .leading, spacing: 6) {
+            if !sender.draft.attachments.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack {
+                        ForEach(sender.draft.attachments) { attachment in
+                            HStack(spacing: 6) {
+                                Image(systemName: "paperclip")
+                                Text(verbatim: attachment.name).lineLimit(1)
+                                Text(ByteCountFormatter.string(fromByteCount: attachment.byteCount, countStyle: .file))
+                                    .foregroundStyle(.secondary)
+                                Button { sender.removeDraftAttachment(attachment.id) } label: { Image(systemName: "xmark.circle") }
+                                    .accessibilityLabel(Text("sending.remove"))
+                            }.font(.caption).padding(8).background(.quaternary, in: Capsule())
+                        }
+                    }
+                }
             }
-            .accessibilityIdentifier("sending.queue")
-            Spacer()
-            Button("sending.stop", role: .destructive) {
-                stopRunID = currentRunID
-                showStop = stopRunID != nil
+            if let error = importError ?? sender.error {
+                Text(verbatim: error).font(.caption).foregroundStyle(.secondary).lineLimit(3)
             }
-                .disabled(currentRunID == nil || sender.status != .ready)
-                .accessibilityIdentifier("sending.stop")
+            HStack(alignment: .bottom, spacing: 10) {
+                Menu {
+                    Button { selectPhoto() } label: { Label("sending.photo", systemImage: "photo") }
+                    Button { selectFile() } label: { Label("sending.file", systemImage: "doc") }
+                    Button("sending.draft") { focused = false; showDraft = true }
+                    Button("sending.queue") { focused = false; showQueue = true }
+                        .accessibilityIdentifier("sending.queue")
+                    if currentRunID != nil {
+                        Button("sending.stop", role: .destructive) {
+                            stopRunID = currentRunID
+                            showStop = stopRunID != nil
+                        }.disabled(sender.status != .ready).accessibilityIdentifier("sending.stop")
+                    }
+                    modelPicker
+                } label: { Image(systemName: "plus.circle").font(.title2).frame(width: 44, height: 44) }
+                .accessibilityLabel(Text("sending.options"))
+                .accessibilityIdentifier("sending.options")
+                TextField("sending.placeholder", text: Binding(
+                    get: { sender.draft.text },
+                    set: { sender.editDraft(text: $0, modelID: sender.draft.modelID) }
+                ), axis: .vertical)
+                .lineLimit(1...5)
+                .focused($focused)
+                .id(sender.selectedAgentID)
+                .padding(.vertical, 10)
+                .accessibilityLabel(Text("sending.text"))
+                .accessibilityIdentifier("sending.text")
+                Button { sender.enqueue() } label: {
+                    Image(systemName: "arrow.up.circle.fill").font(.title).frame(width: 44, height: 44)
+                }
+                .disabled(sender.selectedAgentID == nil || !SendingPresentation.hasContent(sender.draft))
+                .accessibilityLabel(Text("sending.send"))
+                .accessibilityIdentifier("sending.enqueue")
+            }
         }
-        .padding()
+        .padding(.horizontal, 12).padding(.vertical, 8)
         .background(.bar)
+        .background(attachmentHandlers)
         .sheet(isPresented: $showDraft) { draftEditor }
         .sheet(isPresented: $showQueue) { queue }
         .confirmationDialog("sending.stop.confirm", isPresented: $showStop, titleVisibility: .visible) {
@@ -74,6 +116,43 @@ struct SendingView: View {
         } message: {
             Text("sending.stop.explanation")
         }
+        .onChange(of: sender.selectedAgentID) { _, _ in
+            focused = false
+            showDraft = false
+            showQueue = false
+            importError = nil
+            photoContext = nil
+            fileContext = nil
+        }
+    }
+
+    private var modelPicker: some View {
+        Picker("sending.model", selection: Binding(
+            get: { sender.draft.modelID ?? "" },
+            set: { sender.editDraft(text: sender.draft.text, modelID: $0.isEmpty ? nil : $0) }
+        )) {
+            Text("sending.model.default").tag("")
+            let common = sender.models.filter { commonModels.contains($0.id) || $0.id == sender.draft.modelID }
+            ForEach(common) { Text(verbatim: $0.name).tag($0.id) }
+            Section("sending.models.more") {
+                ForEach(sender.models.filter { model in !common.contains(where: { $0.id == model.id }) }) {
+                    Text(verbatim: $0.name).tag($0.id)
+                }
+            }
+            if let selected = sender.draft.modelID, !sender.models.contains(where: { $0.id == selected }) {
+                Text(verbatim: selected).tag(selected)
+            }
+        }
+    }
+
+    private func selectPhoto() {
+        photoContext = sender.attachmentImportContext
+        photoImportID = nil
+        showPhotos = photoContext != nil
+    }
+    private func selectFile() {
+        fileContext = sender.attachmentImportContext
+        showFiles = fileContext != nil
     }
 
     private var draftEditor: some View {
@@ -87,17 +166,7 @@ struct SendingView: View {
                     .frame(minHeight: 140)
                     .accessibilityLabel(Text("sending.text"))
                     .accessibilityIdentifier("sending.text")
-                    Picker("sending.model", selection: Binding(
-                        get: { sender.draft.modelID ?? "" },
-                        set: { sender.editDraft(text: sender.draft.text, modelID: $0.isEmpty ? nil : $0) }
-                    )) {
-                        Text("sending.model.default").tag("")
-                        ForEach(sender.models) { model in Text(model.name).tag(model.id) }
-                        if let selected = sender.draft.modelID,
-                           !sender.models.contains(where: { $0.id == selected }) {
-                            Text(selected).tag(selected)
-                        }
-                    }
+                    modelPicker
                 }
                 Section("sending.attachments") {
                     ForEach(sender.draft.attachments) { attachment in
@@ -115,13 +184,10 @@ struct SendingView: View {
                         }
                     }
                     Button {
-                        photoContext = sender.attachmentImportContext
-                        photoImportID = nil
-                        showPhotos = photoContext != nil
+                        selectPhoto()
                     } label: { Label("sending.photo", systemImage: "photo") }
                     Button("sending.file") {
-                        fileContext = sender.attachmentImportContext
-                        showFiles = fileContext != nil
+                        selectFile()
                     }
                     Text("sending.limits").font(.caption).foregroundStyle(.secondary)
                 }
@@ -140,6 +206,11 @@ struct SendingView: View {
             }
             .navigationTitle("sending.draft")
             .toolbar { Button("sending.close") { showDraft = false } }
+        }
+    }
+
+    private var attachmentHandlers: some View {
+        Color.clear.frame(width: 0, height: 0)
             .photosPicker(isPresented: $showPhotos, selection: $photo, matching: .images)
             .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item]) { result in
                 guard let context = fileContext, sender.attachmentImportContext == context else { return }
@@ -184,7 +255,6 @@ struct SendingView: View {
                     }
                 }
             }
-        }
     }
 
     private var queue: some View {

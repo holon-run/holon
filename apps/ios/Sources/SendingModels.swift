@@ -44,6 +44,7 @@ struct SendingEntry: Identifiable, Equatable, Codable, Sendable {
     var payload: SendingPayload?
     var state: SendingState = .queued
     var messageID: String?
+    var canonicalObserved: Bool?
     var error: String?
 }
 

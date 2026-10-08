@@ -250,3 +250,12 @@
 "scan.openSettings" = "打开系统设置";
 "scan.aim" = "将相机对准电脑上的 Holon 配对二维码。相机画面仅留在本机。";
 "scan.requesting" = "正在准备相机…";
+"agents.search" = "搜索 Agent";
+"agents.needsReply" = "需要你回应";
+"agents.more" = "显示更多 Agent";
+"agents.noMatches" = "没有匹配的 Agent";
+"conversation.more" = "Agent 操作";
+"sending.send" = "发送";
+"sending.placeholder" = "给 Agent 发消息…";
+"sending.options" = "附件与更多选项";
+"sending.models.more" = "所有模型";

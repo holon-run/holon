@@ -3,34 +3,27 @@ import HolonClient
 
 struct WorkView: View {
     @Bindable var coordinator: WorkCoordinator
+    var route: WorkRoute? = nil
     var openPlan: (String, String, JSONValue) -> Void
     var openArtifact: (String, JSONValue) -> Void
-    @State private var path: [WorkRoute] = []
-    @State private var agentInput = ""
 
     var body: some View {
-        NavigationStack(path: $path) {
+        Group {
+            if let route {
+                detail(route).onAppear { coordinator.open(route) }
+            } else {
             List {
-                Section {
-                    TextField("work.agent", text: $agentInput)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    Button("work.select_agent") {
-                        coordinator.selectAgent(agentInput.isEmpty ? nil : agentInput)
-                    }
-                    if let agent = coordinator.selectedAgentID { Text(agent).font(.caption) }
-                }
                 Section("work.items") {
                     state(coordinator.itemsState, empty: coordinator.items.isEmpty)
                     ForEach(coordinator.items) { item in
-                        NavigationLink(value: WorkRoute.item(item.id)) { row(item) }
+                        NavigationLink(value: AppRoute.workDetail(coordinator.selectedAgentID ?? "", .item(item.id))) { row(item) }
                             .accessibilityIdentifier("work.item." + item.id)
                     }
                 }
                 Section("work.tasks") {
                     state(coordinator.tasksState, empty: coordinator.tasks.isEmpty)
                     ForEach(coordinator.tasks) { task in
-                        NavigationLink(value: WorkRoute.task(task.id)) { row(task) }
+                        NavigationLink(value: AppRoute.workDetail(coordinator.selectedAgentID ?? "", .task(task.id))) { row(task) }
                             .accessibilityIdentifier("work.task." + task.id)
                     }
                 }
@@ -39,15 +32,7 @@ struct WorkView: View {
             .toolbar {
                 Button("work.refresh", systemImage: "arrow.clockwise") { coordinator.refresh() }
             }
-            .navigationDestination(for: WorkRoute.self) { route in
-                detail(route)
-                    .onAppear { coordinator.open(route) }
             }
-        }
-        .onAppear { agentInput = coordinator.selectedAgentID ?? "" }
-        .onChange(of: coordinator.selectedAgentID) { _, id in
-            path = []
-            agentInput = id ?? ""
         }
     }
 
@@ -93,7 +78,7 @@ struct WorkView: View {
                     if case .item = route {
                         plan(record)
                         if let id = record.briefID {
-                            NavigationLink("work.brief", value: WorkRoute.brief(id))
+                            NavigationLink("work.brief", value: AppRoute.workDetail(coordinator.selectedAgentID ?? "", .brief(id)))
                         }
                         if !record.references.isEmpty {
                             Section("work.artifacts") {

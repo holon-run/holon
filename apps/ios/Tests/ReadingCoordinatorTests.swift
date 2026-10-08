@@ -136,6 +136,10 @@ private actor ReadingFakeTransport: ReadingTransport {
         _ = await expansion("turn", id: turnID)
         return .object(["turn_id": .string(turnID), "detail_revision": .integer(detailRevision)])
     }
+    func operatorPreview(agentID: String) async throws -> ReadingOperatorPreview? {
+        _ = await expansion("id", id: agentID)
+        return ReadingOperatorPreview(text: "new " + agentID, createdAt: Date(timeIntervalSince1970: 10))
+    }
     func markRead(agentID: String, through: Int64) async throws -> JSONValue {
         readCalls += 1
         if readFailure { throw Failure.read }
@@ -259,6 +263,20 @@ final class ReadingCoordinatorTests: XCTestCase {
             XCTAssertEqual(coordinator.agents.first?.currentRunID, expected)
         }
         coordinator.disconnect()
+    }
+
+    func testVisibleMetadataBudgetAndCancellationFence() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.setGate(.expansions)
+        let task = Task { await coordinator.loadVisiblePreviews(agentIDs: ["A", "B"]) }
+        try await wait { await fake.expansionCalls == 2 }
+        XCTAssertEqual(coordinator.agents.first?.operatorPreview, "operator", "Roster is already visible")
+        coordinator.disconnect()
+        await fake.releaseExpansions()
+        await task.value
+        XCTAssertTrue(coordinator.agents.isEmpty)
+        let maximum = await fake.maximumExpansions
+        XCTAssertEqual(maximum, 2)
     }
 
     func testAgentSwitchFencesLateSuccessAnd401() async throws {

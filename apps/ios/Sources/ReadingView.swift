@@ -3,29 +3,31 @@ import HolonClient
 
 struct ReadingView: View {
     @Bindable var reader: ReadingCoordinator
-    var sender: SendingCoordinator? = nil
     let connection: ConnectionCoordinator
-    let manageConnection: () -> Void
+    @State private var query = ""
+    @State private var needsReply = false
+    @State private var window = 80
+
+    private var matching: [ReadingAgent] {
+        AgentSummaryPresentation.sorted(reader.agents, query: query, needsReply: needsReply)
+    }
 
     var body: some View {
-        NavigationStack {
             List {
                 Section {
-                    Button(action: manageConnection) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Label {
-                                Text(verbatim: connection.selectedProfile?.name ?? "")
-                            } icon: {
-                                Image(systemName: "network")
+                    NavigationLink(value: AppRoute.connections) {
+                        HStack {
+                            Image(systemName: "network").foregroundStyle(.secondary)
+                            Text(verbatim: connection.selectedProfile?.name ?? "")
+                            Spacer()
+                            if reader.status != .live {
+                                Text(LocalizedStringKey("reading.status." + reader.status.rawValue))
+                                    .font(.caption).foregroundStyle(.secondary)
                             }
-                            Text(LocalizedStringKey("status." + connection.status.rawValue))
-                                .font(.subheadline).foregroundStyle(.secondary)
                         }
                     }
                     .accessibilityIdentifier("connection.manage")
-                    Text(LocalizedStringKey("reading.status." + reader.status.rawValue))
-                        .accessibilityIdentifier("reading.status")
-                    if reader.status == .syncing { ProgressView() }
+                    if reader.status == .syncing && reader.agents.isEmpty { ProgressView() }
                     if reader.agents.isEmpty {
                         if reader.status == .live {
                             Text("reading.noAgentsConnected")
@@ -36,43 +38,61 @@ struct ReadingView: View {
                     }
                 }
                 Section("reading.recent") {
-                    ForEach(reader.agents) { agent in
-                        Button {
-                            reader.selectAgent(agent.id)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(matching.prefix(window))) { agent in
+                        NavigationLink(value: AppRoute.conversation(agent.id)) {
+                            VStack(alignment: .leading, spacing: 6) {
                                 HStack {
-                                    Text(verbatim: agent.name).font(.headline)
+                                    Text(verbatim: agent.name).font(.headline).foregroundStyle(.primary)
                                     Spacer()
-                                    if let unread = agent.unreadCount {
-                                        Text("reading.unread \(unread)").font(.caption)
-                                    } else {
-                                        Text("reading.unreadUnknown").font(.caption)
+                                    if let date = AgentSummaryPresentation.activityDate(agent) {
+                                        Text(date, style: .relative).font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                    if let unread = agent.unreadCount, unread > 0 {
+                                        Text("reading.unread \(unread)").font(.caption2).foregroundStyle(.blue)
                                     }
                                 }
-                                if let preview = agent.operatorPreview {
+                                let preview = AgentSummaryPresentation.preview(agent)
+                                if !preview.isEmpty {
                                     Text(verbatim: preview).lineLimit(2).foregroundStyle(.secondary)
                                 }
-                                Text(verbatim: agent.preview).lineLimit(3).foregroundStyle(.secondary)
+                                if AgentSummaryPresentation.needsReply(agent) {
+                                    Label("agents.needsReply", systemImage: "bubble.left")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
                             }
+                            .padding(.vertical, 4)
                         }
                         .accessibilityIdentifier("agent." + agent.id)
                     }
+                    if matching.count > window {
+                        Button("agents.more") { window += 80 }
+                    } else if matching.isEmpty && !reader.agents.isEmpty {
+                        Text("agents.noMatches").foregroundStyle(.secondary)
+                    }
                 }
             }
+            .listStyle(.plain)
+            .searchable(text: $query, prompt: Text("agents.search"))
             .navigationTitle("agents.title")
             .refreshable { await reader.refresh() }
-            .navigationDestination(isPresented: Binding(
-                get: { reader.selectedAgentID != nil },
-                set: { if !$0 { reader.selectAgent(nil) } }
-            )) {
-                ConversationReadingView(reader: reader, sender: sender)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    NavigationLink(value: AppRoute.settings) {
+                        Label("settings.title", systemImage: "gearshape")
+                    }.accessibilityIdentifier("settings.open")
+                }
+                ToolbarItem(placement: .secondaryAction) {
+                    Toggle("agents.needsReply", isOn: $needsReply)
+                }
             }
-        }
+            .onChange(of: query) { _, _ in window = 80 }
+            .task(id: "\(reader.rosterRevision)|\(reader.status.rawValue)|\(query)|\(window)|\(needsReply)") {
+                await reader.loadVisiblePreviews(agentIDs: Array(matching.prefix(window).map(\.id)))
+            }
     }
 }
 
-private struct ConversationReadingView: View {
+struct ConversationReadingView: View {
     @Bindable var reader: ReadingCoordinator
     let sender: SendingCoordinator?
     @State private var visibleTurnID: String?
@@ -100,8 +120,10 @@ private struct ConversationReadingView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text(LocalizedStringKey("reading.status." + reader.status.rawValue))
-                    .font(.caption).foregroundStyle(.secondary)
+                if reader.status != .live {
+                    Text(LocalizedStringKey("reading.status." + reader.status.rawValue))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if reader.canLoadHistory {
                     Button("reading.history") { Task { await reader.loadHistory() } }
                         .disabled(reader.isLoadingHistory)
@@ -122,6 +144,9 @@ private struct ConversationReadingView: View {
                     }
                 }
                 .scrollTargetLayout()
+                if let sender {
+                    LocalMessageView(sender: sender, canonicalIDs: LocalMessageProjection.canonicalIDs(reader.snapshot?.raw))
+                }
             }
             .padding()
         }
@@ -134,21 +159,26 @@ private struct ConversationReadingView: View {
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) {
             if let sender {
-                SendingView(sender: sender, currentRunID: currentRunID)
+                SendingView(sender: sender, currentRunID: currentRunID, commonModels: reader.agents.compactMap(\.effectiveModel))
             } else {
                 Text("status.storageError").font(.caption).padding()
             }
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button("reading.refresh") { Task { await reader.refresh() } }
-            }
-            ToolbarItem(placement: .bottomBar) {
-                HStack {
+                Menu {
+                    if let agent = reader.selectedAgentID {
+                        NavigationLink(value: AppRoute.work(agent)) { Label("work.title", systemImage: "checklist") }
+                            .accessibilityIdentifier("conversation.work")
+                        NavigationLink(value: AppRoute.files(agent)) { Label("files.title", systemImage: "folder") }
+                            .accessibilityIdentifier("conversation.files")
+                    }
+                    Button("reading.refresh") { Task { await reader.refresh() } }
                     Button("reading.markRead") { readThroughToConfirm = reader.readConfirmationForVisibleBriefs }
                         .disabled(reader.readThroughForVisibleBriefs == nil)
-                    Text(LocalizedStringKey("reading.read." + reader.readStatus.rawValue)).font(.caption)
-                }
+                    NavigationLink(value: AppRoute.tools) { Label("settings.sharing", systemImage: "square.and.arrow.up") }
+                } label: { Image(systemName: "ellipsis.circle").accessibilityLabel(Text("conversation.more")) }
+                .accessibilityIdentifier("conversation.more")
             }
         }
         .confirmationDialog("reading.markRead", isPresented: Binding(

@@ -250,3 +250,12 @@
 "scan.openSettings" = "Open Settings";
 "scan.aim" = "Point your camera at the Holon pairing QR code on your computer. Images stay on this device.";
 "scan.requesting" = "Preparing the camera…";
+"agents.search" = "Search Agents";
+"agents.needsReply" = "Needs your reply";
+"agents.more" = "Show more Agents";
+"agents.noMatches" = "No matching Agents";
+"conversation.more" = "Agent actions";
+"sending.send" = "Send";
+"sending.placeholder" = "Message this Agent…";
+"sending.options" = "Attachments and options";
+"sending.models.more" = "All models";
