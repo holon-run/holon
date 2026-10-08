@@ -192,8 +192,11 @@ struct ConversationReadingView: View {
                 if turnRange.upperBound < turns.count {
                     Button("reading.newerTurns") {
                         follow.reviewHistory()
-                        historyEndTurnID = ConversationTurnWindow.newerEnd(ids: turnIDs, current: turnRange)
-                        if let first = visibleTurns.first { scrollRequest = .top(first.id) }
+                        let ids = turnIDs
+                        let nextEnd = ConversationTurnWindow.newerEnd(ids: ids, current: turnRange)
+                        let nextRange = ConversationTurnWindow.range(ids: ids, endingAt: nextEnd)
+                        historyEndTurnID = nextEnd
+                        if !nextRange.isEmpty { scrollRequest = .top(ids[nextRange.lowerBound]) }
                     }.accessibilityIdentifier("conversation.newer")
                 }
                 ForEach(reader.snapshot?.raw["pending_inputs"].viewArray ?? [], id: \.viewMessageID) { input in

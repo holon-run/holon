@@ -49,4 +49,17 @@ final class ConversationTurnWindowTests: XCTestCase {
         XCTAssertEqual(ConversationTurnWindow.range(ids: ids, endingAt: "removed"), 40..<60)
         XCTAssertEqual(ConversationTurnWindow.range(ids: [], endingAt: nil), 0..<0)
     }
+
+    func testNewerWindowTopIsDerivedFromItsNextRangeNotTheOldView() {
+        let ids = (0..<41).map { "turn-\($0)" }
+        let latest = ConversationTurnWindow.range(ids: ids, endingAt: nil)
+        let olderEnd = ConversationTurnWindow.olderEnd(ids: ids, current: latest)
+        let older = ConversationTurnWindow.range(ids: ids, endingAt: olderEnd)
+        XCTAssertEqual(ids[older.lowerBound], "turn-6")
+        let newerEnd = ConversationTurnWindow.newerEnd(ids: ids, current: older)
+        let newer = ConversationTurnWindow.range(ids: ids, endingAt: newerEnd)
+        XCTAssertNil(newerEnd)
+        XCTAssertEqual(ids[newer.lowerBound], "turn-21")
+        XCTAssertFalse(ids[newer].contains(ids[older.lowerBound]))
+    }
 }
