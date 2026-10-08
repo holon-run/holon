@@ -26,6 +26,8 @@ final class RichTextContentTests: XCTestCase {
     func testTablesAndTasksRemainReadableAndExplicitURIsAreLinkedOutsideCodeBlocks() throws {
         let content = try HolonMarkdownParser().attributedString(for: "| File | State |\n| --- | --- |\n| a.md | Done |\n\n- [x] Complete\n- [ ] Next\n\nOpen workspace://w/report.md?root=r\n\n```\nworkspace://w/do-not-link.md?root=r\n```")
         XCTAssertTrue(String(content.characters).contains("Complete"))
+        XCTAssertTrue(String(content.characters).contains("☑ Complete"))
+        XCTAssertTrue(String(content.characters).contains("☐ Next"))
         XCTAssertTrue(content.runs.contains { run in
             run.presentationIntent?.components.contains { if case .table = $0.kind { return true }; return false } == true
         })
@@ -38,6 +40,15 @@ final class RichTextContentTests: XCTestCase {
         let links = content.runs.compactMap(\.link)
         XCTAssertEqual(links.count, 1)
         XCTAssertEqual(RichTextLink.classify(try XCTUnwrap(links.first)), .reference(path))
+    }
+
+    func testBareURIsExcludeClosingDelimitersAndSentencePunctuation() throws {
+        let content = try HolonMarkdownParser().attributedString(for: "See workspace://w/report.md?root=r. (file:///tmp/a.txt), 'workspace://w/b.md?root=r'; 中文 workspace://w/c.md?root=r。")
+        XCTAssertEqual(content.runs.compactMap(\.link).map(\.absoluteString), [
+            "workspace://w/report.md?root=r", "file:///tmp/a.txt", "workspace://w/b.md?root=r", "workspace://w/c.md?root=r"
+        ])
+        let literal = try HolonMarkdownParser().attributedString(for: "[Exact](workspace://w/a.?root=r.) and `workspace://w/b.?root=r.`")
+        XCTAssertEqual(literal.runs.compactMap(\.link).map(\.absoluteString), ["workspace://w/a.?root=r.", "workspace://w/b.?root=r."])
     }
 
     func testUnsafeSchemesCredentialsAndNonlocalFileHostsFailClosed() {

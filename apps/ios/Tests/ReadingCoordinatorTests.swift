@@ -60,6 +60,10 @@ private actor ReadingFakeTransport: ReadingTransport {
     private var detailRevision: Int64 = 1
     private var pagedActivities = false
     private var activityFailure = false
+    private var activityRevision: Int64 = 1
+    private var activityBody = "first"
+    private var overlapOlderActivity = false
+    private(set) var activityDetailCalls = 0
     private(set) var activityCursors: [String?] = []
     private var expansionWaiters: [CheckedContinuation<Void, Never>] = []
     private var activeExpansions = 0
@@ -86,6 +90,8 @@ private actor ReadingFakeTransport: ReadingTransport {
     func setAgentIDs(_ ids: [String]) { agentIDs = ids }
     func setDetailRevision(_ revision: Int64) { detailRevision = revision }
     func enablePagedActivities() { pagedActivities = true }
+    func setActivityDetail(revision: Int64, body: String) { activityRevision = revision; activityBody = body }
+    func overlapNextOlderActivityPage() { overlapOlderActivity = true }
     func failNextActivityPage() { activityFailure = true }
     func replaceEpoch() { liveEpoch = "replacement"; liveCursor = "replacement-cursor" }
     func isBlocked() -> Bool { blocked != nil }
@@ -146,10 +152,10 @@ private actor ReadingFakeTransport: ReadingTransport {
         activityCursors.append(before)
         _ = await expansion("turn", id: turnID)
         if activityFailure { activityFailure = false; throw Failure.offline }
-        let first = before == nil ? 60 : 0
+        let first = before == nil ? 60 : (overlapOlderActivity ? 1 : 0)
         let rows: [JSONValue] = pagedActivities ? (first..<(first + 60)).map { index in
             let id = "tool:\(index)"
-            return .object(["id": .string(id), "kind": .string("tool"), "revision": .integer(1),
+            return .object(["id": .string(id), "kind": .string("tool"), "revision": .integer(activityRevision),
                             "summary": .string("command \(index)"),
                             "key": .object(["event_seq": .integer(Int64(index)), "activity_id": .string(id)])])
         } : []
@@ -164,6 +170,12 @@ private actor ReadingFakeTransport: ReadingTransport {
     func operatorPreview(agentID: String) async throws -> ReadingOperatorPreview? {
         _ = await expansion("id", id: agentID)
         return ReadingOperatorPreview(text: "new " + agentID, createdAt: Date(timeIntervalSince1970: 10))
+    }
+    func activityDetail(agentID: String, turnID: String, activity: ReadingActivity) async throws -> JSONValue {
+        activityDetailCalls += 1
+        let body = activityBody
+        _ = await expansion("id", id: activity.id)
+        return .object(["output": .string(body)])
     }
     func markRead(agentID: String, through: Int64) async throws -> JSONValue {
         readCalls += 1
@@ -541,6 +553,51 @@ final class ReadingCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.failedActivities.contains("turn"))
         let cursors = await fake.activityCursors
         XCTAssertEqual(cursors, [nil, "older", nil])
+        coordinator.disconnect()
+    }
+
+    func testExpandedActivityDetailReloadsEvenWhenServerRevisionsAreIdentical() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.enablePagedActivities()
+        await coordinator.loadActivities("turn")
+        await coordinator.loadActivityDetail(turnID: "turn", activityID: "tool:60")
+        XCTAssertEqual(coordinator.activityDetails["tool:60"]?["output"], .string("first"))
+        await fake.setActivityDetail(revision: 1, body: "refreshed")
+        let cacheRevision = coordinator.activityCacheRevision
+        await coordinator.reloadActivities("turn")
+        XCTAssertNil(coordinator.activityDetails["tool:60"])
+        XCTAssertGreaterThan(coordinator.activityCacheRevision, cacheRevision)
+        await coordinator.loadActivityDetail(turnID: "turn", activityID: "tool:60")
+        XCTAssertEqual(coordinator.activityDetails["tool:60"]?["output"], .string("refreshed"))
+        coordinator.disconnect()
+    }
+
+    func testDetailRevisionChangeDuringPagingInvalidatesExpandedOutput() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.enablePagedActivities()
+        await coordinator.loadActivities("turn")
+        await coordinator.loadActivityDetail(turnID: "turn", activityID: "tool:60")
+        await fake.setActivityDetail(revision: 2, body: "revised")
+        // Same turn/detail revision; overlap merge may independently update an activity revision.
+        await fake.overlapNextOlderActivityPage()
+        await coordinator.loadOlderActivities("turn")
+        await coordinator.loadActivityDetail(turnID: "turn", activityID: "tool:60")
+        XCTAssertEqual(coordinator.activityDetails["tool:60"]?["output"], .string("revised"))
+        coordinator.disconnect()
+    }
+
+    func testInFlightDetailCannotRepopulateCacheAfterExplicitReload() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.enablePagedActivities()
+        await coordinator.loadActivities("turn")
+        await fake.setGate(.expansions)
+        let detail = Task { await coordinator.loadActivityDetail(turnID: "turn", activityID: "tool:60") }
+        try await wait { await fake.activityDetailCalls == 1 }
+        let refresh = Task { await coordinator.reloadActivities("turn") }
+        try await wait { await fake.expansionCalls == 3 }
+        await fake.releaseExpansions()
+        await detail.value; await refresh.value
+        XCTAssertNil(coordinator.activityDetails["tool:60"])
         coordinator.disconnect()
     }
 

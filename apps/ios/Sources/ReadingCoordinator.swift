@@ -20,6 +20,7 @@ final class ReadingCoordinator {
     private(set) var visibleBriefIDs: Set<String> = []
     private(set) var activities: [String: JSONValue] = [:]
     private(set) var activityDetails: [String: JSONValue] = [:]
+    private(set) var activityCacheRevision = 0
     private(set) var loadingActivities: Set<String> = []
     private(set) var failedActivities: Set<String> = []
     private(set) var status: ReadingStatus = .disconnected
@@ -49,6 +50,12 @@ final class ReadingCoordinator {
     @ObservationIgnored private var visibilityRevision = 0
     @ObservationIgnored private var previewTask: Task<Void, Never>?
     @ObservationIgnored private var previewedAgentIDs: Set<String> = []
+    private struct DetailVersion: Equatable {
+        let turnID: String
+        let pageRevision: Int64
+        let activityRevision: Int64
+    }
+    @ObservationIgnored private var detailVersions: [String: DetailVersion] = [:]
 
     init() { cache = ReadingCache() }
     init(cache: ReadingCache) { self.cache = cache }
@@ -140,7 +147,7 @@ final class ReadingCoordinator {
         reducer = nil
         clearBriefCache()
         activities.removeAll()
-        activityDetails.removeAll()
+        clearActivityDetails()
         failedActivities.removeAll()
         before = nil
         canLoadHistory = false
@@ -264,7 +271,7 @@ final class ReadingCoordinator {
                     }
                     // Summary revisions cannot prove detail freshness across a stream gap.
                     self.activities.removeAll()
-                    self.activityDetails.removeAll()
+                    self.clearActivityDetails()
                     self.snapshot = value
                     self.reducer = HolonConversationReducer(snapshot: value, maximumTurns: 180)
                     self.before = value.nextBeforeCursor
@@ -325,7 +332,7 @@ final class ReadingCoordinator {
                                     return (self.activities[id]?["detail_revision"]?.readingInteger ?? -1) >= invalidated
                                 }
                             }
-                            if previousActivities != self.activities { self.activityDetails.removeAll() }
+                            if previousActivities != self.activities { self.clearActivityDetails() }
                             self.persist()
                         }
                     }
@@ -453,17 +460,31 @@ final class ReadingCoordinator {
 
     func reloadActivities(_ turnID: String) async {
         guard !loadingActivities.contains(turnID) else { return }
+        clearActivityDetails()
         activities.removeValue(forKey: turnID)
         await loadActivities(turnID)
+    }
+
+    private func clearActivityDetails() {
+        activityDetails.removeAll()
+        detailVersions.removeAll()
+        activityCacheRevision &+= 1
+    }
+
+    private func detailVersion(turnID: String, activity: ReadingActivity) -> DetailVersion {
+        DetailVersion(turnID: turnID, pageRevision: activities[turnID]?["detail_revision"]?.readingInteger ?? -1,
+                      activityRevision: activity.revision)
     }
 
     func loadActivityDetail(turnID: String, activityID: String) async {
         let key = "detail:" + activityID
         guard foreground, status == .live, expansionCount < 2, !expanding.contains(key),
-              activityDetails[activityID] == nil, let transport, let agent = selectedAgentID,
+              let transport, let agent = selectedAgentID,
               let activity = ActivityPresentation.items(activities[turnID]).first(where: { $0.id == activityID }),
               activity.detailID != nil else { return }
-        let page = activities[turnID], epoch = snapshot?.eventLogEpoch
+        let version = detailVersion(turnID: turnID, activity: activity)
+        guard activityDetails[activityID] == nil || detailVersions[activityID] != version else { return }
+        let page = activities[turnID], epoch = snapshot?.eventLogEpoch, cacheRevision = activityCacheRevision
         expansionCount += 1; expanding.insert(key); loadingActivities.insert(activityID)
         failedActivities.remove(activityID)
         let task = launch { [weak self] token in
@@ -476,10 +497,13 @@ final class ReadingCoordinator {
             do {
                 let detail = try await transport.activityDetail(agentID: agent, turnID: turnID, activity: activity)
                 guard self.current(token), self.snapshot?.eventLogEpoch == epoch,
-                      self.activities[turnID] == page,
+                      self.activities[turnID] == page, self.activityCacheRevision == cacheRevision,
                       (try JSONEncoder().encode(detail)).count <= 1_048_576 else { return }
-                if self.activityDetails.count >= 8 { self.activityDetails.removeAll() }
+                if self.activityDetails.count >= 8 {
+                    self.activityDetails.removeAll(); self.detailVersions.removeAll()
+                }
                 self.activityDetails[activityID] = detail
+                self.detailVersions[activityID] = version
             } catch {
                 if self.current(token) {
                     self.failedActivities.insert(activityID)
@@ -542,8 +566,17 @@ final class ReadingCoordinator {
                         guard self.activities[id] == previous else { return }
                         page = try ActivityPresentation.merging(value, into: previous, requestedCursor: before)
                     } else { page = value }
-                    if self.activities[id] == nil && self.activities.count >= 8 { self.activities.removeAll() }
+                    if self.activities[id] == nil && self.activities.count >= 8 {
+                        self.activities.removeAll(); self.clearActivityDetails()
+                    }
                     self.activities[id] = page
+                    let items = ActivityPresentation.items(page)
+                    for activity in items where self.detailVersions[activity.id] != self.detailVersion(turnID: id, activity: activity) {
+                        self.activityDetails.removeValue(forKey: activity.id)
+                        self.detailVersions.removeValue(forKey: activity.id)
+                    }
+                    // An explicit reload may return identical revisions; expanded rows must read it again.
+                    self.activityCacheRevision &+= 1
                 }
             } catch {
                 if self.current(token) {

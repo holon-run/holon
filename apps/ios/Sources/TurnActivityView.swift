@@ -89,7 +89,7 @@ private struct ActivityRowView: View {
             }
         }
         .accessibilityIdentifier("activity." + activity.id)
-        .task(id: "\(expanded)|\(activity.revision)|\(reader.activities[turnID]?["detail_revision"]?.readingInteger ?? -1)") {
+        .task(id: "\(expanded)|\(activity.revision)|\(reader.activityCacheRevision)|\(reader.activities[turnID]?["detail_revision"]?.readingInteger ?? -1)") {
             if expanded { await reader.loadActivityDetail(turnID: turnID, activityID: activity.id) }
         }
     }

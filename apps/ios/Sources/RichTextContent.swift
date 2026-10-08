@@ -67,15 +67,38 @@ struct HolonMarkdownParser: MarkupParser {
                 } else { content[run.range].link = RichTextLink.literalPathURL(text) }
             } else if run.link == nil {
                 let text = String(content[run.range].characters)
-                let pattern = try NSRegularExpression(pattern: "(?:workspace|file)://[^\\s<>]+")
+                let pattern = try NSRegularExpression(pattern: "(?:workspace|file)://[^\\s<>\"')\\]]+")
                 for match in pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
-                    guard let range = Range(match.range, in: text),
+                    guard var range = Range(match.range, in: text) else { continue }
+                    while range.lowerBound < range.upperBound, ".,;!?:。；，！？".contains(text[text.index(before: range.upperBound)]) {
+                        range = range.lowerBound..<text.index(before: range.upperBound)
+                    }
+                    guard !range.isEmpty,
                           let url = URL(string: String(text[range])), case .reference = RichTextLink.classify(url) else { continue }
                     let lower = content.index(run.range.lowerBound, offsetByCharacters: text.distance(from: text.startIndex, to: range.lowerBound))
                     let upper = content.index(lower, offsetByCharacters: text.distance(from: range.lowerBound, to: range.upperBound))
                     content[lower..<upper].link = url
                 }
             }
+        }
+        // Foundation retains GFM task markers as text. Change only native list-item prefixes.
+        let taskMarkers = content.runs.compactMap { run -> (Int, Bool)? in
+            let listItem = run.presentationIntent?.components.contains {
+                if case .listItem = $0.kind { return true }; return false
+            } == true
+            let code = run.presentationIntent?.components.contains {
+                if case .codeBlock = $0.kind { return true }; return false
+            } == true || run.inlinePresentationIntent?.contains(.code) == true
+            let value = String(content[run.range].characters)
+            guard listItem, !code, value.hasPrefix("[x] ") || value.hasPrefix("[X] ") || value.hasPrefix("[ ] ") else { return nil }
+            return (content.characters.distance(from: content.startIndex, to: run.range.lowerBound), !value.hasPrefix("[ ] "))
+        }
+        for (offset, checked) in taskMarkers.reversed() {
+            let lower = content.index(content.startIndex, offsetByCharacters: offset)
+            let upper = content.index(lower, offsetByCharacters: 4)
+            var marker = AttributedString(checked ? "☑ " : "☐ ")
+            if let attributes = content[lower..<upper].runs.first?.attributes { marker.mergeAttributes(attributes) }
+            content.replaceSubrange(lower..<upper, with: marker)
         }
         return content
     }

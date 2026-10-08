@@ -143,9 +143,6 @@ struct ConversationReadingView: View {
                 } else if turns.isEmpty && reader.snapshot?.raw["pending_inputs"].viewArray.isEmpty == true {
                     Text("reading.emptyConversation")
                 }
-                ForEach(reader.snapshot?.raw["pending_inputs"].viewArray ?? [], id: \.viewMessageID) { input in
-                    ReadingInputView(input: input)
-                }
                 LazyVStack(alignment: .leading, spacing: 20) {
                     ForEach(turns) { turn in
                         ReadingTurnView(turn: turn, reader: reader)
@@ -155,13 +152,18 @@ struct ConversationReadingView: View {
                     }
                 }
                 .scrollTargetLayout()
+                ForEach(reader.snapshot?.raw["pending_inputs"].viewArray ?? [], id: \.viewMessageID) { input in
+                    ReadingInputView(input: input)
+                        .accessibilityIdentifier("pending." + input.viewMessageID)
+                }
                 if let sender {
                     LocalMessageView(sender: sender, canonicalIDs: LocalMessageProjection.canonicalIDs(reader.snapshot?.raw))
                 }
                 Color.clear.frame(height: 1).id("conversation-tail")
             }
-            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .contentMargins(.all, 16, for: .scrollContent)
         .scrollPosition($position)
         .scrollDismissesKeyboard(.interactively)
         .onScrollGeometryChange(for: Bool.self) { geometry in
