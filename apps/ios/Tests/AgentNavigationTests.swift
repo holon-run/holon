@@ -65,6 +65,16 @@ final class AgentNavigationTests: XCTestCase {
         let many = (0..<120).map { ReadingAgent(id: "A\($0)", name: "Agent \($0)", preview: "") }
         XCTAssertEqual(AgentSummaryPresentation.sorted(many, query: "A119", needsReply: false).map(\.id), ["A119"])
     }
+    func testHomeFiltersUseKnownAuthorityAndBriefPreviewDoesNotChangeOperatorText() {
+        let ready = ReadingAgent(id: "ready", name: "Ready", preview: "## Result\n\n**Done**\n\n- first", unreadCount: 2)
+        let active = ReadingAgent(id: "active", name: "Active", preview: "", currentRunID: "r")
+        let unknown = ReadingAgent(id: "unknown", name: "Unknown", preview: "", unreadCount: nil, posture: "future")
+        XCTAssertEqual(AgentSummaryPresentation.preview(ready), "Result Done first")
+        XCTAssertEqual(AgentSummaryPresentation.sorted([ready, active, unknown], query: "", filter: .newResults).map(\.id), ["ready"])
+        XCTAssertEqual(AgentSummaryPresentation.sorted([ready, active, unknown], query: "", filter: .active).map(\.id), ["active"])
+        let input = ReadingAgent(id: "input", name: "Input", preview: "", operatorPreview: "# literal\n**input**")
+        XCTAssertEqual(AgentSummaryPresentation.preview(input), "# literal\n**input**")
+    }
     func testCanonicalInputReplacesOnlyTheJoinedLocalRequest() {
         let scope = SendingScope(partition: partition(), agentID: "A")
         var received = SendingEntry(requestID: UUID(), scope: scope, draft: SendingDraft(text: "hello"))

@@ -11,6 +11,8 @@ import tempfile
 import threading
 import time
 import urllib.request
+import struct
+import zlib
 
 from ios_simulator_text_size import (
     MAXIMUM_TEXT_SIZE, initialize_simulator_text_size, runtime_text_size_control,
@@ -18,6 +20,7 @@ from ios_simulator_text_size import (
 )
 
 binary, repo, mode = sys.argv[1:]
+rich_acceptance = os.environ.get("IOS_RICH_ACCEPTANCE") == "1"
 with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
     root = pathlib.Path(temporary)
     # Do not inherit provider credentials, production paths or daemon settings.
@@ -38,6 +41,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
 
     class FakeProvider(http.server.BaseHTTPRequestHandler):
         image_requests = 0
+        rich_batches = 0
 
         def log_message(self, *args):
             pass
@@ -54,20 +58,35 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
             if "Explicit stop contract: hold this request." in json.dumps(request.get("messages", [])):
                 held_run_started.write_text("ready")
                 release_held_run.wait(timeout=15)
+            tool_calls = None
+            if rich_acceptance and "IOS_RICH_ACTIVITIES" in json.dumps(request.get("messages", [])) and FakeProvider.rich_batches < 10:
+                available = {tool.get("function", {}).get("name") for tool in request.get("tools", [])}
+                if "GetAgent" not in available:
+                    self.send_error(500, "GetAgent must be a real supported read-only tool")
+                    return
+                batch = FakeProvider.rich_batches
+                FakeProvider.rich_batches += 1
+                tool_calls = [{"id": f"fixture-read-{batch}-{index}", "type": "function",
+                               "function": {"name": "GetAgent", "arguments": "{}"}}
+                              for index in range(6)]
             text = ("## Result\n\nIOS_POPULATED_BRIEF: isolated iOS contract fixture reply.\n\n"
                     "**Ready** · 中英文混排\n\n- [x] Read result\n- [ ] Inspect files\n\n"
                     "> Keep operator output separate from execution.\n\n"
                     "| File | Status |\n| --- | --- |\n| report.md | Ready |\n\n"
                     "```swift\nlet message = \"Hello Holon\"\n```\n\n"
                     f"![Explicit image only](http://127.0.0.1:{provider.server_port}/must-not-auto-load.png)")
+            if tool_calls:
+                text = f"IOS_RICH_ASSISTANT: read-only inspection batch {FakeProvider.rich_batches}."
+            finish_reason = "tool_calls" if tool_calls else "stop"
             if request.get("stream"):
                 chunks = [
                     {"id": "fixture-completion", "object": "chat.completion.chunk", "created": 1,
                      "model": request["model"], "choices": [{"index": 0,
-                     "delta": {"role": "assistant", "content": text}, "finish_reason": None}]},
+                     "delta": {"role": "assistant", "content": text,
+                               **({"tool_calls": [dict(call, index=index) for index, call in enumerate(tool_calls)]} if tool_calls else {})}, "finish_reason": None}]},
                     {"id": "fixture-completion", "object": "chat.completion.chunk", "created": 1,
                      "model": request["model"], "choices": [{"index": 0,
-                     "delta": {}, "finish_reason": "stop"}]}]
+                     "delta": {}, "finish_reason": finish_reason}]}]
                 body = ("".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks)
                         + "data: [DONE]\n\n").encode()
                 self.send_response(200)
@@ -81,8 +100,9 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 return
             body = json.dumps({"id": "fixture-completion", "object": "chat.completion",
                 "created": 1, "model": request.get("model", "fixture-model"),
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
-                             "finish_reason": "stop"}],
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": text,
+                             **({"tool_calls": tool_calls} if tool_calls else {})},
+                             "finish_reason": finish_reason}],
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -196,6 +216,60 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
             state = local("GET", f"/agents/{agent}/state")
             workspace_id = next(w["workspace_id"] for w in state["workspace"]["workspaces"]
                                 if w.get("kind") == "agent_home" or w.get("workspace_id", "").startswith("agent_home"))
+            rich_turn = None
+            if rich_acceptance:
+                # All rich data lives in this temporary daemon, never a production Agent.
+                for number in range(90):
+                    local("POST", f"/control/agents/ios-fixture-agent-{number:03}/create", {})
+                for number in range(55):
+                    local("POST", f"/control/agents/{agent}/work-items", {"objective": f"IOS_RICH_WORK_{number:03}"})
+                rich_files = workspace / "rich-files"
+                rich_files.mkdir()
+                for number in range(80):
+                    (rich_files / f"note-{number:03}.txt").write_text(f"IOS_RICH_NOTE_{number:03}\n")
+                (rich_files / "large-utf8.txt").write_text(
+                    "IOS_RICH_TEXT_START\n" + "中英文 UTF-8 complete source line.\n" * 18000 + "IOS_RICH_TEXT_END\n")
+                (rich_files / "source.ts").write_text(
+                    '// IOS_RICH_CODE_START\n' + 'const value: string = "Holon 中英文";\n' * 16000 + '// IOS_RICH_CODE_END\n')
+                (rich_files / "report.md").write_text("# Native report\n\n[Open sibling](./note-079.txt)\n\n**Full result**.\n")
+                # Passive synthetic image/PDF; no remote resource or executable action.
+                def chunk(kind, data):
+                    return struct.pack("!I", len(data)) + kind + data + struct.pack("!I", zlib.crc32(kind + data))
+                pixels = b"\0" + bytes([40, 100, 190]) * 64
+                (rich_files / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n" +
+                    chunk(b"IHDR", struct.pack("!2I5B", 64, 64, 8, 2, 0, 0, 0)) +
+                    chunk(b"IDAT", zlib.compress(pixels * 64)) + chunk(b"IEND", b""))
+                objects = [b"<< /Type /Catalog /Pages 2 0 R >>",
+                    b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 6 0 R >>",
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R >>",
+                    b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+                for page in (1, 2):
+                    stream = f"BT /F1 18 Tf 20 150 Td (IOS RICH PDF PAGE {page}) Tj ET".encode()
+                    objects.append(f"<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"\nendstream")
+                pdf, offsets = b"%PDF-1.4\n", [0]
+                for number, value in enumerate(objects, 1):
+                    offsets.append(len(pdf)); pdf += f"{number} 0 obj\n".encode() + value + b"\nendobj\n"
+                xref = len(pdf)
+                pdf += f"xref\n0 {len(offsets)}\n0000000000 65535 f \n".encode()
+                pdf += b"".join(f"{offset:010} 00000 n \n".encode() for offset in offsets[1:])
+                pdf += f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+                (rich_files / "report.pdf").write_bytes(pdf)
+                local("POST", f"/agents/{agent}/enqueue", {"text": "IOS_RICH_ACTIVITIES: inspect the current Agent using read-only tools."})
+                for attempt in range(600):
+                    conversation = local("GET", f"/agents/{agent}/conversation")
+                    candidates = [turn for turn in conversation.get("turns", [])
+                        if "IOS_RICH_ACTIVITIES" in json.dumps(turn)]
+                    if candidates and candidates[-1].get("brief_ids"):
+                        rich_turn = candidates[-1]["turn_id"]
+                        break
+                    time.sleep(.1)
+                else:
+                    raise RuntimeError("rich tool turn did not complete with a real brief")
+                activities = local("GET", f"/agents/{agent}/turns/{rich_turn}/activities?limit=60")
+                if FakeProvider.rich_batches != 10 or not activities.get("has_more"):
+                    raise RuntimeError("rich acceptance requires more than sixty real activities")
+                print("Rich fixture: 91 Agents, 56 WorkItems, 60 real tool calls, large UTF-8/code, PNG and two-page PDF", flush=True)
             test_env = dict(os.environ)
             test_env.update(HOLON_UI_BASE_URL=base, HOLON_UI_PAIRING_TICKET=pairing["ticket"],
                 HOLON_UI_AGENT_ID=agent, HOLON_UI_WORK_ID=work_id, HOLON_UI_TASK_ID=task["id"],
@@ -213,6 +287,8 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     "READ_MARKER": "IOS_POPULATED_BRIEF", "PLAN_MARKER": "IOS_POPULATED_FULL_PLAN",
                     "TASK_MARKER": "IOS_POPULATED_OUTPUT",
                     "FILE_REFERENCE": str(workspace / file_path), "FILE_MARKER": "IOS_POPULATED_FILE"}
+                if rich_turn:
+                    runner_inputs.update(RICH_TURN_ID=rich_turn, RICH_DIRECTORY="rich-files")
                 for key, value in runner_inputs.items():
                     test_env["TEST_RUNNER_HOLON_UI_" + key] = value
                 simulator = os.environ.get("IOS_SIMULATOR_ID")
@@ -238,6 +314,8 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                          ("testDiagnosticsControlsRespondToRuntimeTextSize", MAXIMUM_TEXT_SIZE),
                          ("testPreparedDiagnosticsRespondToRuntimeTextSize", "large"),
                          ("testPreparedDiagnosticsViewportCoverage", MAXIMUM_TEXT_SIZE)]
+                if rich_acceptance:
+                    cases.append(("testRichFilesAndActivityWorkflow", "large"))
                 selected_cases = os.environ.get("IOS_UI_CASES")
                 if selected_cases:
                     requested = selected_cases.split(",")

@@ -86,7 +86,7 @@ final class FilesCoordinatorTests: XCTestCase {
         let request = FilesRequest.source(.reference("/original/private.txt"))
         coordinator.openRequest(request); await settle(coordinator)
         let oldURL = try XCTUnwrap(coordinator.prepared?.url)
-        let position = FilesReadingPosition(page: 8, renderMarkdown: false, wrap: false)
+        let position = FilesReadingPosition(page: 8, atEnd: true, renderMarkdown: false, wrap: false)
         coordinator.rememberPosition(position, for: request)
         coordinator.setForeground(false)
         XCTAssertNil(coordinator.prepared); XCTAssertFalse(FileManager.default.fileExists(atPath: oldURL.path))

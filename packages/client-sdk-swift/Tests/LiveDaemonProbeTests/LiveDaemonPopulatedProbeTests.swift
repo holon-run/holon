@@ -31,7 +31,7 @@ final class LiveDaemonPopulatedProbeTests: XCTestCase {
     func testPopulatedWorkDetailAndPlan() async throws {
         let sdk = try await client()
         let id = try environment("HOLON_UI_WORK_ID")
-        let list = try await sdk.workItems(agentID: environment("HOLON_UI_AGENT_ID"))
+        let list = try await sdk.workItems(agentID: environment("HOLON_UI_AGENT_ID"), limit: 100)
         XCTAssertTrue(try text(list.value).contains(id))
         let detail = try await sdk.workItem(agentID: environment("HOLON_UI_AGENT_ID"), workItemID: id)
         XCTAssertTrue(try text(detail.value).contains("IOS_POPULATED_PLAN"))

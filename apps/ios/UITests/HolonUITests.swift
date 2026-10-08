@@ -537,6 +537,11 @@ final class HolonUITests: XCTestCase {
         app.buttons["conversation.more"].tap()
         app.buttons["conversation.work"].tap()
         let item = app.buttons["work.item." + work]
+        if !item.waitForExistence(timeout: 5), ProcessInfo.processInfo.environment["HOLON_UI_RICH_TURN_ID"] != nil {
+            let more = app.buttons["Show more work"].firstMatch
+            reveal(more, in: app); more.tap()
+            reveal(item, in: app)
+        }
         XCTAssertTrue(item.waitForExistence(timeout: 30))
         item.tap()
         let openPlan = app.buttons["work.openPlan"]
@@ -594,6 +599,107 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts[
             "Queued independently; your editor draft is unchanged. Check the Agent's sending queue for receipt."
         ].waitForExistence(timeout: 10))
+        app.terminate()
+    }
+
+    func testRichFilesAndActivityWorkflow() throws {
+        let agent = try required("AGENT_ID")
+        let turn = try required("RICH_TURN_ID")
+        let directory = try required("RICH_DIRECTORY")
+        let app = launch(language: "en", dark: false, large: false)
+        // Existing credentials came only from the preceding shipped onboarding flow.
+        for _ in 0..<6 {
+            if app.buttons["settings.open"].exists { break }
+            let back = app.navigationBars.buttons.element(boundBy: 0)
+            XCTAssertTrue(back.waitForExistence(timeout: 20)); back.tap()
+        }
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.tabBars.firstMatch.exists)
+        app.swipeDown()
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 10)); search.tap()
+        search.typeText("ios-fixture-agent-089\n")
+        let lastAgent = app.buttons["agent.ios-fixture-agent-089"]
+        XCTAssertTrue(lastAgent.waitForExistence(timeout: 15)); lastAgent.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.waitForExistence(timeout: 15))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 10), "One native back returns to the list")
+        search.tap(); search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "ios-fixture-agent-089".count) + agent + "\n")
+        let agentRow = app.buttons["agent." + agent]
+        XCTAssertTrue(agentRow.waitForExistence(timeout: 15)); agentRow.tap()
+        app.buttons["sending.options"].tap(); app.buttons["Take photo"].tap()
+        XCTAssertTrue(app.staticTexts["The camera is not available on this device. Choose a photo or file instead."].waitForExistence(timeout: 10))
+        let activity = app.descendants(matching: .any)["activities." + turn].firstMatch
+        reveal(activity, in: app); activity.tap()
+        let fullProcess = app.buttons["Read full activity"].firstMatch
+        reveal(fullProcess, in: app); fullProcess.tap()
+        let older = app.buttons["activities.older"]
+        reveal(older, in: app)
+        XCTAssertTrue(older.isEnabled); older.tap()
+        let firstBatch = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_RICH_ASSISTANT: read-only inspection batch 1.")).firstMatch
+        reveal(firstBatch, in: app)
+        capture(app, "rich-activity-paged-to-first-batch")
+        app.buttons["Close"].tap()
+        app.buttons["conversation.more"].tap(); app.buttons["conversation.files"].tap()
+        let home = app.buttons["agent_home"].firstMatch
+        reveal(home, in: app); home.tap()
+        let folder = app.buttons["files.entry." + directory]
+        reveal(folder, in: app); folder.tap()
+        let lastNote = app.buttons["files.entry." + directory + "/note-079.txt"]
+        reveal(lastNote, in: app)
+        let savedY = lastNote.frame.minY
+        lastNote.tap()
+        XCTAssertTrue(app.staticTexts["IOS_RICH_NOTE_079\n"].waitForExistence(timeout: 20))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(lastNote.waitForExistence(timeout: 10)); XCTAssertTrue(lastNote.isHittable)
+        XCTAssertEqual(lastNote.frame.minY, savedY, accuracy: 44, "Reader return preserves native directory position")
+        func open(_ name: String) {
+            let row = app.buttons["files.entry." + directory + "/" + name]
+            reveal(row, in: app); row.tap()
+            XCTAssertTrue(app.descendants(matching: .any)["files.preview"].firstMatch.waitForExistence(timeout: 20))
+        }
+        open("large-utf8.txt")
+        app.buttons["files.end"].tap()
+        let end = app.staticTexts["files.endOfFile"]
+        // Do not swipe to rescue a failed End action; the real footer must be on-screen.
+        let endVisible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: end)
+        XCTAssertEqual(XCTWaiter.wait(for: [endVisible], timeout: 20), .completed)
+        XCTAssertGreaterThanOrEqual(end.frame.minX, 12)
+        XCTAssertLessThanOrEqual(end.frame.maxX, app.windows.firstMatch.frame.maxX - 12)
+        capture(app, "large-utf8-real-document-end")
+        XCUIDevice.shared.press(.home); app.activate()
+        XCTAssertTrue(end.waitForExistence(timeout: 30)); XCTAssertTrue(end.isHittable, "Foreground reauthorization restores the last page")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        open("source.ts"); app.buttons["files.end"].tap()
+        let codeEnd = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: end)
+        XCTAssertEqual(XCTWaiter.wait(for: [codeEnd], timeout: 30), .completed)
+        capture(app, "large-typescript-real-document-end")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        open("report.md")
+        let relative = app.links["Open sibling"].firstMatch
+        XCTAssertTrue(relative.waitForExistence(timeout: 20)); relative.tap()
+        XCTAssertTrue(app.staticTexts["IOS_RICH_NOTE_079\n"].waitForExistence(timeout: 20))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(relative.waitForExistence(timeout: 15), "Relative links return to their source file")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        open("image.png")
+        let raster = app.descendants(matching: .any)["files.raster"].firstMatch
+        XCTAssertTrue(raster.waitForExistence(timeout: 20)); XCTAssertTrue(raster.isHittable)
+        capture(app, "native-image-preview")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        open("report.pdf")
+        XCTAssertTrue(raster.waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts["1/2"].exists)
+        app.buttons["files.nextPage"].tap()
+        XCTAssertTrue(app.staticTexts["2/2"].waitForExistence(timeout: 10))
+        capture(app, "native-pdf-second-page")
+        app.buttons["files.options"].tap(); app.buttons["Share a copy"].tap()
+        XCTAssertTrue(app.otherElements["ActivityListView"].waitForExistence(timeout: 10), "Share hands the original file to the native system sheet")
+        capture(app, "native-original-file-share")
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30), "Process relaunch restores the confirmed Agent route")
+        XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.exists)
+        capture(app, "restored-confirmed-conversation")
         app.terminate()
     }
 }

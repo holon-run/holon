@@ -2,6 +2,7 @@ import CoreTransferable
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
+import AVFoundation
 
 enum SendingPresentation {
     static func statusKey(_ status: SendingStatus) -> String { "sending.status." + status.rawValue }
@@ -47,6 +48,9 @@ struct SendingView: View {
     @State private var fileContext: SendingAttachmentImportContext?
     @State private var photoImportID: UUID?
     @State private var importError: String?
+    @State private var showCamera = false
+    @State private var cameraContext: SendingAttachmentImportContext?
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -55,11 +59,14 @@ struct SendingView: View {
                     HStack {
                         ForEach(sender.draft.attachments) { attachment in
                             HStack(spacing: 6) {
-                                Image(systemName: "paperclip")
-                                Text(verbatim: attachment.name).lineLimit(1)
-                                Text(ByteCountFormatter.string(fromByteCount: attachment.byteCount, countStyle: .file))
-                                    .foregroundStyle(.secondary)
+                                Image(systemName: attachment.contentType.hasPrefix("image/") ? "photo" : "doc")
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(verbatim: attachment.name).lineLimit(1)
+                                    Text(verbatim: attachment.contentType + " · " + ByteCountFormatter.string(fromByteCount: attachment.byteCount, countStyle: .file))
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
                                 Button { sender.removeDraftAttachment(attachment.id) } label: { Image(systemName: "xmark.circle") }
+                                    .frame(minWidth: 44, minHeight: 44)
                                     .accessibilityLabel(Text("sending.remove"))
                             }.font(.caption).padding(8).background(.quaternary, in: Capsule())
                         }
@@ -72,6 +79,7 @@ struct SendingView: View {
             HStack(alignment: .bottom, spacing: 10) {
                 Menu {
                     Button { selectPhoto() } label: { Label("sending.photo", systemImage: "photo") }
+                    Button { selectCamera() } label: { Label("sending.camera", systemImage: "camera") }
                     Button { selectFile() } label: { Label("sending.file", systemImage: "doc") }
                     Button("sending.draft") { focused = false; showDraft = true }
                     Button("sending.queue") { focused = false; showQueue = true }
@@ -109,6 +117,21 @@ struct SendingView: View {
         .background(attachmentHandlers)
         .sheet(isPresented: $showDraft) { draftEditor }
         .sheet(isPresented: $showQueue) { queue }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraAttachmentView { data in
+                showCamera = false
+                guard let context = cameraContext, sender.attachmentImportContext == context else { return }
+                cameraContext = nil
+                guard let data else { return }
+                let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
+                defer { try? FileManager.default.removeItem(at: url) }
+                do {
+                    guard data.count <= 20 * 1024 * 1024 else { throw SendingFailure.oversizedAttachment("Photo") }
+                    try data.write(to: url, options: [.atomic, .completeFileProtection])
+                    sender.stageAttachment(source: url, context: context, contentType: "image/jpeg")
+                } catch { importError = error.localizedDescription }
+            }
+        }
         .confirmationDialog("sending.stop.confirm", isPresented: $showStop, titleVisibility: .visible) {
             Button("sending.stop", role: .destructive) {
                 if let stopRunID { Task { await sender.stopAgent(runID: stopRunID) } }
@@ -123,6 +146,10 @@ struct SendingView: View {
             importError = nil
             photoContext = nil
             fileContext = nil
+            showCamera = false; cameraContext = nil
+        }
+        .onChange(of: scenePhase) { _, value in
+            if value == .background { showCamera = false; cameraContext = nil }
         }
     }
 
@@ -153,6 +180,18 @@ struct SendingView: View {
     private func selectFile() {
         fileContext = sender.attachmentImportContext
         showFiles = fileContext != nil
+    }
+    private func selectCamera() {
+        guard UIImagePickerController.isSourceTypeAvailable(.camera), let context = sender.attachmentImportContext else {
+            importError = String(localized: "sending.camera.unavailable"); return
+        }
+        cameraContext = context
+        Task { @MainActor in
+            let allowed = await AVCaptureDevice.requestAccess(for: .video)
+            guard cameraContext == context, sender.attachmentImportContext == context else { return }
+            if allowed { showCamera = true }
+            else { cameraContext = nil; importError = String(localized: "sending.camera.permission") }
+        }
     }
 
     private var draftEditor: some View {

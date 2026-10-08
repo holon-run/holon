@@ -5,12 +5,12 @@ struct ReadingView: View {
     @Bindable var reader: ReadingCoordinator
     let connection: ConnectionCoordinator
     @State private var query = ""
-    @State private var needsReply = false
+    @State private var filter: AgentListFilter = .all
     @State private var window = 80
     @State private var visibleAgents: Set<String> = []
 
     private var matching: [ReadingAgent] {
-        AgentSummaryPresentation.sorted(reader.agents, query: query, needsReply: needsReply)
+        AgentSummaryPresentation.sorted(reader.agents, query: query, filter: filter)
     }
 
     var body: some View {
@@ -85,10 +85,19 @@ struct ReadingView: View {
                     }.accessibilityIdentifier("settings.open")
                 }
                 ToolbarItem(placement: .secondaryAction) {
-                    Toggle("agents.needsReply", isOn: $needsReply)
+                    Menu {
+                        Picker("agents.filter", selection: $filter) {
+                            ForEach(AgentListFilter.allCases, id: \.self) { option in
+                                Text(LocalizedStringKey("agents.filter." + option.rawValue)).tag(option)
+                            }
+                        }
+                    } label: {
+                        Label("agents.filter", systemImage: filter == .all ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill")
+                    }.accessibilityIdentifier("agents.filter")
                 }
             }
             .onChange(of: query) { _, _ in window = 80 }
+            .onChange(of: filter) { _, _ in window = 80 }
             .task(id: "\(reader.rosterRevision)|\(reader.status.rawValue)|\(visibleAgents.sorted().joined(separator: "|"))") {
                 do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
                 await reader.loadVisiblePreviews(agentIDs: visibleAgents.sorted())
@@ -299,6 +308,7 @@ private struct ReadingTurnView: View {
             } label: {
                 Text("reading.activities").font(.caption).foregroundStyle(.secondary)
             }
+            .accessibilityIdentifier("activities." + turn.id)
             .task(id: "\(showActivities)|\(reader.snapshot?.snapshotCursor ?? "")") {
                 if showActivities { await reader.loadActivities(turn.id) }
             }

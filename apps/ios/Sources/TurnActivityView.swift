@@ -1,9 +1,17 @@
 import SwiftUI
 import HolonClient
 
+private struct OpenReferenceKey: EnvironmentKey { static var defaultValue: ((String) -> Void)? { nil } }
+private struct OpenWorkKey: EnvironmentKey { static var defaultValue: ((String) -> Void)? { nil } }
 extension EnvironmentValues {
-    @Entry var holonOpenReference: ((String) -> Void)? = nil
-    @Entry var holonOpenWork: ((String) -> Void)? = nil
+    var holonOpenReference: ((String) -> Void)? {
+        get { self[OpenReferenceKey.self] }
+        set { self[OpenReferenceKey.self] = newValue }
+    }
+    var holonOpenWork: ((String) -> Void)? {
+        get { self[OpenWorkKey.self] }
+        set { self[OpenWorkKey.self] = newValue }
+    }
 }
 
 struct TurnActivityView: View {
@@ -77,7 +85,7 @@ private struct ActivityRowView: View {
                             rawDetails
                         }
                     } label: {
-                        Text(verbatim: activity.summary).foregroundStyle(.secondary)
+                        Text(verbatim: activity.summary).foregroundStyle(Color.secondary)
                     }
                 } else {
                     Text(LocalizedStringKey(activity.kind == "wait" ? "reading.wait" :

@@ -330,3 +330,13 @@
 "work.state.unknown" = "Other state";
 "work.state.cancelling" = "Cancelling";
 "work.state.interrupted" = "Interrupted";
+"agents.filter" = "Filter Agents";
+"agents.filter.all" = "All Agents";
+"agents.filter.reply" = "Needs your reply";
+"agents.filter.newResults" = "New results";
+"agents.filter.active" = "Active turn";
+"files.completeText" = "Complete file";
+"files.endOfFile" = "End of file";
+"sending.camera" = "Take photo";
+"sending.camera.unavailable" = "The camera is not available on this device. Choose a photo or file instead.";
+"sending.camera.permission" = "Camera access is denied. Enable it in iOS Settings or choose an existing photo.";

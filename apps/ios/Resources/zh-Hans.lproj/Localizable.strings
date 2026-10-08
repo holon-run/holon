@@ -330,3 +330,13 @@
 "work.state.unknown" = "其他状态";
 "work.state.cancelling" = "取消中";
 "work.state.interrupted" = "已中断";
+"agents.filter" = "筛选 Agent";
+"agents.filter.all" = "全部 Agent";
+"agents.filter.reply" = "需要回应";
+"agents.filter.newResults" = "新结果";
+"agents.filter.active" = "当前有 turn";
+"files.completeText" = "完整文件";
+"files.endOfFile" = "文件末尾";
+"sending.camera" = "拍照";
+"sending.camera.unavailable" = "此设备无法使用相机，请选择已有照片或文件。";
+"sending.camera.permission" = "相机权限被拒绝，请在 iOS 设置中开启，或选择已有照片。";

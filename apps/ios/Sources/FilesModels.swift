@@ -75,6 +75,7 @@ enum FilesRequest: Hashable, Sendable {
 /// Metadata only; byte caches are discarded whenever authority or visibility changes.
 struct FilesReadingPosition: Equatable, Sendable {
     var page = 0
+    var atEnd = false
     var renderMarkdown = true
     var wrap = true
 }

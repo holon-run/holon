@@ -15,7 +15,7 @@ struct FilesView: View {
                     ForEach(coordinator.entries) { entry in
                         if entry.isDirectory {
                             Button { coordinator.browse(directory.workspace, path: entry.path) } label: { row(entry) }
-                                .id(entry.id)
+                                .id(entry.id).accessibilityIdentifier("files.entry." + entry.path)
                         } else {
                             NavigationLink(value: AppRoute.file(coordinator.selectedAgentID ?? "",
                                 .source(.workspace(directory.workspace, path: entry.path)))) { row(entry) }

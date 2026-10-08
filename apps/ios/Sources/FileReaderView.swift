@@ -156,6 +156,7 @@ private struct FileTextContent: View {
     @State private var query = ""
     @State private var matches: [Int] = []
     @State private var matchNumber = 0
+    @State private var jumpingToEnd = false
     private var renderMarkdown: Bool {
         position.renderMarkdown && artifact.byteCount <= 256 * 1024 &&
             (artifact.name as NSString).pathExtension.lowercased() == "md"
@@ -163,6 +164,7 @@ private struct FileTextContent: View {
 
     var body: some View {
         GeometryReader { geometry in
+            ScrollViewReader { scroll in
             VStack(spacing: 0) {
                 if !renderMarkdown {
                     HStack {
@@ -171,10 +173,16 @@ private struct FileTextContent: View {
                             Text("\(matches.isEmpty ? 0 : matchNumber + 1)/\(matches.count)").font(.caption)
                             Button("files.nextMatch", systemImage: "chevron.down") {
                                 guard !matches.isEmpty else { return }
+                                position.atEnd = false
                                 matchNumber = (matchNumber + 1) % matches.count; visiblePage = matches[matchNumber]
                             }.disabled(matches.isEmpty)
                         }
-                        Button("files.end", systemImage: "arrow.down.to.line") { visiblePage = max(0, (index?.pages.count ?? 1) - 1) }
+                        Button("files.end", systemImage: "arrow.down.to.line") {
+                            jumpingToEnd = true
+                            position.atEnd = true
+                            scroll.scrollTo("file-end", anchor: .bottom)
+                        }
+                            .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
                             .accessibilityIdentifier("files.end")
                     }.padding(12).background(.bar)
                 }
@@ -191,21 +199,42 @@ private struct FileTextContent: View {
                             }
                             ForEach(index.pages.indices, id: \.self) { page in
                                 FileTextPage(reader: reader, page: page, width: max(1, geometry.size.width - 32), wrap: position.wrap,
-                                    language: artifact.byteCount <= 1024 * 1024 ? FileCodePresentation.language(name: artifact.name) : nil)
+                                    language: artifact.byteCount <= 1024 * 1024 ? FileCodePresentation.language(name: artifact.name) : nil,
+                                    didLayout: {
+                                        // A lazy page initially has only a placeholder height. Re-anchor
+                                        // after the last page's real text has laid out, not at its start.
+                                        if jumpingToEnd, page == index.pages.count - 1 {
+                                            scroll.scrollTo("file-end", anchor: .bottom)
+                                            jumpingToEnd = false
+                                        }
+                                    })
                                     .id(page)
                             }
                             if index.pages.isEmpty { Text("files.emptyText").foregroundStyle(.secondary) }
+                            Text("files.endOfFile").font(.caption).foregroundStyle(.secondary)
+                                .padding(.vertical, 12).id("file-end")
+                                .accessibilityIdentifier("files.endOfFile")
                         }
                     }.frame(width: max(1, geometry.size.width - 32), alignment: .leading).padding(.horizontal, 16)
                         .scrollTargetLayout()
                 }
                 .scrollPosition(id: $visiblePage, anchor: .top)
+                .onScrollPhaseChange { _, phase in
+                    if phase == .interacting { jumpingToEnd = false; position.atEnd = false }
+                }
                 .textSelection(.enabled)
                 HStack {
-                    Text(ByteCountFormatter.string(fromByteCount: Int64(artifact.byteCount), countStyle: .file))
+                    Text("files.completeText")
                     Spacer()
                     if let index, !renderMarkdown { Text("\(min((visiblePage ?? 0) + 1, index.pages.count))/\(index.pages.count)") }
                 }.font(.caption).foregroundStyle(.secondary).padding(8)
+            }
+            .onChange(of: index?.pages.count) { _, _ in
+                if position.atEnd {
+                    jumpingToEnd = true
+                    scroll.scrollTo("file-end", anchor: .bottom)
+                }
+            }
             }
         }
         .task { index = reader.index; visiblePage = position.page }
@@ -216,7 +245,7 @@ private struct FileTextContent: View {
                 try await Task.sleep(for: .milliseconds(250))
                 let result = try await reader.matches(query)
                 try Task.checkCancellation(); matches = result
-                if let first = result.first { visiblePage = first }
+                if let first = result.first { position.atEnd = false; visiblePage = first }
             } catch {}
         }
         .onChange(of: visiblePage) { _, page in if let page { position.page = page } }
@@ -229,6 +258,7 @@ private struct FileTextPage: View {
     let width: CGFloat
     let wrap: Bool
     let language: String?
+    var didLayout: () -> Void
     @State private var text: String?
     @State private var height: CGFloat = 80
     @State private var failed = false
@@ -244,7 +274,9 @@ private struct FileTextPage: View {
             else { Color.clear.frame(height: height).overlay(ProgressView()) }
         }
         .accessibilityIdentifier("files.text.page.\(page)")
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if text != nil { height = $0 } }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+            if text != nil { height = $0; didLayout() }
+        }
         .task {
             do { let value = try await reader.page(page); try Task.checkCancellation(); text = value }
             catch { if !Task.isCancelled { failed = true } }
@@ -272,8 +304,10 @@ private struct FileRasterContent: View {
             if pdf {
                 HStack {
                     Button("files.previousPage", systemImage: "chevron.left") { position.page -= 1 }.disabled(position.page == 0)
+                        .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
                     Spacer(); Text("\(position.page + 1)/\(count)").monospacedDigit(); Spacer()
                     Button("files.nextPage", systemImage: "chevron.right") { position.page += 1 }.disabled(position.page + 1 >= count)
+                        .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
                         .accessibilityIdentifier("files.nextPage")
                 }.padding()
             }
