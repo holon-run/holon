@@ -2379,6 +2379,16 @@ mod tests {
             .unwrap();
         assert!(origin_guard_allows(&trusted_origin, &state));
 
+        let untrusted_origin = Request::builder()
+            .method("POST")
+            .uri("/api/control/runtime/status")
+            .header(header::HOST, "holon.example:7878")
+            .header(header::COOKIE, "holon_session=session")
+            .header(header::ORIGIN, "https://attacker.example")
+            .body(Body::empty())
+            .unwrap();
+        assert!(!origin_guard_allows(&untrusted_origin, &state));
+
         let browser_exchange_without_source = Request::builder()
             .method("POST")
             .uri("/api/auth/session/exchange")
