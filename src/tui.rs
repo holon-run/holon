@@ -38,6 +38,7 @@ use serde_json::Value;
 mod app;
 mod chat;
 mod composer;
+mod conversation;
 mod input;
 mod keymap;
 pub(crate) mod logging;

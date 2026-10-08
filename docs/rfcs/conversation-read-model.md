@@ -39,6 +39,38 @@ As of 2026-09-15, the Web GUI consumes the SDK turn read model. Its reading,
 folding, and scrolling behavior is documented in [the GUI design contract](../../web-gui/DESIGN.md#conversation-reading-contract).
 The display-summary refinement below keeps the existing v1 wire shape.
 
+### TUI consumption contract
+
+The TUI adopts the same versioned conversation summary, activity, and change
+stream resources as the Web GUI. Default agent navigation reads the public
+roster (`/agents/list` for bootstrap, `/agents/snapshot` for refresh), not the
+complete operator tree. Private child identities remain available to explicit
+control-plane inspection; they are not default conversation navigation entries.
+
+The TUI has one conversation page rather than separate result and execution
+pages or an operator-selected display level. Historical turns load summaries
+and canonical Briefs without replaying verbose event history. Active turns
+load bounded activity and receive live changes. A canonical terminal execution
+state removes that turn's activity from the page while preserving operator
+inputs, Briefs, and a safe typed result/terminal status when no Brief is
+available. A Brief arriving during execution does not collapse an active turn.
+Later result delivery still updates a terminal summary.
+
+Input previews decode serialized message bodies, including bounded text
+previews. Pending inputs retain queue-time ordering and assignment state.
+Canonical Briefs and terminal/result notices are static, never working
+indicators. A terminal turn with pending delivery retains a result-status
+notice; failed Brief hydration retries with capped backoff independently of
+new stream events. Legacy assistant envelopes expose only visible text
+blocks, never thinking, signatures, or provider state.
+
+Conversation cursors, revisions, and reset handling remain authoritative.
+Agent switches and new snapshots fence stale activity/history/stream responses;
+reconnects must not merge changes from another snapshot or runtime scope.
+Raw event inspection and control-plane overlays are separate read surfaces,
+not a fallback conversation reducer. Existing display-mode preferences do not
+change the new page.
+
 Related native contracts:
 
 - [Operator Display Levels and Event Presentation](./operator-display-levels-and-event-presentation.md)
@@ -66,7 +98,7 @@ The existing raw-stream RFC places projection in first-party clients. This
 proposal adds a narrow server-side read projection for lightweight conversation
 loading. It is an explicit extension to that architecture, not a claim that the
 existing raw stream already has these semantics. Raw events remain available
-without changing their contract; the TUI need not migrate.
+without changing their diagnostic contract.
 
 ### Goals
 

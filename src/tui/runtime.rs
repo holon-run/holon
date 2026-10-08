@@ -36,6 +36,16 @@ pub(super) enum TuiConnectionState {
 }
 
 pub(super) enum TuiRuntimeMessage {
+    ConversationLoaded {
+        generation: u64,
+        agent_id: String,
+        model: super::conversation::ConversationModel,
+    },
+    ConversationStatus {
+        generation: u64,
+        error: String,
+        reset: bool,
+    },
     Event(AgentStreamEvent),
     Disconnected {
         error: String,
@@ -185,12 +195,14 @@ impl TuiApp {
         }
         let client = self.client.clone();
         let tx = self.runtime_tx.clone();
+        let initial_load = self.agents.is_empty();
         tokio::spawn(async move {
-            let result = client
-                .operator_agent_tree()
-                .await
-                .map(crate::types::AgentTreeProjection::into_agent_entries)
-                .map_err(|err| err.to_string());
+            let result = if initial_load {
+                client.list_agent_entries().await
+            } else {
+                client.public_agent_roster().await
+            }
+            .map_err(|err| err.to_string());
             let _ = tx.send(TuiRuntimeMessage::AgentListLoaded(result));
         });
     }
@@ -277,6 +289,11 @@ impl TuiApp {
 
     pub(super) fn apply_agent_list(&mut self, agents: Vec<AgentSummary>) -> AgentListChange {
         let previously_selected = self.selected_agent_id().map(ToString::to_string);
+        self.optimistic_operator_messages.retain(|message| {
+            agents
+                .iter()
+                .any(|agent| agent.identity.agent_id == message.agent_id)
+        });
         if agents.is_empty() {
             self.clear_agent_view();
             return AgentListChange::Empty;
@@ -299,9 +316,6 @@ impl TuiApp {
             .or_else(|| find_agent_index(&agents, self.client.default_agent_id()))
             .unwrap_or_else(|| self.selected_agent.min(agents.len().saturating_sub(1)));
         self.agents = agents;
-        if let Some(agent_id) = self.selected_agent_id().map(ToString::to_string) {
-            self.apply_persisted_display_mode_for(&agent_id);
-        }
 
         if selected_missing {
             self.clear_projection_view();
@@ -404,6 +418,13 @@ impl TuiApp {
 
     pub(super) fn clear_projection_view(&mut self) {
         self.stop_stream_task();
+        if let Some(task) = self.conversation_task.take() {
+            task.abort();
+        }
+        self.conversation_generation = self.conversation_generation.saturating_add(1);
+        self.conversation = None;
+        self.conversation_history_tx = None;
+        self.chat_text_cache.borrow_mut().take();
         self.optimistic_operator_messages.clear();
         self.tasks.clear();
         self.projection = None;
@@ -424,6 +445,24 @@ impl TuiApp {
 
     pub(super) fn begin_bootstrap_selected_agent(&mut self) {
         self.begin_bootstrap_agent_index(self.selected_agent);
+    }
+
+    fn begin_conversation(&mut self, agent_id: String) {
+        if let Some(task) = self.conversation_task.take() {
+            task.abort();
+        }
+        self.conversation_generation = self.conversation_generation.saturating_add(1);
+        self.conversation = None;
+        let (history_tx, history_rx) = mpsc::channel(1);
+        self.conversation_history_tx = Some(history_tx);
+        self.conversation_task = Some(tokio::spawn(super::conversation::observe(
+            self.client.clone(),
+            agent_id,
+            self.conversation_generation,
+            self.runtime_tx.clone(),
+            history_rx,
+        )));
+        self.chat_text_cache.borrow_mut().take();
     }
 
     pub(super) fn begin_bootstrap_agent_index(&mut self, target_index: usize) {
@@ -448,10 +487,6 @@ impl TuiApp {
         self.status_line = format!("Loading agent state for {agent_id}");
         let client = self.client.clone();
         let tx = self.runtime_tx.clone();
-        let display_mode = self
-            .persisted_display_mode_for(&agent_id)
-            .name()
-            .to_string();
         tokio::spawn({
             let agent_id = agent_id.clone();
             async move {
@@ -468,7 +503,7 @@ impl TuiApp {
                             EventPageRequest {
                                 limit: Some(BOOTSTRAP_EVENT_TAIL_LIMIT),
                                 order: Some("desc".into()),
-                                max_level: Some(display_mode),
+                                max_level: None,
                                 ..Default::default()
                             },
                         )
@@ -510,6 +545,13 @@ impl TuiApp {
         if request_id != self.snapshot_refresh_request_id {
             return;
         }
+        if !self
+            .agents
+            .get(target_index)
+            .is_some_and(|agent| agent.identity.agent_id == agent_id)
+        {
+            return;
+        }
         self.snapshot_refresh_in_flight = false;
         let (snapshot, events_tail, event_log_epoch, newest_seq, oldest_seq, has_older) =
             match result {
@@ -549,8 +591,8 @@ impl TuiApp {
 
         self.stop_stream_task();
         self.selected_agent = target_index;
+        self.begin_conversation(agent_id.clone());
         self.record_selected_agent(&agent_id);
-        self.apply_persisted_display_mode_for(&agent_id);
         self.projection = Some(projection);
         self.apply_projection_view();
         self.last_refresh_at = Some(Local::now());
@@ -669,50 +711,6 @@ impl TuiApp {
         }
     }
 
-    pub(super) fn persist_agent_display_mode(
-        &mut self,
-        agent_id: &str,
-        display_mode: OperatorDisplayMode,
-    ) {
-        let mut state = TuiClientState::load_or_new(&self.state_path, agent_id);
-        state.set_selected_agent(agent_id);
-        state.set_agent_display_mode(agent_id, display_mode);
-        if let Err(err) = state.save(&self.state_path) {
-            tracing::warn!(
-                error = %err,
-                path = %self.state_path.display(),
-                "failed to persist TUI display mode"
-            );
-        }
-    }
-
-    pub(super) fn clear_agent_display_mode(&mut self, agent_id: &str) -> OperatorDisplayMode {
-        let mut state = TuiClientState::load_or_new(&self.state_path, agent_id);
-        state.set_selected_agent(agent_id);
-        state.clear_agent_display_mode(agent_id);
-        let display_mode = state.effective_display_mode(agent_id);
-        if let Err(err) = state.save(&self.state_path) {
-            tracing::warn!(
-                error = %err,
-                path = %self.state_path.display(),
-                "failed to persist TUI display reset"
-            );
-        }
-        display_mode
-    }
-
-    pub(super) fn apply_persisted_display_mode_for(&mut self, agent_id: &str) {
-        self.display_mode = self.persisted_display_mode_for(agent_id);
-    }
-
-    pub(super) fn persisted_display_mode_for(&self, agent_id: &str) -> OperatorDisplayMode {
-        if let Ok(state) = TuiClientState::load(&self.state_path) {
-            state.effective_display_mode(agent_id)
-        } else {
-            OperatorDisplayMode::DEFAULT
-        }
-    }
-
     pub(super) fn next_agent_index_from(&self, selected: usize, delta: i32) -> Option<usize> {
         if self.agents.is_empty() {
             return None;
@@ -774,6 +772,36 @@ impl TuiApp {
             };
 
             match message {
+                TuiRuntimeMessage::ConversationStatus {
+                    generation,
+                    error,
+                    reset,
+                } => {
+                    if generation == self.conversation_generation {
+                        if reset {
+                            self.conversation = None;
+                            self.chat_text_cache.borrow_mut().take();
+                        }
+                        self.status_line = format!("Conversation reconnecting: {error}");
+                    }
+                }
+                TuiRuntimeMessage::ConversationLoaded {
+                    generation,
+                    agent_id,
+                    model,
+                } => {
+                    if generation == self.conversation_generation
+                        && model.agent_id == agent_id
+                        && self.selected_agent_id() == Some(agent_id.as_str())
+                        && self
+                            .agents
+                            .iter()
+                            .any(|agent| agent.identity.agent_id == agent_id)
+                    {
+                        self.conversation = Some(model);
+                        self.chat_text_cache.borrow_mut().take();
+                    }
+                }
                 TuiRuntimeMessage::Event(event) => self.apply_stream_event(event),
                 TuiRuntimeMessage::Disconnected { error } => {
                     disconnected = true;
@@ -832,7 +860,7 @@ impl TuiApp {
 
     pub(super) fn apply_stream_event(&mut self, event: AgentStreamEvent) {
         if let Some(projection) = self.projection.as_mut() {
-            projection.apply_stream_event(event, &self.log_writer, self.display_mode);
+            projection.apply_stream_event(event, &self.log_writer, OperatorDisplayMode::Info);
             self.last_event_at = Some(Local::now());
             self.apply_projection_view();
             self.schedule_projection_refresh_if_stale();
@@ -842,6 +870,16 @@ impl TuiApp {
     }
 
     pub(super) fn maybe_begin_load_older_events(&mut self) {
+        if let Some(model) = &self.conversation {
+            if model.has_older() && self.chat_scroll.is_at_top(self.chat_max_scroll) {
+                self.chat_scroll
+                    .prepare_for_history_prepend(self.chat_max_scroll);
+                if let Some(tx) = &self.conversation_history_tx {
+                    let _ = tx.try_send(());
+                }
+            }
+            return;
+        }
         if self.event_history_load_in_flight {
             return;
         }
@@ -866,7 +904,7 @@ impl TuiApp {
         let request_id = self.event_history_request_id;
         let client = self.client.clone();
         let tx = self.runtime_tx.clone();
-        let max_level = self.display_mode.name().to_string();
+        let max_level = OperatorDisplayMode::Info.name().to_string();
         self.status_line = "Loading older events".into();
         tokio::spawn({
             let agent_id = agent_id.clone();
@@ -1266,6 +1304,9 @@ fn find_agent_index(agents: &[AgentSummary], agent_id: &str) -> Option<usize> {
 impl Drop for TuiApp {
     fn drop(&mut self) {
         self.stop_stream_task();
+        if let Some(task) = self.conversation_task.take() {
+            task.abort();
+        }
     }
 }
 

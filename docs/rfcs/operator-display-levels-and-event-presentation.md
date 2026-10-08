@@ -6,18 +6,20 @@ status: implemented
 
 # RFC: Operator Display Levels and Event Presentation
 
-Related draft: [Conversation Read Model](./conversation-read-model.md) proposes
-combining result and activity presentation in the Web GUI while preserving these
-visibility levels and raw event filters. It is not yet an implemented exception.
+The [Conversation Read Model](./conversation-read-model.md) supersedes display
+levels for the main Web GUI and TUI conversation pages: they show canonical
+Briefs and active-turn activity using turn lifecycle rather than a verbosity
+preference. The event classification and raw event filters below remain
+available for diagnostics and other event-based adapters.
 
 ## Summary
 
 Holon should separate raw runtime audit events from operator-facing presentation.
 
-The raw event stream remains the canonical runtime record. Operator surfaces
-such as the TUI, future web clients, remote operator views, AgentInbox bridges,
-and notification adapters should render those events through shared display
-levels instead of showing raw event kinds directly.
+The raw event stream remains the canonical runtime record. Event-based operator
+adapters, remote diagnostic views, AgentInbox bridges, and notification adapters
+can render those events through shared display levels instead of showing raw
+event kinds directly. Conversation clients use the separate turn read model.
 
 The proposed display levels are:
 
@@ -27,14 +29,14 @@ The proposed display levels are:
 - `trace`: raw audit/event inspection, reserved for event inspectors such as
   `/events`
 
-Only `info`, `verbose`, and `debug` should be main operator conversation display
-modes. `trace` is not a normal conversation mode; it is an inspection surface.
+For event-based adapters, `info`, `verbose`, and `debug` are presentation modes.
+`trace` is an inspection surface, not a normal conversation mode.
 
 Clarification:
 
 - "Compact activity view" describes the presentation density of `verbose`, not
   the event taxonomy and not the raw event kind names.
-- TUI and server surfaces should share one event-level contract:
+- Event-based adapters and server event filters share one event-level contract:
   `info | verbose | debug`.
 - Presentation reducers may render the same eligible activity differently at
   different display levels. For example, an ApplyPatch activity can be a compact

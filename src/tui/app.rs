@@ -22,6 +22,10 @@ pub(super) struct TuiApp {
     pub(super) optimistic_operator_messages: Vec<OperatorMessageRecord>,
     pub(super) tasks: Vec<TaskRecord>,
     pub(super) projection: Option<TuiProjection>,
+    pub(super) conversation: Option<super::conversation::ConversationModel>,
+    pub(super) conversation_task: Option<JoinHandle<()>>,
+    pub(super) conversation_generation: u64,
+    pub(super) conversation_history_tx: Option<mpsc::Sender<()>>,
     pub(super) connection_state: TuiConnectionState,
     pub(super) runtime_tx: UnboundedSender<TuiRuntimeMessage>,
     pub(super) runtime_messages: UnboundedReceiver<TuiRuntimeMessage>,
@@ -60,7 +64,6 @@ pub(super) struct TuiApp {
     pub(super) overlay: OverlayState,
     pub(super) last_refresh_at: Option<DateTime<Local>>,
     pub(super) last_event_at: Option<DateTime<Local>>,
-    pub(super) display_mode: OperatorDisplayMode,
     pub(crate) status_line: String,
     pub(super) should_quit: bool,
     pub(super) chat_text_cache: std::cell::RefCell<Option<CachedChatText>>,
@@ -77,14 +80,6 @@ impl TuiApp {
         let preferred_agent_id = tui_state
             .as_ref()
             .map(|state| state.last_selected_agent_id.clone());
-        let display_mode = preferred_agent_id
-            .as_deref()
-            .and_then(|agent_id| {
-                tui_state
-                    .as_ref()
-                    .map(|state| state.effective_display_mode(agent_id))
-            })
-            .unwrap_or(OperatorDisplayMode::DEFAULT);
         let (runtime_tx, runtime_messages) = mpsc::unbounded_channel();
         Self {
             client,
@@ -132,7 +127,10 @@ impl TuiApp {
             overlay: OverlayState::None,
             last_refresh_at: None,
             last_event_at: None,
-            display_mode,
+            conversation: None,
+            conversation_task: None,
+            conversation_generation: 0,
+            conversation_history_tx: None,
             status_line: format!("Connecting to {connection_summary}..."),
             should_quit: false,
             chat_text_cache: std::cell::RefCell::new(None),

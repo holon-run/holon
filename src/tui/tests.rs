@@ -43,7 +43,7 @@ use ratatui::{backend::TestBackend, layout::Rect, Terminal};
 use serde_json::json;
 use std::{path::PathBuf, time::Instant};
 
-fn test_config() -> AppConfig {
+pub(super) fn test_config() -> AppConfig {
     let temp = tempfile::tempdir().unwrap().keep();
     AppConfig {
         default_agent_id: "default".into(),
@@ -103,8 +103,7 @@ fn test_config() -> AppConfig {
 fn local_tui_restores_persisted_selected_agent_on_initial_agent_list() {
     let config = test_config();
     let state_path = config.home_dir.join("state").join("tui").join("local.json");
-    let mut state = TuiClientState::new("beta");
-    state.set_agent_display_mode("beta", OperatorDisplayMode::Verbose);
+    let state = TuiClientState::new("beta");
     state.save(&state_path).unwrap();
     let client = LocalClient::new(config).unwrap();
     let mut app = TuiApp::new(
@@ -119,7 +118,6 @@ fn local_tui_restores_persisted_selected_agent_on_initial_agent_list() {
 
     assert_eq!(change, AgentListChange::RequiresBootstrap);
     assert_eq!(app.selected_agent_id(), Some("beta"));
-    assert_eq!(app.display_mode, OperatorDisplayMode::Verbose);
 }
 
 #[test]
@@ -166,11 +164,10 @@ fn remote_tui_state_scope_uses_hashed_connect_target_without_token() {
 }
 
 #[test]
-fn recording_selected_agent_preserves_display_preferences() {
+fn recording_selected_agent_preserves_selection() {
     let config = test_config();
     let state_path = config.home_dir.join("state").join("tui").join("local.json");
-    let mut state = TuiClientState::new("alpha");
-    state.set_agent_display_mode("alpha", OperatorDisplayMode::Debug);
+    let state = TuiClientState::new("alpha");
     state.save(&state_path).unwrap();
     let client = LocalClient::new(config).unwrap();
     let mut app = TuiApp::new(
@@ -182,13 +179,9 @@ fn recording_selected_agent_preserves_display_preferences() {
 
     let loaded = TuiClientState::load(&state_path).unwrap();
     assert_eq!(loaded.last_selected_agent_id, "beta");
-    assert_eq!(
-        loaded.effective_display_mode("alpha"),
-        OperatorDisplayMode::Debug
-    );
 }
 
-fn sample_agent_summary(agent_id: &str) -> AgentSummary {
+pub(super) fn sample_agent_summary(agent_id: &str) -> AgentSummary {
     let mut state = crate::types::AgentState::new(agent_id);
     state.status = AgentStatus::AwakeIdle;
     state.pending = 1;
@@ -511,26 +504,6 @@ fn work_item_written_event_envelope(
                 "created_at": Utc::now(),
                 "updated_at": Utc::now()
             }
-        }),
-    )
-}
-
-fn tool_executed_event_envelope(
-    id: &str,
-    event_seq: u64,
-    agent_id: &str,
-    tool_name: &str,
-) -> StreamEventEnvelope {
-    pipeline_event_envelope(
-        id,
-        event_seq,
-        agent_id,
-        "tool_executed",
-        json!({
-            "duration_ms": 0,
-            "status": "success",
-            "summary": tool_name,
-            "tool_name": tool_name
         }),
     )
 }
@@ -1104,138 +1077,6 @@ fn build_chat_text_groups_activity_by_kind_not_minute() {
     assert!(lines
         .iter()
         .any(|line| line.starts_with("  narrative line")));
-}
-
-#[test]
-fn build_chat_text_groups_agent_cells_by_turn_index() {
-    let client = LocalClient::new(test_config()).unwrap();
-    let mut app = TuiApp::new(
-        client,
-        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-    app.display_mode = OperatorDisplayMode::Verbose;
-    let ts = Utc::now();
-    let mut projection = TuiProjection::from_snapshot(sample_snapshot("holon-pm", "evt-0"));
-    let resume_event = pipeline_event_envelope(
-        "evt-resume",
-        1,
-        "holon-pm",
-        "continuation_trigger_received",
-        json!({
-            "agent_id": "holon-pm",
-            "trigger_kind": "operator_input"
-        }),
-    );
-    projection.apply_event(
-        AgentStreamEvent {
-            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
-            id: resume_event.id.clone(),
-            event: resume_event.event_type.clone(),
-            data: StreamEventEnvelope { ts, ..resume_event },
-        },
-        &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-    for event in [
-        pipeline_event_envelope(
-            "evt-progress",
-            2,
-            "holon-pm",
-            "assistant_round_recorded",
-            json!({
-                "agent_id": "holon-pm",
-                "turn_index": 7,
-                "round": 1,
-                "text_preview": "I will inspect the PR.",
-                "has_text": true,
-                "has_tool_calls": false
-            }),
-        ),
-        pipeline_event_envelope(
-            "evt-tool",
-            3,
-            "holon-pm",
-            "tool_executed",
-            json!({
-                "agent_id": "holon-pm",
-                "turn_index": 7,
-                "tool_name": "ExecCommand",
-                "exec_command_cmd": "gh pr view 1497",
-                "duration_ms": 100,
-                "status": "success",
-                "summary": "gh pr view 1497"
-            }),
-        ),
-    ] {
-        projection.apply_event(
-            AgentStreamEvent {
-                contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
-                id: event.id.clone(),
-                event: event.event_type.clone(),
-                data: StreamEventEnvelope { ts, ..event },
-            },
-            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-        );
-    }
-    let brief = BriefRecord {
-        id: "brief-1".into(),
-        agent_id: "holon-pm".into(),
-        workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
-        work_item_id: None,
-        turn_index: Some(7),
-        turn_id: None,
-        kind: BriefKind::Result,
-        created_at: ts,
-        content_source: BriefContentSource::Inline,
-        finalizes_assistant_round_id: None,
-        text: "PR is merged.".into(),
-        citations: None,
-        attachments: None,
-        related_message_id: None,
-        related_task_id: None,
-        created_event_seq: None,
-    };
-    let brief_event = StreamEventEnvelope {
-        projection_effect: None,
-        event_log_epoch: Some("epoch-test".into()),
-        payload_schema: None,
-        payload_schema_version: None,
-        id: "evt-brief".into(),
-        event_seq: 4,
-        ts,
-        agent_id: "holon-pm".into(),
-        event_type: "brief_created".into(),
-        payload: serde_json::to_value(brief).unwrap(),
-    };
-    projection.apply_event(
-        AgentStreamEvent {
-            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
-            id: brief_event.id.clone(),
-            event: brief_event.event_type.clone(),
-            data: brief_event,
-        },
-        &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-    app.projection = Some(projection);
-
-    let lines: Vec<String> = build_chat_text(&collect_chat_items(&app))
-        .lines
-        .into_iter()
-        .map(|line| line.spans.into_iter().map(|span| span.content).collect())
-        .collect();
-    let header_count = lines
-        .iter()
-        .filter(|line| line.contains("• holon-pm "))
-        .count();
-    assert_eq!(header_count, 1);
-    assert!(lines
-        .iter()
-        .any(|line| line.contains("• holon-pm ") && line.contains("operator input")));
-    assert!(!lines
-        .iter()
-        .any(|line| line.contains("Continuation triggered")));
-    assert!(lines.iter().any(|line| line.contains("I will inspect")));
-    assert!(lines.iter().any(|line| line.contains("gh pr view 1497")));
-    assert!(lines.iter().any(|line| line.contains("PR is merged.")));
 }
 
 #[test]
@@ -2004,77 +1845,6 @@ async fn agent_state_overlay_scrolls_and_esc_closes() {
         .await
         .unwrap();
     assert_eq!(app.overlay, OverlayState::None);
-}
-
-#[tokio::test]
-async fn slash_display_sets_chat_display_mode() {
-    let client = LocalClient::new(test_config()).unwrap();
-    let state_path = tui_state_path(&client);
-    let mut app = TuiApp::new(
-        client,
-        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-    app.apply_agent_list(vec![sample_agent_summary("default")]);
-    app.composer = ComposerState::from("/display 5");
-
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
-        .await
-        .unwrap();
-
-    assert_eq!(app.display_mode, OperatorDisplayMode::Debug);
-    assert_eq!(app.overlay, OverlayState::None);
-    assert_eq!(app.composer.as_str(), "");
-    assert_eq!(app.status_line, "Loading agent state for default");
-    let loaded = TuiClientState::load(&state_path).unwrap();
-    assert_eq!(
-        loaded.effective_display_mode("default"),
-        OperatorDisplayMode::Debug
-    );
-}
-
-#[tokio::test]
-async fn slash_display_accepts_named_modes() {
-    let client = LocalClient::new(test_config()).unwrap();
-    let mut app = TuiApp::new(
-        client,
-        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-    app.apply_agent_list(vec![sample_agent_summary("default")]);
-    app.composer = ComposerState::from("/display VERBOSE");
-
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
-        .await
-        .unwrap();
-
-    assert_eq!(app.display_mode, OperatorDisplayMode::Verbose);
-    assert_eq!(app.status_line, "Loading agent state for default");
-}
-
-#[tokio::test]
-async fn slash_display_reset_clears_selected_agent_override() {
-    let client = LocalClient::new(test_config()).unwrap();
-    let state_path = tui_state_path(&client);
-    let mut state = TuiClientState::new("default");
-    state.set_agent_display_mode("default", OperatorDisplayMode::Debug);
-    state.save(&state_path).unwrap();
-    let mut app = TuiApp::new(
-        client,
-        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-    app.apply_agent_list(vec![sample_agent_summary("default")]);
-    app.composer = ComposerState::from("/display reset");
-
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
-        .await
-        .unwrap();
-
-    assert_eq!(app.display_mode, OperatorDisplayMode::Info);
-    let loaded = TuiClientState::load(&state_path).unwrap();
-    assert_eq!(
-        loaded.effective_display_mode("default"),
-        OperatorDisplayMode::Info
-    );
-    assert!(loaded.display.per_agent.is_empty());
 }
 
 #[tokio::test]
@@ -2978,7 +2748,7 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
             },
         },
         &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-        app.display_mode,
+        OperatorDisplayMode::Info,
     );
     app.projection = Some(projection);
 
@@ -2994,86 +2764,12 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
 }
 
 #[test]
-fn chat_display_mode_debug_shows_debug_events_and_keeps_working_row() {
-    let client = LocalClient::new(test_config()).unwrap();
-    let mut app = TuiApp::new(
-        client,
-        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-    app.display_mode = OperatorDisplayMode::Debug;
-    let mut snapshot = sample_snapshot("default", "evt-0");
-    snapshot.agent.agent.status = AgentStatus::AwakeRunning;
-    let mut projection = TuiProjection::from_snapshot(snapshot);
-    projection.apply_event(
-        AgentStreamEvent {
-            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
-            id: "evt-tool".into(),
-            event: "tool_executed".into(),
-            data: StreamEventEnvelope {
-                projection_effect: None,
-                event_log_epoch: Some("epoch-test".into()),
-                payload_schema: None,
-                payload_schema_version: None,
-                id: "evt-tool".into(),
-                event_seq: 2,
-                ts: Utc::now(),
-                agent_id: "default".into(),
-                event_type: "tool_executed".into(),
-                payload: json!({
-                    "tool_name": "ExecCommand",
-                    "exec_command_cmd": "cargo test tui"
-                }),
-            },
-        },
-        &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-    projection.apply_event(
-        AgentStreamEvent {
-            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
-            id: "evt-state".into(),
-            event: "agent_state_changed".into(),
-            data: StreamEventEnvelope {
-                projection_effect: None,
-                event_log_epoch: Some("epoch-test".into()),
-                payload_schema: None,
-                payload_schema_version: None,
-                id: "evt-state".into(),
-                event_seq: 3,
-                ts: Utc::now(),
-                agent_id: "default".into(),
-                event_type: "agent_state_changed".into(),
-                payload: json!({ "status": "AwakeRunning" }),
-            },
-        },
-        &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-    app.projection = Some(projection);
-
-    let items = collect_chat_items(&app);
-    let rendered: String = build_chat_text(&items)
-        .lines
-        .into_iter()
-        .flat_map(|line| line.spans.into_iter().map(|span| span.content))
-        .collect();
-    assert!(items.iter().any(|item| matches!(
-        item,
-        ConversationCell::SystemNotice { body, .. }
-            if body.contains("cargo test tui")
-    )));
-    assert!(rendered.contains("cargo test tui"));
-    assert!(!rendered.contains("State sync"));
-    assert!(!rendered.contains("agent_state_changed"));
-    assert!(rendered.contains("Working"));
-}
-
-#[test]
 fn chat_display_mode_info_shows_hidden_stream_activity_in_working_body() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    app.display_mode = OperatorDisplayMode::Info;
     let mut snapshot = sample_snapshot("default", "evt-0");
     snapshot.agent.agent.status = AgentStatus::AwakeRunning;
     let mut projection = TuiProjection::from_snapshot(snapshot);
@@ -3099,7 +2795,7 @@ fn chat_display_mode_info_shows_hidden_stream_activity_in_working_body() {
             },
         },
         &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-        app.display_mode,
+        OperatorDisplayMode::Info,
     );
     app.projection = Some(projection);
 
@@ -3119,7 +2815,6 @@ fn chat_display_mode_info_suppresses_successful_work_item_tool_activity() {
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    app.display_mode = OperatorDisplayMode::Info;
     let mut snapshot = sample_snapshot("default", "evt-0");
     snapshot.agent.agent.status = AgentStatus::AwakeRunning;
     let mut projection = TuiProjection::from_snapshot(snapshot);
@@ -3146,7 +2841,7 @@ fn chat_display_mode_info_suppresses_successful_work_item_tool_activity() {
             },
         },
         &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-        app.display_mode,
+        OperatorDisplayMode::Info,
     );
     app.projection = Some(projection);
 
@@ -3167,7 +2862,6 @@ fn chat_display_mode_info_uses_rendered_list_work_items_activity() {
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    app.display_mode = OperatorDisplayMode::Info;
     let mut snapshot = sample_snapshot("default", "evt-0");
     snapshot.agent.agent.status = AgentStatus::AwakeRunning;
     let mut projection = TuiProjection::from_snapshot(snapshot);
@@ -3206,7 +2900,7 @@ fn chat_display_mode_info_uses_rendered_list_work_items_activity() {
             },
         },
         &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-        app.display_mode,
+        OperatorDisplayMode::Info,
     );
     app.projection = Some(projection);
 
@@ -3218,56 +2912,6 @@ fn chat_display_mode_info_uses_rendered_list_work_items_activity() {
             assert!(body.contains("fix work item tui rendering"));
             assert!(!body.contains("Tool finished: ListWorkItems"));
         }
-        other => panic!("expected active activity item, got {other:?}"),
-    }
-}
-
-#[test]
-fn chat_display_mode_verbose_keeps_working_marker_without_activity_body() {
-    let client = LocalClient::new(test_config()).unwrap();
-    let mut app = TuiApp::new(
-        client,
-        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-    app.display_mode = OperatorDisplayMode::Verbose;
-    let mut snapshot = sample_snapshot("default", "evt-0");
-    snapshot.agent.agent.status = AgentStatus::AwakeRunning;
-    let mut projection = TuiProjection::from_snapshot(snapshot);
-    projection.apply_stream_event(
-        AgentStreamEvent {
-            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
-            id: "evt-tool".into(),
-            event: "tool_executed".into(),
-            data: StreamEventEnvelope {
-                projection_effect: None,
-                event_log_epoch: Some("epoch-test".into()),
-                payload_schema: None,
-                payload_schema_version: None,
-                id: "evt-tool".into(),
-                event_seq: 2,
-                ts: Utc::now(),
-                agent_id: "default".into(),
-                event_type: "tool_executed".into(),
-                payload: json!({
-                    "tool_name": "ExecCommand",
-                    "exec_command_cmd": "cargo test tui"
-                }),
-            },
-        },
-        &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-        app.display_mode,
-    );
-    app.projection = Some(projection);
-
-    let items = collect_chat_items(&app);
-    assert!(items.iter().any(|item| matches!(
-        item,
-        ConversationCell::SystemNotice { body, .. }
-            if body.contains("cargo test tui")
-    )));
-    let active_item = items.last().expect("active activity item");
-    match active_item {
-        ConversationCell::ActiveActivity { body, .. } => assert!(body.is_empty()),
         other => panic!("expected active activity item, got {other:?}"),
     }
 }
@@ -3440,7 +3084,7 @@ fn chat_text_keeps_active_action_after_snapshot_refresh() {
             },
         },
         &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-        app.display_mode,
+        OperatorDisplayMode::Info,
     );
     app.projection = Some(refreshed_projection);
 
@@ -3485,7 +3129,7 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
             },
         },
         &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-        app.display_mode,
+        OperatorDisplayMode::Info,
     );
     app.projection = Some(previous_projection);
     let before_switch: String = build_chat_text(&collect_chat_items(&app))
@@ -3971,79 +3615,6 @@ fn chat_deduplicates_replayed_projected_work_item_events() {
         })
         .count();
     assert_eq!(matching, 1);
-}
-
-#[test]
-fn chat_deduplicates_replayed_projected_tool_events() {
-    let client = LocalClient::new(test_config()).unwrap();
-    let mut app = TuiApp::new(
-        client,
-        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-    let event = tool_executed_event_envelope("evt-tool", 43, "default", "GetAgent");
-    let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
-    for _ in 0..2 {
-        projection.apply_event(
-            AgentStreamEvent {
-                contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
-                id: event.id.clone(),
-                event: event.event_type.clone(),
-                data: event.clone(),
-            },
-            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-        );
-    }
-    assert_eq!(projection.event_log().len(), 1);
-    app.display_mode = OperatorDisplayMode::Verbose;
-    app.projection = Some(projection);
-
-    let matching = collect_chat_items(&app)
-        .iter()
-        .filter(|item| {
-            matches!(
-                item,
-                ConversationCell::SystemNotice { body, .. }
-                    if body.contains("GetAgent")
-            )
-        })
-        .count();
-    assert_eq!(matching, 1);
-}
-
-#[test]
-fn chat_keeps_distinct_projected_tool_events_with_same_body() {
-    let client = LocalClient::new(test_config()).unwrap();
-    let mut app = TuiApp::new(
-        client,
-        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-    let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
-    for (id, event_seq) in [("evt-tool-1", 43), ("evt-tool-2", 44)] {
-        let event = tool_executed_event_envelope(id, event_seq, "default", "GetAgent");
-        projection.apply_event(
-            AgentStreamEvent {
-                contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
-                id: event.id.clone(),
-                event: event.event_type.clone(),
-                data: event,
-            },
-            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-        );
-    }
-    app.display_mode = OperatorDisplayMode::Verbose;
-    app.projection = Some(projection);
-
-    let matching = collect_chat_items(&app)
-        .iter()
-        .filter(|item| {
-            matches!(
-                item,
-                ConversationCell::SystemNotice { body, .. }
-                    if body.contains("GetAgent")
-            )
-        })
-        .count();
-    assert_eq!(matching, 2);
 }
 
 #[test]
@@ -4974,6 +4545,24 @@ fn apply_agent_list_clears_stale_projection_when_selected_agent_disappears() {
     assert_eq!(change, AgentListChange::RequiresBootstrap);
     assert_eq!(app.selected_agent_id(), Some("gamma"));
     assert!(app.projection.is_none());
+}
+
+#[test]
+fn roster_replacement_prunes_removed_agent_inputs() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.apply_agent_list(vec![
+        sample_agent_summary("alpha"),
+        sample_agent_summary("beta"),
+    ]);
+    app.add_optimistic_operator_message("alpha".into(), "keep".into());
+    app.add_optimistic_operator_message("beta".into(), "remove".into());
+    app.apply_agent_list(vec![sample_agent_summary("alpha")]);
+    assert_eq!(app.optimistic_operator_messages.len(), 1);
+    assert_eq!(app.optimistic_operator_messages[0].agent_id, "alpha");
 }
 
 #[tokio::test]

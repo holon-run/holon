@@ -20,7 +20,6 @@ enum SlashCommand {
     Refresh,
     ClearStatus,
     DebugPrompt,
-    Display,
     Abort,
     Agent,
     Skills,
@@ -50,7 +49,6 @@ enum SlashArgRule {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SlashArgHint {
     None,
-    Values(&'static [&'static str]),
     Agent,
     SkillName,
 }
@@ -101,9 +99,7 @@ pub(super) struct SlashCommandSpec {
     command: SlashCommand,
 }
 
-const DISPLAY_MODE_ARGS: &[&str] = &["info", "verbose", "debug", "3", "4", "5", "reset"];
-
-const SLASH_COMMAND_SPECS: [SlashCommandSpec; 22] = [
+const SLASH_COMMAND_SPECS: [SlashCommandSpec; 21] = [
     SlashCommandSpec {
         name: "/help",
         description: "show slash command help",
@@ -202,15 +198,6 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 22] = [
         category: SlashCommandCategory::Debug,
         arg_rule: SlashArgRule::None,
         command: SlashCommand::DebugPrompt,
-    },
-    SlashCommandSpec {
-        name: "/display",
-        description: "set or reset selected agent display mode",
-        usage: "/display <info|verbose|debug|3|4|5|reset>",
-        arg_hint: SlashArgHint::Values(DISPLAY_MODE_ARGS),
-        category: SlashCommandCategory::Runtime,
-        arg_rule: SlashArgRule::ExactlyOne,
-        command: SlashCommand::Display,
     },
     SlashCommandSpec {
         name: "/abort",
@@ -956,47 +943,6 @@ impl TuiApp {
                     composer: ComposerState::new(),
                 };
                 self.status_line = "Opened debug prompt dialog".into();
-            }
-            SlashCommand::Display => {
-                let level = args
-                    .into_iter()
-                    .next()
-                    .expect("slash command /display requires one argument");
-                let agent_id = self
-                    .selected_agent_id()
-                    .ok_or_else(|| anyhow!("No agent selected"))?
-                    .to_string();
-                let reset = level.trim().eq_ignore_ascii_case("reset");
-                let display_mode = if reset {
-                    self.clear_agent_display_mode(&agent_id)
-                } else {
-                    OperatorDisplayMode::parse(&level).ok_or_else(|| {
-                        anyhow!("/display expects info, verbose, debug, 3, 4, 5, or reset")
-                    })?
-                };
-                self.display_mode = display_mode;
-                if !reset {
-                    self.persist_agent_display_mode(&agent_id, display_mode);
-                }
-                if let Some(projection) = self.projection.as_mut() {
-                    projection.clear_event_history();
-                }
-                self.chat_text_cache.borrow_mut().take();
-                self.overlay = OverlayState::None;
-                self.status_line = if reset {
-                    format!(
-                        "Display mode reset to {} ({}) for {agent_id}",
-                        display_mode.name(),
-                        display_mode.display_level()
-                    )
-                } else {
-                    format!(
-                        "Display mode set to {} ({}) for {agent_id}",
-                        display_mode.name(),
-                        display_mode.display_level()
-                    )
-                };
-                self.begin_bootstrap_selected_agent();
             }
             SlashCommand::Abort => {
                 let agent_id = match self.selected_agent_id() {
@@ -2903,13 +2849,6 @@ mod tests {
             ))
         );
         assert_eq!(
-            parse_composer_submission("/display 4").unwrap(),
-            Some(ComposerSubmission::Slash(
-                SlashCommand::Display,
-                vec!["4".into()]
-            ))
-        );
-        assert_eq!(
             parse_composer_submission("/skill-catalog").unwrap(),
             Some(ComposerSubmission::Slash(
                 SlashCommand::SkillCatalog,
@@ -2965,9 +2904,11 @@ mod tests {
     }
 
     #[test]
-    fn slash_display_requires_one_argument() {
-        let err = parse_composer_submission("/display").unwrap_err();
-        assert!(err.to_string().contains("requires one argument"));
+    fn slash_display_is_not_a_command() {
+        assert_eq!(
+            parse_composer_submission("/display").unwrap(),
+            Some(ComposerSubmission::Chat("/display".into()))
+        );
     }
 
     #[test]
@@ -3150,7 +3091,6 @@ mod tests {
             "/refresh",
             "/clear-status",
             "/debug-prompt",
-            "/display <info|verbose|debug|3|4|5|reset>",
             "/abort",
             "/vim",
             "/agent switch <agent-id>|create <name>|start [agent-id]|stop [agent-id]|delete [agent-id]",

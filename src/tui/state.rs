@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -9,27 +8,18 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::{client::LocalClient, operator_event::OperatorDisplayMode};
+use crate::client::LocalClient;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct TuiClientState {
     pub(super) last_selected_agent_id: String,
-    #[serde(default)]
-    pub(super) display: TuiDisplayState,
     pub(super) updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct TuiDisplayState {
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(super) per_agent: BTreeMap<String, OperatorDisplayMode>,
 }
 
 impl TuiClientState {
     pub(super) fn new(last_selected_agent_id: impl Into<String>) -> Self {
         Self {
             last_selected_agent_id: last_selected_agent_id.into(),
-            display: TuiDisplayState::default(),
             updated_at: Utc::now(),
         }
     }
@@ -55,30 +45,8 @@ impl TuiClientState {
         Self::load(path).unwrap_or_else(|_| Self::new(last_selected_agent_id))
     }
 
-    pub(super) fn effective_display_mode(&self, agent_id: &str) -> OperatorDisplayMode {
-        self.display
-            .per_agent
-            .get(agent_id)
-            .copied()
-            .unwrap_or(OperatorDisplayMode::DEFAULT)
-    }
-
     pub(super) fn set_selected_agent(&mut self, agent_id: impl Into<String>) {
         self.last_selected_agent_id = agent_id.into();
-        self.updated_at = Utc::now();
-    }
-
-    pub(super) fn set_agent_display_mode(
-        &mut self,
-        agent_id: impl Into<String>,
-        display_mode: OperatorDisplayMode,
-    ) {
-        self.display.per_agent.insert(agent_id.into(), display_mode);
-        self.updated_at = Utc::now();
-    }
-
-    pub(super) fn clear_agent_display_mode(&mut self, agent_id: &str) {
-        self.display.per_agent.remove(agent_id);
         self.updated_at = Utc::now();
     }
 }
@@ -105,20 +73,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn obsolete_display_preferences_are_ignored_and_not_saved_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("local.json");
+        fs::write(&path, r#"{"last_selected_agent_id":"beta","display":{"per_agent":{"beta":"debug"}},"updated_at":"2026-01-01T00:00:00Z"}"#).unwrap();
+        let state = TuiClientState::load(&path).unwrap();
+        state.save(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["last_selected_agent_id"], "beta");
+        assert!(value.get("display").is_none());
+    }
+
+    #[test]
     fn state_round_trip_preserves_selected_agent() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("state").join("tui").join("local.json");
-        let mut state = TuiClientState::new("agent-beta");
-        state.set_agent_display_mode("agent-beta", OperatorDisplayMode::Verbose);
+        let state = TuiClientState::new("agent-beta");
 
         state.save(&path).unwrap();
         let loaded = TuiClientState::load(&path).unwrap();
 
         assert_eq!(loaded.last_selected_agent_id, "agent-beta");
-        assert_eq!(
-            loaded.effective_display_mode("agent-beta"),
-            OperatorDisplayMode::Verbose
-        );
     }
 
     #[test]
@@ -137,9 +112,5 @@ mod tests {
         let loaded = TuiClientState::load(&path).unwrap();
 
         assert_eq!(loaded.last_selected_agent_id, "agent-beta");
-        assert_eq!(
-            loaded.effective_display_mode("agent-beta"),
-            OperatorDisplayMode::DEFAULT
-        );
     }
 }
