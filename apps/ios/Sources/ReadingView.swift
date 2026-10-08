@@ -214,7 +214,7 @@ struct ConversationReadingView: View {
             .scrollTargetLayout()
         }
         .scrollPosition($scrollPosition)
-        .defaultScrollAnchor(follow.followsLatest ? .bottom : .top, for: .initialOffset)
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
         .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.1) { ids in
             visibleTurnIDs = ids
         }
@@ -235,9 +235,6 @@ struct ConversationReadingView: View {
             nearBottom = value
             if value { newContent = false }
         }
-        // A replacement history window is a new reading viewport, not the old
-        // scroll offset applied to a different collection. Live updates retain it.
-        .id(historyEndTurnID)
         .task(id: reader.snapshot?.agentID) {
             guard let agent = reader.snapshot?.agentID, initializedAgent != agent else { return }
             initializedAgent = agent
