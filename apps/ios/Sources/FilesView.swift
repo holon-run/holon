@@ -30,6 +30,7 @@ struct FilesView: View {
                         Button { coordinator.browse(workspace) } label: {
                             Label(workspace.name, systemImage: "externaldrive")
                         }
+                        .accessibilityIdentifier("files.workspace." + workspace.workspaceID)
                     }
                 }
             }

@@ -292,11 +292,6 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
             file_path = "ios-populated.txt"
             workspace = root / "holon" / "agents" / agent
             (workspace / file_path).write_text("IOS_POPULATED_FILE\n")
-            task = local("POST", f"/control/agents/{agent}/tasks", {
-                "summary": "IOS_POPULATED_TASK",
-                "cmd": "printf 'IOS_POPULATED_OUTPUT\\n'; while :; do sleep 30; done",
-                "workdir": str(root), "login": False, "yield_time_ms": 1})
-            task_id = task["id"]
             state = local("GET", f"/agents/{agent}/state")
             workspace_id = next(w["workspace_id"] for w in state["workspace"]["workspaces"]
                                 if w.get("kind") == "agent_home" or w.get("workspace_id", "").startswith("agent_home"))
@@ -379,6 +374,13 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 if FakeProvider.rich_batches != 10 or not activities.get("has_more"):
                     raise RuntimeError("rich acceptance requires more than sixty real activities")
                 print("Rich fixture: 91 Agents, 56 WorkItems, 60 real tool calls, large UTF-8/code, PNG and two-page PDF", flush=True)
+            # The active output probe belongs to native acceptance, not the
+            # potentially long catalog/history preparation phase.
+            task = local("POST", f"/control/agents/{agent}/tasks", {
+                "summary": "IOS_POPULATED_TASK",
+                "cmd": "printf 'IOS_POPULATED_OUTPUT\\n'; while :; do sleep 30; done",
+                "workdir": str(root), "login": False, "yield_time_ms": 1})
+            task_id = task["id"]
             test_env = dict(os.environ)
             test_env.update(HOLON_UI_BASE_URL=base, HOLON_UI_PAIRING_TICKET=pairing["ticket"],
                 HOLON_UI_AGENT_ID=agent, HOLON_UI_WORK_ID=work_id, HOLON_UI_TASK_ID=task["id"],
@@ -394,7 +396,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
             if mode != "--sdk-only":
                 runner_inputs = {
                     "ENDPOINT": base,
-                    "AGENT_ID": agent, "WORK_ID": work_id, "TASK_ID": task["id"],
+                    "AGENT_ID": agent, "WORK_ID": work_id, "TASK_ID": task["id"], "WORKSPACE_ID": workspace_id,
                     "READ_MARKER": "IOS_POPULATED_BRIEF", "PLAN_MARKER": "IOS_POPULATED_FULL_PLAN",
                     "TASK_MARKER": "IOS_POPULATED_OUTPUT",
                     "FILE_REFERENCE": str(workspace / file_path), "FILE_MARKER": "IOS_POPULATED_FILE"}
@@ -430,7 +432,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                          ("testPreparedDiagnosticsRespondToRuntimeTextSize", "large"),
                          ("testPreparedDiagnosticsViewportCoverage", MAXIMUM_TEXT_SIZE)]
                 if rich_acceptance:
-                    cases.append(("testRichFilesAndActivityWorkflow", "large"))
+                    cases.extend([("testRichActivityWorkflow", "large"), ("testRichFilesWorkflow", "large")])
                 if lost_response_acceptance:
                     cases.append(("testLostResponseAndProcessRecovery", "large"))
                 if history_acceptance:
@@ -480,7 +482,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                             if result.returncode:
                                 raise RuntimeError(f"UI case {method} 失败（SDK 通过不能替代 UI）")
             else:
-                print("4 项真实 SDK probes 已运行；SDK-only 未运行 UI", flush=True)
+                print(f"{5 if rich_turn else 4} 项真实 SDK probes 已运行；SDK-only 未运行 UI", flush=True)
             if FakeProvider.image_requests:
                 raise RuntimeError("Markdown renderer made an unconfirmed external image request")
             if lost_response_acceptance and mode != "--sdk-only":

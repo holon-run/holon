@@ -608,10 +608,9 @@ final class HolonUITests: XCTestCase {
         app.terminate()
     }
 
-    func testRichFilesAndActivityWorkflow() throws {
+    func testRichActivityWorkflow() throws {
         let agent = try required("AGENT_ID")
         let turn = try required("RICH_TURN_ID")
-        let directory = try required("RICH_DIRECTORY")
         let app = launch(language: "en", dark: false, large: false)
         // Existing credentials came only from the preceding shipped onboarding flow.
         // Wait for confirmed route restoration, not the transient home while
@@ -650,22 +649,48 @@ final class HolonUITests: XCTestCase {
         reveal(activity, in: app); activity.tap()
         let fullProcess = app.buttons["Read full activity"].firstMatch
         reveal(fullProcess, in: app); fullProcess.tap()
-        let older = app.buttons["activities.older"]
-        let firstBatch = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_RICH_ASSISTANT: read-only inspection batch 1.")).firstMatch
+        let fullReader = app.scrollViews["activities.fullReader"]
+        XCTAssertTrue(fullReader.waitForExistence(timeout: 10))
+        let older = fullReader.buttons["activities.older"]
+        XCUIDevice.shared.press(.home); app.activate()
+        XCTAssertTrue(older.waitForExistence(timeout: 30),
+                      "Open activity reader reacquires detail after a quiet foreground bootstrap")
+        let firstBatch = fullReader.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_RICH_ASSISTANT: read-only inspection batch 1.")).firstMatch
         for _ in 0..<4 {
             if firstBatch.exists { break }
             for _ in 0..<20 {
                 if older.exists { break }
-                app.swipeDown()
+                fullReader.swipeDown()
             }
             reveal(older, in: app)
             XCTAssertTrue(older.isEnabled); older.tap()
         }
         reveal(firstBatch, in: app)
         capture(app, "rich-activity-paged-to-first-batch")
+        let assistant = fullReader.buttons["Full assistant text"].firstMatch
+        reveal(assistant, in: app); assistant.tap()
+        let rawRecord = fullReader.buttons["Raw record"].firstMatch
+        XCTAssertTrue(rawRecord.waitForExistence(timeout: 20)); rawRecord.tap()
+        XCTAssertTrue(fullReader.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "assistant_round"))
+            .firstMatch.waitForExistence(timeout: 20), "Canonical transcript detail was fetched, not the summary fallback")
+        capture(app, "rich-assistant-full-detail")
+        rawRecord.tap()
+        let tool = fullReader.buttons.containing(NSPredicate(format: "label CONTAINS %@", "GetAgent")).firstMatch
+        reveal(tool, in: app); tool.tap()
+        let input = fullReader.staticTexts["Input"].firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 20), "Canonical tool input is readable")
+        capture(app, "rich-tool-detail")
         app.buttons["Close"].tap()
+        app.terminate()
+    }
+
+    func testRichFilesWorkflow() throws {
+        let directory = try required("RICH_DIRECTORY")
+        let workspace = try required("WORKSPACE_ID")
+        let app = launch(language: "en", dark: false, large: false)
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
         app.buttons["conversation.more"].tap(); app.buttons["conversation.files"].tap()
-        let home = app.buttons["agent_home"].firstMatch
+        let home = app.buttons["files.workspace." + workspace].firstMatch
         reveal(home, in: app); home.tap()
         let folder = app.buttons["files.entry." + directory]
         reveal(folder, in: app); folder.tap()

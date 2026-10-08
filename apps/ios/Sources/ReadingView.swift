@@ -370,6 +370,7 @@ private struct ReadingTurnView: View {
             .sheet(isPresented: $fullActivities) {
                 NavigationStack {
                     ScrollView { TurnActivityView(turnID: turn.id, reader: reader).padding() }
+                        .accessibilityIdentifier("activities.fullReader")
                         .task(id: reader.activityReadKey) {
                             if reader.status == .live { await reader.loadActivities(turn.id) }
                         }
