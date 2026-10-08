@@ -893,6 +893,32 @@ impl LocalClient {
         Ok(response.dump)
     }
 
+    pub async fn agent_timezone(&self, agent_id: &str) -> Result<Value> {
+        self.get_control_json(&format!("/control/agents/{agent_id}/timezone"))
+            .await
+    }
+
+    pub async fn set_agent_timezone(&self, agent_id: &str, timezone: String) -> Result<Value> {
+        self.post_control_json(
+            &format!("/control/agents/{agent_id}/timezone"),
+            &crate::http::SetAgentTimezoneRequest {
+                timezone,
+                authority_class: Some(AuthorityClass::OperatorInstruction),
+            },
+        )
+        .await
+    }
+
+    pub async fn clear_agent_timezone(&self, agent_id: &str) -> Result<Value> {
+        self.post_control_json(
+            &format!("/control/agents/{agent_id}/timezone/clear"),
+            &ClearAgentModelRequest {
+                authority_class: Some(AuthorityClass::OperatorInstruction),
+            },
+        )
+        .await
+    }
+
     pub async fn set_agent_model_override(
         &self,
         agent_id: &str,

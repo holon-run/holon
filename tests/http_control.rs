@@ -12,6 +12,7 @@ macro_rules! http_async_tests {
 }
 
 http_async_tests!(
+    control_agent_timezone_validates_and_requires_token,
     control_prompt_is_open_on_loopback_auto_without_token,
     control_prompt_requires_configured_token_on_loopback_auto,
     control_agent_create_returns_degraded_receipt_and_repairs,

@@ -102,6 +102,7 @@ impl TurnModelSelection {
 #[derive(Debug, Clone)]
 struct TurnRoundRecord {
     round: usize,
+    inference_time: Option<String>,
     assistant_blocks: Vec<ModelBlock>,
     text_blocks: Vec<String>,
     tool_calls: Vec<ToolCall>,

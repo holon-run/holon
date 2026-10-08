@@ -4,6 +4,7 @@
 //! - `tools`: Tool-specific prompt guidance (registry-style)
 //! - Top-level: execution-oriented sections and overall assembly
 
+pub mod time;
 pub mod tools;
 
 pub use tools::{tool_sections, ToolPromptContext};
@@ -648,6 +649,11 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
     continuation: Option<&ContinuationResolution>,
     default_external_ingress: Option<&ExternalTriggerRecord>,
 ) -> Result<EffectivePrompt> {
+    let mut time_reserved_config = config.clone();
+    time_reserved_config.prompt_budget_estimated_tokens = config
+        .prompt_budget_estimated_tokens
+        .checked_sub(time::RUNTIME_TIME_RESERVED_TOKENS)
+        .ok_or_else(|| anyhow::anyhow!("context budget cannot reserve runtime time"))?;
     let built_context = build_context_with_default_external_ingress(
         storage,
         session,
@@ -655,7 +661,7 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
         skills,
         current_message,
         continuation,
-        config,
+        &time_reserved_config,
         agent_home,
         default_external_ingress,
     )?;

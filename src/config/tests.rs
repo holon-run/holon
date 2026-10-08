@@ -1,3 +1,52 @@
+#[test]
+fn runtime_timezone_configuration_validation_and_compatibility() {
+    let mut config: HolonConfigFile = toml::from_str("").unwrap();
+    assert!(config.runtime.timezone.is_none());
+    set_config_key(&mut config, "runtime.timezone", "Asia/Shanghai").unwrap();
+    assert_eq!(
+        get_config_key(&config, "runtime.timezone").unwrap(),
+        serde_json::json!("Asia/Shanghai")
+    );
+    assert!(set_config_key(&mut config, "runtime.timezone", "invalid/zone").is_err());
+    assert_eq!(config.runtime.timezone.as_deref(), Some("Asia/Shanghai"));
+    let encoded = toml::to_string(&config).unwrap();
+    let decoded: HolonConfigFile = toml::from_str(&encoded).unwrap();
+    assert_eq!(decoded.runtime.timezone, config.runtime.timezone);
+    assert!(toml::from_str::<HolonConfigFile>("[runtime]\ntimezone = 'invalid/zone'").is_err());
+    unset_config_key(&mut config, "runtime.timezone").unwrap();
+    assert!(config.runtime.timezone.is_none());
+}
+
+#[test]
+fn agent_timezone_configuration_validation_and_compatibility() {
+    let mut state = crate::types::AgentState::new("timezone-test");
+    let old_state = serde_json::to_value(&state).unwrap();
+    assert!(old_state.get("timezone_override").is_none());
+    assert!(
+        serde_json::from_value::<crate::types::AgentState>(old_state)
+            .unwrap()
+            .timezone_override
+            .is_none()
+    );
+    state.set_timezone(Some("America/Los_Angeles")).unwrap();
+    assert!(state.set_timezone(Some("invalid/zone")).is_err());
+    assert_eq!(
+        state.timezone_override.as_deref(),
+        Some("America/Los_Angeles")
+    );
+    let mut encoded = serde_json::to_value(&state).unwrap();
+    assert_eq!(
+        serde_json::from_value::<crate::types::AgentState>(encoded.clone())
+            .unwrap()
+            .timezone_override,
+        state.timezone_override
+    );
+    encoded["timezone_override"] = serde_json::json!("invalid/zone");
+    assert!(serde_json::from_value::<crate::types::AgentState>(encoded).is_err());
+    state.set_timezone(None).unwrap();
+    assert!(state.timezone_override.is_none());
+}
+
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};

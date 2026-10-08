@@ -1518,6 +1518,21 @@ mod tests {
     }
 
     #[test]
+    fn agent_timezone_commands_use_positional_agent_id() {
+        for action in ["get", "clear"] {
+            assert!(Cli::try_parse_from(["holon", "agent", "timezone", action, "foo"]).is_ok());
+            assert!(Cli::try_parse_from(["holon", "agent", "timezone", action]).is_ok());
+        }
+        let cli = Cli::parse_from(["holon", "agent", "timezone", "set", "Asia/Shanghai", "foo"]);
+        assert!(matches!(cli.command, Commands::Agent {
+            command: Some(AgentCommands::Timezone {
+                command: holon::cli::AgentTimezoneCommands::Set { timezone, agent_id }
+            })
+        } if timezone == "Asia/Shanghai" && agent_id.as_deref() == Some("foo")));
+        assert!(Cli::try_parse_from(["holon", "agent", "timezone", "set"]).is_err());
+    }
+
+    #[test]
     fn agent_model_commands_use_positional_agent_id() {
         let cli = Cli::parse_from(["holon", "agent", "model", "get", "foo"]);
         let Commands::Agent {
@@ -5474,6 +5489,28 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
                 },
             )
             .await
+        }
+        Some(AgentCommands::Timezone { command }) => {
+            if cli_invocation_context()?.is_some() {
+                return Err(anyhow!(
+                    "agent_scope_denied: agent timezone commands require operator mode"
+                ));
+            }
+            let client = LocalClient::new(config.clone())?;
+            match command {
+                holon::cli::AgentTimezoneCommands::Get { agent_id } => {
+                    let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());
+                    print_json(&client.agent_timezone(&agent).await?)
+                }
+                holon::cli::AgentTimezoneCommands::Set { timezone, agent_id } => {
+                    let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());
+                    print_json(&client.set_agent_timezone(&agent, timezone).await?)
+                }
+                holon::cli::AgentTimezoneCommands::Clear { agent_id } => {
+                    let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());
+                    print_json(&client.clear_agent_timezone(&agent).await?)
+                }
+            }
         }
         Some(AgentCommands::Model { command }) => {
             let client = LocalClient::new(config.clone())?;

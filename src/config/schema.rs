@@ -64,6 +64,13 @@ fn parse_optional_session_ttl(key: &str, raw_value: &str) -> Result<Option<u64>>
 pub fn config_schema() -> Vec<ConfigSchemaEntry> {
     vec![
         ConfigSchemaEntry {
+            key: "runtime.timezone",
+            kind: "string",
+            description: "Default IANA timezone for runtime clock samples.",
+            default: json!("UTC"),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "tailscale_serve_desired_enabled",
             kind: "boolean",
             description: "Desired Tailscale Serve state; changing this setting alone does not change the external Serve rule.",
@@ -1062,6 +1069,12 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .unwrap_or(Value::Null)),
         "providers" => Ok(serde_json::to_value(&config.providers)?),
         key if key.starts_with("providers.") => get_provider_config_key(config, key),
+        "runtime.timezone" => Ok(config
+            .runtime
+            .timezone
+            .as_ref()
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
         "runtime.max_output_tokens" => Ok(config
             .runtime
             .max_output_tokens
@@ -1547,6 +1560,10 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                 Some(parse_positive_u32_key(key, raw_value)?);
         }
         key if key.starts_with("providers.") => set_provider_config_key(config, key, raw_value)?,
+        "runtime.timezone" => {
+            crate::prompt::time::parse_timezone(raw_value)?;
+            config.runtime.timezone = Some(raw_value.to_string());
+        }
         "runtime.max_output_tokens" => {
             let value = parse_positive_u32_key(key, raw_value)?;
             config.runtime.max_output_tokens = Some(value);
@@ -1975,6 +1992,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         }
         "decision.model" => config.decision.model = None,
         key if key.starts_with("providers.") => unset_provider_config_key(config, key)?,
+        "runtime.timezone" => config.runtime.timezone = None,
         "runtime.max_output_tokens" => config.runtime.max_output_tokens = None,
         "runtime.default_tool_output_tokens" => config.runtime.default_tool_output_tokens = None,
         "runtime.max_tool_output_tokens" => config.runtime.max_tool_output_tokens = None,

@@ -41,6 +41,74 @@ use std::sync::{Arc, Mutex};
 static CODEX_REFRESH_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+fn inference_time_remains_after_input_for_chat_and_responses() {
+    use crate::prompt::PromptStability;
+    use crate::provider::{PromptContentBlock, ProviderPromptCache};
+
+    let mut request = ProviderTurnRequest::plain(
+        "stable system",
+        vec![ConversationMessage::UserText("current input".into())],
+        vec![],
+    );
+    request.prompt_frame.cache = Some(ProviderPromptCache {
+        agent_id: "test".into(),
+        prompt_cache_key: "stable-cache-key".into(),
+        context_fingerprint: "stable-fingerprint".into(),
+        compression_epoch: 0,
+    });
+    for time in [
+        "current_time: 2026-10-08T23:59:59+08:00\ntimezone: Asia/Shanghai",
+        "current_time: 2026-10-09T00:00:01+08:00\ntimezone: Asia/Shanghai",
+    ] {
+        let mut sampled = request.clone();
+        sampled
+            .conversation
+            .push(ConversationMessage::UserBlocks(vec![PromptContentBlock {
+                text: time.into(),
+                stability: PromptStability::TurnScoped,
+                cache_breakpoint: false,
+            }]));
+        let chat = super::build_chat_completion_request(
+            "gpt-test",
+            1024,
+            &sampled,
+            ToolSchemaContract::Strict,
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(chat["messages"][0]["content"], "stable system");
+        assert_eq!(chat["messages"][1]["content"], "current input");
+        assert!(chat["messages"][2]["content"]
+            .to_string()
+            .contains(time.split('\n').next().unwrap()));
+        assert_eq!(chat["prompt_cache_key"], "stable-cache-key");
+
+        for contract in [
+            OpenAiResponsesTransportContract::StandardJson,
+            OpenAiResponsesTransportContract::CodexStreaming,
+        ] {
+            let responses = build_openai_responses_request(
+                "gpt-test",
+                1024,
+                &sampled,
+                contract,
+                ToolSchemaContract::Strict,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(responses["instructions"], "stable system");
+            assert!(responses["input"][0].to_string().contains("current input"));
+            assert!(responses["input"][1]
+                .to_string()
+                .contains(time.split('\n').next().unwrap()));
+            assert_eq!(responses["prompt_cache_key"], "stable-cache-key");
+        }
+    }
+}
+
+#[test]
 fn codex_credential_resolution_preserves_typed_transport_errors() {
     let error = provider_transport_error(
         ProviderFailureClassification {

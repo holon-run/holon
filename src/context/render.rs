@@ -154,7 +154,7 @@ pub(super) fn message_body_text(body: &MessageBody) -> String {
     }
 }
 
-/// Build the bracketed header label for a message (origin, surface, trust, etc.).
+/// Build the message header, including envelope creation time (not external occurrence time).
 pub(super) fn message_header(message: &MessageEnvelope) -> String {
     let mut labels = vec![origin_label(&message.origin).to_string()];
     if let Some(surface) = message.delivery_surface {
@@ -174,6 +174,12 @@ pub(super) fn message_header(message: &MessageEnvelope) -> String {
     }
     labels.push(authority_class_label(message.authority_class).to_string());
     labels.push(kind_label(message));
+    labels.push(format!(
+        "message_created_at={} UTC",
+        message
+            .created_at
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    ));
     format!("[{}]", labels.join("]["))
 }
 
@@ -306,6 +312,32 @@ pub(super) fn enum_label<T: serde::Serialize + std::fmt::Debug>(value: &T) -> St
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn message_header_projects_envelope_creation_time() {
+        let mut message = MessageEnvelope::new(
+            "target",
+            crate::types::MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            MessageBody::Text {
+                text: "request".into(),
+            },
+        );
+        message.created_at = "2024-01-02T03:04:05.123Z".parse().unwrap();
+        message.metadata = Some(json!({"occurred_at": "2020-01-01T00:00:00Z"}));
+        let header = message_header(&message);
+        assert!(header.contains("[message_created_at=2024-01-02T03:04:05.123Z UTC]"));
+        assert!(!header.contains("2020-01-01"));
+        for budget in [1, 256] {
+            let input = super::super::render_current_input_section(&message, budget, None);
+            assert!(input.content.contains(&header));
+        }
+    }
 
     #[test]
     fn reply_expectation_context_requires_runtime_owned_consistent_metadata() {

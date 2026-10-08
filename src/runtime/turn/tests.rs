@@ -20,6 +20,152 @@ use super::reminders::*;
 use super::tool_summary::*;
 use super::*;
 
+fn project_with_inference_time(
+    rounds: &[TurnRoundRecord],
+    budget: usize,
+    time: &str,
+) -> TurnLocalProjectionOutcome {
+    build_turn_local_projection_with_time(
+        &fixture_prompt_frame(),
+        rounds,
+        &[],
+        &TurnLocalCheckpointState::default(),
+        Some("time-test".into()),
+        budget,
+        budget,
+        120,
+        usize::MAX,
+        None,
+        Some(time),
+    )
+}
+
+fn is_inference_time_message(message: &ConversationMessage, time: &str) -> bool {
+    matches!(message, ConversationMessage::UserBlocks(blocks)
+        if blocks.len() == 1
+            && blocks[0].text == time
+            && blocks[0].stability == crate::prompt::PromptStability::TurnScoped
+            && !blocks[0].cache_breakpoint)
+}
+
+#[test]
+fn inference_time_appends_without_rewriting_previous_request_prefix() {
+    let first_time = "runtime time: first";
+    let second_time = "runtime time: second";
+    let third_time = "runtime time: third";
+    let TurnLocalProjectionOutcome::Projection(first) =
+        project_with_inference_time(&[], 10_000, first_time)
+    else {
+        panic!("first projection");
+    };
+    let mut round = fixture_round_with_follow_up(1, "answer", "new input");
+    round.inference_time = Some(first_time.into());
+    let TurnLocalProjectionOutcome::Projection(second) =
+        project_with_inference_time(&[round.clone()], 10_000, second_time)
+    else {
+        panic!("second projection");
+    };
+    // Compare the complete first request prefix, including its emitted time.
+    for (old, new) in first.conversation.iter().zip(&second.conversation) {
+        assert_eq!(format!("{old:?}"), format!("{new:?}"));
+    }
+    assert!(second
+        .conversation
+        .last()
+        .is_some_and(|message| is_inference_time_message(message, second_time)));
+    let mut next =
+        fixture_round_with_tool(2, "tool", "ExecCommand", serde_json::json!({"cmd": "true"}));
+    next.inference_time = Some(second_time.into());
+    let TurnLocalProjectionOutcome::Projection(third) =
+        project_with_inference_time(&[round, next], 10_000, third_time)
+    else {
+        panic!("third projection");
+    };
+    for (old, new) in second.conversation.iter().zip(&third.conversation) {
+        assert_eq!(format!("{old:?}"), format!("{new:?}"));
+    }
+    assert!(third
+        .conversation
+        .last()
+        .is_some_and(|message| is_inference_time_message(message, third_time)));
+}
+
+#[test]
+fn inference_time_cannot_be_silently_dropped_to_fit_budget() {
+    let frame = fixture_prompt_frame();
+    let baseline = vec![ConversationMessage::UserBlocks(
+        frame.context_blocks.clone(),
+    )];
+    let budget =
+        estimate_projection_tokens(&frame, &baseline) + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
+    assert!(matches!(
+        project_with_inference_time(&[], budget, &"time ".repeat(100)),
+        TurnLocalProjectionOutcome::BaselineOverBudget(_)
+    ));
+}
+
+#[test]
+fn inference_time_survives_round_receipt_compaction_and_degradation() {
+    let mut round = fixture_round(1, &"answer ".repeat(500));
+    let original_time = "  runtime time: original\n";
+    round.inference_time = Some(original_time.into());
+    for messages in [
+        exact_round_messages(&round),
+        compacted_round_messages(&round, usize::MAX).unwrap().0,
+        degraded_round_messages(&round, 100).0,
+    ] {
+        let time_index = messages
+            .iter()
+            .position(|message| is_inference_time_message(message, original_time))
+            .expect("historical inference time must survive projection");
+        assert!(matches!(
+            messages.get(time_index + 1),
+            Some(ConversationMessage::AssistantBlocks(_))
+        ));
+    }
+    assert_eq!(
+        estimate_round_tokens(&round),
+        round.estimated_tokens + estimate_text_tokens(original_time)
+    );
+}
+
+#[test]
+fn inference_time_is_final_after_checkpoint_compaction() {
+    let mut rounds = vec![
+        fixture_round(1, &"alpha ".repeat(170)),
+        fixture_round(2, &"beta ".repeat(170)),
+        fixture_round(3, &"gamma ".repeat(170)),
+    ];
+    for round in &mut rounds {
+        round.inference_time = Some(format!("historical time {}", round.round));
+    }
+    let time = "current time";
+    let frame = fixture_prompt_frame();
+    let mut exact = vec![ConversationMessage::UserBlocks(
+        frame.context_blocks.clone(),
+    )];
+    for round in &rounds {
+        exact.extend(exact_round_messages(round));
+    }
+    push_inference_time_message(&mut exact, Some(time));
+    let budget =
+        estimate_projection_tokens(&frame, &exact) + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS - 1;
+    let TurnLocalProjectionOutcome::Projection(projection) =
+        project_with_inference_time(&rounds, budget, time)
+    else {
+        panic!("compacted projection");
+    };
+    assert!(projection.compaction.is_some());
+    assert!(projection
+        .conversation
+        .last()
+        .is_some_and(|message| is_inference_time_message(message, time)));
+    assert!(projection
+        .conversation
+        .iter()
+        .any(|message| is_inference_time_message(message, "historical time 3")));
+}
+
 #[tokio::test]
 async fn persist_turn_record_uses_turn_id_not_numeric_sequence_collisions() {
     let dir = tempfile::tempdir().unwrap();
@@ -474,6 +620,7 @@ fn fixture_round(round: usize, text: &str) -> TurnRoundRecord {
     let text_blocks = vec![text.to_string()];
     let tool_results = Vec::new();
     TurnRoundRecord {
+        inference_time: None,
         round,
         estimated_tokens: build_round_estimated_tokens(&assistant_blocks, &tool_results, &[]),
         assistant_blocks,
@@ -493,6 +640,7 @@ fn fixture_round_with_follow_up(round: usize, text: &str, follow_up: &str) -> Tu
     let follow_up_user_texts = vec![follow_up.to_string()];
     let tool_results = Vec::new();
     TurnRoundRecord {
+        inference_time: None,
         round,
         estimated_tokens: build_round_estimated_tokens(
             &assistant_blocks,
@@ -534,6 +682,7 @@ fn fixture_round_with_tool(
     let text_blocks = vec![text.to_string()];
     let tool_results = Vec::new();
     TurnRoundRecord {
+        inference_time: None,
         round,
         estimated_tokens: build_round_estimated_tokens(&assistant_blocks, &tool_results, &[]),
         assistant_blocks,
@@ -566,6 +715,7 @@ fn fixture_tool_only_round_with_result(round: usize, follow_up: &str) -> TurnRou
     }];
     let follow_up_user_texts = vec![follow_up.to_string()];
     TurnRoundRecord {
+        inference_time: None,
         round,
         estimated_tokens: build_round_estimated_tokens(
             &assistant_blocks,
@@ -1973,6 +2123,7 @@ fn fixture_round_with_large_tool_result(
     }];
     let follow_up_user_texts = vec!["continue".to_string()];
     TurnRoundRecord {
+        inference_time: None,
         round,
         estimated_tokens: build_round_estimated_tokens(
             &assistant_blocks,
@@ -2633,6 +2784,7 @@ fn degraded_round_messages_no_trimmable_returns_exact() {
         input: serde_json::json!({"cmd": "echo hi"}),
     };
     let round = TurnRoundRecord {
+        inference_time: None,
         round: 1,
         assistant_blocks: vec![ModelBlock::ToolUse {
             id: call.id.clone(),

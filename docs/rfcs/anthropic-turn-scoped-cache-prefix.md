@@ -16,6 +16,11 @@ context boundary, even as later history and its rolling marker advance. The
 next turn must use its own context, not a stale context from prior requests.
 The runtime's replayable conversation remains unchanged.
 
+The small [runtime time reminder](runtime-time-context.md) is an exception:
+it is appended after new input/results, not inserted into this context head.
+An unmarked `TurnScoped` content block is excluded from the rolling cache
+marker; explicit context breakpoints still follow the contract above.
+
 ## Trade-off and validation
 
 A changed turn-scoped prefix can invalidate the cached history of *previous*

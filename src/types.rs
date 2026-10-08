@@ -2674,6 +2674,12 @@ pub struct WorkItemExecutionBinding {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentState {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::prompt::time::deserialize_optional_timezone"
+    )]
+    pub timezone_override: Option<String>,
     pub id: String,
     pub status: AgentStatus,
     pub sleeping_until: Option<DateTime<Utc>>,
@@ -2839,10 +2845,19 @@ pub struct AgentTokenUsageSummary {
 }
 
 impl AgentState {
+    pub fn set_timezone(&mut self, timezone: Option<&str>) -> anyhow::Result<()> {
+        if let Some(timezone) = timezone {
+            crate::prompt::time::parse_timezone(timezone)?;
+        }
+        self.timezone_override = timezone.map(str::to_owned);
+        Ok(())
+    }
+
     pub fn new(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
             status: AgentStatus::Booting,
+            timezone_override: None,
             sleeping_until: None,
             current_run_id: None,
             pending: 0,

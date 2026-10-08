@@ -134,6 +134,7 @@ pub(super) fn build_checkpoint_resume_round(
 ) -> TurnRoundRecord {
     let continuation_text = CHECKPOINT_RESUME_PROMPT.to_string();
     TurnRoundRecord {
+        inference_time: None,
         round,
         estimated_tokens: build_round_estimated_tokens(
             &assistant_blocks,
