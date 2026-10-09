@@ -25,11 +25,9 @@ final class DemoReviewUITests: XCTestCase {
         XCTAssertTrue(element.exists && element.isHittable)
     }
 
-    func testDemoReviewWorkflow() throws {
+    private func connectToDemo(_ app: XCUIApplication) throws {
         let endpoint = try required("ENDPOINT")
         let ticket = try required("PAIRING_TICKET")
-        let agentID = try required("AGENT_ID")
-        let marker = try required("REPLY_MARKER")
         guard var components = URLComponents(string: endpoint),
               components.scheme == "https", components.host == "demo.holon.run",
               components.path == "/api", ticket.count == 64,
@@ -39,11 +37,9 @@ final class DemoReviewUITests: XCTestCase {
         }
         components.path = "/login"
         components.fragment = "pair=" + ticket
-        let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en",
                                "-AppleInterfaceStyle", "Light"]
         app.launch()
-        defer { app.terminate() }
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 20))
         let paste = app.buttons["onboarding.pasteEntry"]
         reveal(paste, in: app)
@@ -60,15 +56,23 @@ final class DemoReviewUITests: XCTestCase {
         XCTAssertTrue(confirm.isEnabled, "HTTPS pairing must not require insecure HTTP permission")
         confirm.tap()
         XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
+    }
+
+    func testDemoReviewWorkflow() throws {
+        let agentID = try required("AGENT_ID")
+        let marker = try required("REPLY_MARKER")
+        let app = XCUIApplication()
+        defer { app.terminate() }
+        try connectToDemo(app)
 
         app.buttons["settings.open"].tap()
         let review = app.buttons["privacy.review"]
         reveal(review, in: app)
         review.tap()
-        let agree = app.buttons["privacy.agree"]
+        let agree = app.alerts.buttons["privacy.agree"].firstMatch
         XCTAssertTrue(agree.waitForExistence(timeout: 10))
-        reveal(agree, in: app)
         agree.tap()
+        XCTAssertTrue(app.buttons["privacy.revoke"].waitForExistence(timeout: 10))
         app.navigationBars.buttons.element(boundBy: 0).tap()
 
         let agent = app.buttons["agent." + agentID]
@@ -93,6 +97,20 @@ final class DemoReviewUITests: XCTestCase {
                       "Require the demo Agent's actual reply, not the outgoing prompt")
 
         app.navigationBars.buttons.element(boundBy: 0).tap()
+        try deleteOnlyNetwork(in: app)
+    }
+
+    /// Complements an already verified reply without enqueueing another prompt.
+    func testDemoReviewLoginAndDeleteOnly() throws {
+        let agentID = try required("AGENT_ID")
+        let app = XCUIApplication()
+        defer { app.terminate() }
+        try connectToDemo(app)
+        XCTAssertTrue(app.buttons["agent." + agentID].waitForExistence(timeout: 30))
+        try deleteOnlyNetwork(in: app)
+    }
+
+    private func deleteOnlyNetwork(in app: XCUIApplication) throws {
         let manage = app.buttons["connection.manage"]
         XCTAssertTrue(manage.waitForExistence(timeout: 15))
         manage.tap()
@@ -101,9 +119,12 @@ final class DemoReviewUITests: XCTestCase {
         reveal(actions, in: app)
         actions.tap()
         app.buttons["Delete network"].tap()
-        let deletion = app.alerts.buttons["profiles.confirmDelete"]
-        XCTAssertTrue(deletion.waitForExistence(timeout: 10))
-        deletion.tap()
+        let buttons = app.alerts.buttons.matching(identifier: "profiles.confirmDelete")
+        XCTAssertTrue(buttons.firstMatch.waitForExistence(timeout: 10))
+        // UIKit can expose a wrapper and child for one SwiftUI alert action.
+        let deletion = buttons.allElementsBoundByIndex.filter { $0.buttons.count == 0 }
+        XCTAssertEqual(deletion.count, 1, "There must be exactly one destructive action")
+        try XCTUnwrap(deletion.first).tap()
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 30),
                       "Deleting the only network must remove the local sign-in session")
     }
