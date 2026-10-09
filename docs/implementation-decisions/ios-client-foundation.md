@@ -147,12 +147,14 @@ transition uses server workspace/root metadata or an opaque server reference,
 never the plan's execution-host absolute path. File contents are displayed by
 bounded native text/image views without a WebView, script execution or a bridge.
 
-The share extension has no SDK dependency, network sending path or Keychain
-entitlement. Its shared container stores only validated text, links and managed
-attachment copies. The app and extension share an App Group placeholder, not
-credentials or authority. Registered entitlements and physical-device behavior
-are explicit gates; a missing container fails closed. Host enqueue reuses the
-same canonical text builder that validated the staged UTF-8 size.
+The original P5 extension was staging-only. Direct sharing now uses the SDK and
+one explicit App Group Keychain item for the validated active session; private
+profile/proof vaults remain app-only. See `ios-direct-agent-sharing.md` for
+authority fencing and immutable request recovery. Shared disk records contain
+validated content, managed attachments and confirmed destination metadata, never
+credentials. Registered entitlements and physical-device behavior are explicit
+gates; a missing container fails closed. Host enqueue reuses the same canonical
+text builder and UUID, and refuses a bound request under a different identity.
 
 ## Evidence and outstanding gates
 

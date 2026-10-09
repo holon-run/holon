@@ -540,6 +540,17 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(read.waitForExistence(timeout: 30))
         reveal(read, in: app)
         capture(app, "authenticated-reading")
+        XCTAssertFalse(app.staticTexts["Loading messages…"].exists,
+                       "Synchronization must be chrome, not a timeline message")
+        let pathLink = app.links["Open fixture file"].firstMatch
+        reveal(pathLink, in: app)
+        XCTAssertTrue(pathLink.isHittable)
+        capture(app, "conversation-absolute-markdown-path")
+        pathLink.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", fileMarker))
+            .firstMatch.waitForExistence(timeout: 30))
+        capture(app, "conversation-path-opened-file")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertFalse(read.frame.isEmpty, "Assert margins only on a laid-out, visible element")
         XCTAssertTrue(read.isHittable)
         XCTAssertGreaterThanOrEqual(read.frame.minX, 12, "Conversation text must retain native horizontal margins")
@@ -714,6 +725,90 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(input.waitForExistence(timeout: 20), "Canonical tool input is readable")
         capture(app, "rich-tool-detail")
         app.buttons["Close"].tap()
+        app.terminate()
+    }
+
+    func testDirectAgentShareWorkflow() async throws {
+        try connectForSharing()
+        let agent = try required("AGENT_ID")
+        let probe = XCUIApplication(bundleIdentifier: "run.holon.ios.share-probe")
+        probe.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        for kind in ["text", "url", "image", "file"] {
+            probe.launch()
+            let share = probe.buttons["probe." + kind]
+            XCTAssertTrue(share.waitForExistence(timeout: 10)); share.tap()
+            let holon = probe.cells["Holon"].firstMatch
+            if !holon.waitForExistence(timeout: 5) {
+                let more = probe.cells["More"].firstMatch
+                XCTAssertTrue(more.waitForExistence(timeout: 10)); more.tap()
+            }
+            let destination = probe.cells["Holon"].firstMatch
+            XCTAssertTrue(destination.waitForExistence(timeout: 10)); destination.tap()
+            // These elements belong to the real extension hosted in the sender process.
+            let recipient = probe.cells["share.agent." + agent]
+            guard recipient.waitForExistence(timeout: 30) else {
+                capture(probe, "system-share-" + kind + "-failed-preview")
+                let detail = XCTAttachment(string: probe.debugDescription)
+                detail.name = "share-preview-hierarchy"; detail.lifetime = .keepAlways; add(detail)
+                return XCTFail("System share preview and authoritative recipient list must load")
+            }
+            if kind == "text" {
+                let search = probe.descendants(matching: .any)["share.search"].firstMatch
+                XCTAssertTrue(search.exists); search.tap(); search.typeText(agent)
+                XCTAssertTrue(recipient.waitForExistence(timeout: 10))
+            }
+            recipient.tap()
+            let send = probe.buttons["share.send"]
+            XCTAssertTrue(send.isEnabled)
+            capture(probe, "system-share-" + kind + "-agent")
+            send.tap()
+            let confirm = probe.alerts.buttons["Send"]
+            XCTAssertTrue(confirm.waitForExistence(timeout: 10)); confirm.tap()
+            if kind == "text", ProcessInfo.processInfo.environment["HOLON_UI_LOSS_CONTROL_URL"] != nil {
+                let unknown = probe.staticTexts.matching(NSPredicate(format:
+                    "identifier == %@ AND label CONTAINS %@", "share.status", "Receipt unknown")).firstMatch
+                XCTAssertTrue(unknown.waitForExistence(timeout: 35))
+                capture(probe, "system-share-unknown-original-recipient")
+                var request = URLRequest(url: try XCTUnwrap(URL(string: required("LOSS_CONTROL_URL"))))
+                request.httpMethod = "POST"
+                request.setValue("Bearer " + (try required("LOSS_CONTROL_TOKEN")), forHTTPHeaderField: "Authorization")
+                let (_, response) = try await URLSession.shared.data(for: request)
+                XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 204)
+                XCTAssertEqual(probe.buttons["share.send"].label, "Retry same request")
+                probe.buttons["share.send"].tap()
+                XCTAssertTrue(confirm.waitForExistence(timeout: 10)); confirm.tap()
+            }
+            let received = probe.staticTexts["Received by Agent"]
+            XCTAssertTrue(received.waitForExistence(timeout: 35))
+            capture(probe, "system-share-" + kind + "-received")
+            probe.buttons["share.send"].tap()
+            probe.terminate()
+        }
+    }
+    private func connectForSharing() throws {
+        let endpoint = try required("ENDPOINT")
+        var components = try XCTUnwrap(URLComponents(string: endpoint))
+        components.path = String(components.path.dropLast(4)) + "/login"
+        components.fragment = "pair=" + (try required("PAIRING_CODE"))
+        let app = launch(language: "en", dark: false, large: false)
+        if !app.buttons["onboarding.scan"].waitForExistence(timeout: 5) {
+            // A full sweep already authenticated through the shipped UI. Restore
+            // that validated session; don't require a second disconnected install.
+            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15) ||
+                          app.buttons["conversation.more"].waitForExistence(timeout: 15))
+            app.terminate(); return
+        }
+        let entry = app.staticTexts["onboarding.pasteEntry"]
+        reveal(entry, in: app); entry.tap()
+        let payload = app.secureTextFields["onboarding.payload"]
+        reveal(payload, in: app); payload.tap()
+        payload.typeText(try XCTUnwrap(components.string)); payload.typeText("\n")
+        app.buttons["onboarding.preview"].tap()
+        let permission = app.switches["onboarding.pairingHTTP"]
+        reveal(permission, in: app); permission.switches.firstMatch.tap()
+        let confirm = app.buttons["onboarding.confirmPairing"]
+        reveal(confirm, in: app); confirm.tap()
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
         app.terminate()
     }
 

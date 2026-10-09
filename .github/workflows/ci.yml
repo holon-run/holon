@@ -345,6 +345,7 @@ jobs:
       - name: Test isolated simulator UI
         run: make ios-ui-test
         env:
+          IOS_SHARE_ACCEPTANCE: "1"
           IOS_DERIVED_DATA_PATH: ${{ runner.temp }}/holon-ios-ui
           IOS_RESULT_BUNDLE_PATH: ${{ runner.temp }}/holon-ios-ui.xcresult
       - name: Preserve application test results

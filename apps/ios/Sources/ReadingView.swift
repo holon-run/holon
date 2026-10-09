@@ -54,7 +54,12 @@ struct ReadingView: View {
                                 }
                                 let preview = AgentSummaryPresentation.preview(agent)
                                 if !preview.isEmpty {
-                                    Text(verbatim: preview).lineLimit(2).foregroundStyle(.secondary)
+                                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                                        if AgentSummaryPresentation.showsOperatorPreview(agent) {
+                                            Text("reading.inputPreview").font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        Text(verbatim: preview).lineLimit(2).foregroundStyle(.secondary)
+                                    }
                                 }
                                 if AgentSummaryPresentation.needsReply(agent) {
                                     Label("agents.needsReply", systemImage: "bubble.left")
@@ -151,10 +156,6 @@ struct ConversationReadingView: View {
             // The explicit turn window is bounded to20. Use its actual heights:
             // lazy offscreen estimates can loop while scrolling rich results.
             VStack(alignment: .leading, spacing: 16) {
-                if reader.status != .live {
-                    Text(LocalizedStringKey("reading.status." + reader.status.rawValue))
-                        .font(.caption).foregroundStyle(.secondary)
-                }
                 if turnRange.lowerBound > 0 || reader.canLoadHistory {
                     Button("reading.history") {
                         follow.reviewHistory()
@@ -178,9 +179,7 @@ struct ConversationReadingView: View {
                         .accessibilityIdentifier("conversation.older")
                 }
                 if reader.isLoadingHistory { ProgressView() }
-                if reader.snapshot == nil {
-                    Text("reading.loadingConversation")
-                } else if turns.isEmpty && reader.snapshot?.raw["pending_inputs"].viewArray.isEmpty == true {
+                if reader.snapshot != nil && turns.isEmpty && reader.snapshot?.raw["pending_inputs"].viewArray.isEmpty == true {
                     Text("reading.emptyConversation")
                 }
                 ForEach(visibleTurns) { turn in
@@ -201,10 +200,12 @@ struct ConversationReadingView: View {
                 }
                 ForEach(reader.snapshot?.raw["pending_inputs"].viewArray ?? [], id: \.viewMessageID) { input in
                     ReadingInputView(input: input)
+                        .environment(\.holonOpenReference, openReference)
                         .accessibilityIdentifier("pending." + input.viewMessageID)
                 }
                 if let sender {
                     LocalMessageView(sender: sender, canonicalIDs: LocalMessageProjection.canonicalIDs(reader.snapshot?.raw))
+                        .environment(\.holonOpenReference, openReference)
                 }
                 Color.clear.frame(height: 1).id("conversation-tail")
             }
@@ -277,6 +278,11 @@ struct ConversationReadingView: View {
         }
         .navigationTitle(Text(verbatim: reader.agents.first { $0.id == reader.selectedAgentID }?.name ?? "Holon"))
         .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            ConversationConnectionStatus(status: reader.status, hasSnapshot: reader.snapshot != nil) {
+                Task { await reader.refresh() }
+            }
+        }
         .safeAreaInset(edge: .bottom) {
             if let sender {
                 SendingView(sender: sender, currentRunID: currentRunID, commonModels: reader.agents.compactMap(\.effectiveModel))
@@ -395,21 +401,64 @@ private struct ReadingTurnView: View {
     }
 }
 
-private struct ReadingInputView: View {
+struct ReadingInputView: View {
     let input: JSONValue
     var fallbackClass: String? = nil
 
     var body: some View {
         if (input["presentation_class"].viewString ?? fallbackClass) == "operator" {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("reading.operator").font(.caption).bold()
-                    Text(verbatim: input["actor_display_name"].viewString ?? "")
-                        .font(.caption).foregroundStyle(.secondary)
+            OperatorMessageBubble {
+                VStack(alignment: .leading, spacing: 6) {
+                    OperatorMessageText(text: ReadingPresentation.operatorText(input))
+                    if let actor = input["actor_display_name"].viewString?.trimmingCharacters(in: .whitespacesAndNewlines), !actor.isEmpty {
+                        Text(verbatim: actor).font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
-                Text(verbatim: ReadingPresentation.operatorText(input)).textSelection(.enabled)
             }
+            .accessibilityIdentifier("operator." + input.viewMessageID)
         }
+    }
+}
+
+/// Connection state is chrome, not an invented entry in the conversation.
+struct ConversationConnectionStatus: View {
+    let status: ReadingStatus
+    let hasSnapshot: Bool
+    var retry: () -> Void
+    var body: some View {
+        if status != .live || !hasSnapshot {
+            HStack(spacing: 8) {
+                if status == .syncing || (status == .live && !hasSnapshot) {
+                    ProgressView().controlSize(.mini)
+                } else { Image(systemName: "wifi.exclamationmark") }
+                Text(LocalizedStringKey(status == .live ? "reading.loadingConversation" : "reading.status." + status.rawValue))
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                if status == .offline {
+                    Button("reading.retry", action: retry).font(.caption).frame(minHeight: 44)
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 8)
+            .background(.bar)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("conversation.connectionStatus")
+        }
+    }
+}
+
+struct OperatorMessageBubble<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            Spacer(minLength: 24)
+            content().padding(.horizontal, 13).padding(.vertical, 10)
+                .background(Color(uiColor: .secondarySystemBackground),
+                            in: UnevenRoundedRectangle(topLeadingRadius: 16, bottomLeadingRadius: 16,
+                                                       bottomTrailingRadius: 4, topTrailingRadius: 16))
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text("reading.operator"))
     }
 }
 

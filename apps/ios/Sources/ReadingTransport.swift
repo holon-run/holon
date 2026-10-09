@@ -186,17 +186,22 @@ actor ReadingClientTransport: ReadingTransport {
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             candidates.append((date, candidates.count, String(text.prefix(240))))
         }
+        var turns: [String: JSONValue] = [:]
         for key in ["turns", "active_turns"] {
-            if case .array(let turns) = raw[key] {
-                for turn in turns {
-                    if case .array(let ids) = turn["brief_ids"], !ids.isEmpty { continue }
-                    if case .array(let inputs) = turn["inputs"] {
-                        for input in inputs {
-                            append(input, fallback: turn["presentation_class"]?.readingString,
-                                   startedAt: turn["started_at"]?.readingString)
-                        }
-                    }
+            if case .array(let values) = raw[key] {
+                for turn in values {
+                    if let id = turn["turn_id"]?.readingString { turns[id] = turn }
                 }
+            }
+        }
+        // Match Android: an unfinished historical turn must not displace the latest result.
+        if let latest = turns.values.max(by: {
+            ($0["key"]?["turn_index"]?.readingInteger ?? -1) < ($1["key"]?["turn_index"]?.readingInteger ?? -1)
+        }), latest["brief_ids"]?.workArray?.isEmpty != false,
+           case .array(let inputs) = latest["inputs"] {
+            for input in inputs {
+                append(input, fallback: latest["presentation_class"]?.readingString,
+                       startedAt: latest["started_at"]?.readingString)
             }
         }
         if case .array(let inputs) = raw["pending_inputs"] {

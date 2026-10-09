@@ -24,6 +24,7 @@ enum RichTextLink: Equatable {
         case "workspace":
             // The SDK/server validate workspace/root membership; never reinterpret it as a device URL.
             var reference = components
+            reference.scheme = "workspace"
             reference.fragment = nil
             guard components.host?.isEmpty == false, components.port == nil,
                   let value = reference.string else { return .unsupported }
@@ -33,7 +34,13 @@ enum RichTextLink: Equatable {
                   let path = components.percentEncodedPath.removingPercentEncoding,
                   path.hasPrefix("/"), !path.contains("\0") else { return .unsupported }
             return .reference(path)
-        case nil, "holon-relative":
+        case nil:
+            guard components.host == nil, components.query == nil,
+                  let path = components.percentEncodedPath.removingPercentEncoding,
+                  !path.isEmpty, !path.contains("\0") else { return .unsupported }
+            if path.hasPrefix("/") { return path.hasPrefix("//") ? .unsupported : .reference(path) }
+            return path.contains("\\") ? .unsupported : .relative(path)
+        case "holon-relative":
             guard components.host == nil, components.query == nil,
                   let path = components.percentEncodedPath.removingPercentEncoding,
                   !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\"), !path.contains("\0") else { return .unsupported }
@@ -43,7 +50,7 @@ enum RichTextLink: Equatable {
     }
 
     static func literalPathURL(_ path: String) -> URL? {
-        guard path.hasPrefix("/"), path.utf8.count <= 16_384, !path.contains("\0") else { return nil }
+        guard path.hasPrefix("/"), !path.hasPrefix("//"), path.utf8.count <= 16_384, !path.contains("\0") else { return nil }
         var components = URLComponents()
         components.scheme = "holon-path"
         components.path = path
@@ -60,6 +67,45 @@ enum RichTextLink: Equatable {
               !path.contains("\0"), !path.contains("\\") else { return nil }
         var components = URLComponents(); components.scheme = "holon-relative"; components.path = path
         return components.url
+    }
+}
+
+/// Match Android's message-path boundaries. A bare absolute path is literal, not a URI.
+enum MessagePathLinks {
+    struct Match {
+        let range: Range<String.Index>
+        let url: URL
+    }
+    private static let pattern = try! NSRegularExpression(
+        pattern: #"(?:workspace|file)://[^\s<>"')\]}，。；：]+|(?<![^\s：(\[{=，；])/(?!/)[^\s<>"')\]}，。；：]+"#,
+        options: [.caseInsensitive])
+
+    static func matches(_ text: String, preceding: Character? = nil) -> [Match] {
+        pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match in
+            guard var range = Range(match.range, in: text) else { return nil }
+            let absolute = text[range.lowerBound] == "/"
+            if absolute, range.lowerBound == text.startIndex, let preceding,
+               !preceding.isWhitespace, !"：( [{=，；".contains(preceding) { return nil }
+            while range.lowerBound < range.upperBound, ".,;!?:。；，！？".contains(text[text.index(before: range.upperBound)]) {
+                range = range.lowerBound..<text.index(before: range.upperBound)
+            }
+            let candidate = String(text[range])
+            guard candidate.count > 1 else { return nil }
+            if absolute, let url = RichTextLink.literalPathURL(candidate) { return Match(range: range, url: url) }
+            guard let url = URL(string: candidate), case .reference = RichTextLink.classify(url) else { return nil }
+            return Match(range: range, url: url)
+        }
+    }
+
+    static func annotate(_ content: inout AttributedString, range: Range<AttributedString.Index>) {
+        let text = String(content[range].characters)
+        let preceding: Character? = range.lowerBound == content.startIndex ? nil :
+            content.characters[content.index(range.lowerBound, offsetByCharacters: -1)]
+        for match in matches(text, preceding: preceding) {
+            let lower = content.index(range.lowerBound, offsetByCharacters: text.distance(from: text.startIndex, to: match.range.lowerBound))
+            let upper = content.index(lower, offsetByCharacters: text.distance(from: match.range.lowerBound, to: match.range.upperBound))
+            content[lower..<upper].link = match.url
+        }
     }
 }
 
@@ -82,32 +128,24 @@ struct HolonMarkdownParser: MarkupParser {
             if let link = run.link, link.scheme == nil {
                 // Give relative links an explicit app-routed scheme. This is
                 // still an opaque host reference, never a device file URL.
-                if case .relative(let path) = RichTextLink.classify(link) {
+                if case .reference(let path) = RichTextLink.classify(link) {
+                    content[run.range].link = RichTextLink.literalPathURL(path)
+                } else if case .relative(let path) = RichTextLink.classify(link) {
                     content[run.range].link = RichTextLink.relativeURL(path)
                 } else { content[run.range].link = URL(string: "holon-unsupported:relative") }
             }
             if run.link == nil, run.inlinePresentationIntent?.contains(.code) == true {
                 let text = String(content[run.range].characters)
-                if let url = URL(string: text), case .reference = RichTextLink.classify(url) {
+                if text.hasPrefix("/") {
+                    content[run.range].link = RichTextLink.literalPathURL(text)
+                } else if let url = URL(string: text), case .reference = RichTextLink.classify(url) {
                     content[run.range].link = url
                 } else {
                     content[run.range].link = RichTextLink.literalPathURL(text) ??
                         (allowsRelativePaths ? RichTextLink.literalRelativeURL(text) : nil)
                 }
             } else if run.link == nil {
-                let text = String(content[run.range].characters)
-                let pattern = try NSRegularExpression(pattern: "(?:workspace|file)://[^\\s<>\"')\\]]+")
-                for match in pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
-                    guard var range = Range(match.range, in: text) else { continue }
-                    while range.lowerBound < range.upperBound, ".,;!?:。；，！？".contains(text[text.index(before: range.upperBound)]) {
-                        range = range.lowerBound..<text.index(before: range.upperBound)
-                    }
-                    guard !range.isEmpty,
-                          let url = URL(string: String(text[range])), case .reference = RichTextLink.classify(url) else { continue }
-                    let lower = content.index(run.range.lowerBound, offsetByCharacters: text.distance(from: text.startIndex, to: range.lowerBound))
-                    let upper = content.index(lower, offsetByCharacters: text.distance(from: range.lowerBound, to: range.upperBound))
-                    content[lower..<upper].link = url
-                }
+                MessagePathLinks.annotate(&content, range: run.range)
             }
         }
         // Foundation retains GFM task markers as text. Change only native list-item prefixes.
@@ -132,6 +170,30 @@ struct HolonMarkdownParser: MarkupParser {
             if let attributes = content[lower..<upper].runs.first?.attributes { marker.mergeAttributes(attributes) }
             content.replaceSubrange(lower..<upper, with: marker)
         }
+        return content
+    }
+}
+
+/// Operator input stays verbatim; only authorized host-file actions are annotated.
+struct OperatorMessageText: View {
+    let text: String
+    @Environment(\.holonOpenReference) private var openReference
+    @State private var unavailable = false
+    var body: some View {
+        Text(Self.attributed(text)).textSelection(.enabled)
+            .environment(\.openURL, OpenURLAction { url in
+                if case .reference(let reference) = RichTextLink.classify(url), let openReference {
+                    openReference(reference)
+                } else { unavailable = true }
+                return .handled
+            })
+            .alert("reading.linkUnavailable", isPresented: $unavailable) {
+                Button("action.ok", role: .cancel) {}
+            }
+    }
+    static func attributed(_ text: String) -> AttributedString {
+        var content = AttributedString(text)
+        MessagePathLinks.annotate(&content, range: content.startIndex..<content.endIndex)
         return content
     }
 }

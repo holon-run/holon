@@ -99,10 +99,12 @@ declaration. Supply a public privacy policy that matches the actual deployment.
   explain any MFA/access restrictions. Provide a supported alternative only
   when the configured daemon actually offers it.
 - Give reviewers steps to read, queue a prompt, inspect work/files, stop an
-  observed run, stage a share then explicitly confirm it in the host, export
+  observed run, share text/link/image/file through the extension's Agent picker
+  and explicit Send, test offline staging and same-ID host recovery, export
   diagnostics and log out. Explain that unknown queue outcomes require care.
 - On signed physical devices validate app/extension group access, share-sheet
-  invocation and host import; Local Network grant/denial; native browser
+  invocation, shared active-session Keychain access, identity withdrawal and
+  host import; Local Network grant/denial; native browser
   callback; logout/revocation; accessibility and cleanup/storage errors.
 - For first connection, scan a fresh computer-generated pairing QR code on an
   iPhone or iPad. Confirm destination preview makes no request, cancel leaves

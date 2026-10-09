@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Run build/archive and UI command contract regressions without starting Xcode."""
+import ast
 import json
 import os
+import pathlib
 from pathlib import Path
 import subprocess
 import tempfile
 import threading
 import unittest
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 import urllib.error
 import urllib.request
 
@@ -120,6 +122,67 @@ class BuildToolContracts(unittest.TestCase):
         Path(self.env["IOS_ARCHIVE_PATH"]).mkdir()
         self.run_tool("package-ios-archive.sh", expected=2)
         self.assertFalse(self.log.exists())
+
+
+class UIFixtureSetupContracts(unittest.TestCase):
+    def run_setup(self, initialize, install, share=True):
+        # Execute the fixture's real setup block without starting its daemon/XCTest.
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if not isinstance(body, list):
+                continue
+            start = next((index for index, statement in enumerate(body)
+                          if isinstance(statement, ast.Assign)
+                          and any(isinstance(target, ast.Name) and target.id == "cases"
+                                  for target in statement.targets)), None)
+            if start is not None:
+                stop = next(index for index in range(start, len(body))
+                            if isinstance(body[index], ast.For))
+                setup = ast.Module(body=body[start:stop], type_ignores=[])
+                break
+        else:
+            self.fail("UI fixture setup block not found")
+        with tempfile.TemporaryDirectory(prefix="holon-ios-ui-setup-") as directory:
+            namespace = dict(os=os, pathlib=pathlib, simulator=UUID, repo=str(ROOT),
+                             root=Path(directory), bundle=Path(directory) / "UI.xcresult",
+                             MAXIMUM_TEXT_SIZE=MAXIMUM_TEXT_SIZE, rich_acceptance=False,
+                             lost_response_acceptance=False, history_acceptance=False,
+                             share_acceptance=share, initialize_simulator_text_size=initialize)
+            with patch.dict(os.environ, {}, clear=True), patch("ios_share_probe.install", install):
+                exec(compile(setup, str(source), "exec"), namespace)
+
+    def test_cold_simulator_is_initialized_before_share_install(self):
+        events = []
+
+        def initialize(simulator):
+            self.assertEqual(simulator, UUID)
+            events.append("ready")
+
+        def install(simulator, repo, directory):
+            self.assertEqual(events, ["ready"], "Cannot install on a Shutdown simulator")
+            self.assertEqual(simulator, UUID)
+            self.assertEqual(repo, str(ROOT))
+            self.assertTrue(directory.is_dir())
+            events.append("installed")
+
+        self.run_setup(initialize, install)
+        self.assertEqual(events, ["ready", "installed"])
+
+    def test_failed_initialization_prevents_share_install(self):
+        install = Mock()
+        initialize = Mock(side_effect=subprocess.CalledProcessError(149, ["xcrun"]))
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_setup(initialize, install)
+        initialize.assert_called_once_with(UUID)
+        install.assert_not_called()
+
+    def test_non_share_setup_still_initializes_without_install(self):
+        initialize, install = Mock(), Mock()
+        self.run_setup(initialize, install, share=False)
+        initialize.assert_called_once_with(UUID)
+        install.assert_not_called()
 
 
 class SimulatorAppearanceContracts(unittest.TestCase):

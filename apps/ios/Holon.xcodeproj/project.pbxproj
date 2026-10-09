@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        B00000000000000000000031 /* HolonClient in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000031 /* HolonClient */; };
 		A00000000000000000000032 /* HolonClient in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000031 /* HolonClient */; };
 		D00000000000000000000002 /* Textual in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000001 /* Textual */; };
 		B00000000000000000000007 /* HolonShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B00000000000000000000004 /* HolonShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -91,6 +92,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B00000000000000000000031 /* HolonClient in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -197,6 +199,7 @@
 				B00000000000000000000003 /* ShareExtension */,
 			);
 			name = HolonShare;
+			packageProductDependencies = (A00000000000000000000031 /* HolonClient */, );
 			productName = HolonShare;
 			productReference = B00000000000000000000004 /* HolonShare.appex */;
 			productType = "com.apple.product-type.app-extension";
