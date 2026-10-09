@@ -1,0 +1,36 @@
+[[skills]]
+kind = "local"
+path = "skills/interlinked-markdown-wiki"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/ghx"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/sview"
+path = "skills/sview"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/agentinbox"
+path = "skills/agentinbox"
+
+[[skills]]
+kind = "github"
+repo = "anthropics/knowledge-work-plugins"
+path = "enterprise-search/skills/knowledge-synthesis"
+ref = "ae1513ea94dcb74a7f1505ddcf3b0ec3fab327f1"
+
+[[skills]]
+kind = "github"
+repo = "anthropics/knowledge-work-plugins"
+path = "productivity/skills/memory-management"
+ref = "ae1513ea94dcb74a7f1505ddcf3b0ec3fab327f1"
+
+[[skills]]
+kind = "github"
+repo = "anthropics/knowledge-work-plugins"
+path = "enterprise-search/skills/source-management"
+ref = "ae1513ea94dcb74a7f1505ddcf3b0ec3fab327f1"
