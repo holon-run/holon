@@ -1273,8 +1273,9 @@ impl RuntimeHandle {
             .iter()
             .map(|item| {
                 format!(
-                    "- work_item={} blocked_by={} recheck_at={}",
+                    "- work_item={} objective={} blocked_by={} recheck_at={}",
                     item.id,
+                    item.objective,
                     item.blocked_by.as_deref().unwrap_or("unset"),
                     item.recheck_at
                         .map(|recheck_at| recheck_at.to_rfc3339())
@@ -2052,6 +2053,10 @@ mod tests {
             "body should name the target WorkItem: {text}"
         );
         assert!(
+            text.contains("blocked-target"),
+            "body should carry the target objective: {text}"
+        );
+        assert!(
             text.contains("waiting for timer"),
             "body should carry the blocker: {text}"
         );
@@ -2109,6 +2114,28 @@ mod tests {
             "items should list every target"
         );
         assert!(ids.contains(&"wi-later"), "items should list every target");
+
+        let message = test_runtime
+            .runtime
+            .inner
+            .storage
+            .read_recent_messages(10)
+            .unwrap()
+            .into_iter()
+            .find(|message| {
+                matches!(
+                    message.origin,
+                    MessageOrigin::System { ref subsystem } if subsystem == "work_item_recheck"
+                )
+            })
+            .expect("recheck tick message should be durable");
+        let MessageBody::Text { text } = &message.body else {
+            panic!("recheck tick should carry a text body");
+        };
+        assert!(
+            text.contains("earlier-target") && text.contains("later-target"),
+            "body should carry every target objective: {text}"
+        );
     }
 
     #[test]
