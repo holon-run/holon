@@ -225,9 +225,9 @@ P1、P2、P3 已在 [PR #3452](https://github.com/holon-run/holon/pull/3452) 实
 
 | 阶段 | 已实现 | 当前验证 |
 | --- | --- | --- |
-| P1 | `DeleteAgent`；当前监督关系、权限和 incarnation 校验；SQLite 准入 fence；旧运行体协作退出；保守产物保护和 worktree 预检/阶段复检 | 六项 host 测试通过：当前 parent/双方 incarnation、监督转移、队列两种顺序、开放工作/文件保护、worktree 保护和真实结果保全 |
+| P1 | `DeleteAgent`；当前监督关系、权限和 incarnation 校验；SQLite 准入 fence；旧运行体协作退出；保守产物保护和 worktree 预检/阶段复检 | 七项 host 测试通过：当前 parent/双方 incarnation、监督转移、队列与 pending settlement 的两种准入顺序、开放工作/文件保护、worktree 保护和真实结果保全 |
 | P2 | migration 77 持久观察与 outbox；每批 16 个的 keyset 补扫；self `GetAgent` 责任清单；每天最多一批普通内部提醒；孤儿与重复失败 operator brief | 五项 host 测试通过：重启/幂等、停止/预算、分页/陈旧事实、孤儿通知和重复失败去重；无自由文本解析或 TTL 删除 |
-| P3 | 实例 admission gate；有主的任务 handle；同 generation join/移除；host message/callback 重试定位；独立开关 | 三项 host 测试通过：真实退出/读取不激活/重新加载、过期 generation、已受理操作保护，以及 callback 冷加载与旧进程入口拒绝 |
+| P3 | 实例 admission gate；有主的任务 handle；同 generation join/移除；host message/callback 重试定位；独立开关 | 四项 host 测试通过：真实退出/读取不激活/重新加载、过期 generation、已受理操作保护、callback 冷加载与旧进程入口拒绝，以及 TaskInput 跨实例退休重试；强制卸载与准入回滚另有原子门闩回归 |
 
 实施中发现旧 `converge_private_child_identities` 会依据缺少 home、parent 或历史 task
 直接 tombstone 并移除目录。该路径已移除；明确终态的一次性子任务沿用持久删除

@@ -7176,7 +7176,34 @@ impl RuntimeHostBridge {
             "followup_via": "task_input",
             "delegated_authority_class": authority_class,
         }));
-        runtime.enqueue(message).await.map(|_| true)
+        self.enqueue_child_followup(runtime, message).await
+    }
+
+    async fn enqueue_child_followup(
+        &self,
+        mut runtime: RuntimeHandle,
+        message: MessageEnvelope,
+    ) -> Result<bool> {
+        for _ in 0..3 {
+            match runtime.enqueue(message.clone()).await {
+                Ok(_) => return Ok(true),
+                Err(error)
+                    if describe_runtime_error(&error).code == "runtime_instance_retiring" =>
+                {
+                    runtime = match self.host()?.get_or_create_agent(&message.agent_id).await {
+                        Ok(runtime) => runtime,
+                        Err(error) => {
+                            if !self.reusable_agent_exists(&message.agent_id).await? {
+                                return Ok(false);
+                            }
+                            return Err(error);
+                        }
+                    };
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(crate::runtime::execution_admission::closed_error())
     }
 
     pub(crate) async fn acquire_workspace_occupancy(
@@ -13382,6 +13409,180 @@ mod tests {
             .agent_deletions()
             .begin_parent_cleanup(&child.agent_id, "peer", child.incarnation, 1)
             .is_err());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn idle_retirement_retries_child_followup_after_runtime_lookup() {
+        let (_home, host) = test_host();
+        let (parent, child) = completed_retained_child(&host).await;
+        let old = host.try_get_loaded_runtime(&child.agent_id).await.unwrap();
+        let generation = observe_idle_candidate(&host, &child.agent_id).await;
+        host.try_retire_idle_runtime(&child.agent_id, generation)
+            .await
+            .unwrap();
+        let mut message = MessageEnvelope::new(
+            &child.agent_id,
+            MessageKind::InternalFollowup,
+            MessageOrigin::Task {
+                task_id: child.task_handle.task_id.clone(),
+            },
+            AuthorityClass::ExternalEvidence,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "follow-up crossing idle exit".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        message.metadata = Some(
+            json!({"followup_via":"task_input","parent_agent_id":host.config().default_agent_id}),
+        );
+        assert!(host
+            .bridge()
+            .enqueue_child_followup(old.clone(), message.clone())
+            .await
+            .unwrap());
+        assert!(host.inner.runtimes.read().await.agents[&child.agent_id].generation > generation);
+        let messages = host
+            .agent_storage_read_only(&child.agent_id)
+            .unwrap()
+            .read_recent_messages(100)
+            .unwrap();
+        let delivered = messages
+            .iter()
+            .filter(|m| m.id == message.id)
+            .collect::<Vec<_>>();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(
+            delivered[0].authority_class,
+            AuthorityClass::ExternalEvidence
+        );
+        assert!(old
+            .task_input("irrelevant", "late input")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("admission has closed"));
+        assert!(old
+            .task_input_with_trust(
+                "irrelevant",
+                "late input",
+                &AuthorityClass::ExternalEvidence
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("admission has closed"));
+        drop(parent);
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn parent_cleanup_serializes_with_pending_settlement_without_losing_result() {
+        use crate::runtime_db::task_result_settlement::{
+            TaskResultSettlementDisposition, TaskResultSettlementState,
+        };
+        fn terminal_result(
+            db: &crate::runtime_db::RuntimeDb,
+            agent_id: &str,
+        ) -> (TaskRecord, MessageEnvelope) {
+            let task_id = format!("terminal-{agent_id}");
+            let message = MessageEnvelope::new(
+                agent_id,
+                MessageKind::TaskResult,
+                MessageOrigin::Task {
+                    task_id: task_id.clone(),
+                },
+                AuthorityClass::RuntimeInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "durable terminal result".into(),
+                },
+            );
+            let task = TaskRecord {
+                id: task_id.clone(),
+                agent_id: agent_id.into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Completed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: Some(message.id.clone()),
+                work_item_id: None,
+                summary: None,
+                detail: Some(
+                    json!({"rejoin_obligation_id":task_id,"rejoin_generation":1,"parent_turn_id":"parent-turn","result":"durable terminal result"}),
+                ),
+                recovery: None,
+            };
+            db.tasks().upsert(&task).unwrap();
+            (task, message)
+        }
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let child = retained_cleanup_fixture(&host, "settlement-first");
+        let (task, message) = terminal_result(host.runtime_db(), &child.agent_id);
+        let record = host
+            .runtime_db()
+            .task_result_settlements()
+            .ensure_pending(&task, &message, Utc::now())
+            .unwrap()
+            .unwrap();
+        let error = host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("pending_result_settlement"));
+        assert_eq!(
+            host.runtime_db()
+                .task_result_settlements()
+                .latest_for_message(&message.id)
+                .unwrap()
+                .unwrap(),
+            record
+        );
+        host.runtime_db()
+            .task_result_settlements()
+            .settle_owner_unavailable(
+                &message.id,
+                TaskResultSettlementDisposition::OwnerClosed,
+                Utc::now(),
+            )
+            .unwrap();
+        host.begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap();
+        let replay = host
+            .runtime_db()
+            .task_result_settlements()
+            .ensure_pending(&task, &message, Utc::now())
+            .unwrap()
+            .unwrap();
+        assert_eq!(replay.state, TaskResultSettlementState::Settled);
+
+        let child = retained_cleanup_fixture(&host, "cleanup-before-settlement");
+        host.begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap();
+        let (task, message) = terminal_result(host.runtime_db(), &child.agent_id);
+        let error = host
+            .runtime_db()
+            .task_result_settlements()
+            .ensure_pending(&task, &message, Utc::now())
+            .unwrap_err();
+        assert!(error.to_string().contains("cleanup_fenced"));
+        assert!(host
+            .runtime_db()
+            .task_result_settlements()
+            .latest_for_message(&message.id)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            host.runtime_db().tasks().latest(&task.id).unwrap().unwrap(),
+            task
+        );
         host.shutdown().await.unwrap();
     }
 

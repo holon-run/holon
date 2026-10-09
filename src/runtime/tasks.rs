@@ -2506,6 +2506,7 @@ impl RuntimeHandle {
     }
 
     pub async fn task_input(&self, task_id: &str, input: &str) -> Result<TaskInputResult> {
+        let _admission = self.execution_admission_lease()?;
         let task = self
             .task_record(task_id)
             .await?
@@ -2547,6 +2548,7 @@ impl RuntimeHandle {
         input: &str,
         authority_class: &AuthorityClass,
     ) -> Result<TaskInputResult> {
+        let _admission = self.execution_admission_lease()?;
         let task = self
             .task_record(task_id)
             .await?

@@ -7,6 +7,7 @@ use std::sync::{
 };
 
 const CLOSED: usize = 1 << (usize::BITS - 1);
+const FORCED: usize = 1 << (usize::BITS - 2);
 
 #[derive(Default)]
 pub(super) struct ExecutionAdmission(Arc<AtomicUsize>);
@@ -34,7 +35,7 @@ impl ExecutionAdmission {
     pub(super) fn lease(&self) -> Result<ExecutionLease> {
         let mut state = self.0.load(Ordering::Acquire);
         loop {
-            if state >= CLOSED - 1 {
+            if state >= FORCED - 1 {
                 return Err(closed_error());
             }
             match self.0.compare_exchange_weak(
@@ -47,6 +48,9 @@ impl ExecutionAdmission {
                 Err(current) => state = current,
             }
         }
+    }
+    pub(super) fn force_close(&self) {
+        self.0.fetch_or(CLOSED | FORCED, Ordering::AcqRel);
     }
     pub(super) fn try_close(&self) -> Result<ClosedAdmission> {
         self.0
@@ -71,7 +75,10 @@ impl ClosedAdmission {
 impl Drop for ClosedAdmission {
     fn drop(&mut self) {
         if !self.committed {
-            self.gate.store(0, Ordering::Release);
+            // A concurrent forced unload must survive failed cleanup admission.
+            let _ = self
+                .gate
+                .compare_exchange(CLOSED, 0, Ordering::AcqRel, Ordering::Acquire);
         }
     }
 }
@@ -103,6 +110,7 @@ impl super::RuntimeHandle {
         self.inner.identity_incarnation
     }
     pub(crate) fn close_execution_admission(&self) {
+        self.inner.execution_admission.force_close();
         self.inner.shutdown_requested.store(true, Ordering::Release);
     }
     pub(crate) fn strong_handle_count(&self) -> usize {
@@ -123,6 +131,24 @@ impl super::RuntimeHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn forced_close_preserves_in_flight_leases_and_cannot_be_rolled_back() {
+        let gate = ExecutionAdmission::default();
+        let lease = gate.lease().unwrap();
+        gate.force_close();
+        assert!(gate.lease().is_err());
+        drop(lease);
+        assert!(!gate.is_open());
+        assert!(gate.lease().is_err());
+
+        let gate = ExecutionAdmission::default();
+        let provisional_close = gate.try_close().unwrap();
+        gate.force_close();
+        drop(provisional_close);
+        assert!(!gate.is_open());
+        assert!(gate.lease().is_err());
+    }
+
     #[test]
     fn work_and_closure_have_one_winner() {
         let gate = ExecutionAdmission::default();

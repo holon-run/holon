@@ -572,6 +572,7 @@ pub(crate) fn upsert_pending_tx(
         }
         return Ok(false);
     }
+    super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
     let payload = serde_json::to_string(record)?;
     let inserted = tx.execute(
         "INSERT INTO task_result_settlements (
