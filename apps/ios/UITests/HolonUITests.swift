@@ -856,6 +856,8 @@ final class HolonUITests: XCTestCase {
         reveal(otherActions, in: app); otherActions.tap()
         app.buttons["Delete network"].tap()
         XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.alerts.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "http://127.0.0.1:1/api/"))
+            .firstMatch.exists, "Confirm the address, not only a potentially shared network name")
         app.alerts.buttons["Cancel"].tap()
         XCTAssertEqual(rows.count, 2, "Cancel must preserve the network")
         otherActions.tap(); app.buttons["Delete network"].tap()
@@ -869,6 +871,8 @@ final class HolonUITests: XCTestCase {
         let actions = app.buttons[originalID.replacingOccurrences(of: "profiles.select.", with: "profiles.actions.")]
         reveal(actions, in: app); actions.tap()
         app.buttons["Delete network"].tap()
+        XCTAssertTrue(app.alerts.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", try required("ENDPOINT") + "/"))
+            .firstMatch.waitForExistence(timeout: 10))
         capture(app, "delete-active-network-confirmation")
         try confirmNetworkDeletion(app)
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 10))

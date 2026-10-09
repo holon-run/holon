@@ -47,7 +47,7 @@ struct SavedNetworkRow: View {
                 .accessibilityIdentifier("profiles.confirmDelete")
             Button("action.cancel", role: .cancel) {}
         } message: {
-            Text(verbatim: profile.name + "\n\n") + Text("profiles.deleteHelp")
+            Text(verbatim: profile.name + "\n" + profile.apiBaseURL.absoluteString + "\n\n") + Text("profiles.deleteHelp")
         }
     }
 }
