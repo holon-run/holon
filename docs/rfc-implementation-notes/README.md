@@ -22,6 +22,7 @@ would be noisy or misleading if duplicated inside each RFC.
 - [recent-turns-context-spine](recent-turns-context-spine.md)
 - [runtime-database-storage-migration](runtime-database-storage-migration.md)
 - [runtime-scheduler-contract](runtime-scheduler-contract.md)
+- [Subagent 清理与运行体回收实施计划](subagent-reclamation-plan.md)
 - [tool-contracts](tool-contracts.md)
 - [work-items-and-waiting-plane](work-items-and-waiting-plane.md)
 
