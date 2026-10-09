@@ -93,6 +93,10 @@ pub struct ConversationRepository<'a> {
     pub(crate) db: &'a RuntimeDb,
 }
 
+pub struct ContentReportRepository<'a> {
+    pub(crate) db: &'a RuntimeDb,
+}
+
 pub struct MessageRepository<'a> {
     pub(crate) db: &'a RuntimeDb,
 }

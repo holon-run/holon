@@ -16,6 +16,7 @@ pub mod audit;
 pub mod authentication;
 pub mod brief_publication_repair;
 pub mod connection;
+pub mod content_reports;
 pub mod conversation;
 pub mod destructive_operations;
 pub mod evidence;
@@ -84,7 +85,7 @@ pub use crate::runtime_db::turn_settlement_repair::{
 pub use crate::runtime_db::types::{
     AgentBootstrapRepository, AgentCanonicalRelationRepository, AgentDeletionRepository,
     AgentIdentityRepository, AgentMessageDeliveryRepository, AgentStateRepository, AuditEventSink,
-    ContextEpisodeRepository, ConversationRepository, EvidenceRepository,
+    ContentReportRepository, ContextEpisodeRepository, ConversationRepository, EvidenceRepository,
     ExecutionRootEntryRepository, ExternalTriggerRepository, MessageRepository,
     OperatorDeliveryRepository, OperatorNotificationRepository, OperatorTransportBindingRepository,
     QueueEntryRepository, TaskRepository, TimerCancel, TimerCancelResult, TimerFire,
@@ -865,6 +866,10 @@ impl RuntimeDb {
 
     pub fn conversation(&self) -> ConversationRepository<'_> {
         ConversationRepository { db: self }
+    }
+
+    pub fn content_reports(&self) -> ContentReportRepository<'_> {
+        ContentReportRepository { db: self }
     }
 
     pub fn messages(&self) -> MessageRepository<'_> {
