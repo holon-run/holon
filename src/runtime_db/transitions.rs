@@ -3030,13 +3030,26 @@ fn validate_scheduler_claim_work_item_tx(
             trigger_delivery_by_id: &trigger_delivery_by_id,
         },
     );
-    let expected_scheduling_state = match expectation {
-        SchedulerClaimWorkItemExpectation::Runnable(_) => WorkItemSchedulingState::Runnable,
-        SchedulerClaimWorkItemExpectation::BlockedRecheck { .. } => {
-            WorkItemSchedulingState::Blocked
+    // A blocked recheck may be record-blocked (`Blocked`) or wait-bound
+    // (`Waiting*`): `WaitFor` records both an active wait condition and
+    // record-level `blocked_by`, and scheduling derives the wait state first.
+    // The exact-record, `Open`, `blocked_by`, and revision fences above remain
+    // authoritative; this check only rejects genuinely unexpected states.
+    let scheduling_state_matches = match expectation {
+        SchedulerClaimWorkItemExpectation::Runnable(_) => {
+            scheduling.scheduling_state == WorkItemSchedulingState::Runnable
         }
+        SchedulerClaimWorkItemExpectation::BlockedRecheck { .. } => matches!(
+            scheduling.scheduling_state,
+            WorkItemSchedulingState::Blocked
+                | WorkItemSchedulingState::WaitingOperator
+                | WorkItemSchedulingState::WaitingTask
+                | WorkItemSchedulingState::WaitingExternal
+                | WorkItemSchedulingState::WaitingTimer
+                | WorkItemSchedulingState::WaitingSystem
+        ),
     };
-    if scheduling.scheduling_state != expected_scheduling_state {
+    if !scheduling_state_matches {
         return Err(RuntimeStateTransitionConflict::concurrent_mutation(
             "scheduler_claim_work_item",
             &expected.id,
@@ -6439,6 +6452,58 @@ mod tests {
         assert!(conflict.retryable());
         assert_eq!(db.queue_entries().latest_all()?, vec![queued]);
         assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn queue_claim_allows_wait_bound_blocked_recheck_inside_transaction() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        // `WaitFor` records both an active wait condition and record-level
+        // `blocked_by`, so the item derives a `Waiting*` scheduling state while
+        // still being a valid blocked-recheck target.
+        let mut waiting = work_item("work-wait-bound-recheck");
+        waiting.blocked_by = Some("waiting for operator".into());
+        db.work_items().insert_new(&waiting)?;
+        db.wait_conditions().upsert(&wait_condition(
+            "wait-bound-recheck",
+            &waiting.id,
+            "operator",
+        ))?;
+        let now = Utc::now();
+        let queued = QueueEntryRecord {
+            message_id: "message-wait-bound-recheck".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        db.queue_entries().upsert(&queued)?;
+        let mut claimed = queued.clone();
+        claimed.status = QueueEntryStatus::Dequeued;
+        claimed.updated_at += chrono::Duration::seconds(1);
+
+        let commit = db.transitions().commit_queue(&QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Claim,
+            mutation: QueueMutation::Consume(claimed),
+            scheduler_claim_work_item: Some(SchedulerClaimWorkItemExpectation::BlockedRecheck {
+                record: waiting.clone(),
+                minimum_revision: waiting.revision,
+            }),
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: vec![AuditEvent::legacy(
+                "queue_entry_claimed",
+                serde_json::json!({}),
+            )],
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        })?;
+        assert!(commit.applied);
         Ok(())
     }
 

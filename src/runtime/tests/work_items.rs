@@ -1429,6 +1429,95 @@ async fn blocked_recheck_turn_binds_target_work_item_without_switching_focus() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn wait_bound_blocked_recheck_turn_runs_without_switching_focus() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    // A `WaitFor`-bound WorkItem keeps both an active wait condition and
+    // record-level `blocked_by` + `recheck_at`, so its scheduling state is
+    // `WaitingOperator`. Its expired fallback recheck must still run a turn.
+    let mut waiting = WorkItemRecord::new(
+        "default",
+        "operator wait awaiting fallback recheck",
+        WorkItemState::Open,
+    );
+    waiting.blocked_by = Some("waiting for operator input".into());
+    waiting.recheck_at = Some(clock.now() + chrono::Duration::milliseconds(50));
+    storage.append_work_item(&waiting).unwrap();
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-bound-recheck".into(),
+            agent_id: "default".into(),
+            work_item_id: Some(waiting.id.clone()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Operator,
+            source: None,
+            subject_ref: None,
+            waiting_for: "operator input".into(),
+            wake_sources: vec![],
+            continuation: None,
+            created_at: clock.now(),
+            updated_at: clock.now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
+        })
+        .unwrap();
+
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("wait-bound recheck observed")),
+        "default".into(),
+        context_config(),
+        clock.clone(),
+    )
+    .unwrap();
+    let runtime_task = tokio::spawn(runtime.clone().run());
+    advance_lifecycle_time(&clock, std::time::Duration::from_millis(50)).await;
+
+    let mut bound = false;
+    for _ in 0..100 {
+        bound = runtime
+            .storage()
+            .read_recent_turns(10)
+            .unwrap()
+            .iter()
+            .any(|turn| {
+                turn.current_work_item_id.as_deref() == Some(waiting.id.as_str())
+                    && turn.terminal.is_some()
+            });
+        if bound {
+            break;
+        }
+        advance_lifecycle_time(&clock, std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        bound,
+        "a wait-bound blocked recheck should run a turn bound to the target WorkItem"
+    );
+
+    let latest = runtime
+        .storage()
+        .latest_work_item(&waiting.id)
+        .unwrap()
+        .expect("waiting work item exists");
+    assert_eq!(latest.state, WorkItemState::Open);
+    assert_eq!(
+        latest.blocked_by.as_deref(),
+        Some("waiting for operator input"),
+        "a recheck turn must not implicitly clear the blocker"
+    );
+    runtime_task.abort();
+}
+
+#[tokio::test(start_paused = true)]
 async fn runtime_wakes_itself_for_queued_redispatch_retry_deadline() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
