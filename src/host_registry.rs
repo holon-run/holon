@@ -69,6 +69,11 @@ impl RuntimeRegistry {
         self.inner.config.store(Arc::new(config));
     }
 
+    /// Host-scoped storage backing shared, non-agent-scoped indexes.
+    pub(crate) fn host_storage(&self) -> AppStorage {
+        self.inner.host_storage.clone()
+    }
+
     pub(crate) fn restore_default_agent_selection(&self) -> Result<Option<String>> {
         let config = self.config();
         if self
