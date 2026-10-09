@@ -24,6 +24,22 @@ struct ConnectionProfile: Identifiable, Codable, Equatable, Sendable {
         get throws { try HolonEndpoint(apiBaseURL: apiBaseURL, allowInsecureHTTP: allowInsecureHTTP) }
     }
 
+    /// Comparison only: stored URLs remain unchanged because credentials are scoped to them.
+    var endpointKey: String {
+        get throws {
+            let endpoint = try endpoint
+            guard var parts = URLComponents(url: endpoint.apiBaseURL, resolvingAgainstBaseURL: false) else {
+                throw HolonClientError.invalidRequest
+            }
+            parts.host = parts.host?.lowercased()
+            if (parts.scheme == "https" && parts.port == 443) || (parts.scheme == "http" && parts.port == 80) {
+                parts.port = nil
+            }
+            guard let url = parts.url else { throw HolonClientError.invalidRequest }
+            return url.absoluteString
+        }
+    }
+
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(id: values.decode(UUID.self, forKey: .id),
@@ -64,7 +80,7 @@ struct PendingCredential: Codable, Sendable, CustomStringConvertible, CustomDebu
 
 @MainActor
 final class ConnectionStore {
-    enum Failure: Error { case invalidStorage, unknownProfile }
+    enum Failure: Error { case invalidStorage, unknownProfile, duplicateEndpoint }
 
     private struct State: Codable {
         var profiles: [ConnectionProfile]
@@ -107,10 +123,24 @@ final class ConnectionStore {
             }
             profiles = state.profiles
             selectedID = state.selectedID
+            try removeLegacyDuplicates()
         } else {
             profiles = []
             selectedID = nil
         }
+    }
+
+    private func removeLegacyDuplicates() throws {
+        var retained: [String: UUID] = [:]
+        for profile in profiles {
+            let key = try profile.endpointKey
+            if retained[key] == nil || profile.id == selectedID { retained[key] = profile.id }
+        }
+        let unique = try profiles.filter { retained[try $0.endpointKey] == $0.id }
+        guard unique.count != profiles.count else { return }
+        // Keep the selected profile and its partition. Never transplant another ID's session.
+        for profile in profiles where !unique.contains(profile) { try removeSession(for: profile) }
+        try persist(unique, selectedID: selectedID)
     }
 
     private func persist(_ profiles: [ConnectionProfile], selectedID: UUID?) throws {
@@ -120,8 +150,13 @@ final class ConnectionStore {
         self.selectedID = selectedID
     }
 
-    func saveProfile(_ profile: ConnectionProfile) throws {
-        _ = try profile.endpoint
+    @discardableResult
+    func saveProfile(_ profile: ConnectionProfile) throws -> ConnectionProfile {
+        let key = try profile.endpointKey
+        if let existing = try profiles.first(where: { try $0.endpointKey == key && $0.id != profile.id }) {
+            guard !profiles.contains(where: { $0.id == profile.id }) else { throw Failure.duplicateEndpoint }
+            return existing
+        }
         var updated = profiles
         if let position = updated.firstIndex(where: { $0.id == profile.id }) {
             let previous = updated[position]
@@ -133,6 +168,7 @@ final class ConnectionStore {
             updated.append(profile)
         }
         try persist(updated, selectedID: selectedID)
+        return profile
     }
 
     func select(_ id: UUID?) throws {

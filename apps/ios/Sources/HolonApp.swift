@@ -297,7 +297,7 @@ struct HolonApp: App {
     private func returnToPreviousConnection(_ coordinator: ConnectionCoordinator) {
         guard !returningConnection else { return }
         coordinator.cancelLogin()
-        guard let profile = previousProfile,
+        guard let profile = previousProfile, coordinator.profiles.contains(profile),
               coordinator.identity == nil || coordinator.selectedProfile?.id != profile.id else {
             addingConnection = false
             previousProfile = nil

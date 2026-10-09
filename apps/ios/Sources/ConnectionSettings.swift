@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ConnectionSettings: View {
     @AppStorage("ui.language") private var language = "system"
+    var showsHeading = true
 
     var body: some View {
         Section {
@@ -13,7 +14,7 @@ struct ConnectionSettings: View {
             .font(.body)
             Text("settings.languageHelp").font(.body).foregroundStyle(.secondary)
         } header: {
-            Text("settings.title").font(.headline)
+            if showsHeading { Text("settings.title").font(.headline) }
         }
     }
 }

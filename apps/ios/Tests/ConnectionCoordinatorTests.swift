@@ -639,6 +639,85 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(accepted.count, 1)
     }
 
+    func testAddAndPairAgainReuseSavedNetworkWithoutBindingOldCredentialToTicket() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        let transport = CoordinatorTransport()
+        let c = coordinator(f, transport: transport)
+        let reused = try c.addProfile(name: "Renamed", apiBaseURL: XCTUnwrap(URL(string: "https://A.example.test:443/api/")),
+                                      allowInsecureHTTP: false)
+        XCTAssertEqual(reused, p)
+        XCTAssertEqual(c.profiles, [p])
+        XCTAssertEqual(try f.store.session(for: p)?.credential, "saved-session")
+        try c.previewPairing("https://a.example.test/login#pair=\(String(repeating: "a", count: 64))")
+        await c.confirmPairing(allowInsecureHTTP: false)
+        XCTAssertEqual(c.status, .connected)
+        XCTAssertEqual(c.selectedProfile, p)
+        XCTAssertEqual(c.profiles, [p])
+        XCTAssertEqual(try f.store.session(for: p)?.credential, "issued-session")
+        let bindings = await transport.bindings
+        XCTAssertFalse(bindings.contains(where: { $0?.credential == "saved-session" }))
+    }
+
+    func testDeletingInactiveNetworkPreservesActiveIdentityAndClearsLocalSecrets() async throws {
+        let f = try fixture()
+        let active = try profile(f)
+        let other = try profile(f, name: "B")
+        try saved(f, profile: active)
+        try saved(f, profile: other)
+        try f.proofs.save(NativeLoginProof.make(apiBaseURL: other.apiBaseURL))
+        let c = coordinator(f, transport: CoordinatorTransport())
+        await c.connect(active)
+        let identity = c.identity
+        await c.removeProfile(other)
+        XCTAssertEqual(c.identity, identity)
+        XCTAssertEqual(c.selectedProfile, active)
+        XCTAssertEqual(c.profiles, [active])
+        XCTAssertNil(try f.proofs.loadPending(apiBaseURL: other.apiBaseURL))
+        XCTAssertNil(try f.vault.read(account: "session-index.\(other.id.uuidString)"))
+        XCTAssertEqual(try f.reopen().profiles, [active])
+    }
+
+    func testDeletingActiveNetworkDisconnectsAndCannotRestoreDeletedSelection() async throws {
+        let f = try fixture()
+        let active = try profile(f)
+        try saved(f, profile: active)
+        let c = coordinator(f, transport: CoordinatorTransport())
+        await c.connect(active)
+        XCTAssertNotNil(c.identity)
+        await c.removeProfile(active)
+        XCTAssertNil(c.identity)
+        XCTAssertNil(c.selectedProfile)
+        XCTAssertEqual(c.status, .disconnected)
+        XCTAssertTrue(c.profiles.isEmpty)
+        XCTAssertNil(try f.vault.read(account: "session-index.\(active.id.uuidString)"))
+        let reopened = try f.reopen()
+        XCTAssertNil(reopened.selectedID)
+        let restored = ConnectionCoordinator(store: reopened, proofStore: f.proofs, makeTransport: { _ in CoordinatorTransport() })
+        await restored.restore()
+        XCTAssertEqual(restored.launchState, .connection)
+        XCTAssertNil(restored.identity)
+    }
+
+    func testDeletingNetworkFencesAnInFlightSessionRestore() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        let transport = CoordinatorTransport(gate: .user)
+        let c = coordinator(f, transport: transport)
+        let connection = Task { await c.connect(p) }
+        await transport.waitUntilEntered()
+        await c.removeProfile(p)
+        await transport.release()
+        await connection.value
+        XCTAssertTrue(c.profiles.isEmpty)
+        XCTAssertNil(c.selectedProfile)
+        XCTAssertNil(c.identity)
+        XCTAssertEqual(c.status, .disconnected)
+        XCTAssertNil(try f.vault.read(account: "session-index.\(p.id.uuidString)"))
+    }
+
     func testRestartProofLocatorWrongStateAndCorrectCallback() async throws {
         let f = try fixture()
         let p = try profile(f)

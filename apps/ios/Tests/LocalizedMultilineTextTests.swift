@@ -74,19 +74,19 @@ final class LocalizedMultilineTextTests: XCTestCase {
         defer { window.isHidden = true; window.rootViewController = nil }
         let title = try label("onboarding.welcome", in: host.view)
         let body = try label("onboarding.purpose", in: host.view)
-        XCTAssertEqual(title.text, "连接你的 Holon，继续工作")
+        XCTAssertEqual(title.text, "连接你的 Holon")
         host.rootView = welcome(locale: "en", size: .accessibility5)
         try await waitForLayout(host) {
-            title.text == "Your Holon, wherever you work" &&
-                body.text == "Connect to a running Holon on your computer to view your Agents and work."
+            title.text == "Connect to your Holon" &&
+                body.text == "View the Agents and work on your computer’s Holon."
         }
         XCTAssertTrue(title === (try label("onboarding.welcome", in: host.view)))
         XCTAssertTrue(body === (try label("onboarding.purpose", in: host.view)))
         try checkFontsAndSizing(title: title, body: body)
         host.rootView = welcome(locale: "zh-Hans", size: .accessibility5)
         try await waitForLayout(host) {
-            title.text == "连接你的 Holon，继续工作" &&
-                body.text == "连接电脑上正在运行的 Holon，即可查看 Agent 和工作。"
+            title.text == "连接你的 Holon" &&
+                body.text == "查看电脑上 Holon 的 Agent 和工作。"
         }
         try checkFontsAndSizing(title: title, body: body)
     }
@@ -99,12 +99,12 @@ final class LocalizedMultilineTextTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(title.text).isEmpty)
         XCTAssertFalse(try XCTUnwrap(body.text).isEmpty)
         if locale == "zh-Hans" {
-            XCTAssertEqual(title.text, "连接你的 Holon，继续工作")
-            XCTAssertEqual(body.text, "连接电脑上正在运行的 Holon，即可查看 Agent 和工作。")
+            XCTAssertEqual(title.text, "连接你的 Holon")
+            XCTAssertEqual(body.text, "查看电脑上 Holon 的 Agent 和工作。")
         } else {
-            XCTAssertEqual(title.text, "Your Holon, wherever you work")
+            XCTAssertEqual(title.text, "Connect to your Holon")
             XCTAssertEqual(body.text,
-                           "Connect to a running Holon on your computer to view your Agents and work.")
+                           "View the Agents and work on your computer’s Holon.")
         }
         try checkFontsAndSizing(title: title, body: body)
     }

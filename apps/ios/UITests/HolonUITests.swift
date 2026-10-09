@@ -375,7 +375,7 @@ final class HolonUITests: XCTestCase {
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
-        let pasteEntry = app.staticTexts["onboarding.pasteEntry"]
+        let pasteEntry = app.buttons["onboarding.pasteEntry"]
         reveal(pasteEntry, in: app)
         pasteEntry.tap()
         let payload = app.secureTextFields["onboarding.payload"]
@@ -486,7 +486,7 @@ final class HolonUITests: XCTestCase {
         let app = launch(language: "en", dark: false, large: false)
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
         XCTAssertFalse(app.tabBars.firstMatch.exists, "Identity must be confirmed before showing tabs")
-        let pasteEntry = app.staticTexts["onboarding.pasteEntry"]
+        let pasteEntry = app.buttons["onboarding.pasteEntry"]
         reveal(pasteEntry, in: app)
         pasteEntry.tap()
         let payload = app.secureTextFields["onboarding.payload"]
@@ -798,7 +798,7 @@ final class HolonUITests: XCTestCase {
                           app.buttons["conversation.more"].waitForExistence(timeout: 15))
             app.terminate(); return
         }
-        let entry = app.staticTexts["onboarding.pasteEntry"]
+        let entry = app.buttons["onboarding.pasteEntry"]
         reveal(entry, in: app); entry.tap()
         let payload = app.secureTextFields["onboarding.payload"]
         reveal(payload, in: app); payload.tap()
@@ -810,6 +810,86 @@ final class HolonUITests: XCTestCase {
         reveal(confirm, in: app); confirm.tap()
         XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
         app.terminate()
+    }
+
+    func testNetworkManagementWorkflow() throws {
+        try connectForSharing()
+        let app = launch(language: "en", dark: false, large: false)
+        defer { app.terminate() }
+        if app.buttons["conversation.more"].waitForExistence(timeout: 3) {
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+        }
+        let manage = app.buttons["connection.manage"]
+        XCTAssertTrue(manage.waitForExistence(timeout: 30)); manage.tap()
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "profiles.select."))
+        XCTAssertEqual(rows.count, 1)
+        let originalID = rows.firstMatch.identifier
+
+        // Re-enter the same host with a different trailing-slash spelling.
+        let add = app.buttons["connection.add"]
+        reveal(add, in: app); add.tap()
+        app.buttons["onboarding.manual"].tap()
+        let address = app.textFields["onboarding.address"]
+        address.tap(); address.typeText(try required("ENDPOINT") + "///")
+        let permission = app.switches["onboarding.allowHTTP"]
+        reveal(permission, in: app); permission.switches.firstMatch.tap()
+        let next = app.buttons["onboarding.checkAddress"]
+        reveal(next, in: app); next.tap()
+        XCTAssertTrue(manage.waitForExistence(timeout: 30), "The saved session should reconnect without another token")
+        manage.tap()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.firstMatch.identifier, originalID, "Duplicate additions must keep the original partition")
+        capture(app, "network-deduplicated")
+
+        // A second, unreachable fixture-only host remains independently removable on the welcome screen.
+        reveal(add, in: app); add.tap()
+        app.buttons["onboarding.manual"].tap()
+        address.tap(); address.typeText("http://127.0.0.1:1")
+        reveal(permission, in: app); permission.switches.firstMatch.tap()
+        reveal(next, in: app); next.tap()
+        XCTAssertTrue(app.staticTexts["connection.status"].waitForExistence(timeout: 10))
+        app.buttons["onboarding.back"].tap()
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 10))
+        XCTAssertEqual(rows.count, 2)
+        let other = try XCTUnwrap(rows.allElementsBoundByIndex.first { $0.identifier != originalID })
+        let otherActions = app.buttons[other.identifier.replacingOccurrences(of: "profiles.select.", with: "profiles.actions.")]
+        reveal(otherActions, in: app); otherActions.tap()
+        app.buttons["Delete network"].tap()
+        XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.alerts.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "http://127.0.0.1:1/api/"))
+            .firstMatch.exists, "Confirm the address, not only a potentially shared network name")
+        app.alerts.buttons["Cancel"].tap()
+        XCTAssertEqual(rows.count, 2, "Cancel must preserve the network")
+        otherActions.tap(); app.buttons["Delete network"].tap()
+        try confirmNetworkDeletion(app)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.firstMatch.identifier, originalID)
+        capture(app, "welcome-network-deleted")
+        app.buttons["onboarding.cancel"].tap()
+        XCTAssertTrue(manage.waitForExistence(timeout: 30), "Deleting the attempted host must not prevent returning to the previous host")
+        manage.tap()
+        let actions = app.buttons[originalID.replacingOccurrences(of: "profiles.select.", with: "profiles.actions.")]
+        reveal(actions, in: app); actions.tap()
+        app.buttons["Delete network"].tap()
+        XCTAssertTrue(app.alerts.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", try required("ENDPOINT") + "/"))
+            .firstMatch.waitForExistence(timeout: 10))
+        capture(app, "delete-active-network-confirmation")
+        try confirmNetworkDeletion(app)
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 10))
+        XCTAssertEqual(rows.count, 0)
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
+        XCTAssertEqual(rows.count, 0, "Deleted networks must not reappear after process restart")
+        capture(app, "network-deletion-restored-empty")
+    }
+
+    private func confirmNetworkDeletion(_ app: XCUIApplication) throws {
+        let buttons = app.alerts.buttons.matching(identifier: "profiles.confirmDelete")
+        XCTAssertTrue(buttons.firstMatch.waitForExistence(timeout: 10))
+        // UIKit can expose a wrapper and child for one SwiftUI alert action.
+        let actions = buttons.allElementsBoundByIndex.filter { $0.buttons.count == 0 }
+        XCTAssertEqual(actions.count, 1, "There must be exactly one destructive action")
+        try XCTUnwrap(actions.first).tap()
     }
 
     func testPopulatedComposerMaximumTextSize() throws {

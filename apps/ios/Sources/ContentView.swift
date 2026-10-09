@@ -9,25 +9,8 @@ struct ContentView: View {
         Form {
             Section("profiles.title") {
                 ForEach(coordinator.profiles) { profile in
-                    Button {
+                    SavedNetworkRow(coordinator: coordinator, profile: profile) {
                         Task { await coordinator.connect(profile) }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(verbatim: profile.name)
-                                if coordinator.selectedProfile?.id == profile.id {
-                                    Image(systemName: "checkmark").accessibilityLabel(Text("profiles.selected"))
-                                }
-                            }
-                            Text(verbatim: profile.apiBaseURL.absoluteString)
-                                .font(.subheadline).foregroundStyle(.secondary)
-                        }
-                    }
-                    .disabled(coordinator.isBusy)
-                    .swipeActions {
-                        Button("profiles.delete", role: .destructive) {
-                            Task { await coordinator.removeProfile(profile) }
-                        }.disabled(coordinator.isBusy)
                     }
                 }
                 Button("connection.add", systemImage: "plus", action: addConnection)
