@@ -60,6 +60,30 @@ machine-readable attestation. The default model route is
 Keep `Cargo.toml` aligned with the tag. For example, `v0.13.0` must be released
 from a commit whose crate version is `0.13.0`.
 
+## Release notes
+
+The published GitHub Release body is the heredoc embedded in the
+"Prepare release notes" step of `.github/workflows/release.yml`. The release
+workflow publishes that text verbatim; nothing else generates or refreshes it.
+
+Rewrite the notes for **every** release as part of the release-prep commit,
+before pushing the tag:
+
+- replace the overview and `## Changes` sections with this version's actual
+  changes, grouped by theme, with each item linking the feature or fix PR
+  (or the commit, for direct pushes) rather than only the release-prep PR
+- confirm the asset-support paragraph matches the artifacts this release
+  actually ships, and keep the `## Install` section's `${GITHUB_REF_NAME}`
+  placeholders
+- after the release workflow publishes, open the GitHub Release page and
+  verify the body describes this version, not the previous one
+
+v0.47.0 and v0.48.0 were published with the frozen v0.46.0 notes because
+their pre-release commits skipped this rewrite; their pages were repaired
+afterwards with `gh release edit <tag> --notes-file <body.md>`. Merging the
+release branch back into `main` after tagging also keeps the baseline notes
+on `main` current for the next release.
+
 ## Publish
 
 Before creating the tag:
@@ -125,7 +149,11 @@ Before pushing the tag, verify:
 - release notes include a concise overview, then list notable features/fixes
   with the related feature or fix PR link on each item; do not use only the
   release-prep PR as the PR reference
+- the `.github/workflows/release.yml` "Prepare release notes" heredoc has
+  been rewritten for this version, not reused from the previous release
 - supported binary assets are Linux amd64, macOS amd64, and macOS arm64
+- the release publishes the signed Android APK and AAB plus the universal
+  macOS DMG in addition to the Linux and macOS tarballs
 - `checksums.txt` will be included with the release assets
 - `make docker-smoke` passes against the production Dockerfile
 - the protected `Release E2E` workflow passed for the exact candidate commit
