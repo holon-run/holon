@@ -509,6 +509,7 @@ jobs:
             cargo publish --locked --manifest-path "crates/${crate}/Cargo.toml"
             sleep 15
           }
+          publish_if_needed holon-model-client
           publish_if_needed decision-core
           publish_if_needed decision-jev
           publish_if_needed decision-clef

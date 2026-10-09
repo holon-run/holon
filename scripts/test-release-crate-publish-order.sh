@@ -17,7 +17,7 @@ mapfile -t local_crates < <(
 
 mapfile -t published_crates < <(
   awk '
-    /publish_if_needed decision-/ {
+    /publish_if_needed [A-Za-z0-9_-]+/ {
       sub(/^.*publish_if_needed /, "")
       print $1
     }
