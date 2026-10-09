@@ -13,10 +13,11 @@ use crate::{
         BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest, CancelTimerRequest,
         CompleteWorkItemRequest, ControlPromptRequest, ConversationActivityResponse,
         ConversationReadQuery, ConversationShadowQuery, ConversationStreamMessage,
-        ConversationSummaryResponse, CreateTimerRequest, CurrentUserResponse, DeleteAgentRequest,
-        DesktopCapabilities, EnqueueResponse, HandshakeResponse, HttpErrorEnvelope,
-        MarkBriefReadRequest, MemoryGetRequest, ModelConfigMigrationRequest, NativeSessionResponse,
-        PairingIssueResponse, PairingRedeemRequest, PickWorkItemRequest, PickWorkItemResponse,
+        ConversationSummaryResponse, CreateContentReportRequest, CreateContentReportResponse,
+        CreateTimerRequest, CurrentUserResponse, DeleteAgentRequest, DesktopCapabilities,
+        EnqueueResponse, HandshakeResponse, HttpErrorEnvelope, MarkBriefReadRequest,
+        MemoryGetRequest, ModelConfigMigrationRequest, NativeSessionResponse, PairingIssueResponse,
+        PairingRedeemRequest, PickWorkItemRequest, PickWorkItemResponse,
         ResolveFileReferencesRequest, ResolveFileReferencesResponse, RevealFileRequest,
         RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
         RuntimeDecisionTestRequest, RuntimeDecisionTestResponse, SearchRequest, SearchResponse,
@@ -83,6 +84,7 @@ const ROUTES: &[RouteSpec] = &[
     route_with_response("get", "/handshake", "handshake", "discovery", "Protocol handshake", "Return auth mode, protocol version, capabilities, and runtime hints.", None, "HandshakeResponse", AuthKind::RemoteAccess),
     route("get", "/models", "models", "discovery", "List available models", "Return model catalog entries and runtime availability.", None, AuthKind::RemoteAccess),
     route("post", "/models/refresh", "refreshModels", "discovery", "Refresh available models", "Discover models for providers with missing or expired caches, then return the model catalog and runtime availability.", None, AuthKind::RemoteAccess),
+    route_with_response("post", "/content-reports", "createContentReport", "content-reports", "Report AI content", "Save an authenticated user's report about user-visible AI content.", Some("CreateContentReportRequest"), "CreateContentReportResponse", AuthKind::RemoteAccess),
     aide_route_with_response("get", "/agents/list", "listAgents", "agents", "List agents", "Return lightweight public agent entries. Optional parent query parameter filters the public roster to direct children of that parent.", None, "AgentListResponse", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/brief-read-states", "briefReadStates", "agents", "Brief read states", "Return the authoritative per-Agent Brief read cursor and exact unread count for the current principal and visibility scope.", None, "BriefReadStates", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/brief-read-state", "briefReadState", "agents", "Brief read state", "Return the authoritative Brief read cursor and exact unread count for one visible public Agent.", None, "BriefReadState", AuthKind::RemoteAccess),
@@ -413,6 +415,7 @@ fn openapi_value() -> Value {
             { "name": "templates" },
             { "name": "jobs" },
             { "name": "search" },
+            { "name": "content-reports" },
             { "name": "callbacks", "description": "Capability-token callback ingress. Never publish real callback_token values." },
             { "name": "compat" }
         ],
@@ -771,6 +774,14 @@ fn component_schemas() -> Value {
     schemas.insert(
         "HandshakeResponse".into(),
         component_schema_with_refs::<HandshakeResponse>(),
+    );
+    schemas.insert(
+        "CreateContentReportRequest".into(),
+        component_schema::<CreateContentReportRequest>(),
+    );
+    schemas.insert(
+        "CreateContentReportResponse".into(),
+        component_schema::<CreateContentReportResponse>(),
     );
     schemas.insert(
         "AgentListResponse".into(),

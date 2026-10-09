@@ -9,7 +9,7 @@ use crate::runtime_db::content_reports::{
 
 pub(crate) const CONTENT_REPORT_BODY_LIMIT_BYTES: usize = 32 * 1024;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct CreateContentReportRequest {
     pub agent_id: String,
     pub turn_id: String,
@@ -21,7 +21,7 @@ pub(crate) struct CreateContentReportRequest {
     pub client_request_id: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub(crate) struct CreateContentReportResponse {
     pub report_id: String,
     pub status: String,

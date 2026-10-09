@@ -131,6 +131,7 @@ pub(crate) use auth::{
     CurrentUserResponse, NativeSessionResponse, PairingIssueResponse, PairingRedeemRequest,
     SessionExchangeRequest, SessionResponse,
 };
+pub(crate) use content_reports::{CreateContentReportRequest, CreateContentReportResponse};
 pub(crate) use conversation::{
     ConversationActivityResponse, ConversationReadQuery, ConversationShadowQuery,
     ConversationStreamMessage, ConversationSummaryResponse, CONVERSATION_SHADOW_DEFAULT_LIMIT,
