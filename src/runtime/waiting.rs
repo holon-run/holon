@@ -511,6 +511,40 @@ impl RuntimeHandle {
         let mut audit_events = Vec::new();
         let mut index_changes = Vec::new();
         let mut committed_agent_state = None;
+        let mut condition = WaitConditionRecord {
+            id: condition_id.unwrap_or_else(crate::ids::wait_condition_id),
+            agent_id: agent_id.to_string(),
+            work_item_id: work_item_id.clone(),
+            status: WaitConditionStatus::Active,
+            kind,
+            source: Some("WaitFor".to_string()),
+            subject_ref,
+            waiting_for: reason.clone(),
+            wake_sources,
+            continuation: Some(serde_json::json!({
+                "created_by": "WaitFor",
+                "wake": wake,
+                "resource": resource,
+                "recheck_after_ms": recheck_after_ms,
+                "recheck_at": recheck_at,
+                "recovery": recheck_at.map(|_| serde_json::json!({
+                    "kind": "recoverable",
+                    "recheck_source": "WaitFor",
+                })),
+                "clear_blocker_on_task_result": wake == WaitForWakeKind::TaskResult,
+            })),
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: current_turn_id,
+            trigger_message_id: None,
+            triggered_at: None,
+        };
+        if let Some(timer_wake) = pending_timer_wake.as_ref() {
+            condition.mark_triggered(&timer_wake.message_id, now);
+        }
         if !cancelled_wait_condition_ids.is_empty() {
             audit_events.push(AuditEvent::legacy(
                 "wait_conditions_cancelled",
@@ -560,9 +594,21 @@ impl RuntimeHandle {
                     audit_events.push(event);
                 }
             }
-            audit_events.push(self.work_item_written_event(
+            let mut projection_waits = wait_conditions
+                .iter()
+                .filter(|record| record.status == WaitConditionStatus::Active)
+                .cloned()
+                .collect::<Vec<_>>();
+            projection_waits.push(condition.clone());
+            let readiness = crate::work_item_scheduling::readiness_from_facts(
+                &updated,
+                false,
+                &projection_waits,
+            );
+            audit_events.push(self.work_item_written_event_with_readiness(
                 "wait_for_blocked",
                 &updated,
+                readiness,
                 Value::Null,
             ));
             index_changes.extend(self.inner.storage.index_changes_for_work_item(&updated)?);
@@ -578,7 +624,7 @@ impl RuntimeHandle {
                         "agent_id": agent_id,
                         "work_item_id": updated.id.as_str(),
                         "reason": "work_item_waiting",
-                        "readiness": updated.readiness(),
+                        "readiness": readiness,
                         "revision": updated.revision,
                     }),
                 ));
@@ -594,7 +640,7 @@ impl RuntimeHandle {
                         "agent_id": agent_id,
                         "work_item_id": updated.id.as_str(),
                         "reason": "operator_input_wait",
-                        "readiness": updated.readiness(),
+                        "readiness": readiness,
                         "revision": updated.revision,
                     }),
                 ));
@@ -603,40 +649,6 @@ impl RuntimeHandle {
             work_item = Some(updated);
         }
 
-        let mut condition = WaitConditionRecord {
-            id: condition_id.unwrap_or_else(crate::ids::wait_condition_id),
-            agent_id: agent_id.to_string(),
-            work_item_id: work_item_id.clone(),
-            status: WaitConditionStatus::Active,
-            kind,
-            source: Some("WaitFor".to_string()),
-            subject_ref,
-            waiting_for: reason.clone(),
-            wake_sources,
-            continuation: Some(serde_json::json!({
-                "created_by": "WaitFor",
-                "wake": wake,
-                "resource": resource,
-                "recheck_after_ms": recheck_after_ms,
-                "recheck_at": recheck_at,
-                "recovery": recheck_at.map(|_| serde_json::json!({
-                    "kind": "recoverable",
-                    "recheck_source": "WaitFor",
-                })),
-                "clear_blocker_on_task_result": wake == WaitForWakeKind::TaskResult,
-            })),
-            created_at: now,
-            updated_at: now,
-            expires_at: None,
-            resolved_at: None,
-            cancelled_at: None,
-            turn_id: current_turn_id,
-            trigger_message_id: None,
-            triggered_at: None,
-        };
-        if let Some(timer_wake) = pending_timer_wake.as_ref() {
-            condition.mark_triggered(&timer_wake.message_id, now);
-        }
         wait_conditions.push(condition.clone());
         audit_events.extend(
             self.inner

@@ -8341,6 +8341,13 @@ async fn operator_input_wait_releases_execution_focus() {
         event.kind == "work_item_focus_released"
             && event.data["reason"] == "operator_input_wait"
             && event.data["work_item_id"].as_str() == Some(work.id.as_str())
+            && event.data["readiness"].as_str() == Some("waiting_for_operator")
+    }));
+    assert!(events.iter().any(|event| {
+        event.kind == "work_item_written"
+            && event.data["action"] == "wait_for_blocked"
+            && event.data["work_item_id"].as_str() == Some(work.id.as_str())
+            && event.data["readiness"].as_str() == Some("waiting_for_operator")
     }));
 }
 

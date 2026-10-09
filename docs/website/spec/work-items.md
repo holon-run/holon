@@ -115,6 +115,15 @@ wait state, and continuation-yield state:
 
 - Readiness is derived, not stored. `is_runnable()` and
   `is_waiting_for_operator()` are computed from current state.
+- `WorkItemRecord::readiness()` is a **record-only** reduced view: it uses only
+  persisted record fields and cannot infer active waits or continuation-yield
+  state. When those facts are available, the scheduling projection is
+  authoritative and may report a different readiness (for example,
+  `WaitingForOperator` instead of reduced `Blocked`).
+- Audit fields describing a wait, focus release, or other scheduling transition
+  must use the same fact-backed snapshot as the transition. Callers that only
+  have a record must label or treat the value as record-only readiness rather
+  than presenting it as the current scheduling projection.
 - `WaitFor(wake=operator_input)` is the explicit wait signal when operator
   input blocks the current WorkItem.
 - Older blocked WorkItems with `recheck_at` carry a fallback deadline; the
