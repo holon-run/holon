@@ -1,10 +1,13 @@
 ---
 title: "从请求-响应到事件驱动：长周期 Agent 系统的内核设计"
 summary: "为什么死循环 while(true) 无法支撑生产级工作？融合操作系统中断演进史与直观工程隐喻，深度解析长周期自主 Agent 的持久化等待、唤醒调度与因果状态内核架构。"
+socialImage: "/assets/event-driven-kernel-cover.webp"
 order: 62
 ---
 
 # 从“请求-响应”到“事件驱动”：长周期 Agent 系统的内核设计
+
+<img src="/assets/event-driven-kernel-cover.webp" width="1248" height="832" alt="长周期自主 Agent 系统的内核设计概念图：解耦的工作状态、异步事件流与等待唤醒调度" decoding="async" fetchpriority="high">
 
 > 本文深入探讨长周期自主代理（Long-Lived Autonomous Agents）的系统架构。文中所剖析的状态正交解耦、统一等待唤醒协议与因果保留原则，旨在为构建能够跨越数小时乃至数天的工业级 Agent 运行时提供通用的系统级范式。
 

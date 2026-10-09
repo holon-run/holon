@@ -218,4 +218,8 @@ holon daemon start
 - [维护者](./maintainers/)
   <!-- mdorigin:index kind=directory -->
 
+- [Holon Android 隐私政策](./privacy.md)
+  Holon Android 客户端的数据处理说明。
+  <!-- mdorigin:index kind=article -->
+
 <!-- INDEX:END -->
