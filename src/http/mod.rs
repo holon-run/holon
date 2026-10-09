@@ -100,6 +100,7 @@ pub(crate) use crate::{
 mod agents;
 mod apps;
 mod auth;
+mod content_reports;
 mod control;
 mod conversation;
 mod events;
@@ -130,6 +131,7 @@ pub(crate) use auth::{
     CurrentUserResponse, NativeSessionResponse, PairingIssueResponse, PairingRedeemRequest,
     SessionExchangeRequest, SessionResponse,
 };
+pub(crate) use content_reports::{CreateContentReportRequest, CreateContentReportResponse};
 pub(crate) use conversation::{
     ConversationActivityResponse, ConversationReadQuery, ConversationShadowQuery,
     ConversationStreamMessage, ConversationSummaryResponse, CONVERSATION_SHADOW_DEFAULT_LIMIT,
@@ -520,6 +522,12 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/agents/{agent_id}/conversation",
             get(conversation::summary),
+        )
+        .route(
+            "/content-reports",
+            post(content_reports::create).layer(DefaultBodyLimit::max(
+                content_reports::CONTENT_REPORT_BODY_LIMIT_BYTES,
+            )),
         )
         .route(
             "/agents/{agent_id}/conversation/stream",

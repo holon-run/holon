@@ -8899,6 +8899,64 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "CreateContentReportRequest": {
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "client_request_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "turn_id",
+          "message_id",
+          "category"
+        ],
+        "title": "CreateContentReportRequest",
+        "type": "object"
+      },
+      "CreateContentReportResponse": {
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "report_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "report_id",
+          "status",
+          "created_at"
+        ],
+        "title": "CreateContentReportResponse",
+        "type": "object"
+      },
       "CreateJobRequest": {
         "additionalProperties": false,
         "properties": {
@@ -21085,6 +21143,64 @@
         ]
       }
     },
+    "/api/content-reports": {
+      "post": {
+        "description": "Save an authenticated user's report about user-visible AI content.",
+        "operationId": "createContentReport",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateContentReportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateContentReportResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Report AI content",
+        "tags": [
+          "content-reports"
+        ]
+      }
+    },
     "/api/control/agents/tree": {
       "get": {
         "description": "Return the authenticated operator Agent tree built from canonical lineage.",
@@ -26594,6 +26710,9 @@
     },
     {
       "name": "search"
+    },
+    {
+      "name": "content-reports"
     },
     {
       "description": "Capability-token callback ingress. Never publish real callback_token values.",

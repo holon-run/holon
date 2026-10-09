@@ -961,6 +961,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/content-reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Report AI content
+         * @description Save an authenticated user's report about user-visible AI content.
+         */
+        post: operations["createContentReport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/control/agents/tree": {
         parameters: {
             query?: never;
@@ -5073,6 +5093,23 @@ export interface components {
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         CreateCommandTaskRequest: {
             [key: string]: unknown;
+        };
+        /** CreateContentReportRequest */
+        CreateContentReportRequest: {
+            agent_id: string;
+            category: string;
+            /** @default null */
+            client_request_id: string | null;
+            /** @default null */
+            description: string | null;
+            message_id: string;
+            turn_id: string;
+        };
+        /** CreateContentReportResponse */
+        CreateContentReportResponse: {
+            created_at: string;
+            report_id: string;
+            status: string;
         };
         CreateJobRequest: {
             /** @enum {string} */
@@ -9753,6 +9790,48 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    createContentReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateContentReportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateContentReportResponse"];
                 };
             };
             /** @description Client error JSON response. */

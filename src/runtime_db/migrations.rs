@@ -3773,6 +3773,56 @@ CREATE TABLE IF NOT EXISTS subagent_cleanup_failure_notices (
 );
 "#,
     },
+    Migration {
+        version: 78,
+        name: "content_reports",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS content_reports (
+  report_id TEXT PRIMARY KEY,
+  reporter_principal TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  category TEXT NOT NULL CHECK (
+    category IN (
+      'harmful_or_abusive',
+      'sexual_content',
+      'hate_or_harassment',
+      'self_harm',
+      'violence',
+      'privacy',
+      'spam_or_other'
+    )
+  ),
+  description TEXT,
+  content_snapshot TEXT NOT NULL,
+  content_snapshot_hash TEXT NOT NULL,
+  snapshot_truncated INTEGER NOT NULL DEFAULT 0 CHECK (snapshot_truncated IN (0, 1)),
+  source_message_created_at TEXT NOT NULL,
+  source_origin_json TEXT NOT NULL,
+  source_authority_class TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('received', 'reviewed', 'dismissed', 'actioned')),
+  client_request_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_content_reports_idempotency
+  ON content_reports(
+    reporter_principal, agent_id, turn_id, message_id, client_request_id
+  )
+  WHERE client_request_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_content_reports_created
+  ON content_reports(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_content_reports_status_created
+  ON content_reports(status, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_content_reports_reporter_created
+  ON content_reports(reporter_principal, created_at);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
