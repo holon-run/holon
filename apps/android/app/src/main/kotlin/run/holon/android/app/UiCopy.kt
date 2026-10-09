@@ -72,6 +72,12 @@ internal object UiCopy {
         "已折叠" to R.string.pending_collapsed,
         "展开消息" to R.string.pending_expand,
         "收起消息" to R.string.pending_collapse,
+        "删除网络" to R.string.network_delete,
+        "删除此网络？" to R.string.network_delete_title,
+        "此网络的本机配置、登录凭据、缓存、草稿、待发送消息和附件及诊断记录会被清除。远端主机和已发送的工作不受影响。" to R.string.network_delete_warning,
+        "这是当前网络。删除后将断开连接并返回登录页，不会自动连接其他网络。" to R.string.network_delete_current_warning,
+        "正在删除网络…" to R.string.network_deleting,
+        "网络已删除" to R.string.network_deleted,
     )
 
     internal fun translate(source: String, language: String): String {
@@ -243,6 +249,12 @@ internal object UiCopy {
         图片无法预览，可保存或分享后打开|Cannot preview this image. Save or share it to open elsewhere.
         地址|Address
         添加网络|Add network
+        删除网络|Delete network
+        删除此网络？|Delete this network?
+        此网络的本机配置、登录凭据、缓存、草稿、待发送消息和附件及诊断记录会被清除。远端主机和已发送的工作不受影响。|This network’s saved settings, sign-in credentials, caches, drafts, unsent messages and attachments, and diagnostic logs will be removed from this device. The remote host and work already sent are not affected.
+        这是当前网络。删除后将断开连接并返回登录页，不会自动连接其他网络。|This is the current network. Deleting it will disconnect and return to sign-in without connecting to another network automatically.
+        正在删除网络…|Deleting network…
+        网络已删除|Network deleted
         添加并切换|Add and switch
         当前网络|Current network
         已保存的网络|Saved networks

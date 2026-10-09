@@ -450,6 +450,23 @@ internal fun HolonUiState.afterCancelAddingNetwork(): HolonUiState =
         statusMessage = null,
     )
 
+internal fun HolonUiState.canDeleteNetwork(networkId: String): Boolean =
+    phase in setOf(AppPhase.Ready, AppPhase.SignedOut) &&
+        !busy && !enqueueing && !stagingAttachment &&
+        networkProfiles.any { it.networkId == networkId }
+
+internal fun HolonUiState.afterDeletingNetwork(
+    networkId: String,
+    profiles: List<NetworkProfile>,
+): HolonUiState =
+    if (session?.networkId == networkId ||
+        (session == null && networkProfiles.firstOrNull { it.networkId == networkId }?.baseUrl == baseUrl)
+    ) {
+        HolonUiState(phase = AppPhase.SignedOut, networkProfiles = profiles, statusMessage = "网络已删除")
+    } else {
+        copy(busy = false, networkProfiles = profiles, error = null, statusMessage = "网络已删除")
+    }
+
 internal fun isCurrentLiveSync(
     foreground: Boolean,
     phase: AppPhase,

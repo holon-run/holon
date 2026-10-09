@@ -385,16 +385,16 @@ internal class HolonRepository(
     }
 
     suspend fun deleteNetwork(networkId: String) {
-        preferences.profiles().firstOrNull { it.networkId == networkId }?.savedScopeKey()?.let {
-            clearLocalState(it)
-        }
+        val profile = preferences.profiles().firstOrNull { it.networkId == networkId } ?: return
+        val current = active?.takeIf { it.networkId == networkId }
+        val scopeKey = current?.scopeKey ?: profile.savedScopeKey()
+        // Fence in-flight responses before any suspending local cleanup.
+        if (current != null) sessions.clear()
+        scopeKey?.let { clearLocalState(it) }
         traceRecorder.record(TraceScope.Network(networkId), TraceLevel.INFO, "network", "network.deleted")
         traceRecorder.deleteScope(TraceScope.Network(networkId))
         credentialStore(networkId).clear()
         preferences.removeProfile(networkId)
-        if (active?.networkId == networkId) {
-            sessions.clear()
-        }
     }
 
     suspend fun conversation(agent: AgentSummary, lease: SessionLease = sessions.capture(), freshWindow: Boolean = false): ConversationBundle {

@@ -5,6 +5,24 @@ import org.junit.Test
 
 class UiCopyTest {
     @Test
+    fun `network deletion copy identifies the local only boundary in both languages`() {
+        assertEquals("Delete network", UiCopy.translate("删除网络", "en"))
+        assertEquals("Delete this network?", UiCopy.translate("删除此网络？", "en"))
+        assertEquals("Network deleted", UiCopy.translate("网络已删除", "en"))
+        assertEquals("Deleting network…", UiCopy.translate("正在删除网络…", "en"))
+        val warning = "此网络的本机配置、登录凭据、缓存、草稿、待发送消息和附件及诊断记录会被清除。远端主机和已发送的工作不受影响。"
+        assertEquals(
+            "This network’s saved settings, sign-in credentials, caches, drafts, unsent messages and attachments, and diagnostic logs will be removed from this device. The remote host and work already sent are not affected.",
+            UiCopy.translate(warning, "en"),
+        )
+        assertEquals(warning, UiCopy.translate(warning, "zh-CN"))
+        assertEquals(
+            "This is the current network. Deleting it will disconnect and return to sign-in without connecting to another network automatically.",
+            UiCopy.translate("这是当前网络。删除后将断开连接并返回登录页，不会自动连接其他网络。", "en"),
+        )
+    }
+
+    @Test
     fun `background queue copy is localized without translating message content`() {
         assertEquals("Background messages", UiCopy.translate("后台消息", "en"))
         assertEquals("Tap a message for details", UiCopy.translate("点击消息查看详情", "en"))

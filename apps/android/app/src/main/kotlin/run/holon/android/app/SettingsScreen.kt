@@ -11,11 +11,8 @@ import android.content.Intent
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -27,14 +24,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -44,7 +39,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 
@@ -53,7 +47,20 @@ internal fun SettingsScreen(state: HolonUiState, viewModel: SettingsActions, onB
     var showDiagnostics by remember { mutableStateOf(false) }
     var showLanguagePicker by remember { mutableStateOf(false) }
     var pendingSignOut by remember { mutableStateOf<String?>(null) }
+    var pendingNetworkDeletion by remember { mutableStateOf<NetworkProfile?>(null) }
     if (showLanguagePicker) AppLanguagePicker { showLanguagePicker = false }
+    pendingNetworkDeletion?.let { profile ->
+        DeleteNetworkDialog(
+            profile = profile,
+            isCurrent = profile.networkId == state.session?.networkId,
+            busy = state.busy || state.enqueueing || state.stagingAttachment,
+            onConfirm = {
+                pendingNetworkDeletion = null
+                viewModel.deleteNetwork(profile.networkId)
+            },
+            onDismiss = { pendingNetworkDeletion = null },
+        )
+    }
     pendingSignOut?.let { action ->
         AlertDialog(
             onDismissRequest = { pendingSignOut = null },
@@ -103,10 +110,11 @@ internal fun SettingsScreen(state: HolonUiState, viewModel: SettingsActions, onB
                 NetworkSection(
                     profiles = state.networkProfiles,
                     currentNetworkId = state.session?.networkId,
-                    busy = state.busy,
+                    busy = state.busy || state.enqueueing || state.stagingAttachment,
                     switchingNetworkId = state.switchingNetworkId,
                     onSwitch = viewModel::switchNetwork,
                     onAdd = viewModel::beginAddNetwork,
+                    onDelete = { networkId -> pendingNetworkDeletion = state.networkProfiles.firstOrNull { it.networkId == networkId } },
                 )
             }
             item {
@@ -201,35 +209,18 @@ internal fun NetworkSection(
     switchingNetworkId: String?,
     onSwitch: (String) -> Unit,
     onAdd: () -> Unit,
+    onDelete: (String) -> Unit,
 ) {
     HolonSection(ui("网络")) {
         profiles.sortedByDescending { it.networkId == currentNetworkId }.forEach { profile ->
             val isCurrent = profile.networkId == currentNetworkId
-            Surface(
-                modifier = Modifier.fillMaxWidth().clickable(enabled = !busy && !isCurrent) {
-                    onSwitch(profile.networkId)
-                },
-                shape = RoundedCornerShape(10.dp),
-                border = BorderStroke(1.dp, if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
-                color = MaterialTheme.colorScheme.surface,
-            ) {
-                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text(profile.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(
-                            profile.baseUrl,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    if (isCurrent) {
-                        Spacer(Modifier.width(8.dp))
-                        Icon(Icons.Default.CheckCircle, contentDescription = ui("当前网络"), tint = MaterialTheme.colorScheme.primary)
-                    }
-                }
-            }
+            SavedNetworkRow(
+                profile = profile,
+                isCurrent = isCurrent,
+                busy = busy,
+                onSwitch = { onSwitch(profile.networkId) },
+                onDelete = { onDelete(profile.networkId) },
+            )
         }
         OutlinedButton(onClick = onAdd, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Default.Add, contentDescription = null)

@@ -9,6 +9,7 @@ import run.holon.android.sdk.HolonTaskSnapshot
 import run.holon.android.sdk.HolonWorkspace
 
 internal interface ConnectionActions {
+    fun deleteNetwork(networkId: String): Unit
     fun applyScannedAddress(value: String): Unit
     fun cancelAddNetwork(): Unit
     fun cancelPairing(): Unit
@@ -33,6 +34,7 @@ internal interface AgentsActions {
 }
 
 internal interface SettingsActions {
+    fun deleteNetwork(networkId: String): Unit
     val traceRecorder: TraceRecorder
     fun beginAddNetwork(): Unit
     fun logout(): Unit
@@ -104,6 +106,7 @@ internal interface ShareActions {
 /** UI depends on page actions, not lifecycle, AndroidViewModel, or transport. */
 internal class AndroidScreenActions(private val delegate: HolonViewModel) {
     val connection: ConnectionActions = object : ConnectionActions {
+        override fun deleteNetwork(networkId: String): Unit { delegate.deleteNetwork(networkId) }
         override fun applyScannedAddress(value: String): Unit { delegate.applyScannedAddress(value) }
         override fun cancelAddNetwork(): Unit { delegate.cancelAddNetwork() }
         override fun cancelPairing(): Unit { delegate.cancelPairing() }
@@ -126,6 +129,7 @@ internal class AndroidScreenActions(private val delegate: HolonViewModel) {
         override fun switchNetwork(networkId: String): Unit { delegate.switchNetwork(networkId) }
     }
     val settings: SettingsActions = object : SettingsActions {
+        override fun deleteNetwork(networkId: String): Unit { delegate.deleteNetwork(networkId) }
         override val traceRecorder get() = delegate.traceRecorder
         override fun beginAddNetwork(): Unit { delegate.beginAddNetwork() }
         override fun logout(): Unit { delegate.logout() }
