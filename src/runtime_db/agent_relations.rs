@@ -616,6 +616,10 @@ fn upsert_lineage_tx(tx: &Transaction<'_>, record: &AgentLineageRecord) -> Resul
 }
 
 fn upsert_supervision_tx(tx: &Transaction<'_>, record: &AgentSupervisionRecord) -> Result<()> {
+    if record.state == AgentSupervisionState::Active {
+        super::reclamation::ensure_work_admission_tx(tx, &record.supervisor_agent_id)?;
+        super::reclamation::ensure_work_admission_tx(tx, &record.child_agent_id)?;
+    }
     let payload_json = serde_json::to_string(record)?;
     let affected = tx.execute(
         "INSERT INTO agent_supervisions (
@@ -1712,7 +1716,11 @@ fn validate_effective_relations(
             AgentRegistryStatus::Deleting => AgentSupervisionState::CleanupRequired,
             AgentRegistryStatus::Deleted => AgentSupervisionState::Closed,
         };
-        if supervision.state != expected_state {
+        // Active identities can retain unresolved cleanup responsibility after
+        // their supervisor disappears. This posture grants no deletion authority.
+        let retained_cleanup_debt = identity.status == AgentRegistryStatus::Active
+            && supervision.state == AgentSupervisionState::CleanupRequired;
+        if supervision.state != expected_state && !retained_cleanup_debt {
             issue(
                 issues,
                 AgentCanonicalRelationAxis::Supervision,

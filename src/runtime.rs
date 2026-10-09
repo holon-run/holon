@@ -9,6 +9,7 @@ mod continuation;
 pub(crate) mod decision_models;
 pub(crate) mod decision_openai;
 mod delivery;
+pub(crate) mod execution_admission;
 mod failure;
 mod first_run_intro;
 mod lifecycle;
@@ -408,6 +409,7 @@ pub struct RuntimeHandle {
 }
 
 struct RuntimeInner {
+    identity_incarnation: u64,
     agent: Mutex<RuntimeAgent>,
     projection_cache: Mutex<AgentRuntimeProjectionCache>,
     object_query_cache: Arc<crate::object_query_cache::ObjectQueryCache>,
@@ -433,6 +435,7 @@ struct RuntimeInner {
     default_agent_id: String,
     host_bridge: Option<RuntimeHostBridge>,
     task_handles: Mutex<HashMap<String, ManagedTaskHandle>>,
+    owned_task_handles: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
     recovered_tasks: Mutex<Option<Vec<TaskRecord>>>,
     recovered_timers: Mutex<Option<Vec<TimerRecord>>>,
     bootstrap_result: StdMutex<Option<std::result::Result<(), String>>>,
@@ -442,6 +445,7 @@ struct RuntimeInner {
         RwLock<Option<Arc<dyn scheduler::AsyncSemanticCandidateSelectionHook>>>,
     suppress_next_continue_active_tick: Mutex<bool>,
     shutdown_requested: AtomicBool,
+    execution_admission: execution_admission::ExecutionAdmission,
     transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
     #[cfg(test)]
     completion_binding_replacement: StdMutex<Option<WorkItemExecutionBinding>>,
@@ -4626,6 +4630,7 @@ impl RuntimeHandle {
         mut message: MessageEnvelope,
         delivery: Option<&AgentMessageDeliveryRecord>,
     ) -> Result<(MessageEnvelope, Option<AgentMessageDeliveryReceipt>)> {
+        let _admission = self.execution_admission_lease()?;
         message.normalize_admission_fields();
         message.turn_id = normalized_turn_id(message.turn_id.as_deref());
         if message.turn_id.is_none() {
@@ -4749,6 +4754,10 @@ impl RuntimeHandle {
         )];
         let commit = {
             let mut guard = self.inner.agent.lock().await;
+            anyhow::ensure!(
+                !self.inner.shutdown_requested.load(Ordering::SeqCst),
+                "runtime_execution_admission_closed"
+            );
             if matches!(
                 &message.origin,
                 MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"
@@ -4776,6 +4785,23 @@ impl RuntimeHandle {
             let expected_persisted_state = guard.last_persisted_state.clone();
             let mut committed_state = guard.state.clone();
             let discard_due_to_stop = committed_state.status == AgentStatus::Stopped;
+            if matches!(&message.origin, MessageOrigin::System { subsystem } if subsystem == "subagent_reclamation")
+            {
+                anyhow::ensure!(
+                    !discard_due_to_stop,
+                    "subagent_reminder_deferred: parent_stopped"
+                );
+                anyhow::ensure!(
+                    committed_state
+                        .turn_budget
+                        .as_ref()
+                        .is_none_or(|budget| committed_state
+                            .turn_index
+                            .saturating_sub(budget.run_start_turn_index)
+                            < budget.max_turns),
+                    "subagent_reminder_deferred: parent_budget_exhausted"
+                );
+            }
             let previous_status = committed_state.status.clone();
             let previous_sleeping_until = committed_state.sleeping_until;
             committed_state.pending = guard

@@ -581,7 +581,7 @@
       "stability": "stable"
     },
     {
-      "description": "Read an agent-plane summary, including identity, lifecycle, active work focus,\nwaiting state, and child-agent lineage. The default response is a compact\nruntime summary. Pass `{\"detail\":\"full\"}` when complete execution, skills,\nloaded guidance, token usage, and diagnostic fields are required.\n\nWhen called without arguments, returns the current agent's summary. When called\nwith `agent_id`, returns the requested agent's summary. Read-only inspection\ndoes not start an unloaded target runtime.\n",
+      "description": "Read an agent-plane summary, including identity, lifecycle, active work focus,\nwaiting state, and child-agent lineage. The default response is a compact\nruntime summary. Pass `{\"detail\":\"full\"}` when complete execution, skills,\nloaded guidance, token usage, and diagnostic fields are required.\n\nWhen called without arguments, returns the current agent's summary. When called\nwith `agent_id`, returns the requested agent's summary. Read-only inspection\ndoes not start an unloaded target runtime.\n\nFor the current agent, `subagent_cleanup` lists up to 16 supervised ephemeral\nchildren and their current database blockers. This is a read-only responsibility\nlist, not authorization to delete. `observed_since` is absent until background\nobservation exists. Inspect the target with full detail for `identity.incarnation`\nbefore requesting `DeleteAgent`; filesystem/worktree checks can add blockers.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -618,6 +618,153 @@
         "model_rendering": "canonical_json_envelope",
         "success_result": "GetAgentResult (full) or GetAgentCompactResult (compact)",
         "success_result_schema": null
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Request durable deletion of an ephemeral child currently supervised by you.\nSupply `agent_id` and `incarnation` from `GetAgent.identity`. Caller identity\ncomes from your runtime and cannot be supplied. No reminder or special reply is\nrequired. You may delete a retained child once it is no longer useful.\n\nAccepted requests return a deletion job, not proof that physical cleanup has\nfinished. Repeating the request for the same incarnation returns its job.\nActive/queued/waiting work, open WorkItems, descendant responsibility, referenced\nartifacts and unsafe worktrees block cleanup. Resolve the reported blocker first;\ndo not cancel valid work merely to make cleanup eligible. Public, independent,\npeer, and recreated identities are excluded. No automatic identity TTL applies.\n",
+      "family": "agent_creation",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "incarnation": {
+            "description": "Use identity.incarnation from GetAgent; prevents deleting a recreated agent.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_id",
+          "incarnation"
+        ],
+        "type": "object"
+      },
+      "name": "DeleteAgent",
+      "related_surfaces": [],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "DeleteAgentResult",
+        "success_result_schema": {
+          "properties": {
+            "deletion": {
+              "properties": {
+                "agent_id": {
+                  "type": "string"
+                },
+                "attempts": {
+                  "format": "uint32",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "cascade_private_children": {
+                  "type": "boolean"
+                },
+                "completed_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "deletion_id": {
+                  "type": "string"
+                },
+                "expected_identity_revision": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "last_error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "mode": {
+                  "default": "delete",
+                  "oneOf": [
+                    {
+                      "enum": [
+                        "delete",
+                        "cleanup_repair"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "const": "parent_cleanup",
+                      "description": "Supervision-authorized deletion that must preserve accepted work.",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "next_attempt_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "phase": {
+                  "enum": [
+                    "fence",
+                    "quiesce",
+                    "ingress",
+                    "scheduler",
+                    "workspace",
+                    "index",
+                    "home",
+                    "finalize"
+                  ],
+                  "type": "string"
+                },
+                "requested_by": {
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "pending",
+                    "running",
+                    "retryable_failed",
+                    "completed"
+                  ],
+                  "type": "string"
+                },
+                "updated_at": {
+                  "format": "date-time",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "deletion_id",
+                "agent_id",
+                "status",
+                "phase",
+                "requested_by",
+                "expected_identity_revision",
+                "cascade_private_children",
+                "attempts",
+                "created_at",
+                "updated_at"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "deletion"
+          ],
+          "type": "object"
+        }
       },
       "stability": "stable"
     },
@@ -1349,7 +1496,7 @@
       "stability": "stable"
     },
     {
-      "description": "Invoke an agent asynchronously and return its `agent_id`, whether this request\ncreated it, and a `TaskHandle`. `target` is a strict discriminated union: use\n`kind=existing_agent` with only `agent_id`, or `kind=new_subagent` with optional\n`template`, `workspace_mode`, and `model`. `initial_message` is required.\n\nFor `existing_agent`, the handle waits for the first later durable message from\nthat agent. The message satisfies the wait but is not a business-completion\nresult, and concurrent waits may observe the same later message. The target is\nnever reconfigured or reparented.\n\nFor `new_subagent`, the handle remains a result-bearing supervised child task.\nCaller provenance and authority are bound by the current runtime context and\ncannot be supplied in the request.\n",
+      "description": "Invoke an agent asynchronously and return its `agent_id`, whether this request\ncreated it, and a `TaskHandle`. `target` is a strict discriminated union: use\n`kind=existing_agent` with only `agent_id`, or `kind=new_subagent` with optional\n`template`, `workspace_mode`, and `model`. `initial_message` is required.\n\nFor `existing_agent`, the handle waits for the first later durable message from\nthat agent. The message satisfies the wait but is not a business-completion\nresult, and concurrent waits may observe the same later message. The target is\nnever reconfigured or reparented.\n\nFor `new_subagent`, the handle remains a result-bearing supervised child task.\nCaller provenance and authority are bound by the current runtime context and\ncannot be supplied in the request.\n\nA newly invoked reusable subagent is retained after its invocation completes.\nThe current supervising parent owns cleanup: reuse it while needed, then call\n`DeleteAgent` with the current identity incarnation. Creation requires no TTL.\n",
       "family": "agent_creation",
       "freeform_grammar": null,
       "input_schema": {

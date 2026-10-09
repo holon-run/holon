@@ -550,6 +550,7 @@ impl RuntimeHandle {
         let runtime = self.clone();
         let task_record = queued_task.clone();
         let task_id = queued_task.id.clone();
+        let mut task_handles = self.inner.task_handles.lock().await;
         let handle = tokio::spawn(async move {
             let _ = runtime
                 .monitor_agent_message_wait(
@@ -561,9 +562,9 @@ impl RuntimeHandle {
                     recovered,
                 )
                 .await;
-            runtime.inner.task_handles.lock().await.remove(&task_id);
+            runtime.release_completed_task_handle(&task_id).await;
         });
-        self.inner.task_handles.lock().await.insert(
+        task_handles.insert(
             queued_task.id.clone(),
             command_task::ManagedTaskHandle::Async(handle),
         );
@@ -611,6 +612,7 @@ impl RuntimeHandle {
             }) => *lifecycle_disposition,
             _ => AgentLifecycleDisposition::Retain,
         };
+        let mut task_handles = self.inner.task_handles.lock().await;
         let handle = tokio::spawn(async move {
             let _ = runtime
                 .monitor_spawned_child_agent_task(
@@ -625,9 +627,9 @@ impl RuntimeHandle {
                     task_detail,
                 )
                 .await;
-            runtime.inner.task_handles.lock().await.remove(&task_id);
+            runtime.release_completed_task_handle(&task_id).await;
         });
-        self.inner.task_handles.lock().await.insert(
+        task_handles.insert(
             queued_task.id.clone(),
             command_task::ManagedTaskHandle::Async(handle),
         );
@@ -673,6 +675,7 @@ impl RuntimeHandle {
         authority_class: AuthorityClass,
         workspace_mode: ChildAgentWorkspaceMode,
     ) -> Result<TaskRecord> {
+        let _admission = self.execution_admission_lease()?;
         match workspace_mode {
             ChildAgentWorkspaceMode::Inherit => {
                 self.schedule_inherited_child_agent_task(summary, prompt, authority_class)
@@ -735,6 +738,7 @@ impl RuntimeHandle {
         let runtime = self.clone();
         let task_record = task.clone();
         let task_id = task.id.clone();
+        let mut task_handles = self.inner.task_handles.lock().await;
         let handle = tokio::spawn(async move {
             let running_message = MessageEnvelope {
                 metadata: Some(serde_json::json!({
@@ -821,18 +825,10 @@ impl RuntimeHandle {
                 );
             }
 
-            runtime
-                .inner
-                .task_handles
-                .lock()
-                .await
-                .remove(&task_record.id);
+            runtime.release_completed_task_handle(&task_record.id).await;
         });
-        self.inner
-            .task_handles
-            .lock()
-            .await
-            .insert(task_id, command_task::ManagedTaskHandle::Async(handle));
+        task_handles.insert(task_id, command_task::ManagedTaskHandle::Async(handle));
+        drop(task_handles);
 
         Ok(task)
     }
@@ -1020,6 +1016,7 @@ impl RuntimeHandle {
         let runtime = self.clone();
         let task_record = task.clone();
         let task_id = task.id.clone();
+        let mut task_handles = self.inner.task_handles.lock().await;
         let handle = tokio::spawn(async move {
             let subagent_result = runtime
                 .run_subagent_prompt_in_dedicated_worktree(
@@ -1133,18 +1130,10 @@ impl RuntimeHandle {
                 );
             }
 
-            runtime
-                .inner
-                .task_handles
-                .lock()
-                .await
-                .remove(&task_record.id);
+            runtime.release_completed_task_handle(&task_record.id).await;
         });
-        self.inner
-            .task_handles
-            .lock()
-            .await
-            .insert(task_id, command_task::ManagedTaskHandle::Async(handle));
+        task_handles.insert(task_id, command_task::ManagedTaskHandle::Async(handle));
+        drop(task_handles);
 
         Ok(task)
     }
@@ -1176,6 +1165,7 @@ impl RuntimeHandle {
         let runtime = self.clone();
         let task_id = task_record.id.clone();
         let task_id_for_cleanup = task_id.clone();
+        let mut task_handles = self.inner.task_handles.lock().await;
         let handle = tokio::spawn(async move {
             let spawned = async {
                 if let Some(child_agent_id) = existing_child_id {
@@ -1327,11 +1317,8 @@ impl RuntimeHandle {
                     }
 
                     runtime
-                        .inner
-                        .task_handles
-                        .lock()
-                        .await
-                        .remove(&task_id_for_cleanup);
+                        .release_completed_task_handle(&task_id_for_cleanup)
+                        .await;
                     return;
                 }
             };
@@ -1349,17 +1336,11 @@ impl RuntimeHandle {
                 )
                 .await;
             runtime
-                .inner
-                .task_handles
-                .lock()
-                .await
-                .remove(&task_id_for_cleanup);
+                .release_completed_task_handle(&task_id_for_cleanup)
+                .await;
         });
-        self.inner
-            .task_handles
-            .lock()
-            .await
-            .insert(task_id, command_task::ManagedTaskHandle::Async(handle));
+        task_handles.insert(task_id, command_task::ManagedTaskHandle::Async(handle));
+        drop(task_handles);
         Ok(())
     }
 
@@ -2525,6 +2506,7 @@ impl RuntimeHandle {
     }
 
     pub async fn task_input(&self, task_id: &str, input: &str) -> Result<TaskInputResult> {
+        let _admission = self.execution_admission_lease()?;
         let task = self
             .task_record(task_id)
             .await?
@@ -2566,6 +2548,7 @@ impl RuntimeHandle {
         input: &str,
         authority_class: &AuthorityClass,
     ) -> Result<TaskInputResult> {
+        let _admission = self.execution_admission_lease()?;
         let task = self
             .task_record(task_id)
             .await?
@@ -2822,6 +2805,7 @@ impl RuntimeHandle {
         plan: Option<String>,
         todo_list: Vec<TodoItem>,
     ) -> Result<WorkItemRecord> {
+        let _admission = self.execution_admission_lease()?;
         let agent_id = self.agent_id().await?;
         let mut record = WorkItemRecord::new(agent_id.clone(), objective, WorkItemState::Open);
         if let Some(plan_status) = plan_status {
@@ -3241,6 +3225,7 @@ impl RuntimeHandle {
         reason: Option<String>,
         clear_blocker: bool,
     ) -> Result<PickedWorkItem> {
+        let _admission = self.execution_admission_lease()?;
         let agent_id = self.agent_id().await?;
         let state = self.agent_state().await?;
         let current_id = state.current_work_item_id.clone();
@@ -3640,6 +3625,7 @@ impl RuntimeHandle {
         blocked_by: Option<Option<String>>,
         recheck_after_ms: Option<u64>,
     ) -> Result<WorkItemRecord> {
+        let _admission = self.execution_admission_lease()?;
         let agent_id = self.agent_id().await?;
         let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
         if existing.state != WorkItemState::Open {

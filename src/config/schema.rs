@@ -528,6 +528,21 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec!["true", "false"],
         },
         ConfigSchemaEntry {
+            key: "runtime.reclamation.idle_retirement_enabled", kind: "boolean",
+            description: "Enable safe idle exit of supervised ephemeral runtimes. Identity and history remain retained.",
+            default: json!(false), allowed_values: vec!["true", "false"],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.reclamation.idle_grace_seconds", kind: "positive_integer",
+            description: "Observed idle grace before cleanup reminders and runtime retirement. Does not expire identities.",
+            default: json!(600), allowed_values: Vec::new(),
+        },
+        ConfigSchemaEntry {
+            key: "runtime.reclamation.reminders_enabled", kind: "boolean",
+            description: "Enable bounded internal reminders for retained supervised children.",
+            default: json!(false), allowed_values: vec!["true", "false"],
+        },
+        ConfigSchemaEntry {
             key: "runtime.retention.enabled",
             kind: "boolean",
             description: "Enable bounded runtime SQLite retention. Disabled unless explicitly configured.",
@@ -1123,6 +1138,24 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .disable_provider_fallback
             .map(Value::Bool)
             .unwrap_or(Value::Null)),
+        "runtime.reclamation.idle_retirement_enabled" => Ok(config
+            .runtime
+            .reclamation
+            .idle_retirement_enabled
+            .map(Value::Bool)
+            .unwrap_or(Value::Null)),
+        "runtime.reclamation.reminders_enabled" => Ok(config
+            .runtime
+            .reclamation
+            .reminders_enabled
+            .map(Value::Bool)
+            .unwrap_or(Value::Null)),
+        "runtime.reclamation.idle_grace_seconds" => Ok(config
+            .runtime
+            .reclamation
+            .idle_grace_seconds
+            .map(|v| json!(v))
+            .unwrap_or(Value::Null)),
         "runtime.retention.enabled" => Ok(config
             .runtime
             .retention
@@ -1612,6 +1645,20 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                 parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
             );
         }
+        "runtime.reclamation.idle_retirement_enabled" => {
+            config.runtime.reclamation.idle_retirement_enabled = Some(
+                parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
+            );
+        }
+        "runtime.reclamation.reminders_enabled" => {
+            config.runtime.reclamation.reminders_enabled = Some(
+                parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
+            );
+        }
+        "runtime.reclamation.idle_grace_seconds" => {
+            config.runtime.reclamation.idle_grace_seconds =
+                Some(parse_positive_u64_key(key, raw_value)?);
+        }
         "runtime.retention.enabled" => {
             config.runtime.retention.enabled = Some(
                 parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
@@ -2022,6 +2069,15 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
             config.runtime.command_task_min_free_disk_percent = None;
         }
         "runtime.disable_provider_fallback" => config.runtime.disable_provider_fallback = None,
+        "runtime.reclamation.idle_retirement_enabled" => {
+            config.runtime.reclamation.idle_retirement_enabled = None
+        }
+        "runtime.reclamation.reminders_enabled" => {
+            config.runtime.reclamation.reminders_enabled = None
+        }
+        "runtime.reclamation.idle_grace_seconds" => {
+            config.runtime.reclamation.idle_grace_seconds = None
+        }
         "runtime.retention.enabled" => config.runtime.retention.enabled = None,
         "runtime.retention.audit_events_days" => {
             config.runtime.retention.audit_events_days = None;

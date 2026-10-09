@@ -29,6 +29,11 @@ use crate::types::*;
 #[derive(Debug, Clone)]
 pub(crate) enum AgentDeletionAdmission {
     ExpectedRevision(u64),
+    SupervisingParent {
+        parent_agent_id: String,
+        expected_incarnation: u64,
+        parent_incarnation: u64,
+    },
     TerminalEphemeralChild {
         parent_agent_id: String,
         task_id: String,
@@ -932,6 +937,84 @@ impl AgentBootstrapRepository<'_> {
     }
 }
 
+/// Used before filesystem inspection and again in the fenced admission transaction.
+pub(crate) fn validate_parent_cleanup_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    parent_agent_id: &str,
+    expected_incarnation: u64,
+    parent_incarnation: u64,
+) -> Result<()> {
+    let payload: String = tx.query_row(
+        "SELECT payload_json FROM agent_identities WHERE agent_id=?1",
+        [agent_id],
+        |r| r.get(0),
+    )?;
+    let identity = decode_agent_identity_payload(&payload)?;
+    anyhow::ensure!(
+        identity.incarnation == expected_incarnation,
+        "agent_cleanup_stale_incarnation"
+    );
+    anyhow::ensure!(
+        identity.kind == AgentKind::Child
+            && identity.visibility == AgentVisibility::Private
+            && identity.ownership() == AgentOwnership::ParentSupervised,
+        "agent_cleanup_not_supervised_child"
+    );
+    let relations = canonical_relations_from_connection(tx, agent_id)?
+        .ok_or_else(|| anyhow!("agent_cleanup_missing_relations"))?;
+    anyhow::ensure!(
+        relations.resolution == AgentCanonicalResolution::Resolved
+            && relations
+                .supervision
+                .as_ref()
+                .is_some_and(|s| s.supervisor_agent_id == parent_agent_id)
+            && relations
+                .durability
+                .as_ref()
+                .is_some_and(|d| d.durability == AgentCanonicalDurability::Ephemeral)
+            && relations
+                .lifecycle_attachment
+                .as_ref()
+                .is_some_and(|a| a.attachment == AgentLifecycleAttachment::SupervisionAttached),
+        "agent_cleanup_parent_not_authorized"
+    );
+    let parent_active: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_identities WHERE agent_id = ?1 AND status = 'active')",
+        [parent_agent_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(parent_active, "agent_cleanup_parent_unavailable");
+    let current_parent_incarnation: u64 = tx.query_row("SELECT COALESCE(json_extract(payload_json, '$.incarnation'),1) FROM agent_identities WHERE agent_id=?1",[parent_agent_id],|row|row.get(0))?;
+    anyhow::ensure!(
+        current_parent_incarnation == parent_incarnation,
+        "agent_cleanup_stale_parent_incarnation"
+    );
+    let parent_relations = canonical_relations_from_connection(tx, parent_agent_id)?
+        .ok_or_else(|| anyhow!("agent_cleanup_parent_missing_relations"))?;
+    anyhow::ensure!(
+        parent_relations.resolution == AgentCanonicalResolution::Resolved
+            && parent_relations
+                .capability_policy
+                .as_ref()
+                .is_some_and(|policy| policy.allows(AgentCapabilityFamily::AgentCreation)),
+        "agent_cleanup_capability_denied"
+    );
+    if identity.status == AgentRegistryStatus::Active {
+        anyhow::ensure!(
+            relations.supervision.as_ref().is_some_and(|s| matches!(
+                s.state,
+                AgentSupervisionState::Active | AgentSupervisionState::CleanupRequired
+            )),
+            "agent_cleanup_supervision_closed"
+        );
+        if let Some(blocker) = super::reclamation::parent_cleanup_blocker_tx(tx, agent_id)? {
+            return Err(anyhow!("agent_cleanup_blocked: {blocker}"));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn ensure_agent_deletion_tx(
     tx: &Transaction<'_>,
     request: &AgentDeletionRequest,
@@ -974,6 +1057,22 @@ pub(crate) fn ensure_agent_deletion_tx(
         })
         .transpose()?;
 
+    // Authorization precedes idempotent replay, including deleting/deleted targets.
+    if let AgentDeletionAdmission::SupervisingParent {
+        parent_agent_id,
+        expected_incarnation,
+        parent_incarnation,
+    } = &request.admission
+    {
+        validate_parent_cleanup_tx(
+            tx,
+            agent_id,
+            parent_agent_id,
+            *expected_incarnation,
+            *parent_incarnation,
+        )?;
+    }
+
     if identity.status != AgentRegistryStatus::Active {
         transition_supervision_state_tx(
             tx,
@@ -990,6 +1089,7 @@ pub(crate) fn ensure_agent_deletion_tx(
             if matches!(
                 request.admission,
                 AgentDeletionAdmission::TerminalEphemeralChild { .. }
+                    | AgentDeletionAdmission::SupervisingParent { .. }
             ) {
                 return Ok((identity, job.clone(), false));
             }
@@ -1004,6 +1104,7 @@ pub(crate) fn ensure_agent_deletion_tx(
 
     let expected_identity_revision = match &request.admission {
         AgentDeletionAdmission::ExpectedRevision(revision) => *revision,
+        AgentDeletionAdmission::SupervisingParent { .. } => identity.revision,
         AgentDeletionAdmission::TerminalEphemeralChild {
             parent_agent_id,
             task_id,
@@ -1136,6 +1237,11 @@ pub(crate) fn ensure_agent_deletion_tx(
         agent_id: agent_id.to_string(),
         mode: if identity.status == AgentRegistryStatus::Deleted {
             AgentDeletionMode::CleanupRepair
+        } else if matches!(
+            request.admission,
+            AgentDeletionAdmission::SupervisingParent { .. }
+        ) {
+            AgentDeletionMode::ParentCleanup
         } else {
             AgentDeletionMode::Delete
         },
@@ -1210,6 +1316,30 @@ impl AgentDeletionRepository<'_> {
                     admission: AgentDeletionAdmission::ExpectedRevision(expected_identity_revision),
                     requested_by: requested_by.to_string(),
                     cascade_private_children,
+                },
+            )
+        })
+    }
+
+    pub(crate) fn begin_parent_cleanup(
+        &self,
+        agent_id: &str,
+        parent_agent_id: &str,
+        expected_incarnation: u64,
+        parent_incarnation: u64,
+    ) -> Result<(AgentIdentityRecord, AgentDeletionJob, bool)> {
+        self.db.transaction(|tx| {
+            ensure_agent_deletion_tx(
+                tx,
+                &AgentDeletionRequest {
+                    agent_id: agent_id.into(),
+                    admission: AgentDeletionAdmission::SupervisingParent {
+                        parent_agent_id: parent_agent_id.into(),
+                        expected_incarnation,
+                        parent_incarnation,
+                    },
+                    requested_by: format!("agent:{parent_agent_id}"),
+                    cascade_private_children: false,
                 },
             )
         })
@@ -4550,6 +4680,9 @@ fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord
 }
 
 fn upsert_external_trigger_tx(tx: &Transaction<'_>, record: &ExternalTriggerRecord) -> Result<()> {
+    if record.status == ExternalTriggerStatus::Active {
+        super::reclamation::ensure_work_admission_tx(tx, &record.target_agent_id)?;
+    }
     let payload_json = serde_json::to_string(record)?;
     let status = enum_string(&record.status)?;
     let revoked_at = record.revoked_at.map(timestamp);
@@ -4887,6 +5020,9 @@ fn update_work_item_row_tx(
 }
 
 fn import_work_item_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<()> {
+    if record.state != WorkItemState::Completed {
+        super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
+    }
     let payload_json = serde_json::to_string(record)?;
     let state = enum_string(&record.state)?;
     let plan_status = enum_string(&record.plan_status)?;
@@ -4945,6 +5081,12 @@ fn import_work_item_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<
 }
 
 pub(crate) fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<bool> {
+    if is_active_task_status(&record.status) {
+        super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
+        if let Some(child_id) = task_detail_string(&record.detail, "child_agent_id") {
+            super::reclamation::ensure_work_admission_tx(tx, &child_id)?;
+        }
+    }
     let existing = tx
         .query_row(
             "SELECT payload_json FROM tasks WHERE task_id = ?1",
@@ -5051,6 +5193,12 @@ pub(crate) fn upsert_wait_condition_tx(
     tx: &Transaction<'_>,
     record: &WaitConditionRecord,
 ) -> Result<bool> {
+    if matches!(
+        record.status,
+        WaitConditionStatus::Active | WaitConditionStatus::Triggered
+    ) {
+        super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
+    }
     let existing = tx
         .query_row(
             "SELECT payload_json FROM wait_conditions WHERE wait_condition_id = ?1",
@@ -5239,6 +5387,12 @@ pub(crate) fn upsert_queue_entry_tx(
     tx: &Transaction<'_>,
     record: &QueueEntryRecord,
 ) -> Result<bool> {
+    if matches!(
+        record.status,
+        QueueEntryStatus::Queued | QueueEntryStatus::Dequeued | QueueEntryStatus::Interrupted
+    ) {
+        super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
+    }
     let existing = tx
         .query_row(
             "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
@@ -5315,6 +5469,12 @@ pub(crate) fn compare_and_set_queue_entry_tx(
         ));
     }
     queue_entry_transition(expected, record)?;
+    if matches!(
+        record.status,
+        QueueEntryStatus::Queued | QueueEntryStatus::Dequeued | QueueEntryStatus::Interrupted
+    ) {
+        super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
+    }
 
     let expected_payload_json = serde_json::to_string(expected)?;
     let payload_json = serde_json::to_string(record)?;
@@ -5608,6 +5768,7 @@ fn try_transition_claimable_message_tx(
     target_status: QueueEntryStatus,
     include_interrupted: bool,
 ) -> Result<bool> {
+    super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
     let queued_status = enum_string(&QueueEntryStatus::Queued)?;
     let secondary_status = enum_string(if include_interrupted {
         &QueueEntryStatus::Interrupted
@@ -5677,6 +5838,9 @@ fn timer_tx(tx: &Transaction<'_>, timer_id: &str) -> Result<Option<TimerRecord>>
 }
 
 fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Result<()> {
+    if record.status == TimerStatus::Active {
+        super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
+    }
     let payload_json = serde_json::to_string(record)?;
     let status = enum_string(&record.status)?;
     let updated_at = timer_updated_at(record);

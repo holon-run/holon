@@ -10,6 +10,7 @@
 pub mod tool_names {
     pub const SCHEDULE_DESTRUCTIVE_OPERATION: &str = "ScheduleDestructiveOperation";
     pub const GET_AGENT: &str = "GetAgent";
+    pub const DELETE_AGENT: &str = "DeleteAgent";
     pub const APPLY_PATCH: &str = "ApplyPatch";
     pub const ATTACH_WORKSPACE: &str = "AttachWorkspace";
     pub const CANCEL_EXTERNAL_TRIGGER: &str = "CancelExternalTrigger";
@@ -73,6 +74,7 @@ pub const STABLE_TOOL_NAMES: &[&str] = &[
     CREATE_WORK_ITEM,
     CREATE_WORKTREE,
     DETACH_WORKSPACE,
+    DELETE_AGENT,
     ENQUEUE,
     EXEC_COMMAND,
     EXEC_COMMAND_BATCH,

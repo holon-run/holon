@@ -11,3 +11,7 @@ never reconfigured or reparented.
 For `new_subagent`, the handle remains a result-bearing supervised child task.
 Caller provenance and authority are bound by the current runtime context and
 cannot be supplied in the request.
+
+A newly invoked reusable subagent is retained after its invocation completes.
+The current supervising parent owns cleanup: reuse it while needed, then call
+`DeleteAgent` with the current identity incarnation. Creation requires no TTL.

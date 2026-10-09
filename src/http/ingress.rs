@@ -23,24 +23,12 @@ async fn callback_ingress(
     if identity.status != AgentRegistryStatus::Active {
         return Err(forbidden("invalid callback token"));
     }
-    let runtime = if identity.visibility == AgentVisibility::Public {
-        state
-            .host
-            .get_public_agent_for_external_ingress(&agent_id)
-            .await
-            .map_err(agent_access_error)?
-    } else {
-        state
-            .host
-            .get_or_create_agent(&agent_id)
-            .await
-            .map_err(error_response)?
-    };
     if descriptor.delivery_mode != mode.delivery_mode() {
         return Err(forbidden("callback delivery mode mismatch"));
     }
-    let result = runtime
-        .deliver_callback(&descriptor.external_trigger_id, payload)
+    let result = state
+        .host
+        .deliver_external_callback(&agent_id, &descriptor.external_trigger_id, payload)
         .await
         .map_err(|err| {
             error!(

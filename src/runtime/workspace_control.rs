@@ -218,6 +218,7 @@ impl RuntimeHandle {
         &self,
         path: PathBuf,
     ) -> Result<AttachWorkspaceResult> {
+        let _admission = self.execution_admission_lease()?;
         let discovery = crate::system::workspace::discover_workspace_path(&path)?;
         let workspace = self
             .ensure_workspace_entry_for_path(discovery.workspace_anchor.clone())
@@ -248,6 +249,7 @@ impl RuntimeHandle {
         &self,
         workspace_id: &str,
     ) -> Result<DetachWorkspaceResult> {
+        let _admission = self.execution_admission_lease()?;
         let state = self.agent_state().await?;
         let canonical_agent_home_id = crate::types::agent_home_workspace_id(&state.id);
         if workspace_id == AGENT_HOME_WORKSPACE_ID || workspace_id == canonical_agent_home_id {
@@ -346,6 +348,7 @@ impl RuntimeHandle {
         target: WorkspaceSwitchTarget,
         requested_cwd: Option<PathBuf>,
     ) -> Result<SwitchWorkspaceResult> {
+        let _admission = self.execution_admission_lease()?;
         let state = self.agent_state().await?;
         let (workspace, execution_root, projection_kind, default_cwd, selected_root_id) =
             match target {
@@ -519,6 +522,7 @@ impl RuntimeHandle {
         activate: bool,
         on_existing: ExistingWorktreePolicy,
     ) -> Result<CreateWorktreeResult> {
+        let _admission = self.execution_admission_lease()?;
         let state = self.agent_state().await?;
         if !state.execution_profile.supports_managed_worktrees {
             return Err(anyhow!(
@@ -821,6 +825,7 @@ impl RuntimeHandle {
         branch_policy: WorktreeBranchPolicy,
         merged_into: Option<&str>,
     ) -> Result<RemoveWorktreeResult> {
+        let _admission = self.execution_admission_lease()?;
         let state = self.agent_state().await?;
         let resolved_execution_root_id = match (execution_root_id, path) {
             (Some(execution_root_id), None) => execution_root_id.to_string(),

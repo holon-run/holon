@@ -3742,6 +3742,37 @@ CREATE INDEX IF NOT EXISTS idx_destructive_operations_phase
         name: "authentication_native_redirect",
         sql: "",
     },
+    Migration {
+        version: 77,
+        name: "subagent_reclamation_reminders",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS subagent_cleanup_observations (
+  child_agent_id TEXT PRIMARY KEY,
+  parent_agent_id TEXT NOT NULL,
+  evidence TEXT NOT NULL,
+  observed_since TEXT NOT NULL,
+  next_reminder_at TEXT NOT NULL,
+  blocker TEXT,
+  orphaned INTEGER NOT NULL,
+  notice_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_subagent_cleanup_parent_due
+  ON subagent_cleanup_observations(parent_agent_id, next_reminder_at, child_agent_id);
+CREATE TABLE IF NOT EXISTS subagent_cleanup_outbox (
+  parent_agent_id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('pending', 'queued', 'settled')),
+  message_json TEXT NOT NULL,
+  candidates_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_subagent_cleanup_outbox_state ON subagent_cleanup_outbox(state, parent_agent_id);
+CREATE TABLE IF NOT EXISTS subagent_cleanup_failure_notices (
+  notice_key TEXT PRIMARY KEY,
+  brief_id TEXT NOT NULL
+);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

@@ -2829,11 +2829,8 @@ export interface components {
                 /** Format: uint64 */
                 expected_identity_revision: number;
                 last_error?: string | null;
-                /**
-                 * @default delete
-                 * @enum {string}
-                 */
-                mode: "delete" | "cleanup_repair";
+                /** @default delete */
+                mode: ("delete" | "cleanup_repair") | "parent_cleanup";
                 /** Format: date-time */
                 next_attempt_at?: string | null;
                 /** @enum {string} */
@@ -2886,11 +2883,8 @@ export interface components {
                 /** Format: uint64 */
                 expected_identity_revision: number;
                 last_error?: string | null;
-                /**
-                 * @default delete
-                 * @enum {string}
-                 */
-                mode: "delete" | "cleanup_repair";
+                /** @default delete */
+                mode: ("delete" | "cleanup_repair") | "parent_cleanup";
                 /** Format: date-time */
                 next_attempt_at?: string | null;
                 /** @enum {string} */
@@ -3086,11 +3080,8 @@ export interface components {
                 /** Format: uint64 */
                 expected_identity_revision: number;
                 last_error?: string | null;
-                /**
-                 * @default delete
-                 * @enum {string}
-                 */
-                mode: "delete" | "cleanup_repair";
+                /** @default delete */
+                mode: ("delete" | "cleanup_repair") | "parent_cleanup";
                 /** Format: date-time */
                 next_attempt_at?: string | null;
                 /** @enum {string} */

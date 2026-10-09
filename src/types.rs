@@ -870,6 +870,8 @@ pub enum AgentDeletionMode {
     #[default]
     Delete,
     CleanupRepair,
+    /// Supervision-authorized deletion that must preserve accepted work.
+    ParentCleanup,
 }
 
 #[derive(
@@ -4123,9 +4125,20 @@ pub struct TaskInputResult {
     pub summary_text: Option<String>,
 }
 
+/// Bounded, read-only lifecycle responsibility; never a deletion decision.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct SubagentCleanupCandidate {
+    pub agent_id: String,
+    pub incarnation: u64,
+    pub blocker: Option<String>,
+    pub observed_since: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GetAgentResult {
     pub agent: AgentSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagent_cleanup: Vec<SubagentCleanupCandidate>,
 }
 
 /// Compact projection returned by the default `GetAgent` tool response.
@@ -4135,6 +4148,8 @@ pub struct GetAgentResult {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct GetAgentCompactResult {
     pub agent: crate::http_dto::SlimAgentDto,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagent_cleanup: Vec<SubagentCleanupCandidate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]

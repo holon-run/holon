@@ -61,73 +61,169 @@ impl RuntimeHost {
 
     async fn run_daemon_deletion_coordinator(self) {
         let mut startup_recovery_complete = false;
+        let mut sweep = tokio::time::interval(DELETION_SWEEP_INTERVAL);
+        sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut deletion: Option<tokio::task::JoinHandle<Result<()>>> = None;
+        let mut retirement: Option<tokio::task::JoinHandle<Result<()>>> = None;
+        let mut idle_cursor = None;
+        let mut cleanup_cursor = None;
+        let mut reminder_cursor = None;
+        let mut reminders: Option<tokio::task::JoinHandle<Result<Option<String>>>> = None;
         loop {
-            let mut coordinator_failed = false;
-            let mut legacy_scan_has_more = false;
-            if !startup_recovery_complete {
-                match self
-                    .runtime_db()
-                    .agent_deletions()
-                    .recover_running_jobs(Utc::now())
-                {
-                    Ok(recovered) => {
-                        startup_recovery_complete = true;
-                        if recovered > 0 {
-                            info!(recovered, "recovered running deletion jobs at startup");
-                        }
-                    }
-                    Err(err) => {
-                        coordinator_failed = true;
-                        warn!(error = %err, "deletion coordinator startup recovery failed");
-                    }
-                }
-            }
-            if startup_recovery_complete {
-                match self.scan_legacy_deletion_residue_batch().await {
-                    Ok(outcome) => {
-                        legacy_scan_has_more = outcome.cursor.is_some();
-                        if outcome.created > 0 || outcome.ambiguous > 0 {
-                            info!(
-                                scanned = outcome.scanned,
-                                created = outcome.created,
-                                ambiguous = outcome.ambiguous,
-                                cursor = outcome.cursor.as_deref().unwrap_or_default(),
-                                "legacy deletion residue scan completed"
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        coordinator_failed = true;
-                        warn!(error = %err, "legacy deletion residue scan failed");
-                    }
-                }
-                if let Err(err) = self.drain_due_deletions().await {
-                    coordinator_failed = true;
-                    warn!(error = %err, "deletion coordinator sweep failed");
-                }
-            }
-            let sleep_for = if coordinator_failed {
-                DELETION_COORDINATOR_ERROR_DELAY
-            } else if legacy_scan_has_more {
-                Duration::ZERO
-            } else {
-                match self.next_deletion_coordinator_delay() {
-                    Ok(delay) => delay.min(DELETION_SWEEP_INTERVAL),
-                    Err(err) => {
-                        warn!(error = %err, "reading deletion retry deadline failed");
-                        DELETION_COORDINATOR_ERROR_DELAY
-                    }
-                }
-            };
+            let retry_delay = self
+                .next_deletion_coordinator_delay()
+                .unwrap_or(DELETION_COORDINATOR_ERROR_DELAY)
+                .max(Duration::from_millis(1));
             tokio::select! {
-                _ = self.inner.daemon_deletion_token.cancelled() => {
-                    debug!("deletion coordinator cancelled");
-                    break;
+                _ = self.inner.daemon_deletion_token.cancelled() => break,
+                _ = sweep.tick() => {
+                    if !startup_recovery_complete {
+                        match self.runtime_db().agent_deletions().recover_running_jobs(Utc::now()) {
+                            Ok(recovered) => { startup_recovery_complete = true; info!(recovered, "deletion startup recovery complete"); }
+                            Err(error) => { warn!(%error, "deletion startup recovery failed"); sweep.reset_after(DELETION_COORDINATOR_ERROR_DELAY); continue; }
+                        }
+                    }
+                    match self.scan_legacy_deletion_residue_batch().await {
+                        Ok(outcome) => {
+                            if outcome.created > 0 || outcome.ambiguous > 0 { info!(scanned = outcome.scanned, created = outcome.created, ambiguous = outcome.ambiguous, "legacy deletion scan completed"); }
+                            if outcome.cursor.is_some() { sweep.reset_after(Duration::from_millis(1)); }
+                        },
+                        Err(error) => warn!(%error, "legacy deletion scan failed"),
+                    }
+                    let config = self.config();
+                    let enabled = config.stored_config.runtime.reclamation.reminders_enabled.unwrap_or(false);
+                    let grace = chrono::Duration::from_std(Duration::from_secs(config.stored_config.runtime.reclamation.idle_grace_seconds.unwrap_or(600).max(1))).unwrap_or(chrono::Duration::MAX);
+                    match self.runtime_db().scan_subagent_cleanup(cleanup_cursor.as_deref(), DELETION_BATCH_LIMIT, Utc::now(), grace, enabled) {
+                        Ok(outcome) => { cleanup_cursor = outcome.cursor; if outcome.changed > 0 { debug!(observed=outcome.observed, changed=outcome.changed, "subagent responsibility observations changed"); } }
+                        Err(error) => warn!(%error, "subagent responsibility scan failed"),
+                    }
+                    if enabled && reminders.is_none() {
+                        let host=self.clone(); let cursor=reminder_cursor.take();
+                        reminders=Some(tokio::spawn(async move { host.process_subagent_reminder_batch(cursor).await }));
+                    }
+                    if retirement.is_none() {
+                        let grace = Duration::from_secs(config.stored_config.runtime.reclamation.idle_grace_seconds.unwrap_or(600).max(1));
+                        match self.scan_idle_runtime_candidates(&mut idle_cursor, DELETION_BATCH_LIMIT, grace, config.stored_config.runtime.reclamation.idle_retirement_enabled.unwrap_or(false)).await {
+                            Ok(candidates) => if let Some((agent_id, generation)) = candidates.into_iter().next() {
+                                let host = self.clone();
+                                retirement = Some(tokio::spawn(async move { host.try_retire_idle_runtime(&agent_id, generation).await }));
+                            },
+                            Err(error) => warn!(%error, "idle runtime observation failed"),
+                        }
+                    }
+                    if deletion.is_none() { deletion = Some(self.spawn_deletion_batch()); }
                 }
-                _ = self.inner.daemon_deletion_notify.notified() => {}
-                _ = tokio::time::sleep(sleep_for) => {}
+                _ = self.inner.daemon_deletion_notify.notified(), if startup_recovery_complete => {
+                    if deletion.is_none() { deletion = Some(self.spawn_deletion_batch()); }
+                }
+                _ = tokio::time::sleep(retry_delay), if startup_recovery_complete && deletion.is_none() => {
+                    deletion = Some(self.spawn_deletion_batch());
+                }
+                result = async { deletion.as_mut().unwrap().await }, if deletion.is_some() => {
+                    deletion = None;
+                    if !matches!(result, Ok(Ok(()))) { warn!(?result, "deletion batch failed"); }
+                    if self.runtime_db().agent_deletions().due_jobs(Utc::now(), 1).is_ok_and(|jobs| !jobs.is_empty()) { deletion = Some(self.spawn_deletion_batch()); }
+                }
+                result = async { reminders.as_mut().unwrap().await }, if reminders.is_some() => {
+                    reminders=None;
+                    match result { Ok(Ok(cursor)) => reminder_cursor=cursor, other => warn!(?other, "subagent reminder batch deferred") }
+                }
+                result = async { retirement.as_mut().unwrap().await }, if retirement.is_some() => {
+                    retirement = None;
+                    if !matches!(result, Ok(Ok(()))) { debug!(?result, "idle retirement deferred"); }
+                }
             }
         }
+        // Do not detach phase work or drop a closed runtime gate on shutdown.
+        if let Some(job) = deletion {
+            let _ = job.await;
+        }
+        if let Some(job) = reminders {
+            let _ = job.await;
+        }
+        if let Some(job) = retirement {
+            let _ = job.await;
+        }
+    }
+
+    async fn process_subagent_reminder_batch(
+        &self,
+        cursor: Option<String>,
+    ) -> Result<Option<String>> {
+        if !self
+            .config()
+            .stored_config
+            .runtime
+            .reclamation
+            .reminders_enabled
+            .unwrap_or(false)
+        {
+            return Ok(cursor);
+        }
+        let operator = self.config().default_agent_id.clone();
+        if let Some(brief) = self
+            .runtime_db()
+            .orphan_cleanup_notice(&operator, DELETION_BATCH_LIMIT)?
+        {
+            let event = brief_created_event_for(&brief)?;
+            self.agent_storage(&operator)?
+                .append_brief_with_created_event(&brief, &event)?;
+            self.runtime_db().acknowledge_subagent_reminder(&brief.id)?;
+        }
+        let messages = self
+            .runtime_db()
+            .pending_subagent_reminders(cursor.as_deref(), DELETION_BATCH_LIMIT)?;
+        let next = if messages.len() == DELETION_BATCH_LIMIT {
+            messages.last().map(|m| m.agent_id.clone())
+        } else {
+            None
+        };
+        for message in messages {
+            if self.inner.daemon_deletion_token.is_cancelled()
+                || !self
+                    .config()
+                    .stored_config
+                    .runtime
+                    .reclamation
+                    .reminders_enabled
+                    .unwrap_or(false)
+            {
+                break;
+            }
+            if !self.runtime_db().subagent_reminder_is_current(&message)? {
+                continue;
+            }
+            // Reuse the durable ID when activation/enqueue crosses idle retirement.
+            for _ in 0..3 {
+                let runtime = self.get_or_create_agent(&message.agent_id).await?;
+                match runtime.enqueue(message.clone()).await {
+                    Ok(_) => {
+                        self.runtime_db()
+                            .acknowledge_subagent_reminder(&message.id)?;
+                        break;
+                    }
+                    Err(error)
+                        if crate::runtime_error::describe_runtime_error(&error).code
+                            == "runtime_instance_retiring" =>
+                    {
+                        continue
+                    }
+                    Err(error) => {
+                        debug!(parent=%message.agent_id,%error,"subagent reminder deferred");
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(next)
+    }
+
+    fn spawn_deletion_batch(&self) -> tokio::task::JoinHandle<Result<()>> {
+        let host = self.clone();
+        let executor = tokio::runtime::Handle::current();
+        // Existing phases include synchronous filesystem/SQLite operations.
+        // Keep their owned worker from stalling scans and shutdown admission.
+        tokio::task::spawn_blocking(move || executor.block_on(host.process_due_deletion_batch()))
     }
 
     pub(crate) fn notify_deletion_coordinator(&self) {
@@ -452,39 +548,18 @@ impl RuntimeHost {
         Ok(true)
     }
 
-    async fn drain_due_deletions(&self) -> Result<()> {
-        loop {
+    async fn process_due_deletion_batch(&self) -> Result<()> {
+        let jobs = self
+            .runtime_db()
+            .agent_deletions()
+            .due_jobs(Utc::now(), DELETION_BATCH_LIMIT)?;
+        for job in jobs {
             if self.inner.daemon_deletion_token.is_cancelled() {
-                return Ok(());
+                break;
             }
-            let jobs = self
-                .runtime_db()
-                .agent_deletions()
-                .due_jobs(Utc::now(), DELETION_BATCH_LIMIT)?;
-            let batch_len = jobs.len();
-            if batch_len == 0 {
-                return Ok(());
-            }
-            let mut failed = 0;
-            for job in jobs {
-                if self.inner.daemon_deletion_token.is_cancelled() {
-                    return Ok(());
-                }
-                if self.execute_deletion_job(job).await.is_err() {
-                    failed += 1;
-                }
-            }
-            if failed > 0 {
-                warn!(
-                    processed = batch_len,
-                    failed, "deletion coordinator batch completed with failures"
-                );
-            }
-            if batch_len < DELETION_BATCH_LIMIT {
-                return Ok(());
-            }
-            tokio::task::yield_now().await;
+            let _ = self.execute_deletion_job(job).await;
         }
+        Ok(())
     }
 
     /// Drive a single deletion job through its remaining phases.
@@ -607,13 +682,24 @@ impl RuntimeHost {
         job: &AgentDeletionJob,
     ) -> Result<()> {
         match phase {
+            AgentDeletionPhase::Fence if job.mode == AgentDeletionMode::ParentCleanup => {
+                self.finish_idle_runtime_exit(agent_id, None).await
+            }
             AgentDeletionPhase::Fence => self.deletion_phase_fence(agent_id).await,
             AgentDeletionPhase::Quiesce => self.deletion_phase_quiesce(agent_id, job).await,
             AgentDeletionPhase::Ingress => self.deletion_phase_ingress(agent_id).await,
             AgentDeletionPhase::Scheduler => self.deletion_phase_scheduler(agent_id).await,
+            AgentDeletionPhase::Workspace if job.mode == AgentDeletionMode::ParentCleanup => {
+                self.deletion_phase_parent_workspace(agent_id).await
+            }
             AgentDeletionPhase::Workspace => self.deletion_phase_workspace(agent_id).await,
             AgentDeletionPhase::Index => self.deletion_phase_index(agent_id).await,
-            AgentDeletionPhase::Home => self.deletion_phase_home(agent_id).await,
+            AgentDeletionPhase::Home => {
+                if job.mode == AgentDeletionMode::ParentCleanup {
+                    ensure_parent_cleanup_home_safe(&self.agent_data_dir(agent_id))?;
+                }
+                self.deletion_phase_home(agent_id).await
+            }
             AgentDeletionPhase::Finalize => {
                 unreachable!("finalize uses the atomic repository path")
             }
@@ -642,6 +728,16 @@ impl RuntimeHost {
     /// If cascade_private_children is set, drive private children through
     /// deletion first.
     async fn deletion_phase_quiesce(&self, agent_id: &str, job: &AgentDeletionJob) -> Result<()> {
+        if job.mode == AgentDeletionMode::ParentCleanup {
+            return self.runtime_db().transaction(|tx| {
+                if let Some(blocker) =
+                    crate::runtime_db::reclamation::parent_cleanup_blocker_tx(tx, agent_id)?
+                {
+                    anyhow::bail!("agent_cleanup_blocked: {blocker}");
+                }
+                Ok(())
+            });
+        }
         // Cascade private children first.
         if job.cascade_private_children {
             self.cascade_private_children_deletion(agent_id, job)
@@ -879,6 +975,83 @@ impl RuntimeHost {
 
     /// Workspace: release all workspace occupancies held by this agent and
     /// remove owned clean managed worktrees.
+    async fn deletion_phase_parent_workspace(&self, agent_id: &str) -> Result<()> {
+        self.check_parent_cleanup_workspaces(agent_id, true).await
+    }
+
+    pub(crate) async fn check_parent_cleanup_workspaces(
+        &self,
+        agent_id: &str,
+        remove: bool,
+    ) -> Result<()> {
+        // No force-removal or directory fallback. Lease prevents concurrent use.
+        let roots = self.runtime_db().execution_root_entries().latest_all()?;
+        for root in roots {
+            if root.removed_at.is_some() {
+                continue;
+            }
+            let Some(worktree) = &root.worktree else {
+                continue;
+            };
+            if worktree.registered_by_agent_id.as_deref() != Some(agent_id)
+                && !worktree
+                    .authorized_agent_ids
+                    .iter()
+                    .any(|id| id == agent_id)
+            {
+                continue;
+            }
+            anyhow::ensure!(
+                worktree.registered_by_agent_id.as_deref() == Some(agent_id)
+                    && worktree.provenance == WorktreeProvenance::RuntimeCreated,
+                "agent_cleanup_blocked: foreign_or_unowned_worktree"
+            );
+            anyhow::ensure!(
+                !worktree
+                    .authorized_agent_ids
+                    .iter()
+                    .any(|id| id != agent_id),
+                "agent_cleanup_blocked: shared_worktree"
+            );
+            let _lease = self.acquire_workspace_cleanup_lease(&root.execution_root_id)?;
+            if root.filesystem_path.exists() {
+                let path = root.filesystem_path.clone();
+                tokio::task::spawn_blocking(move || -> Result<()> {
+                    let status = std::process::Command::new("git")
+                        .args(["status", "--porcelain", "--untracked-files=all"])
+                        .current_dir(&path)
+                        .output()?;
+                    anyhow::ensure!(
+                        status.status.success() && status.stdout.is_empty(),
+                        "agent_cleanup_blocked: dirty_or_unknown_worktree"
+                    );
+                    if !remove {
+                        return Ok(());
+                    }
+                    let removed = std::process::Command::new("git")
+                        .args(["worktree", "remove"])
+                        .arg(&path)
+                        .current_dir(&path)
+                        .output()?;
+                    anyhow::ensure!(
+                        removed.status.success(),
+                        "git refused safe worktree removal: {}",
+                        String::from_utf8_lossy(&removed.stderr)
+                    );
+                    Ok(())
+                })
+                .await??;
+            }
+            if !remove {
+                continue;
+            }
+            self.runtime_db()
+                .execution_root_entries()
+                .mark_removed(&root.execution_root_id)?;
+        }
+        Ok(())
+    }
+
     async fn deletion_phase_workspace(&self, agent_id: &str) -> Result<()> {
         // Release all active occupancies held by this agent.
         let all_occupancies = self.runtime_db().workspace_occupancies().latest_all()?;
@@ -1132,6 +1305,39 @@ fn deletion_retry_delay(job: &AgentDeletionJob) -> Duration {
 /// directory (not a symlink) that resolves inside the runtime agents root.
 /// Deletion fails closed so a tampered home cannot remove files outside the
 /// runtime data directory.
+/// Parent cleanup retains unregistered user output rather than guessing whether
+/// a historical link still needs it. Identity configuration is not an artifact.
+pub(crate) fn ensure_parent_cleanup_home_safe(data_dir: &Path) -> Result<()> {
+    if !data_dir.exists() {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        !std::fs::symlink_metadata(data_dir)?
+            .file_type()
+            .is_symlink(),
+        "agent_cleanup_blocked: symlink_home"
+    );
+    for entry in std::fs::read_dir(data_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if matches!(
+            name.to_str(),
+            Some(".holon" | "AGENTS.md" | "memory" | "skills")
+        ) {
+            continue;
+        }
+        let empty_scaffold = matches!(name.to_str(), Some("notes" | "work" | "tmp" | "work-items"))
+            && entry.file_type()?.is_dir()
+            && std::fs::read_dir(entry.path())?.next().is_none();
+        anyhow::ensure!(
+            empty_scaffold,
+            "agent_cleanup_blocked: unregistered_home_artifact {}",
+            entry.path().display()
+        );
+    }
+    Ok(())
+}
+
 fn ensure_deletable_agent_home(data_dir: &Path, agents_root: &Path) -> Result<()> {
     let metadata = std::fs::symlink_metadata(data_dir)
         .with_context(|| format!("inspecting agent home {}", data_dir.display()))?;

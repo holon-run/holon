@@ -19,6 +19,7 @@ implementation and tests.
 - [Agent Control Plane Model](./agent-control-plane-model.md)
 - [Agent Actor And Invocation Model](./agent-actor-invocation-model.md)
 - [Agent Lifecycle Control Posture](./agent-lifecycle-control-posture.md)
+- [Subagent Residency And Reclamation (draft)](./subagent-residency-and-reclamation.md)
 - [Agent State Model And Runtime Projection](./agent-state-model.md)
 - [Agent Status Display Projection](./agent-status-display-projection.md)
 - [Agent Profile Model](./agent-profile-model.md)

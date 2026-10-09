@@ -53,6 +53,12 @@ pub(crate) async fn execute(
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: GetAgentArgs = parse_tool_args(NAME, input)?;
+    let show_cleanup = args.agent_id.as_deref().is_none_or(|id| id == _agent_id);
+    let subagent_cleanup = if show_cleanup {
+        runtime.subagent_cleanup_candidates().await?
+    } else {
+        Vec::new()
+    };
     let summary = match args.agent_id {
         None => {
             // Default behavior: return current agent summary.
@@ -67,8 +73,12 @@ pub(crate) async fn execute(
     let response = match args.detail.unwrap_or_default() {
         GetAgentDetail::Compact => GetAgentResponse::Compact(GetAgentCompactResult {
             agent: SlimAgentDto::from(&summary),
+            subagent_cleanup,
         }),
-        GetAgentDetail::Full => GetAgentResponse::Full(GetAgentResult { agent: summary }),
+        GetAgentDetail::Full => GetAgentResponse::Full(GetAgentResult {
+            agent: summary,
+            subagent_cleanup,
+        }),
     };
     serialize_success(NAME, &response)
 }

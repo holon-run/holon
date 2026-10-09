@@ -150,3 +150,15 @@ Tests cover:
 - Changing canonical activation settlement semantics.
 - Accepting shutdown-window ingress under a new delivery protocol.
 - Introducing a general service or plugin framework.
+
+## Safe idle instance retirement
+
+An eligible supervised ephemeral child may close its per-instance execution
+admission and cooperatively exit while its identity and durable state remain
+active. Every cloned execution handle must respect the closed gate. Retirement
+joins owned tasks and the scheduler before removing the same registry generation;
+a replacement cannot overlap it. New execution that loses this race retries host
+activation after exit. Durable reads continue without activation. Retirement is
+distinct from Stop, force unload, recovery after failure, and identity deletion.
+
+See [subagent residency and reclamation](./subagent-residency-and-reclamation.md).
