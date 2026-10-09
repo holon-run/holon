@@ -1,12 +1,15 @@
 # models.dev refresh summary
 
-- Supplement models: 51 (drafted this run: 0, retained: 51, removed: 0)
-- Deferred candidates: 205 (not auto-drafted; see below)
+- Supplement models: 55 (drafted this run: 4, retained: 51, removed: 0)
+- Deferred candidates: 208 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
 
-(none this run)
+- `anthropic/claude-haiku-5-5` — Claude Haiku 5.5 (context 1000000, reasoning true, image input true)
+- `mistral/glm-5-2` — GLM-5.2 (context 1048576, reasoning true, image input false)
+- `mistral/labs-leanstral-1-5-1` — Leanstral 1.5 (context 262144, reasoning true, image input true)
+- `mistral/mistral-large-4` — Mistral Large 4 (context 1048576, reasoning true, image input true)
 
 ## Deferred (needs human decision or outside policy)
 
@@ -50,4 +53,4 @@
 - `dashscope/qwen3-livetranslate-flash-realtime` — ReleaseOutsideWindow (release 2025-09-22)
 - `dashscope/qwen3-max` — ReleaseOutsideWindow (release 2025-09-23)
 - `dashscope/qwen3-next-80b-a3b-instruct` — ReleaseOutsideWindow (release 2025-09)
-- … and 165 more (see `holon models-dev audit`)
+- … and 168 more (see `holon models-dev audit`)
