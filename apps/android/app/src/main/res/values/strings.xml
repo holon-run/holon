@@ -20,4 +20,10 @@
     <string name="pending_collapsed">Collapsed</string>
     <string name="pending_expand">Expand messages</string>
     <string name="pending_collapse">Collapse messages</string>
+    <string name="network_delete">Delete network</string>
+    <string name="network_delete_title">Delete this network?</string>
+    <string name="network_delete_warning">This network’s saved settings, sign-in credentials, caches, drafts, unsent messages and attachments, and diagnostic logs will be removed from this device. The remote host and work already sent are not affected.</string>
+    <string name="network_delete_current_warning">This is the current network. Deleting it will disconnect and return to sign-in without connecting to another network automatically.</string>
+    <string name="network_deleting">Deleting network…</string>
+    <string name="network_deleted">Network deleted</string>
 </resources>

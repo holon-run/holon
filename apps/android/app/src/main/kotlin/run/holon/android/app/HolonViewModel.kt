@@ -435,6 +435,63 @@ internal class HolonViewModel(
         }
     }
 
+    fun deleteNetwork(networkId: String) {
+        val before = state.value
+        if (!before.canDeleteNetwork(networkId)) return
+        val deletingCurrent = before.session?.networkId == networkId
+        val transitioningSession = deletingCurrent || before.session == null
+        val pendingWrites = if (deletingCurrent) (draftSaveJobs.values + composerSaveJobs.values).toList() else emptyList()
+        val generation = if (deletingCurrent) {
+            sessionTransitionGeneration += 1
+            workspaceBrowseGeneration += 1
+            workspaceBrowseJob?.cancel()
+            pendingWrites.forEach { it.cancel() }
+            draftSaveJobs.clear()
+            composerSaveJobs.clear()
+            invalidateLiveSync()
+        } else liveSyncGeneration
+        if (transitioningSession) sessionResetBarrier.beginTransition()
+        mutableState.update { it.copy(busy = true, error = null, statusMessage = "正在删除网络…") }
+        viewModelScope.launch {
+            try {
+                if (transitioningSession) sessionResetBarrier.await()
+                pendingWrites.forEach { it.join() }
+                val profiles = withContext(Dispatchers.IO) {
+                    repository.deleteNetwork(networkId)
+                    repository.networkProfiles()
+                }
+                if (generation != liveSyncGeneration) return@launch
+                mutableState.update { it.afterDeletingNetwork(networkId, profiles) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (generation != liveSyncGeneration) return@launch
+                val profiles = withContext(Dispatchers.IO) {
+                    runCatching { repository.networkProfiles() }.getOrDefault(before.networkProfiles)
+                }
+                mutableState.update {
+                    // Deleting the current network invalidates its lease before local cleanup.
+                    val next = if (deletingCurrent) before.afterDeletingNetwork(networkId, profiles)
+                    else it.copy(busy = false, networkProfiles = profiles)
+                    next.copy(error = humanError(error), statusMessage = null)
+                }
+            } finally {
+                if (transitioningSession) sessionResetBarrier.endTransition()
+                if (!deletingCurrent && generation == liveSyncGeneration &&
+                    state.value.session?.scopeKey == before.session?.scopeKey &&
+                    isCurrentLiveSync(foreground, state.value.phase, generation, liveSyncGeneration)
+                ) {
+                    startLiveSync(state.value.agents)
+                    state.value.selectedAgent?.let { agent ->
+                        if (conversationStreamJob?.isActive != true) {
+                            startConversationStream(agent, state.value.conversation?.snapshotCursor)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private fun loadBriefReadStates() {
         val scopeKey = state.value.session?.scopeKey ?: return
         if (scopeKey != briefReadStateScope) {

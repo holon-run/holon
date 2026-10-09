@@ -209,6 +209,22 @@ class HolonVisualSnapshotTest {
                     switchingNetworkId = null,
                     onSwitch = {},
                     onAdd = {},
+                    onDelete = {},
+                )
+            }
+        }
+    }
+
+    @Test
+    fun networkDeletionConfirmationChinese() {
+        paparazzi.snapshot {
+            PreviewFrame {
+                DeleteNetworkDialog(
+                    NetworkProfile("office", "办公网络", "https://office.example/api/", false),
+                    isCurrent = true,
+                    busy = false,
+                    onConfirm = {},
+                    onDismiss = {},
                 )
             }
         }
@@ -265,6 +281,37 @@ class HolonVisualSnapshotTest {
 }
 
 class HolonPendingEnglishVisualSnapshotTest {
+    @Test fun savedNetworksEnglish() {
+        paparazzi.snapshot {
+            PreviewFrame {
+                Text(ui("已保存的网络"), style = MaterialTheme.typography.titleSmall)
+                SavedNetworkRow(
+                    NetworkProfile("office", "Office", "https://office.example/api/", false),
+                    isCurrent = false, busy = false, onSwitch = {}, onDelete = {},
+                )
+                NetworkSection(
+                    profiles = listOf(
+                        NetworkProfile("office", "Office", "https://office.example/api/", false),
+                        NetworkProfile("lab", "Lab", "http://10.0.2.2:7878/api/", true),
+                    ),
+                    currentNetworkId = "office", busy = false, switchingNetworkId = null,
+                    onSwitch = {}, onAdd = {}, onDelete = {},
+                )
+            }
+        }
+    }
+
+    @Test fun networkDeletionConfirmationEnglish() {
+        paparazzi.snapshot {
+            PreviewFrame {
+                DeleteNetworkDialog(
+                    NetworkProfile("lab", "Lab", "http://10.0.2.2:7878/api/", true),
+                    isCurrent = false, busy = false, onConfirm = {}, onDismiss = {},
+                )
+            }
+        }
+    }
+
     private val originalTimeZone = TimeZone.getDefault()
     @get:Rule
     val paparazzi =

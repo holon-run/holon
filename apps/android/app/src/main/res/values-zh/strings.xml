@@ -20,4 +20,10 @@
     <string name="pending_collapsed">已折叠</string>
     <string name="pending_expand">展开消息</string>
     <string name="pending_collapse">收起消息</string>
+    <string name="network_delete">删除网络</string>
+    <string name="network_delete_title">删除此网络？</string>
+    <string name="network_delete_warning">此网络的本机配置、登录凭据、缓存、草稿、待发送消息和附件及诊断记录会被清除。远端主机和已发送的工作不受影响。</string>
+    <string name="network_delete_current_warning">这是当前网络。删除后将断开连接并返回登录页，不会自动连接其他网络。</string>
+    <string name="network_deleting">正在删除网络…</string>
+    <string name="network_deleted">网络已删除</string>
 </resources>

@@ -27,6 +27,20 @@ class SessionCoordinatorTest {
         assertSame(second, owner.capture().client)
     }
 
+    @Test fun `clearing a deleted network rejects its lease and late responses`() {
+        val owner = SessionCoordinator()
+        owner.activate(session("A"), HolonHttpClient("https://example.test/api/"))
+        val old = owner.capture()
+        assertFailsWith<CancellationException> {
+            owner.read(old) {
+                owner.clear()
+                "late response from deleted network"
+            }
+        }
+        assertEquals(null, owner.current)
+        assertFailsWith<CancellationException> { owner.requireCurrent(old) }
+    }
+
     @Test fun `read cannot publish after network switch`() {
         val owner = SessionCoordinator()
         owner.activate(session("A"), HolonHttpClient("https://example.test/api/"))

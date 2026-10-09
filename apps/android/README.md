@@ -10,6 +10,13 @@ builds are described in [RELEASING.md](./RELEASING.md). Store listing, privacy
 declarations and review access remain tracked in
 [#3229](https://github.com/holon-run/holon/issues/3229).
 
+Saved networks can be deleted from Settings or the sign-in screen after
+confirmation. Deletion removes only that network's on-device configuration,
+credentials, caches, drafts, unsent messages/attachments, and diagnostic logs;
+the remote host and already submitted work are unaffected. Deleting the current
+network disconnects and returns to sign-in without automatically connecting to
+another saved network. Other networks and their local data are retained.
+
 The app UI supports English and Simplified Chinese. It follows the device or
 Android per-app language by default; the login and Settings screens also offer
 an app-language override (System default, English, 简体中文). The override stays

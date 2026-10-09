@@ -78,7 +78,20 @@ internal fun LoginScreen(state: HolonUiState, viewModel: ConnectionActions, addi
     val context = LocalContext.current
     val scanner = remember(context) { GmsBarcodeScanning.getClient(context) }
     var showLanguagePicker by remember { mutableStateOf(false) }
+    var pendingNetworkDeletion by remember { mutableStateOf<NetworkProfile?>(null) }
     if (showLanguagePicker) AppLanguagePicker { showLanguagePicker = false }
+    pendingNetworkDeletion?.let { profile ->
+        DeleteNetworkDialog(
+            profile = profile,
+            isCurrent = false,
+            busy = state.busy,
+            onConfirm = {
+                pendingNetworkDeletion = null
+                viewModel.deleteNetwork(profile.networkId)
+            },
+            onDismiss = { pendingNetworkDeletion = null },
+        )
+    }
     state.pendingPairing?.let { pairing ->
         AlertDialog(
             onDismissRequest = viewModel::cancelPairing,
@@ -140,16 +153,13 @@ internal fun LoginScreen(state: HolonUiState, viewModel: ConnectionActions, addi
             if (shouldShowSavedNetworks(addingNetwork, state.networkProfiles)) {
                 Text(ui("已保存的网络"), style = MaterialTheme.typography.titleSmall)
                 state.networkProfiles.forEach { profile ->
-                    OutlinedButton(
-                        onClick = { viewModel.switchNetwork(profile.networkId) },
-                        enabled = !state.busy,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
-                            Text(profile.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(profile.baseUrl, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
-                        }
-                    }
+                    SavedNetworkRow(
+                        profile = profile,
+                        isCurrent = false,
+                        busy = state.busy,
+                        onSwitch = { viewModel.switchNetwork(profile.networkId) },
+                        onDelete = { pendingNetworkDeletion = profile },
+                    )
                 }
             }
             OutlinedTextField(

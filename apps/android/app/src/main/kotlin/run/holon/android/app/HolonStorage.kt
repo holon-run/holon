@@ -53,7 +53,10 @@ internal fun NetworkProfile.savedScopeKey(): String? =
     if (runtimeId == null || userId == null || visibilityScopeId == null) null
     else scopeKeyForNetwork(networkId, baseUrl, runtimeId, userId, visibilityScopeId)
 
-internal class HostPreferences(private val context: Context) {
+internal class HostPreferences(
+    private val dataStore: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>,
+) {
+    constructor(context: Context) : this(context.holonDataStore)
     private val baseUrlKey = stringPreferencesKey("base_url")
     private val runtimeIdKey = stringPreferencesKey("runtime_id")
     private val userIdKey = stringPreferencesKey("user_id")
@@ -63,7 +66,7 @@ internal class HostPreferences(private val context: Context) {
     private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun read(): SavedConnection? {
-        val values = context.holonDataStore.data.first()
+        val values = dataStore.data.first()
         val baseUrl = values[baseUrlKey] ?: return null
         val runtimeId = values[runtimeIdKey] ?: return null
         val userId = values[userIdKey] ?: return null
@@ -72,7 +75,7 @@ internal class HostPreferences(private val context: Context) {
     }
 
     suspend fun write(connection: SavedConnection) {
-        context.holonDataStore.edit { values ->
+        dataStore.edit { values ->
             values[baseUrlKey] = connection.baseUrl
             values[runtimeIdKey] = connection.runtimeId
             values[userIdKey] = connection.userId
@@ -81,18 +84,18 @@ internal class HostPreferences(private val context: Context) {
     }
 
     suspend fun clear() {
-        context.holonDataStore.edit { it.clear() }
+        dataStore.edit { it.clear() }
     }
 
     suspend fun profiles(): List<NetworkProfile> {
-        val values = context.holonDataStore.data.first()
+        val values = dataStore.data.first()
         val stored =
             values[profilesKey]?.let { raw ->
                 runCatching {
                     json.decodeFromString(ListSerializer(NetworkProfile.serializer()), raw)
                 }.getOrNull()
             }.orEmpty()
-        if (stored.isNotEmpty()) return stored.sortedByDescending { it.lastUsedAt }
+        if (values[profilesKey] != null) return stored.sortedByDescending { it.lastUsedAt }
 
         val legacy = readLegacy(values) ?: return emptyList()
         val migrated =
@@ -110,7 +113,7 @@ internal class HostPreferences(private val context: Context) {
     }
 
     suspend fun selectedProfile(): NetworkProfile? {
-        val values = context.holonDataStore.data.first()
+        val values = dataStore.data.first()
         val profiles = profiles()
         val selectedId = values[selectedProfileKey]
         return profiles.firstOrNull { it.networkId == selectedId } ?: profiles.firstOrNull()
@@ -129,12 +132,41 @@ internal class HostPreferences(private val context: Context) {
     }
 
     suspend fun removeProfile(networkId: String) {
-        val remaining = profiles().filterNot { it.networkId == networkId }
-        saveProfiles(remaining, remaining.maxByOrNull { it.lastUsedAt }?.networkId)
+        // Read without migration so an unknown id cannot mutate preferences.
+        dataStore.edit { values ->
+            val raw = values[profilesKey]
+            val profiles = if (raw != null) {
+                runCatching {
+                    json.decodeFromString(ListSerializer(NetworkProfile.serializer()), raw)
+                }.getOrDefault(emptyList())
+            } else {
+                readLegacy(values)?.let {
+                    listOf(NetworkProfile(
+                        it.networkId, it.displayName, it.baseUrl, it.allowInsecureHttp,
+                        it.runtimeId, it.userId, it.visibilityScopeId,
+                    ))
+                }.orEmpty()
+            }
+            val removed = profiles.firstOrNull { it.networkId == networkId } ?: return@edit
+            val remaining = profiles.filterNot { it.networkId == networkId }
+            val selectedId = values[selectedProfileKey]
+                ?.takeIf { id -> remaining.any { it.networkId == id } }
+                ?: remaining.maxByOrNull { it.lastUsedAt }?.networkId
+            values[profilesKey] =
+                json.encodeToString(ListSerializer(NetworkProfile.serializer()), remaining)
+            if (selectedId == null) values.remove(selectedProfileKey)
+            else values[selectedProfileKey] = selectedId
+            if (remaining.isEmpty() || values[baseUrlKey] == removed.baseUrl) {
+                values.remove(baseUrlKey)
+                values.remove(runtimeIdKey)
+                values.remove(userIdKey)
+                values.remove(visibilityScopeIdKey)
+            }
+        }
     }
 
     private suspend fun saveProfiles(profiles: List<NetworkProfile>, selectedId: String?) {
-        context.holonDataStore.edit { values ->
+        dataStore.edit { values ->
             values[profilesKey] =
                 json.encodeToString(ListSerializer(NetworkProfile.serializer()), profiles)
             if (selectedId == null) values.remove(selectedProfileKey)
