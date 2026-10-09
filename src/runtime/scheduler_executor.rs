@@ -1474,6 +1474,28 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 });
             }
         }
+        if let scheduler::CanonicalActivationScenario::BlockedRecheck {
+            expected_work_item_revision,
+            ..
+        } = &scenario
+        {
+            // The due recheck is consumed (bumping the revision) right after the
+            // tick is emitted, so the emitted revision is a lower bound rather
+            // than an exact fence. A record behind it means this activation is
+            // replaying stale state.
+            if work_item.revision < *expected_work_item_revision {
+                return Ok(CanonicalClaimOutcome::RejectQueued {
+                    scenario_class,
+                    reason: "canonical_blocked_recheck_work_item_revision_stale",
+                });
+            }
+            if work_item.blocked_by.is_none() {
+                return Ok(CanonicalClaimOutcome::RejectQueued {
+                    scenario_class,
+                    reason: "canonical_blocked_recheck_blocker_cleared",
+                });
+            }
+        }
         let work_queue = self.runtime.inner.storage.work_queue_prompt_projection()?;
         let Some(work_projection) = work_queue
             .items
@@ -1641,7 +1663,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
             scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
             | scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
-            | scheduler::CanonicalActivationScenario::InternalFollowup { .. } => None,
+            | scheduler::CanonicalActivationScenario::InternalFollowup { .. }
+            | scheduler::CanonicalActivationScenario::BlockedRecheck { .. } => None,
             scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. } => {
                 unreachable!("lifecycle scenario is planned before WorkItem lookup")
             }
@@ -1667,6 +1690,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         } else if !matches!(
             scenario,
             scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
+                | scheduler::CanonicalActivationScenario::BlockedRecheck { .. }
         ) && !interrupted_task_result_replay
             && authoritative_work.is_some_and(|record| {
                 !matches!(
@@ -2035,6 +2059,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             } => ExecutionSourceIdentity::WorkItemContinuation {
                 work_item_id: work_item_id.clone(),
             },
+            scheduler::CanonicalActivationScenario::BlockedRecheck { work_item_id, .. } => {
+                ExecutionSourceIdentity::WorkItemContinuation {
+                    work_item_id: work_item_id.clone(),
+                }
+            }
             scheduler::CanonicalActivationScenario::ProviderRecovery { .. } => {
                 ExecutionSourceIdentity::RuntimeRecovery {
                     recovery_id: message.id.clone(),
@@ -2533,6 +2562,16 @@ fn execution_attempt_matches_scenario(
             },
         ) => source_work_item_id == expected && work_item_id == expected,
         (
+            ExecutionSourceIdentity::WorkItemContinuation {
+                work_item_id: source_work_item_id,
+            },
+            ExecutionBinding::WorkItem { work_item_id },
+            scheduler::CanonicalActivationScenario::BlockedRecheck {
+                work_item_id: expected,
+                ..
+            },
+        ) => source_work_item_id == expected && work_item_id == expected,
+        (
             ExecutionSourceIdentity::RuntimeRecovery { recovery_id },
             ExecutionBinding::WorkItem { work_item_id },
             scheduler::CanonicalActivationScenario::ProviderRecovery {
@@ -2782,6 +2821,7 @@ fn canonical_execution_origin_for_scenario(
         scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. } => {
             ExecutionOrigin::System
         }
+        scheduler::CanonicalActivationScenario::BlockedRecheck { .. } => ExecutionOrigin::System,
         scheduler::CanonicalActivationScenario::ProviderRecovery { .. } => {
             ExecutionOrigin::RuntimeRecovery
         }
@@ -2809,6 +2849,7 @@ fn canonical_execution_trust_for_scenario(
     use crate::domain::execution_protocol::ExecutionTrust;
     match scenario {
         scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
+        | scheduler::CanonicalActivationScenario::BlockedRecheck { .. }
         | scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
         | scheduler::CanonicalActivationScenario::ExactTaskRejoin { .. } => {
             ExecutionTrust::RuntimeInstruction

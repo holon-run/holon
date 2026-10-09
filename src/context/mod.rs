@@ -1896,6 +1896,48 @@ fn render_recent_turn_runtime_input_line(
         ));
     }
 
+    if let Some(recheck) = metadata.and_then(|metadata| metadata.get("work_item_recheck")) {
+        let count = recheck
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let targets = recheck
+            .get("items")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        let work_item_id = item
+                            .get("work_item_id")
+                            .and_then(serde_json::Value::as_str)?;
+                        let blocked_by = item
+                            .get("blocked_by")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("unset");
+                        let recheck_at = item
+                            .get("recheck_at")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("unscheduled");
+                        Some(format!(
+                            "work_item={} blocked_by={} recheck_at={}",
+                            bounded_inline(work_item_id, 80),
+                            bounded_inline(blocked_by, 120),
+                            bounded_inline(recheck_at, 40),
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .unwrap_or_default();
+        return Some(format!(
+            "  - input summary: work item recheck count={} targets=[{}] message_ref={}",
+            count,
+            bounded_inline(&targets, 800),
+            message_ref
+        ));
+    }
+
     let subsystem = match &message.origin {
         MessageOrigin::System { subsystem } => bounded_inline(subsystem, 80),
         _ => "unknown".to_string(),

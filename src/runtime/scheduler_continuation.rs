@@ -1241,7 +1241,14 @@ impl RuntimeHandle {
         &self,
         work_items: &[crate::types::WorkItemRecord],
     ) -> Result<()> {
-        let items = work_items
+        // Stable primary selection: earliest due recheck, then WorkItem id.
+        let mut ordered: Vec<&crate::types::WorkItemRecord> = work_items.iter().collect();
+        ordered.sort_by(|left, right| {
+            left.recheck_at
+                .cmp(&right.recheck_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let items = ordered
             .iter()
             .map(|item| {
                 serde_json::json!({
@@ -1259,6 +1266,23 @@ impl RuntimeHandle {
             .map(|(item, recheck_at)| format!("{}@{}", item.id, recheck_at.to_rfc3339()))
             .collect::<Vec<_>>()
             .join(",");
+        let primary = ordered.first().copied();
+        let primary_work_item_id = primary.map(|item| item.id.clone());
+        let primary_work_item_revision = primary.map(|item| item.revision);
+        let recheck_lines = ordered
+            .iter()
+            .map(|item| {
+                format!(
+                    "- work_item={} blocked_by={} recheck_at={}",
+                    item.id,
+                    item.blocked_by.as_deref().unwrap_or("unset"),
+                    item.recheck_at
+                        .map(|recheck_at| recheck_at.to_rfc3339())
+                        .unwrap_or_else(|| "unscheduled".to_string()),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         let mut message = MessageEnvelope::new(
             self.agent_id().await?,
             MessageKind::SystemTick,
@@ -1269,9 +1293,10 @@ impl RuntimeHandle {
             Priority::Background,
             MessageBody::Text {
                 text: format!(
-                    "{} blocked WorkItem recheck{} due; inspect blockers and refresh or clear blocked_by.",
+                    "{} blocked WorkItem recheck{} due; inspect the blocker and refresh or clear blocked_by when ready.\n{}",
                     work_items.len(),
-                    if work_items.len() == 1 { " is" } else { "s are" }
+                    if work_items.len() == 1 { " is" } else { "s are" },
+                    recheck_lines,
                 )
             },
         )
@@ -1283,9 +1308,17 @@ impl RuntimeHandle {
             "work_item_recheck": {
                 "idempotency_key": idempotency_key,
                 "count": work_items.len(),
+                "primary_work_item_id": primary_work_item_id.clone(),
+                "primary_work_item_revision": primary_work_item_revision,
                 "items": items
             }
         }));
+        message.work_item_id = primary_work_item_id;
+        message.normalize_admission_fields();
+        message.turn_id = normalized_turn_id(message.turn_id.as_deref());
+        if message.turn_id.is_none() {
+            message.turn_id = Some(crate::ids::turn_id());
+        }
         self.inner.storage.append_event(&AuditEvent::legacy(
             "system_tick_emitted",
             serde_json::json!({
@@ -1968,6 +2001,114 @@ mod tests {
         assert_eq!(ticks.len(), 1);
         assert_eq!(ticks[0].0, "work_item_recheck");
         assert_eq!(ticks[0].1["count"].as_u64(), Some(1));
+    }
+
+    #[test]
+    fn blocked_recheck_tick_names_target_work_item() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+
+        let blocked = add_queued_work_item(&test_runtime, "wi-blocked", "blocked-target");
+        let blocked =
+            block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for timer");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        assert!(rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap());
+
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].0, "work_item_recheck");
+        assert_eq!(
+            ticks[0].1["primary_work_item_id"].as_str(),
+            Some(blocked.id.as_str())
+        );
+        assert_eq!(
+            ticks[0].1["primary_work_item_revision"].as_u64(),
+            Some(blocked.revision)
+        );
+
+        let message = test_runtime
+            .runtime
+            .inner
+            .storage
+            .read_recent_messages(10)
+            .unwrap()
+            .into_iter()
+            .find(|message| {
+                matches!(
+                    message.origin,
+                    MessageOrigin::System { ref subsystem } if subsystem == "work_item_recheck"
+                )
+            })
+            .expect("recheck tick message should be durable");
+        assert_eq!(message.work_item_id.as_deref(), Some(blocked.id.as_str()));
+        let MessageBody::Text { text } = &message.body else {
+            panic!("recheck tick should carry a text body");
+        };
+        assert!(
+            text.contains(&blocked.id),
+            "body should name the target WorkItem: {text}"
+        );
+        assert!(
+            text.contains("waiting for timer"),
+            "body should carry the blocker: {text}"
+        );
+
+        let guard = test_runtime.runtime.inner.agent.blocking_lock();
+        assert!(
+            guard.state.current_work_item_id.is_none(),
+            "emitting a recheck must not switch the persistent current WorkItem"
+        );
+    }
+
+    #[test]
+    fn multiple_due_blocked_rechecks_choose_stable_primary_target() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+
+        let later = add_queued_work_item(&test_runtime, "wi-later", "later-target");
+        let mut later = block_work_item_with_due_recheck(&test_runtime, &later, "later blocker");
+        later.revision += 1;
+        later.recheck_at = Some(chrono::Utc::now() - chrono::Duration::seconds(2));
+        later.updated_at = chrono::Utc::now();
+        persist_test_work_item(&test_runtime, &later);
+
+        let earlier = add_queued_work_item(&test_runtime, "wi-earlier", "earlier-target");
+        let mut earlier =
+            block_work_item_with_due_recheck(&test_runtime, &earlier, "earlier blocker");
+        earlier.revision += 1;
+        earlier.recheck_at = Some(chrono::Utc::now() - chrono::Duration::seconds(10));
+        earlier.updated_at = chrono::Utc::now();
+        persist_test_work_item(&test_runtime, &earlier);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        assert!(rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap());
+
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].0, "work_item_recheck");
+        assert_eq!(ticks[0].1["count"].as_u64(), Some(2));
+        assert_eq!(
+            ticks[0].1["primary_work_item_id"].as_str(),
+            Some("wi-earlier"),
+            "the earliest due recheck is the stable primary target"
+        );
+        let items = ticks[0].1["items"]
+            .as_array()
+            .expect("recheck items should be structured");
+        let ids = items
+            .iter()
+            .filter_map(|item| item["work_item_id"].as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            ids.contains(&"wi-earlier"),
+            "items should list every target"
+        );
+        assert!(ids.contains(&"wi-later"), "items should list every target");
     }
 
     #[test]

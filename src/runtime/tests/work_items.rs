@@ -1342,6 +1342,79 @@ async fn runtime_wakes_itself_for_blocked_work_item_recheck_deadline() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn blocked_recheck_turn_binds_target_work_item_without_switching_focus() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut blocked = WorkItemRecord::new(
+        "default",
+        "blocked work awaiting recheck",
+        WorkItemState::Open,
+    );
+    blocked.blocked_by = Some("waiting for external wake".into());
+    blocked.recheck_at = Some(clock.now() + chrono::Duration::milliseconds(50));
+    storage.append_work_item(&blocked).unwrap();
+
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("recheck observed")),
+        "default".into(),
+        context_config(),
+        clock.clone(),
+    )
+    .unwrap();
+    let runtime_task = tokio::spawn(runtime.clone().run());
+    advance_lifecycle_time(&clock, std::time::Duration::from_millis(50)).await;
+
+    // The due recheck should open a turn bound to the target WorkItem: the
+    // turn record carries it as the turn's WorkItem while the agent's
+    // persistent current WorkItem stays untouched.
+    let mut bound = false;
+    for _ in 0..100 {
+        bound = runtime
+            .storage()
+            .read_recent_turns(10)
+            .unwrap()
+            .iter()
+            .any(|turn| {
+                turn.current_work_item_id.as_deref() == Some(blocked.id.as_str())
+                    && turn.terminal.is_some()
+            });
+        if bound {
+            break;
+        }
+        advance_lifecycle_time(&clock, std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        bound,
+        "a blocked recheck should run a turn bound to the target WorkItem"
+    );
+
+    let state = runtime.agent_state().await.unwrap();
+    assert!(
+        state.current_work_item_id.is_none(),
+        "a recheck turn must not switch the agent's persistent current WorkItem"
+    );
+
+    let latest = runtime
+        .storage()
+        .latest_work_item(&blocked.id)
+        .unwrap()
+        .expect("blocked work item exists");
+    assert_eq!(latest.state, WorkItemState::Open);
+    assert_eq!(
+        latest.blocked_by.as_deref(),
+        Some("waiting for external wake"),
+        "a recheck turn must not implicitly clear the blocker"
+    );
+    runtime_task.abort();
+}
+
+#[tokio::test(start_paused = true)]
 async fn runtime_wakes_itself_for_queued_redispatch_retry_deadline() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
