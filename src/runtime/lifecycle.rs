@@ -322,7 +322,17 @@ impl RuntimeHandle {
     }
 
     pub async fn control(&self, action: ControlAction) -> Result<()> {
-        let _admission = self.execution_admission_lease()?;
+        let admission = self.execution_admission_lease()?;
+        self.control_admitted(action, admission).await
+    }
+
+    /// A host Start may unload the stopped instance after admitting control.
+    /// Complete only that admitted posture change; cloned handles stay closed.
+    pub(crate) async fn control_admitted(
+        &self,
+        action: ControlAction,
+        _admission: super::execution_admission::ExecutionLease,
+    ) -> Result<()> {
         let outcome = super::scheduler_executor::SchedulerDecisionExecutor::new(self)
             .apply_control(action)
             .await?;
@@ -456,7 +466,7 @@ impl RuntimeHandle {
                 guard.state.status,
                 AgentStatus::AwakeIdle | AgentStatus::Asleep | AgentStatus::Stopped
             ) && guard.state.current_run_id.is_none()
-                && guard.queue.len() == 0
+                && guard.queue.is_empty()
                 && tasks.is_empty(),
             "agent_cleanup_blocked: live_execution"
         );

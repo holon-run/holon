@@ -309,11 +309,20 @@
               },
               "mode": {
                 "default": "delete",
-                "enum": [
-                  "delete",
-                  "cleanup_repair"
-                ],
-                "type": "string"
+                "oneOf": [
+                  {
+                    "enum": [
+                      "delete",
+                      "cleanup_repair"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "const": "parent_cleanup",
+                    "description": "Supervision-authorized deletion that must preserve accepted work.",
+                    "type": "string"
+                  }
+                ]
               },
               "next_attempt_at": {
                 "format": "date-time",
@@ -481,11 +490,20 @@
               },
               "mode": {
                 "default": "delete",
-                "enum": [
-                  "delete",
-                  "cleanup_repair"
-                ],
-                "type": "string"
+                "oneOf": [
+                  {
+                    "enum": [
+                      "delete",
+                      "cleanup_repair"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "const": "parent_cleanup",
+                    "description": "Supervision-authorized deletion that must preserve accepted work.",
+                    "type": "string"
+                  }
+                ]
               },
               "next_attempt_at": {
                 "format": "date-time",
@@ -1223,11 +1241,20 @@
               },
               "mode": {
                 "default": "delete",
-                "enum": [
-                  "delete",
-                  "cleanup_repair"
-                ],
-                "type": "string"
+                "oneOf": [
+                  {
+                    "enum": [
+                      "delete",
+                      "cleanup_repair"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "const": "parent_cleanup",
+                    "description": "Supervision-authorized deletion that must preserve accepted work.",
+                    "type": "string"
+                  }
+                ]
               },
               "next_attempt_at": {
                 "format": "date-time",

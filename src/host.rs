@@ -3311,6 +3311,9 @@ impl RuntimeHost {
         action: crate::types::ControlAction,
     ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
         let runtime = self.get_public_agent(agent_id).await?;
+        let admission = runtime
+            .execution_admission_lease()
+            .map_err(PublicAgentError::Runtime)?;
         let was_stopped = matches!(
             runtime
                 .agent_state()
@@ -3323,7 +3326,7 @@ impl RuntimeHost {
             self.unload_runtime(agent_id).await;
         }
         runtime
-            .control(action.clone())
+            .control_admitted(action.clone(), admission)
             .await
             .map_err(PublicAgentError::Runtime)?;
         self.notify_runtime_recovery(agent_id).await;
@@ -4210,6 +4213,9 @@ impl RuntimeHost {
                         failed_runtime_phase = Some(entry.phase.clone());
                     } else {
                         stale_entry = registry.agents.remove(agent_id);
+                        if let Some(entry) = &stale_entry {
+                            entry.runtime.close_execution_admission();
+                        }
                     }
                 }
                 if let Some(mut phase) = failed_runtime_phase {
@@ -12016,6 +12022,8 @@ mod tests {
             .control_public_agent(&agent_id, ControlAction::Start)
             .await
             .unwrap();
+        assert!(runtime.execution_admission_lease().is_err());
+        assert!(started.execution_admission_lease().is_ok());
         started
             .enqueue(MessageEnvelope::new(
                 &agent_id,
@@ -12692,14 +12700,13 @@ mod tests {
         host.try_retire_idle_runtime(&child.agent_id, generation)
             .await
             .unwrap();
-        assert!(host
+        assert!(!host
             .inner
             .runtimes
             .read()
             .await
             .agents
-            .get(&child.agent_id)
-            .is_none());
+            .contains_key(&child.agent_id));
         assert_eq!(
             host.agent_identity_record(&child.agent_id)
                 .unwrap()
@@ -12716,13 +12723,13 @@ mod tests {
         assert!(old.execution_admission_lease().is_err());
         parent.agent_summary_for(&child.agent_id).await.unwrap();
         assert!(
-            host.inner
+            !host
+                .inner
                 .runtimes
                 .read()
                 .await
                 .agents
-                .get(&child.agent_id)
-                .is_none(),
+                .contains_key(&child.agent_id),
             "durable inspection must not activate"
         );
         assert_eq!(
