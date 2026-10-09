@@ -31,6 +31,10 @@
   height: auto;
 }
 
+.site-header {
+  z-index: 30;
+}
+
 .site-header__inner {
   align-items: center;
   max-width: 80rem;
@@ -94,19 +98,22 @@
   }
 
   .site-languages {
+    position: relative;
     grid-column: 3;
     grid-row: 1;
+    justify-self: end;
   }
 
   .site-languages__panel {
-    position: fixed;
-    top: 7.75rem;
-    right: 1rem;
+    position: absolute;
+    top: calc(100% + 0.45rem);
+    right: 0;
     left: auto;
     box-sizing: border-box;
-    width: 9.5rem;
-    min-width: 0;
+    width: max-content;
+    min-width: 8.5rem;
     max-width: calc(100vw - 2rem);
+    z-index: 40;
   }
 
   .site-search__toggle,
