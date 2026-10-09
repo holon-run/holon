@@ -18,7 +18,43 @@ final class HolonUITests: XCTestCase {
         XCTAssertEqual(ProcessInfo.processInfo.environment["HOLON_UI_APPEARANCE"], dark ? "dark" : "light",
                        "The UI runner must configure and verify the system appearance")
         app.launch()
+        if app.buttons["settings.open"].waitForExistence(timeout: 5) ||
+            app.buttons["conversation.more"].exists {
+            approveSharingThroughSettings(app)
+        }
         return app
+    }
+
+    private func approveSharingThroughSettings(_ app: XCUIApplication) {
+        openSettings(app)
+        let review = app.buttons["privacy.review"]
+        reveal(review.exists ? review : app.buttons["privacy.revoke"], in: app)
+        if review.exists {
+            review.tap()
+            let agree = app.alerts.buttons["privacy.agree"]
+            XCTAssertTrue(agree.waitForExistence(timeout: 5))
+            agree.tap()
+        }
+        XCTAssertTrue(app.buttons["privacy.revoke"].waitForExistence(timeout: 5))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+    }
+
+    func testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored() throws {
+        try connectForSharing()
+        let app = launch(language: "en", dark: false, large: false)
+        openSettings(app)
+        let revoke = app.buttons["privacy.revoke"]
+        reveal(revoke, in: app)
+        XCTAssertTrue(app.links["privacy.policy"].exists || app.buttons["privacy.policy"].exists)
+        revoke.tap()
+        let review = app.buttons["privacy.review"]
+        XCTAssertTrue(review.waitForExistence(timeout: 5))
+        review.tap()
+        let alert = app.alerts.firstMatch
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        XCTAssertTrue(alert.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "third-party AI")).firstMatch.exists)
+        alert.buttons["privacy.agree"].tap()
+        XCTAssertTrue(app.buttons["privacy.revoke"].waitForExistence(timeout: 5))
     }
 
     private func capture(_ app: XCUIApplication, _ name: String) {
@@ -513,6 +549,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(confirm.isEnabled)
         confirm.tap()
         XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
+        approveSharingThroughSettings(app)
         XCTAssertFalse(app.tabBars.firstMatch.exists, "Agent home has no global bottom tabs")
         let manage = app.buttons["connection.manage"]
         XCTAssertTrue(manage.waitForExistence(timeout: 10))
@@ -809,6 +846,7 @@ final class HolonUITests: XCTestCase {
         let confirm = app.buttons["onboarding.confirmPairing"]
         reveal(confirm, in: app); confirm.tap()
         XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
+        approveSharingThroughSettings(app)
         app.terminate()
     }
 

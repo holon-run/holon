@@ -69,9 +69,12 @@ authorization. An unsigned simulator build is not a signing check.
 **Required-reason API evidence must match each submitted build.** The app's
 manifest is included by the existing synchronized `Resources` group; a hosted
 test checks its bundled UserDefaults declaration. `CA92.1` covers the observed
-app-only profile, selection and language preferences, not App Group defaults.
-The share extension and local Swift SDK currently have no observed required-reason
-API use; do not copy the app's declaration into them without corresponding use.
+app-only profile, selection and language preferences. `1C8F.1` covers the
+per-host sharing consent preferences used by the app and share extension in
+their shared App Group. The extension bundles its own `1C8F.1` declaration,
+checked by a hosted release-configuration test. The local Swift SDK currently
+has no observed required-reason API use; do not copy these declarations into
+it without corresponding use.
 Audit the final dependency/binary API inventory and inspect the archive's
 privacy report and actual bundled manifests before each submission. Do not
 declare unobserved file-timestamp, disk-space or uptime categories just because

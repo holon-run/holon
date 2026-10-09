@@ -10,12 +10,14 @@ private actor SendingMockTransport: SendingTransport {
     var closes = 0
     var uploads = 0
     var catalogs = 0
+    var afterUpload: (@Sendable () -> Void)?
     var loseResponse = true
     var failure: HolonHTTPFailure?
     var delayed = false
     var continuation: CheckedContinuation<String?, any Error>?
     func upload(agentID: String, attachment: SendingAttachment, file: URL) async throws -> SendingPreparedAttachment {
         uploads += 1
+        afterUpload?()
         return SendingPreparedAttachment(name: attachment.name, contentType: attachment.contentType,
                                          data: try Data(contentsOf: file))
     }
@@ -41,10 +43,74 @@ private actor SendingMockTransport: SendingTransport {
     func closeCount() -> Int { closes }
     func uploadCount() -> Int { uploads }
     func catalogCount() -> Int { catalogs }
+    func revokeAfterUpload(_ action: @escaping @Sendable () -> Void) { afterUpload = action }
 }
 
 @MainActor
 final class SendingCoordinatorTests: XCTestCase {
+    func testMissingConsentBlocksEnqueueAndNewHost() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try FileManager.default.removeItem(at: folder) }
+        let suite = "MissingConsent.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let consent = SharingConsent(defaults: defaults)
+        let transport = SendingMockTransport()
+        let coordinator = SendingCoordinator(store: try makeStore(directory: folder), consent: consent)
+        defer { coordinator.disconnect() }
+        let url = URL(string: "https://example.test")!
+        coordinator.activate(transport: transport, identity: identity(), apiBaseURL: url)
+        coordinator.selectAgent("A")
+        coordinator.editDraft(text: "private", modelID: nil)
+        coordinator.enqueue()
+        XCTAssertNotNil(coordinator.error)
+        XCTAssertTrue(coordinator.entries.isEmpty)
+        consent.approve(url)
+        coordinator.activate(transport: transport, identity: identity(), apiBaseURL: URL(string: "https://other.test")!)
+        coordinator.selectAgent("A")
+        coordinator.editDraft(text: "private", modelID: nil)
+        coordinator.enqueue()
+        let calls = await transport.callCount()
+        XCTAssertEqual(calls, 0)
+        XCTAssertTrue(coordinator.entries.isEmpty)
+    }
+
+    func testWithdrawalDuringUploadBlocksRemainingUploadAndPost() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try FileManager.default.removeItem(at: folder) }
+        let suite = "WithdrawConsent.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let consent = SharingConsent(defaults: defaults)
+        let url = URL(string: "https://example.test")!
+        consent.approve(url)
+        let transport = SendingMockTransport()
+        await transport.revokeAfterUpload {
+            SharingConsent(defaults: UserDefaults(suiteName: suite)).revoke(url)
+        }
+        let coordinator = SendingCoordinator(store: try makeStore(directory: folder), consent: consent)
+        defer { coordinator.disconnect() }
+        coordinator.activate(transport: transport, identity: identity(), apiBaseURL: url)
+        coordinator.selectAgent("A")
+        coordinator.editDraft(text: "private", modelID: nil)
+        for name in ["one.txt", "two.txt"] {
+            let source = folder.appendingPathComponent(name)
+            try Data(name.utf8).write(to: source)
+            coordinator.stageAttachment(source: source,
+                context: try XCTUnwrap(coordinator.attachmentImportContext), contentType: "text/plain")
+        }
+        coordinator.enqueue()
+        try await waitUntil { coordinator.entries.first?.state == .unknown }
+        let uploads = await transport.uploadCount()
+        let posts = await transport.callCount()
+        XCTAssertEqual(uploads, 1)
+        XCTAssertEqual(posts, 0)
+        coordinator.retry(requestID: try XCTUnwrap(coordinator.entries.first?.requestID))
+        for _ in 0..<10 { await Task.yield() }
+        let retryPosts = await transport.callCount()
+        XCTAssertEqual(retryPosts, 0)
+    }
+
     private func makeStore(directory: URL) throws -> SendingStore {
         let store = try SendingStore(directory: directory)
         addTeardownBlock {
@@ -54,7 +120,12 @@ final class SendingCoordinatorTests: XCTestCase {
     }
 
     private func makeCoordinator(store: SendingStore) -> SendingCoordinator {
-        let coordinator = SendingCoordinator(store: store)
+        let suite = "SendingConsentTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        let consent = SharingConsent(defaults: defaults)
+        consent.approve(URL(string: "https://example.test")!)
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let coordinator = SendingCoordinator(store: store, consent: consent)
         addTeardownBlock {
             await MainActor.run { coordinator.disconnect() }
         }

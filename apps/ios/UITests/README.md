@@ -71,3 +71,24 @@ covered by simulator success.
 Test activity logs may include the manually typed, ephemeral pairing payload:
 keep xcresult local/restricted; do not publish it as a sanitized diagnostic.
 Static parsing/project validation is not evidence these UI tests passed.
+
+## Opt-in review demo
+
+`DemoReviewUITests/testDemoReviewWorkflow` is separate from the isolated CI
+fixture. Run it only with explicit permission to interact with
+`https://demo.holon.run`, on a new task-owned simulator, selecting
+`-only-testing:HolonUITests/DemoReviewUITests/testDemoReviewWorkflow`.
+Forward `TEST_RUNNER_HOLON_DEMO_ENDPOINT` (`https://demo.holon.run/api`),
+`TEST_RUNNER_HOLON_DEMO_PAIRING_TICKET`, `TEST_RUNNER_HOLON_DEMO_AGENT_ID`, and
+`TEST_RUNNER_HOLON_DEMO_REPLY_MARKER` to `xcodebuild`. Missing inputs fail rather
+than skip; the ordinary CI harness does not select this live test.
+
+Issue a short-lived, single-use pairing ticket using an authorized temporary
+native session. Do not pass the administrator/reviewer token into XCUITest,
+application launch arguments, command arguments, screenshots, or public logs.
+The ticket can appear in local XCTest activities; retain results privately,
+consume it once, revoke the temporary issuance session, and delete the owned
+simulator after testing. The test uses the shipped pairing UI, explicit data
+sharing consent, one non-sensitive prompt, the server receipt and actual Agent
+reply, then removes the saved connection. It does not establish demo isolation,
+provider retention rules, physical-camera behavior, or App Store compliance.

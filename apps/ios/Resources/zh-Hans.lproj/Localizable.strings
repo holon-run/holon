@@ -361,3 +361,14 @@
 "reading.pendingEvents" = "后台事件";
 "reading.assigning" = "分配中";
 "reading.queued" = "排队中";
+
+"privacy.title" = "隐私与数据分享";
+"privacy.policy" = "隐私政策";
+"privacy.support" = "支持：hello@holon.run";
+"privacy.disclosure" = "消息及所选文件或图片将发送到您连接的 runtime，并可能交给其管理员配置的第三方 AI 供应商。请先向 runtime 管理员确认供应商及数据保留规则，再决定是否同意。";
+"privacy.withdrawal" = "撤回同意将阻止后续上传及发送。本应用无法收回已发送的数据。仅保存到本地不会发送。";
+"privacy.review" = "查看数据分享同意说明";
+"privacy.agree" = "我同意分享数据";
+"privacy.revoke" = "撤回数据分享同意";
+"privacy.cancel" = "取消";
+"privacy.required" = "发送前需要明确同意数据分享。请打开主应用 Settings 的「隐私与数据分享」，先向 runtime 管理员确认 AI 供应商及保留规则，再明确同意。您仍可仅将分享内容保存到本地。";

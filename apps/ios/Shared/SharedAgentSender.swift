@@ -9,7 +9,9 @@ actor SharedAgentSender {
     private let session: SharedSession
     private let vault: SharedSessionVault
     private let client: HolonClient
-    init(session: SharedSession, vault: SharedSessionVault) throws {
+    private let consent: SharingConsent
+    init(session: SharedSession, vault: SharedSessionVault, consent: SharingConsent = .shared) throws {
+        self.consent = consent
         self.session = session; self.vault = vault
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 20
@@ -44,6 +46,7 @@ actor SharedAgentSender {
         return agents.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
     func send(payloadID: UUID, agentID: String, store: SharedImportStore) async throws {
+        try consent.require(session.apiBaseURL)
         guard try await agents().contains(where: { $0.id == agentID }) else { throw SharedShareError.missingAgent }
         let target = SharedShareTarget(session: session, agentID: agentID)
         let payload = try store.prepareDelivery(id: payloadID, target: target)
@@ -52,6 +55,7 @@ actor SharedAgentSender {
         // Durable unknown precedes POST, including termination before the reply arrives.
         try store.markDelivery(id: payloadID, target: target, state: .unknown)
         try vault.require(session)
+        try consent.require(session.apiBaseURL)
         let receipt = try await client.sendOperatorPrompt(agentID: agentID, request: prompt).value
         guard receipt.isAccepted else { throw HolonClientError.malformedResponse }
         // A changed host identity does not erase a receipt for an already admitted request.

@@ -361,3 +361,14 @@
 "reading.pendingEvents" = "Background events";
 "reading.assigning" = "Assigning";
 "reading.queued" = "Queued";
+
+"privacy.title" = "Privacy and data sharing";
+"privacy.policy" = "Privacy policy";
+"privacy.support" = "Support: hello@holon.run";
+"privacy.disclosure" = "Messages and selected files or images will be sent to your connected runtime and may be shared with third-party AI providers configured by its administrator. Before agreeing, confirm the providers and data retention rules with your runtime administrator.";
+"privacy.withdrawal" = "Withdrawing consent stops subsequent uploads and sends. Data already sent cannot be recalled by this app. Saving locally does not send anything.";
+"privacy.review" = "Review data sharing consent";
+"privacy.agree" = "I agree to data sharing";
+"privacy.revoke" = "Withdraw data sharing consent";
+"privacy.cancel" = "Cancel";
+"privacy.required" = "Data sharing consent is required. Open Privacy and data sharing in the main app Settings, confirm AI providers and retention rules with your runtime administrator, then explicitly agree before sending. You can save this share locally without sending.";

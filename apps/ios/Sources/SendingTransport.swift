@@ -17,11 +17,16 @@ extension SendingTransport {
 actor SendingClientTransport: SendingTransport {
     private let client: HolonClient
     private let authority: HolonConnectionIdentity
+    private let consent: SharingConsent
+    private let apiBaseURL: URL
     private var bound: HolonConnectionIdentity?
 
-    init(client: HolonClient, authority: HolonConnectionIdentity) {
+    init(client: HolonClient, authority: HolonConnectionIdentity,
+         apiBaseURL: URL, consent: SharingConsent = .shared) {
         self.client = client
         self.authority = authority
+        self.apiBaseURL = apiBaseURL
+        self.consent = consent
     }
 
     private func expected() async throws -> HolonConnectionIdentity {
@@ -35,9 +40,11 @@ actor SendingClientTransport: SendingTransport {
     }
 
     private func request<T: Sendable>(
+        sharing: Bool = false,
         _ operation: @Sendable (HolonClient) async throws -> HolonResponse<T>
     ) async throws -> T {
         let identity = try await expected()
+        if sharing { try consent.require(apiBaseURL) }
         do {
             let response = try await operation(client)
             guard response.identity == identity, try await expected() == identity else { throw CancellationError() }
@@ -56,6 +63,7 @@ actor SendingClientTransport: SendingTransport {
 
     func upload(agentID: String, attachment: SendingAttachment, file: URL) async throws -> SendingPreparedAttachment {
         _ = try await expected()
+        try consent.require(apiBaseURL)
         let data = try Data(contentsOf: file)
         guard !data.isEmpty, data.count <= HolonPromptLimits.maximumAttachmentBytes else {
             throw SendingFailure.oversizedAttachment(attachment.name)
@@ -76,9 +84,9 @@ actor SendingClientTransport: SendingTransport {
         } catch { throw SendingFailure.rejected("Invalid prompt or attachment body exceeds the server limit.") }
         if let model = payload.modelID {
             let selection = try HolonAgentModelRequest(model: model)
-            _ = try await request { try await $0.setAgentModel(agentID: agentID, request: selection) }
+            _ = try await request(sharing: true) { try await $0.setAgentModel(agentID: agentID, request: selection) }
         }
-        let receipt = try await request { try await $0.sendOperatorPrompt(agentID: agentID, request: prompt) }
+        let receipt = try await request(sharing: true) { try await $0.sendOperatorPrompt(agentID: agentID, request: prompt) }
         guard receipt.isAccepted else { throw HolonClientError.malformedResponse }
         return receipt.messageID
     }
