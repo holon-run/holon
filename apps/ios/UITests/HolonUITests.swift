@@ -28,10 +28,14 @@ final class HolonUITests: XCTestCase {
     private func approveSharingThroughSettings(_ app: XCUIApplication) {
         openSettings(app)
         let review = app.buttons["privacy.review"]
-        reveal(review.exists ? review : app.buttons["privacy.revoke"], in: app)
+        // Form rows are lazy; reveal either state before deciding which is active.
+        let consentAction = app.buttons.matching(NSPredicate(
+            format: "identifier IN %@", ["privacy.review", "privacy.revoke"]
+        )).firstMatch
+        reveal(consentAction, in: app)
         if review.exists {
             review.tap()
-            let agree = app.alerts.buttons["privacy.agree"]
+            let agree = app.alerts.buttons["privacy.agree"].firstMatch
             XCTAssertTrue(agree.waitForExistence(timeout: 5))
             agree.tap()
         }
@@ -53,7 +57,7 @@ final class HolonUITests: XCTestCase {
         let alert = app.alerts.firstMatch
         XCTAssertTrue(alert.waitForExistence(timeout: 5))
         XCTAssertTrue(alert.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "third-party AI")).firstMatch.exists)
-        alert.buttons["privacy.agree"].tap()
+        alert.buttons["privacy.agree"].firstMatch.tap()
         XCTAssertTrue(app.buttons["privacy.revoke"].waitForExistence(timeout: 5))
     }
 

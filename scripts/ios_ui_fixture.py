@@ -481,6 +481,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                          ("testPairingPreviewStaysOfflineAndCanCancel", "large"),
                          # Authenticate through shipped onboarding before diagnostics.
                          ("testAuthenticatedNativeWorkflow", "large"),
+                         ("testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored", "large"),
                          ("testChineseDiagnosticsDarkAccessibilitySize", MAXIMUM_TEXT_SIZE),
                          ("testDiagnosticsControlsRespondToRuntimeTextSize", MAXIMUM_TEXT_SIZE),
                          ("testPreparedDiagnosticsRespondToRuntimeTextSize", "large"),
@@ -526,7 +527,9 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                             test_env["TEST_RUNNER_HOLON_UI_TEXT_SIZE_TOKEN"] = control_token
                             test_env["TEST_RUNNER_HOLON_UI_CONTENT_SIZE"] = content_size
                             test_env["TEST_RUNNER_HOLON_UI_APPEARANCE"] = appearance
-                            if method in {"testAuthenticatedNativeWorkflow", "testDirectAgentShareWorkflow", "testNetworkManagementWorkflow", "testTaskResultProcessWorkflow"}:
+                            if method in {"testAuthenticatedNativeWorkflow", "testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored",
+                                          "testDirectAgentShareWorkflow", "testNetworkManagementWorkflow",
+                                          "testTaskResultProcessWorkflow"}:
                                 # Tickets expire after two minutes. The preceding cases also
                                 # warm the build; issue only when redemption is about to run.
                                 ticket = local("POST", "/auth/pairing/issue")["ticket"]
