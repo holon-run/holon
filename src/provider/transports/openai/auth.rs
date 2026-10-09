@@ -453,6 +453,20 @@ pub(super) fn choose_openai_codex_credential(
     profile.or(cli)
 }
 
+/// Codex CLI release whose wire behavior this transport aligns to. Sent as the
+/// client version in the User-Agent so the chatgpt.com Codex backend sees
+/// Holon traffic as an up-to-date first-party CLI client.
+const CODEX_CLI_WIRE_VERSION: &str = "0.160.0";
+
+pub(super) fn openai_codex_user_agent(originator: &str) -> String {
+    format!(
+        "{originator}/{CODEX_CLI_WIRE_VERSION} ({}; {}) holon/{}",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        env!("CARGO_PKG_VERSION"),
+    )
+}
+
 pub(super) fn openai_codex_headers(
     credential: &CodexCliCredential,
     originator: &str,
@@ -463,9 +477,49 @@ pub(super) fn openai_codex_headers(
             format!("Bearer {}", credential.access_token),
         ),
         ("chatgpt-account-id", credential.account_id.clone()),
-        ("OpenAI-Beta", "responses=experimental".to_string()),
         ("originator", originator.to_string()),
+        ("user-agent", openai_codex_user_agent(originator)),
     ]
+}
+
+/// Conversation-scoped headers the Codex CLI attaches to `/responses` turns:
+/// `session-id` identifies the client session, `thread-id` the conversation
+/// thread, and `x-client-request-id` mirrors the thread id for request
+/// correlation. Holon maps the long-lived agent to the session and the
+/// provider continuation scope to the conversation thread.
+pub(super) fn openai_codex_session_headers(
+    agent_id: Option<&str>,
+    scope: Option<&ContinuationScopeId>,
+) -> Vec<(&'static str, String)> {
+    let mut headers = Vec::new();
+    if let Some(agent_id) = agent_id.filter(|id| is_valid_header_value(id)) {
+        headers.push(("session-id", agent_id.to_string()));
+    }
+    if let Some(scope) = scope
+        .map(ContinuationScopeId::as_str)
+        .filter(|id| is_valid_header_value(id))
+    {
+        headers.push(("thread-id", scope.to_string()));
+        headers.push(("x-client-request-id", scope.to_string()));
+    }
+    headers
+}
+
+/// Headers for Codex `/responses` conversation traffic: the shared Codex
+/// client headers plus the session/thread correlation headers.
+pub(super) fn openai_codex_conversation_headers(
+    credential: &CodexCliCredential,
+    originator: &str,
+    agent_id: Option<&str>,
+    scope: Option<&ContinuationScopeId>,
+) -> Vec<(&'static str, String)> {
+    let mut headers = openai_codex_headers(credential, originator);
+    headers.extend(openai_codex_session_headers(agent_id, scope));
+    headers
+}
+
+fn is_valid_header_value(value: &str) -> bool {
+    reqwest::header::HeaderValue::from_str(value).is_ok()
 }
 
 pub(super) fn is_openai_codex_auth_status_error(error: &anyhow::Error) -> bool {

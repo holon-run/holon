@@ -3,9 +3,10 @@ use super::{
     build_openai_responses_request, chat_completions_url, choose_openai_codex_credential,
     consume_openai_sse_event, incremental_diagnostics, latest_openai_compaction_index,
     native_web_search_diagnostics, openai_codex_coarse_quota_identity,
-    openai_compaction_trigger_for_request_plan, openai_compaction_trigger_for_window,
-    openai_images_dialect, openai_model_policy_for_runtime_config,
-    openai_provider_window_compaction_candidate,
+    openai_codex_conversation_headers, openai_codex_headers, openai_codex_session_headers,
+    openai_codex_user_agent, openai_compaction_trigger_for_request_plan,
+    openai_compaction_trigger_for_window, openai_images_dialect,
+    openai_model_policy_for_runtime_config, openai_provider_window_compaction_candidate,
     parse_openai_codex_image_generation_response_items, parse_openai_images_response,
     plan_openai_responses_request, resolve_openai_codex_credential, CredentialStoreRefreshLock,
     OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiCompactionPolicy,
@@ -1368,4 +1369,107 @@ fn openai_responses_request_body_clamps_max_output_tokens() {
 
     assert_eq!(body["max_output_tokens"], json!(effective));
     assert!(effective < 384_000);
+}
+
+#[test]
+fn openai_codex_headers_match_codex_cli_client_identity() {
+    let credential = CodexCliCredential {
+        access_token: "access".into(),
+        account_id: "acct".into(),
+        expires_at: None,
+        refreshed_at: None,
+        source: "keychain".into(),
+    };
+    let headers = openai_codex_headers(&credential, "codex_cli_rs");
+    let names: Vec<&str> = headers.iter().map(|(name, _)| *name).collect();
+    assert_eq!(
+        names,
+        vec![
+            "authorization",
+            "chatgpt-account-id",
+            "originator",
+            "user-agent",
+        ]
+    );
+    let (_, user_agent) = headers
+        .iter()
+        .find(|(name, _)| *name == "user-agent")
+        .expect("user-agent header should be present");
+    assert!(user_agent.starts_with("codex_cli_rs/"));
+    assert!(user_agent.contains(&format!("holon/{}", env!("CARGO_PKG_VERSION"))));
+}
+
+#[test]
+fn openai_codex_user_agent_follows_codex_cli_shape() {
+    // Codex CLI shape: {originator}/{version} ({os}; {arch}) {client surface}
+    assert_eq!(
+        openai_codex_user_agent("codex_cli_rs"),
+        format!(
+            "codex_cli_rs/0.160.0 ({}; {}) holon/{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            env!("CARGO_PKG_VERSION")
+        )
+    );
+}
+
+#[test]
+fn openai_codex_session_headers_map_agent_and_scope() {
+    let scope = crate::provider::ContinuationScopeId::new("agent-conv:abc123")
+        .expect("scope id should be valid");
+    let headers = openai_codex_session_headers(Some("holon-ops"), Some(&scope));
+    let pairs: Vec<(&str, &str)> = headers
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![
+            ("session-id", "holon-ops"),
+            ("thread-id", "agent-conv:abc123"),
+            ("x-client-request-id", "agent-conv:abc123"),
+        ]
+    );
+
+    assert!(openai_codex_session_headers(None, None).is_empty());
+
+    let only_agent = openai_codex_session_headers(Some("holon-ops"), None);
+    assert_eq!(only_agent.len(), 1);
+    assert_eq!(only_agent[0].0, "session-id");
+
+    // Control characters cannot form a valid header value; they are dropped
+    // instead of failing the whole request.
+    assert!(openai_codex_session_headers(Some("bad\nagent"), None).is_empty());
+}
+
+#[test]
+fn openai_codex_conversation_headers_include_session_identity() {
+    let credential = CodexCliCredential {
+        access_token: "access".into(),
+        account_id: "acct".into(),
+        expires_at: None,
+        refreshed_at: None,
+        source: "keychain".into(),
+    };
+    let scope = crate::provider::ContinuationScopeId::new("agent-conv:abc123")
+        .expect("scope id should be valid");
+    let headers = openai_codex_conversation_headers(
+        &credential,
+        "codex_cli_rs",
+        Some("holon-ops"),
+        Some(&scope),
+    );
+    let names: Vec<&str> = headers.iter().map(|(name, _)| *name).collect();
+    assert_eq!(
+        names,
+        vec![
+            "authorization",
+            "chatgpt-account-id",
+            "originator",
+            "user-agent",
+            "session-id",
+            "thread-id",
+            "x-client-request-id",
+        ]
+    );
 }
