@@ -7,10 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-        B00000000000000000000031 /* HolonClient in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000031 /* HolonClient */; };
 		A00000000000000000000032 /* HolonClient in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000031 /* HolonClient */; };
-		D00000000000000000000002 /* Textual in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000001 /* Textual */; };
 		B00000000000000000000007 /* HolonShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B00000000000000000000004 /* HolonShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		B00000000000000000000031 /* HolonClient in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000031 /* HolonClient */; };
+		D00000000000000000000002 /* Textual in Frameworks */ = {isa = PBXBuildFile; productRef = D00000000000000000000001 /* Textual */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -56,7 +56,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				Share.entitlements,
 			);
 			target = B00000000000000000000001 /* HolonShare */;
 		};
@@ -199,7 +198,9 @@
 				B00000000000000000000003 /* ShareExtension */,
 			);
 			name = HolonShare;
-			packageProductDependencies = (A00000000000000000000031 /* HolonClient */, );
+			packageProductDependencies = (
+				A00000000000000000000031 /* HolonClient */,
+			);
 			productName = HolonShare;
 			productReference = B00000000000000000000004 /* HolonShare.appex */;
 			productType = "com.apple.product-type.app-extension";
@@ -537,20 +538,23 @@
 		D00000000000000000000003 /* XCRemoteSwiftPackageReference "textual" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/gonzalezreal/textual";
-			requirement = {kind = exactVersion; version = 0.5.0; };
+			requirement = {
+				kind = exactVersion;
+				version = 0.5.0;
+			};
 		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		D00000000000000000000001 /* Textual */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = D00000000000000000000003 /* XCRemoteSwiftPackageReference "textual" */;
-			productName = Textual;
-		};
 		A00000000000000000000031 /* HolonClient */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = A00000000000000000000030 /* XCLocalSwiftPackageReference "../../packages/client-sdk-swift" */;
 			productName = HolonClient;
+		};
+		D00000000000000000000001 /* Textual */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D00000000000000000000003 /* XCRemoteSwiftPackageReference "textual" */;
+			productName = Textual;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
