@@ -17,7 +17,7 @@ struct ConnectionWelcomeView: View {
     @State private var anchor: UIWindow?
     @FocusState private var payloadFocused: Bool
 
-    private enum Step { case welcome, address, authentication, pairing }
+    private enum Step { case welcome, invitation, address, authentication, pairing }
 
     var body: some View {
         NavigationStack {
@@ -26,23 +26,24 @@ struct ConnectionWelcomeView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 24) {
                             welcome
-                            ConnectionSettings()
                         }
                         .padding()
                     }
+                    .background(Color(uiColor: .systemGroupedBackground))
                 } else {
                     Form {
                         switch step {
                         case .welcome: EmptyView()
+                        case .invitation: invitationEntry
                         case .address: manualAddress
                         case .authentication: authentication
                         case .pairing: pairing
                         }
-                        ConnectionSettings()
                     }
                 }
             }
             .navigationTitle("onboarding.title")
+            .navigationBarTitleDisplayMode(.inline)
             .background(WindowAnchorReader { anchor = $0 }.frame(width: 0, height: 0))
             .toolbar {
                 if let cancel {
@@ -86,101 +87,121 @@ struct ConnectionWelcomeView: View {
 
     private var welcome: some View {
         Group {
-            Section {
-                VStack(alignment: .leading, spacing: 12) {
-                    Image(systemName: "network").font(.largeTitle).accessibilityHidden(true)
-                    LocalizedMultilineText(key: "onboarding.welcome", isHeading: true)
-                    LocalizedMultilineText(key: "onboarding.purpose")
-                    Button("onboarding.scan", systemImage: "qrcode.viewfinder") {
-                        pairingAttempt = false
-                        scanning = true
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("onboarding.scan")
-                    Button("onboarding.manual", systemImage: "keyboard") {
-                        token = ""
-                        addressOnly = false
-                        pairingAttempt = false
-                        step = .address
-                    }
-                    .buttonStyle(.bordered)
-                    .accessibilityIdentifier("onboarding.manual")
-                    PasteButton(payloadType: String.self) { values in
-                        if let value = values.first { receive(value) }
-                    }
-                    .accessibilityLabel(Text("onboarding.paste"))
-                }
-            }
-            Section {
-                DisclosureGroup {
-                    SecureField("pairing.payload", text: $payload)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .privacySensitive().focused($payloadFocused)
-                        .submitLabel(.done)
-                        .onSubmit { payloadFocused = false }
-                        .accessibilityIdentifier("onboarding.payload")
-                    Button("pairing.preview") {
-                        let submitted = payload
-                        payload = ""
-                        payloadFocused = false
-                        receive(submitted)
-                    }
-                    .disabled(coordinator.isBusy || payload.isEmpty)
-                    .accessibilityIdentifier("onboarding.preview")
+            VStack(alignment: .leading, spacing: 16) {
+                Image(systemName: "server.rack").font(.largeTitle)
+                    .foregroundStyle(Color.accentColor).accessibilityHidden(true)
+                LocalizedMultilineText(key: "onboarding.welcome", isHeading: true)
+                LocalizedMultilineText(key: "onboarding.purpose")
+                Button {
+                    pairingAttempt = false
+                    scanning = true
                 } label: {
-                    Text("onboarding.paste")
-                        .accessibilityIdentifier("onboarding.pasteEntry")
+                    actionLabel("onboarding.scan", image: "qrcode.viewfinder")
                 }
-                DisclosureGroup("onboarding.getCode") {
-                    Text("onboarding.getCodeHelp")
-                    Text("connection.localNetworkHelp")
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("onboarding.scan")
+                Button {
+                    payload = ""
+                    step = .invitation
+                } label: {
+                    actionLabel("onboarding.paste", image: "doc.on.clipboard")
                 }
-                .font(.body)
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("onboarding.pasteEntry")
+                Button {
+                    token = ""
+                    addressOnly = false
+                    pairingAttempt = false
+                    step = .address
+                } label: {
+                    actionLabel("onboarding.manual", image: "keyboard")
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("onboarding.manual")
             }
+            .disabled(coordinator.isBusy)
             if !coordinator.profiles.isEmpty {
-                Section("profiles.title") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("profiles.title").font(.headline)
                     ForEach(coordinator.profiles) { profile in
-                        Button {
+                        SavedNetworkRow(coordinator: coordinator, profile: profile) {
                             token = ""
                             pairingAttempt = false
                             step = .authentication
                             Task { await coordinator.connect(profile) }
-                        } label: {
-                            VStack(alignment: .leading) {
-                                Text(verbatim: profile.name)
-                                Text(verbatim: profile.apiBaseURL.absoluteString)
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
                         }
-                        .disabled(coordinator.isBusy)
                     }
                     if coordinator.selectedProfile != nil {
                         ConnectionStatusView(coordinator: coordinator)
                         Button("onboarding.continueLogin") { step = .authentication }
+                            .buttonStyle(.bordered)
                             .disabled(coordinator.isBusy)
                     }
                 }
+                .padding().background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
             }
+            VStack(alignment: .leading, spacing: 20) {
+                DisclosureGroup("onboarding.getCode") {
+                    Text("onboarding.getCodeHelp").padding(.top, 8)
+                    Text("connection.localNetworkHelp").padding(.top, 8)
+                }
+                DisclosureGroup("settings.title") { ConnectionSettings(showsHeading: false) }
+            }
+            .font(.subheadline).foregroundStyle(.secondary)
         }
+    }
+
+    private func actionLabel(_ key: LocalizedStringKey, image: String? = nil) -> some View {
+        Group {
+            if let image { Label(key, systemImage: image) }
+            else { Text(key) }
+        }
+        .frame(maxWidth: .infinity, minHeight: 32)
+        .multilineTextAlignment(.center)
+    }
+
+    private var invitationEntry: some View {
+        Section {
+            SecureField("pairing.payload", text: $payload)
+                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                .privacySensitive().focused($payloadFocused)
+                .submitLabel(.done).onSubmit { payloadFocused = false }
+                .accessibilityIdentifier("onboarding.payload")
+            PasteButton(payloadType: String.self) { values in
+                if let value = values.first { receive(value) }
+            }
+            .accessibilityLabel(Text("onboarding.paste"))
+            Button {
+                let submitted = payload
+                payload = ""
+                payloadFocused = false
+                receive(submitted)
+            } label: { actionLabel("pairing.preview") }
+            .buttonStyle(.borderedProminent)
+            .disabled(coordinator.isBusy || payload.isEmpty)
+            .accessibilityIdentifier("onboarding.preview")
+        } header: { Text("onboarding.paste") }
+        footer: { Text("onboarding.pasteHelp") }
     }
 
     private var manualAddress: some View {
         Section("onboarding.addressStep") {
             if addressOnly { Text("onboarding.addressOnly") }
-            TextField("profiles.address", text: $address)
+            TextField("profiles.address", text: $address, prompt: Text("profiles.addressExample"))
                 .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                 .accessibilityIdentifier("onboarding.address")
-            Text("profiles.addressHelp").font(.caption).foregroundStyle(.secondary)
-            Text("onboarding.noLocalhost").font(.caption).foregroundStyle(.secondary)
             DisclosureGroup("onboarding.advanced") {
                 TextField("profiles.name", text: $name)
+                Text("profiles.addressHelp").font(.caption).foregroundStyle(.secondary)
+                Text("onboarding.noLocalhost").font(.caption).foregroundStyle(.secondary)
             }
             if URL(string: address)?.scheme?.lowercased() == "http" {
                 Toggle("connection.allowHTTP", isOn: $allowHTTP)
                     .accessibilityIdentifier("onboarding.allowHTTP")
                 Text("connection.httpWarning").font(.caption)
             }
-            Button("onboarding.checkAddress") { connectAddress() }
+            Button { connectAddress() } label: { actionLabel("onboarding.checkAddress") }
+                .buttonStyle(.borderedProminent)
                 .disabled(coordinator.isBusy || address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                           (URL(string: address)?.scheme?.lowercased() == "http" && !allowHTTP))
                 .accessibilityIdentifier("onboarding.checkAddress")
@@ -201,6 +222,7 @@ struct ConnectionWelcomeView: View {
                             token = ""
                             coordinator.startOrganizationLogin(anchor: anchor)
                         }
+                        .buttonStyle(.borderedProminent)
                         .disabled(coordinator.isBusy || anchor == nil)
                     } else {
                         Text("onboarding.oidcHTTPS")
@@ -210,11 +232,12 @@ struct ConnectionWelcomeView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
                         .accessibilityIdentifier("onboarding.token")
                     Text("onboarding.tokenHelp").font(.caption).foregroundStyle(.secondary)
-                    Button("login.tokenSubmit") {
+                    Button {
                         let submitted = token
                         token = ""
                         Task { await coordinator.login(token: submitted) }
-                    }
+                    } label: { actionLabel("login.tokenSubmit") }
+                    .buttonStyle(.borderedProminent)
                     .disabled(coordinator.isBusy || token.isEmpty)
                     .accessibilityIdentifier("onboarding.login")
                 }
@@ -243,11 +266,12 @@ struct ConnectionWelcomeView: View {
                         .accessibilityIdentifier("onboarding.pairingHTTP")
                     Text("connection.httpWarning").font(.caption)
                 }
-                Button("pairing.confirm") {
+                Button {
                     pairingAttempt = true
                     step = .authentication
                     Task { await coordinator.confirmPairing(allowInsecureHTTP: allowHTTP) }
-                }
+                } label: { actionLabel("pairing.confirm") }
+                .buttonStyle(.borderedProminent)
                 .disabled(coordinator.isBusy || (invitation.apiBaseURL.scheme == "http" && !allowHTTP))
                 .accessibilityIdentifier("onboarding.confirmPairing")
                 Button("pairing.cancel", role: .cancel) { back() }

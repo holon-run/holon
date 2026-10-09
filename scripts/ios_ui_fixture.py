@@ -464,6 +464,8 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     cases.append(("testConversationHistoryWindowPosition", "large"))
                 if share_acceptance:
                     cases.append(("testDirectAgentShareWorkflow", "large"))
+                # Deletes the saved fixture session, so run last in a full sweep.
+                cases.append(("testNetworkManagementWorkflow", "large"))
                 selected_cases = os.environ.get("IOS_UI_CASES")
                 if selected_cases:
                     requested = selected_cases.split(",")
@@ -492,7 +494,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                             test_env["TEST_RUNNER_HOLON_UI_TEXT_SIZE_TOKEN"] = control_token
                             test_env["TEST_RUNNER_HOLON_UI_CONTENT_SIZE"] = content_size
                             test_env["TEST_RUNNER_HOLON_UI_APPEARANCE"] = appearance
-                            if method in {"testAuthenticatedNativeWorkflow", "testDirectAgentShareWorkflow"}:
+                            if method in {"testAuthenticatedNativeWorkflow", "testDirectAgentShareWorkflow", "testNetworkManagementWorkflow"}:
                                 # Tickets expire after two minutes. The preceding cases also
                                 # warm the build; issue only when redemption is about to run.
                                 ticket = local("POST", "/auth/pairing/issue")["ticket"]
