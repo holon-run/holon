@@ -464,8 +464,6 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     cases.append(("testConversationHistoryWindowPosition", "large"))
                 if share_acceptance:
                     cases.append(("testDirectAgentShareWorkflow", "large"))
-                    from ios_share_probe import install
-                    install(simulator, repo, root)
                 selected_cases = os.environ.get("IOS_UI_CASES")
                 if selected_cases:
                     requested = selected_cases.split(",")
@@ -477,6 +475,10 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 if any(path.exists() for path in bundles):
                     raise RuntimeError("Per-case xcresult paths must be unused")
                 initialize_simulator_text_size(simulator)
+                if share_acceptance:
+                    # The preceding xcodebuild may leave this simulator shut down.
+                    from ios_share_probe import install
+                    install(simulator, repo, root)
                 for (method, content_size), case_bundle in zip(cases, bundles):
                     appearance = "dark" if method in {
                         "testDisconnectedChineseDarkAccessibilitySize",
