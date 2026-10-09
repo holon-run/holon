@@ -196,7 +196,10 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
             &body,
         )
     });
-    let mut request = client.post(&url).header("content-type", "application/json");
+    let mut request = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .header("accept", "text/event-stream");
     for (name, value) in headers {
         request = request.header(name, value);
     }

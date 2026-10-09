@@ -325,8 +325,16 @@ async fn post_codex_probe(
             format!("Bearer {}", credential.access_token),
         )
         .header("chatgpt-account-id", &credential.account_id)
-        .header("OpenAI-Beta", "responses=experimental")
         .header("originator", "codex_cli_rs")
+        .header(
+            "user-agent",
+            format!(
+                "codex_cli_rs/0.160.0 ({}; {}) holon/{}",
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
         .json(&body)
         .send()
         .await

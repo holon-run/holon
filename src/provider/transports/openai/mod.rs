@@ -66,9 +66,12 @@ use auth::{
     choose_openai_codex_credential, resolve_openai_codex_credential, CredentialStoreRefreshLock,
 };
 use auth::{
-    is_openai_codex_auth_status_error, openai_codex_headers,
+    is_openai_codex_auth_status_error, openai_codex_conversation_headers, openai_codex_headers,
     openai_model_policy_for_runtime_config, openai_model_policy_from_config,
 };
+
+#[cfg(test)]
+use auth::{openai_codex_session_headers, openai_codex_user_agent};
 
 #[cfg(test)]
 use images::parse_openai_codex_image_generation_response_items;
@@ -879,7 +882,12 @@ impl AgentProvider for OpenAiCodexProvider {
         let mut quota_identity =
             ProviderQuotaIdentity::exact("codex-account", &credential.account_id)
                 .unwrap_or_else(|| self.quota_identity.clone());
-        let mut headers = openai_codex_headers(&credential, &self.originator);
+        let mut headers = openai_codex_conversation_headers(
+            &credential,
+            &self.originator,
+            request_agent_id(&request),
+            plan_scope.as_ref(),
+        );
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
         if let Some(remote_compaction) = maybe_compact_openai_request_plan(
             &self.continuation,
@@ -939,7 +947,12 @@ impl AgentProvider for OpenAiCodexProvider {
                         quota_identity =
                             ProviderQuotaIdentity::exact("codex-account", &credential.account_id)
                                 .unwrap_or_else(|| self.quota_identity.clone());
-                        headers = openai_codex_headers(&credential, &self.originator);
+                        headers = openai_codex_conversation_headers(
+                            &credential,
+                            &self.originator,
+                            request_agent_id(&request),
+                            plan_scope.as_ref(),
+                        );
                         match send_openai_responses_streaming_request(
                             &self.client,
                             openai_codex_responses_url(&self.base_url),
