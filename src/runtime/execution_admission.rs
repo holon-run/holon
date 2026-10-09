@@ -32,12 +32,21 @@ impl ExecutionAdmission {
         self.0.load(Ordering::Acquire) & CLOSED == 0
     }
     pub(super) fn lease(&self) -> Result<ExecutionLease> {
-        self.0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
-                (state < CLOSED - 1).then_some(state + 1)
-            })
-            .map_err(|_| closed_error())?;
-        Ok(ExecutionLease(self.0.clone()))
+        let mut state = self.0.load(Ordering::Acquire);
+        loop {
+            if state >= CLOSED - 1 {
+                return Err(closed_error());
+            }
+            match self.0.compare_exchange_weak(
+                state,
+                state + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(ExecutionLease(self.0.clone())),
+                Err(current) => state = current,
+            }
+        }
     }
     pub(super) fn try_close(&self) -> Result<ClosedAdmission> {
         self.0
