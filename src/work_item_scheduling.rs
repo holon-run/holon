@@ -376,6 +376,25 @@ pub fn record_only_readiness(record: &WorkItemRecord) -> WorkItemReadiness {
     .readiness
 }
 
+/// Derive readiness from the facts available to a transition or audit path.
+///
+/// Unlike [`WorkItemRecord::readiness`], this preserves active wait and
+/// continuation-yield context when the caller has an in-memory snapshot.
+pub fn readiness_from_facts(
+    record: &WorkItemRecord,
+    is_yielded: bool,
+    active_wait_conditions: &[WaitConditionRecord],
+) -> WorkItemReadiness {
+    derive_work_item_scheduling(WorkItemSchedulingFacts {
+        work_item: record,
+        is_current: false,
+        is_yielded,
+        active_wait_conditions,
+        trigger_delivery_by_id: &BTreeMap::new(),
+    })
+    .readiness
+}
+
 pub fn readiness_for_scheduling_state(state: WorkItemSchedulingState) -> WorkItemReadiness {
     match state {
         WorkItemSchedulingState::Runnable => WorkItemReadiness::Runnable,
@@ -530,6 +549,27 @@ mod tests {
             projection.reason_code,
             WorkItemSchedulingReasonCode::ActiveTaskWait
         );
+    }
+
+    #[test]
+    fn record_only_readiness_is_distinct_from_fact_backed_readiness() {
+        let mut record = WorkItemRecord::new("agent", "work", WorkItemState::Open);
+        record.blocked_by = Some("manual".into());
+
+        for (kind, expected) in [
+            (
+                WaitConditionKind::Operator,
+                WorkItemReadiness::WaitingForOperator,
+            ),
+            (WaitConditionKind::Task, WorkItemReadiness::Blocked),
+            (WaitConditionKind::Timer, WorkItemReadiness::Blocked),
+            (WaitConditionKind::External, WorkItemReadiness::Blocked),
+            (WaitConditionKind::System, WorkItemReadiness::Blocked),
+        ] {
+            let waits = [wait(&record, kind)];
+            assert_eq!(record.readiness(), WorkItemReadiness::Blocked);
+            assert_eq!(readiness_from_facts(&record, false, &waits), expected);
+        }
     }
 
     #[test]

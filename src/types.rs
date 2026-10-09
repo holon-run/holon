@@ -5077,6 +5077,14 @@ pub struct WorkItemLifecycleAuditEvent {
 
 impl WorkItemLifecycleAuditEvent {
     pub fn from_work_item(action: impl Into<String>, record: &WorkItemRecord) -> Self {
+        Self::from_work_item_with_readiness(action, record, record.readiness())
+    }
+
+    pub fn from_work_item_with_readiness(
+        action: impl Into<String>,
+        record: &WorkItemRecord,
+        readiness: WorkItemReadiness,
+    ) -> Self {
         Self {
             agent_id: record.agent_id.clone(),
             work_item_id: record.id.clone(),
@@ -5085,7 +5093,7 @@ impl WorkItemLifecycleAuditEvent {
             action: action.into(),
             state: record.state.clone(),
             plan_status: record.plan_status,
-            readiness: record.readiness(),
+            readiness,
             updated_at: record.updated_at,
             turn_id: record.turn_id.clone(),
             objective_preview: truncate_audit_preview(&record.objective, 600),

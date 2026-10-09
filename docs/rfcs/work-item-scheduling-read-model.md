@@ -195,7 +195,11 @@ Core properties:
 - active wait reason is retained;
 - a triggered wait does not clear a manual hold;
 - plan status never changes scheduler state; and
-- record-only and fully loaded projections use the same derivation function.
+- record-only and fully loaded projections use the same derivation function,
+  but record-only readiness intentionally omits wait and continuation facts.
+  Transition/audit paths must use a fact-backed projection when those facts are
+  available; reduced record readiness must not be presented as the current
+  scheduling posture.
 
 ## Migration
 

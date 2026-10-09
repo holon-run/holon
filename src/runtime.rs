@@ -3497,7 +3497,18 @@ impl RuntimeHandle {
         record: &crate::types::WorkItemRecord,
         extra: Value,
     ) -> AuditEvent {
-        let payload = WorkItemLifecycleAuditEvent::from_work_item(action, record);
+        self.work_item_written_event_with_readiness(action, record, record.readiness(), extra)
+    }
+
+    pub(crate) fn work_item_written_event_with_readiness(
+        &self,
+        action: &str,
+        record: &crate::types::WorkItemRecord,
+        readiness: crate::types::WorkItemReadiness,
+        extra: Value,
+    ) -> AuditEvent {
+        let payload =
+            WorkItemLifecycleAuditEvent::from_work_item_with_readiness(action, record, readiness);
         let mut event = AuditEvent::typed(RuntimeEventKind::WorkItemWritten, &payload)
             .expect("work item lifecycle payload must serialize");
         if let (Some(payload), Some(extra)) = (event.data.as_object_mut(), extra.as_object()) {
