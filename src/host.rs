@@ -681,9 +681,18 @@ impl RuntimeHost {
     pub fn prepare_runtime_storage(config: &AppConfig) -> Result<()> {
         let runtime_db =
             RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
+        // Pre-server preparation targets the *resolved* default agent. A fresh
+        // install has no agent yet, so there is nothing to prepare for the
+        // configured fallback id: doing so would seed runtime/index rows for a
+        // phantom identity that never becomes a real agent (issue #3445).
+        let registry = RuntimeRegistry::new(config.clone(), runtime_db.clone())?;
+        let Some(agent_id) = registry.restore_default_agent_selection()? else {
+            tracing::info!("skipping pre-server runtime preparation: no default agent configured");
+            return Ok(());
+        };
         RuntimeHandle::prepare_runtime_storage(
-            config.default_agent_id.clone(),
-            config.agent_root_dir().join(&config.default_agent_id),
+            agent_id.clone(),
+            config.agent_root_dir().join(&agent_id),
             InitialWorkspaceBinding::Detached,
             runtime_db,
         )
@@ -1023,6 +1032,20 @@ impl RuntimeHost {
         storage.enable_event_bus(self.inner.event_bus.clone())?;
         storage.enable_memory_index_notify(self.inner.memory_index_notify.clone())?;
         Ok(storage)
+    }
+
+    /// Storage handle for the daemon-shared memory index.
+    ///
+    /// The shared index lives at the host level, so any agent-scoped storage
+    /// resolves to the same path. Prefer the resolved default agent, but fall
+    /// back to host-scoped storage when no default agent exists yet instead of
+    /// materializing a phantom `<data_dir>/agents/<fallback>` directory
+    /// (issue #3445).
+    fn default_shared_index_storage(&self) -> Result<AppStorage> {
+        match self.configured_default_agent_id()? {
+            Some(agent_id) => self.agent_storage(&agent_id),
+            None => Ok(self.inner.registry.host_storage()),
+        }
     }
 
     /// Spawn a single daemon-level memory indexer that covers all agents.
@@ -1599,7 +1622,7 @@ impl RuntimeHost {
                     continue;
                 }
             };
-            let default_storage = match self.agent_storage(&self.config().default_agent_id) {
+            let default_storage = match self.default_shared_index_storage() {
                 Ok(storage) => storage,
                 Err(error) => {
                     tracing::warn!(error = %error, "daemon memory indexer: failed to open shared index");
@@ -7087,6 +7110,33 @@ mod tests {
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
+    }
+
+    #[test]
+    fn pre_server_preparation_skips_missing_default_agent() {
+        let home = tempdir().unwrap();
+        write_test_model_config(home.path());
+        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        // Fresh install: no agent identities exist yet.
+        RuntimeHost::prepare_runtime_storage(&config).unwrap();
+        assert!(
+            !config
+                .agent_root_dir()
+                .join(&config.default_agent_id)
+                .exists(),
+            "pre-server preparation must not materialize a phantom default agent"
+        );
+        let runtime_db =
+            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
+                .unwrap();
+        assert!(
+            runtime_db
+                .runtime_index_outbox()
+                .agent_ids_with_pending()
+                .unwrap()
+                .is_empty(),
+            "no index work should be seeded for a missing default agent"
+        );
     }
 
     fn canonical_test_host() -> (tempfile::TempDir, RuntimeHost) {

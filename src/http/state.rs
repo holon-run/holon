@@ -16,13 +16,27 @@ pub struct AgentSummaryQuery {
     detail: AgentSummaryDetail,
 }
 
+/// Resolve the operator-facing default agent, rejecting the request with a
+/// clear error when no agent has been configured yet.
+///
+/// Reading `config.default_agent_id` directly would surface the legacy fallback
+/// id (for example `main`) even when no such agent exists, producing a
+/// misleading `agent <id> not found` (issue #3445).
+fn resolve_default_agent_id(state: &AppState) -> Result<String, (StatusCode, Json<Value>)> {
+    state
+        .host
+        .configured_default_agent_id()
+        .map_err(error_response)?
+        .ok_or_else(|| not_found("no default agent configured"))
+}
+
 pub async fn enqueue_default(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<EnqueueRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let agent_id = state.host.config().default_agent_id.clone();
+    let agent_id = resolve_default_agent_id(&state)?;
     let trace_context = trace_context_from_headers(&headers)?;
     enqueue_internal(
         state,
@@ -263,8 +277,9 @@ pub async fn status_default(
     headers: HeaderMap,
     Query(query): Query<AgentSummaryQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let agent_id = resolve_default_agent_id(&state)?;
     agent_summary(
-        state.host.config().default_agent_id.clone(),
+        agent_id,
         state,
         headers,
         "/agents/{agent_id}/status",
@@ -323,12 +338,11 @@ async fn agent_summary(
 }
 
 pub async fn state_default(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AxumResponse {
-    agent_state(
-        Path(state.host.config().default_agent_id.clone()),
-        State(state),
-        headers,
-    )
-    .await
+    let agent_id = match resolve_default_agent_id(&state) {
+        Ok(agent_id) => agent_id,
+        Err(error) => return error.into_response(),
+    };
+    agent_state(Path(agent_id), State(state), headers).await
 }
 
 pub async fn agent_state(
@@ -1139,13 +1153,8 @@ pub async fn briefs_default(
     headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    briefs(
-        Path(state.host.config().default_agent_id.clone()),
-        State(state),
-        headers,
-        Query(query),
-    )
-    .await
+    let agent_id = resolve_default_agent_id(&state)?;
+    briefs(Path(agent_id), State(state), headers, Query(query)).await
 }
 
 pub async fn briefs(
@@ -1241,25 +1250,16 @@ pub async fn transcript_default(
     headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    transcript(
-        Path(state.host.config().default_agent_id.clone()),
-        State(state),
-        headers,
-        Query(query),
-    )
-    .await
+    let agent_id = resolve_default_agent_id(&state)?;
+    transcript(Path(agent_id), State(state), headers, Query(query)).await
 }
 
 pub async fn worktree_summary_default(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    worktree_summary(
-        Path(state.host.config().default_agent_id.clone()),
-        State(state),
-        headers,
-    )
-    .await
+    let agent_id = resolve_default_agent_id(&state)?;
+    worktree_summary(Path(agent_id), State(state), headers).await
 }
 
 pub async fn transcript(

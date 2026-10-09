@@ -2271,6 +2271,28 @@ mod tests {
         (home, host)
     }
 
+    #[tokio::test]
+    async fn status_default_reports_missing_default_agent() {
+        let (_home, host) = test_host();
+        let app = router(AppState::for_tcp(host));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body["code"], "not_found");
+        assert_eq!(body["error"], "no default agent configured");
+    }
+
     #[test]
     fn origin_guard_is_disabled_by_default_for_cookie_writes() {
         let (_home, host) = test_host();
