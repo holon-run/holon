@@ -15,6 +15,7 @@ ARTICLES = {
     "one-pr-one-work-item",
     "agents-in-a-small-team",
     "from-prompt-to-finished-work",
+    "event-driven-kernel",
 }
 CJK = re.compile(r"[\u3400-\u9fff]")
 DRAFT = re.compile(

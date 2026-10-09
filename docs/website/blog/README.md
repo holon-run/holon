@@ -56,6 +56,13 @@ order: 4
 <p>A small team's 77 days of recorded usage, device investigations, and hands-on testing show where shared agents fit—and where people still step in.</p>
 <span class="blog-read">Read the team story <span aria-hidden="true">→</span></span></div>
 </a>
+<a class="blog-story" href="/blog/event-driven-kernel">
+<img src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">ARCHITECTURE</span>
+<h3>From Request-Response to Event-Driven: Designing the Kernel for Long-Lived Agents</h3>
+<p>Why while(true) loops fail in production engineering. Drawing from OS history, we explore durable wait-wake scheduling and causal context design.</p>
+<span class="blog-read">Read the architecture <span aria-hidden="true">→</span></span></div>
+</a>
 </section>
 
 <footer class="blog-next">
@@ -84,6 +91,10 @@ order: 4
 
 - [From prompt to finished work: a practical Holon workflow](./from-prompt-to-finished-work.md)
   A repeatable workflow for giving an agent a real repository task, letting it work past the prompt, and checking the result when it comes back.
+  <!-- mdorigin:index kind=article -->
+
+- [From Request-Response to Event-Driven: Designing the Kernel for Long-Lived Agents](./event-driven-kernel.md)
+  Why while(true) loops fail in production software engineering. Drawing from OS history—from busy-waiting to hardware interrupts and epoll—we explore durable wait-wake scheduling, decoupled work state, and causal contexts for long-lived autonomous agents.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->
