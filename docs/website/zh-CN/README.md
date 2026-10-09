@@ -140,6 +140,13 @@ order: 1
 <p>从接口迁移到两个 PR 交替推进，看看目标、进度和等待条件如何跨轮保留。</p>
 <span class="home-reading-card__cta">拆解 WorkItem →</span>
 </a>
+<a class="home-reading-card" href="/zh-CN/blog/event-driven-kernel">
+<img class="home-reading-card__cover" src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
+<span class="home-reading-card__category">06 · 架构设计</span>
+<h3>从请求-响应到事件驱动：长周期 Agent 系统的内核设计</h3>
+<p>为什么死循环无法支撑生产级工作？借鉴操作系统中断演进史，解析长周期 Agent 的持久化等待与事件驱动内核。</p>
+<span class="home-reading-card__cta">探索内核架构 →</span>
+</a>
 </div>
 </section>
 

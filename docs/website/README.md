@@ -140,6 +140,13 @@ See how teams share agents, set up continuous code review, and explore the desig
 <p>From an API migration to two reviews running side by side, see how work items retain goals, progress, and pending results between conversations.</p>
 <span class="home-reading-card__cta">Explore the design →</span>
 </a>
+<a class="home-reading-card" href="/blog/event-driven-kernel">
+<img class="home-reading-card__cover" src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
+<span class="home-reading-card__category">06 · ARCHITECTURE</span>
+<h3>From Request-Response to Event-Driven: Designing the Kernel for Long-Lived Agents</h3>
+<p>Why while(true) loops fail in production software engineering. Lessons from OS interrupt history for long-lived autonomous agents.</p>
+<span class="home-reading-card__cta">Explore the kernel design →</span>
+</a>
 </div>
 </section>
 

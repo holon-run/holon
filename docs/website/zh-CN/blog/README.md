@@ -56,6 +56,13 @@ order: 4
 <p>77 天的留存用量、设备故障调查和真机测试，记录共享 Agent 怎样接入团队分工，以及哪些环节仍需要人。</p>
 <span class="blog-read">看团队如何协作 <span aria-hidden="true">→</span></span></div>
 </a>
+<a class="blog-story" href="/zh-CN/blog/event-driven-kernel">
+<img src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">系统架构</span>
+<h3>从请求-响应到事件驱动：长周期 Agent 系统的内核设计</h3>
+<p>为什么死循环无法支撑生产级工作？融合操作系统中断演进史与直观工程隐喻，解析长周期 Agent 的事件驱动内核。</p>
+<span class="blog-read">阅读架构设计 <span aria-hidden="true">→</span></span></div>
+</a>
 </section>
 
 <footer class="blog-next">
@@ -84,6 +91,10 @@ order: 4
 
 - [“从 Prompt 到完成工作：一套可复现的 Holon 工作流”](./from-prompt-to-finished-work.md)
   “给 Agent 一项真实的仓库任务，让它在 Prompt 结束后继续工作，并在回来时检查结果。”
+  <!-- mdorigin:index kind=article -->
+
+- [从请求-响应到事件驱动：长周期 Agent 系统的内核设计](./event-driven-kernel.md)
+  为什么死循环 while(true) 无法支撑生产级工作？融合操作系统中断演进史与直观工程隐喻，深度解析长周期自主 Agent 的持久化等待、唤醒调度与因果状态内核架构。
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->
