@@ -1920,8 +1920,14 @@ fn render_recent_turn_runtime_input_line(
                             .and_then(serde_json::Value::as_str)
                             .unwrap_or("unscheduled");
                         Some(format!(
-                            "work_item={} blocked_by={} recheck_at={}",
+                            "work_item={} objective={} blocked_by={} recheck_at={}",
                             bounded_inline(work_item_id, 80),
+                            bounded_inline(
+                                item.get("objective")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("unknown"),
+                                160,
+                            ),
                             bounded_inline(blocked_by, 120),
                             bounded_inline(recheck_at, 40),
                         ))

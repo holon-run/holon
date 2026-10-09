@@ -119,7 +119,8 @@ struct CanonicalClaimPlan {
     activation_id: String,
     scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
     work_item_id: Option<String>,
-    work_item_expectation: Option<crate::types::WorkItemRecord>,
+    work_item_expectation:
+        Option<crate::runtime_db::transitions::SchedulerClaimWorkItemExpectation>,
     execution_protocol: crate::runtime_db::transitions::ExecutionProtocolTransition,
 }
 
@@ -1736,12 +1737,24 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             wait_id,
             recovery_of_attempt_id,
         )?;
-        let work_item_expectation = matches!(
-            scenario,
+        let work_item_expectation = match scenario {
             scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
-                | scheduler::CanonicalActivationScenario::InternalFollowup { .. }
-        )
-        .then_some(work_item.clone());
+            | scheduler::CanonicalActivationScenario::InternalFollowup { .. } => Some(
+                crate::runtime_db::transitions::SchedulerClaimWorkItemExpectation::Runnable(
+                    work_item.clone(),
+                ),
+            ),
+            scheduler::CanonicalActivationScenario::BlockedRecheck {
+                expected_work_item_revision,
+                ..
+            } => Some(
+                crate::runtime_db::transitions::SchedulerClaimWorkItemExpectation::BlockedRecheck {
+                    record: work_item.clone(),
+                    minimum_revision: expected_work_item_revision,
+                },
+            ),
+            _ => None,
+        };
 
         Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
             activation_id,

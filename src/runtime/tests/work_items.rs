@@ -1356,6 +1356,14 @@ async fn blocked_recheck_turn_binds_target_work_item_without_switching_focus() {
     blocked.recheck_at = Some(clock.now() + chrono::Duration::milliseconds(50));
     storage.append_work_item(&blocked).unwrap();
 
+    // A distinct pre-existing persistent focus must survive the recheck turn.
+    let mut focus =
+        WorkItemRecord::new("default", "existing persistent focus", WorkItemState::Open);
+    focus.blocked_by = Some("focus blocker".into());
+    // Not due, so the focus stays non-runnable while remaining the current WorkItem.
+    focus.recheck_at = Some(clock.now() + chrono::Duration::hours(1));
+    storage.append_work_item(&focus).unwrap();
+
     let runtime = RuntimeHandle::new_with_clock(
         "default",
         dir.path().to_path_buf(),
@@ -1367,6 +1375,11 @@ async fn blocked_recheck_turn_binds_target_work_item_without_switching_focus() {
         clock.clone(),
     )
     .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_work_item_id = Some(focus.id.clone());
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
     let runtime_task = tokio::spawn(runtime.clone().run());
     advance_lifecycle_time(&clock, std::time::Duration::from_millis(50)).await;
 
@@ -1395,9 +1408,10 @@ async fn blocked_recheck_turn_binds_target_work_item_without_switching_focus() {
     );
 
     let state = runtime.agent_state().await.unwrap();
-    assert!(
-        state.current_work_item_id.is_none(),
-        "a recheck turn must not switch the agent's persistent current WorkItem"
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(focus.id.as_str()),
+        "a recheck turn must not switch or clear the agent's persistent current WorkItem"
     );
 
     let latest = runtime

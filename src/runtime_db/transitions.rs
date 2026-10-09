@@ -291,7 +291,7 @@ pub(crate) struct QueueTransitionCommand {
     pub agent_id: String,
     pub operation: QueueOperation,
     pub mutation: QueueMutation,
-    pub scheduler_claim_work_item: Option<WorkItemRecord>,
+    pub scheduler_claim_work_item: Option<SchedulerClaimWorkItemExpectation>,
     pub agent_state: Option<AgentStateMutation>,
     pub message_evidence: Vec<MessageEnvelope>,
     pub transcript_entries: Vec<TranscriptEntry>,
@@ -300,6 +300,15 @@ pub(crate) struct QueueTransitionCommand {
     pub notify_scheduler: bool,
     pub fault: Option<TransitionFaultPoint>,
     pub brief_evidence: Vec<BriefRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum SchedulerClaimWorkItemExpectation {
+    Runnable(WorkItemRecord),
+    BlockedRecheck {
+        record: WorkItemRecord,
+        minimum_revision: u64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -2941,9 +2950,9 @@ fn validate_scheduler_claim_work_item_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
     operation: QueueOperation,
-    expected: Option<&WorkItemRecord>,
+    expectation: Option<&SchedulerClaimWorkItemExpectation>,
 ) -> Result<()> {
-    let Some(expected) = expected else {
+    let Some(expectation) = expectation else {
         return Ok(());
     };
     if operation != QueueOperation::Claim {
@@ -2951,6 +2960,13 @@ fn validate_scheduler_claim_work_item_tx(
             "scheduler WorkItem claim guard is only valid for queue claim"
         ));
     }
+    let (expected, minimum_revision) = match expectation {
+        SchedulerClaimWorkItemExpectation::Runnable(record) => (record, None),
+        SchedulerClaimWorkItemExpectation::BlockedRecheck {
+            record,
+            minimum_revision,
+        } => (record, Some(*minimum_revision)),
+    };
     let actual = tx
         .query_row(
             "SELECT payload_json FROM work_items WHERE work_item_id = ?1",
@@ -2969,6 +2985,15 @@ fn validate_scheduler_claim_work_item_tx(
             &expected.id,
         )
         .into());
+    }
+    if let Some(minimum_revision) = minimum_revision {
+        if expected.revision < minimum_revision || expected.blocked_by.is_none() {
+            return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+                "scheduler_claim_work_item",
+                &expected.id,
+            )
+            .into());
+        }
     }
     let mut statement = tx.prepare(
         "SELECT payload_json
@@ -3005,7 +3030,13 @@ fn validate_scheduler_claim_work_item_tx(
             trigger_delivery_by_id: &trigger_delivery_by_id,
         },
     );
-    if scheduling.scheduling_state != WorkItemSchedulingState::Runnable {
+    let expected_scheduling_state = match expectation {
+        SchedulerClaimWorkItemExpectation::Runnable(_) => WorkItemSchedulingState::Runnable,
+        SchedulerClaimWorkItemExpectation::BlockedRecheck { .. } => {
+            WorkItemSchedulingState::Blocked
+        }
+    };
+    if scheduling.scheduling_state != expected_scheduling_state {
         return Err(RuntimeStateTransitionConflict::concurrent_mutation(
             "scheduler_claim_work_item",
             &expected.id,
@@ -6383,7 +6414,9 @@ mod tests {
                 agent_id: "agent-a".into(),
                 operation: QueueOperation::Claim,
                 mutation: QueueMutation::Consume(claimed),
-                scheduler_claim_work_item: Some(work_item.clone()),
+                scheduler_claim_work_item: Some(SchedulerClaimWorkItemExpectation::Runnable(
+                    work_item.clone(),
+                )),
                 agent_state: None,
                 message_evidence: Vec::new(),
                 transcript_entries: Vec::new(),
@@ -6406,6 +6439,107 @@ mod tests {
         assert!(conflict.retryable());
         assert_eq!(db.queue_entries().latest_all()?, vec![queued]);
         assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn queue_claim_revalidates_blocked_recheck_work_item_inside_transaction() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let mut blocked = work_item("work-blocked-recheck");
+        blocked.blocked_by = Some("waiting for recheck".into());
+        db.work_items().insert_new(&blocked)?;
+        let now = Utc::now();
+        let queued = QueueEntryRecord {
+            message_id: "message-blocked-recheck".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        db.queue_entries().upsert(&queued)?;
+        let mut claimed = queued.clone();
+        claimed.status = QueueEntryStatus::Dequeued;
+        claimed.updated_at += chrono::Duration::seconds(1);
+
+        // A blocked-recheck expectation accepts the still-blocked item and
+        // fences its exact revision inside the claim transaction.
+        let commit = db.transitions().commit_queue(&QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Claim,
+            mutation: QueueMutation::Consume(claimed),
+            scheduler_claim_work_item: Some(SchedulerClaimWorkItemExpectation::BlockedRecheck {
+                record: blocked.clone(),
+                minimum_revision: blocked.revision,
+            }),
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: vec![AuditEvent::legacy(
+                "queue_entry_claimed",
+                serde_json::json!({}),
+            )],
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        })?;
+        assert!(commit.applied);
+
+        // A concurrent mutation (blocker cleared, revision bumped) between the
+        // scheduler decision and the claim must reject the stale recheck turn.
+        let mut cleared = blocked.clone();
+        cleared.revision += 1;
+        cleared.blocked_by = None;
+        cleared.updated_at += chrono::Duration::seconds(1);
+        db.work_items()
+            .update_expected(&cleared, blocked.revision)?;
+        let mut requeued = queued.clone();
+        requeued.message_id = "message-blocked-recheck-2".into();
+        db.queue_entries().upsert(&requeued)?;
+        let mut reclaimed = requeued.clone();
+        reclaimed.status = QueueEntryStatus::Dequeued;
+        reclaimed.updated_at += chrono::Duration::seconds(1);
+
+        let error = db
+            .transitions()
+            .commit_queue(&QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Claim,
+                mutation: QueueMutation::Consume(reclaimed),
+                scheduler_claim_work_item: Some(
+                    SchedulerClaimWorkItemExpectation::BlockedRecheck {
+                        record: blocked.clone(),
+                        minimum_revision: blocked.revision,
+                    },
+                ),
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: vec![AuditEvent::legacy(
+                    "queue_entry_claimed",
+                    serde_json::json!({}),
+                )],
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            })
+            .unwrap_err();
+
+        let conflict = error
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .expect("stale blocked-recheck WorkItem claim should return typed conflict");
+        assert_eq!(conflict.domain(), "scheduler_claim_work_item");
+        assert_eq!(conflict.record_id(), blocked.id);
+        assert!(conflict.retryable());
+        // The rejected claim left the re-queued entry untouched (still Queued).
+        let entries = db.queue_entries().latest_all()?;
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|entry| {
+            entry.message_id == "message-blocked-recheck-2"
+                && entry.status == QueueEntryStatus::Queued
+        }));
         Ok(())
     }
 
