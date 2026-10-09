@@ -136,6 +136,7 @@ jobs:
       ios_app: ${{ steps.filter.outputs.ios_app }}
       macos_app: ${{ steps.filter.outputs.macos_app }}
       macos_rust_check: ${{ steps.filter.outputs.macos_rust_check }}
+      src_non_tui: ${{ steps.src-scope.outputs.src_non_tui }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -220,7 +221,6 @@ jobs:
               - 'scripts/ios_simulator_text_size.py'
               - 'scripts/test-ios-build-tools.py'
               - 'scripts/package-ios-archive.sh'
-              - 'src/**'
               - 'crates/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -241,6 +241,23 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'build.rs'
+      # Non-TUI Rust changes still gate iOS. paths-filter's default 'some'
+      # quantifier cannot express exclusion (a '!' rule would match every
+      # other path), so this dedicated step uses predicate-quantifier: every
+      # to AND the rules per file: src/** minus TUI-only sources.
+      - uses: dorny/paths-filter@v3
+        id: src-scope
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        with:
+          predicate-quantifier: every
+          filters: |
+            src_non_tui:
+              - 'src/**'
+              - '!src/tui/**'
+              - '!src/tui.rs'
+              - '!src/tui_markdown.rs'
+              - '!src/onboarding_tui.rs'
+              - '!src/runtime/tests/tui_pipeline_e2e.rs'
 
   web:
     name: Web
@@ -308,7 +325,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 60
     needs: changes
-    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true'
+    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true' || needs.changes.outputs.src_non_tui == 'true'
     steps:
       - uses: actions/checkout@v4
       - name: Require Xcode and an available iOS 18+ simulator
