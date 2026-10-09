@@ -458,8 +458,12 @@ internal fun HolonUiState.canDeleteNetwork(networkId: String): Boolean =
 internal fun HolonUiState.afterDeletingNetwork(
     networkId: String,
     profiles: List<NetworkProfile>,
+    sessionIsCurrent: Boolean = true,
 ): HolonUiState =
-    if (session?.networkId == networkId ||
+    // Saved profiles remain authoritative even after a session transition.
+    if (!sessionIsCurrent) {
+        copy(networkProfiles = profiles)
+    } else if (session?.networkId == networkId ||
         (session == null && networkProfiles.firstOrNull { it.networkId == networkId }?.baseUrl == baseUrl)
     ) {
         HolonUiState(phase = AppPhase.SignedOut, networkProfiles = profiles, statusMessage = "网络已删除")

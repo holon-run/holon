@@ -460,16 +460,17 @@ internal class HolonViewModel(
                     repository.deleteNetwork(networkId)
                     repository.networkProfiles()
                 }
-                if (generation != liveSyncGeneration) return@launch
-                mutableState.update { it.afterDeletingNetwork(networkId, profiles) }
+                mutableState.update {
+                    it.afterDeletingNetwork(networkId, profiles, sessionIsCurrent = generation == liveSyncGeneration)
+                }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                if (generation != liveSyncGeneration) return@launch
                 val profiles = withContext(Dispatchers.IO) {
                     runCatching { repository.networkProfiles() }.getOrDefault(before.networkProfiles)
                 }
                 mutableState.update {
+                    if (generation != liveSyncGeneration) return@update it.copy(networkProfiles = profiles)
                     // Deleting the current network invalidates its lease before local cleanup.
                     val next = if (deletingCurrent) before.afterDeletingNetwork(networkId, profiles)
                     else it.copy(busy = false, networkProfiles = profiles)

@@ -115,6 +115,7 @@ internal fun SettingsScreen(state: HolonUiState, viewModel: SettingsActions, onB
                     onSwitch = viewModel::switchNetwork,
                     onAdd = viewModel::beginAddNetwork,
                     onDelete = { networkId -> pendingNetworkDeletion = state.networkProfiles.firstOrNull { it.networkId == networkId } },
+                    statusMessage = state.statusMessage,
                 )
             }
             item {
@@ -210,8 +211,12 @@ internal fun NetworkSection(
     onSwitch: (String) -> Unit,
     onAdd: () -> Unit,
     onDelete: (String) -> Unit,
+    statusMessage: String? = null,
 ) {
     HolonSection(ui("网络")) {
+        statusMessage?.let {
+            Text(ui(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         profiles.sortedByDescending { it.networkId == currentNetworkId }.forEach { profile ->
             val isCurrent = profile.networkId == currentNetworkId
             SavedNetworkRow(

@@ -150,6 +150,9 @@ internal fun LoginScreen(state: HolonUiState, viewModel: ConnectionActions, addi
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            state.statusMessage?.let {
+                Text(ui(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             if (shouldShowSavedNetworks(addingNetwork, state.networkProfiles)) {
                 Text(ui("已保存的网络"), style = MaterialTheme.typography.titleSmall)
                 state.networkProfiles.forEach { profile ->

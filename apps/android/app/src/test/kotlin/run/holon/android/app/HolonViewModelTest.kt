@@ -159,6 +159,35 @@ class HolonViewModelTest {
     }
 
     @Test
+    fun `completed deletion refreshes saved profiles after authentication failure`() {
+        val current = networkDeletionState().copy(
+            phase = AppPhase.SignedOut,
+            session = null,
+            error = "登录已失效，请重新登录",
+        )
+        val remaining = current.networkProfiles.filterNot { it.networkId == "network-a" }
+
+        val updated = current.afterDeletingNetwork("network-a", remaining, sessionIsCurrent = false)
+
+        assertEquals(current.copy(networkProfiles = remaining), updated)
+    }
+
+    @Test
+    fun `stale deletion refreshes saved profiles without replacing a newer session transition`() {
+        val original = networkDeletionState()
+        val remaining = original.networkProfiles.filterNot { it.networkId == "network-a" }
+        val current = original.copy(
+            session = original.session!!.copy(networkId = "network-b", baseUrl = remaining.single().baseUrl),
+            busy = true,
+            statusMessage = "正在切换网络…",
+        )
+
+        val updated = current.afterDeletingNetwork("network-a", remaining, sessionIsCurrent = false)
+
+        assertEquals(current.copy(networkProfiles = remaining), updated)
+    }
+
+    @Test
     fun `deleting the last network leaves an empty signed out screen`() {
         val current = networkDeletionState()
         val updated = current.afterDeletingNetwork("network-a", emptyList())

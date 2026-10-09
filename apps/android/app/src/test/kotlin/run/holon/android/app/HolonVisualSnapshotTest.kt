@@ -216,6 +216,20 @@ class HolonVisualSnapshotTest {
     }
 
     @Test
+    fun networkDeletionProgressChinese() {
+        paparazzi.snapshot {
+            PreviewFrame {
+                NetworkSection(
+                    profiles = listOf(NetworkProfile("office", "办公网络", "https://office.example/api/", false)),
+                    currentNetworkId = "office", busy = true, switchingNetworkId = null,
+                    onSwitch = {}, onAdd = {}, onDelete = {},
+                    statusMessage = "正在删除网络…",
+                )
+            }
+        }
+    }
+
+    @Test
     fun networkDeletionConfirmationChinese() {
         paparazzi.snapshot {
             PreviewFrame {
@@ -281,6 +295,19 @@ class HolonVisualSnapshotTest {
 }
 
 class HolonPendingEnglishVisualSnapshotTest {
+    @Test fun networkDeletionSuccessEnglish() {
+        paparazzi.snapshot {
+            PreviewFrame {
+                NetworkSection(
+                    profiles = listOf(NetworkProfile("lab", "Lab", "https://lab.example/api/", false)),
+                    currentNetworkId = null, busy = false, switchingNetworkId = null,
+                    onSwitch = {}, onAdd = {}, onDelete = {},
+                    statusMessage = "网络已删除",
+                )
+            }
+        }
+    }
+
     @Test fun savedNetworksEnglish() {
         paparazzi.snapshot {
             PreviewFrame {
