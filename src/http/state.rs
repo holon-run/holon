@@ -30,6 +30,13 @@ fn resolve_default_agent_id(state: &AppState) -> Result<String, (StatusCode, Jso
         .ok_or_else(|| not_found("no default agent configured"))
 }
 
+fn authorize_default_route(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    authorize_remote_access(headers, state).map_err(|err| auth_required(err.to_string()))
+}
+
 pub async fn enqueue_default(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -277,6 +284,7 @@ pub async fn status_default(
     headers: HeaderMap,
     Query(query): Query<AgentSummaryQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_default_route(&headers, &state)?;
     let agent_id = resolve_default_agent_id(&state)?;
     agent_summary(
         agent_id,
@@ -338,6 +346,9 @@ async fn agent_summary(
 }
 
 pub async fn state_default(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AxumResponse {
+    if let Err(error) = authorize_default_route(&headers, &state) {
+        return error.into_response();
+    }
     let agent_id = match resolve_default_agent_id(&state) {
         Ok(agent_id) => agent_id,
         Err(error) => return error.into_response(),
@@ -1153,6 +1164,7 @@ pub async fn briefs_default(
     headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_default_route(&headers, &state)?;
     let agent_id = resolve_default_agent_id(&state)?;
     briefs(Path(agent_id), State(state), headers, Query(query)).await
 }
@@ -1250,6 +1262,7 @@ pub async fn transcript_default(
     headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_default_route(&headers, &state)?;
     let agent_id = resolve_default_agent_id(&state)?;
     transcript(Path(agent_id), State(state), headers, Query(query)).await
 }
@@ -1258,6 +1271,7 @@ pub async fn worktree_summary_default(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_default_route(&headers, &state)?;
     let agent_id = resolve_default_agent_id(&state)?;
     worktree_summary(Path(agent_id), State(state), headers).await
 }
