@@ -9,6 +9,8 @@ import type {
   RuntimeModelCatalog,
 } from "../../runtime/types";
 
+const DEFAULT_TEMPLATE_ID = "holon-default";
+
 interface OnboardingModalProps {
   modelCatalog: RuntimeModelCatalog;
   modelCatalogLoading: boolean;
@@ -36,7 +38,7 @@ export function OnboardingModal({
   const [step, setStep] = useState<1 | 2>(1);
   const [model, setModel] = useState("");
   const [agentId, setAgentId] = useState("");
-  const [template, setTemplate] = useState("");
+  const [template, setTemplate] = useState(DEFAULT_TEMPLATE_ID);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
 
@@ -51,19 +53,13 @@ export function OnboardingModal({
     }
   }, [availableModels, model, runtimeConfig.surface?.modelDefault]);
 
-  useEffect(() => {
-    if (!template && templates.length > 0) {
-      setTemplate(templates[0].template);
-    }
-  }, [template, templates]);
-
   function close(): void {
     if (!busy) onClose();
   }
 
   async function finish(): Promise<void> {
     const trimmedAgentId = agentId.trim();
-    if (!model || !trimmedAgentId || !template) return;
+    if (!model || !trimmedAgentId) return;
     setBusy(true);
     setError(undefined);
     try {
@@ -157,7 +153,7 @@ export function OnboardingModal({
                 <span role="status">{t("onboarding.loadingTemplate")}</span>
               ) : (
                 <select value={template} onChange={(event) => setTemplate(event.target.value)} disabled={busy}>
-                  <option value="">{t("app.chooseTemplate")}</option>
+                  <option value={DEFAULT_TEMPLATE_ID}>{t("onboarding.defaultTemplateOption")}</option>
                   {templates.map((entry) => (
                     <option key={entry.catalogId} value={entry.template}>
                       {entry.name} ({entry.source})
@@ -167,12 +163,12 @@ export function OnboardingModal({
               )}
             </label>
             {templates.length === 0 && !templateCatalogLoading ? (
-              <span className="connection-error" role="alert">{t("onboarding.noTemplates")}</span>
+              <span role="note">{t("onboarding.noTemplatesNote")}</span>
             ) : null}
             {error ? <span className="connection-error" role="alert">{error}</span> : null}
             <div className="modal-actions">
               <Button type="button" variant="outline" disabled={busy} onClick={() => setStep(1)}>{t("onboarding.back")}</Button>
-              <Button type="submit" variant="accent" disabled={busy || !agentId.trim() || !template}>
+              <Button type="submit" variant="accent" disabled={busy || !agentId.trim()}>
                 {busy ? t("common.creating") : t("onboarding.finish")}
               </Button>
             </div>
