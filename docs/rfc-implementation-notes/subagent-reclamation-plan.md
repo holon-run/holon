@@ -1,13 +1,13 @@
 # Subagent 清理与运行体回收：调研及实施计划
 
-状态：待实施；本文件是可随实现更新的计划，不是运行时契约。
+状态：实施与验证中；本文件是可随实现更新的计划，不是运行时契约。
 
 关联 RFC：[`rfc-subagent-residency-and-reclamation`](../rfcs/subagent-residency-and-reclamation.md)。
 关联需求：[#3430](https://github.com/holon-run/holon/issues/3430)。
 
 调研日期：2026-10-09。代码基线：
 [`93fa91260fbf`](https://github.com/holon-run/holon/commit/93fa91260fbfd1dce484b4e585c2014f360b9c0f)。
-以下文件和符号是该快照的定位信息，实施前应复核。当前结论来自源码检查，
+第二节的文件和符号是改造前快照；最新实施状态见第七节。调研结论来自源码检查，
 没有执行现网清理，也没有通过压力测试确认内存、进程或磁盘泄漏。
 
 ## 一、实施结论
@@ -217,3 +217,36 @@ P1 可以独立交付；P2 在 P1 的可用删除入口之上闭环；P3 独立�
 实施 PR 同步更新删除准入、监督关系与工具文档；运行体退出落地时同步 host
 activation 契约。阶段状态和具体符号更新在本计划及 implementation matrix 中，
 RFC 只在职责或语义边界变化时修改。
+
+## 七、实施记录（2026-10-09）
+
+P1、P2、P3 的代码已落在任务分支，当前继续验证，尚未上线。
+
+| 阶段 | 已实现 | 当前验证 |
+| --- | --- | --- |
+| P1 | `DeleteAgent`；当前监督关系、权限和 incarnation 校验；SQLite 准入 fence；旧运行体协作退出；保守产物保护和 worktree 预检/阶段复检 | parent 授权、队列两种顺序、开放工作/文件保护、真实调用结果保全测试已通过；资源与全量回归继续执行 |
+| P2 | migration 77 持久观察与 outbox；每批 16 个的 keyset 补扫；self `GetAgent` 责任清单；每天最多一批普通内部提醒；孤儿与重复失败 operator brief | 重启、幂等、停止/预算、分页与孤儿通知四组测试通过；无自由文本解析或 TTL 删除 |
+| P3 | 实例 admission gate；有主的任务 handle；同 generation join/移除；host message/callback 重试定位；独立开关 | 闲置退出、读取不激活、重新加载、过期 generation 和已受理操作保护测试通过；callback 与实际进程入口测试继续执行 |
+
+实施中发现旧 `converge_private_child_identities` 会依据缺少 home、parent 或历史 task
+直接 tombstone 并移除目录。该路径已移除；明确终态的一次性子任务沿用持久删除
+准入/遗留修复扫描，责任不明确的对象保留并诊断。相关启动回归改为验证保全。
+
+提醒首期直接读取已有任务、队列、监督和状态事实，按 keyset 周期补扫，不另建
+一套领域事件消费者。观察记录只在事实变化时更新；一次事务提交提醒批次、消息
+outbox 和冷却时间。投递与 ack 之间重启复用同一个消息 ID，交既有队列幂等处理。
+这减少事件丢失/重复投影的维护面；规模增大后可用既有事件作加速提示，周期补扫仍保留。
+大 fleet 的发现延迟随批次数增加，首期不承诺固定的全量扫描完成时间。
+
+运行体观察独立使用内存中的活动证据与单调时钟，不把扫描时间当作最后使用时间。
+任务归档或缺少状态不证明空闲；缺少历史证据先等待观察期。默认 callback 是可由
+host 重新解析并加载的持久入口；有实际 wait、timer 或 pending wake 的实例仍排除。
+
+删除保护优先阻止而非迁移：有 child 产物元数据、任务输出文件、未知 AgentHome
+内容、后代责任或不安全 worktree 时返回 blocker。只删除 child 自建、干净、独占、
+取得 cleanup lease 的 worktree，不 force remove；Git branch 历史继续保留。
+canonical parent 结果在共享 DB 中保全，身份配置与可重建缓存随明确删除一起回收。
+
+新增配置键均支持 get/set/unset。提醒和闲置退出默认 `false`，观察阈值默认 600 秒。
+部署级真实 RSS、外部进程驻留与模型恢复延迟尚未测量，因此本 PR 不自动启用、
+部署或重启现网。验证数据只描述测试 runtime 的资源退出与持久事实。

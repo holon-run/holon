@@ -1071,6 +1071,7 @@ fn stored_command_hash_tx(
 }
 
 pub(crate) fn persist_state_tx(tx: &Transaction<'_>, state: &ExecutionProtocolState) -> Result<()> {
+    crate::runtime_db::reclamation::ensure_work_admission_tx(tx, &state.agent_id)?;
     execution_protocol::assert_invariants(state)
         .map_err(|error| anyhow!("invalid execution protocol state: {error}"))?;
     tx.execute(

@@ -20,6 +20,7 @@ pub(crate) mod create_agent;
 pub(crate) mod create_external_trigger;
 pub(crate) mod create_work_item;
 pub(crate) mod create_worktree;
+pub(crate) mod delete_agent;
 pub(crate) mod detach_workspace;
 pub(crate) mod enqueue;
 pub(crate) mod exec_command;
@@ -77,6 +78,7 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         timer::get_definition()?,
         timer::cancel_definition()?,
         get_agent::definition()?,
+        delete_agent::definition()?,
         enqueue::definition()?,
         create_agent::definition()?,
         send_agent_message::definition()?,
@@ -167,7 +169,10 @@ fn execute_builtin_tool_inner<'a>(
         };
     }
 
-    match call.name.as_str() {
+    let future: Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> = match call
+        .name
+        .as_str()
+    {
         advisory_decision::NAME => Box::pin(advisory_decision::execute(
             runtime,
             agent_id,
@@ -192,6 +197,7 @@ fn execute_builtin_tool_inner<'a>(
         timer::LIST_NAME => Box::pin(timer::list(runtime, &call.input)),
         timer::GET_NAME => Box::pin(timer::get(runtime, &call.input)),
         timer::CANCEL_NAME => Box::pin(timer::cancel(runtime, &call.input)),
+        delete_agent::NAME => Box::pin(delete_agent::execute(runtime, &call.input)),
         get_agent::NAME => Box::pin(get_agent::execute(
             runtime,
             agent_id,
@@ -431,7 +437,11 @@ fn execute_builtin_tool_inner<'a>(
             &call.input,
         )),
         _ => Box::pin(async move { Err(anyhow!("unknown builtin tool {}", call.name)) }),
-    }
+    };
+    Box::pin(async move {
+        let _admission = runtime.execution_admission_lease()?;
+        future.await
+    })
 }
 
 pub(crate) fn render_tool_result_for_model(result: &ToolResult) -> Result<String> {
@@ -618,6 +628,7 @@ mod tests {
             "CreateWorkItem" => "src/tool/tool_descriptions/create_work_item.md",
             "CreateWorktree" => "src/tool/tool_descriptions/create_worktree.md",
             "DetachWorkspace" => "src/tool/tool_descriptions/detach_workspace.md",
+            "DeleteAgent" => "src/tool/tool_descriptions/delete_agent.md",
             "Enqueue" => "src/tool/tool_descriptions/enqueue.md",
             "ExecCommand" => "src/tool/tool_descriptions/exec_command.md",
             "ExecCommandBatch" => "src/tool/tool_descriptions/exec_command_batch.md",

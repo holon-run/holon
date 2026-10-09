@@ -135,6 +135,9 @@ pub(crate) struct EvidenceInsert<'a> {
 }
 
 pub(crate) fn insert_evidence_tx(tx: &Transaction<'_>, evidence: EvidenceInsert<'_>) -> Result<()> {
+    if evidence.table == "artifact_metadata" {
+        super::reclamation::ensure_work_admission_tx(tx, evidence.agent_id)?;
+    }
     let existing_payload = tx
         .query_row(
             &format!(
@@ -292,6 +295,9 @@ pub(crate) fn append_transcript_entry_tx(
 }
 
 pub(crate) fn upsert_agent_state_tx(tx: &Transaction<'_>, record: &AgentState) -> Result<()> {
+    if record.current_run_id.is_some() || record.status == crate::types::AgentStatus::AwakeRunning {
+        super::reclamation::ensure_work_admission_tx(tx, &record.id)?;
+    }
     let payload_json = serde_json::to_string(record)?;
     let status = enum_string(&record.status)?;
     let now = timestamp(Utc::now());
@@ -366,6 +372,10 @@ pub(crate) fn upsert_workspace_occupancy_tx(
     tx: &Transaction<'_>,
     record: &WorkspaceOccupancyRecord,
 ) -> Result<()> {
+    if record.released_at.is_none() {
+        super::reclamation::ensure_work_admission_tx(tx, &record.holder_agent_id)?;
+        super::reclamation::ensure_root_admission_tx(tx, &record.execution_root_id)?;
+    }
     let payload_json = serde_json::to_string(record)?;
     let access_mode = enum_string(&record.access_mode)?;
     tx.execute(
@@ -400,6 +410,18 @@ pub(crate) fn upsert_execution_root_entry_tx(
     tx: &Transaction<'_>,
     record: &ExecutionRootEntry,
 ) -> Result<()> {
+    if record.removed_at.is_none() {
+        super::reclamation::ensure_root_admission_tx(tx, &record.execution_root_id)?;
+        if let Some(worktree) = &record.worktree {
+            for agent_id in worktree
+                .authorized_agent_ids
+                .iter()
+                .chain(worktree.registered_by_agent_id.iter())
+            {
+                super::reclamation::ensure_work_admission_tx(tx, agent_id)?;
+            }
+        }
+    }
     let existing_removed_at = tx
         .query_row(
             "SELECT removed_at FROM execution_root_entries

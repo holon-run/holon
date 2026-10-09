@@ -322,6 +322,7 @@ impl RuntimeHandle {
     }
 
     pub async fn control(&self, action: ControlAction) -> Result<()> {
+        let _admission = self.execution_admission_lease()?;
         let outcome = super::scheduler_executor::SchedulerDecisionExecutor::new(self)
             .apply_control(action)
             .await?;
@@ -433,6 +434,55 @@ impl RuntimeHandle {
         }
         self.inner.notify.notify_one();
         Ok(())
+    }
+
+    /// Hold the same lock used by scheduler/ingress while committing the fence.
+    /// An unsuccessful admission leaves the runtime available.
+    pub(crate) async fn admit_idle_cleanup<T>(
+        &self,
+        admit: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let guard = self.inner.agent.lock().await;
+        let tasks = self.inner.task_handles.lock().await;
+        anyhow::ensure!(
+            !self
+                .inner
+                .shutdown_requested
+                .load(std::sync::atomic::Ordering::SeqCst),
+            "agent_cleanup_runtime_exiting"
+        );
+        anyhow::ensure!(
+            matches!(
+                guard.state.status,
+                AgentStatus::AwakeIdle | AgentStatus::Asleep | AgentStatus::Stopped
+            ) && guard.state.current_run_id.is_none()
+                && guard.queue.len() == 0
+                && tasks.is_empty(),
+            "agent_cleanup_blocked: live_execution"
+        );
+        anyhow::ensure!(
+            self.inner.model_discovery_refreshes.lock().await.is_empty(),
+            "agent_cleanup_blocked: model_discovery"
+        );
+        anyhow::ensure!(
+            self.inner
+                .owned_task_handles
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|task| task.is_finished()),
+            "agent_cleanup_blocked: owned_task_exit_pending"
+        );
+        let closing = self.inner.execution_admission.try_close()?;
+        let admitted = admit()?;
+        closing.commit();
+        self.inner
+            .shutdown_requested
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(tasks);
+        drop(guard);
+        self.inner.notify.notify_one();
+        Ok(admitted)
     }
 
     pub(crate) async fn request_service_shutdown(&self) -> Result<()> {
@@ -1043,6 +1093,7 @@ impl RuntimeHandle {
     }
 
     pub async fn attach_workspace(&self, workspace: &WorkspaceEntry) -> Result<()> {
+        let _admission = self.execution_admission_lease()?;
         // Workspace cleanup is a mutation concern. Keep GET projections read-only while
         // opportunistically repairing stale attachments before applying a new binding.
         self.prune_stale_attached_workspaces().await?;
@@ -1404,6 +1455,7 @@ impl RuntimeHandle {
         cwd: Option<PathBuf>,
         branch_name: Option<String>,
     ) -> Result<()> {
+        let _admission = self.execution_admission_lease()?;
         let agent_id = self.agent_id().await?;
         let existing_state = self.agent_state().await?;
         if !existing_state
@@ -1582,6 +1634,7 @@ impl RuntimeHandle {
         access_mode: WorkspaceAccessMode,
         cwd: Option<PathBuf>,
     ) -> Result<()> {
+        let _admission = self.execution_admission_lease()?;
         let execution_root = crate::system::workspace::normalize_path(&worktree_root)?;
         let base_execution_root_id = Self::build_execution_root_id(
             &workspace.workspace_id,
@@ -1758,6 +1811,7 @@ impl RuntimeHandle {
     }
 
     pub async fn exit_workspace(&self) -> Result<()> {
+        let _admission = self.execution_admission_lease()?;
         let state = self.agent_state().await?;
         let Some(active_entry) = state.active_workspace_entry.clone() else {
             return Err(anyhow!("agent has no active workspace entry"));
@@ -1920,7 +1974,7 @@ impl RuntimeHandle {
         sleeping_until: chrono::DateTime<chrono::Utc>,
     ) {
         let runtime = self.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             runtime.inner.clock.sleep_until(sleeping_until).await;
             let should_wake = {
                 let guard = runtime.inner.agent.lock().await;
@@ -1969,6 +2023,7 @@ impl RuntimeHandle {
             ));
             let _ = runtime.enqueue(message).await;
         });
+        self.track_owned_task(handle);
     }
 
     pub(super) async fn agent_id(&self) -> Result<String> {

@@ -4390,3 +4390,34 @@ fn otlp_exporter_config_loads_authorization_from_credential_profile() {
         .to_string()
         .contains("must not configure authorization when credential_profile is set"));
 }
+
+#[test]
+fn reclamation_config_roundtrips_and_requires_positive_grace() {
+    let mut config = HolonConfigFile::default();
+    for (key, value, expected) in [
+        (
+            "runtime.reclamation.idle_retirement_enabled",
+            "true",
+            serde_json::json!(true),
+        ),
+        (
+            "runtime.reclamation.reminders_enabled",
+            "true",
+            serde_json::json!(true),
+        ),
+        (
+            "runtime.reclamation.idle_grace_seconds",
+            "60",
+            serde_json::json!(60),
+        ),
+    ] {
+        set_config_key(&mut config, key, value).unwrap();
+        assert_eq!(get_config_key(&config, key).unwrap(), expected);
+        unset_config_key(&mut config, key).unwrap();
+        assert_eq!(
+            get_config_key(&config, key).unwrap(),
+            serde_json::Value::Null
+        );
+    }
+    assert!(set_config_key(&mut config, "runtime.reclamation.idle_grace_seconds", "0").is_err());
+}

@@ -535,6 +535,7 @@ impl RuntimeHandle {
         spec: CommandTaskSpec,
         authority_class: AuthorityClass,
     ) -> Result<TaskRecord> {
+        let _admission = self.execution_admission_lease()?;
         self.ensure_background_tasks_allowed("command_task").await?;
         self.ensure_process_execution_exposed("command_task")
             .await?;
@@ -555,6 +556,7 @@ impl RuntimeHandle {
         authority_class: &AuthorityClass,
         trace_context: Option<&crate::observability::TraceContext>,
     ) -> Result<ExecCommandResult> {
+        let _admission = self.execution_admission_lease()?;
         self.ensure_process_execution_exposed(crate::tool::names::EXEC_COMMAND)
             .await?;
         self.apply_command_output_policy(&mut spec);
@@ -732,6 +734,7 @@ impl RuntimeHandle {
         trace_context: Option<&crate::observability::TraceContext>,
         tool_name: &str,
     ) -> Result<ExecCommandResult> {
+        let _admission = self.execution_admission_lease()?;
         self.ensure_process_execution_exposed(tool_name).await?;
         self.apply_command_output_policy(&mut spec);
         let diagnostics = self.command_cost_diagnostics_for(&spec);
@@ -1069,7 +1072,7 @@ impl RuntimeHandle {
         let task_record = task.clone();
         let task_record_for_error = task.clone();
         let resolved_for_error = resolved.clone();
-        tokio::spawn(async move {
+        let monitor = tokio::spawn(async move {
             if let Err(err) = runtime
                 .run_command_task(
                     task_record,
@@ -1117,6 +1120,7 @@ impl RuntimeHandle {
                     .remove(&task_record_for_error.id);
             }
         });
+        self.track_owned_task(monitor);
 
         Ok(task)
     }

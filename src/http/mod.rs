@@ -87,14 +87,14 @@ pub(crate) use crate::{
     storage::EventLogPageOrder,
     system::{ExecutionScopeKind, HostLocalBoundary},
     types::{
-        AdmissionContext, AgentRegistryStatus, AgentState, AgentVisibility, AuditEvent,
-        AuthorityClass, BriefRecord, CallbackDeliveryPayload, CallbackDeliveryResult,
-        ControlAction, ExternalTriggerStateSnapshot, MessageBody, MessageDeliverySurface,
-        MessageEnvelope, MessageKind, MessageOrigin, OperatorTransportBinding,
-        OperatorTransportBindingStatus, OperatorTransportCapabilities,
-        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
-        TaskStatusSnapshot, TaskStopResult, TodoItem, TranscriptEntry, TurnTerminalRecord,
-        WorkItemPlanStatus, WorkItemRecord, WorkItemState,
+        AdmissionContext, AgentRegistryStatus, AgentState, AuditEvent, AuthorityClass, BriefRecord,
+        CallbackDeliveryPayload, CallbackDeliveryResult, ControlAction,
+        ExternalTriggerStateSnapshot, MessageBody, MessageDeliverySurface, MessageEnvelope,
+        MessageKind, MessageOrigin, OperatorTransportBinding, OperatorTransportBindingStatus,
+        OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
+        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TaskStatusSnapshot,
+        TaskStopResult, TodoItem, TranscriptEntry, TurnTerminalRecord, WorkItemPlanStatus,
+        WorkItemRecord, WorkItemState,
     },
 };
 mod agents;

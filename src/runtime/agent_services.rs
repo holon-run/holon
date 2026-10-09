@@ -36,6 +36,30 @@ pub(crate) struct AgentMessagingService<'a> {
 }
 
 impl RuntimeHandle {
+    pub(crate) async fn subagent_cleanup_candidates(
+        &self,
+    ) -> Result<Vec<crate::types::SubagentCleanupCandidate>> {
+        self.inner
+            .runtime_db
+            .subagent_cleanup_candidates(&self.agent_state().await?.id, 16)
+    }
+
+    pub(crate) async fn delete_supervised_child(
+        &self,
+        agent_id: &str,
+        incarnation: u64,
+    ) -> Result<crate::types::AgentDeletionJob> {
+        let _admission = self.execution_admission_lease()?;
+        let bridge = self
+            .inner
+            .host_bridge
+            .as_ref()
+            .ok_or_else(|| anyhow!("agent cleanup requires a host bridge"))?;
+        bridge
+            .delete_supervised_child(self, agent_id, incarnation)
+            .await
+    }
+
     pub(crate) fn agent_creation_service(&self) -> AgentCreationService<'_> {
         AgentCreationService { runtime: self }
     }
@@ -51,6 +75,7 @@ impl RuntimeHandle {
 
 impl AgentCreationService<'_> {
     pub(crate) async fn create(&self, request: CreateAgentRequest) -> Result<AgentCreateResult> {
+        let _admission = self.runtime.execution_admission_lease()?;
         let bridge = self
             .runtime
             .inner
@@ -67,6 +92,7 @@ impl AgentMessagingService<'_> {
         request: AgentMessageSendRequest,
         authority_class: AuthorityClass,
     ) -> Result<AgentMessageDeliveryReceipt> {
+        let _admission = self.runtime.execution_admission_lease()?;
         let bridge = self
             .runtime
             .inner
@@ -133,6 +159,7 @@ impl AgentInvocationService<'_> {
         request: InvokeAgentRequest,
     ) -> Pin<Box<dyn Future<Output = Result<AgentInvocationReceipt>> + Send + 'a>> {
         Box::pin(async move {
+            let _admission = self.runtime.execution_admission_lease()?;
             let message = request.message;
             if message.trim().is_empty() {
                 return Err(anyhow!("agent invocation requires a non-empty message"));

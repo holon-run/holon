@@ -397,6 +397,11 @@ pub struct RuntimeConfigFile {
     pub retention: RuntimeRetentionConfigFile,
     #[serde(
         default,
+        skip_serializing_if = "RuntimeReclamationConfigFile::is_empty"
+    )]
+    pub reclamation: RuntimeReclamationConfigFile,
+    #[serde(
+        default,
         skip_serializing_if = "RuntimeDiagnosticsConfigFile::is_empty"
     )]
     pub diagnostics: RuntimeDiagnosticsConfigFile,
@@ -651,6 +656,24 @@ impl ImageGenerationConfigFile {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeReclamationConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_retirement_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_grace_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reminders_enabled: Option<bool>,
+}
+impl RuntimeReclamationConfigFile {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.idle_retirement_enabled.is_none()
+            && self.idle_grace_seconds.is_none()
+            && self.reminders_enabled.is_none()
+    }
+}
+
 impl RuntimeConfigFile {
     pub(crate) fn is_empty(&self) -> bool {
         self.timezone.is_none()
@@ -664,6 +687,7 @@ impl RuntimeConfigFile {
             && self.disable_provider_fallback.is_none()
             && self.scheduler.is_none()
             && self.retention.is_empty()
+            && self.reclamation.is_empty()
             && self.diagnostics.is_empty()
             && self.observability.is_empty()
     }

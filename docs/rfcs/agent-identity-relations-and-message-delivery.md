@@ -1203,3 +1203,8 @@ receipts and a deletion-aware lifecycle fence, and expose it through
 Expose `CreateAgent`, `SendAgentMessage`, and `InvokeAgent`; remove `SpawnAgent`
 from the agent-facing tool surface without a versioned compatibility window;
 and defer explicit detach/persist plus authenticated operator HTTP invoke.
+
+An active retained child may carry `cleanup_required` supervision when its
+supervisor is unavailable. This records unresolved responsibility while leaving
+identity and data retained; it does not authorize automatic deletion or ownership
+transfer. See [subagent reclamation](./subagent-residency-and-reclamation.md).

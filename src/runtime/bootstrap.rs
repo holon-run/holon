@@ -378,7 +378,7 @@ impl Drop for ModelDiscoveryRefreshGuard {
         }
         let runtime = self.runtime.clone();
         let provider_id = self.provider_id.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             runtime
                 .inner
                 .model_discovery_refreshes
@@ -390,6 +390,7 @@ impl Drop for ModelDiscoveryRefreshGuard {
                 .model_discovery_refresh_notify
                 .notify_waiters();
         });
+        self.runtime.track_owned_task(handle);
     }
 }
 
@@ -727,8 +728,13 @@ impl RuntimeHandle {
         };
         let base_provider = provider.clone();
 
+        let identity_incarnation = runtime_db
+            .agent_identities()
+            .latest(&state.id)?
+            .map_or(1, |identity| identity.incarnation);
         let runtime = Self {
             inner: Arc::new(RuntimeInner {
+                identity_incarnation,
                 agent: Mutex::new(RuntimeAgent {
                     last_persisted_state: state.clone(),
                     state,
@@ -757,6 +763,7 @@ impl RuntimeHandle {
                 default_agent_id,
                 host_bridge,
                 task_handles: Mutex::new(HashMap::new()),
+                owned_task_handles: StdMutex::new(Vec::new()),
                 recovered_tasks: Mutex::new(Some(active_tasks)),
                 recovered_timers: Mutex::new(Some(active_timers)),
                 bootstrap_result: StdMutex::new(None),
@@ -769,6 +776,7 @@ impl RuntimeHandle {
                 ),
                 suppress_next_continue_active_tick: Mutex::new(false),
                 shutdown_requested: AtomicBool::new(false),
+                execution_admission: super::execution_admission::ExecutionAdmission::default(),
                 transition_faults: StdMutex::new(std::collections::VecDeque::new()),
                 #[cfg(test)]
                 completion_binding_replacement: StdMutex::new(None),
@@ -1359,6 +1367,9 @@ impl RuntimeHandle {
         config: &AppConfig,
         cache: &ModelDiscoveryCacheFile,
     ) {
+        let Ok(_admission) = self.execution_admission_lease() else {
+            return;
+        };
         let providers = config
             .providers
             .values()
@@ -1380,7 +1391,7 @@ impl RuntimeHandle {
             let cache_path = discovery_cache_path(&config.home_dir);
             let refresh_guard =
                 ModelDiscoveryRefreshGuard::new(runtime.clone(), provider_id.clone());
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 let result = refresh_provider_models(&provider, &cache_path).await;
                 match result {
                     Ok(report) => {
@@ -1406,6 +1417,7 @@ impl RuntimeHandle {
                 }
                 refresh_guard.release().await;
             });
+            self.track_owned_task(handle);
         }
     }
 

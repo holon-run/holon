@@ -21,6 +21,8 @@ pub mod destructive_operations;
 pub mod evidence;
 mod legacy_scheduler_wire;
 pub mod migrations;
+pub(crate) mod reclamation;
+pub(crate) mod reclamation_reminders;
 pub mod repositories;
 pub mod retention;
 pub mod retired_scheduler_cleanup;

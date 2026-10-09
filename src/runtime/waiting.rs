@@ -304,6 +304,7 @@ impl RuntimeHandle {
         reason: String,
         recheck_after_ms: Option<u64>,
     ) -> Result<WaitForRegistrationOutcome> {
+        let _admission = self.execution_admission_lease()?;
         for attempt in 0..3 {
             match self
                 .prepare_wait_for_outcome(
@@ -358,6 +359,7 @@ impl RuntimeHandle {
         reason: String,
         recheck_after_ms: Option<u64>,
     ) -> Result<PrepareWaitForOutcome> {
+        let _admission = self.execution_admission_lease()?;
         self.prepare_wait_for_outcome_with_id(
             agent_id,
             work_item_id,
@@ -1275,6 +1277,7 @@ impl RuntimeHandle {
     }
 
     pub async fn submit_wake_hint(&self, hint: WakeHint) -> Result<WakeDisposition> {
+        let _admission = self.execution_admission_lease()?;
         let runtime_agent_id = self.agent_id().await?;
         scheduler_executor::SchedulerDecisionExecutor::new(self)
             .reconcile_stale_run_projection(
@@ -1387,6 +1390,7 @@ impl RuntimeHandle {
         interval_ms: Option<u64>,
         summary: Option<String>,
     ) -> Result<TimerRecord> {
+        let _admission = self.execution_admission_lease()?;
         let created_at = self.now();
         let timer = TimerRecord {
             id: crate::ids::timer_id(),
@@ -1526,7 +1530,7 @@ impl RuntimeHandle {
 
     fn spawn_timer_loop(&self, timer: TimerRecord) {
         let runtime = self.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut timer = timer;
             loop {
                 let Some(next_fire_at) = timer.next_fire_at else {
@@ -1550,6 +1554,7 @@ impl RuntimeHandle {
                 }
             }
         });
+        self.track_owned_task(handle);
     }
 
     async fn recover_timer(&self, timer: TimerRecord) -> Result<()> {

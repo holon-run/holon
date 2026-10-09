@@ -63,7 +63,9 @@ idempotent; revision validation fences only job creation or replacement.
 
 After the fence commits, runtime bootstrap, ingress, wake, prompt, enqueue, and
 control paths must not return or create a runnable runtime for that identity.
-An already loaded runtime is unloaded when the deletion request is admitted.
+Operator deletion unloads an already loaded runtime at admission. Parent cleanup
+closes execution admission and cooperatively joins the retiring instance before
+resource removal.
 
 ## Supervised Child Terminal Disposition
 
@@ -233,3 +235,18 @@ round.
 Operator deletion, parent cascade, and terminal supervised cleanup acquire the
 same fence before changing a child identity, preventing a refresh from crossing
 the deletion admission boundary.
+
+## Parent-requested cleanup
+
+A supervising parent may directly request deletion of its ephemeral,
+supervision-attached private child. Authorization follows current supervision
+and capability policy, and the request identifies the child's incarnation.
+The `parent_cleanup` deletion mode fences new execution and references only
+after protected work and resources pass admission. It cooperatively joins owned
+runtime work and never cancels legitimate work to make deletion possible.
+Protected artifacts, descendants, dirty/shared/occupied or foreign worktrees
+block this mode; operator deletion retains its existing explicit semantics.
+Retries preserve the durable job and parent result. Missing parent/task evidence
+at startup is not authorization to archive a child or remove its home.
+
+See [subagent residency and reclamation](./subagent-residency-and-reclamation.md).

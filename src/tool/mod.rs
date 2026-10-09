@@ -123,6 +123,7 @@ fn tool_success_result_contract(name: &str) -> &'static str {
         tn::SLEEP => "SleepResult",
         tn::WAIT_FOR => "WaitForResult",
         tn::CREATE_AGENT => "AgentCreateResult",
+        tn::DELETE_AGENT => "DeleteAgentResult",
         tn::INVOKE_AGENT => "AgentInvocationReceipt",
         tn::SEND_AGENT_MESSAGE => "AgentMessageDeliveryReceipt",
         tn::TASK_INPUT => "TaskInputResult",
@@ -149,6 +150,7 @@ fn tool_success_result_schema(name: &str) -> Result<Option<Value>> {
         tn::LIST_TIMERS => schema::tool_result_schema::<tools::timer::ListTimersResult>()?,
         tn::LIST_TASKS => schema::tool_result_schema::<tools::task_list::ListTasksResult>()?,
         tn::CREATE_AGENT => schema::tool_result_schema::<crate::types::AgentCreateResult>()?,
+        tn::DELETE_AGENT => schema::tool_result_schema::<tools::delete_agent::DeleteAgentResult>()?,
         tn::INVOKE_AGENT => schema::tool_result_schema::<crate::types::AgentInvocationReceipt>()?,
         tn::SEND_AGENT_MESSAGE => {
             schema::tool_result_schema::<crate::types::AgentMessageDeliveryReceipt>()?

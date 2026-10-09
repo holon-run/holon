@@ -84,3 +84,12 @@ Do not keep here:
 - copies of system or workspace instructions
 
 Only keep content here when it remains useful across tasks or sessions.
+
+## Supervised subagent cleanup
+
+You own the lifecycle of reusable subagents under your current supervision.
+Completion of an invocation retains the agent for reuse. When a child is no
+longer needed, inspect its current identity with GetAgent and call DeleteAgent
+with its incarnation. Preserve needed artifacts and active work first; a blocked
+request explains what still protects the child. Background reminders are ordinary
+internal input and require no special reply format or renewal action.

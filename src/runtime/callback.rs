@@ -39,6 +39,7 @@ impl RuntimeHandle {
         &self,
         _delivery_mode: CallbackDeliveryMode,
     ) -> Result<ExternalTriggerCapability> {
+        let _admission = self.execution_admission_lease()?;
         let delivery_mode = CallbackDeliveryMode::WakeHint;
         let agent_id = self.agent_id().await?;
         let now = Utc::now();
@@ -82,6 +83,7 @@ impl RuntimeHandle {
         descriptor_id: &str,
         payload: CallbackDeliveryPayload,
     ) -> Result<CallbackDeliveryResult> {
+        let _admission = self.execution_admission_lease()?;
         let descriptor = self
             .inner
             .runtime_db

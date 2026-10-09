@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     future::Future,
     path::{Path, PathBuf},
@@ -361,6 +361,12 @@ struct AgentEntry {
     task: JoinHandle<()>,
     phase: watch::Receiver<AgentRuntimePhase>,
     generation: u64,
+    idle_observation: Option<IdleRuntimeObservation>,
+}
+
+struct IdleRuntimeObservation {
+    evidence: String,
+    since: std::time::Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,6 +380,7 @@ enum AgentRuntimePhase {
 impl AgentEntry {
     fn accepts_host_access(&self) -> bool {
         !self.task.is_finished()
+            && self.runtime.accepts_execution_admission()
             && matches!(
                 *self.phase.borrow(),
                 AgentRuntimePhase::Bootstrapping | AgentRuntimePhase::Running
@@ -390,7 +397,7 @@ enum HostRuntimePhase {
 
 struct HostRuntimeRegistry {
     phase: HostRuntimePhase,
-    agents: HashMap<String, AgentEntry>,
+    agents: BTreeMap<String, AgentEntry>,
     next_generation: u64,
     recovering: HashMap<String, RuntimeRecoveryClaim>,
 }
@@ -779,7 +786,7 @@ impl RuntimeHost {
                 bootstrap_ready_notify: Notify::new(),
                 runtimes: RwLock::new(HostRuntimeRegistry {
                     phase: HostRuntimePhase::Open,
-                    agents: HashMap::new(),
+                    agents: BTreeMap::new(),
                     next_generation: 1,
                     recovering: HashMap::new(),
                 }),
@@ -800,7 +807,6 @@ impl RuntimeHost {
             }),
         };
         host.ensure_legacy_public_agent_bootstraps()?;
-        host.converge_private_child_identities()?;
         host.import_legacy_external_triggers()?;
         Ok(host)
     }
@@ -1972,10 +1978,8 @@ impl RuntimeHost {
             match registry.phase {
                 HostRuntimePhase::Open => {
                     registry.phase = HostRuntimePhase::Closing;
-                    registry
-                        .agents
-                        .drain()
-                        .map(|(_, entry)| entry)
+                    std::mem::take(&mut registry.agents)
+                        .into_values()
                         .collect::<Vec<_>>()
                 }
                 HostRuntimePhase::Closing | HostRuntimePhase::Closed => return Ok(()),
@@ -2009,8 +2013,238 @@ impl RuntimeHost {
         Ok(())
     }
 
+    /// Wait for the idle scheduler to exit before removing its generation.
+    /// Timeout keeps the entry and its closed admission for a managed retry.
+    pub(crate) async fn finish_idle_runtime_exit(
+        &self,
+        agent_id: &str,
+        expected_generation: Option<u64>,
+    ) -> Result<()> {
+        let snapshot = {
+            let registry = self.inner.runtimes.read().await;
+            registry
+                .agents
+                .get(agent_id)
+                .filter(|entry| {
+                    expected_generation.is_none_or(|generation| entry.generation == generation)
+                })
+                .map(|entry| (entry.phase.clone(), entry.generation, entry.runtime.clone()))
+        };
+        let Some((mut phase, generation, runtime)) = snapshot else {
+            return Ok(());
+        };
+        runtime.join_idle_owned_tasks().await?;
+        tokio::time::timeout(HOST_SHUTDOWN_GRACE, async {
+            while *phase.borrow_and_update() != AgentRuntimePhase::Terminated {
+                if phase.changed().await.is_err() {
+                    break;
+                }
+            }
+        })
+        .await
+        .map_err(|_| anyhow!("idle runtime exit has not completed for {agent_id}"))?;
+        let entry = {
+            let mut registry = self.inner.runtimes.write().await;
+            if registry
+                .agents
+                .get(agent_id)
+                .is_some_and(|entry| entry.generation == generation)
+            {
+                registry.agents.remove(agent_id)
+            } else {
+                None
+            }
+        };
+        if let Some(entry) = entry {
+            entry.task.await?;
+        }
+        Ok(())
+    }
+
+    /// A bounded keyset observation over loaded instances; never activates one.
+    pub(crate) async fn scan_idle_runtime_candidates(
+        &self,
+        cursor: &mut Option<String>,
+        limit: usize,
+        grace: Duration,
+        allow_new: bool,
+    ) -> Result<Vec<(String, u64)>> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let batch = {
+            let registry = self.inner.runtimes.read().await;
+            if registry.phase != HostRuntimePhase::Open {
+                return Ok(Vec::new());
+            }
+            registry
+                .agents
+                .range::<String, _>((
+                    cursor.as_ref().map(Excluded).unwrap_or(Unbounded),
+                    Unbounded,
+                ))
+                .take(limit)
+                .map(|(id, entry)| {
+                    (
+                        id.clone(),
+                        entry.generation,
+                        entry.idle_observation.is_some()
+                            && !entry.runtime.accepts_execution_admission(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        *cursor = if batch.len() == limit {
+            batch.last().map(|(id, _, _)| id.clone())
+        } else {
+            None
+        };
+        let mut candidates = Vec::new();
+        for (agent_id, generation, closing) in batch {
+            if closing {
+                if self.runtime_db().transaction(|tx| {
+                    crate::runtime_db::reclamation::retirable_child_tx(tx, &agent_id)
+                })? {
+                    candidates.push((agent_id, generation));
+                }
+                continue;
+            }
+            let evidence = self.runtime_db().transaction(|tx| {
+                if !crate::runtime_db::reclamation::retirable_child_tx(tx, &agent_id)?
+                    || crate::runtime_db::reclamation::idle_blocker_tx(tx, &agent_id)?.is_some()
+                {
+                    return Ok(None);
+                }
+                crate::runtime_db::reclamation::idle_evidence_tx(tx, &agent_id).map(Some)
+            })?;
+            let mut registry = self.inner.runtimes.write().await;
+            if registry.phase != HostRuntimePhase::Open
+                || registry.recovering.contains_key(&agent_id)
+            {
+                continue;
+            }
+            let Some(entry) = registry
+                .agents
+                .get_mut(&agent_id)
+                .filter(|entry| entry.generation == generation)
+            else {
+                continue;
+            };
+            if !matches!(
+                *entry.phase.borrow(),
+                AgentRuntimePhase::Running | AgentRuntimePhase::Terminated
+            ) || !entry.runtime.accepts_execution_admission()
+            {
+                continue;
+            }
+            let Some(evidence) = evidence else {
+                entry.idle_observation = None;
+                continue;
+            };
+            let now = std::time::Instant::now();
+            match &entry.idle_observation {
+                Some(observation) if observation.evidence == evidence => {
+                    if allow_new && now.duration_since(observation.since) >= grace {
+                        candidates.push((agent_id, generation));
+                    }
+                }
+                _ => {
+                    entry.idle_observation = Some(IdleRuntimeObservation {
+                        evidence,
+                        since: now,
+                    })
+                }
+            }
+        }
+        Ok(candidates)
+    }
+
+    pub(crate) async fn try_retire_idle_runtime(
+        &self,
+        agent_id: &str,
+        generation: u64,
+    ) -> Result<()> {
+        let bootstrap_lock = self.agent_bootstrap_lock(agent_id);
+        let _bootstrap_guard = bootstrap_lock.lock().await;
+        let snapshot = {
+            let registry = self.inner.runtimes.read().await;
+            anyhow::ensure!(
+                registry.phase == HostRuntimePhase::Open
+                    && !registry.recovering.contains_key(agent_id),
+                "idle retirement admission closed"
+            );
+            registry
+                .agents
+                .get(agent_id)
+                .filter(|entry| entry.generation == generation)
+                .and_then(|entry| {
+                    entry
+                        .idle_observation
+                        .as_ref()
+                        .map(|observation| (entry.runtime.clone(), observation.evidence.clone()))
+                })
+        };
+        let Some((runtime, expected_evidence)) = snapshot else {
+            return Ok(());
+        };
+        if !runtime.accepts_execution_admission() {
+            if self.runtime_db().transaction(|tx| {
+                crate::runtime_db::reclamation::retirable_child_tx(tx, agent_id)
+            })? {
+                self.finish_idle_runtime_exit(agent_id, Some(generation))
+                    .await?;
+            }
+            return Ok(());
+        }
+        anyhow::ensure!(
+            !self.inner.daemon_deletion_token.is_cancelled(),
+            "idle retirement coordinator stopping"
+        );
+        runtime
+            .admit_idle_cleanup(|| {
+                self.runtime_db().transaction(|tx| {
+                    anyhow::ensure!(
+                        crate::runtime_db::reclamation::retirable_child_tx(tx, agent_id)?,
+                        "idle retirement target changed"
+                    );
+                    anyhow::ensure!(
+                        crate::runtime_db::reclamation::idle_evidence_tx(tx, agent_id)?
+                            == expected_evidence,
+                        "idle retirement activity changed"
+                    );
+                    if let Some(blocker) =
+                        crate::runtime_db::reclamation::idle_blocker_tx(tx, agent_id)?
+                    {
+                        anyhow::bail!("idle retirement blocked: {blocker}");
+                    }
+                    Ok(())
+                })
+            })
+            .await?;
+        tracing::info!(
+            agent_id,
+            generation,
+            reason = "idle_retirement",
+            "runtime instance exit requested"
+        );
+        self.finish_idle_runtime_exit(agent_id, Some(generation))
+            .await?;
+        tracing::info!(
+            agent_id,
+            generation,
+            remaining_strong_handles = runtime.strong_handle_count().saturating_sub(1),
+            "idle runtime instance exited"
+        );
+        Ok(())
+    }
+
     pub(crate) async fn unload_runtime(&self, agent_id: &str) {
-        let entry = self.inner.runtimes.write().await.agents.remove(agent_id);
+        let entry = {
+            let mut registry = self.inner.runtimes.write().await;
+            let entry = registry.agents.remove(agent_id);
+            if let Some(entry) = &entry {
+                entry.runtime.close_execution_admission();
+            }
+            entry
+        };
         self.notify_runtime_recovery(agent_id).await;
         if let Some(entry) = entry {
             entry.task.abort();
@@ -2612,6 +2846,64 @@ impl RuntimeHost {
             .await
             .map_err(PublicAgentError::Runtime)?;
         Ok(runtime)
+    }
+
+    /// Parent cleanup uses current supervision and never cancels accepted work.
+    pub(crate) async fn begin_parent_agent_deletion(
+        &self,
+        caller: &RuntimeHandle,
+        agent_id: &str,
+        expected_incarnation: u64,
+    ) -> Result<AgentDeletionJob> {
+        self.validate_agent_id(agent_id)?;
+        let parent_agent_id = caller.agent_state().await?.id;
+        anyhow::ensure!(
+            parent_agent_id != agent_id && agent_id != self.config().default_agent_id,
+            "agent_cleanup_target_forbidden"
+        );
+        self.active_agent_identity(&parent_agent_id)
+            .map_err(anyhow::Error::new)?;
+        let bootstrap_lock = self.agent_bootstrap_lock(agent_id);
+        let _bootstrap_guard = bootstrap_lock.lock().await;
+        self.runtime_db().transaction(|tx| {
+            crate::runtime_db::repositories::validate_parent_cleanup_tx(
+                tx,
+                agent_id,
+                &parent_agent_id,
+                expected_incarnation,
+                caller.instance_incarnation(),
+            )
+        })?;
+        crate::deletion::ensure_parent_cleanup_home_safe(&self.agent_data_dir(agent_id))?;
+        self.check_parent_cleanup_workspaces(agent_id, false)
+            .await?;
+        let admit = || {
+            crate::deletion::ensure_parent_cleanup_home_safe(&self.agent_data_dir(agent_id))?;
+            self.runtime_db().agent_deletions().begin_parent_cleanup(
+                agent_id,
+                &parent_agent_id,
+                expected_incarnation,
+                caller.instance_incarnation(),
+            )
+        };
+        let identity_active = self
+            .runtime_db()
+            .agent_identities()
+            .latest(agent_id)?
+            .is_some_and(|i| i.status == AgentRegistryStatus::Active);
+        let loaded = if identity_active {
+            self.try_get_loaded_runtime(agent_id).await
+        } else {
+            None
+        };
+        let admitted = if let Some(runtime) = loaded {
+            runtime.admit_idle_cleanup(admit).await?
+        } else {
+            admit()?
+        };
+        self.cache_agent_identity(&admitted.0)?;
+        self.notify_deletion_coordinator();
+        Ok(admitted.1)
     }
 
     pub async fn begin_public_agent_deletion(
@@ -3912,7 +4204,8 @@ impl RuntimeHost {
                         return Ok(entry.runtime.clone());
                     }
                     if !entry.task.is_finished()
-                        && *entry.phase.borrow() == AgentRuntimePhase::FailedCleaning
+                        && (*entry.phase.borrow() == AgentRuntimePhase::FailedCleaning
+                            || !entry.runtime.accepts_execution_admission())
                     {
                         failed_runtime_phase = Some(entry.phase.clone());
                     } else {
@@ -3944,6 +4237,7 @@ impl RuntimeHost {
                         task: runtime_task,
                         phase,
                         generation,
+                        idle_observation: None,
                     },
                 );
                 drop(registry);
@@ -4088,7 +4382,7 @@ impl RuntimeHost {
             .release_workspace_occupancy(occupancy_id)
     }
 
-    fn acquire_workspace_cleanup_lease(
+    pub(crate) fn acquire_workspace_cleanup_lease(
         &self,
         execution_root_id: &str,
     ) -> Result<WorkspaceCleanupLeaseGuard> {
@@ -4832,6 +5126,39 @@ impl RuntimeHost {
         RuntimeHandle::child_agent_observability_from_storage(storage, state)
     }
 
+    pub(crate) async fn deliver_external_callback(
+        &self,
+        agent_id: &str,
+        descriptor_id: &str,
+        payload: crate::types::CallbackDeliveryPayload,
+    ) -> Result<crate::types::CallbackDeliveryResult> {
+        for _ in 0..3 {
+            let identity = self
+                .active_agent_identity(agent_id)
+                .map_err(anyhow::Error::new)?;
+            let runtime = if identity.visibility == AgentVisibility::Public {
+                self.get_public_agent_for_external_ingress(agent_id)
+                    .await
+                    .map_err(anyhow::Error::new)?
+            } else {
+                self.get_or_create_agent(agent_id).await?
+            };
+            match runtime
+                .deliver_callback(descriptor_id, payload.clone())
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(error)
+                    if describe_runtime_error(&error).code == "runtime_instance_retiring" =>
+                {
+                    continue
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(crate::runtime::execution_admission::closed_error())
+    }
+
     pub async fn resolve_external_trigger(
         &self,
         callback_token: &str,
@@ -5024,88 +5351,6 @@ impl RuntimeHost {
         Ok(())
     }
 
-    fn converge_private_child_identities(&self) -> Result<()> {
-        for identity in self.agent_identity_records()?.into_iter() {
-            if !self.should_archive_private_child_identity(&identity)? {
-                continue;
-            }
-            self.archive_private_agent_identity_record(&identity.agent_id)?;
-        }
-        Ok(())
-    }
-
-    fn should_archive_private_child_identity(
-        &self,
-        identity: &AgentIdentityRecord,
-    ) -> Result<bool> {
-        if identity.status != AgentRegistryStatus::Active
-            || identity.visibility != AgentVisibility::Private
-            || identity.ownership() != AgentOwnership::ParentSupervised
-            || identity.kind != AgentKind::Child
-        {
-            return Ok(false);
-        }
-
-        let data_dir = self.agent_data_dir(&identity.agent_id);
-        if !data_dir.exists() {
-            return Ok(true);
-        }
-
-        let Some(parent_agent_id) = identity.parent_agent_id.as_deref() else {
-            return Ok(true);
-        };
-        let Some(parent_identity) = self.agent_identity_record(parent_agent_id)? else {
-            return Ok(true);
-        };
-        if parent_identity.status != AgentRegistryStatus::Active {
-            return Ok(true);
-        }
-
-        let Some(task_id) = identity.delegated_from_task_id.as_deref() else {
-            return Ok(true);
-        };
-        if !self.agent_data_dir(parent_agent_id).exists() {
-            return Ok(true);
-        }
-        let parent_storage = self.agent_storage(parent_agent_id)?;
-        let Some(task) = parent_storage.latest_task_record(task_id)? else {
-            return Ok(true);
-        };
-
-        if task.kind == TaskKind::ActorInvocation {
-            return Ok(false);
-        }
-
-        Ok(matches!(
-            task.status,
-            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
-        ))
-    }
-
-    fn archive_private_agent_identity_record(&self, agent_id: &str) -> Result<()> {
-        if let Some(identity) = self.agent_identity_record(agent_id)? {
-            if identity.status != AgentRegistryStatus::Deleted {
-                let identity = self
-                    .runtime_db()
-                    .agent_identities()
-                    .tombstone_with_closed_supervision(agent_id)?;
-                self.cache_agent_identity(&identity)?;
-            }
-        }
-        // Abort pending queue entries as a safety net for agents that were
-        // stopped through a different path (e.g. data dir already removed).
-        let _ = self
-            .runtime_db()
-            .queue_entries()
-            .abort_pending_for_agent(agent_id)?;
-
-        let data_dir = self.agent_data_dir(agent_id);
-        if data_dir.exists() {
-            fs::remove_dir_all(&data_dir)?;
-        }
-        Ok(())
-    }
-
     async fn stop_private_agent(&self, agent_id: &str) -> Result<()> {
         self.archive_private_agent(agent_id).await
     }
@@ -5219,6 +5464,36 @@ impl RuntimeHost {
         .context(ChildTaskSpawnFailure { child_agent_id })
     }
 
+    async fn deliver_to_current_runtime(
+        &self,
+        prepared: &crate::runtime::PreparedAgentMessageDelivery,
+    ) -> Result<(
+        RuntimeHandle,
+        u64,
+        crate::types::AgentMessageDeliveryReceipt,
+    )> {
+        for _ in 0..3 {
+            let runtime = self
+                .get_or_create_agent(&prepared.record.target_agent_id)
+                .await?;
+            let baseline = runtime.agent_state().await?.turn_index;
+            match runtime
+                .agent_message_delivery_service()
+                .deliver(prepared)
+                .await
+            {
+                Ok(receipt) => return Ok((runtime, baseline, receipt)),
+                Err(error)
+                    if describe_runtime_error(&error).code == "runtime_instance_retiring" =>
+                {
+                    continue
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(crate::runtime::execution_admission::closed_error())
+    }
+
     async fn deliver_agent_message(
         &self,
         prepared: &crate::runtime::PreparedAgentMessageDelivery,
@@ -5228,20 +5503,13 @@ impl RuntimeHost {
         let identity = self.agent_identity_record(target_agent_id)?;
         let (identity, runtime, target_turn_baseline, receipt) = match identity {
             Some(identity) if identity.status == AgentRegistryStatus::Active => {
-                match self.get_or_create_agent(target_agent_id).await {
-                    Ok(runtime) => {
-                        let target_turn_baseline = runtime.agent_state().await?.turn_index;
-                        let receipt = runtime
-                            .agent_message_delivery_service()
-                            .deliver(prepared)
-                            .await?;
-                        (
-                            Some(identity),
-                            Some(runtime),
-                            Some(target_turn_baseline),
-                            receipt,
-                        )
-                    }
+                match self.deliver_to_current_runtime(prepared).await {
+                    Ok((runtime, target_turn_baseline, receipt)) => (
+                        Some(identity),
+                        Some(runtime),
+                        Some(target_turn_baseline),
+                        receipt,
+                    ),
                     Err(activation_error) => {
                         let latest_identity = self.agent_identity_record(target_agent_id)?;
                         if latest_identity
@@ -6637,6 +6905,17 @@ impl RuntimeHostBridge {
         agent_id: &str,
     ) -> Result<Option<AgentIdentityRecord>> {
         self.host()?.agent_identity_record(agent_id)
+    }
+
+    pub(crate) async fn delete_supervised_child(
+        &self,
+        caller: &RuntimeHandle,
+        agent_id: &str,
+        incarnation: u64,
+    ) -> Result<AgentDeletionJob> {
+        self.host()?
+            .begin_parent_agent_deletion(caller, agent_id, incarnation)
+            .await
     }
 
     pub(crate) async fn activate_agent_deletion(&self, agent_id: &str) -> Result<()> {
@@ -11225,7 +11504,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_bootstrap_archives_orphaned_private_child_identity() {
+    async fn host_bootstrap_preserves_private_child_with_missing_task() {
         let (_home, host) = test_host();
         let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
@@ -11256,9 +11535,9 @@ mod tests {
         let identity = restarted
             .agent_identity_record("child_orphan")
             .unwrap()
-            .expect("child identity should still be recorded after archive");
-        assert_eq!(identity.status, AgentRegistryStatus::Deleted);
-        assert!(!restarted.agent_data_dir("child_orphan").exists());
+            .expect("child identity should still be recorded without inferring deletion");
+        assert_eq!(identity.status, AgentRegistryStatus::Active);
+        assert!(restarted.agent_data_dir("child_orphan").exists());
     }
 
     #[tokio::test]
@@ -11292,7 +11571,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_bootstrap_does_not_recreate_missing_parent_storage_when_archiving_child() {
+    async fn host_bootstrap_preserves_child_without_recreating_missing_parent_storage() {
         let (_home, host) = test_host();
         let config = host.config().as_ref().clone();
 
@@ -11339,9 +11618,9 @@ mod tests {
         let identity = restarted
             .agent_identity_record("child_parent_missing")
             .unwrap()
-            .expect("child identity should remain recorded after archive");
-        assert_eq!(identity.status, AgentRegistryStatus::Deleted);
-        assert!(!restarted.agent_data_dir("child_parent_missing").exists());
+            .expect("child identity should remain recorded without inferring deletion");
+        assert_eq!(identity.status, AgentRegistryStatus::Active);
+        assert!(restarted.agent_data_dir("child_parent_missing").exists());
         assert!(!restarted.agent_data_dir("parent_missing").exists());
     }
 
@@ -11420,8 +11699,8 @@ mod tests {
         host.create_named_agent("alpha", None).await.unwrap();
         host.create_named_agent("beta", None).await.unwrap();
 
-        let _alpha = host.get_public_agent("alpha").await.unwrap();
-        let _beta = host.get_public_agent("beta").await.unwrap();
+        let alpha = host.get_public_agent("alpha").await.unwrap();
+        let beta = host.get_public_agent("beta").await.unwrap();
 
         {
             let registry = host.inner.runtimes.read().await;
@@ -11430,6 +11709,8 @@ mod tests {
         }
 
         host.unload_runtime("alpha").await;
+        assert!(alpha.execution_admission_lease().is_err());
+        assert!(beta.execution_admission_lease().is_ok());
 
         {
             let registry = host.inner.runtimes.read().await;
@@ -12327,6 +12608,961 @@ mod tests {
             .expect("completed job should exist");
         assert_eq!(completed.status, AgentDeletionStatus::Completed);
         assert_eq!(completed.attempts, 2);
+    }
+
+    fn retained_cleanup_fixture(host: &RuntimeHost, child_id: &str) -> AgentIdentityRecord {
+        let parent_id = host.config().default_agent_id.clone();
+        let task_id = format!("task-{child_id}");
+        let child = AgentIdentityRecord::new(
+            child_id,
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(parent_id.clone()),
+            Some(task_id.clone()),
+        );
+        let relations = supervised_creation_records(&child, &parent_id, &task_id, None);
+        host.runtime_db()
+            .agent_identities()
+            .create_with_relations(&child, &relations)
+            .unwrap();
+        host.cache_agent_identity(&child).unwrap();
+        let mut state = AgentState::new(child_id.to_string());
+        state.status = AgentStatus::AwakeIdle;
+        host.runtime_db().agent_states().upsert(&state).unwrap();
+        child
+    }
+
+    async fn completed_retained_child(
+        host: &RuntimeHost,
+    ) -> (RuntimeHandle, crate::types::AgentInvocationReceipt) {
+        let parent = host.default_runtime().await.unwrap();
+        let created = parent
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::NewSubagent {
+                    template: None,
+                    workspace_mode: ChildAgentWorkspaceMode::Inherit,
+                    model_resolution: Some(inherited_model_resolution("openai", "gpt-5.4")),
+                },
+                message: "retirement fixture".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+            })
+            .await
+            .unwrap();
+        wait_for_terminal_task(&parent, &created.task_handle.task_id).await;
+        (parent, created)
+    }
+
+    async fn observe_idle_candidate(host: &RuntimeHost, agent_id: &str) -> u64 {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let mut cursor = None;
+                let candidates = host
+                    .scan_idle_runtime_candidates(&mut cursor, 16, Duration::ZERO, true)
+                    .await
+                    .unwrap();
+                if let Some((_, generation)) = candidates.into_iter().find(|(id, _)| id == agent_id)
+                {
+                    break generation;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn idle_retirement_preserves_identity_and_reloads_one_new_generation() {
+        let (_home, host) = test_host();
+        let (parent, child) = completed_retained_child(&host).await;
+        let old = host.try_get_loaded_runtime(&child.agent_id).await.unwrap();
+        let identity = host
+            .agent_identity_record(&child.agent_id)
+            .unwrap()
+            .unwrap();
+        let before = host
+            .agent_storage_read_only(&child.agent_id)
+            .unwrap()
+            .count_messages()
+            .unwrap();
+        let generation = observe_idle_candidate(&host, &child.agent_id).await;
+        host.try_retire_idle_runtime(&child.agent_id, generation)
+            .await
+            .unwrap();
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .agents
+            .get(&child.agent_id)
+            .is_none());
+        assert_eq!(
+            host.agent_identity_record(&child.agent_id)
+                .unwrap()
+                .unwrap(),
+            identity
+        );
+        assert!(host.agent_data_dir(&child.agent_id).exists());
+        assert!(host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&child.agent_id)
+            .unwrap()
+            .is_none());
+        assert!(old.execution_admission_lease().is_err());
+        parent.agent_summary_for(&child.agent_id).await.unwrap();
+        assert!(
+            host.inner
+                .runtimes
+                .read()
+                .await
+                .agents
+                .get(&child.agent_id)
+                .is_none(),
+            "durable inspection must not activate"
+        );
+        assert_eq!(
+            host.agent_storage_read_only(&child.agent_id)
+                .unwrap()
+                .count_messages()
+                .unwrap(),
+            before
+        );
+        let new = host.get_or_create_agent(&child.agent_id).await.unwrap();
+        new.wait_for_bootstrap().await.unwrap();
+        assert!(new.execution_admission_lease().is_ok());
+        let current_generation =
+            host.inner.runtimes.read().await.agents[&child.agent_id].generation;
+        assert!(current_generation > generation);
+        host.try_retire_idle_runtime(&child.agent_id, generation)
+            .await
+            .unwrap();
+        assert_eq!(
+            host.inner.runtimes.read().await.agents[&child.agent_id].generation,
+            current_generation,
+            "stale retirement must not remove a replacement"
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn idle_retirement_cannot_overtake_an_admitted_operation() {
+        let (_home, host) = test_host();
+        let (_parent, child) = completed_retained_child(&host).await;
+        let old = host.try_get_loaded_runtime(&child.agent_id).await.unwrap();
+        let generation = observe_idle_candidate(&host, &child.agent_id).await;
+        let lease = old.execution_admission_lease().unwrap();
+        assert!(host
+            .try_retire_idle_runtime(&child.agent_id, generation)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("in_flight_admission"));
+        assert!(old.accepts_execution_admission());
+        drop(lease);
+        host.try_retire_idle_runtime(&child.agent_id, generation)
+            .await
+            .unwrap();
+        assert!(!old.accepts_execution_admission());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subagent_reminder_observation_is_durable_bounded_and_read_only() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let child = retained_cleanup_fixture(&host, "reminder-child");
+        let db = host.runtime_db();
+        let now = Utc::now();
+        let grace = chrono::Duration::minutes(10);
+        let first = db
+            .scan_subagent_cleanup(None, 16, now, grace, true)
+            .unwrap();
+        assert_eq!(first.changed, 1);
+        assert!(
+            db.pending_subagent_reminders(None, 16).unwrap().is_empty(),
+            "legacy age is not an expiry"
+        );
+        assert_eq!(
+            parent.subagent_cleanup_candidates().await.unwrap()[0].agent_id,
+            child.agent_id
+        );
+        assert!(host.try_get_loaded_runtime(&child.agent_id).await.is_none());
+        let again = db
+            .scan_subagent_cleanup(None, 16, now + grace, grace, true)
+            .unwrap();
+        assert_eq!(
+            again.changed, 0,
+            "scanning must not refresh activity or rewrite unchanged observations"
+        );
+        let pending = db.pending_subagent_reminders(None, 16).unwrap();
+        assert_eq!(pending.len(), 1);
+        let message = &pending[0];
+        assert!(message.work_item_id.is_none());
+        assert!(message.task_id.is_none());
+        assert_eq!(
+            message.admission_context,
+            Some(AdmissionContext::RuntimeOwned)
+        );
+        assert!(db.subagent_reminder_is_current(message).unwrap());
+        // Simulate a crash after enqueue and before the outbox acknowledgement.
+        parent.enqueue(message.clone()).await.unwrap();
+        parent.enqueue(message.clone()).await.unwrap();
+        assert!(db.queue_entries().latest(&message.id).unwrap().is_some());
+        db.acknowledge_subagent_reminder(&message.id).unwrap();
+        assert!(db.pending_subagent_reminders(None, 16).unwrap().is_empty());
+        db.scan_subagent_cleanup(
+            None,
+            16,
+            now + grace + chrono::Duration::hours(1),
+            grace,
+            true,
+        )
+        .unwrap();
+        assert!(
+            db.pending_subagent_reminders(None, 16).unwrap().is_empty(),
+            "one standalone batch per parent per day"
+        );
+        assert!(db
+            .agent_deletions()
+            .latest_for_agent(&child.agent_id)
+            .unwrap()
+            .is_none());
+        let config = host.config().as_ref().clone();
+        host.shutdown().await.unwrap();
+        let reopened =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        assert_eq!(
+            reopened
+                .runtime_db()
+                .subagent_cleanup_candidates(&message.agent_id, 16)
+                .unwrap()[0]
+                .observed_since
+                .as_deref(),
+            Some(crate::runtime_db::migrations::timestamp(now).as_str())
+        );
+        assert!(reopened
+            .runtime_db()
+            .pending_subagent_reminders(None, 16)
+            .unwrap()
+            .is_empty());
+        reopened.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subagent_reminder_defers_stopped_and_exhausted_parent_without_losing_outbox() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let child = retained_cleanup_fixture(&host, "reminder-stopped");
+        let now = Utc::now();
+        host.runtime_db()
+            .scan_subagent_cleanup(None, 16, now, chrono::Duration::zero(), true)
+            .unwrap();
+        let message = host
+            .runtime_db()
+            .pending_subagent_reminders(None, 16)
+            .unwrap()
+            .pop()
+            .unwrap();
+        parent
+            .control(crate::types::ControlAction::Stop)
+            .await
+            .unwrap();
+        assert!(!host
+            .runtime_db()
+            .subagent_reminder_is_current(&message)
+            .unwrap());
+        assert!(parent
+            .enqueue(message.clone())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("parent_stopped"));
+        assert!(host
+            .runtime_db()
+            .queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            host.runtime_db()
+                .pending_subagent_reminders(None, 16)
+                .unwrap()[0]
+                .id,
+            message.id
+        );
+        let mut state = parent.agent_state().await.unwrap();
+        state.status = AgentStatus::AwakeIdle;
+        state.turn_budget = Some(crate::types::TurnBudget {
+            max_turns: 0,
+            run_start_turn_index: state.turn_index,
+        });
+        host.runtime_db().agent_states().upsert(&state).unwrap();
+        assert!(!host
+            .runtime_db()
+            .subagent_reminder_is_current(&message)
+            .unwrap());
+        assert!(host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&child.agent_id)
+            .unwrap()
+            .is_none());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subagent_reminder_revalidates_activity_and_scans_beyond_first_batch() {
+        let (_home, host) = test_host();
+        let _parent = host.default_runtime().await.unwrap();
+        for n in 0..19 {
+            retained_cleanup_fixture(&host, &format!("reminder-page-{n:02}"));
+        }
+        let now = Utc::now();
+        let first = host
+            .runtime_db()
+            .scan_subagent_cleanup(None, 16, now, chrono::Duration::zero(), true)
+            .unwrap();
+        assert_eq!(first.observed, 16);
+        let last = host
+            .runtime_db()
+            .scan_subagent_cleanup(
+                first.cursor.as_deref(),
+                16,
+                now,
+                chrono::Duration::zero(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(last.observed, 3);
+        assert!(last.cursor.is_none());
+        let message = host
+            .runtime_db()
+            .pending_subagent_reminders(None, 16)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let mut state = host
+            .runtime_db()
+            .agent_states()
+            .latest("reminder-page-00")
+            .unwrap()
+            .unwrap();
+        state.total_message_count += 1;
+        host.runtime_db().agent_states().upsert(&state).unwrap();
+        assert!(
+            !host
+                .runtime_db()
+                .subagent_reminder_is_current(&message)
+                .unwrap(),
+            "fresh activity invalidates stale idle evidence"
+        );
+        assert!(host
+            .runtime_db()
+            .pending_subagent_reminders(None, 16)
+            .unwrap()
+            .is_empty());
+        assert!(host
+            .runtime_db()
+            .agent_deletions()
+            .due_jobs(now, 32)
+            .unwrap()
+            .is_empty());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subagent_reminder_orphan_notice_retries_same_brief_without_activation() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let child = retained_cleanup_fixture(&host, "reminder-orphan");
+        let mut parent_identity = host
+            .runtime_db()
+            .agent_identities()
+            .latest(&host.config().default_agent_id)
+            .unwrap()
+            .unwrap();
+        parent_identity.status = AgentRegistryStatus::Deleted;
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&parent_identity)
+            .unwrap();
+        host.runtime_db()
+            .scan_subagent_cleanup(None, 16, Utc::now(), chrono::Duration::zero(), false)
+            .unwrap();
+        assert_eq!(
+            host.runtime_db()
+                .agent_canonical_relations()
+                .latest(&child.agent_id)
+                .unwrap()
+                .unwrap()
+                .supervision
+                .unwrap()
+                .state,
+            AgentSupervisionState::CleanupRequired
+        );
+        let brief = host
+            .runtime_db()
+            .orphan_cleanup_notice(&parent_identity.agent_id, 16)
+            .unwrap()
+            .unwrap();
+        let replay = host
+            .runtime_db()
+            .orphan_cleanup_notice(&parent_identity.agent_id, 16)
+            .unwrap()
+            .unwrap();
+        assert_eq!(brief.id, replay.id);
+        let storage = host.agent_storage(&parent_identity.agent_id).unwrap();
+        let event = crate::types::brief_created_event_for(&brief).unwrap();
+        storage
+            .append_brief_with_created_event(&brief, &event)
+            .unwrap();
+        storage
+            .append_brief_with_created_event(&brief, &event)
+            .unwrap();
+        host.runtime_db()
+            .acknowledge_subagent_reminder(&brief.id)
+            .unwrap();
+        assert!(host
+            .runtime_db()
+            .orphan_cleanup_notice(&parent_identity.agent_id, 16)
+            .unwrap()
+            .is_none());
+        assert!(host.try_get_loaded_runtime(&child.agent_id).await.is_none());
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(&child.agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Active
+        );
+        drop(parent);
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn parent_cleanup_preserves_dirty_shared_and_occupied_worktrees() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        for case in ["dirty", "shared", "occupied"] {
+            let child = retained_cleanup_fixture(&host, &format!("cleanup-worktree-{case}"));
+            let dir = tempdir().unwrap();
+            assert!(std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success());
+            std::fs::write(dir.path().join("valuable.txt"), "keep").unwrap();
+            let root: crate::types::ExecutionRootEntry=serde_json::from_value(serde_json::json!({
+                "execution_root_id":format!("root-{case}"),"workspace_id":format!("workspace-{case}"),
+                "filesystem_path":dir.path(),"root_kind":"git_worktree_root","created_at":Utc::now(),
+                "worktree":{"provenance":"runtime_created","registered_by_agent_id":child.agent_id,"authorized_agent_ids":if case=="shared"{vec![child.agent_id.clone(),"peer".into()]}else{vec![child.agent_id.clone()]}}
+            })).unwrap();
+            host.runtime_db()
+                .execution_root_entries()
+                .upsert(&root)
+                .unwrap();
+            if case == "occupied" {
+                host.runtime_db()
+                    .workspace_occupancies()
+                    .upsert(&crate::types::WorkspaceOccupancyRecord {
+                        occupancy_id: "other-agent-occupancy".into(),
+                        execution_root_id: root.execution_root_id.clone(),
+                        workspace_id: root.workspace_id.clone(),
+                        holder_agent_id: "peer".into(),
+                        access_mode: crate::system::WorkspaceAccessMode::SharedRead,
+                        acquired_at: Utc::now(),
+                        released_at: None,
+                    })
+                    .unwrap();
+            }
+            let error = host
+                .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+                .await
+                .unwrap_err();
+            let expected = match case {
+                "dirty" => "dirty_or_unknown_worktree",
+                "shared" => "shared_worktree",
+                _ => "active occupancy",
+            };
+            assert!(error.to_string().contains(expected), "{case}: {error:#}");
+            assert_eq!(
+                host.runtime_db()
+                    .agent_identities()
+                    .latest(&child.agent_id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                AgentRegistryStatus::Active
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("valuable.txt")).unwrap(),
+                "keep"
+            );
+            assert!(host
+                .runtime_db()
+                .agent_deletions()
+                .latest_for_agent(&child.agent_id)
+                .unwrap()
+                .is_none());
+        }
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn idle_retirement_reloads_through_callback_and_blocks_old_process_start() {
+        let (_home, host) = test_host();
+        let (_parent, child) = completed_retained_child(&host).await;
+        let old = host.try_get_loaded_runtime(&child.agent_id).await.unwrap();
+        let capability = old
+            .default_external_trigger(crate::types::CallbackDeliveryMode::WakeHint)
+            .await
+            .unwrap();
+        let trigger = host
+            .runtime_db()
+            .external_triggers()
+            .latest(&capability.external_trigger_id)
+            .unwrap()
+            .unwrap();
+        let generation = observe_idle_candidate(&host, &child.agent_id).await;
+        host.try_retire_idle_runtime(&child.agent_id, generation)
+            .await
+            .unwrap();
+        let marker = host
+            .agent_data_dir(&child.agent_id)
+            .join("old-handle-started");
+        let error = old
+            .schedule_command_task(
+                "must not start".into(),
+                crate::types::CommandTaskSpec {
+                    cmd: format!("touch '{}'", marker.display()),
+                    workdir: None,
+                    shell: None,
+                    login: false,
+                    tty: false,
+                    yield_time_ms: 100,
+                    max_output_tokens: None,
+                    accepts_input: false,
+                    terminal_reentry: false,
+                },
+                AuthorityClass::RuntimeInstruction,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            describe_runtime_error(&error).code,
+            "runtime_instance_retiring"
+        );
+        assert!(!marker.exists());
+        let (target, descriptor) = host
+            .resolve_external_trigger_record(trigger.token.as_ref().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(target, child.agent_id);
+        assert!(
+            host.try_get_loaded_runtime(&child.agent_id).await.is_none(),
+            "token lookup is read-only"
+        );
+        host.deliver_external_callback(
+            &target,
+            &descriptor.external_trigger_id,
+            crate::types::CallbackDeliveryPayload {
+                body: None,
+                content_type: None,
+                correlation_id: None,
+                causation_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(host.inner.runtimes.read().await.agents[&child.agent_id].generation > generation);
+        assert_eq!(
+            host.runtime_db()
+                .external_triggers()
+                .latest(&descriptor.external_trigger_id)
+                .unwrap()
+                .unwrap()
+                .delivery_count,
+            1
+        );
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(&child.agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Active
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn parent_cleanup_follows_transferred_supervision_not_lineage() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let child = retained_cleanup_fixture(&host, "cleanup-transferred");
+        let peer = AgentIdentityRecord::new(
+            "new-supervisor",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        let records =
+            independent_creation_records(&peer, None, AgentCanonicalDurability::Persistent);
+        host.runtime_db()
+            .agent_identities()
+            .create_with_relations(&peer, &records)
+            .unwrap();
+        let mut edge = host
+            .runtime_db()
+            .agent_canonical_relations()
+            .latest(&child.agent_id)
+            .unwrap()
+            .unwrap()
+            .supervision
+            .unwrap();
+        edge.supervisor_agent_id = peer.agent_id.clone();
+        edge.delegated_from_task_id = None;
+        edge.revision += 1;
+        // The existing transfer contract also updates legacy current-owner
+        // fields while keeping the creation lineage explicit.
+        let mut transferred = child
+            .clone()
+            .with_lineage_parent_agent_id(child.parent_agent_id.clone());
+        transferred.parent_agent_id = Some(peer.agent_id.clone());
+        transferred.delegated_from_task_id = None;
+        transferred.revision += 1;
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&transferred)
+            .unwrap();
+        host.runtime_db()
+            .agent_canonical_relations()
+            .upsert_supervision(&edge)
+            .unwrap();
+        let error = host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("parent_not_authorized"));
+        let (_, job, _) = host
+            .runtime_db()
+            .agent_deletions()
+            .begin_parent_cleanup(&child.agent_id, &peer.agent_id, child.incarnation, 1)
+            .unwrap();
+        assert_eq!(job.mode, AgentDeletionMode::ParentCleanup);
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(&child.agent_id)
+                .unwrap()
+                .unwrap()
+                .lineage_parent_agent_id,
+            Some(host.config().default_agent_id.clone()),
+            "lineage stays historical"
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subagent_reminder_repeated_cleanup_failure_notifies_only_changed_reason() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let child = retained_cleanup_fixture(&host, "cleanup-repeated-failure");
+        let mut job = host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap();
+        job.status = AgentDeletionStatus::RetryableFailed;
+        job.attempts = 3;
+        job.last_error = Some("protected resource unavailable".into());
+        host.runtime_db().agent_deletions().update(&job).unwrap();
+        let brief = host
+            .runtime_db()
+            .orphan_cleanup_notice(&host.config().default_agent_id, 16)
+            .unwrap()
+            .unwrap();
+        assert!(brief.text.contains(&child.agent_id));
+        host.runtime_db()
+            .acknowledge_subagent_reminder(&brief.id)
+            .unwrap();
+        job.attempts += 1;
+        host.runtime_db().agent_deletions().update(&job).unwrap();
+        assert!(host
+            .runtime_db()
+            .orphan_cleanup_notice(&host.config().default_agent_id, 16)
+            .unwrap()
+            .is_none());
+        job.last_error = Some("different protected resource".into());
+        host.runtime_db().agent_deletions().update(&job).unwrap();
+        assert_ne!(
+            host.runtime_db()
+                .orphan_cleanup_notice(&host.config().default_agent_id, 16)
+                .unwrap()
+                .unwrap()
+                .id,
+            brief.id
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn parent_cleanup_requires_current_supervision_and_incarnation() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let child = retained_cleanup_fixture(&host, "parent-cleanup-auth");
+        let denied = host
+            .runtime_db()
+            .agent_deletions()
+            .begin_parent_cleanup(&child.agent_id, "peer", child.incarnation, 1)
+            .unwrap_err();
+        assert!(denied.to_string().contains("parent_not_authorized"));
+        let stale_parent = host
+            .runtime_db()
+            .agent_deletions()
+            .begin_parent_cleanup(
+                &child.agent_id,
+                &host.config().default_agent_id,
+                child.incarnation,
+                parent.instance_incarnation() + 1,
+            )
+            .unwrap_err();
+        assert!(stale_parent
+            .to_string()
+            .contains("stale_parent_incarnation"));
+        let stale = host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation + 1)
+            .await
+            .unwrap_err();
+        assert!(stale.to_string().contains("stale_incarnation"));
+        assert_eq!(
+            host.agent_identity_record(&child.agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Active
+        );
+        assert!(host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&child.agent_id)
+            .unwrap()
+            .is_none());
+        let job = host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap();
+        assert_eq!(job.mode, AgentDeletionMode::ParentCleanup);
+        let repeated = host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap();
+        assert_eq!(repeated.deletion_id, job.deletion_id);
+        assert!(host
+            .runtime_db()
+            .agent_deletions()
+            .begin_parent_cleanup(&child.agent_id, "peer", child.incarnation, 1)
+            .is_err());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn parent_cleanup_serializes_with_queued_work_without_cancelling_it() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let child = retained_cleanup_fixture(&host, "parent-cleanup-queue-wins");
+        let now = Utc::now();
+        let queued = QueueEntryRecord {
+            message_id: "cleanup-queued".into(),
+            agent_id: child.agent_id.clone(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        host.runtime_db().queue_entries().upsert(&queued).unwrap();
+        let error = host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("queued_or_claimed_input"));
+        assert_eq!(
+            host.runtime_db()
+                .queue_entries()
+                .latest(&queued.message_id)
+                .unwrap()
+                .unwrap(),
+            queued
+        );
+        assert!(host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&child.agent_id)
+            .unwrap()
+            .is_none());
+
+        let child = retained_cleanup_fixture(&host, "parent-cleanup-delete-wins");
+        let job = host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap();
+        let later = QueueEntryRecord {
+            agent_id: child.agent_id.clone(),
+            message_id: "cleanup-later".into(),
+            ..queued
+        };
+        assert!(host
+            .runtime_db()
+            .queue_entries()
+            .upsert(&later)
+            .unwrap_err()
+            .to_string()
+            .contains("cleanup_fenced"));
+        assert!(host
+            .runtime_db()
+            .queue_entries()
+            .latest(&later.message_id)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            host.runtime_db()
+                .agent_deletions()
+                .latest_for_agent(&child.agent_id)
+                .unwrap()
+                .unwrap()
+                .deletion_id,
+            job.deletion_id
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn parent_cleanup_protects_active_work_and_home_artifacts() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let child = retained_cleanup_fixture(&host, "parent-cleanup-task-blocker");
+        let task = test_child_supervision_task(&child.agent_id, "cleanup-active-task");
+        host.runtime_db().tasks().upsert(&task).unwrap();
+        assert!(host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("active_task"));
+        assert_eq!(
+            host.runtime_db()
+                .tasks()
+                .latest(&task.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            TaskStatus::Running
+        );
+
+        let child = retained_cleanup_fixture(&host, "parent-cleanup-artifact-blocker");
+        let artifact = host.agent_data_dir(&child.agent_id).join("work/report.md");
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        fs::write(&artifact, "durable result").unwrap();
+        assert!(host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("home_artifact"));
+        assert_eq!(fs::read_to_string(&artifact).unwrap(), "durable result");
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn parent_cleanup_exits_runtime_and_preserves_parent_result() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let created = parent
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::NewSubagent {
+                    template: None,
+                    workspace_mode: ChildAgentWorkspaceMode::Inherit,
+                    model_resolution: Some(inherited_model_resolution("openai", "gpt-5.4")),
+                },
+                message: "produce durable result".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+            })
+            .await
+            .unwrap();
+        let task = wait_for_terminal_task(&parent, &created.task_handle.task_id).await;
+        let before = parent.task_output(&task.id, false, 0).await.unwrap();
+        let old = host
+            .try_get_loaded_runtime(&created.agent_id)
+            .await
+            .unwrap();
+        let identity = host
+            .agent_identity_record(&created.agent_id)
+            .unwrap()
+            .unwrap();
+        let job = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match host
+                    .begin_parent_agent_deletion(&parent, &identity.agent_id, identity.incarnation)
+                    .await
+                {
+                    Ok(job) => break job,
+                    Err(error) if error.to_string().contains("live_execution") => {
+                        tokio::task::yield_now().await
+                    }
+                    Err(error) => panic!("unexpected cleanup rejection: {error:#}"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        host.execute_deletion_job(job.clone()).await.unwrap();
+        assert!(host
+            .try_get_loaded_runtime(&identity.agent_id)
+            .await
+            .is_none());
+        assert!(!host.agent_data_dir(&identity.agent_id).exists());
+        assert_eq!(
+            host.agent_identity_record(&identity.agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
+        let after = parent.task_output(&task.id, false, 0).await.unwrap();
+        assert_eq!(after.task.output_preview, before.task.output_preview);
+        assert_eq!(after.task.status, before.task.status);
+        let message = MessageEnvelope::new(
+            &identity.agent_id,
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "test".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "late input".into(),
+            },
+        );
+        assert!(old.enqueue(message).await.is_err());
+        let repeated = host
+            .begin_parent_agent_deletion(&parent, &identity.agent_id, identity.incarnation)
+            .await
+            .unwrap();
+        assert_eq!(repeated.deletion_id, job.deletion_id);
+        host.shutdown().await.unwrap();
     }
 
     #[tokio::test]
