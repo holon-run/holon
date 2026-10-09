@@ -195,14 +195,11 @@ impl TuiApp {
         }
         let client = self.client.clone();
         let tx = self.runtime_tx.clone();
-        let initial_load = self.agents.is_empty();
         tokio::spawn(async move {
-            let result = if initial_load {
-                client.list_agent_entries().await
-            } else {
-                client.public_agent_roster().await
-            }
-            .map_err(|err| err.to_string());
+            let result = client
+                .public_agent_roster()
+                .await
+                .map_err(|err| err.to_string());
             let _ = tx.send(TuiRuntimeMessage::AgentListLoaded(result));
         });
     }

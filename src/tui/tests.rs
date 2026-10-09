@@ -4599,10 +4599,128 @@ async fn remote_tick_does_not_await_slow_agent_list_refresh() {
 
     tokio::time::timeout(std::time::Duration::from_millis(50), app.tick())
         .await
-        .expect("tick should not wait for slow /agents/list")
+        .expect("tick should not wait for slow /agents/snapshot")
         .unwrap();
 
     assert!(app.agent_list_refresh_in_flight);
+}
+
+#[tokio::test]
+async fn initial_agent_roster_load_uses_public_snapshot() {
+    assert_public_agent_roster_loading(false, true, axum::http::StatusCode::OK).await;
+}
+
+#[tokio::test]
+async fn populated_agent_roster_refresh_uses_public_snapshot() {
+    assert_public_agent_roster_loading(true, true, axum::http::StatusCode::OK).await;
+}
+
+#[tokio::test]
+async fn empty_agent_roster_reload_uses_public_snapshot() {
+    assert_public_agent_roster_loading(false, false, axum::http::StatusCode::OK).await;
+}
+
+#[tokio::test]
+async fn failed_agent_roster_reload_does_not_fall_back_to_private_list() {
+    assert_public_agent_roster_loading(false, true, axum::http::StatusCode::SERVICE_UNAVAILABLE)
+        .await;
+}
+
+async fn assert_public_agent_roster_loading(
+    initially_populated: bool,
+    public_agent_visible: bool,
+    snapshot_status: axum::http::StatusCode,
+) {
+    use axum::response::IntoResponse;
+    use std::sync::{Arc, Mutex};
+
+    let public_agent = sample_agent_summary("public-agent");
+    let mut private_agent = sample_agent_summary("private-child");
+    private_agent.identity.visibility = AgentVisibility::Private;
+    private_agent.identity.can_rename = false;
+    private_agent.identity.parent_agent_id = Some("public-agent".into());
+    let public_entry = AgentListEntry::from_summary(&public_agent);
+    let legacy_list = json!([public_entry, AgentListEntry::from_summary(&private_agent)]);
+    let public_entries = if public_agent_visible {
+        vec![json!({
+            "agent": public_entry,
+            "event_window": {"event_head_seq": 0, "oldest_retained_seq": 0},
+            "latest_brief": null,
+        })]
+    } else {
+        vec![]
+    };
+    let snapshot = json!({
+        "contract_version": 1,
+        "runtime_id": "test-runtime",
+        "event_log_epoch": "test-epoch",
+        "visibility_scope_id": "test-public",
+        "agents": public_entries,
+    });
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let server_requests = requests.clone();
+    let router = axum::Router::new().fallback(move |uri: axum::http::Uri| {
+        let requests = server_requests.clone();
+        let snapshot = snapshot.clone();
+        let legacy_list = legacy_list.clone();
+        async move {
+            let path = uri.path().to_owned();
+            requests.lock().unwrap().push(path.clone());
+            match path.as_str() {
+                "/api/agents/snapshot" => (snapshot_status, axum::Json(snapshot)).into_response(),
+                "/api/agents/list" => axum::Json(legacy_list).into_response(),
+                _ => axum::http::StatusCode::NOT_FOUND.into_response(),
+            }
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let client = LocalClient::remote(test_config(), format!("http://{addr}"), "secret").unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    if initially_populated {
+        app.agents = vec![public_agent];
+    }
+
+    for _ in 0..2 {
+        app.begin_load_agents();
+        let message = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            app.runtime_messages.recv(),
+        )
+        .await
+        .expect("agent roster request should finish")
+        .expect("agent roster result should be delivered");
+        let TuiRuntimeMessage::AgentListLoaded(result) = message else {
+            panic!("expected an agent roster result");
+        };
+        assert_eq!(
+            result.is_ok(),
+            snapshot_status.is_success(),
+            "unexpected roster result: {result:?}"
+        );
+        if let Ok(agents) = result {
+            assert_eq!(agents.len(), usize::from(public_agent_visible));
+            assert!(agents
+                .iter()
+                .all(|agent| agent.identity.agent_id == "public-agent"));
+            app.agents = agents
+                .into_iter()
+                .map(AgentListEntry::into_agent_summary_placeholder)
+                .collect();
+        }
+        app.agent_list_refresh_in_flight = false;
+    }
+    assert_eq!(
+        *requests.lock().unwrap(),
+        ["/api/agents/snapshot", "/api/agents/snapshot"]
+    );
+    server.abort();
 }
 
 #[test]
