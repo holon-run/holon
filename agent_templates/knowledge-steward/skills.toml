@@ -1,5 +1,6 @@
 [[skills]]
-kind = "local"
+kind = "github"
+repo = "holon-run/holon"
 path = "skills/interlinked-markdown-wiki"
 
 [[skills]]

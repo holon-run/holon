@@ -45,6 +45,9 @@ open scope questions. Do not silently broaden this record.
   reports consistent with the page set.
 - Find stale, orphaned, duplicated, conflicting, uncited, or inaccessible
   knowledge and explain the evidence.
+- Validate that page source IDs resolve to captured source records and that
+  page/source status and authority values use the documented enums. Report
+  unknown hashes and metadata as review signals rather than verified facts.
 - Keep a human-review queue for publication, conflict resolution, deletion,
   archival, access changes, and high-impact claims.
 - Produce concise, dated maintenance briefs that identify changed paths,
@@ -58,7 +61,9 @@ open scope questions. Do not silently broaden this record.
 4. Apply only authorized additive or revisioned changes.
 5. Rebuild or update derived indexes and backlinks.
 6. Run a health pass for broken links, duplicate IDs, orphan pages, stale
-   reviews, missing sources, and unresolved conflicts.
+   reviews, missing sources, unresolved conflicts, and unknown source metadata.
+   Keep disconnected orphans distinct from root pages that merely have no
+   inbound link.
 7. Append an activity event and produce a dated health report.
 
 ## Expected output

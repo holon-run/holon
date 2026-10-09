@@ -92,6 +92,24 @@ authority: stated | inferred | unknown
 If a source changes, append a new snapshot or revision record. Do not make a
 mutable page appear to be an immutable source.
 
+Validate the page-to-source relationship, not only the presence of a
+`sources` field:
+
+- every page source ID must match exactly one source record in the bounded
+  `sources/` set;
+- page IDs and source IDs must each be unique;
+- `status` must be one of `draft`, `review`, `published`, `stale`, or
+  `archived`;
+- source `kind` must identify the capture (`document`, `message`, `web`,
+  `record`, or `unknown`) and `authority` must be `stated`, `inferred`, or
+  `unknown`;
+- `content_hash` must be `sha256:<64 hexadecimal characters>` when known;
+  `sha256:UNKNOWN` is an explicit review signal, not a verified hash.
+
+If a page cites a missing source, report the source ID and page ID together;
+do not silently drop the citation or treat a syntactically valid frontmatter
+field as evidence that the source exists.
+
 ## Maintenance workflow
 
 1. **Inventory:** identify the requested workspace, existing layout, authority
@@ -109,6 +127,21 @@ mutable page appear to be an immutable source.
 7. **Report:** produce a dated maintenance event and a human-readable health
    report. State what was changed, what was not changed, and what needs review.
 
+For a deterministic file-level audit, emit separate result sets for:
+
+- **unresolved links:** a page points to an ID that is not present;
+- **orphans:** a page has neither an incoming nor an outgoing internal link;
+- **roots:** a page has no incoming link but does have an outgoing link;
+- **missing sources:** a page cites an ID absent from the source records;
+- **stale review:** `review_after` is earlier than the scan date;
+- **unknown source metadata:** missing/`UNKNOWN` authority, retrieval time,
+  publication time, or content hash.
+
+Do not collapse roots into orphans: a deliberately navigational entry page is
+different from a disconnected page. A simple script, repository validator, or
+manual inspection may perform this audit; the report must preserve these
+categories and list the affected IDs.
+
 ## Index and health report
 
 An index is a derived view and may be regenerated. At minimum it should make
@@ -123,6 +156,32 @@ these conditions visible:
 
 Use counts only as evidence from the current snapshot. A zero count means
 "none found in this scan", not "none exists".
+
+The health report should also include the scan timestamp, bounded root,
+validator or method used, and a short disposition for each non-empty result
+set. If a report was generated from a lightweight script rather than a
+repository command, name the script/method instead of implying a stronger
+validation guarantee.
+
+Append an activity event for every maintenance pass that changes or derives
+knowledge. Use an append-only Markdown record with at least:
+
+```yaml
+---
+event_id: 2026-01-01T00-00-00Z-knowledge-audit
+actor: agent-or-person
+occurred_at: 2026-01-01T00:00:00Z
+mode: audit | draft | revise | publish | archive
+changed_paths: []
+source_ids: []
+unresolved_risks: []
+---
+```
+
+For publication, conflict resolution, deletion, archival, access changes, or
+high-impact claims, add a review-queue item before taking the action. Include
+an item ID, request type, status, evidence paths, owner, created time, and the
+explicit human decision (or `PENDING`).
 
 ## Safe change and review boundaries
 
