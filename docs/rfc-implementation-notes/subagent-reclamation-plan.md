@@ -1,6 +1,6 @@
 # Subagent 清理与运行体回收：调研及实施计划
 
-状态：实施与验证中；本文件是可随实现更新的计划，不是运行时契约。
+状态：已实现，默认未启用；部署验证待完成。本文件是可随实现更新的计划，不是运行时契约。
 
 关联 RFC：[`rfc-subagent-residency-and-reclamation`](../rfcs/subagent-residency-and-reclamation.md)。
 关联需求：[#3430](https://github.com/holon-run/holon/issues/3430)。
@@ -211,7 +211,8 @@ P1 可以独立交付；P2 在 P1 的可用删除入口之上闭环；P3 独立�
 
 #3430 当前仍包含创建时暴露 `retain/delete_on_terminal` 的要求。
 本计划建议把它降为可选便捷能力，优先完成 parent 直接删除、保护和后台提醒。
-该取舍在设计接受后同步到 issue；本文件没有将原验收项视为已经满足或删除。
+该取舍已在实施 [PR #3452](https://github.com/holon-run/holon/pull/3452) 中明确；
+原创建入口验收项仍未完成，本文件没有将其视为已经满足或删除。
 一次性任务已有的终态删除路径继续保留。
 
 实施 PR 同步更新删除准入、监督关系与工具文档；运行体退出落地时同步 host
@@ -220,13 +221,13 @@ RFC 只在职责或语义边界变化时修改。
 
 ## 七、实施记录（2026-10-09）
 
-P1、P2、P3 的代码已落在任务分支，当前继续验证，尚未上线。
+P1、P2、P3 已在 [PR #3452](https://github.com/holon-run/holon/pull/3452) 实现，尚未上线。
 
 | 阶段 | 已实现 | 当前验证 |
 | --- | --- | --- |
-| P1 | `DeleteAgent`；当前监督关系、权限和 incarnation 校验；SQLite 准入 fence；旧运行体协作退出；保守产物保护和 worktree 预检/阶段复检 | parent 授权、队列两种顺序、开放工作/文件保护、真实调用结果保全测试已通过；资源与全量回归继续执行 |
-| P2 | migration 77 持久观察与 outbox；每批 16 个的 keyset 补扫；self `GetAgent` 责任清单；每天最多一批普通内部提醒；孤儿与重复失败 operator brief | 重启、幂等、停止/预算、分页与孤儿通知四组测试通过；无自由文本解析或 TTL 删除 |
-| P3 | 实例 admission gate；有主的任务 handle；同 generation join/移除；host message/callback 重试定位；独立开关 | 闲置退出、读取不激活、重新加载、过期 generation 和已受理操作保护测试通过；callback 与实际进程入口测试继续执行 |
+| P1 | `DeleteAgent`；当前监督关系、权限和 incarnation 校验；SQLite 准入 fence；旧运行体协作退出；保守产物保护和 worktree 预检/阶段复检 | 六项 host 测试通过：当前 parent/双方 incarnation、监督转移、队列两种顺序、开放工作/文件保护、worktree 保护和真实结果保全 |
+| P2 | migration 77 持久观察与 outbox；每批 16 个的 keyset 补扫；self `GetAgent` 责任清单；每天最多一批普通内部提醒；孤儿与重复失败 operator brief | 五项 host 测试通过：重启/幂等、停止/预算、分页/陈旧事实、孤儿通知和重复失败去重；无自由文本解析或 TTL 删除 |
+| P3 | 实例 admission gate；有主的任务 handle；同 generation join/移除；host message/callback 重试定位；独立开关 | 三项 host 测试通过：真实退出/读取不激活/重新加载、过期 generation、已受理操作保护，以及 callback 冷加载与旧进程入口拒绝 |
 
 实施中发现旧 `converge_private_child_identities` 会依据缺少 home、parent 或历史 task
 直接 tombstone 并移除目录。该路径已移除；明确终态的一次性子任务沿用持久删除
@@ -250,3 +251,10 @@ canonical parent 结果在共享 DB 中保全，身份配置与可重建缓存�
 新增配置键均支持 get/set/unset。提醒和闲置退出默认 `false`，观察阈值默认 600 秒。
 部署级真实 RSS、外部进程驻留与模型恢复延迟尚未测量，因此本 PR 不自动启用、
 部署或重启现网。验证数据只描述测试 runtime 的资源退出与持久事实。
+
+验证覆盖还包括 24 项接口快照、callback/workspace 与一次性 worktree 清理集成检查，
+以及 15 项 workspace 控制回归。`cargo fmt --all -- --check`、
+`RUSTFLAGS="-D warnings" cargo check --all-targets`、测试临时资源审计和仓库 CI
+设置的 Clippy 均已通过。macOS 回归使用规范化的 `TMPDIR=/private/tmp`，避免 Git
+返回 `/private/var`、测试 fixture 使用 `/var` 的路径别名差异。完整库、host 回归和
+远端 CI 的最终结果在实施 PR 的验证记录中维护。
