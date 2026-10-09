@@ -241,10 +241,13 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'build.rs'
-      # Non-TUI Rust changes still gate iOS. paths-filter's default 'some'
-      # quantifier cannot express exclusion (a '!' rule would match every
-      # other path), so this dedicated step uses predicate-quantifier: every
-      # to AND the rules per file: src/** minus TUI-only sources.
+      # Non-TUI Rust changes gate the lightweight Swift wire-drift + SDK
+      # tests (swift-sdk job) instead of the full iOS simulator gates; the
+      # full gates stay on iOS-relevant paths and the nightly full sweep.
+      # paths-filter's default 'some' quantifier cannot express exclusion
+      # (a '!' rule would match every other path), so this dedicated step
+      # uses predicate-quantifier: every to AND the rules per file:
+      # src/** minus TUI-only sources.
       - uses: dorny/paths-filter@v3
         id: src-scope
         if: github.event_name == 'push' || github.event_name == 'pull_request'
@@ -301,7 +304,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 15
     needs: changes
-    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.swift_sdk == 'true'
+    # Fast gate for non-TUI Rust changes: wire drift plus mock-based SDK
+    # tests (type check included) without a daemon or simulator.
+    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.swift_sdk == 'true' || needs.changes.outputs.src_non_tui == 'true'
     steps:
       - uses: actions/checkout@v4
       - name: Set up Node.js
@@ -325,7 +330,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 60
     needs: changes
-    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true' || needs.changes.outputs.src_non_tui == 'true'
+    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true'
     steps:
       - uses: actions/checkout@v4
       - name: Require Xcode and an available iOS 18+ simulator
