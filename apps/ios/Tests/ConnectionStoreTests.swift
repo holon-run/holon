@@ -103,7 +103,7 @@ final class ConnectionStoreTests: XCTestCase {
         try fixture { defaults, vault in
             let store = try ConnectionStore(defaults: defaults, vault: vault)
             let first = try profile()
-            let second = try profile()
+            let second = try profile(base: "https://other.example.com/api")
             defer { try? store.removeProfile(first.id); try? store.removeProfile(second.id) }
             try store.saveProfile(first)
             try store.saveProfile(second)
@@ -183,6 +183,90 @@ final class ConnectionStoreTests: XCTestCase {
             object["allowInsecureHTTP"] = false
             let tampered = try JSONSerialization.data(withJSONObject: object)
             XCTAssertThrowsError(try JSONDecoder().decode(ConnectionProfile.self, from: tampered))
+        }
+    }
+
+    func testEquivalentAddressesReuseProfileWithoutChangingSessionOrName() throws {
+        try fixture { defaults, vault in
+            let store = try ConnectionStore(defaults: defaults, vault: vault)
+            let original = try profile(base: "https://EXAMPLE.com:443/api")
+            try store.saveProfile(original)
+            defer { try? store.removeProfile(original.id) }
+            try store.select(original.id)
+            try store.saveSession(session(), for: original)
+            for base in ["https://example.com/api/", "https://example.com:443/api///"] {
+                let duplicate = try ConnectionProfile(name: "New name", apiBaseURL: XCTUnwrap(URL(string: base)))
+                XCTAssertEqual(try store.saveProfile(duplicate), original)
+            }
+            XCTAssertEqual(store.profiles, [original])
+            XCTAssertEqual(store.selectedID, original.id)
+            XCTAssertEqual(try store.session(for: original), session())
+            XCTAssertEqual(try ConnectionStore(defaults: defaults, vault: vault).profiles, [original])
+        }
+    }
+
+    func testDifferentSchemesPortsAndPathsRemainSeparate() throws {
+        try fixture { defaults, vault in
+            let store = try ConnectionStore(defaults: defaults, vault: vault)
+            defer { for p in store.profiles { try? store.removeProfile(p.id) } }
+            for base in ["https://example.com/api", "http://example.com/api", "https://example.com:7878/api",
+                         "https://example.com/proxy/api", "https://example.com/API"] {
+                try store.saveProfile(ConnectionProfile(name: "Host", apiBaseURL: XCTUnwrap(URL(string: base)),
+                                                        allowInsecureHTTP: true))
+            }
+            XCTAssertEqual(store.profiles.count, 5)
+            let http = try ConnectionProfile(name: "HTTP", apiBaseURL: XCTUnwrap(URL(string: "http://EXAMPLE.com:80/api/")),
+                                             allowInsecureHTTP: true)
+            XCTAssertEqual(try store.saveProfile(http).id, store.profiles[1].id)
+        }
+    }
+
+    func testLegacyDedupKeepsSelectedPartitionAndRemovesDiscardedCredentials() throws {
+        try fixture { defaults, vault in
+            let first = try profile()
+            let selected = try profile(base: "https://EXAMPLE.com:443/api/")
+            // Seed the previous format with separate UUID-scoped sessions, without migrating credentials.
+            for p in [first, selected] {
+                let scope = ["profileID": p.id.uuidString, "base": p.apiBaseURL.absoluteString,
+                             "runtime": "runtime", "user": "user", "visibility": "private"]
+                try vault.write(JSONEncoder().encode(session()), account: account(p, session()))
+                try vault.write(JSONEncoder().encode(scope), account: "session-index.\(p.id.uuidString)")
+                let pending = PendingCredential(apiBaseURL: p.apiBaseURL, credential: "pending", userID: "user", expiresAt: nil)
+                try vault.write(JSONEncoder().encode(pending), account: "pending-session.\(p.id.uuidString)")
+            }
+            struct LegacyState: Encodable { let profiles: [ConnectionProfile]; let selectedID: UUID? }
+            defaults.set(try JSONEncoder().encode(LegacyState(profiles: [first, selected], selectedID: selected.id)),
+                         forKey: "run.holon.ios.connectionProfiles.v1")
+            let store = try ConnectionStore(defaults: defaults, vault: vault)
+            defer { try? store.removeProfile(selected.id) }
+            XCTAssertEqual(store.profiles, [selected])
+            XCTAssertEqual(store.selectedID, selected.id)
+            XCTAssertEqual(try store.session(for: selected), session())
+            XCTAssertEqual(try store.pendingSession(for: selected)?.credential, "pending")
+            XCTAssertNil(try vault.read(account: account(first, session())))
+            XCTAssertNil(try vault.read(account: "session-index.\(first.id.uuidString)"))
+            XCTAssertNil(try vault.read(account: "pending-session.\(first.id.uuidString)"))
+            XCTAssertEqual(try ConnectionStore(defaults: defaults, vault: vault).profiles, [selected])
+        }
+    }
+
+    func testLegacyDedupWithoutSelectionKeepsFirstAndEditingCannotCollide() throws {
+        try fixture { defaults, vault in
+            let first = try profile()
+            let duplicate = try profile(base: "https://example.com/api/")
+            struct LegacyState: Encodable { let profiles: [ConnectionProfile] }
+            defaults.set(try JSONEncoder().encode(LegacyState(profiles: [first, duplicate])),
+                         forKey: "run.holon.ios.connectionProfiles.v1")
+            let store = try ConnectionStore(defaults: defaults, vault: vault)
+            let other = try profile(base: "https://other.example.com/api")
+            try store.saveProfile(other)
+            defer { for p in store.profiles { try? store.removeProfile(p.id) } }
+            XCTAssertEqual(store.profiles, [first, other])
+            XCTAssertNil(store.selectedID)
+            try store.saveSession(session(), for: other)
+            let collision = try profile(id: other.id)
+            XCTAssertThrowsError(try store.saveProfile(collision))
+            XCTAssertEqual(try store.session(for: other), session())
         }
     }
 }

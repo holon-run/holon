@@ -166,16 +166,17 @@ final class ConnectionCoordinator {
     func addProfile(name: String, apiBaseURL: URL, allowInsecureHTTP: Bool) throws -> ConnectionProfile {
         let profile = try ConnectionProfile(name: name, apiBaseURL: apiBaseURL,
                                             allowInsecureHTTP: allowInsecureHTTP)
-        try store.saveProfile(profile)
+        let saved = try store.saveProfile(profile)
         profiles = store.profiles
-        return profile
+        return saved
     }
 
     func removeProfile(_ profile: ConnectionProfile) async {
-        if selectedProfile?.id == profile.id {
+        guard profiles.contains(profile) else { return }
+        let removingSelected = selectedProfile?.id == profile.id
+        if removingSelected {
             guard invalidate() else { return }
-            selectedProfile = nil
-            status = .disconnected
+            pendingPairing = nil
         }
         do {
             if let pending = try proofStore.loadPending(apiBaseURL: profile.apiBaseURL) {
@@ -183,6 +184,10 @@ final class ConnectionCoordinator {
             }
             try store.removeProfile(profile.id)
             profiles = store.profiles
+            if removingSelected {
+                selectedProfile = nil
+                status = .disconnected
+            }
         } catch { status = .storageError }
     }
 
