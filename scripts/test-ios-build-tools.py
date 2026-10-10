@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run build/archive and UI command contract regressions without starting Xcode."""
 import ast
+import http.server
 import json
 import os
 import pathlib
@@ -199,6 +200,75 @@ class UIFixtureSetupContracts(unittest.TestCase):
         self.run_setup(initialize, install, share=False)
         initialize.assert_called_once_with(UUID)
         install.assert_not_called()
+
+
+class UIFixtureProviderContracts(unittest.TestCase):
+    def test_failed_history_seed_clears_scope(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        seed_block = next(node for node in ast.walk(tree)
+                          if isinstance(node, ast.If) and isinstance(node.test, ast.Name)
+                          and node.test.id == "history_acceptance")
+        history_seed_active = threading.Event()
+
+        def fail_seed(*args):
+            self.assertTrue(history_seed_active.is_set())
+            raise RuntimeError("seed stopped")
+
+        namespace = dict(history_acceptance=True, history_seed_active=history_seed_active,
+                         agent="holon-tester", local=fail_seed)
+        with self.assertRaisesRegex(RuntimeError, "seed stopped"):
+            exec(compile(ast.Module(body=[seed_block], type_ignores=[]),
+                         str(source), "exec"), namespace)
+        self.assertFalse(history_seed_active.is_set())
+
+    def test_history_seed_scope_preserves_normal_and_streaming_markdown(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        provider_class = next(node for node in ast.walk(tree)
+                              if isinstance(node, ast.ClassDef) and node.name == "FakeProvider")
+        history_seed_active = threading.Event()
+        with tempfile.TemporaryDirectory(prefix="holon-ios-ui-provider-") as directory:
+            namespace = dict(http=http, json=json, root=Path(directory),
+                             rich_activity_acceptance=False, report_acceptance=True,
+                             history_acceptance=True, history_seed_active=history_seed_active)
+            exec(compile(ast.Module(body=[provider_class], type_ignores=[]),
+                         str(source), "exec"), namespace)
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), namespace["FakeProvider"])
+            namespace["provider"] = server
+            worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .05})
+            worker.start()
+            try:
+                for streaming in (False, True):
+                    for seeding in (False, True, False):
+                        if seeding:
+                            history_seed_active.set()
+                        else:
+                            history_seed_active.clear()
+                        request = urllib.request.Request(
+                            f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
+                            data=json.dumps({"model": "fixture-model", "stream": streaming,
+                                             "messages": [
+                                                 {"role": "user", "content": "IOS_HISTORY_024"},
+                                                 {"role": "user", "content": "Produce the reading brief"},
+                                             ]}).encode(),
+                            headers={"Authorization": "Bearer isolated-test-only",
+                                     "Content-Type": "application/json"})
+                        with urllib.request.urlopen(request, timeout=5) as response:
+                            body = response.read().decode()
+                        with self.subTest(streaming=streaming, seeding=seeding):
+                            self.assertIn("IOS_POPULATED_BRIEF", body)
+                            if seeding:
+                                self.assertIn("History fixture result.", body)
+                                self.assertNotIn("Open fixture file", body)
+                            else:
+                                self.assertIn("Open fixture file", body)
+                                self.assertNotIn("History fixture result.", body)
+            finally:
+                server.shutdown()
+                server.server_close()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
 
 
 class SimulatorAppearanceContracts(unittest.TestCase):

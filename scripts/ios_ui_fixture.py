@@ -49,6 +49,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
     base = f"http://127.0.0.1:{port}/api"
     held_run_started = root / "held-run-started"
     release_held_run = threading.Event()
+    history_seed_active = threading.Event()
 
     class FakeProvider(http.server.BaseHTTPRequestHandler):
         image_requests = 0
@@ -92,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 text = f"IOS_RICH_ASSISTANT: read-only inspection batch {FakeProvider.rich_batches}."
                 if report_acceptance:
                     text += "\n\n" + "safe-report-body " * 600 + "\nIOS_CONTENT_REPORT_TAIL"
-            elif history_acceptance:
+            elif history_seed_active.is_set():
                 text = "IOS_POPULATED_BRIEF: History fixture result."
             finish_reason = "tool_calls" if tool_calls else "stop"
             if request.get("stream"):
@@ -312,17 +313,21 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
             rich_turn = None
             rich_additional_work = None
             if history_acceptance:
-                for number in range(25):
-                    marker = f"IOS_HISTORY_{number:03}"
-                    local("POST", f"/agents/{agent}/enqueue", {"text": marker})
-                    for attempt in range(200):
-                        history = local("GET", f"/agents/{agent}/conversation")
-                        if any(marker in json.dumps(turn) and turn.get("brief_ids")
-                               for turn in history.get("turns", [])):
-                            break
-                        time.sleep(.1)
-                    else:
-                        raise RuntimeError("history fixture turn did not finish")
+                history_seed_active.set()
+                try:
+                    for number in range(25):
+                        marker = f"IOS_HISTORY_{number:03}"
+                        local("POST", f"/agents/{agent}/enqueue", {"text": marker})
+                        for attempt in range(200):
+                            history = local("GET", f"/agents/{agent}/conversation")
+                            if any(marker in json.dumps(turn) and turn.get("brief_ids")
+                                   for turn in history.get("turns", [])):
+                                break
+                            time.sleep(.1)
+                        else:
+                            raise RuntimeError("history fixture turn did not finish")
+                finally:
+                    history_seed_active.clear()
             if rich_activity_acceptance:
                 # All rich data lives in this temporary daemon, never a production Agent.
                 for number in range(90):
