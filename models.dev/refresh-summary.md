@@ -1,15 +1,12 @@
 # models.dev refresh summary
 
-- Supplement models: 55 (drafted this run: 4, retained: 51, removed: 0)
+- Supplement models: 55 (drafted this run: 0, retained: 55, removed: 0)
 - Deferred candidates: 208 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
 
-- `anthropic/claude-haiku-5-5` — Claude Haiku 5.5 (context 1000000, reasoning true, image input true)
-- `mistral/glm-5-2` — GLM-5.2 (context 1048576, reasoning true, image input false)
-- `mistral/labs-leanstral-1-5-1` — Leanstral 1.5 (context 262144, reasoning true, image input true)
-- `mistral/mistral-large-4` — Mistral Large 4 (context 1048576, reasoning true, image input true)
+(none this run)
 
 ## Deferred (needs human decision or outside policy)
 
