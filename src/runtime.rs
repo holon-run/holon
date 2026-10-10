@@ -112,8 +112,8 @@ use crate::{
         EffectivePrompt,
     },
     provider::{
-        provider_attempt_timeline, AgentProvider, ModelBlock, ProviderBuiltinWebSearchCapability,
-        ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
+        provider_attempt_timeline, AgentProvider, ModelBlock, ProviderNativeWebSearchKind,
+        ProviderNativeWebSearchRequest,
     },
     queue::RuntimeQueue,
     runtime_db::{
@@ -431,8 +431,6 @@ struct RuntimeInner {
     turn_fallback_model: RwLock<Option<ModelRouteRef>>,
     context_config: RwLock<ContextConfig>,
     config_snapshot: ArcSwap<ConfigSnapshot>,
-    builtin_web_search_probe_cache:
-        Mutex<HashMap<BuiltinWebSearchProbeKey, BuiltinWebSearchProbeCacheEntry>>,
     view_image_observation_cache:
         Mutex<HashMap<ViewImageObservationCacheKey, ViewImageObservation>>,
     view_image_candidate_health: Mutex<bootstrap::ViewImageCandidateHealth>,
@@ -2837,45 +2835,6 @@ pub(crate) struct ViewImageObservationCacheKey {
     pub(crate) generation_policy: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct BuiltinWebSearchProbeKey {
-    provider_id: String,
-    provider_model_ref: String,
-    provider_transport: String,
-    provider_base_url: String,
-    advertised_tool_type: String,
-    backend_kind: String,
-}
-
-impl BuiltinWebSearchProbeKey {
-    fn from_capability(capability: &ProviderBuiltinWebSearchCapability) -> Self {
-        Self {
-            provider_id: capability.provider_id.clone(),
-            provider_model_ref: capability.provider_model_ref.clone(),
-            provider_transport: capability.provider_transport.clone(),
-            provider_base_url: capability.provider_base_url.clone(),
-            advertised_tool_type: capability.advertised_tool_type.clone(),
-            backend_kind: capability.backend_kind.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BuiltinWebSearchProbeCacheEntry {
-    status: BuiltinWebSearchProbeStatus,
-    reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[allow(dead_code)]
-#[serde(rename_all = "snake_case")]
-enum BuiltinWebSearchProbeStatus {
-    Supported,
-    Unsupported,
-    TransientFailure,
-    Skipped,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum BuiltinWebSearchSelectionStatus {
@@ -2884,7 +2843,6 @@ enum BuiltinWebSearchSelectionStatus {
     Unsupported,
     NotDeclared,
     NotRequested,
-    TransientProbeFailure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2904,8 +2862,6 @@ struct BuiltinWebSearchSelectionDiagnostics {
     advertised_tool_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     backend_kind: Option<String>,
-    probe_status: BuiltinWebSearchProbeStatus,
-    probe_cache_hit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
