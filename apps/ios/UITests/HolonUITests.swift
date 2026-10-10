@@ -696,7 +696,8 @@ final class HolonUITests: XCTestCase {
         if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
         let report = app.buttons["report.open." + turn]
         for _ in 0..<40 {
-            if report.exists && report.isHittable { break }
+            // Once loaded, reveal the row instead of paging past its turn.
+            if report.exists { break }
             let older = app.buttons["conversation.older"]
             if older.exists && older.isHittable { older.tap() } else { app.swipeDown() }
         }
@@ -735,7 +736,7 @@ final class HolonUITests: XCTestCase {
         defer { app.terminate() }
         let submit = app.buttons["report.submit"]
         reveal(submit, in: app); XCTAssertTrue(submit.isEnabled); submit.tap()
-        let confirm = app.alerts.buttons["report.confirm"]
+        let confirm = app.alerts.buttons["report.confirm"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 10))
         app.alerts.buttons["Cancel"].tap()
         XCTAssertFalse(confirm.exists)
@@ -770,19 +771,26 @@ final class HolonUITests: XCTestCase {
         app.swipeDown()
         let submit = app.buttons["report.submit"]
         reveal(submit, in: app); XCTAssertTrue(submit.isEnabled); submit.tap()
-        let confirm = app.alerts.buttons["report.confirm"]
+        // SwiftUI exposes the native alert control as nested Button nodes.
+        let confirm = app.alerts.buttons["report.confirm"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 10)); confirm.tap()
-        let accepted = app.descendants(matching: .any)["report.accepted"].firstMatch
+        // Assert the receipt text, not the Label's decorative, non-hittable icon.
+        let accepted = app.staticTexts["report.accepted"].firstMatch
         XCTAssertTrue(accepted.waitForExistence(timeout: 30))
-        reveal(accepted, in: app)
+        reveal(accepted, in: app, fullyVisible: true)
         let receipt = app.staticTexts.matching(NSPredicate(format:
             "label MATCHES %@", "report_[0-9a-f]+")).firstMatch
         reveal(receipt, in: app)
         XCTAssertTrue(receipt.label.hasPrefix("report_"), "Accepted must show the server report ID")
+        let receiptID = receipt.label
         XCTAssertFalse(submit.exists, "An accepted draft cannot be submitted again")
         XCTAssertFalse(app.staticTexts["report.error"].exists)
         XCUIDevice.shared.press(.home); app.activate()
+        // Foreground refresh may reset the Form offset; receipt rows are lazy.
+        reveal(accepted, in: app, fullyVisible: true)
         XCTAssertTrue(accepted.waitForExistence(timeout: 30))
+        reveal(receipt, in: app)
+        XCTAssertEqual(receipt.label, receiptID, "Foreground restoration must preserve the accepted receipt")
         XCTAssertFalse(submit.exists, "Foreground restoration must not resend an accepted report")
         capture(app, "content-report-real-accepted-receipt")
         app.buttons["report.dismiss"].tap()
@@ -846,8 +854,12 @@ final class HolonUITests: XCTestCase {
             if olderTurns.exists && olderTurns.isHittable { olderTurns.tap() }
             else { app.swipeDown() }
         }
+        // Hittable can include a sliver above the navigation bar.
+        // Reveal the whole disclosure row before asking it to expand.
+        reveal(activity, in: app, fullyVisible: true)
         XCTAssertTrue(activity.isHittable); activity.tap()
         let fullProcess = app.buttons["activities.full." + turn]
+        XCTAssertTrue(fullProcess.waitForExistence(timeout: 10))
         reveal(fullProcess, in: app); fullProcess.tap()
         let fullReader = app.scrollViews["activities.fullReader"]
         XCTAssertTrue(fullReader.waitForExistence(timeout: 10))
