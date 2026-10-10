@@ -3351,6 +3351,13 @@ async fn context_length_exceeded_turn_recovers_once_with_recent_turns() {
     )
     .unwrap();
 
+    // Recovery only retries when the initial recent-turns projection includes
+    // the historical turn but the reduced retry budget (initial minus
+    // max(initial / 4, 1024) tokens) drops it. context_config() derives that
+    // budget from live tool descriptions, so scale the fixture to ~7/8 of it:
+    // inside the window with ~1/8-budget margins against description drift.
+    let historical_repeats =
+        public_tools_prompt_budget_estimated_tokens() * 7 / 8 * 4 / "historical context".len();
     let historical_message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
@@ -3361,7 +3368,7 @@ async fn context_length_exceeded_turn_recovers_once_with_recent_turns() {
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
-            text: "historical context".repeat(2048),
+            text: "historical context".repeat(historical_repeats),
         },
     );
     let mut historical_turn = TurnRecord::new("default", "turn-context-recovery-history", 1);

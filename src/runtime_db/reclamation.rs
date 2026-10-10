@@ -47,8 +47,30 @@ pub(crate) fn ensure_root_admission_tx(tx: &Transaction<'_>, root_id: &str) -> R
     Ok(())
 }
 
+/// Durable state that proves live execution or scheduling. These block both
+/// deletion admission and reminder delivery because the agent is not idle.
+const EXECUTION_BLOCKER_CHECKS: &[(&str, &str)] = &[
+    ("active_task", "SELECT EXISTS(SELECT 1 FROM tasks WHERE owner_agent_id = ?1 AND status IN ('queued','running','cancelling'))"),
+    ("inbound_invocation", "SELECT EXISTS(SELECT 1 FROM tasks WHERE child_agent_id = ?1 AND status IN ('queued','running','cancelling'))"),
+    ("queued_or_claimed_input", "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id = ?1 AND status IN ('queued','dequeued','interrupted'))"),
+    ("accepted_delivery", "SELECT EXISTS(SELECT 1 FROM agent_message_deliveries WHERE target_agent_id = ?1 AND state IN ('queued','dispatched'))"),
+    ("wait", "SELECT EXISTS(SELECT 1 FROM wait_conditions WHERE agent_id = ?1 AND status IN ('active','triggered'))"),
+    ("pending_result_settlement", "SELECT EXISTS(SELECT 1 FROM task_result_settlements WHERE agent_id = ?1 AND state != 'settled')"),
+    ("open_execution", "SELECT EXISTS(SELECT 1 FROM execution_protocol_attempts WHERE agent_id = ?1 AND lifecycle_state = 'open')"),
+    ("workspace_occupancy", "SELECT EXISTS(SELECT 1 FROM workspace_occupancies WHERE holder_agent_id = ?1 AND released_at IS NULL)"),
+];
+
+/// Durable retention state that outlives the current turn. The parent owns the
+/// decision to keep or release it, so it is a diagnostic hint rather than a
+/// blocker for deletion admission or reminder delivery.
+const RETENTION_BLOCKER_CHECKS: &[(&str, &str)] = &[
+    ("open_work_item", "SELECT EXISTS(SELECT 1 FROM work_items WHERE agent_id = ?1 AND state != 'completed')"),
+    ("timer", "SELECT EXISTS(SELECT 1 FROM timers WHERE agent_id = ?1 AND status = 'active')"),
+    ("timer_wake", "SELECT EXISTS(SELECT 1 FROM timers t JOIN timer_wakes w USING(timer_id) WHERE t.agent_id = ?1 AND w.status = 'pending')"),
+];
+
 /// Fail closed on unknown state. Historical rows alone are not live work.
-pub(crate) fn idle_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<String>> {
+fn runtime_state_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<String>> {
     let state: Option<String> = tx
         .query_row(
             "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
@@ -73,39 +95,61 @@ pub(crate) fn idle_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Op
     {
         return Ok(Some("runtime_execution_or_wake".into()));
     }
-    // Each query uses an owner/target index. Keep these predicates aligned
-    // with producer fencing; a caller must never make work idle by cancelling it.
-    for (reason, sql) in [
-        ("active_task", "SELECT EXISTS(SELECT 1 FROM tasks WHERE owner_agent_id = ?1 AND status IN ('queued','running','cancelling'))"),
-        ("inbound_invocation", "SELECT EXISTS(SELECT 1 FROM tasks WHERE child_agent_id = ?1 AND status IN ('queued','running','cancelling'))"),
-        ("queued_or_claimed_input", "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id = ?1 AND status IN ('queued','dequeued','interrupted'))"),
-        ("accepted_delivery", "SELECT EXISTS(SELECT 1 FROM agent_message_deliveries WHERE target_agent_id = ?1 AND state IN ('queued','dispatched'))"),
-        ("open_work_item", "SELECT EXISTS(SELECT 1 FROM work_items WHERE agent_id = ?1 AND state != 'completed')"),
-        ("wait", "SELECT EXISTS(SELECT 1 FROM wait_conditions WHERE agent_id = ?1 AND status IN ('active','triggered'))"),
-        ("timer", "SELECT EXISTS(SELECT 1 FROM timers WHERE agent_id = ?1 AND status = 'active')"),
-        ("timer_wake", "SELECT EXISTS(SELECT 1 FROM timers t JOIN timer_wakes w USING(timer_id) WHERE t.agent_id = ?1 AND w.status = 'pending')"),
-        ("pending_result_settlement", "SELECT EXISTS(SELECT 1 FROM task_result_settlements WHERE agent_id = ?1 AND state != 'settled')"),
-        ("open_execution", "SELECT EXISTS(SELECT 1 FROM execution_protocol_attempts WHERE agent_id = ?1 AND lifecycle_state = 'open')"),
-        ("workspace_occupancy", "SELECT EXISTS(SELECT 1 FROM workspace_occupancies WHERE holder_agent_id = ?1 AND released_at IS NULL)"),
-    ] {
+    Ok(None)
+}
+
+// Each query uses an owner/target index. Keep these predicates aligned with
+// producer fencing; a caller must never make work idle by cancelling it.
+fn first_blocker_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    checks: &[(&str, &str)],
+) -> Result<Option<String>> {
+    for (reason, sql) in checks {
         if tx.query_row(sql, [agent_id], |row| row.get::<_, bool>(0))? {
-            return Ok(Some(reason.into()));
+            return Ok(Some((*reason).into()));
         }
     }
     Ok(None)
 }
 
+/// Full idle safety facts. Used by idle runtime retirement, which must keep
+/// considering retention state before exiting a runtime.
+pub(crate) fn idle_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<String>> {
+    if let Some(blocker) = runtime_state_blocker_tx(tx, agent_id)? {
+        return Ok(Some(blocker));
+    }
+    if let Some(blocker) = first_blocker_tx(tx, agent_id, EXECUTION_BLOCKER_CHECKS)? {
+        return Ok(Some(blocker));
+    }
+    first_blocker_tx(tx, agent_id, RETENTION_BLOCKER_CHECKS)
+}
+
+/// Execution-only blockers: live runtime state plus active, queued, or waiting
+/// work. Retention state (open work items, timers, timer wakes) is excluded so
+/// callers can treat it as a hint instead of a hard stop.
+pub(crate) fn execution_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<String>> {
+    if let Some(blocker) = runtime_state_blocker_tx(tx, agent_id)? {
+        return Ok(Some(blocker));
+    }
+    first_blocker_tx(tx, agent_id, EXECUTION_BLOCKER_CHECKS)
+}
+
+/// Deletion admission for a supervised child. Execution blockers, descendant
+/// responsibility, and protected artifacts block cleanup. Retention state
+/// (open work items, timers) and retained command-task output do not: the parent
+/// decides whether they are still needed, and deletion later terminalizes or
+/// cancels them through the normal phases.
 pub(crate) fn parent_cleanup_blocker_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
 ) -> Result<Option<String>> {
-    if let Some(blocker) = idle_blocker_tx(tx, agent_id)? {
+    if let Some(blocker) = execution_blocker_tx(tx, agent_id)? {
         return Ok(Some(blocker));
     }
     for (reason, sql) in [
         ("descendant_responsibility", "SELECT EXISTS(SELECT 1 FROM agent_supervisions WHERE supervisor_agent_id = ?1 AND state != 'closed')"),
         ("protected_artifact", "SELECT EXISTS(SELECT 1 FROM artifact_metadata WHERE agent_id = ?1)"),
-        ("task_output_artifact", "SELECT EXISTS(SELECT 1 FROM tasks WHERE owner_agent_id = ?1 AND output_path IS NOT NULL)"),
     ] {
         if tx.query_row(sql, [agent_id], |row| row.get::<_, bool>(0))? { return Ok(Some(reason.into())); }
     }

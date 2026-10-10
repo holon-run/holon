@@ -13694,6 +13694,159 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn parent_cleanup_allows_retention_state_and_retained_outputs() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+
+        // Retained command-task output no longer blocks cleanup.
+        let child = retained_cleanup_fixture(&host, "parent-cleanup-output");
+        let mut task = test_child_supervision_task(&child.agent_id, "cleanup-output-task");
+        task.status = TaskStatus::Completed;
+        task.detail = Some(json!({"output_path": "/tmp/holon-retained-output.txt"}));
+        host.runtime_db().tasks().upsert(&task).unwrap();
+        host.begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap();
+
+        // An open WorkItem is the parent's call, not a cleanup blocker.
+        let child = retained_cleanup_fixture(&host, "parent-cleanup-work-item");
+        let work_item = WorkItemRecord::new(&child.agent_id, "still open", WorkItemState::Open);
+        host.runtime_db()
+            .work_items()
+            .insert_new(&work_item)
+            .unwrap();
+        host.begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap();
+
+        // An active timer is the parent's call too.
+        let child = retained_cleanup_fixture(&host, "parent-cleanup-timer");
+        host.runtime_db()
+            .timers()
+            .upsert(&startup_timer_fixture(
+                "cleanup-active-timer",
+                &child.agent_id,
+                TimerStatus::Active,
+                None,
+                Some(Utc::now() + chrono::Duration::hours(1)),
+            ))
+            .unwrap();
+        let wake_created_at = crate::runtime_db::migrations::timestamp(Utc::now());
+        host.runtime_db()
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO timer_wakes (timer_id, message_id, fire_count, status, created_at, updated_at) \
+                     VALUES ('cleanup-active-timer', 'cleanup-timer-wake-message', 1, 'pending', ?1, ?1)",
+                    [wake_created_at.as_str()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let job = host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap();
+        // Run the job to completion: admitted timers must be cancelled
+        // instead of surviving as active rows behind the deleted identity.
+        host.execute_deletion_job(job).await.unwrap();
+        assert_eq!(
+            host.runtime_db()
+                .timers()
+                .latest("cleanup-active-timer")
+                .unwrap()
+                .unwrap()
+                .status,
+            TimerStatus::Cancelled
+        );
+        let wake_status = host
+            .runtime_db()
+            .transaction(|tx| {
+                let status: String = tx.query_row(
+                    "SELECT status FROM timer_wakes WHERE message_id = 'cleanup-timer-wake-message'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                Ok(status)
+            })
+            .unwrap();
+        assert_eq!(wake_status, "cancelled");
+
+        // Protected artifacts still block.
+        let child = retained_cleanup_fixture(&host, "parent-cleanup-protected-artifact");
+        let created_at = crate::runtime_db::migrations::timestamp(Utc::now());
+        host.runtime_db()
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO artifact_metadata (evidence_id, agent_id, created_at, kind, payload_json) \
+                     VALUES ('evidence-protected', ?1, ?2, 'result', '{}')",
+                    [child.agent_id.as_str(), created_at.as_str()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("protected_artifact"));
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subagent_reminder_reports_retention_state_and_defers_busy_parent() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let child = retained_cleanup_fixture(&host, "reminder-retention");
+        let work_item = WorkItemRecord::new(&child.agent_id, "still open", WorkItemState::Open);
+        host.runtime_db()
+            .work_items()
+            .insert_new(&work_item)
+            .unwrap();
+
+        let now = Utc::now();
+        host.runtime_db()
+            .scan_subagent_cleanup(None, 16, now, chrono::Duration::zero(), true)
+            .unwrap();
+        let message = host
+            .runtime_db()
+            .pending_subagent_reminders(None, 16)
+            .unwrap()
+            .pop()
+            .expect("retention state must not suppress a reminder");
+        let MessageBody::Text { text } = &message.body else {
+            panic!("reminder body should be text");
+        };
+        assert!(text.contains("reminder-retention"), "{text}");
+        assert!(text.contains("open_work_item"), "{text}");
+
+        // A busy parent defers delivery and keeps the outbox pending.
+        let mut state = parent.agent_state().await.unwrap();
+        state.status = AgentStatus::AwakeRunning;
+        host.runtime_db().agent_states().upsert(&state).unwrap();
+        assert!(!host
+            .runtime_db()
+            .subagent_reminder_is_current(&message)
+            .unwrap());
+        assert_eq!(
+            host.runtime_db()
+                .pending_subagent_reminders(None, 16)
+                .unwrap()[0]
+                .id,
+            message.id
+        );
+
+        // Once the parent is idle again, the same reminder is deliverable.
+        state.status = AgentStatus::AwakeIdle;
+        host.runtime_db().agent_states().upsert(&state).unwrap();
+        assert!(host
+            .runtime_db()
+            .subagent_reminder_is_current(&message)
+            .unwrap());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn parent_cleanup_exits_runtime_and_preserves_parent_result() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();

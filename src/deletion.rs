@@ -22,8 +22,10 @@ use tracing::{debug, info, warn};
 use crate::host::RuntimeHost;
 use crate::types::*;
 
-/// Interval between periodic deletion coordinator sweeps.
-const DELETION_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+/// Interval between periodic deletion coordinator safety/observation sweeps.
+/// Deletion admission wakes the coordinator directly and retries use persisted
+/// deadlines, so this cadence only bounds low-priority scans.
+const DELETION_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 const DELETION_BATCH_LIMIT: usize = 16;
 const DELETION_RETRY_BASE: Duration = Duration::from_millis(250);
 const DELETION_RETRY_CAP: Duration = Duration::from_secs(30);
@@ -91,7 +93,7 @@ impl RuntimeHost {
                         Err(error) => warn!(%error, "legacy deletion scan failed"),
                     }
                     let config = self.config();
-                    let enabled = config.stored_config.runtime.reclamation.reminders_enabled.unwrap_or(false);
+                    let enabled = config.stored_config.runtime.reclamation.reminders_enabled.unwrap_or(true);
                     let grace = chrono::Duration::from_std(Duration::from_secs(config.stored_config.runtime.reclamation.idle_grace_seconds.unwrap_or(600).max(1))).unwrap_or(chrono::Duration::MAX);
                     match self.runtime_db().scan_subagent_cleanup(cleanup_cursor.as_deref(), DELETION_BATCH_LIMIT, Utc::now(), grace, enabled) {
                         Ok(outcome) => { cleanup_cursor = outcome.cursor; if outcome.changed > 0 { debug!(observed=outcome.observed, changed=outcome.changed, "subagent responsibility observations changed"); } }
@@ -156,7 +158,7 @@ impl RuntimeHost {
             .runtime
             .reclamation
             .reminders_enabled
-            .unwrap_or(false)
+            .unwrap_or(true)
         {
             return Ok(cursor);
         }
@@ -186,7 +188,7 @@ impl RuntimeHost {
                     .runtime
                     .reclamation
                     .reminders_enabled
-                    .unwrap_or(false)
+                    .unwrap_or(true)
             {
                 break;
             }
@@ -729,14 +731,29 @@ impl RuntimeHost {
     /// deletion first.
     async fn deletion_phase_quiesce(&self, agent_id: &str, job: &AgentDeletionJob) -> Result<()> {
         if job.mode == AgentDeletionMode::ParentCleanup {
-            return self.runtime_db().transaction(|tx| {
+            self.runtime_db().transaction(|tx| {
                 if let Some(blocker) =
                     crate::runtime_db::reclamation::parent_cleanup_blocker_tx(tx, agent_id)?
                 {
                     anyhow::bail!("agent_cleanup_blocked: {blocker}");
                 }
                 Ok(())
-            });
+            })?;
+            // Admitted retention state is not quiesced by any later
+            // ParentCleanup phase; cancel active timers and their pending
+            // wakes so they cannot outlive the deleted identity.
+            let cancelled_timers = self
+                .runtime_db()
+                .timers()
+                .cancel_active_for_agent(agent_id, Utc::now())?;
+            if cancelled_timers > 0 {
+                debug!(
+                    agent_id,
+                    count = cancelled_timers,
+                    "cancelled admitted timers"
+                );
+            }
+            return Ok(());
         }
         // Cascade private children first.
         if job.cascade_private_children {

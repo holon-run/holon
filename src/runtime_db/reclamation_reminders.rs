@@ -64,6 +64,37 @@ fn parent_can_receive_tx(tx: &Transaction<'_>, parent: &str) -> Result<bool> {
                 .is_some_and(|p| p.allows(AgentCapabilityFamily::AgentCreation))
     }))
 }
+
+/// Transient "parent is busy" state. Unlike [`parent_can_receive_tx`], which is
+/// a durable eligibility gate, this only defers a reminder so a running parent
+/// is not interrupted. Durable retention state (open work items, timers) is not
+/// "busy".
+fn parent_busy_blocker_tx(tx: &Transaction<'_>, parent: &str) -> Result<Option<String>> {
+    let payload: Option<String> = tx.query_row("SELECT s.payload_json FROM agent_states s JOIN agent_identities i USING(agent_id) WHERE i.agent_id = ?1 AND i.status = 'active'", [parent], |r| r.get(0)).optional()?;
+    let Some(payload) = payload else {
+        return Ok(Some("parent_unavailable".into()));
+    };
+    let state: AgentState = serde_json::from_str(&payload)?;
+    if matches!(
+        state.status,
+        AgentStatus::Booting | AgentStatus::AwakeRunning | AgentStatus::AwaitingTask
+    ) || state.current_run_id.is_some()
+        || state.pending > 0
+        || state.pending_wake_hint.is_some()
+    {
+        return Ok(Some("parent_running".into()));
+    }
+    for (reason, sql) in [
+        ("parent_active_task", "SELECT EXISTS(SELECT 1 FROM tasks WHERE owner_agent_id = ?1 AND status IN ('queued','running','cancelling'))"),
+        ("parent_queued_input", "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id = ?1 AND status IN ('queued','dequeued','interrupted'))"),
+        ("parent_accepted_delivery", "SELECT EXISTS(SELECT 1 FROM agent_message_deliveries WHERE target_agent_id = ?1 AND state IN ('queued','dispatched'))"),
+    ] {
+        if tx.query_row(sql, [parent], |row| row.get::<_, bool>(0))? {
+            return Ok(Some(reason.into()));
+        }
+    }
+    Ok(None)
+}
 impl RuntimeDb {
     /// Bounded keyset fallback. Only changed facts produce observation writes.
     pub(crate) fn scan_subagent_cleanup(
@@ -103,18 +134,36 @@ impl RuntimeDb {
                 }
                 let blocker = idle_blocker_tx(tx, &child)?;
                 let previous: Option<(String, Option<String>, bool)> = tx.query_row("SELECT evidence, blocker, orphaned FROM subagent_cleanup_observations WHERE child_agent_id = ?1", [&child], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
-                if previous.as_ref() != Some(&(fact.evidence.clone(), blocker.clone(), orphaned)) {
-                    tx.execute("INSERT INTO \
-                        subagent_cleanup_observations(child_agent_id,parent_agent_id,evidence,observed_since,next_reminder_at,blocker,orphaned,notice_id) \
-                        VALUES(?1,?2,?3,?4,?5,?6,?7,NULL) ON CONFLICT(child_agent_id) DO UPDATE SET \
-                        parent_agent_id=excluded.parent_agent_id,evidence=excluded.evidence,observed_since=excluded.observed_since,next_reminder_at=excluded.next_reminder_at,blocker=excluded.blocker,orphaned=excluded.orphaned,notice_id=NULL", params![child, fact.parent, fact.evidence, timestamp(now), timestamp(now.checked_add_signed(grace).ok_or_else(||anyhow::anyhow!("idle_grace_seconds exceeds timestamp range"))?), blocker, orphaned])?;
-                    outcome.changed += 1;
+                match previous {
+                    // Only identity/supervision/activity evidence or orphan status
+                    // restarts the idle grace. A changed blocker is just a refreshed
+                    // hint and must not push next_reminder_at out forever.
+                    Some((evidence, previous_blocker, previous_orphaned))
+                        if evidence == fact.evidence && previous_orphaned == orphaned =>
+                    {
+                        if previous_blocker != blocker {
+                            tx.execute("UPDATE subagent_cleanup_observations SET blocker=?2 WHERE child_agent_id=?1", params![child, blocker])?;
+                            outcome.changed += 1;
+                        }
+                    }
+                    _ => {
+                        tx.execute("INSERT INTO \
+                            subagent_cleanup_observations(child_agent_id,parent_agent_id,evidence,observed_since,next_reminder_at,blocker,orphaned,notice_id) \
+                            VALUES(?1,?2,?3,?4,?5,?6,?7,NULL) ON CONFLICT(child_agent_id) DO UPDATE SET \
+                            parent_agent_id=excluded.parent_agent_id,evidence=excluded.evidence,observed_since=excluded.observed_since,next_reminder_at=excluded.next_reminder_at,blocker=excluded.blocker,orphaned=excluded.orphaned,notice_id=NULL", params![child, fact.parent, fact.evidence, timestamp(now), timestamp(now.checked_add_signed(grace).ok_or_else(||anyhow::anyhow!("idle_grace_seconds exceeds timestamp range"))?), blocker, orphaned])?;
+                        outcome.changed += 1;
+                    }
                 }
                 parents.insert(fact.parent);
             }
             if reminders_enabled {
                 for parent in parents {
                     if !parent_can_receive_tx(tx, &parent)? {
+                        continue;
+                    }
+                    if parent_busy_blocker_tx(tx, &parent)?.is_some() {
+                        // Defer without settling: the pending outbox is retried
+                        // once the parent is idle again.
                         continue;
                     }
                     let previous: Option<(String, String, String)> = tx.query_row("SELECT message_id,state,created_at FROM subagent_cleanup_outbox WHERE parent_agent_id=?1", [&parent], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
@@ -129,15 +178,22 @@ impl RuntimeDb {
                     }
                     let due = {
                         let mut stmt = tx.prepare("SELECT child_agent_id,evidence FROM subagent_cleanup_observations WHERE \
-                            parent_agent_id=?1 AND orphaned=0 AND blocker IS NULL AND \
+                            parent_agent_id=?1 AND orphaned=0 AND \
                             next_reminder_at<=?2 ORDER BY next_reminder_at,child_agent_id LIMIT ?3")?;
                         let rows=stmt.query_map(params![parent,timestamp(now),limit], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
                         rows
                     };
                     let mut facts = Vec::new();
+                    let mut hints = std::collections::BTreeMap::new();
                     for (child, evidence) in due {
                         if let Some(fact) = fact_tx(tx, &child)? {
-                            if fact.parent == parent && fact.evidence == evidence && idle_blocker_tx(tx,&child)?.is_none() {
+                            // Only live execution suppresses a reminder. Retention
+                            // state is attached as a hint below.
+                            if fact.parent == parent
+                                && fact.evidence == evidence
+                                && execution_blocker_tx(tx, &child)?.is_none()
+                            {
+                                hints.insert(child.clone(), idle_blocker_tx(tx, &child)?);
                                 facts.push(fact);
                             }
                         }
@@ -145,15 +201,19 @@ impl RuntimeDb {
                     if facts.is_empty() {
                         continue;
                     }
-                    let list = facts.iter().map(|f| format!("{} (incarnation {})",f.child,f.incarnation)).collect::<Vec<_>>().join(", ");
+                    let list = facts.iter().map(|f| match hints.get(&f.child).and_then(|hint| hint.as_deref()) {
+                        Some(reason) => format!("{} (incarnation {}, {})",f.child,f.incarnation,reason),
+                        None => format!("{} (incarnation {})",f.child,f.incarnation),
+                    }).collect::<Vec<_>>().join(", ");
                     let message = MessageEnvelope::new(&parent, MessageKind::InternalFollowup, MessageOrigin::System {
                         subsystem: "subagent_reclamation".into()
                     }, AuthorityClass::RuntimeInstruction, Priority::Background, MessageBody::Text {
                         text: format!("Retained subagents still under your supervision have been idle: {list}. \
                             Review whether they are still needed. You own cleanup: use GetAgent to \
                             inspect current identity and blockers, and DeleteAgent when safe and no \
-                            longer needed. Keep any needed agent. No special reply format is required; \
-                            silence never authorizes deletion.")
+                            longer needed. Idle state such as an open work item or timer is a hint, \
+                            not a deletion requirement. Keep any needed agent. No special reply \
+                            format is required; silence never authorizes deletion.")
                     }).with_admission(MessageDeliverySurface::RuntimeSystem, AdmissionContext::RuntimeOwned);
                     tx.execute("INSERT INTO \
                         subagent_cleanup_outbox(parent_agent_id,message_id,created_at,state,message_json,candidates_json) \
@@ -193,6 +253,10 @@ impl RuntimeDb {
             if !parent_can_receive_tx(tx, &message.agent_id)? {
                 return Ok(false);
             }
+            if parent_busy_blocker_tx(tx, &message.agent_id)?.is_some() {
+                // Defer, do not settle: the outbox is retried when the parent is idle.
+                return Ok(false);
+            }
             // An already durable queue admission is authoritative on replay.
             let queued: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM queue_entries WHERE message_id=?1)",[&message.id],|r| r.get(0))?;
             if queued {
@@ -205,7 +269,7 @@ impl RuntimeDb {
             let facts: Vec<CandidateFact>=serde_json::from_str(&json)?;
             for fact in &facts {
                 let current=fact_tx(tx,&fact.child)?;
-                if current.as_ref().is_none_or(|c| c.parent != fact.parent || c.evidence != fact.evidence) || idle_blocker_tx(tx,&fact.child)?.is_some() {
+                if current.as_ref().is_none_or(|c| c.parent != fact.parent || c.evidence != fact.evidence) || execution_blocker_tx(tx,&fact.child)?.is_some() {
                     tx.execute("UPDATE subagent_cleanup_outbox SET state='settled' WHERE message_id=?1",[&message.id])?;
                     return Ok(false);
                 }

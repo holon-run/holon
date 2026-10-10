@@ -539,8 +539,8 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         },
         ConfigSchemaEntry {
             key: "runtime.reclamation.reminders_enabled", kind: "boolean",
-            description: "Enable bounded internal reminders for retained supervised children.",
-            default: json!(false), allowed_values: vec!["true", "false"],
+            description: "Enable bounded internal reminders for retained supervised children. Enabled by default; set false to opt out.",
+            default: json!(true), allowed_values: vec!["true", "false"],
         },
         ConfigSchemaEntry {
             key: "runtime.retention.enabled",
