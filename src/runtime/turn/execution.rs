@@ -4712,12 +4712,6 @@ fn provider_quota_incident_identities_to_resolve(
         return Ok(Vec::new());
     }
 
-    let mut resolved = HashSet::new();
-    let coarse_identity = ProviderQuotaIdentity::coarse(
-        "agent-provider-route",
-        &format!("{agent_id}:{winning_model_ref}"),
-    );
-    let coarse_identity_key = serde_json::to_string(&coarse_identity)?;
     let rate_limit_candidates = timeline
         .attempts
         .iter()
@@ -4741,9 +4735,19 @@ fn provider_quota_incident_identities_to_resolve(
         })
         .collect::<Result<Vec<_>>>()?;
     let mut candidates = rate_limit_candidates;
-    if !candidates.is_empty() {
-        candidates.insert(0, (coarse_identity_key, winning_model_ref.to_string()));
+    if winning_model_ref == timeline.requested_model_ref
+        || candidates
+            .iter()
+            .any(|(_, model_ref)| model_ref == winning_model_ref)
+    {
+        let coarse_identity = ProviderQuotaIdentity::coarse(
+            "agent-provider-route",
+            &format!("{agent_id}:{winning_model_ref}"),
+        );
+        let coarse_identity_key = serde_json::to_string(&coarse_identity)?;
+        candidates.push((coarse_identity_key, winning_model_ref.to_string()));
     }
+    let mut resolved = HashSet::new();
     Ok(candidates
         .into_iter()
         .filter(|result| resolved.insert(result.0.clone()))
@@ -4864,6 +4868,28 @@ mod tests {
                 ),
                 quota_attempt("primary/model", ProviderAttemptOutcome::Succeeded, None),
             ],
+            requested_model_ref: "primary/model".into(),
+            active_model_ref: Some("primary/model".into()),
+            winning_model_ref: Some("primary/model".into()),
+            pending_fallback_model_ref: None,
+            pending_fallback_disposition: None,
+            aggregated_token_usage: None,
+        };
+
+        let resolved = provider_quota_incident_identities_to_resolve(&timeline, "agent")
+            .expect("identity resolution should succeed");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].1, "primary/model");
+    }
+
+    #[test]
+    fn clean_winning_route_success_resolves_its_prior_quota_incident() {
+        let timeline = ProviderAttemptTimeline {
+            attempts: vec![quota_attempt(
+                "primary/model",
+                ProviderAttemptOutcome::Succeeded,
+                None,
+            )],
             requested_model_ref: "primary/model".into(),
             active_model_ref: Some("primary/model".into()),
             winning_model_ref: Some("primary/model".into()),

@@ -3799,6 +3799,79 @@ async fn provider_recovery_budget_exhaustion_stops_the_lineage() {
     assert!(!events.iter().any(|event| event.kind == "recovery_enqueued"));
 }
 
+#[tokio::test]
+async fn single_candidate_quota_failures_park_without_recovery_enqueue() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let error = crate::provider::provider_turn_error(
+        "all configured providers failed for this turn: test/model: retries_exhausted (rate_limited)",
+        crate::provider::ProviderAttemptTimeline {
+            attempts: vec![crate::provider::ProviderAttemptRecord {
+                provider: "test".into(),
+                model_ref: "test/model".into(),
+                attempt: 1,
+                max_attempts: 1,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+                failure_kind: Some("rate_limited".into()),
+                disposition: Some("deferred".into()),
+                outcome: crate::provider::ProviderAttemptOutcome::RetriesExhausted,
+                advanced_to_fallback: false,
+                backoff_ms: None,
+                backoff_source: None,
+                token_usage: None,
+                cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
+                provider_http_trace_id: None,
+                transport_diagnostics: None,
+                transport_timeline: None,
+            }],
+            requested_model_ref: "test/model".into(),
+            active_model_ref: Some("test/model".into()),
+            winning_model_ref: None,
+            pending_fallback_model_ref: None,
+            pending_fallback_disposition: None,
+            aggregated_token_usage: None,
+        },
+        anyhow::anyhow!("quota exhausted"),
+    );
+
+    for round in 1..=2 {
+        assert!(runtime
+            .maybe_defer_provider_lineage_failure(
+                "default", round, &error, None, None, 10, false, false
+            )
+            .await
+            .unwrap()
+            .is_none());
+    }
+    let outcome = runtime
+        .maybe_defer_provider_lineage_failure("default", 3, &error, None, None, 10, false, false)
+        .await
+        .unwrap()
+        .expect("third quota failure should park the turn");
+
+    assert_eq!(outcome.terminal_kind, TurnTerminalKind::DeferredToFallback);
+    assert!(runtime.inner.agent.lock().await.queue.is_empty());
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "provider_quota_exhausted" && event.data["parked"].as_bool() == Some(true)
+    }));
+    assert!(!events.iter().any(|event| event.kind == "recovery_enqueued"));
+}
+
 #[test]
 fn provider_recovery_directive_requires_runtime_owned_recovery_provenance() {
     let mut message = MessageEnvelope::new(
