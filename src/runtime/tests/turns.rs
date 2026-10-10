@@ -3799,11 +3799,12 @@ async fn provider_recovery_budget_exhaustion_stops_the_lineage() {
     assert!(!events.iter().any(|event| event.kind == "recovery_enqueued"));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn single_candidate_quota_failures_park_without_recovery_enqueue() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
+    let clock = controlled_clock();
+    let runtime = RuntimeHandle::new_with_clock(
         "default",
         dir.path().to_path_buf(),
         workspace.path().to_path_buf(),
@@ -3811,8 +3812,32 @@ async fn single_candidate_quota_failures_park_without_recovery_enqueue() {
         Arc::new(StubProvider::new("unused")),
         "default".into(),
         context_config(),
+        clock,
     )
     .unwrap();
+    let work = runtime
+        .create_work_item(
+            "single candidate quota recovery".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+            activation_id: Some("activation-quota-park".into()),
+            admission_provenance: None,
+            source_message_id: "message-quota-park".into(),
+            turn_id: "turn-quota-park".into(),
+            owner: None,
+            work_item_id: Some(work.id.clone()),
+            claimed_work_revision: Some(work.revision),
+        });
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
     let error = crate::provider::provider_turn_error(
         "all configured providers failed for this turn: test/model: retries_exhausted (rate_limited)",
         crate::provider::ProviderAttemptTimeline {
@@ -3865,11 +3890,174 @@ async fn single_candidate_quota_failures_park_without_recovery_enqueue() {
 
     assert_eq!(outcome.terminal_kind, TurnTerminalKind::DeferredToFallback);
     assert!(runtime.inner.agent.lock().await.queue.is_empty());
+    let blocked = runtime
+        .storage()
+        .latest_work_item(&work.id)
+        .unwrap()
+        .expect("parked WorkItem");
+    assert!(blocked
+        .blocked_by
+        .as_deref()
+        .is_some_and(|reason| reason.contains("provider quota incident")));
+    assert!(blocked.recheck_at.is_some());
     let events = runtime.storage().read_recent_events(20).unwrap();
     assert!(events.iter().any(|event| {
         event.kind == "provider_quota_exhausted" && event.data["parked"].as_bool() == Some(true)
     }));
     assert!(!events.iter().any(|event| event.kind == "recovery_enqueued"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn parked_quota_work_item_probes_after_deadline_and_resolves_on_success() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("probe succeeded")),
+        "default".into(),
+        context_config(),
+        clock.clone(),
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item("quota probe recovery".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+            activation_id: Some("activation-quota-probe".into()),
+            admission_provenance: None,
+            source_message_id: "message-quota-probe".into(),
+            turn_id: "turn-quota-probe".into(),
+            owner: None,
+            work_item_id: Some(work.id.clone()),
+            claimed_work_revision: Some(work.revision),
+        });
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+    let error = crate::provider::provider_turn_error(
+        "all configured providers failed for this turn: default: retries_exhausted (rate_limited)",
+        crate::provider::ProviderAttemptTimeline {
+            attempts: vec![crate::provider::ProviderAttemptRecord {
+                provider: "stub".into(),
+                model_ref: "openai@default/gpt-5.4".into(),
+                attempt: 1,
+                max_attempts: 1,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+                failure_kind: Some("rate_limited".into()),
+                disposition: Some("deferred".into()),
+                outcome: crate::provider::ProviderAttemptOutcome::RetriesExhausted,
+                advanced_to_fallback: false,
+                backoff_ms: None,
+                backoff_source: None,
+                token_usage: None,
+                cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
+                provider_http_trace_id: None,
+                transport_diagnostics: None,
+                transport_timeline: None,
+            }],
+            requested_model_ref: "default".into(),
+            active_model_ref: Some("default".into()),
+            winning_model_ref: None,
+            pending_fallback_model_ref: None,
+            pending_fallback_disposition: None,
+            aggregated_token_usage: None,
+        },
+        anyhow::anyhow!("quota exhausted"),
+    );
+
+    for round in 1..=3 {
+        let outcome = runtime
+            .maybe_defer_provider_lineage_failure(
+                "default", round, &error, None, None, 10, false, false,
+            )
+            .await
+            .unwrap();
+        if round < 3 {
+            assert!(outcome.is_none());
+        } else {
+            assert_eq!(
+                outcome
+                    .expect("third failure parks the WorkItem")
+                    .terminal_kind,
+                TurnTerminalKind::DeferredToFallback
+            );
+        }
+    }
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_execution_binding = None;
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    let blocked = runtime
+        .storage()
+        .latest_work_item(&work.id)
+        .unwrap()
+        .expect("parked WorkItem");
+    let recheck_at = blocked.recheck_at.expect("durable recheck deadline");
+    let incident_identity = runtime
+        .storage()
+        .read_recent_events(20)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.kind == "provider_quota_exhausted")
+        .and_then(|event| event.data["identity_key"].as_str().map(str::to_owned))
+        .expect("quota identity");
+    let run_task = tokio::spawn(runtime.clone().run());
+
+    let before_deadline = (recheck_at - clock.now())
+        .to_std()
+        .expect("recheck deadline is in the future")
+        .saturating_sub(std::time::Duration::from_millis(1));
+    advance_lifecycle_time(&clock, before_deadline).await;
+    assert!(runtime
+        .inner
+        .runtime_db
+        .provider_quota_incident(&incident_identity)
+        .unwrap()
+        .expect("quota incident")
+        .resolved_at
+        .is_none());
+    assert!(runtime
+        .storage()
+        .latest_work_item(&work.id)
+        .unwrap()
+        .expect("parked WorkItem")
+        .blocked_by
+        .is_some());
+
+    advance_lifecycle_time(&clock, std::time::Duration::from_millis(2)).await;
+    wait_for_audit_events(
+        &runtime,
+        100,
+        |events| {
+            events
+                .iter()
+                .any(|event| event.kind == "provider_quota_resolved")
+        },
+        "successful provider quota probe",
+    )
+    .await;
+    assert!(runtime
+        .inner
+        .runtime_db
+        .provider_quota_incident(&incident_identity)
+        .unwrap()
+        .expect("quota incident")
+        .resolved_at
+        .is_some());
+    run_task.abort();
 }
 
 #[test]

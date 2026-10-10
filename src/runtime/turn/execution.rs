@@ -2197,32 +2197,35 @@ impl TurnExecution<'_> {
                     );
                     break Ok(match result {
                         Ok((response, attempt_timeline)) => {
-                            if let Some(timeline) = attempt_timeline.as_ref() {
-                                for (identity_key, model_ref) in
-                                    provider_quota_incident_identities_to_resolve(
-                                        timeline, agent_id,
-                                    )?
-                                {
-                                    let resolved = runtime
-                                        .inner
-                                        .runtime_db
-                                        .resolve_provider_quota_incident(
-                                        &identity_key,
-                                        &runtime.now().to_rfc3339(),
+                            let identities = if let Some(timeline) = attempt_timeline.as_ref() {
+                                provider_quota_incident_identities_to_resolve(timeline, agent_id)?
+                            } else {
+                                provider_quota_clean_success_identities(
+                                    provider.as_ref(),
+                                    agent_id,
+                                    &turn_model_state.effective_model,
+                                )?
+                            };
+                            for (identity_key, model_ref) in identities {
+                                let resolved = runtime
+                                    .inner
+                                    .runtime_db
+                                    .resolve_provider_quota_incident(
+                                    &identity_key,
+                                    &runtime.now().to_rfc3339(),
+                                )?;
+                                if resolved {
+                                    runtime.inner.storage.append_event(
+                                        &AuditEvent::legacy(
+                                            "provider_quota_resolved",
+                                            serde_json::json!({
+                                                "agent_id": agent_id,
+                                                "round": round,
+                                                "identity_key": identity_key,
+                                                "model_ref": model_ref,
+                                            }),
+                                        ),
                                     )?;
-                                    if resolved {
-                                        runtime.inner.storage.append_event(
-                                            &AuditEvent::legacy(
-                                                "provider_quota_resolved",
-                                                serde_json::json!({
-                                                    "agent_id": agent_id,
-                                                    "round": round,
-                                                    "identity_key": identity_key,
-                                                    "model_ref": model_ref,
-                                                }),
-                                            ),
-                                        )?;
-                                    }
                                 }
                             }
                             ProviderRoundResult::Completed((
@@ -4752,6 +4755,26 @@ fn provider_quota_incident_identities_to_resolve(
         .into_iter()
         .filter(|result| resolved.insert(result.0.clone()))
         .collect())
+}
+
+fn provider_quota_clean_success_identities(
+    provider: &dyn AgentProvider,
+    agent_id: &str,
+    model_ref: &ModelRouteRef,
+) -> Result<Vec<(String, String)>> {
+    let mut identities = Vec::new();
+    if let Some(identity) = provider.quota_identity() {
+        identities.push((serde_json::to_string(&identity)?, model_ref.as_string()));
+    }
+    let coarse_identity = ProviderQuotaIdentity::coarse(
+        "agent-provider-route",
+        &format!("{agent_id}:{}", model_ref.as_string()),
+    );
+    identities.push((
+        serde_json::to_string(&coarse_identity)?,
+        model_ref.as_string(),
+    ));
+    Ok(identities)
 }
 
 #[cfg(test)]
