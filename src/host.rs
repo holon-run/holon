@@ -12681,6 +12681,152 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deletion_job_removes_leftover_trash_when_home_already_renamed() {
+        let (_home, host) = test_host();
+
+        let agent = AgentIdentityRecord::new(
+            "trash-leftover",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&agent).unwrap();
+        host.runtime_db().agent_identities().upsert(&agent).unwrap();
+
+        // Simulate a previous attempt that renamed the home to trash and then
+        // failed to remove it: the home itself is already gone.
+        let trash_dir = host
+            .agent_data_dir(&agent.agent_id)
+            .with_extension("deleting_trash");
+        std::fs::create_dir_all(&trash_dir).unwrap();
+        std::fs::write(trash_dir.join("residual.txt"), "leftover").unwrap();
+
+        let (_identity, job, _created) = host
+            .begin_public_agent_deletion(&agent.agent_id, false, "operator")
+            .await
+            .unwrap();
+        host.execute_deletion_job(job).await.unwrap();
+
+        let final_job = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&agent.agent_id)
+            .unwrap()
+            .expect("job should exist");
+        assert_eq!(final_job.status, AgentDeletionStatus::Completed);
+        // The retry must finish removing the trash instead of completing
+        // the job while leaking the directory.
+        assert!(!trash_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn orphan_agent_home_trash_sweep_removes_stale_directories() {
+        let (_home, host) = test_host();
+        let agents_root = host.config().data_dir.join("agents");
+        std::fs::create_dir_all(agents_root.join("stale.deleting_trash/nested")).unwrap();
+        std::fs::write(
+            agents_root.join("stale.deleting_trash/nested/file.txt"),
+            "leftover",
+        )
+        .unwrap();
+        let live_home = agents_root.join("live-agent");
+        std::fs::create_dir_all(&live_home).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/etc", agents_root.join("linked.deleting_trash")).unwrap();
+
+        let removed = host.sweep_orphan_agent_home_trash().await.unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(!agents_root.join("stale.deleting_trash").exists());
+        assert!(live_home.exists());
+        // Suspicious entries are skipped, not deleted.
+        #[cfg(unix)]
+        assert!(agents_root.join("linked.deleting_trash").exists());
+    }
+
+    #[tokio::test]
+    async fn orphan_agent_home_trash_sweep_spares_live_home_with_trash_suffix_id() {
+        let (_home, host) = test_host();
+        let agents_root = host.config().data_dir.join("agents");
+        // Legacy agent id that collides with the reserved trash suffix,
+        // predating suffix validation; its home must never be swept.
+        let agent = AgentIdentityRecord::new(
+            "live.deleting_trash",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&agent).unwrap();
+        host.runtime_db().agent_identities().upsert(&agent).unwrap();
+        let live_home = agents_root.join("live.deleting_trash");
+        std::fs::create_dir_all(live_home.join("nested")).unwrap();
+        std::fs::write(live_home.join("nested/file.txt"), "live").unwrap();
+        std::fs::create_dir_all(agents_root.join("stale.deleting_trash")).unwrap();
+
+        let removed = host.sweep_orphan_agent_home_trash().await.unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(live_home.join("nested/file.txt").exists());
+        assert!(!agents_root.join("stale.deleting_trash").exists());
+    }
+
+    #[tokio::test]
+    async fn deletion_phase_home_refuses_live_home_colliding_with_trash_name() {
+        let (_home, host) = test_host();
+        let agents_root = host.config().data_dir.join("agents");
+        // Legacy live agent whose id equals the trash name of "customer".
+        let colliding = AgentIdentityRecord::new(
+            "customer.deleting_trash",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&colliding).unwrap();
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&colliding)
+            .unwrap();
+        let colliding_home = agents_root.join("customer.deleting_trash");
+        std::fs::create_dir_all(colliding_home.join("nested")).unwrap();
+        std::fs::write(colliding_home.join("nested/file.txt"), "live").unwrap();
+
+        let customer = AgentIdentityRecord::new(
+            "customer",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&customer).unwrap();
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&customer)
+            .unwrap();
+        std::fs::create_dir_all(agents_root.join("customer")).unwrap();
+
+        let (_identity, job, _created) = host
+            .begin_public_agent_deletion("customer", false, "operator")
+            .await
+            .unwrap();
+        let result = host.execute_deletion_job(job).await;
+
+        // The job must fail rather than remove the colliding live home.
+        assert!(result.is_err());
+        assert!(colliding_home.join("nested/file.txt").exists());
+    }
+
+    #[tokio::test]
     async fn daemon_deletion_coordinator_is_singleton_and_admission_wakes_it() {
         let (_home, host) = test_host();
         host.spawn_daemon_deletion_coordinator();

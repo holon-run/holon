@@ -71,6 +71,7 @@ impl RuntimeHost {
         let mut cleanup_cursor = None;
         let mut reminder_cursor = None;
         let mut reminders: Option<tokio::task::JoinHandle<Result<Option<String>>>> = None;
+        let mut trash_sweep: Option<tokio::task::JoinHandle<()>> = None;
         loop {
             let retry_delay = self
                 .next_deletion_coordinator_delay()
@@ -91,6 +92,21 @@ impl RuntimeHost {
                             if outcome.cursor.is_some() { sweep.reset_after(Duration::from_millis(1)); }
                         },
                         Err(error) => warn!(%error, "legacy deletion scan failed"),
+                    }
+                    if trash_sweep.is_none() {
+                        let host = self.clone();
+                        trash_sweep = Some(tokio::spawn(async move {
+                            // Removals run off the coordinator so a large
+                            // orphan tree cannot stall shutdown admission.
+                            match host.sweep_orphan_agent_home_trash().await {
+                                Ok(removed) => {
+                                    if removed > 0 {
+                                        info!(removed, "orphan agent home trash sweep complete");
+                                    }
+                                }
+                                Err(error) => warn!(%error, "orphan agent home trash sweep failed"),
+                            }
+                        }));
                     }
                     let config = self.config();
                     let enabled = config.stored_config.runtime.reclamation.reminders_enabled.unwrap_or(true);
@@ -134,6 +150,9 @@ impl RuntimeHost {
                     retirement = None;
                     if !matches!(result, Ok(Ok(()))) { debug!(?result, "idle retirement deferred"); }
                 }
+                _ = async { trash_sweep.as_mut().unwrap().await }, if trash_sweep.is_some() => {
+                    trash_sweep = None;
+                }
             }
         }
         // Do not detach phase work or drop a closed runtime gate on shutdown.
@@ -144,6 +163,9 @@ impl RuntimeHost {
             let _ = job.await;
         }
         if let Some(job) = retirement {
+            let _ = job.await;
+        }
+        if let Some(job) = trash_sweep {
             let _ = job.await;
         }
     }
@@ -508,6 +530,80 @@ impl RuntimeHost {
             .agent_identities()
             .commit_legacy_deletion_scan_batch(&batch)?;
         Ok(outcome)
+    }
+
+    /// Remove orphaned `*.deleting_trash` directories under the agents root.
+    ///
+    /// A trash directory is created only by [`RuntimeHost::deletion_phase_home`]
+    /// renaming an agent home right before removal. When trash removal fails
+    /// and the deletion job finalizes anyway (older builds), or an unexpected
+    /// crash leaves trash behind, no database record points at the leftover
+    /// directory anymore, so this filesystem-level sweep is the only recovery
+    /// path. Names are matched by suffix only: agent ids may contain `.`, so a
+    /// trash name cannot be reversed into a reliable agent id. A candidate
+    /// whose exact name belongs to a registered non-deleted identity is a
+    /// live home whose legacy id collides with the reserved suffix, not
+    /// trash, and is skipped.
+    pub(crate) async fn sweep_orphan_agent_home_trash(&self) -> Result<usize> {
+        let agents_root = self.config().data_dir.join("agents");
+        let entries = std::fs::read_dir(&agents_root)
+            .with_context(|| format!("reading agents root {}", agents_root.display()))?;
+        let mut removed = 0usize;
+        for entry in entries {
+            let entry =
+                entry.with_context(|| format!("reading agents root {}", agents_root.display()))?;
+            let file_name = entry.file_name();
+            if !file_name.to_string_lossy().ends_with(".deleting_trash") {
+                continue;
+            }
+            let Some(name) = file_name.to_str() else {
+                // Runtime-created trash names are UTF-8; leave anything
+                // else for an operator instead of deleting silently.
+                warn!(entry = %entry.path().display(), "skipping non-UTF-8 agent home trash name");
+                continue;
+            };
+            // The name may be a live agent home whose legacy id ends with
+            // the reserved suffix rather than trash. Registered non-deleted
+            // identities own their directory; only unclaimed names are trash.
+            if self.registered_home_claimant(name)?.is_some() {
+                warn!(
+                    agent = name,
+                    "skipping agent home colliding with trash suffix"
+                );
+                continue;
+            }
+            let trash_dir = entry.path();
+            // Refuse to delete anything that is not a runtime-managed
+            // directory inside the agents root: symlinked or otherwise
+            // suspicious entries are reported and left for an operator.
+            if let Err(error) = ensure_deletable_agent_home(&trash_dir, &agents_root) {
+                warn!(trash = %trash_dir.display(), %error, "skipping orphan agent home trash");
+                continue;
+            }
+            match std::fs::remove_dir_all(&trash_dir) {
+                Ok(()) => {
+                    removed += 1;
+                    info!(trash = %trash_dir.display(), "removed orphan agent home trash");
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    warn!(trash = %trash_dir.display(), %error, "failed to remove orphan agent home trash")
+                }
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Whether `name` belongs to a registered non-deleted agent identity.
+    ///
+    /// `*.deleting_trash` names can collide with legacy agent ids created
+    /// before the suffix was reserved; such a directory is a live home, not
+    /// trash, and must never be removed as trash.
+    fn registered_home_claimant(&self, name: &str) -> Result<Option<AgentIdentityRecord>> {
+        Ok(match self.runtime_db().agent_identities().latest(name)? {
+            Some(identity) if identity.status != AgentRegistryStatus::Deleted => Some(identity),
+            _ => None,
+        })
     }
 
     fn emit_legacy_deletion_ambiguity(
@@ -1168,18 +1264,31 @@ impl RuntimeHost {
     /// Home: rename agent home to trash then delete.
     async fn deletion_phase_home(&self, agent_id: &str) -> Result<()> {
         let data_dir = self.agent_data_dir(agent_id);
-        if !data_dir.exists() {
-            return Ok(());
-        }
         // Refuse to delete anything that is not a runtime-managed directory:
         // symlinked homes or paths resolving outside the agents root fail the
         // job instead of removing unintended files.
         let agents_root = self.config().data_dir.join("agents");
-        ensure_deletable_agent_home(&data_dir, &agents_root)?;
         // Rename to a trash name first to avoid partial-state visibility.
         let trash_dir = data_dir.with_extension("deleting_trash");
+        if !data_dir.exists() {
+            // The home is already gone, but a previous attempt may have
+            // renamed it to trash and failed before removing the trash.
+            // Finish removing the leftover trash so a retry cannot complete
+            // the job while silently leaking the directory.
+            if trash_dir.exists() {
+                ensure_deletable_agent_home(&trash_dir, &agents_root)?;
+                self.ensure_trash_dir_unclaimed(&trash_dir)?;
+                info!(agent_id, trash = %trash_dir.display(), "removing leftover agent home trash");
+                std::fs::remove_dir_all(&trash_dir).with_context(|| {
+                    format!("removing agent home trash {}", trash_dir.display())
+                })?;
+            }
+            return Ok(());
+        }
+        ensure_deletable_agent_home(&data_dir, &agents_root)?;
         if trash_dir.exists() {
             // Previous attempt left trash; remove it.
+            self.ensure_trash_dir_unclaimed(&trash_dir)?;
             std::fs::remove_dir_all(&trash_dir).with_context(|| {
                 format!("removing leftover trash directory {}", trash_dir.display())
             })?;
@@ -1194,6 +1303,20 @@ impl RuntimeHost {
         std::fs::remove_dir_all(&trash_dir)
             .with_context(|| format!("removing agent home trash {}", trash_dir.display()))?;
         info!(agent_id, "removed agent home directory");
+        Ok(())
+    }
+
+    /// Refuse to remove a trash-named directory owned by a live agent.
+    fn ensure_trash_dir_unclaimed(&self, trash_dir: &Path) -> Result<()> {
+        if let Some(name) = trash_dir.file_name().and_then(|n| n.to_str()) {
+            if let Some(claimant) = self.registered_home_claimant(name)? {
+                anyhow::bail!(
+                    "{} is a live home of agent {} colliding with the trash suffix",
+                    trash_dir.display(),
+                    claimant.agent_id
+                );
+            }
+        }
         Ok(())
     }
 
