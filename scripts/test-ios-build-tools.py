@@ -125,7 +125,7 @@ class BuildToolContracts(unittest.TestCase):
 
 
 class UIFixtureSetupContracts(unittest.TestCase):
-    def run_setup(self, initialize, install, share=True):
+    def run_setup(self, initialize, install, share=True, report=False):
         # Execute the fixture's real setup block without starting its daemon/XCTest.
         source = ROOT / "scripts/ios_ui_fixture.py"
         tree = ast.parse(source.read_text(), filename=str(source))
@@ -147,12 +147,26 @@ class UIFixtureSetupContracts(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="holon-ios-ui-setup-") as directory:
             namespace = dict(os=os, pathlib=pathlib, simulator=UUID, repo=str(ROOT),
                              root=Path(directory), bundle=Path(directory) / "UI.xcresult",
-                             MAXIMUM_TEXT_SIZE=MAXIMUM_TEXT_SIZE, rich_acceptance=False,
+                             MAXIMUM_TEXT_SIZE=MAXIMUM_TEXT_SIZE, rich_acceptance=report,
+                             report_acceptance=report,
                              lost_response_acceptance=False, history_acceptance=False,
                              task_result_acceptance=False,
                              share_acceptance=share, initialize_simulator_text_size=initialize)
             with patch.dict(os.environ, {}, clear=True), patch("ios_share_probe.install", install):
                 exec(compile(setup, str(source), "exec"), namespace)
+            return namespace["cases"]
+
+    def test_report_acceptance_selects_real_report_cases(self):
+        initialize, install = Mock(), Mock()
+        cases = self.run_setup(initialize, install, share=False, report=True)
+        methods = {method for method, _ in cases}
+        self.assertTrue({
+            "testContentReportConfirmationCancelDoesNotPersist",
+            "testContentReportInvalidExplanationCannotShowAccepted",
+            "testContentReportAcceptedReceiptCannotSubmitTwice",
+        }.issubset(methods))
+        initialize.assert_called_once_with(UUID)
+        install.assert_not_called()
 
     def test_cold_simulator_is_initialized_before_share_install(self):
         events = []
