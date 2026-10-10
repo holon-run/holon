@@ -1238,7 +1238,9 @@ const en = {
     dropImageHint: "Drop files to attach",
     // Thinking
     speedMode: "Speed",
-    speedInherit: "Inherit",
+    speedAuto: "Auto",
+    speedAria: "Speed: {{speed}}",
+    speedAutoHint: "Auto follows the default for this model route. If none is configured, the service chooses.",
     speedStandard: "Standard",
     fastUsageHint: "Fast uses more quota or costs more. Changes apply to this model route on the next run.",
     thinkingAria: "Thinking: {{level}}",

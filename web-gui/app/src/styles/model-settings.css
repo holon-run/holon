@@ -59,6 +59,3 @@
 
 .model-next-selection { margin: 4px 4px 8px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .settings-model-defaults .settings-advanced { padding: 0; background: transparent; border: 0; }
-
-.speed-picker { display: inline-flex; align-items: center; gap: 0.3rem; color: var(--muted); font-size: 0.75rem; }
-.speed-picker select { max-width: 7rem; padding: 0.25rem; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; }

@@ -10,14 +10,14 @@ const models = [
   { model: "dashscope/shared-model", provider: "dashscope", provider_family: "dashscope", route_provider: "dashscope-coding-plan", endpoint: "coding", display_name: "Shared Model", available: true },
   { model: "deepseek/hidden-model", provider: "deepseek", endpoint: "default", display_name: "Unavailable Model", available: false, unavailable_reason: "Missing credentials" },
 ];
-async function setup(page: Page) {
+async function setup(page: Page, routeDefaultTier?: string) {
   let selection = primary;
   let source = "runtime_default";
   let tier: string | undefined;
   let effort: string | undefined;
   const posts: unknown[] = [];
   const updates: { key: string; value?: unknown }[] = [];
-  const modelState = () => ({ active_model: primary, effective_model: selection, runtime_default_model: primary, source, override_service_tier: tier, effective_service_tier: tier, override_reasoning_effort: effort });
+  const modelState = () => ({ active_model: primary, effective_model: selection, runtime_default_model: primary, source, override_service_tier: tier, effective_service_tier: selection === primary ? tier ?? routeDefaultTier : undefined, override_reasoning_effort: effort });
   await page.route("**/api/models", (route) => route.fulfill({ json: { available_models: models.slice(0, 2), model_availability: models } }));
   await page.route("**/api/control/runtime/config", async (route) => {
     if (route.request().method() === "PATCH") updates.push(...route.request().postDataJSON().updates);
@@ -255,21 +255,25 @@ for (const kind of ["bearer_token", "api_key"] as const) {
 test("fast stays on the selected route and reasoning changes preserve it", async ({ page }) => {
   const { posts } = await setup(page);
   await page.goto("/agents/bootstrap-agent/conversation");
-  const speed = page.getByRole("combobox", { name: "Speed", exact: true });
-  await expect(speed).toHaveValue("inherit");
-  await speed.selectOption("fast");
-  await expect(speed).toHaveValue("fast");
+  const speed = page.getByRole("button", { name: /^Speed:/ });
+  const chooseSpeed = async (label: string) => {
+    await speed.click();
+    await page.getByRole("dialog", { name: "Speed", exact: true }).getByRole("button", { name: label, exact: true }).click();
+  };
+  await expect(speed).toHaveAccessibleName("Speed: Auto");
+  await chooseSpeed("Fast");
+  await expect(speed).toHaveAccessibleName("Speed: Fast");
   expect(posts.at(-1)).toMatchObject({ model: primary, service_tier: "fast" });
   await page.locator(".thinking-button").click();
   await page.getByRole("button", { name: "High", exact: true }).click();
   await expect.poll(() => posts.at(-1)).toMatchObject({ model: primary, reasoning_effort: "high", service_tier: "fast" });
   await page.reload();
-  await expect(speed).toHaveValue("fast");
-  await speed.selectOption("default");
-  await expect(speed).toHaveValue("default");
+  await expect(speed).toHaveAccessibleName("Speed: Fast");
+  await chooseSpeed("Standard");
+  await expect(speed).toHaveAccessibleName("Speed: Standard");
   expect(posts.at(-1)).toMatchObject({ model: primary, service_tier: "default", reasoning_effort: "high" });
-  await speed.selectOption("fast");
-  await expect(speed).toHaveValue("fast");
+  await chooseSpeed("Fast");
+  await expect(speed).toHaveAccessibleName("Speed: Fast");
   await page.locator(".model-button").click();
   await page.locator(".model-browser-row").filter({ hasText: "Coding Plan" }).locator("[data-model-choice]").click();
   await expect(speed).toHaveCount(0);
@@ -277,6 +281,84 @@ test("fast stays on the selected route and reasoning changes preserve it", async
   expect(posts.at(-1)).not.toHaveProperty("service_tier");
   await page.locator(".model-button").click();
   await page.locator(".model-browser-row").filter({ hasText: "OpenAI" }).locator("[data-model-choice]").click();
-  await expect(speed).toHaveValue("inherit");
+  await expect(speed).toHaveAccessibleName("Speed: Auto");
   expect(posts.at(-1)).not.toHaveProperty("service_tier");
+});
+
+
+test("speed shares thinking popover interactions and Auto clears only the speed override", async ({ page }, info) => {
+  const { posts } = await setup(page, "fast");
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("/agents/bootstrap-agent/conversation");
+  const speed = page.getByRole("button", { name: /^Speed:/ });
+  const thinking = page.locator(".thinking-button");
+  const dialog = page.getByRole("dialog", { name: "Speed", exact: true });
+  await expect(speed).toHaveAccessibleName("Speed: Auto");
+  await speed.click();
+  const auto = dialog.getByRole("button", { name: "Auto", exact: true });
+  await expect(auto).toHaveAttribute("aria-pressed", "true");
+  await expect(auto).toBeFocused();
+  await expect(dialog).toContainText("Auto follows the default for this model route.");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(speed).toBeFocused();
+  await speed.click();
+  await page.locator(".message-list").click({ position: { x: 10, y: 10 } });
+  await expect(dialog).toBeHidden();
+  expect(posts).toHaveLength(0);
+  await speed.click();
+  await thinking.click();
+  await expect(dialog).toBeHidden();
+  const thinkingDialog = page.getByRole("dialog", { name: "Thinking level", exact: true });
+  await expect(thinkingDialog).toBeVisible();
+  await thinkingDialog.getByRole("button", { name: "High", exact: true }).click();
+  await speed.click();
+  await dialog.getByRole("button", { name: "Standard", exact: true }).click();
+  await expect(speed).toHaveAccessibleName("Speed: Standard");
+  await speed.click();
+  await auto.click();
+  await expect(speed).toHaveAccessibleName("Speed: Auto");
+  expect(posts.at(-1)).toMatchObject({ model: primary, reasoning_effort: "high" });
+  expect(posts.at(-1)).not.toHaveProperty("service_tier");
+  await speed.click();
+  await dialog.getByRole("button", { name: "Fast", exact: true }).click();
+  await expect(speed).toHaveAccessibleName("Speed: Fast");
+  await page.screenshot({ path: info.outputPath("speed-desktop.png") });
+  await speed.click();
+  await page.screenshot({ path: info.outputPath("speed-popover-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect.poll(() => page.locator(".sidebar").evaluate((element) => element.getBoundingClientRect().right)).toBeLessThanOrEqual(0);
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Fast", exact: true }).click({ trial: true });
+  const box = await dialog.boundingBox();
+  expect(box!.x).toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("speed-popover-mobile.png") });
+  await page.keyboard.press("Escape");
+  await page.screenshot({ path: info.outputPath("speed-mobile.png") });
+  await speed.click();
+  await page.locator(".model-button").click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("dialog", { name: "Switch agent model" })).toBeVisible();
+  await page.evaluate(() => localStorage.setItem("holon.webGui.languageMode.v1", "zh-CN"));
+  await page.reload();
+  await page.getByRole("button", { name: "速度：Fast", exact: true }).click();
+  const chineseDialog = page.getByRole("dialog", { name: "速度", exact: true });
+  await expect(chineseDialog.getByRole("button", { name: "自动", exact: true })).toBeVisible();
+  await expect(chineseDialog).toContainText("自动跟随此模型路由的默认速度");
+  await page.screenshot({ path: info.outputPath("speed-popover-mobile-zh.png") });
+});
+
+test("failed speed changes retain the previous selection", async ({ page }) => {
+  await setup(page);
+  await page.route("**/api/control/agents/bootstrap-agent/model", (route) => route.fulfill({ status: 400, json: { error: "Speed rejected" } }));
+  await page.goto("/agents/bootstrap-agent/conversation");
+  const speed = page.getByRole("button", { name: /^Speed:/ });
+  await speed.click();
+  await page.getByRole("dialog", { name: "Speed", exact: true }).getByRole("button", { name: "Fast", exact: true }).click();
+  await expect(speed).toBeEnabled();
+  await expect(speed).toHaveAccessibleName("Speed: Auto");
+  await speed.click();
+  await expect(page.getByRole("dialog", { name: "Speed", exact: true }).getByRole("button", { name: "Auto", exact: true })).toHaveAttribute("aria-pressed", "true");
 });

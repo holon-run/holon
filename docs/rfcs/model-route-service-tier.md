@@ -30,7 +30,8 @@ and request shape validation preserve the setting. Request diagnostics record
 requested wire tier and the independently reported served tier.
 
 The Web GUI renders an independent speed selector using the backend capability
-contract. Inherit, Standard, and Fast remain distinct; changing reasoning keeps
+contract. Auto (inherit the exact route default), Standard, and Fast remain
+distinct; changing reasoning keeps
 the route's speed override, while selecting another model drops it.
 
 Fast can consume more quota or cost more. Account entitlement is checked by the
