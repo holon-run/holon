@@ -8,7 +8,9 @@ use anyhow::Result;
 use chrono::Utc;
 use std::{
     collections::BTreeMap,
+    fs,
     path::{Path, PathBuf},
+    time::UNIX_EPOCH,
 };
 use tracing::warn;
 
@@ -16,6 +18,34 @@ use crate::types::{
     SkillCatalogEntry, SkillRootRegistration, SkillRootScanStatus, SkillRootSourceKind,
     SkillRootWatchStatus, SkillScope,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RootInputFingerprint {
+    source_kind: SkillRootSourceKind,
+    owner_agent_id: Option<String>,
+    children: Vec<RootChildFingerprint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RootChildFingerprint {
+    path: PathBuf,
+    kind: RootChildKind,
+    skill_file: Option<FileMetadataFingerprint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootChildKind {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileMetadataFingerprint {
+    len: u64,
+    modified_ns: Option<u128>,
+}
 
 /// Read-only skills registry.
 ///
@@ -25,6 +55,7 @@ use crate::types::{
 pub struct SkillsRegistry {
     roots: Vec<SkillRootRegistration>,
     entries: Vec<SkillCatalogEntry>,
+    root_fingerprints: BTreeMap<PathBuf, RootInputFingerprint>,
 }
 
 impl SkillsRegistry {
@@ -39,8 +70,32 @@ impl SkillsRegistry {
             return Ok(());
         }
 
-        self.upsert_root(registration.clone());
-        self.refresh_root(&registration.root_path)?;
+        let root_key = normalize_path(&registration.root_path);
+        let existing_index = self.root_index(&registration.root_path);
+        let registration_changed = existing_index.is_some_and(|root_index| {
+            !same_root_registration(&self.roots[root_index], &registration)
+        });
+        let input_fingerprint = Self::root_input_fingerprint(&registration);
+        let input_changed = match (
+            self.root_fingerprints.get(&root_key),
+            input_fingerprint.as_ref(),
+        ) {
+            (Some(previous), Some(current)) => previous != current,
+            _ => true,
+        };
+
+        match existing_index {
+            Some(root_index) if registration_changed => {
+                self.roots[root_index] = registration.clone();
+                self.root_fingerprints.remove(&root_key);
+            }
+            None => self.upsert_root(registration.clone()),
+            Some(_) => {}
+        }
+
+        if registration_changed || input_changed {
+            self.refresh_root(&registration.root_path)?;
+        }
         Ok(())
     }
 
@@ -67,6 +122,7 @@ impl SkillsRegistry {
     pub fn replace_roots(&mut self, registrations: Vec<SkillRootRegistration>) -> Result<()> {
         self.roots.clear();
         self.entries.clear();
+        self.root_fingerprints.clear();
         for registration in registrations {
             if registration.root_path.exists() {
                 self.upsert_root(registration);
@@ -91,6 +147,13 @@ impl SkillsRegistry {
             .retain(|entry| !entry.path.starts_with(&registration.root_path));
         self.entries.extend(entries);
         self.roots[root_index].scan_status = scan_status;
+        if let Some(fingerprint) = Self::root_input_fingerprint(&registration) {
+            self.root_fingerprints
+                .insert(normalize_path(&registration.root_path), fingerprint);
+        } else {
+            self.root_fingerprints
+                .remove(&normalize_path(&registration.root_path));
+        }
         Ok(true)
     }
 
@@ -100,10 +163,15 @@ impl SkillsRegistry {
     /// catalog reads fail.
     pub fn rescan(&mut self) {
         let mut next_entries = Vec::new();
+        self.root_fingerprints.clear();
         for root in &mut self.roots {
             let (entries, scan_status) = Self::scan_root(root);
             next_entries.extend(entries);
             root.scan_status = scan_status;
+            if let Some(fingerprint) = Self::root_input_fingerprint(root) {
+                self.root_fingerprints
+                    .insert(normalize_path(&root.root_path), fingerprint);
+            }
         }
         self.entries = next_entries;
     }
@@ -149,6 +217,42 @@ impl SkillsRegistry {
         self.roots
             .iter()
             .position(|root| normalize_path(&root.root_path) == root_path)
+    }
+
+    fn root_input_fingerprint(
+        registration: &SkillRootRegistration,
+    ) -> Option<RootInputFingerprint> {
+        let mut children = Vec::new();
+        for child in fs::read_dir(&registration.root_path).ok()? {
+            let child = child.ok()?;
+            let child_path = child.path();
+            let file_type = child.file_type().ok()?;
+            let kind = if file_type.is_file() {
+                RootChildKind::File
+            } else if file_type.is_dir() {
+                RootChildKind::Directory
+            } else if file_type.is_symlink() {
+                RootChildKind::Symlink
+            } else {
+                RootChildKind::Other
+            };
+            let skill_file = if matches!(kind, RootChildKind::Directory | RootChildKind::Symlink) {
+                skill_file_fingerprint(&child_path.join("SKILL.md"))?
+            } else {
+                None
+            };
+            children.push(RootChildFingerprint {
+                path: child_path,
+                kind,
+                skill_file,
+            });
+        }
+        children.sort_by(|left, right| left.path.cmp(&right.path));
+        Some(RootInputFingerprint {
+            source_kind: registration.source_kind.clone(),
+            owner_agent_id: registration.owner_agent_id.clone(),
+            children,
+        })
     }
 
     fn scan_root(
@@ -228,6 +332,31 @@ impl SkillsRegistry {
     /// Get all registered roots.
     pub fn roots(&self) -> &[SkillRootRegistration] {
         &self.roots
+    }
+}
+
+fn same_root_registration(left: &SkillRootRegistration, right: &SkillRootRegistration) -> bool {
+    left.source_kind == right.source_kind
+        && left.owner_agent_id == right.owner_agent_id
+        && normalize_path(&left.root_path) == normalize_path(&right.root_path)
+}
+
+fn skill_file_fingerprint(path: &Path) -> Option<Option<FileMetadataFingerprint>> {
+    match fs::metadata(path) {
+        Ok(metadata) => Some(Some(file_metadata_fingerprint(&metadata))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
+        Err(_) => None,
+    }
+}
+
+fn file_metadata_fingerprint(metadata: &fs::Metadata) -> FileMetadataFingerprint {
+    FileMetadataFingerprint {
+        len: metadata.len(),
+        modified_ns: metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos()),
     }
 }
 
@@ -373,6 +502,28 @@ mod tests {
             registry.roots()[0].scan_status,
             SkillRootScanStatus::Scanned { .. }
         ));
+    }
+
+    #[test]
+    fn register_root_skips_unchanged_root_and_refreshes_changed_input() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        fs::create_dir_all(&root).unwrap();
+        write_skill(&root, "first", "first", "first");
+
+        let registration = registration(root.clone(), SkillRootSourceKind::UserGlobal);
+        let mut registry = SkillsRegistry::new();
+        registry.register_root(registration.clone()).unwrap();
+        registry.entries[0].description = "cached".to_string();
+
+        registry
+            .sync_effective_roots([registration.clone()])
+            .unwrap();
+        assert_eq!(registry.catalog()[0].description, "cached");
+
+        write_skill(&root, "second", "second", "second");
+        registry.sync_effective_roots([registration]).unwrap();
+        assert_eq!(registry.catalog().len(), 2);
     }
 
     #[test]

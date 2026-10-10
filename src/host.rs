@@ -2816,6 +2816,60 @@ impl RuntimeHost {
         Ok(summary)
     }
 
+    pub(crate) async fn local_agent_lightweight_projection(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<LightweightAgentStateProjection, PublicAgentError> {
+        self.active_agent_identity(agent_id)?;
+        if let Some(runtime) = self.try_get_loaded_runtime(agent_id).await {
+            return runtime
+                .lightweight_agent_state_projection()
+                .await
+                .map_err(PublicAgentError::Runtime);
+        }
+
+        let identity = self.active_agent_identity(agent_id)?;
+        let storage = self
+            .agent_storage_read_only(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        let agent = storage
+            .read_agent()
+            .map_err(PublicAgentError::Runtime)?
+            .unwrap_or_else(|| stopped_unloaded_agent(agent_id));
+        let work_queue = storage
+            .work_queue_read_model()
+            .map_err(PublicAgentError::Runtime)?;
+        let scheduling_posture = storage
+            .agent_posture_projection_with_work_queue(&agent, &work_queue)
+            .map_err(PublicAgentError::Runtime)?;
+        let closure = RuntimeHandle::closure_decision_from_storage(&storage, &agent)
+            .map_err(PublicAgentError::Runtime)?;
+        let active_children = self
+            .child_agent_summaries(agent_id)
+            .await
+            .map_err(PublicAgentError::Runtime)?;
+        let active_task_count = storage
+            .active_task_count_for_agent(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        let model = crate::runtime::agent_model_state_for_catalog(
+            &RuntimeModelCatalog::from_config(&self.config()),
+            &self.runtime_context_config(),
+            &agent,
+        );
+
+        Ok(LightweightAgentStateProjection {
+            identity: AgentIdentityView::from_record(&identity, &self.config().default_agent_id),
+            agent: agent.clone(),
+            scheduling_posture,
+            active_task_count,
+            lifecycle: AgentLifecycleHint::from_status(agent_id, agent.status.clone()),
+            model,
+            closure,
+            active_children,
+            work_queue,
+        })
+    }
+
     pub async fn get_public_agent(
         &self,
         agent_id: &str,
