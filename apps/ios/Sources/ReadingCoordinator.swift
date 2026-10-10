@@ -148,7 +148,7 @@ final class ReadingCoordinator {
         let key = ContentReportKey(turnID: target.turnID, messageID: target.messageID)
         if let existing = reportDrafts[key], existing.scope == scope { return existing }
         if reportDrafts.count >= 20 {
-            guard let disposable = reportDrafts.first(where: { $0.value.request == nil || $0.value.receipt != nil })?.key else {
+            guard let disposable = reportDrafts.first(where: { $0.value.request == nil })?.key else {
                 return nil
             }
             reportDrafts.removeValue(forKey: disposable)

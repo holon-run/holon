@@ -1015,16 +1015,20 @@ final class ReadingCoordinatorTests: XCTestCase {
         coordinator.disconnect()
     }
 
-    private func reportDraft(_ coordinator: ReadingCoordinator) throws -> ContentReportDraft {
-        let scope = try XCTUnwrap(coordinator.contentReportScope)
+    private func reportTarget(messageID: String = "transcript_1") throws -> ContentReportTarget {
         let activity = try ReadingActivity(.object([
-            "id": .string("assistant:transcript_1"), "kind": .string("assistant"),
+            "id": .string("assistant:\(messageID)"), "kind": .string("assistant"),
             "revision": .integer(1), "summary": .string("preview"),
-            "key": .object(["event_seq": .integer(1), "activity_id": .string("assistant:transcript_1")])
+            "key": .object(["event_seq": .integer(1), "activity_id": .string("assistant:\(messageID)")])
         ]))
-        let detail: JSONValue = .object(["id": .string("transcript_1"), "kind": .string("assistant_round"),
+        let detail: JSONValue = .object(["id": .string(messageID), "kind": .string("assistant_round"),
                                         "data": .object(["text": .string("full response")])])
-        let target = try XCTUnwrap(ContentReportTarget(turnID: "turn", activity: activity, detail: detail))
+        return try XCTUnwrap(ContentReportTarget(turnID: "turn", activity: activity, detail: detail))
+    }
+
+    private func reportDraft(_ coordinator: ReadingCoordinator, messageID: String = "transcript_1") throws -> ContentReportDraft {
+        let scope = try XCTUnwrap(coordinator.contentReportScope)
+        let target = try reportTarget(messageID: messageID)
         return try XCTUnwrap(coordinator.contentReportDraft(target: target, scope: scope))
     }
 
@@ -1039,6 +1043,60 @@ final class ReadingCoordinatorTests: XCTestCase {
         XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(requests.first?.agentID, "A")
         XCTAssertTrue(try reportDraft(coordinator) === draft)
+        coordinator.disconnect()
+    }
+
+    func testAttemptedReportDraftsCannotBeEvictedAtCapacity() async throws {
+        let (coordinator, fake, _) = try await start()
+        var drafts: [ContentReportDraft] = []
+        for index in 0..<20 {
+            let draft = try reportDraft(coordinator, messageID: "report_\(index)")
+            draft.category = .privacy
+            if index.isMultiple(of: 2) {
+                await draft.submit { try await coordinator.createContentReport($0, scope: $1) }
+                XCTAssertNotNil(draft.receipt)
+            } else {
+                await draft.submit { _, _ in throw URLError(.timedOut) }
+                XCTAssertEqual(draft.errorKey, "report.unknownOutcome")
+            }
+            XCTAssertNotNil(draft.request)
+            drafts.append(draft)
+        }
+        let scope = try XCTUnwrap(coordinator.contentReportScope)
+        let extra = try reportTarget(messageID: "report_extra")
+        XCTAssertNil(coordinator.contentReportDraft(target: extra, scope: scope))
+        for (index, original) in drafts.enumerated() {
+            let reopened = try reportDraft(coordinator, messageID: "report_\(index)")
+            XCTAssertTrue(reopened === original)
+            XCTAssertEqual(reopened.request, original.request)
+            XCTAssertEqual(reopened.receipt?.reportID, original.receipt?.reportID)
+            if index.isMultiple(of: 2) {
+                XCTAssertFalse(reopened.canSubmit)
+                await reopened.submit { try await coordinator.createContentReport($0, scope: $1) }
+            }
+        }
+        let requests = await fake.reportRequests
+        XCTAssertEqual(requests.count, 10)
+        coordinator.disconnect()
+    }
+
+    func testUnattemptedReportDraftsCanBeEvictedWithoutLosingReceipt() async throws {
+        let (coordinator, fake, _) = try await start()
+        let accepted = try reportDraft(coordinator)
+        accepted.category = .privacy
+        await accepted.submit { try await coordinator.createContentReport($0, scope: $1) }
+        XCTAssertNotNil(accepted.receipt)
+        for index in 0..<40 {
+            let unattempted = try reportDraft(coordinator, messageID: "unattempted_\(index)")
+            XCTAssertNil(unattempted.request)
+            XCTAssertTrue(try reportDraft(coordinator) === accepted)
+        }
+        let reopened = try reportDraft(coordinator)
+        XCTAssertEqual(reopened.receipt?.reportID, "report_1")
+        XCTAssertFalse(reopened.canSubmit)
+        await reopened.submit { try await coordinator.createContentReport($0, scope: $1) }
+        let requests = await fake.reportRequests
+        XCTAssertEqual(requests.count, 1)
         coordinator.disconnect()
     }
 
