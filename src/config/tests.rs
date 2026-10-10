@@ -4421,3 +4421,17 @@ fn reclamation_config_roundtrips_and_requires_positive_grace() {
     }
     assert!(set_config_key(&mut config, "runtime.reclamation.idle_grace_seconds", "0").is_err());
 }
+
+#[test]
+fn reclamation_reminders_default_to_enabled_in_schema() {
+    let entry = config_schema()
+        .into_iter()
+        .find(|entry| entry.key == "runtime.reclamation.reminders_enabled")
+        .expect("reminders_enabled schema entry");
+    assert_eq!(entry.default, serde_json::json!(true));
+    let retirement = config_schema()
+        .into_iter()
+        .find(|entry| entry.key == "runtime.reclamation.idle_retirement_enabled")
+        .expect("idle_retirement_enabled schema entry");
+    assert_eq!(retirement.default, serde_json::json!(false));
+}
