@@ -67,7 +67,8 @@ use auth::{
 };
 use auth::{
     is_openai_codex_auth_status_error, openai_codex_conversation_headers, openai_codex_headers,
-    openai_model_policy_for_runtime_config, openai_model_policy_from_config,
+    openai_codex_routing_hint, openai_model_policy_for_runtime_config,
+    openai_model_policy_from_config,
 };
 
 #[cfg(test)]
@@ -83,11 +84,12 @@ use images::{
 #[cfg(test)]
 use images::{parse_openai_images_response, OpenAiImagesDialect};
 
+pub(crate) use chat::build_chat_completion_request;
 #[cfg(test)]
 pub(crate) use chat::{
     accumulate_chat_completion_stream_events, build_chat_completion_messages,
-    build_chat_completion_request, classify_openai_chat_completion_error,
-    parse_chat_completion_response, send_chat_completion_stream_request,
+    classify_openai_chat_completion_error, parse_chat_completion_response,
+    send_chat_completion_stream_request,
 };
 use chat::{plan_chat_completion_request, send_chat_completion_request};
 #[cfg(test)]
@@ -130,6 +132,7 @@ pub struct OpenAiProvider {
     max_output_tokens: u32,
     context_window_tokens: Option<usize>,
     reasoning_effort: Option<String>,
+    service_tier: Option<crate::config::ServiceTier>,
     endpoint_contract: OpenAiResponsesEndpointContract,
     builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
     compaction_policy: OpenAiCompactionPolicy,
@@ -163,6 +166,7 @@ pub struct OpenAiCodexProvider {
     max_output_tokens: u32,
     context_window_tokens: Option<usize>,
     reasoning_effort: Option<String>,
+    service_tier: Option<crate::config::ServiceTier>,
     supports_reasoning: bool,
     verbosity: Option<ModelVerbosity>,
     builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
@@ -181,6 +185,7 @@ pub struct OpenAiChatCompletionsProvider {
     max_output_tokens: u32,
     context_window_tokens: Option<usize>,
     reasoning_effort: Option<String>,
+    service_tier: Option<crate::config::ServiceTier>,
     trace_home_dir: PathBuf,
     continuation: Arc<Mutex<OpenAiContinuationState>>,
 }
@@ -319,6 +324,7 @@ async fn send_openai_responses_for_contract(
 
 #[derive(Debug)]
 pub(crate) struct ParsedOpenAiResponse {
+    pub(crate) served_service_tier: Option<String>,
     pub(crate) response: ProviderTurnResponse,
     pub(crate) response_id: Option<String>,
     pub(crate) output_items: Vec<Value>,
@@ -385,6 +391,7 @@ impl OpenAiProvider {
             max_output_tokens,
             context_window_tokens,
             reasoning_effort: provider_config.reasoning_effort.clone(),
+            service_tier: None,
             endpoint_contract: if provider_config.route_provider.as_str() == "deepseek"
                 && provider_config.route_endpoint.as_str() == "responses"
             {
@@ -497,6 +504,7 @@ impl OpenAiChatCompletionsProvider {
             max_output_tokens: resolved_max_output_tokens,
             context_window_tokens,
             reasoning_effort: provider_config.reasoning_effort.clone(),
+            service_tier: None,
             trace_home_dir: trace_home_dir.to_path_buf(),
             continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
         })
@@ -515,6 +523,7 @@ impl AgentProvider for OpenAiProvider {
             self.reasoning_effort.as_deref(),
             None,
         )?;
+        apply_service_tier(&mut body, self.service_tier, false);
         let effective_output = effective_output_tokens(
             self.context_window_tokens,
             self.max_output_tokens,
@@ -679,6 +688,16 @@ impl AgentProvider for OpenAiProvider {
                 &model_ref,
             )
             .await;
+        }
+        if self.service_tier.is_some() || parsed.served_service_tier.is_some() {
+            let controls = sent_diagnostics
+                .openai_request_controls
+                .get_or_insert_with(Default::default);
+            controls.service_tier = self.service_tier.map(|tier| match tier {
+                crate::config::ServiceTier::Default => "default".into(),
+                crate::config::ServiceTier::Fast => "priority".into(),
+            });
+            controls.served_service_tier = parsed.served_service_tier.clone();
         }
         sent_diagnostics.transport_timeline = parsed.transport_timeline.clone();
         Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
@@ -859,6 +878,7 @@ impl AgentProvider for OpenAiCodexProvider {
             },
             self.verbosity,
         )?;
+        apply_service_tier(&mut body, self.service_tier, true);
         let effective_output = effective_output_tokens(
             self.context_window_tokens,
             self.max_output_tokens,
@@ -888,6 +908,7 @@ impl AgentProvider for OpenAiCodexProvider {
             request_agent_id(&request),
             plan_scope.as_ref(),
         );
+        headers.extend(openai_codex_routing_hint(&self.model, self.service_tier));
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
         if let Some(remote_compaction) = maybe_compact_openai_request_plan(
             &self.continuation,
@@ -953,6 +974,7 @@ impl AgentProvider for OpenAiCodexProvider {
                             request_agent_id(&request),
                             plan_scope.as_ref(),
                         );
+                        headers.extend(openai_codex_routing_hint(&self.model, self.service_tier));
                         match send_openai_responses_streaming_request(
                             &self.client,
                             openai_codex_responses_url(&self.base_url),
@@ -1011,6 +1033,16 @@ impl AgentProvider for OpenAiCodexProvider {
                 &model_ref,
             )
             .await;
+        }
+        if self.service_tier.is_some() || parsed.served_service_tier.is_some() {
+            let controls = sent_diagnostics
+                .openai_request_controls
+                .get_or_insert_with(Default::default);
+            controls.service_tier = self.service_tier.map(|tier| match tier {
+                crate::config::ServiceTier::Default => "default".into(),
+                crate::config::ServiceTier::Fast => "priority".into(),
+            });
+            controls.served_service_tier = parsed.served_service_tier.clone();
         }
         sent_diagnostics.transport_timeline = parsed.transport_timeline.clone();
         Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
@@ -1170,15 +1202,17 @@ impl AgentProvider for OpenAiCodexProvider {
 impl AgentProvider for OpenAiChatCompletionsProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         // Build Chat Completions request
-        let (mut body, plan) = plan_chat_completion_request(
+        let mut full_body = build_chat_completion_request(
             &self.model,
             self.max_output_tokens,
             &request,
             ToolSchemaContract::Relaxed,
             false, // Streaming infrastructure exists but is not currently enabled; requests are non-streaming
             self.reasoning_effort.as_deref(),
-            &self.continuation,
         )?;
+        apply_service_tier(&mut full_body, self.service_tier, false);
+        let (mut body, plan) =
+            plan_chat_completion_request(full_body, &request, &self.continuation)?;
         let effective_output = effective_output_tokens(
             self.context_window_tokens,
             self.max_output_tokens,
@@ -1225,6 +1259,16 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
             &parsed,
         );
 
+        if self.service_tier.is_some() || parsed.served_service_tier.is_some() {
+            let controls = sent_diagnostics
+                .openai_request_controls
+                .get_or_insert_with(Default::default);
+            controls.service_tier = self.service_tier.map(|tier| match tier {
+                crate::config::ServiceTier::Default => "default".into(),
+                crate::config::ServiceTier::Fast => "priority".into(),
+            });
+            controls.served_service_tier = parsed.served_service_tier.clone();
+        }
         sent_diagnostics.transport_timeline = parsed.transport_timeline.clone();
         Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
     }
@@ -1415,3 +1459,94 @@ fn openai_codex_status_error_context(status: reqwest::StatusCode) -> &'static st
 
 #[cfg(test)]
 mod tests;
+
+impl OpenAiProvider {
+    pub(crate) fn with_service_tier(mut self, tier: Option<crate::config::ServiceTier>) -> Self {
+        self.service_tier = tier;
+        self
+    }
+}
+
+impl OpenAiCodexProvider {
+    pub(crate) fn with_service_tier(mut self, tier: Option<crate::config::ServiceTier>) -> Self {
+        self.service_tier = tier;
+        self
+    }
+}
+
+impl OpenAiChatCompletionsProvider {
+    pub(crate) fn with_service_tier(mut self, tier: Option<crate::config::ServiceTier>) -> Self {
+        self.service_tier = tier;
+        self
+    }
+}
+
+fn apply_service_tier(
+    body: &mut Value,
+    tier: Option<crate::config::ServiceTier>,
+    codex_standard: bool,
+) {
+    if let Some(tier) = tier {
+        if tier == crate::config::ServiceTier::Fast || !codex_standard {
+            body["service_tier"] = json!(match tier {
+                crate::config::ServiceTier::Fast => "priority",
+                crate::config::ServiceTier::Default => "default",
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod service_tier_tests {
+    use super::*;
+    use crate::config::ServiceTier;
+
+    #[test]
+    fn service_tier_preserves_legacy_requests_and_independent_reasoning() {
+        let original = json!({"model":"gpt-6-astra","reasoning":{"effort":"high"}});
+        let mut body = original.clone();
+        apply_service_tier(&mut body, None, false);
+        assert_eq!(body, original);
+        apply_service_tier(&mut body, Some(ServiceTier::Fast), true);
+        assert_eq!(body["service_tier"], "priority");
+        assert_eq!(body["reasoning"]["effort"], "high");
+        let mut standard = original.clone();
+        apply_service_tier(&mut standard, Some(ServiceTier::Default), true);
+        assert_eq!(standard, original);
+        apply_service_tier(&mut standard, Some(ServiceTier::Default), false);
+        assert_eq!(standard["service_tier"], "default");
+        assert_eq!(
+            serde_json::from_str::<ServiceTier>("\"priority\"").unwrap(),
+            ServiceTier::Fast
+        );
+    }
+
+    #[test]
+    fn service_tier_codex_routing_hint_matches_the_body_and_preserves_legacy_requests() {
+        assert_eq!(openai_codex_routing_hint("gpt-6-astra", None), None);
+        assert_eq!(
+            openai_codex_routing_hint("gpt-6-astra", Some(ServiceTier::Fast)),
+            Some((
+                "x-codex-routing-hint",
+                "model=gpt-6-astra;tier=priority".into()
+            ))
+        );
+        assert_eq!(
+            openai_codex_routing_hint("gpt-6-astra", Some(ServiceTier::Default)),
+            Some(("x-codex-routing-hint", "model=gpt-6-astra".into()))
+        );
+        assert_eq!(
+            openai_codex_routing_hint("bad\nmodel", Some(ServiceTier::Fast)),
+            None
+        );
+    }
+
+    #[test]
+    fn served_service_tier_survives_response_parsing() {
+        let parsed = responses::parse_openai_response_with_transport_state(json!({
+            "id":"response-fast","service_tier":"default","status":"completed",
+            "output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]
+        })).unwrap();
+        assert_eq!(parsed.served_service_tier.as_deref(), Some("default"));
+    }
+}

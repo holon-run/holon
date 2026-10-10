@@ -537,6 +537,8 @@ pub struct DetachWorkspaceRequest {
 pub struct SetAgentModelRequest {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<crate::config::ServiceTier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     pub authority_class: Option<AuthorityClass>,
 }

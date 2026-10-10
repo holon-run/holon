@@ -424,7 +424,7 @@ export interface RuntimeStoreState {
   /** Drop locally echoed prompts once the server view carries them. */
   pruneOperatorPrompts: (agentId: string, confirmedMessageIds: readonly string[]) => void;
   abortCurrentRun: (agentId: string | undefined, runId: string | null | undefined) => Promise<void>;
-  setAgentModel: (agentId: string | undefined, model: string, reasoningEffort?: string) => Promise<void>;
+  setAgentModel: (agentId: string | undefined, model: string, reasoningEffort?: string, serviceTier?: string) => Promise<void>;
   clearAgentModel: (agentId: string | undefined) => Promise<void>;
   controlAgent: (agentId: string | undefined, action: AgentControlAction) => Promise<void>;
   deleteAgent: (agentId: string | undefined, cascadePrivateChildren?: boolean) => Promise<void>;
@@ -3257,13 +3257,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
   },
 
-  setAgentModel: async (agentId, model, reasoningEffort) => {
+  setAgentModel: async (agentId, model, reasoningEffort, serviceTier) => {
     if (!agentId || !model) return;
     const request = captureClientRequest();
     const previousAgent = get().sessionsByAgentId[agentId]?.detail?.agent;
     setSessionModelError(set, agentId, undefined);
     try {
-      const modelState = await request.client.setAgentModel(agentId, model, reasoningEffort);
+      const modelState = await request.client.setAgentModel(agentId, model, reasoningEffort, serviceTier);
       if (!isCurrentClientRequest(request)) return;
       set((state) =>
         updateAgentModelInState(state, agentId, {
@@ -3272,6 +3272,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           runtimeDefaultModel: modelState?.runtime_default_model,
           modelSource: modelState?.source ?? "agent_override",
           modelReasoningEffort: modelState?.override_reasoning_effort ?? undefined,
+          modelServiceTier: modelState?.effective_service_tier ?? undefined,
+          modelServiceTierOverride: modelState?.override_service_tier ?? undefined,
         }),
       );
       await get().refreshAgentDetail(agentId);
@@ -3301,6 +3303,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           runtimeDefaultModel: modelState?.runtime_default_model,
           modelSource: modelState?.source ?? "runtime_default",
           modelReasoningEffort: modelState?.override_reasoning_effort ?? undefined,
+          modelServiceTier: modelState?.effective_service_tier ?? undefined,
+          modelServiceTierOverride: modelState?.override_service_tier ?? undefined,
         }),
       );
       await get().refreshAgentDetail(agentId);
@@ -4240,7 +4244,7 @@ function buildBootstrapMetrics(agents: AgentSummary[]): RuntimeBootstrap["metric
 function updateAgentModelInState(
   state: RuntimeStoreState,
   agentId: string,
-  modelPatch: Pick<AgentSummary, "model"> & Partial<Pick<AgentSummary, "modelSource" | "modelReasoningEffort" | "modelSelection" | "runtimeDefaultModel">>,
+  modelPatch: Pick<AgentSummary, "model"> & Partial<Pick<AgentSummary, "modelSource" | "modelReasoningEffort" | "modelServiceTier" | "modelServiceTierOverride" | "modelSelection" | "runtimeDefaultModel">>,
 ): Partial<RuntimeStoreState> {
   const session = state.sessionsByAgentId[agentId];
   const detail = session?.detail

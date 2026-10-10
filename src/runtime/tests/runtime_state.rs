@@ -18895,3 +18895,86 @@ async fn conversation_stream_exposes_progress_and_tool_before_result_delivery() 
         .unwrap();
     runner.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn service_tier_override_survives_reload_but_not_fallback_or_model_switch() {
+    use crate::config::{ModelRouteOptions, ServiceTier};
+    let home = tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai-codex@default/gpt-6-astra"}}"#,
+    )
+    .unwrap();
+    let mut config =
+        crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    let primary = config.default_model.clone();
+    let fallback = crate::config::ModelRouteRef::parse("openai-codex@default/gpt-6-sol").unwrap();
+    config.fallback_models = vec![fallback.clone()];
+    config.stored_config.model.route_options.insert(
+        primary.as_string(),
+        ModelRouteOptions {
+            service_tier: Some(ServiceTier::Fast),
+        },
+    );
+    config.providers.get_mut(&crate::config::ProviderId::openai_codex()).unwrap().credential = Some(r#"{"tokens":{"access_token":"test-token","refresh_token":"test-refresh","account_id":"test-account"}}"#.into());
+    let host = RuntimeHost::new(config).unwrap();
+    let runtime = host.default_runtime().await.unwrap();
+    assert_eq!(
+        runtime
+            .model_state_for(&runtime.agent_state().await.unwrap())
+            .effective_service_tier,
+        Some(ServiceTier::Fast)
+    );
+    runtime
+        .set_model_override_with_service_tier(
+            primary.clone(),
+            Some("low".into()),
+            Some(ServiceTier::Default),
+        )
+        .await
+        .unwrap();
+    let state = runtime.agent_state().await.unwrap();
+    let reopened: AgentState =
+        serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+    assert_eq!(
+        reopened.model_override_service_tier,
+        Some(ServiceTier::Default)
+    );
+    runtime
+        .reconfigure_provider_for_turn(Some(&fallback))
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .model_state_for_turn(&state, Some(&fallback))
+            .effective_service_tier,
+        None
+    );
+    assert_eq!(
+        runtime.inner.provider.read().await.configured_model_refs(),
+        vec![fallback.as_string()]
+    );
+    runtime
+        .set_model_override(fallback.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .model_override_service_tier,
+        None
+    );
+    runtime.clear_model_override().await.unwrap();
+    let cleared = runtime.model_state_for(&runtime.agent_state().await.unwrap());
+    assert_eq!(cleared.override_service_tier, None);
+    assert_eq!(cleared.effective_service_tier, Some(ServiceTier::Fast));
+    let unsupported =
+        crate::config::ModelRouteRef::parse("anthropic@default/claude-sonnet-4-6").unwrap();
+    assert!(runtime
+        .set_model_override_with_service_tier(unsupported, None, Some(ServiceTier::Fast))
+        .await
+        .is_err());
+    assert_eq!(runtime.agent_state().await.unwrap().model_override, None);
+}

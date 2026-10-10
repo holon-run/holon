@@ -15,20 +15,24 @@ public struct AgentListModelSummary: Codable, JSONEncodable {
     public var activeModel: String?
     public var effectiveFallbackModels: [String]?
     public var effectiveModel: String
+    public var effectiveServiceTier: ServiceTier?
     public var fallbackActive: Bool? = false
     public var overrideModel: String?
     public var overrideReasoningEffort: String?
+    public var overrideServiceTier: ServiceTier?
     public var requestedModel: String?
     public var runtimeDefaultModel: String
     public var source: AgentModelSource
 
-    public init(activeModel: String? = nil, effectiveFallbackModels: [String]? = nil, effectiveModel: String, fallbackActive: Bool? = false, overrideModel: String? = nil, overrideReasoningEffort: String? = nil, requestedModel: String? = nil, runtimeDefaultModel: String, source: AgentModelSource) {
+    public init(activeModel: String? = nil, effectiveFallbackModels: [String]? = nil, effectiveModel: String, effectiveServiceTier: ServiceTier? = nil, fallbackActive: Bool? = false, overrideModel: String? = nil, overrideReasoningEffort: String? = nil, overrideServiceTier: ServiceTier? = nil, requestedModel: String? = nil, runtimeDefaultModel: String, source: AgentModelSource) {
         self.activeModel = activeModel
         self.effectiveFallbackModels = effectiveFallbackModels
         self.effectiveModel = effectiveModel
+        self.effectiveServiceTier = effectiveServiceTier
         self.fallbackActive = fallbackActive
         self.overrideModel = overrideModel
         self.overrideReasoningEffort = overrideReasoningEffort
+        self.overrideServiceTier = overrideServiceTier
         self.requestedModel = requestedModel
         self.runtimeDefaultModel = runtimeDefaultModel
         self.source = source
@@ -38,9 +42,11 @@ public struct AgentListModelSummary: Codable, JSONEncodable {
         case activeModel = "active_model"
         case effectiveFallbackModels = "effective_fallback_models"
         case effectiveModel = "effective_model"
+        case effectiveServiceTier = "effective_service_tier"
         case fallbackActive = "fallback_active"
         case overrideModel = "override_model"
         case overrideReasoningEffort = "override_reasoning_effort"
+        case overrideServiceTier = "override_service_tier"
         case requestedModel = "requested_model"
         case runtimeDefaultModel = "runtime_default_model"
         case source
@@ -53,9 +59,11 @@ public struct AgentListModelSummary: Codable, JSONEncodable {
         try container.encodeIfPresent(activeModel, forKey: .activeModel)
         try container.encodeIfPresent(effectiveFallbackModels, forKey: .effectiveFallbackModels)
         try container.encode(effectiveModel, forKey: .effectiveModel)
+        try container.encodeIfPresent(effectiveServiceTier, forKey: .effectiveServiceTier)
         try container.encodeIfPresent(fallbackActive, forKey: .fallbackActive)
         try container.encodeIfPresent(overrideModel, forKey: .overrideModel)
         try container.encodeIfPresent(overrideReasoningEffort, forKey: .overrideReasoningEffort)
+        try container.encodeIfPresent(overrideServiceTier, forKey: .overrideServiceTier)
         try container.encodeIfPresent(requestedModel, forKey: .requestedModel)
         try container.encode(runtimeDefaultModel, forKey: .runtimeDefaultModel)
         try container.encode(source, forKey: .source)
@@ -65,6 +73,8 @@ public struct AgentListModelSummary: Codable, JSONEncodable {
 
 extension AgentListModelSummary: UnknownCaseCheckable {
     public var containsUnknownDefaultOpenApiCase: Bool {
+        if effectiveServiceTier == .unknownDefaultOpenApi { return true }
+        if overrideServiceTier == .unknownDefaultOpenApi { return true }
         if source == .unknownDefaultOpenApi { return true }
         return false
     }

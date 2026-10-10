@@ -24,6 +24,7 @@
 package run.holon.client.wire.generated.models
 
 import run.holon.client.wire.generated.models.AgentModelSource
+import run.holon.client.wire.generated.models.ServiceTier
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -37,9 +38,11 @@ import kotlinx.serialization.Contextual
  * @param source
  * @param activeModel
  * @param effectiveFallbackModels
+ * @param effectiveServiceTier
  * @param fallbackActive
  * @param overrideModel
  * @param overrideReasoningEffort
+ * @param overrideServiceTier
  * @param requestedModel
  */
 @Serializable
@@ -61,6 +64,9 @@ data class AgentListModelSummary (
     @SerialName(value = "effective_fallback_models")
     val effectiveFallbackModels: kotlin.collections.List<kotlin.String>? = null,
 
+    @Contextual @SerialName(value = "effective_service_tier")
+    val effectiveServiceTier: ServiceTier? = null,
+
     @SerialName(value = "fallback_active")
     val fallbackActive: kotlin.Boolean? = false,
 
@@ -69,6 +75,9 @@ data class AgentListModelSummary (
 
     @SerialName(value = "override_reasoning_effort")
     val overrideReasoningEffort: kotlin.String? = null,
+
+    @Contextual @SerialName(value = "override_service_tier")
+    val overrideServiceTier: ServiceTier? = null,
 
     @SerialName(value = "requested_model")
     val requestedModel: kotlin.String? = null

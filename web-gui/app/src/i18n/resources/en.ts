@@ -1236,6 +1236,10 @@ const en = {
     sendInputPlaceholder: "Message {{id}}…",
     dropImageHint: "Drop files to attach",
     // Thinking
+    speedMode: "Speed",
+    speedInherit: "Inherit",
+    speedStandard: "Standard",
+    fastUsageHint: "Fast uses more quota or costs more. Changes apply to this model route on the next run.",
     thinkingAria: "Thinking: {{level}}",
     thinkingLevelValue: "Thinking level: {{level}}",
     thinkingLevel: "Thinking level",

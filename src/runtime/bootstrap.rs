@@ -27,9 +27,9 @@ use crate::{
     provider::{
         build_candidate_from_model_route, build_provider_from_model_chain,
         build_provider_from_model_chain_with_override, resolved_model_availability, AgentProvider,
-        ConversationMessage, ModelBlock, ModelRouteReasoningEffortOverride,
-        ProviderGenerateImageRequest, ProviderGenerateImageResponse,
-        ProviderJsonSchemaResponseFormat, ProviderResponseFormatRequest, ProviderTurnRequest,
+        ConversationMessage, ModelBlock, ModelRouteParameterOverride, ProviderGenerateImageRequest,
+        ProviderGenerateImageResponse, ProviderJsonSchemaResponseFormat,
+        ProviderResponseFormatRequest, ProviderTurnRequest,
     },
     queue::RuntimeQueue,
     runtime_db::RuntimeDb,
@@ -234,19 +234,15 @@ use super::{
     RuntimeAgent, RuntimeHandle, RuntimeInner,
 };
 
-fn model_route_reasoning_effort_override(
-    state: &AgentState,
-) -> Option<ModelRouteReasoningEffortOverride<'_>> {
+fn model_route_parameter_override(state: &AgentState) -> Option<ModelRouteParameterOverride<'_>> {
     state
         .model_override
         .as_ref()
-        .zip(state.model_override_reasoning_effort.as_deref())
-        .map(
-            |(route_ref, reasoning_effort)| ModelRouteReasoningEffortOverride {
-                route_ref,
-                reasoning_effort,
-            },
-        )
+        .map(|route_ref| ModelRouteParameterOverride {
+            route_ref,
+            reasoning_effort: state.model_override_reasoning_effort.as_deref(),
+            service_tier: state.model_override_service_tier,
+        })
 }
 
 /// Snapshot of config-derived runtime fields that can be hot-swapped at runtime.
@@ -715,7 +711,7 @@ impl RuntimeHandle {
             provider = build_provider_from_model_chain_with_override(
                 &provider_config,
                 &chain,
-                model_route_reasoning_effort_override(&state),
+                model_route_parameter_override(&state),
             )?;
         }
         let resolved_context_config = if config_snapshot.provider_reconfig.is_some() {
@@ -821,6 +817,13 @@ impl RuntimeHandle {
             &selected_state,
         );
         if let Some(fallback_model) = fallback_model {
+            model_state.effective_service_tier = if model_state.effective_model == *fallback_model {
+                state
+                    .model_override_service_tier
+                    .or_else(|| snap.model_catalog.route_service_tier(fallback_model))
+            } else {
+                snap.model_catalog.route_service_tier(fallback_model)
+            };
             model_state.active_model = Some(fallback_model.clone());
             model_state.fallback_active = model_state.effective_model != *fallback_model;
             model_state.resolved_policy = snap
@@ -907,7 +910,7 @@ impl RuntimeHandle {
         let provider = build_provider_from_model_chain_with_override(
             &provider_config,
             &chain,
-            model_route_reasoning_effort_override(state),
+            model_route_parameter_override(state),
         )?;
         *self.inner.provider.write().await = provider;
         *self.inner.context_config.write().await = resolved_context_config;

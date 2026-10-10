@@ -190,6 +190,13 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "model.route_options",
+            kind: "object",
+            description: "Request options keyed by exact canonical provider@endpoint/model route. Options never propagate to other fallback candidates.",
+            default: json!({}),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "model.default",
             kind: "model_route_ref",
             description: "Explicit default provider@endpoint/model route ref. Legacy provider/model input remains accepted. When unset, the runtime derives one from authenticated providers.",
@@ -1013,6 +1020,7 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .cache_ttl_ms
             .map(|value| json!(value))
             .unwrap_or(Value::Null)),
+        "model.route_options" => Ok(serde_json::to_value(&config.model.route_options)?),
         "model.default" => Ok(config
             .model
             .default
@@ -1547,6 +1555,9 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         "api.projection.cache_ttl_ms" => {
             config.api.projection.cache_ttl_ms = Some(parse_positive_u64_key(key, raw_value)?);
         }
+        "model.route_options" => {
+            config.model.route_options = serde_json::from_str(raw_value)?;
+        }
         "model.default" => {
             let parsed = ModelRouteRef::parse_compatible(raw_value)?;
             config.model.default = Some(parsed.as_string());
@@ -2019,6 +2030,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "api.csrf.trusted_origins" => config.api.csrf.trusted_origins.clear(),
         "api.projection.max_leaders" => config.api.projection.max_leaders = None,
         "api.projection.cache_ttl_ms" => config.api.projection.cache_ttl_ms = None,
+        "model.route_options" => config.model.route_options.clear(),
         "model.default" => config.model.default = None,
         "model.fallbacks" => config.model.fallbacks.clear(),
         "vision.default" => config.vision.default = None,

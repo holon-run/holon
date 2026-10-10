@@ -987,6 +987,30 @@ impl RuntimeHandle {
         model_override: crate::config::ModelRouteRef,
         reasoning_effort: Option<String>,
     ) -> Result<crate::types::AgentModelState> {
+        self.set_model_override_with_service_tier(model_override, reasoning_effort, None)
+            .await
+    }
+
+    pub async fn set_model_override_with_service_tier(
+        &self,
+        model_override: crate::config::ModelRouteRef,
+        reasoning_effort: Option<String>,
+        service_tier: Option<crate::config::ServiceTier>,
+    ) -> Result<crate::types::AgentModelState> {
+        if let Some(tier) = service_tier {
+            let snap = self.inner.config_snapshot.load();
+            let route = snap
+                .model_catalog
+                .resolve_explicit_model_route(
+                    &snap.base_context_config,
+                    &model_override,
+                    crate::config::ModelRouteCapability::Turn,
+                )
+                .ok_or_else(|| {
+                    crate::config::ServiceTierValidationError(model_override.as_string())
+                })?;
+            route.validate_service_tier(tier)?;
+        }
         if let Some(reasoning_effort) = reasoning_effort.as_deref() {
             let snap = self.inner.config_snapshot.load();
             if let Some(route) = snap.model_catalog.resolve_explicit_model_route(
@@ -1007,6 +1031,7 @@ impl RuntimeHandle {
         let mut next_state = self.agent_state().await?;
         next_state.model_override = Some(model_override.clone());
         next_state.model_override_reasoning_effort = reasoning_effort.clone();
+        next_state.model_override_service_tier = service_tier;
         let turn_in_progress = next_state.current_run_id.is_some();
         if !turn_in_progress {
             self.reconfigure_provider_for_state(&next_state).await?;
@@ -1017,6 +1042,7 @@ impl RuntimeHandle {
             let mut guard = self.inner.agent.lock().await;
             guard.state.model_override = Some(model_override);
             guard.state.model_override_reasoning_effort = reasoning_effort;
+            guard.state.model_override_service_tier = service_tier;
             guard.persist_state(&self.inner.storage)?;
         }
         self.append_audit_event(
@@ -1038,6 +1064,7 @@ impl RuntimeHandle {
         let mut next_state = self.agent_state().await?;
         next_state.model_override = None;
         next_state.model_override_reasoning_effort = None;
+        next_state.model_override_service_tier = None;
         let turn_in_progress = next_state.current_run_id.is_some();
         if !turn_in_progress {
             self.reconfigure_provider_for_state(&next_state).await?;
@@ -1048,6 +1075,7 @@ impl RuntimeHandle {
             let mut guard = self.inner.agent.lock().await;
             guard.state.model_override = None;
             guard.state.model_override_reasoning_effort = None;
+            guard.state.model_override_service_tier = None;
             guard.persist_state(&self.inner.storage)?;
         }
         self.append_audit_event(

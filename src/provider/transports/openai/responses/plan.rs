@@ -134,6 +134,11 @@ fn openai_request_controls_diagnostics(body: &Value) -> ProviderOpenAiRequestCon
     let max_output_tokens_sent = body.get("max_output_tokens").is_some();
     let codex_streaming = body.get("stream").and_then(Value::as_bool) == Some(true);
     ProviderOpenAiRequestControlsDiagnostics {
+        service_tier: body
+            .get("service_tier")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        served_service_tier: None,
         reasoning_sent: reasoning_effort.is_some(),
         reasoning_effort,
         verbosity,

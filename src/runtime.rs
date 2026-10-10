@@ -386,12 +386,20 @@ pub(crate) fn agent_model_state_for_catalog(
         },
         runtime_default_model: model_catalog.default_model.clone(),
         effective_model: effective_model.clone(),
-        requested_model: Some(effective_model),
-        active_model: Some(active_model),
+        requested_model: Some(effective_model.clone()),
+        active_model: Some(active_model.clone()),
         fallback_active,
         effective_fallback_models: effective_chain.into_iter().skip(1).collect(),
         override_model: state.model_override.clone(),
         override_reasoning_effort: state.model_override_reasoning_effort.clone(),
+        override_service_tier: state.model_override_service_tier,
+        effective_service_tier: if fallback_active {
+            model_catalog.route_service_tier(&active_model)
+        } else {
+            state
+                .model_override_service_tier
+                .or_else(|| model_catalog.route_service_tier(&effective_model))
+        },
         resolved_policy,
     }
 }
@@ -3859,6 +3867,9 @@ impl RuntimeHandle {
             }
             next_state.execution_profile = parent_state.execution_profile.clone();
             next_state.model_override = parent_state.model_override.clone();
+            next_state.model_override_reasoning_effort =
+                parent_state.model_override_reasoning_effort.clone();
+            next_state.model_override_service_tier = parent_state.model_override_service_tier;
             next_state
         };
         if self
@@ -3897,6 +3908,9 @@ impl RuntimeHandle {
             )?;
             next_state.execution_profile = parent_state.execution_profile.clone();
             next_state.model_override = parent_state.model_override.clone();
+            next_state.model_override_reasoning_effort =
+                parent_state.model_override_reasoning_effort.clone();
+            next_state.model_override_service_tier = parent_state.model_override_service_tier;
             next_state
         };
         if self
@@ -3922,6 +3936,7 @@ impl RuntimeHandle {
         execution_profile: ExecutionProfile,
         model_override: Option<crate::config::ModelRouteRef>,
         model_override_reasoning_effort: Option<String>,
+        model_override_service_tier: Option<crate::config::ServiceTier>,
     ) -> Result<()> {
         let next_state = {
             let guard = self.inner.agent.lock().await;
@@ -3937,6 +3952,7 @@ impl RuntimeHandle {
             next_state.execution_profile = execution_profile;
             next_state.model_override = model_override;
             next_state.model_override_reasoning_effort = model_override_reasoning_effort;
+            next_state.model_override_service_tier = model_override_service_tier;
             next_state
         };
         if self

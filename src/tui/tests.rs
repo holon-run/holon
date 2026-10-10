@@ -226,6 +226,8 @@ pub(super) fn sample_agent_summary(agent_id: &str) -> AgentSummary {
             .unwrap(),
             override_model: None,
             override_reasoning_effort: None,
+            override_service_tier: None,
+            effective_service_tier: None,
             source: AgentModelSource::RuntimeDefault,
             effective_fallback_models: Vec::new(),
             resolved_policy: crate::model_catalog::ResolvedRuntimeModelPolicy {

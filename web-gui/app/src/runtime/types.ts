@@ -353,6 +353,8 @@ export interface AgentSummary {
   runtimeDefaultModel?: string;
   modelSource?: "runtime_default" | "agent_override";
   modelReasoningEffort?: string;
+  modelServiceTier?: string;
+  modelServiceTierOverride?: string;
   footer: string;
   subtitle: string;
   lastBrief: string;
@@ -389,6 +391,7 @@ export interface RuntimeModelOption {
   supportsImageGeneration: boolean;
   supportsReasoningEffort: boolean;
   reasoningEffortOptions: string[];
+  serviceTierOptions?: string[];
 }
 
 export interface RuntimeModelCatalog {

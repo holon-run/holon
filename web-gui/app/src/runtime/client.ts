@@ -214,6 +214,8 @@ interface AgentListEntryDto {
     runtime_default_model?: string;
     active_model?: string | null;
     override_reasoning_effort?: string | null;
+    override_service_tier?: string | null;
+    effective_service_tier?: string | null;
   };
   active_workspace_entry?: {
     workspace_id?: string;
@@ -308,6 +310,8 @@ interface RuntimeModelsDto {
 }
 
 interface RuntimeAvailableModelDto {
+  parameter_contracts?: Array<{ name: string; allowed_values?: string[] }>;
+  resolved_capabilities?: { endpoint?: { accepted_parameters?: Array<{ name: string; allowed_values?: string[] }> } };
   model?: string;
   provider?: string;
   provider_family?: string;
@@ -336,6 +340,7 @@ interface RuntimeAvailableModelDto {
 }
 
 interface ModelAvailabilityDto {
+  parameter_contracts?: Array<{ name: string; allowed_values?: string[] }>;
   model?: string;
   provider?: string;
   provider_family?: string;
@@ -347,6 +352,7 @@ interface ModelAvailabilityDto {
   failure_kind?: string;
   failure_disposition?: "retryable" | "fail_fast";
   resolved_capabilities?: {
+    endpoint?: { accepted_parameters?: Array<{ name: string; allowed_values?: string[] }> };
     decision_capable?: boolean;
   };
   policy?: {
@@ -369,6 +375,8 @@ interface AgentModelStateDto {
   effective_model?: string;
   active_model?: string | null;
   override_reasoning_effort?: string | null;
+  override_service_tier?: string | null;
+  effective_service_tier?: string | null;
 }
 
 interface AgentModelResponseDto {
@@ -1546,7 +1554,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         { timeoutMs: CONTROL_MUTATION_TIMEOUT_MS },
       );
     },
-    async setAgentModel(agentId: string, model: string, reasoningEffort?: string): Promise<AgentModelStateDto | undefined> {
+    async setAgentModel(agentId: string, model: string, reasoningEffort?: string, serviceTier?: string): Promise<AgentModelStateDto | undefined> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
@@ -1554,7 +1562,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         fetchImpl,
         baseUrl,
         `/control/agents/${encodeURIComponent(agentId)}/model`,
-        { model, reasoning_effort: reasoningEffort, authority_class: "operator_instruction" },
+        { model, reasoning_effort: reasoningEffort, service_tier: serviceTier, authority_class: "operator_instruction" },
         requestHeaders,
         { timeoutMs: CONTROL_MUTATION_TIMEOUT_MS },
       );
@@ -2692,6 +2700,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const focusSummary = currentWork?.objective ?? postureReason;
   const model = state?.agent?.model?.active_model ?? state?.agent?.model?.effective_model ?? entry.model?.active_model ?? entry.model?.effective_model ?? "runtime default";
   const modelSource = state?.agent?.model?.source ?? entry.model?.source;
+  const serviceTierModel = state?.agent?.model ?? entry.model;
   const modelReasoningEffort = state?.agent?.model?.override_reasoning_effort ?? entry.model?.override_reasoning_effort ?? undefined;
   const lifecycle = stringifyLifecycle(state?.agent?.lifecycle ?? entry.lifecycle ?? status);
   const currentRunId = state?.session?.current_run_id ?? entry.current_run_id ?? null;
@@ -2713,6 +2722,8 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     modelSelection: state?.agent?.model?.effective_model ?? entry.model?.effective_model,
     runtimeDefaultModel: state?.agent?.model?.runtime_default_model ?? entry.model?.runtime_default_model,
     modelReasoningEffort: modelReasoningEffort ?? undefined,
+    modelServiceTier: serviceTierModel?.effective_service_tier ?? undefined,
+    modelServiceTierOverride: serviceTierModel?.override_service_tier ?? undefined,
     footer: `${lifecycle} · ${posture}`,
     subtitle: `${status} · ${workspace}`,
     lastBrief: brief?.text ?? "",
@@ -2927,6 +2938,7 @@ export function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOpt
       decisionProtocol: entry.policy?.decision_protocol ?? existing?.decisionProtocol,
       supportsImageInput: entry.policy?.capabilities?.image_input ?? existing?.supportsImageInput ?? false,
       supportsImageGeneration: entry.policy?.capabilities?.image_generation ?? existing?.supportsImageGeneration ?? false,
+      serviceTierOptions: serviceTierOptions(entry),
       supportsReasoningEffort: supportsReasoningEffort(entry) || (existing?.supportsReasoningEffort ?? false),
       reasoningEffortOptions: reasoningEffortOptions(entry).length
         ? reasoningEffortOptions(entry)
@@ -2960,6 +2972,7 @@ function projectAvailableModels(
         decisionProtocol: typeof entry === "string" ? undefined : entry.policy?.decision_protocol,
         supportsImageInput: typeof entry === "string" ? false : (entry.capabilities?.image_input ?? false),
         supportsImageGeneration: typeof entry === "string" ? false : (entry.capabilities?.image_generation ?? false),
+        serviceTierOptions: typeof entry === "string" ? [] : serviceTierOptions(entry),
         supportsReasoningEffort: typeof entry === "string" ? false : supportsReasoningEffort(entry),
         reasoningEffortOptions: typeof entry === "string" ? [] : reasoningEffortOptions(entry),
       };
@@ -2972,6 +2985,11 @@ function modelRouteRef(model: string, providerFamily: string, endpoint: string):
   if (separator > 0 && model.slice(0, separator).includes("@")) return model;
   const modelName = separator >= 0 ? model.slice(separator + 1) : model;
   return `${providerFamily}@${endpoint}/${modelName}`;
+}
+
+function serviceTierOptions(entry: ModelAvailabilityDto | RuntimeAvailableModelDto): string[] {
+  const contracts = entry.resolved_capabilities?.endpoint?.accepted_parameters ?? entry.parameter_contracts ?? [];
+  return contracts.find((parameter) => parameter.name === "service_tier")?.allowed_values ?? [];
 }
 
 function supportsReasoningEffort(entry: ModelAvailabilityDto | RuntimeAvailableModelDto): boolean {

@@ -1432,6 +1432,8 @@ impl TuiProjection {
         self.agent.model.active_model = event.active_model;
         self.agent.model.override_model = event.override_model;
         self.agent.model.override_reasoning_effort = event.override_reasoning_effort;
+        self.agent.model.override_service_tier = event.override_service_tier;
+        self.agent.model.effective_service_tier = event.effective_service_tier;
         self.agent.model.fallback_active = event.fallback_active;
         true
     }
@@ -3829,6 +3831,8 @@ mod tests {
                 runtime_default_model: route_ref("anthropic/claude-sonnet-4-6"),
                 override_model: None,
                 override_reasoning_effort: None,
+                override_service_tier: None,
+                effective_service_tier: None,
                 source: AgentModelSource::RuntimeDefault,
                 effective_fallback_models: Vec::new(),
                 resolved_policy: crate::model_catalog::ResolvedRuntimeModelPolicy {

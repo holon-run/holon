@@ -204,6 +204,10 @@ pub struct SlimAgentModelDto {
     pub override_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_service_tier: Option<crate::config::ServiceTier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_service_tier: Option<crate::config::ServiceTier>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -351,6 +355,8 @@ impl From<&crate::types::AgentModelState> for SlimAgentModelDto {
             effective_fallback_models: model.effective_fallback_models.clone(),
             override_model: model.override_model.clone(),
             override_reasoning_effort: model.override_reasoning_effort.clone(),
+            override_service_tier: model.override_service_tier,
+            effective_service_tier: model.effective_service_tier,
         }
     }
 }
@@ -527,6 +533,8 @@ impl SlimAgentDto {
             effective_fallback_models: self.model.effective_fallback_models,
             override_model: self.model.override_model,
             override_reasoning_effort: self.model.override_reasoning_effort,
+            override_service_tier: self.model.override_service_tier,
+            effective_service_tier: self.model.effective_service_tier,
         };
         let mut summary = AgentListEntry {
             identity: self.identity,

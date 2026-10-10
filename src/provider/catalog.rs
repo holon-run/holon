@@ -32,15 +32,16 @@ pub fn build_provider_from_model_chain(
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ModelRouteReasoningEffortOverride<'a> {
+pub(crate) struct ModelRouteParameterOverride<'a> {
     pub(crate) route_ref: &'a ModelRouteRef,
-    pub(crate) reasoning_effort: &'a str,
+    pub(crate) reasoning_effort: Option<&'a str>,
+    pub(crate) service_tier: Option<crate::config::ServiceTier>,
 }
 
 pub(crate) fn build_provider_from_model_chain_with_override(
     config: &AppConfig,
     provider_chain: &[ModelRouteRef],
-    reasoning_effort_override: Option<ModelRouteReasoningEffortOverride<'_>>,
+    parameter_override: Option<ModelRouteParameterOverride<'_>>,
 ) -> Result<Arc<dyn AgentProvider>> {
     let mut candidates = Vec::new();
     let mut errors = Vec::new();
@@ -51,7 +52,7 @@ pub(crate) fn build_provider_from_model_chain_with_override(
     } else {
         provider_chain.len()
     }) {
-        match build_candidate_with_override(config, model_ref, reasoning_effort_override) {
+        match build_candidate_with_override(config, model_ref, parameter_override) {
             Ok(candidate) => {
                 if !candidates
                     .iter()
@@ -83,31 +84,29 @@ pub(crate) fn build_candidate(
 fn build_candidate_with_override(
     config: &AppConfig,
     route_ref: &ModelRouteRef,
-    reasoning_effort_override: Option<ModelRouteReasoningEffortOverride<'_>>,
+    parameter_override: Option<ModelRouteParameterOverride<'_>>,
 ) -> Result<ProviderCandidate> {
     let mut route =
         resolve_explicit_model_route_for_candidate(config, route_ref, ModelRouteCapability::Turn)?;
-    apply_reasoning_effort_override(config, &mut route, reasoning_effort_override);
+    apply_parameter_override(config, &mut route, parameter_override);
     build_candidate_from_model_route(&config.home_dir, &route)
 }
 
-fn apply_reasoning_effort_override(
+fn apply_parameter_override(
     config: &AppConfig,
     route: &mut ResolvedModelRoute,
-    reasoning_effort_override: Option<ModelRouteReasoningEffortOverride<'_>>,
+    parameter_override: Option<ModelRouteParameterOverride<'_>>,
 ) {
-    let reasoning_effort_override = reasoning_effort_override.map(|reasoning_effort| {
-        (
-            RuntimeModelCatalog::from_config(config)
-                .canonicalize_model_route_ref(reasoning_effort.route_ref),
-            reasoning_effort.reasoning_effort,
-        )
-    });
-    if let Some(reasoning_effort_override) =
-        reasoning_effort_override.filter(|(route_ref, _)| route.route_ref == *route_ref)
-    {
-        route.endpoint.runtime_config.reasoning_effort =
-            Some(reasoning_effort_override.1.to_string());
+    if let Some(options) = parameter_override.filter(|options| {
+        RuntimeModelCatalog::from_config(config).canonicalize_model_route_ref(options.route_ref)
+            == route.route_ref
+    }) {
+        if let Some(effort) = options.reasoning_effort {
+            route.endpoint.runtime_config.reasoning_effort = Some(effort.to_string());
+        }
+        if let Some(tier) = options.service_tier {
+            route.service_tier = Some(tier);
+        }
     }
 }
 
@@ -115,6 +114,9 @@ pub(crate) fn build_candidate_from_model_route(
     home_dir: &Path,
     route: &ResolvedModelRoute,
 ) -> Result<ProviderCandidate> {
+    if let Some(tier) = route.service_tier {
+        route.validate_service_tier(tier)?;
+    }
     let provider_config = route.provider_config();
     if let Some(reasoning_effort) = provider_config.reasoning_effort.as_deref() {
         route.validate_reasoning_effort(reasoning_effort)?;
@@ -255,9 +257,10 @@ mod tests {
         let provider = build_provider_from_model_chain_with_override(
             &config,
             &config.provider_chain(),
-            Some(ModelRouteReasoningEffortOverride {
+            Some(ModelRouteParameterOverride {
                 route_ref: &primary,
-                reasoning_effort: "max",
+                reasoning_effort: Some("max"),
+                service_tier: None,
             }),
         )
         .expect("route-scoped effort should not affect the fallback model");
@@ -311,12 +314,13 @@ mod tests {
         let mut route =
             resolve_explicit_model_route_for_candidate(&config, &alias, ModelRouteCapability::Turn)
                 .expect("the legacy alias should resolve");
-        apply_reasoning_effort_override(
+        apply_parameter_override(
             &config,
             &mut route,
-            Some(ModelRouteReasoningEffortOverride {
+            Some(ModelRouteParameterOverride {
                 route_ref: &alias,
-                reasoning_effort: "high",
+                reasoning_effort: Some("high"),
+                service_tier: None,
             }),
         );
 
@@ -324,5 +328,119 @@ mod tests {
             route.endpoint.runtime_config.reasoning_effort.as_deref(),
             Some("high")
         );
+    }
+    #[test]
+    fn service_tier_is_scoped_to_the_exact_route_and_never_filters_fallbacks() {
+        use crate::config::{ModelRouteOptions, ServiceTier};
+        let mut config = codex_config("gpt-6-astra", "low");
+        let primary = config.default_model.clone();
+        let fallback = ModelRouteRef::parse("openai-codex@default/gpt-6-sol").unwrap();
+        config.fallback_models = vec![fallback.clone()];
+        config.stored_config.model.route_options.insert(
+            primary.as_string(),
+            ModelRouteOptions {
+                service_tier: Some(ServiceTier::Fast),
+            },
+        );
+        config.validate_model_route_options().unwrap();
+        let catalog = RuntimeModelCatalog::from_config(&config);
+        let options = Some(ModelRouteParameterOverride {
+            route_ref: &primary,
+            reasoning_effort: None,
+            service_tier: Some(ServiceTier::Default),
+        });
+        let mut selected = resolve_explicit_model_route_for_candidate(
+            &config,
+            &primary,
+            ModelRouteCapability::Turn,
+        )
+        .unwrap();
+        let mut other = resolve_explicit_model_route_for_candidate(
+            &config,
+            &fallback,
+            ModelRouteCapability::Turn,
+        )
+        .unwrap();
+        assert_eq!(selected.service_tier, Some(ServiceTier::Fast));
+        assert_eq!(catalog.route_service_tier(&fallback), None);
+        apply_parameter_override(&config, &mut selected, options);
+        apply_parameter_override(&config, &mut other, options);
+        assert_eq!(selected.service_tier, Some(ServiceTier::Default));
+        assert_eq!(other.service_tier, None);
+        let mut other_endpoint = selected.clone();
+        other_endpoint.route_ref.endpoint =
+            crate::config::ProviderEndpointId::parse("other").unwrap();
+        other_endpoint.service_tier = None;
+        apply_parameter_override(&config, &mut other_endpoint, options);
+        assert_eq!(other_endpoint.service_tier, None);
+        assert_eq!(
+            build_provider_from_model_chain_with_override(
+                &config,
+                &config.provider_chain(),
+                options
+            )
+            .unwrap()
+            .configured_model_refs(),
+            vec![primary.as_string(), fallback.as_string()]
+        );
+        // A fallback owns its own explicit choice rather than borrowing the primary's.
+        config.stored_config.model.route_options.insert(
+            fallback.as_string(),
+            ModelRouteOptions {
+                service_tier: Some(ServiceTier::Fast),
+            },
+        );
+        let mut other = resolve_explicit_model_route_for_candidate(
+            &config,
+            &fallback,
+            ModelRouteCapability::Turn,
+        )
+        .unwrap();
+        apply_parameter_override(&config, &mut other, options);
+        assert_eq!(other.service_tier, Some(ServiceTier::Fast));
+    }
+
+    #[test]
+    fn service_tier_capability_requires_a_supported_model_and_official_endpoint() {
+        use crate::config::{service_tier_supported, ModelRouteOptions, ServiceTier};
+        let mut config = codex_config("gpt-6-astra", "low");
+        let primary = config.default_model.clone();
+        let codex = config
+            .providers
+            .get(&crate::config::ProviderId::openai_codex())
+            .unwrap()
+            .clone();
+        assert!(service_tier_supported(&primary, &codex));
+        let mut proxy = codex.clone();
+        proxy.base_url = "https://gateway.example/v1".into();
+        assert!(!service_tier_supported(&primary, &proxy));
+        let mut unsupported = primary.clone();
+        unsupported.model = "gpt-unknown".into();
+        assert!(!service_tier_supported(&unsupported, &codex));
+        let openai = config
+            .providers
+            .get(&crate::config::ProviderId::openai())
+            .unwrap();
+        let api_route = ModelRouteRef::parse("openai@default/gpt-6-sol").unwrap();
+        assert!(service_tier_supported(&api_route, openai));
+        let mut third_party = api_route.clone();
+        third_party.provider = crate::config::ProviderId::parse("compatible").unwrap();
+        assert!(!service_tier_supported(&third_party, openai));
+        config
+            .providers
+            .get_mut(&crate::config::ProviderId::openai_codex())
+            .unwrap()
+            .base_url = proxy.base_url;
+        config.stored_config.model.route_options.insert(
+            primary.as_string(),
+            ModelRouteOptions {
+                service_tier: Some(ServiceTier::Fast),
+            },
+        );
+        assert!(config
+            .validate_model_route_options()
+            .unwrap_err()
+            .to_string()
+            .contains("does not support service_tier"));
     }
 }

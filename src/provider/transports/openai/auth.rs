@@ -229,6 +229,7 @@ impl OpenAiCodexProvider {
             max_output_tokens,
             context_window_tokens,
             reasoning_effort: provider_config.reasoning_effort.clone(),
+            service_tier: None,
             supports_reasoning,
             verbosity,
             builtin_web_search: provider_config.builtin_web_search.clone(),
@@ -516,6 +517,17 @@ pub(super) fn openai_codex_conversation_headers(
     let mut headers = openai_codex_headers(credential, originator);
     headers.extend(openai_codex_session_headers(agent_id, scope));
     headers
+}
+
+pub(super) fn openai_codex_routing_hint(
+    model: &str,
+    tier: Option<crate::config::ServiceTier>,
+) -> Option<(&'static str, String)> {
+    let value = match tier? {
+        crate::config::ServiceTier::Fast => format!("model={model};tier=priority"),
+        crate::config::ServiceTier::Default => format!("model={model}"),
+    };
+    is_valid_header_value(&value).then_some(("x-codex-routing-hint", value))
 }
 
 fn is_valid_header_value(value: &str) -> bool {

@@ -499,6 +499,10 @@ pub(in super::super) fn parse_openai_response_with_transport_state(
         creation_input_tokens: 0,
     });
     Ok(ParsedOpenAiResponse {
+        served_service_tier: response
+            .get("service_tier")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         response: ProviderTurnResponse {
             blocks,
             stop_reason: response

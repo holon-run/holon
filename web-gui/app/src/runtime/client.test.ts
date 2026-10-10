@@ -70,6 +70,16 @@ function agentStateFixture(agentId: string): components["schemas"]["AgentStateSn
 }
 
 describe("projectModelOptions", () => {
+  it("projects fast only from the exact route parameter contract", () => {
+    const options = projectModelOptions({ model_availability: [
+      { model: "openai/gpt-6-astra", endpoint: "default", available: true,
+        resolved_capabilities: { endpoint: { accepted_parameters: [{ name: "service_tier", allowed_values: ["default", "fast"] }] } } },
+      { model: "openai/gpt-6-astra", endpoint: "proxy", available: true },
+      { model: "compatible/gpt-6-astra", available: true },
+    ] });
+    expect(options.find((option) => option.routeRef === "openai@default/gpt-6-astra")?.serviceTierOptions).toEqual(["default", "fast"]);
+    expect(options.filter((option) => option.routeRef !== "openai@default/gpt-6-astra").every((option) => option.serviceTierOptions?.length === 0)).toBe(true);
+  });
   it("projects Decision capability and protocol from runtime availability", () => {
     const options = projectModelOptions({
       model_availability: [

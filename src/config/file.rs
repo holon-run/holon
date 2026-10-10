@@ -270,6 +270,8 @@ pub(crate) fn default_api_cors_allowed_headers() -> Vec<String> {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelConfigFile {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub route_options: BTreeMap<String, ModelRouteOptions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

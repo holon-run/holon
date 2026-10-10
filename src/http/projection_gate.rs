@@ -238,6 +238,24 @@ impl ProjectionGate {
         result.map_err(ProjectionGateError::Build)
     }
 
+    /// Model controls must not be overwritten by a cached pre-mutation snapshot.
+    pub(crate) fn invalidate_agent(&self, agent_id: &str) {
+        let affected = |key: &ProjectionKey| match key {
+            ProjectionKey::AgentState(id) | ProjectionKey::AgentProjectionSnapshot(id, _) => {
+                id == agent_id
+            }
+            ProjectionKey::AgentsList(_) | ProjectionKey::AgentsRosterSnapshot(_) => true,
+        };
+        self.entries
+            .lock()
+            .expect("projection gate lock poisoned")
+            .retain(|key, _| !affected(key));
+        self.stale
+            .lock()
+            .expect("projection gate lock poisoned")
+            .retain(|key, _| !affected(key));
+    }
+
     fn fresh_stale_bytes(&self, key: &ProjectionKey) -> Option<Bytes> {
         let mut stale = self.stale.lock().expect("projection gate lock poisoned");
         match stale.get(key) {

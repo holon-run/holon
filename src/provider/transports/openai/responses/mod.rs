@@ -16,9 +16,9 @@ pub(super) use continuation::update_openai_continuation;
 #[cfg(test)]
 pub(super) use continuation::{latest_openai_compaction_index, native_web_search_diagnostics};
 #[cfg(test)]
-pub(super) use parse::consume_openai_sse_event;
-#[cfg(test)]
 pub(crate) use parse::parse_openai_response;
+#[cfg(test)]
+pub(super) use parse::{consume_openai_sse_event, parse_openai_response_with_transport_state};
 #[cfg(test)]
 pub(crate) use plan::build_openai_input;
 pub(crate) use plan::build_openai_responses_request;

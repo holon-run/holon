@@ -343,6 +343,7 @@ impl ResolvedProviderEndpointConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedModelRoute {
+    pub service_tier: Option<ServiceTier>,
     pub route_ref: ModelRouteRef,
     pub model_ref: ModelRef,
     pub endpoint: ResolvedProviderEndpointConfig,
@@ -408,6 +409,7 @@ fn parse_image_generation_model_ref(value: &str) -> Result<Option<ModelRouteRef>
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeModelCatalog {
+    pub route_options: BTreeMap<String, ModelRouteOptions>,
     pub default_model: ModelRouteRef,
     pub fallback_models: Vec<ModelRouteRef>,
     pub vision_model: Option<ModelRouteRef>,
@@ -423,6 +425,12 @@ pub struct RuntimeModelCatalog {
 }
 
 impl RuntimeModelCatalog {
+    pub fn route_service_tier(&self, route: &ModelRouteRef) -> Option<ServiceTier> {
+        self.route_options
+            .get(&self.canonicalize_model_route_ref(route).as_string())
+            .and_then(|o| o.service_tier)
+    }
+
     pub(crate) fn canonicalize_model_route_ref(&self, route_ref: &ModelRouteRef) -> ModelRouteRef {
         let canonical_model_ref = self
             .built_in_catalog
@@ -454,6 +462,7 @@ impl RuntimeModelCatalog {
             });
         }
         Self {
+            route_options: config.stored_config.model.route_options.clone(),
             default_model: config.default_model.clone(),
             fallback_models: config.fallback_models.clone(),
             vision_model: config.vision_model.clone(),
@@ -493,6 +502,7 @@ impl RuntimeModelCatalog {
             return None;
         }
         Some(ResolvedModelRoute {
+            service_tier: self.route_service_tier(&metadata.route_ref),
             route_ref: metadata.route_ref,
             model_ref: metadata.model_ref,
             endpoint: metadata.endpoint,
@@ -513,6 +523,7 @@ impl RuntimeModelCatalog {
             return None;
         }
         Some(ResolvedModelRoute {
+            service_tier: self.route_service_tier(&metadata.route_ref),
             route_ref: metadata.route_ref,
             model_ref: metadata.model_ref,
             endpoint: metadata.endpoint,
@@ -541,8 +552,16 @@ impl RuntimeModelCatalog {
         })?;
         let mut policy =
             self.resolved_model_policy_for_route(base_context_config, &canonical_route_ref);
-        let capabilities =
+        let mut capabilities =
             ResolvedModelCapabilities::resolve(&mut policy, endpoint.runtime_config.transport);
+        if service_tier_supported(&canonical_route_ref, &endpoint.runtime_config) {
+            capabilities.endpoint.accepted_parameters.push(
+                crate::model_catalog::ModelParameterSupport {
+                    name: "service_tier".into(),
+                    allowed_values: vec!["default".into(), "fast".into()],
+                },
+            );
+        }
         Some(ResolvedModelRouteMetadata {
             route_ref: canonical_route_ref,
             model_ref: canonical_model_ref,
@@ -950,6 +969,7 @@ fn deepseek_responses_base_url(default_base_url: &str) -> String {
 impl Default for RuntimeModelCatalog {
     fn default() -> Self {
         Self {
+            route_options: BTreeMap::new(),
             default_model: ModelRouteRef::parse("openai@default/gpt-5.4")
                 .expect("valid default model route ref"),
             fallback_models: Vec::new(),
