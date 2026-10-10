@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-63fe28d226713ba2ad6254be9200f8cf055163f49f53d9ee9e4385f5e5de086c",
+  "revision": "models-dev-351c480fa7ff0d6047a63b004e7bd6d7b3e4e35d8ced8ebbaa717d5a138bf368",
   "upstream": {
     "source": "models.dev",
-    "revision": "63fe28d226713ba2ad6254be9200f8cf055163f49f53d9ee9e4385f5e5de086c",
-    "fetched_at": "2026-10-09T00:36:13.254429550+00:00",
-    "content_sha256": "63fe28d226713ba2ad6254be9200f8cf055163f49f53d9ee9e4385f5e5de086c",
-    "adapter_version": "0.48.0 (7a92bea)"
+    "revision": "351c480fa7ff0d6047a63b004e7bd6d7b3e4e35d8ced8ebbaa717d5a138bf368",
+    "fetched_at": "2026-10-10T00:17:17.407516577+00:00",
+    "content_sha256": "351c480fa7ff0d6047a63b004e7bd6d7b3e4e35d8ced8ebbaa717d5a138bf368",
+    "adapter_version": "0.48.0 (5b0af2a)"
   },
   "models": [
     {
@@ -4127,6 +4127,27 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "huggingface/MiniMaxAI/MiniMax-M1-80k",
+      "display_name": "MiniMax M1 80K",
+      "description": "MiniMax model for chat, coding, office work, and agentic tasks",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 80000,
+      "max_output_tokens_upper_limit": 80000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "huggingface/MiniMaxAI/MiniMax-M2",
       "display_name": "MiniMax-M2",
       "description": "Efficient open MiniMax model built for coding agents and tool-heavy workflows",
@@ -4549,6 +4570,27 @@
         "medium",
         "high"
       ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "huggingface/Qwen/Qwen3-VL-30B-A3B-Instruct",
+      "display_name": "Qwen3 VL 30B A3B Instruct",
+      "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
+      "context_window_tokens": 131072,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 124518,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
       "source": "remote_discovered"
     },
     {
@@ -5601,6 +5643,27 @@
         "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "huggingface/zai-org/AutoGLM-Phone-9B-Multilingual",
+      "display_name": "AutoGLM Phone 9B Multilingual",
+      "description": "GLM vision model for visual reasoning, documents, and multimodal agents",
+      "context_window_tokens": 65536,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 62259,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": false,
         "interactive_exec": false
       },
       "source": "remote_discovered"
@@ -12448,8 +12511,8 @@
       "context_window_tokens": 163840,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 155648,
-      "default_max_output_tokens": 16000,
-      "max_output_tokens_upper_limit": 16000,
+      "default_max_output_tokens": 16384,
+      "max_output_tokens_upper_limit": 16384,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -12527,7 +12590,7 @@
     },
     {
       "model_ref": "openrouter/deepseek/deepseek-r1-0528",
-      "display_name": "R1 0528",
+      "display_name": "DeepSeek R1 0528",
       "description": "DeepSeek reasoning model for multi-step analysis, math, coding, and tools",
       "context_window_tokens": 163840,
       "effective_context_window_percent": 95,
@@ -14867,7 +14930,7 @@
     },
     {
       "model_ref": "openrouter/moonshotai/kimi-k2-0905",
-      "display_name": "Kimi K2 0905",
+      "display_name": "Kimi K2 Instruct 0905",
       "description": "Kimi model for long-context chat, coding, and agentic reasoning",
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
@@ -14893,8 +14956,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 235929,
-      "max_output_tokens_upper_limit": 235929,
+      "default_max_output_tokens": 98304,
+      "max_output_tokens_upper_limit": 98304,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -15344,8 +15407,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 235929,
+      "max_output_tokens_upper_limit": 235929,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17439,27 +17502,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/qwen/qwen-plus-2025-07-28",
-      "display_name": "Qwen Plus 0728",
-      "description": "Qwen instruction model for multilingual chat, reasoning, and tool use",
-      "context_window_tokens": 1000000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/qwen/qwen2.5-vl-72b-instruct",
       "display_name": "Qwen2.5 VL 72B Instruct",
       "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
@@ -17484,32 +17526,11 @@
       "model_ref": "openrouter/qwen/qwen3-14b",
       "display_name": "Qwen3 14B",
       "description": "Qwen instruction model for multilingual chat, reasoning, and tool use",
-      "context_window_tokens": 131072,
+      "context_window_tokens": 40960,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
+      "auto_compact_token_limit": 38912,
       "default_max_output_tokens": 16384,
       "max_output_tokens_upper_limit": 16384,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/qwen/qwen3-235b-a22b",
-      "display_name": "Qwen3 235B-A22B",
-      "description": "Large open Qwen MoE for multilingual reasoning, coding, and tool use",
-      "context_window_tokens": 131072,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 8192,
-      "max_output_tokens_upper_limit": 8192,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17547,11 +17568,11 @@
       "model_ref": "openrouter/qwen/qwen3-235b-a22b-thinking-2507",
       "display_name": "Qwen3 235B A22B Thinking 2507",
       "description": "Qwen reasoning model for deliberate problem solving, math, and coding",
-      "context_window_tokens": 131072,
+      "context_window_tokens": 128000,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 117964,
-      "max_output_tokens_upper_limit": 117964,
+      "auto_compact_token_limit": 121600,
+      "default_max_output_tokens": 16384,
+      "max_output_tokens_upper_limit": 16384,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17568,9 +17589,9 @@
       "model_ref": "openrouter/qwen/qwen3-30b-a3b",
       "display_name": "Qwen3 30B A3B",
       "description": "Qwen instruction model for multilingual chat, reasoning, and tool use",
-      "context_window_tokens": 131072,
+      "context_window_tokens": 40960,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
+      "auto_compact_token_limit": 38912,
       "default_max_output_tokens": 16384,
       "max_output_tokens_upper_limit": 16384,
       "default_verbosity": null,
@@ -17607,27 +17628,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/qwen/qwen3-30b-a3b-thinking-2507",
-      "display_name": "Qwen3 30B A3B Thinking 2507",
-      "description": "Qwen reasoning model for deliberate problem solving, math, and coding",
-      "context_window_tokens": 81920,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 77824,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/qwen/qwen3-32b",
       "display_name": "Qwen3 32B",
       "description": "Dense open Qwen model for self-hosted chat, reasoning, and coding",
@@ -17636,27 +17636,6 @@
       "auto_compact_token_limit": 124518,
       "default_max_output_tokens": 16384,
       "max_output_tokens_upper_limit": 16384,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/qwen/qwen3-8b",
-      "display_name": "Qwen3 8B",
-      "description": "Qwen instruction model for multilingual chat, reasoning, and tool use",
-      "context_window_tokens": 131072,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 8192,
-      "max_output_tokens_upper_limit": 8192,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17754,77 +17733,14 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/qwen/qwen3-coder-plus",
-      "display_name": "Qwen3 Coder Plus",
-      "description": "Hosted Qwen coder for software agents, repo edits, and long-context code",
-      "context_window_tokens": 1000000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/qwen/qwen3-max",
-      "display_name": "Qwen3 Max",
-      "description": "Flagship Qwen3 model for coding agents, complex reasoning, and tool use",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/qwen/qwen3-max-thinking",
-      "display_name": "Qwen3 Max Thinking",
-      "description": "Qwen reasoning model for deliberate problem solving, math, and coding",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/qwen/qwen3-next-80b-a3b-instruct",
       "display_name": "Qwen3-Next 80B-A3B Instruct",
       "description": "Qwen instruction model for multilingual chat, reasoning, and tool use",
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
+      "default_max_output_tokens": 235929,
+      "max_output_tokens_upper_limit": 235929,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17844,8 +17760,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
+      "default_max_output_tokens": 235929,
+      "max_output_tokens_upper_limit": 235929,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17880,27 +17796,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/qwen/qwen3-vl-235b-a22b-thinking",
-      "display_name": "Qwen3 VL 235B A22B Thinking",
-      "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
-      "context_window_tokens": 131072,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/qwen/qwen3-vl-30b-a3b-instruct",
       "display_name": "Qwen3 VL 30B A3B Instruct",
       "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
@@ -17928,8 +17823,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
+      "default_max_output_tokens": 235929,
+      "max_output_tokens_upper_limit": 235929,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17938,27 +17833,6 @@
         "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/qwen/qwen3-vl-32b-instruct",
-      "display_name": "Qwen3 VL 32B Instruct",
-      "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
-      "context_window_tokens": 131072,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": false,
         "interactive_exec": false
       },
       "source": "remote_discovered"
@@ -17970,8 +17844,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
+      "default_max_output_tokens": 235929,
+      "max_output_tokens_upper_limit": 235929,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17980,27 +17854,6 @@
         "image_input": true,
         "image_generation": false,
         "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/qwen/qwen3-vl-8b-thinking",
-      "display_name": "Qwen3 VL 8B Thinking",
-      "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
-      "context_window_tokens": 131072,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "remote_discovered"
@@ -18054,8 +17907,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 235929,
-      "max_output_tokens_upper_limit": 235929,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -18180,8 +18033,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
+      "default_max_output_tokens": 81920,
+      "max_output_tokens_upper_limit": 81920,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -18230,27 +18083,6 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/qwen/qwen3.6-max-preview",
-      "display_name": "Qwen3.6 Max Preview",
-      "description": "Flagship Qwen model for complex reasoning, coding, and agentic workflows",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
         "image_generation": false,
         "supports_reasoning": true,
         "interactive_exec": false
@@ -19678,8 +19510,8 @@
       "context_window_tokens": 204800,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 194560,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -20438,8 +20270,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
