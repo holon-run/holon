@@ -415,6 +415,15 @@ pub(crate) fn validate_agent_id_format(agent_id: &str) -> Result<()> {
             "agent id must contain only ASCII letters, digits, '.', '-', or '_'"
         ));
     }
+    if agent_id.ends_with(".deleting_trash") {
+        // `deletion_phase_home` renames agent homes to
+        // `<agent_id>.deleting_trash` before removal, and the orphan-trash
+        // sweep matches that suffix. Reserving the suffix keeps live agent
+        // homes distinguishable from trash directories.
+        return Err(anyhow!(
+            "agent id must not end with the reserved suffix '.deleting_trash'"
+        ));
+    }
 
     let mut components = Path::new(agent_id).components();
     let valid_component =
@@ -445,6 +454,15 @@ mod tests {
                 .unwrap();
         let registry = RuntimeRegistry::new(config, runtime_db).unwrap();
         (home, registry)
+    }
+
+    #[test]
+    fn validate_agent_id_rejects_deleting_trash_suffix() {
+        assert!(validate_agent_id_format("agent.deleting_trash").is_err());
+        // Plain ids containing dots or the words without the suffix stay legal.
+        assert!(validate_agent_id_format("deleting_trash").is_ok());
+        assert!(validate_agent_id_format("a-b_c.d").is_ok());
+        assert!(validate_agent_id_format("").is_err());
     }
 
     const ROOT_ID: &str = "canonical_root:ws_test";

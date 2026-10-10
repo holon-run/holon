@@ -12574,6 +12574,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn orphan_agent_home_trash_sweep_spares_live_home_with_trash_suffix_id() {
+        let (_home, host) = test_host();
+        let agents_root = host.config().data_dir.join("agents");
+        // Legacy agent id that collides with the reserved trash suffix,
+        // predating suffix validation; its home must never be swept.
+        let agent = AgentIdentityRecord::new(
+            "live.deleting_trash",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&agent).unwrap();
+        host.runtime_db().agent_identities().upsert(&agent).unwrap();
+        let live_home = agents_root.join("live.deleting_trash");
+        std::fs::create_dir_all(live_home.join("nested")).unwrap();
+        std::fs::write(live_home.join("nested/file.txt"), "live").unwrap();
+        std::fs::create_dir_all(agents_root.join("stale.deleting_trash")).unwrap();
+
+        let removed = host.sweep_orphan_agent_home_trash().await.unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(live_home.join("nested/file.txt").exists());
+        assert!(!agents_root.join("stale.deleting_trash").exists());
+    }
+
+    #[tokio::test]
     async fn daemon_deletion_coordinator_is_singleton_and_admission_wakes_it() {
         let (_home, host) = test_host();
         host.spawn_daemon_deletion_coordinator();

@@ -526,7 +526,10 @@ impl RuntimeHost {
     /// crash leaves trash behind, no database record points at the leftover
     /// directory anymore, so this filesystem-level sweep is the only recovery
     /// path. Names are matched by suffix only: agent ids may contain `.`, so a
-    /// trash name cannot be reversed into a reliable agent id.
+    /// trash name cannot be reversed into a reliable agent id. A candidate
+    /// whose exact name belongs to a registered non-deleted identity is a
+    /// live home whose legacy id collides with the reserved suffix, not
+    /// trash, and is skipped.
     pub(crate) async fn sweep_orphan_agent_home_trash(&self) -> Result<usize> {
         let agents_root = self.config().data_dir.join("agents");
         let entries = std::fs::read_dir(&agents_root)
@@ -541,6 +544,19 @@ impl RuntimeHost {
             };
             if !name.ends_with(".deleting_trash") {
                 continue;
+            }
+            // The name may be a live agent home whose legacy id ends with
+            // the reserved suffix rather than trash. Registered non-deleted
+            // identities own their directory; only unclaimed names are trash.
+            if let Some(identity) = self.runtime_db().agent_identities().latest(name)? {
+                if identity.status != AgentRegistryStatus::Deleted {
+                    warn!(
+                        agent = name,
+                        status = ?identity.status,
+                        "skipping agent home colliding with trash suffix"
+                    );
+                    continue;
+                }
             }
             let trash_dir = entry.path();
             // Refuse to delete anything that is not a runtime-managed
