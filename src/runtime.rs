@@ -423,7 +423,7 @@ struct RuntimeInner {
     context_config: RwLock<ContextConfig>,
     config_snapshot: ArcSwap<ConfigSnapshot>,
     builtin_web_search_probe_cache:
-        Mutex<HashMap<BuiltinWebSearchProbeKey, BuiltinWebSearchProbeCacheEntry>>,
+        Mutex<HashMap<BuiltinWebSearchProbeKey, CachedBuiltinWebSearchProbe>>,
     view_image_observation_cache:
         Mutex<HashMap<ViewImageObservationCacheKey, ViewImageObservation>>,
     view_image_candidate_health: Mutex<bootstrap::ViewImageCandidateHealth>,
@@ -2855,6 +2855,83 @@ impl BuiltinWebSearchProbeKey {
 struct BuiltinWebSearchProbeCacheEntry {
     status: BuiltinWebSearchProbeStatus,
     reason: Option<String>,
+}
+
+/// Cached probe decision with expiry policy.
+///
+/// `Supported`/`Unsupported` are sticky (`expires_at: None`); a transient
+/// failure expires after an exponential backoff so provider flapping does
+/// not trigger a live probe on every entry turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CachedBuiltinWebSearchProbe {
+    entry: BuiltinWebSearchProbeCacheEntry,
+    cached_at: std::time::Instant,
+    expires_at: Option<std::time::Instant>,
+    transient_failure_streak: u32,
+}
+
+const BUILTIN_WEB_SEARCH_PROBE_TRANSIENT_BACKOFF_BASE: std::time::Duration =
+    std::time::Duration::from_secs(30);
+const BUILTIN_WEB_SEARCH_PROBE_TRANSIENT_BACKOFF_MAX: std::time::Duration =
+    std::time::Duration::from_secs(600);
+
+fn builtin_web_search_probe_transient_backoff(streak: u32) -> std::time::Duration {
+    debug_assert!(streak >= 1, "transient backoff starts at the first failure");
+    let shift = (streak - 1).min(u32::BITS - 1);
+    let candidate = BUILTIN_WEB_SEARCH_PROBE_TRANSIENT_BACKOFF_BASE.saturating_mul(1u32 << shift);
+    candidate.min(BUILTIN_WEB_SEARCH_PROBE_TRANSIENT_BACKOFF_MAX)
+}
+
+/// Returns the live probe decision for `key`, treating expired transient
+/// failures as a miss so the caller re-probes.
+fn lookup_builtin_web_search_probe(
+    cache: &HashMap<BuiltinWebSearchProbeKey, CachedBuiltinWebSearchProbe>,
+    key: &BuiltinWebSearchProbeKey,
+    now: std::time::Instant,
+) -> Option<BuiltinWebSearchProbeCacheEntry> {
+    cache.get(key).and_then(|cached| match cached.expires_at {
+        Some(expires_at) if now >= expires_at => None,
+        _ => Some(cached.entry.clone()),
+    })
+}
+
+/// Records a fresh probe decision, extending the transient-failure backoff
+/// streak across expiry boundaries.
+fn record_builtin_web_search_probe(
+    cache: &mut HashMap<BuiltinWebSearchProbeKey, CachedBuiltinWebSearchProbe>,
+    key: &BuiltinWebSearchProbeKey,
+    entry: BuiltinWebSearchProbeCacheEntry,
+    now: std::time::Instant,
+) {
+    let transient_failure_streak = if entry.status == BuiltinWebSearchProbeStatus::TransientFailure
+    {
+        cache
+            .get(key)
+            .map(|cached| cached.transient_failure_streak)
+            .unwrap_or(0)
+            + 1
+    } else {
+        0
+    };
+    let expires_at = match entry.status {
+        BuiltinWebSearchProbeStatus::TransientFailure => {
+            Some(now + builtin_web_search_probe_transient_backoff(transient_failure_streak))
+        }
+        BuiltinWebSearchProbeStatus::Supported | BuiltinWebSearchProbeStatus::Unsupported => None,
+        BuiltinWebSearchProbeStatus::Skipped => {
+            // Skipped is config-derived, never cached.
+            return;
+        }
+    };
+    cache.insert(
+        key.clone(),
+        CachedBuiltinWebSearchProbe {
+            entry,
+            cached_at: now,
+            expires_at,
+            transient_failure_streak,
+        },
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

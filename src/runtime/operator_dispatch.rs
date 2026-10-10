@@ -640,9 +640,11 @@ impl RuntimeHandle {
         let builtin_capability = provider.builtin_web_search();
         let probe_result = if let Some(capability) = builtin_capability.as_ref() {
             let probe_key = BuiltinWebSearchProbeKey::from_capability(capability);
+            // An unexpired cached probe (including a transient failure inside
+            // its backoff window) avoids a live network probe during context build.
             let cached_probe = {
                 let cache = self.inner.builtin_web_search_probe_cache.lock().await;
-                cache.get(&probe_key).cloned()
+                lookup_builtin_web_search_probe(&cache, &probe_key, std::time::Instant::now())
             };
             if let Some(cached_probe) = cached_probe {
                 cached_probe
@@ -691,6 +693,7 @@ impl RuntimeHandle {
                 native_search_provider.as_ref(),
                 &web_config.search,
                 &mut cache,
+                std::time::Instant::now(),
                 probe_result,
             )
         };
@@ -843,7 +846,8 @@ fn native_web_search_request_for_config(
     provider_capability: Option<crate::provider::ProviderBuiltinWebSearchCapability>,
     native_search_provider: Option<&(String, WebProviderKind)>,
     web_search: &crate::web::WebSearchConfig,
-    probe_cache: &mut HashMap<BuiltinWebSearchProbeKey, BuiltinWebSearchProbeCacheEntry>,
+    probe_cache: &mut HashMap<BuiltinWebSearchProbeKey, CachedBuiltinWebSearchProbe>,
+    now: std::time::Instant,
     probe_result: BuiltinWebSearchProbeCacheEntry,
 ) -> BuiltinWebSearchSelection {
     let Some(capability) = provider_capability else {
@@ -914,16 +918,14 @@ fn native_web_search_request_for_config(
     }
 
     let probe_key = BuiltinWebSearchProbeKey::from_capability(&capability);
-    let (probe, cache_hit) = if let Some(cached) = probe_cache.get(&probe_key).cloned() {
-        (cached, true)
-    } else {
-        if matches!(
-            probe_result.status,
-            BuiltinWebSearchProbeStatus::Supported | BuiltinWebSearchProbeStatus::Unsupported
-        ) {
-            probe_cache.insert(probe_key, probe_result.clone());
+    let (probe, cache_hit) = match lookup_builtin_web_search_probe(probe_cache, &probe_key, now) {
+        Some(cached) => (cached, true),
+        None => {
+            // Transient failures enter the cache with a short exponential
+            // backoff so provider flapping does not re-probe every turn.
+            record_builtin_web_search_probe(probe_cache, &probe_key, probe_result.clone(), now);
+            (probe_result, false)
         }
-        (probe_result, false)
     };
 
     match probe.status {
@@ -1175,6 +1177,7 @@ mod tests {
             Some(&native_provider),
             &search_config(),
             &mut cache,
+            std::time::Instant::now(),
             probe(BuiltinWebSearchProbeStatus::Supported),
         );
 
@@ -1203,6 +1206,7 @@ mod tests {
             Some(&native_provider),
             &config,
             &mut cache,
+            std::time::Instant::now(),
             probe(BuiltinWebSearchProbeStatus::Supported),
         )
         .request
@@ -1230,6 +1234,7 @@ mod tests {
             Some(&native_provider),
             &search_config(),
             &mut cache,
+            std::time::Instant::now(),
             probe(BuiltinWebSearchProbeStatus::Supported),
         )
         .request
@@ -1256,6 +1261,7 @@ mod tests {
             None,
             &search_config(),
             &mut cache,
+            std::time::Instant::now(),
             probe(BuiltinWebSearchProbeStatus::Supported),
         );
         let request = selection.request.unwrap();
@@ -1286,6 +1292,7 @@ mod tests {
             None,
             &config,
             &mut cache,
+            std::time::Instant::now(),
             probe(BuiltinWebSearchProbeStatus::Supported),
         );
 
@@ -1307,13 +1314,19 @@ mod tests {
             "openai_codex_web_search",
         );
         let key = BuiltinWebSearchProbeKey::from_capability(&capability);
-        cache.insert(key, probe(BuiltinWebSearchProbeStatus::Unsupported));
+        record_builtin_web_search_probe(
+            &mut cache,
+            &key,
+            probe(BuiltinWebSearchProbeStatus::Unsupported),
+            std::time::Instant::now(),
+        );
 
         let selection = native_web_search_request_for_config(
             Some(capability),
             None,
             &search_config(),
             &mut cache,
+            std::time::Instant::now(),
             probe(BuiltinWebSearchProbeStatus::Supported),
         );
 
@@ -1347,6 +1360,7 @@ mod tests {
             None,
             &search_config(),
             &mut cache,
+            std::time::Instant::now(),
             probe_result,
         );
 
@@ -1432,8 +1446,9 @@ mod tests {
     }
 
     #[test]
-    fn native_web_search_request_does_not_cache_transient_probe_failure() {
+    fn native_web_search_request_caches_transient_failure_until_backoff_expires() {
         let mut cache = HashMap::new();
+        let now = std::time::Instant::now();
 
         let first = native_web_search_request_for_config(
             Some(capability(
@@ -1446,8 +1461,18 @@ mod tests {
             None,
             &search_config(),
             &mut cache,
+            now,
             probe(BuiltinWebSearchProbeStatus::TransientFailure),
         );
+        assert!(first.request.is_none());
+        assert_eq!(
+            first.diagnostics.status,
+            BuiltinWebSearchSelectionStatus::TransientProbeFailure
+        );
+        assert!(!first.diagnostics.probe_cache_hit);
+
+        // Inside the backoff window the cached failure is reused, so the
+        // fresh probe result does not trigger another live probe decision.
         let second = native_web_search_request_for_config(
             Some(capability(
                 ProviderNativeWebSearchKind::OpenAi,
@@ -1459,16 +1484,150 @@ mod tests {
             None,
             &search_config(),
             &mut cache,
+            now + std::time::Duration::from_secs(29),
             probe(BuiltinWebSearchProbeStatus::Supported),
         );
-
-        assert!(first.request.is_none());
+        assert!(second.request.is_none());
         assert_eq!(
-            first.diagnostics.status,
+            second.diagnostics.status,
             BuiltinWebSearchSelectionStatus::TransientProbeFailure
         );
-        assert!(second.request.is_some());
-        assert!(!second.diagnostics.probe_cache_hit);
+        assert!(second.diagnostics.probe_cache_hit);
+
+        // Once the backoff expires, the fresh probe result is applied again.
+        let third = native_web_search_request_for_config(
+            Some(capability(
+                ProviderNativeWebSearchKind::OpenAi,
+                "openai-codex",
+                "openai-codex/gpt-codex-test",
+                "web_search",
+                "openai_codex_web_search",
+            )),
+            None,
+            &search_config(),
+            &mut cache,
+            now + std::time::Duration::from_secs(31),
+            probe(BuiltinWebSearchProbeStatus::Supported),
+        );
+        assert!(third.request.is_some());
+        assert_eq!(
+            third.diagnostics.status,
+            BuiltinWebSearchSelectionStatus::Selected
+        );
+        assert!(!third.diagnostics.probe_cache_hit);
+    }
+
+    #[test]
+    fn builtin_web_search_probe_transient_backoff_doubles_then_caps() {
+        assert_eq!(
+            builtin_web_search_probe_transient_backoff(1),
+            std::time::Duration::from_secs(30)
+        );
+        assert_eq!(
+            builtin_web_search_probe_transient_backoff(2),
+            std::time::Duration::from_secs(60)
+        );
+        assert_eq!(
+            builtin_web_search_probe_transient_backoff(3),
+            std::time::Duration::from_secs(120)
+        );
+        assert_eq!(
+            builtin_web_search_probe_transient_backoff(5),
+            std::time::Duration::from_secs(480)
+        );
+        assert_eq!(
+            builtin_web_search_probe_transient_backoff(6),
+            std::time::Duration::from_secs(600)
+        );
+        assert_eq!(
+            builtin_web_search_probe_transient_backoff(60),
+            std::time::Duration::from_secs(600)
+        );
+    }
+
+    #[test]
+    fn transient_failure_backoff_extends_across_expiry_and_resets_on_recovery() {
+        let capability = capability(
+            ProviderNativeWebSearchKind::OpenAi,
+            "openai-codex",
+            "openai-codex/gpt-codex-test",
+            "web_search",
+            "openai_codex_web_search",
+        );
+        let key = BuiltinWebSearchProbeKey::from_capability(&capability);
+        let mut cache = HashMap::new();
+        let t0 = std::time::Instant::now();
+
+        record_builtin_web_search_probe(
+            &mut cache,
+            &key,
+            probe(BuiltinWebSearchProbeStatus::TransientFailure),
+            t0,
+        );
+        assert!(lookup_builtin_web_search_probe(
+            &cache,
+            &key,
+            t0 + std::time::Duration::from_secs(29)
+        )
+        .is_some());
+        assert!(lookup_builtin_web_search_probe(
+            &cache,
+            &key,
+            t0 + std::time::Duration::from_secs(30)
+        )
+        .is_none());
+
+        // Second consecutive transient failure doubles the backoff window.
+        record_builtin_web_search_probe(
+            &mut cache,
+            &key,
+            probe(BuiltinWebSearchProbeStatus::TransientFailure),
+            t0 + std::time::Duration::from_secs(30),
+        );
+        assert!(lookup_builtin_web_search_probe(
+            &cache,
+            &key,
+            t0 + std::time::Duration::from_secs(89)
+        )
+        .is_some());
+        assert!(lookup_builtin_web_search_probe(
+            &cache,
+            &key,
+            t0 + std::time::Duration::from_secs(90)
+        )
+        .is_none());
+
+        // A recovered Supported decision is sticky and resets the streak.
+        record_builtin_web_search_probe(
+            &mut cache,
+            &key,
+            probe(BuiltinWebSearchProbeStatus::Supported),
+            t0 + std::time::Duration::from_secs(90),
+        );
+        assert!(lookup_builtin_web_search_probe(
+            &cache,
+            &key,
+            t0 + std::time::Duration::from_secs(10_000)
+        )
+        .is_some());
+        record_builtin_web_search_probe(
+            &mut cache,
+            &key,
+            probe(BuiltinWebSearchProbeStatus::TransientFailure),
+            t0 + std::time::Duration::from_secs(10_001),
+        );
+        assert!(lookup_builtin_web_search_probe(
+            &cache,
+            &key,
+            t0 + std::time::Duration::from_secs(10_030)
+        )
+        .is_some());
+        assert!(lookup_builtin_web_search_probe(
+            &cache,
+            &key,
+            t0 + std::time::Duration::from_secs(10_031)
+        )
+        .is_none());
     }
 
     #[test]
