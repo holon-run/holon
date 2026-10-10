@@ -12,6 +12,26 @@ Set `IOS_SIMULATOR_ID`, `IOS_DERIVED_DATA_PATH`, and an unused
 make ios-ui-test
 ```
 
+### Content-report acceptance
+
+After rebasing onto the real content-report API, run on the isolated simulator:
+
+```sh
+IOS_RICH_ACCEPTANCE=1 IOS_CONTENT_REPORT_ACCEPTANCE=1 \
+IOS_UI_CASES=testContentReportConfirmationCancelDoesNotPersist,testContentReportInvalidExplanationCannotShowAccepted,testContentReportAcceptedReceiptCannotSubmitTwice \
+make ios-ui-test
+```
+
+These English/light/system-`large` cases reuse shipped pairing and reading UI.
+They select a real assistant transcript, cancel native confirmation without a
+write, reject a 2,001-character explanation without fake acceptance, and confirm
+a real accepted receipt with a `report_…` ID. Accepted drafts cannot submit again,
+including after foreground restoration. The harness checks the actual SQLite
+report count after each case, and checks the accepted row's agent, turn, category,
+explanation, content snapshot, persisted `received` status and client request ID.
+It never prints credentials. This is not server-error or lost-response coverage:
+that requires a separately authorized failure fixture.
+
 The harness must explicitly export the following `TEST_RUNNER_` variables to
 `xcodebuild`. Xcode forwards them into the test runner with that prefix removed.
 The runner reads `HOLON_UI_*`; ordinary shell `HOLON_UI_*` variables alone are

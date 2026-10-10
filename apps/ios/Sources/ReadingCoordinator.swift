@@ -39,6 +39,8 @@ final class ReadingCoordinator {
     @ObservationIgnored private var transport: (any ReadingTransport)?
     @ObservationIgnored private var identity: HolonConnectionIdentity?
     @ObservationIgnored private var partition: ReadingPartition?
+    @ObservationIgnored private var reportSessionID = UUID()
+    @ObservationIgnored private var reportDrafts: [ContentReportKey: ContentReportDraft] = [:]
     @ObservationIgnored private var foreground = true
     @ObservationIgnored private var revision = 0
     @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
@@ -73,6 +75,8 @@ final class ReadingCoordinator {
 
     // Injectable only inside the app module, with identical authority fencing.
     func activate(transport: any ReadingTransport, identity: HolonConnectionIdentity, apiBaseURL: URL) {
+        reportSessionID = UUID()
+        reportDrafts.removeAll()
         let previous = self.transport
         stop()
         if let previous { Task { await previous.close() } }
@@ -90,6 +94,8 @@ final class ReadingCoordinator {
     }
 
     func disconnect() {
+        reportSessionID = UUID()
+        reportDrafts.removeAll()
         let previous = transport
         stop()
         transport = nil
@@ -112,6 +118,8 @@ final class ReadingCoordinator {
     func selectAgent(_ agentID: String?) {
         guard agentID == nil || (agentID?.isEmpty == false && (agentID?.utf8.count ?? 0) <= 512) else { return }
         guard selectedAgentID != agentID else { return }
+        reportSessionID = UUID()
+        reportDrafts.removeAll()
         stop()
         selectedAgentID = agentID
         clearConversation()
@@ -126,6 +134,42 @@ final class ReadingCoordinator {
         recoveryAttempts = 0
         let task = bootstrap()
         await task?.value
+    }
+
+    var contentReportScope: ContentReportScope? {
+        guard foreground, status == .live, let partition, let selectedAgentID,
+              snapshot?.agentID == selectedAgentID, let epoch = snapshot?.eventLogEpoch else { return nil }
+        return ContentReportScope(sessionID: reportSessionID, partition: partition,
+                                  agentID: selectedAgentID, epoch: epoch)
+    }
+
+    func contentReportDraft(target: ContentReportTarget, scope: ContentReportScope) -> ContentReportDraft? {
+        guard contentReportScope == scope else { return nil }
+        let key = ContentReportKey(turnID: target.turnID, messageID: target.messageID)
+        if let existing = reportDrafts[key], existing.scope == scope { return existing }
+        if reportDrafts.count >= 20 {
+            guard let disposable = reportDrafts.first(where: { $0.value.request == nil || $0.value.receipt != nil })?.key else {
+                return nil
+            }
+            reportDrafts.removeValue(forKey: disposable)
+        }
+        let draft = ContentReportDraft(scope: scope, target: target)
+        reportDrafts[key] = draft
+        return draft
+    }
+
+    func createContentReport(_ body: HolonContentReportRequest, scope: ContentReportScope) async throws -> HolonContentReportResponse {
+        guard contentReportScope == scope, body.agentID == scope.agentID, let transport else {
+            throw CancellationError()
+        }
+        do {
+            let response = try await transport.createContentReport(body)
+            guard contentReportScope == scope else { throw CancellationError() }
+            return response
+        } catch {
+            guard contentReportScope == scope else { throw CancellationError() }
+            throw error
+        }
     }
 
     private func stop() {

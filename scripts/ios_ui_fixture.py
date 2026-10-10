@@ -5,6 +5,7 @@ import os
 import pathlib
 import secrets
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -21,13 +22,16 @@ from ios_simulator_text_size import (
 
 binary, repo, mode = sys.argv[1:]
 rich_acceptance = os.environ.get("IOS_RICH_ACCEPTANCE") == "1"
+report_acceptance = os.environ.get("IOS_CONTENT_REPORT_ACCEPTANCE") == "1"
 rich_activity_acceptance = rich_acceptance and (
-    mode == "--sdk-only" or not os.environ.get("IOS_UI_CASES")
+    report_acceptance or mode == "--sdk-only" or not os.environ.get("IOS_UI_CASES")
     or "testRichActivityWorkflow" in os.environ["IOS_UI_CASES"].split(","))
 task_result_acceptance = os.environ.get("IOS_TASK_RESULT_ACCEPTANCE") == "1"
 lost_response_acceptance = os.environ.get("IOS_LOST_RESPONSE_ACCEPTANCE") == "1"
 history_acceptance = os.environ.get("IOS_HISTORY_ACCEPTANCE") == "1"
 share_acceptance = os.environ.get("IOS_SHARE_ACCEPTANCE") == "1"
+if report_acceptance and not rich_acceptance:
+    raise RuntimeError("Content-report acceptance requires IOS_RICH_ACCEPTANCE=1")
 with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
     root = pathlib.Path(temporary)
     # Do not inherit provider credentials, production paths or daemon settings.
@@ -497,6 +501,12 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     cases.append(("testConversationHistoryWindowPosition", "large"))
                 if share_acceptance:
                     cases.append(("testDirectAgentShareWorkflow", "large"))
+                if report_acceptance:
+                    cases.extend([
+                        ("testContentReportConfirmationCancelDoesNotPersist", "large"),
+                        ("testContentReportInvalidExplanationCannotShowAccepted", "large"),
+                        ("testContentReportAcceptedReceiptCannotSubmitTwice", "large"),
+                    ])
                 # Deletes the saved fixture session, so run last in a full sweep.
                 cases.append(("testNetworkManagementWorkflow", "large"))
                 selected_cases = os.environ.get("IOS_UI_CASES")
@@ -515,6 +525,13 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     from ios_share_probe import install
                     install(simulator, repo, root)
                 for (method, content_size), case_bundle in zip(cases, bundles):
+                    report_rows_before = None
+                    if method.startswith("testContentReport"):
+                        # Read the real daemon database, never fabricate an accepted receipt.
+                        report_db = home / "state" / "runtime.sqlite"
+                        with sqlite3.connect(f"file:{report_db}?mode=ro", uri=True) as database:
+                            report_rows_before = database.execute(
+                                "SELECT report_id FROM content_reports").fetchall()
                     appearance = "dark" if method in {
                         "testDisconnectedChineseDarkAccessibilitySize",
                         "testChineseDiagnosticsDarkAccessibilitySize",
@@ -529,7 +546,10 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                             test_env["TEST_RUNNER_HOLON_UI_APPEARANCE"] = appearance
                             if method in {"testAuthenticatedNativeWorkflow", "testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored",
                                           "testDirectAgentShareWorkflow", "testNetworkManagementWorkflow",
-                                          "testTaskResultProcessWorkflow"}:
+                                          "testTaskResultProcessWorkflow",
+                                          "testContentReportConfirmationCancelDoesNotPersist",
+                                          "testContentReportInvalidExplanationCannotShowAccepted",
+                                          "testContentReportAcceptedReceiptCannotSubmitTwice"}:
                                 # Tickets expire after two minutes. The preceding cases also
                                 # warm the build; issue only when redemption is about to run.
                                 ticket = local("POST", "/auth/pairing/issue")["ticket"]
@@ -555,6 +575,26 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                                 "-resultBundlePath", str(case_bundle), "CODE_SIGN_IDENTITY=-", "test"], env=test_env)
                             if result.returncode:
                                 raise RuntimeError(f"UI case {method} 失败（SDK 通过不能替代 UI）")
+                            if report_rows_before is not None:
+                                with sqlite3.connect(f"file:{report_db}?mode=ro", uri=True) as database:
+                                    rows = database.execute(
+                                        "SELECT report_id, agent_id, turn_id, category, description, "
+                                        "content_snapshot, status, client_request_id FROM content_reports"
+                                    ).fetchall()
+                                before = {row[0] for row in report_rows_before}
+                                new_rows = [row for row in rows if row[0] not in before]
+                                expected = int(method == "testContentReportAcceptedReceiptCannotSubmitTwice")
+                                if len(rows) != len(before) + expected or len(new_rows) != expected:
+                                    raise RuntimeError("Content-report cancel/submit persisted an unexpected report count")
+                                if expected:
+                                    receipt = new_rows[0]
+                                    if (not receipt[0].startswith("report_")
+                                            or receipt[1:5] != (agent, rich_turn, "spam_or_other",
+                                                               "IOS_CONTENT_REPORT_ACCEPTANCE")
+                                            or "IOS_RICH_ASSISTANT:" not in receipt[5]
+                                            or receipt[6] != "received" or not receipt[7]):
+                                        raise RuntimeError("Content-report receipt lacks the real target, snapshot or request ID")
+                                print(f"Content-report SQLite acceptance: {method}, {expected} new reports", flush=True)
             else:
                 print(f"{5 if rich_turn else 4} 项真实 SDK probes 已运行；SDK-only 未运行 UI", flush=True)
             if FakeProvider.image_requests:

@@ -359,6 +359,7 @@ private struct ReadingTurnView: View {
     @State private var showActivities = false
     @State private var fullActivities = false
     @Environment(\.holonOpenTask) private var openTask
+    @State private var reportScope: ContentReportScope?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -402,9 +403,17 @@ private struct ReadingTurnView: View {
                         .toolbar { Button("files.dismiss") { fullActivities = false } }
                 }
             }
-            ForEach(turn.raw["brief_ids"].viewArray.compactMap(\.viewString), id: \.self) { briefID in
-                ReadingBriefView(briefID: briefID, reader: reader, inputs: turn.raw["inputs"].viewArray)
+            .sheet(item: $reportScope) { scope in
+                ContentReportView(turnID: turn.id, scope: scope, reader: reader)
             }
+            ForEach(turn.raw["brief_ids"].viewArray.compactMap(\.viewString), id: \.self) { briefID in
+                ReadingBriefView(briefID: briefID, reader: reader, inputs: turn.raw["inputs"].viewArray,
+                                 onReport: { reportScope = reader.contentReportScope })
+            }
+            Button("report.title", systemImage: "flag") { reportScope = reader.contentReportScope }
+                .font(.caption)
+                .disabled(reader.contentReportScope == nil)
+                .accessibilityIdentifier("report.open." + turn.id)
             Divider()
         }
     }
@@ -475,6 +484,7 @@ private struct ReadingBriefView: View {
     let briefID: String
     @Bindable var reader: ReadingCoordinator
     var inputs: [JSONValue] = []
+    var onReport: (() -> Void)? = nil
     @State private var isVisible = false
     @Environment(\.holonOpenReference) private var openReference
     @Environment(\.holonOpenWork) private var openWork
@@ -483,7 +493,8 @@ private struct ReadingBriefView: View {
         VStack(alignment: .leading, spacing: 10) {
             if let brief = reader.briefs[briefID] {
                 if !TaskResultInput.isRuntimeBrief(brief, inputs: inputs) {
-                    RichTextContent(text: BriefPresentation.text(brief), openReference: openReference)
+                    RichTextContent(text: BriefPresentation.text(brief), openReference: openReference,
+                                    onReport: reader.contentReportScope == nil ? nil : onReport)
                     ForEach(Array(brief["attachments"].viewArray.enumerated()), id: \.offset) { _, attachment in
                         if let reference = ReadingPresentation.attachmentReference(attachment) {
                             Button { openReference?(reference) } label: {

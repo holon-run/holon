@@ -682,6 +682,101 @@ final class HolonUITests: XCTestCase {
         app.terminate()
     }
 
+    private func openContentReport() throws -> XCUIApplication {
+        try connectForSharing()
+        let app = launch(language: "en", dark: false, large: false)
+        let agent = try required("AGENT_ID")
+        let turn = try required("RICH_TURN_ID")
+        if app.buttons["conversation.more"].waitForExistence(timeout: 30) {
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+        }
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15))
+        let search = app.searchFields.firstMatch
+        app.swipeDown()
+        XCTAssertTrue(search.waitForExistence(timeout: 10))
+        search.tap(); search.typeText(agent + "\n")
+        let row = app.buttons["agent." + agent]
+        XCTAssertTrue(row.waitForExistence(timeout: 15)); row.tap()
+        if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
+        let report = app.buttons["report.open." + turn]
+        for _ in 0..<40 {
+            if report.exists && report.isHittable { break }
+            let older = app.buttons["conversation.older"]
+            if older.exists && older.isHittable { older.tap() } else { app.swipeDown() }
+        }
+        reveal(report, in: app); XCTAssertTrue(report.isHittable); report.tap()
+        let target = app.buttons.matching(NSPredicate(format:
+            "identifier BEGINSWITH %@", "report.target.assistant:")).firstMatch
+        XCTAssertTrue(target.waitForExistence(timeout: 20))
+        reveal(target, in: app); target.tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format:
+            "label CONTAINS %@", "IOS_RICH_ASSISTANT:")).firstMatch.waitForExistence(timeout: 20),
+                      "Reporting must load the real assistant transcript")
+        let category = app.buttons["report.category"]
+        reveal(category, in: app); category.tap()
+        let reason = app.buttons["Spam or other"]
+        XCTAssertTrue(reason.waitForExistence(timeout: 10)); reason.tap()
+        return app
+    }
+
+    func testContentReportConfirmationCancelDoesNotPersist() throws {
+        let app = try openContentReport()
+        defer { app.terminate() }
+        let submit = app.buttons["report.submit"]
+        reveal(submit, in: app); XCTAssertTrue(submit.isEnabled); submit.tap()
+        let confirm = app.alerts.buttons["report.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        app.alerts.buttons["Cancel"].tap()
+        XCTAssertFalse(confirm.exists)
+        XCTAssertFalse(app.descendants(matching: .any)["report.accepted"].firstMatch.exists)
+        XCTAssertFalse(app.staticTexts["report.error"].exists)
+        XCTAssertTrue(submit.isEnabled, "Cancel must leave an editable, unsubmitted draft")
+        app.buttons["report.dismiss"].tap()
+    }
+
+    func testContentReportInvalidExplanationCannotShowAccepted() throws {
+        let app = try openContentReport()
+        defer { app.terminate() }
+        let explanation = app.textViews["report.explanation"]
+        reveal(explanation, in: app); explanation.tap()
+        explanation.typeText(String(repeating: "x", count: 2_001))
+        app.swipeDown()
+        let submit = app.buttons["report.submit"]
+        reveal(submit, in: app)
+        XCTAssertFalse(submit.isEnabled, "An invalid draft must not issue a report")
+        XCTAssertFalse(app.alerts.buttons["report.confirm"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["report.accepted"].firstMatch.exists)
+        app.buttons["report.dismiss"].tap()
+    }
+
+    func testContentReportAcceptedReceiptCannotSubmitTwice() throws {
+        let app = try openContentReport()
+        defer { app.terminate() }
+        let explanation = app.textViews["report.explanation"]
+        reveal(explanation, in: app); explanation.tap()
+        explanation.typeText("IOS_CONTENT_REPORT_ACCEPTANCE")
+        // Dismiss the keyboard through the native form before seeking Submit.
+        app.swipeDown()
+        let submit = app.buttons["report.submit"]
+        reveal(submit, in: app); XCTAssertTrue(submit.isEnabled); submit.tap()
+        let confirm = app.alerts.buttons["report.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10)); confirm.tap()
+        let accepted = app.descendants(matching: .any)["report.accepted"].firstMatch
+        XCTAssertTrue(accepted.waitForExistence(timeout: 30))
+        reveal(accepted, in: app)
+        let receipt = app.staticTexts.matching(NSPredicate(format:
+            "label MATCHES %@", "report_[0-9a-f]+")).firstMatch
+        reveal(receipt, in: app)
+        XCTAssertTrue(receipt.label.hasPrefix("report_"), "Accepted must show the server report ID")
+        XCTAssertFalse(submit.exists, "An accepted draft cannot be submitted again")
+        XCTAssertFalse(app.staticTexts["report.error"].exists)
+        XCUIDevice.shared.press(.home); app.activate()
+        XCTAssertTrue(accepted.waitForExistence(timeout: 30))
+        XCTAssertFalse(submit.exists, "Foreground restoration must not resend an accepted report")
+        capture(app, "content-report-real-accepted-receipt")
+        app.buttons["report.dismiss"].tap()
+    }
+
     func testRichActivityWorkflow() throws {
         let agent = try required("AGENT_ID")
         let turn = try required("RICH_TURN_ID")

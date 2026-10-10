@@ -4,6 +4,99 @@ import XCTest
 
 @MainActor
 final class TransportTests: XCTestCase {
+    private func contentReport(description: String? = nil) throws -> HolonContentReportRequest {
+        try HolonContentReportRequest(agentID: "main", turnID: "turn-1", messageID: "transcript-1",
+                                      category: "privacy", description: description,
+                                      clientRequestID: "B206BA23-AB7E-47DD-A644-543600B45123")
+    }
+
+    func testContentReportSuccessAndExplicitIdempotentRetry() async throws {
+        let receipt = Data(#"{"report_id":"report-1","status":"accepted","created_at":"2026-10-09T16:00:00.000Z"}"#.utf8)
+        let (sdk, exchange) = try client([MockReply(status: 201, body: receipt), MockReply(body: receipt)])
+        let report = try contentReport(description: "Explanation")
+        let first = try await sdk.createContentReport(report)
+        let second = try await sdk.createContentReport(report)
+        XCTAssertEqual(first.value, second.value)
+        XCTAssertEqual(first.identity, second.identity)
+        XCTAssertEqual(first.value.reportID, "report-1")
+        XCTAssertEqual(first.value.status, "accepted")
+        XCTAssertEqual(first.value.createdAt, "2026-10-09T16:00:00.000Z")
+        XCTAssertEqual(exchange.requests[0].httpBody, exchange.requests[1].httpBody)
+        let request = exchange.requests[0]
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path, "/prefix/api/content-reports")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-session")
+        XCTAssertFalse(request.url!.absoluteString.contains("test-session"))
+        XCTAssertFalse(String(decoding: request.httpBody!, as: UTF8.self).contains("test-session"))
+        XCTAssertEqual(try JSONDecoder().decode(HolonContentReportRequest.self, from: request.httpBody!), report)
+        XCTAssertEqual(try JSONDecoder().decode(JSONValue.self, from: request.httpBody!)["message_id"],
+                       .string("transcript-1"))
+    }
+
+    func testContentReportFailuresAndLostResponseNeverRetry() async throws {
+        for status in [401, 403, 404, 409, 429] {
+            let (sdk, exchange) = try client([
+                MockReply(status: status, body: Data(#"{"ok":false,"code":"report_error","error":"rejected","retryable":false}"#.utf8))])
+            do { _ = try await sdk.createContentReport(contentReport()); XCTFail() }
+            catch {
+                XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, status)
+                XCTAssertEqual((error as? HolonHTTPFailure)?.apiError?.code, "report_error")
+            }
+            XCTAssertEqual(exchange.requests.count, 1)
+        }
+        let receipt = Data(#"{"report_id":"r","status":"accepted","created_at":"2026-10-09"}"#.utf8)
+        let (sdk, exchange) = try client([MockReply(error: .networkConnectionLost), MockReply(body: receipt)])
+        let report = try contentReport()
+        do { _ = try await sdk.createContentReport(report); XCTFail() }
+        catch { XCTAssertTrue(error is URLError) }
+        XCTAssertEqual(exchange.requests.count, 1)
+        _ = try await sdk.createContentReport(report)
+        XCTAssertEqual(exchange.requests[0].httpBody, exchange.requests[1].httpBody)
+    }
+
+    func testContentReportMalformedAndIdentityFence() async throws {
+        for body in ["{}", "not json",
+                     #"{"report_id":"","status":"accepted","created_at":"date"}"#,
+                     #"{"report_id":"r","status":"rejected","created_at":"date"}"#] {
+            let (sdk, exchange) = try client([MockReply(body: Data(body.utf8))])
+            do { _ = try await sdk.createContentReport(contentReport()); XCTFail() }
+            catch { XCTAssertEqual(error as? HolonClientError, .malformedResponse) }
+            XCTAssertEqual(exchange.requests.count, 1)
+        }
+        let (sdk, exchange) = try client([MockReply(body: Data("{}".utf8), delay: 2)])
+        let report = try contentReport()
+        let pending = Task { try await sdk.createContentReport(report) }
+        for _ in 0..<100 where exchange.requests.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(exchange.requests.count, 1)
+        _ = try await sdk.bindIdentity(runtimeID: "new", userID: "new", visibilityScopeID: "new", credential: "new")
+        do { _ = try await pending.value; XCTFail() }
+        catch { XCTAssertEqual(error as? HolonClientError, .staleConnection) }
+    }
+
+    func testContentReportScalarLimitsAndDecodedValidation() async throws {
+        let withoutRequestID = try HolonContentReportRequest(
+            agentID: "a", turnID: "t", messageID: "m", category: "privacy")
+        XCTAssertNil(withoutRequestID.clientRequestID)
+        let encoded = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(withoutRequestID)) as! [String: Any]
+        XCTAssertNil(encoded["client_request_id"])
+        XCTAssertThrowsError(try HolonContentReportRequest(
+            agentID: "a", turnID: "t", messageID: "m", category: "unknown"))
+        let boundary = String(repeating: "e\u{301}", count: 1_000)
+        XCTAssertNoThrow(try contentReport(description: boundary))
+        XCTAssertThrowsError(try contentReport(description: boundary + "x"))
+        XCTAssertThrowsError(try HolonContentReportRequest(
+            agentID: "", turnID: "t", messageID: "m", category: "privacy", clientRequestID: "id"))
+        XCTAssertThrowsError(try HolonContentReportRequest(
+            agentID: "a", turnID: "t", messageID: "m", category: "privacy", clientRequestID: "é"))
+        let raw = Data(#"{"agent_id":"a","turn_id":"t","message_id":"m","category":"privacy","client_request_id":"bad key"}"#.utf8)
+        let decoded = try JSONDecoder().decode(HolonContentReportRequest.self, from: raw)
+        let (sdk, exchange) = try client([])
+        do { _ = try await sdk.createContentReport(decoded); XCTFail() }
+        catch { XCTAssertEqual(error as? HolonClientError, .invalidRequest) }
+        XCTAssertTrue(exchange.requests.isEmpty)
+    }
+
     func testPromptStableIdentityPayloadAndUnknownReceipt() async throws {
         let attachment = try HolonPromptAttachment(kind: .file, name: "note.txt",
                                                    mediaType: "text/plain", data: Data("hello".utf8))

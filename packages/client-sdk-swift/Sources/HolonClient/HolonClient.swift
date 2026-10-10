@@ -235,6 +235,22 @@ public actor HolonClient {
         }
     }
 
+    /// Submits once; the caller owns retry coordination and the stable request UUID.
+    public func createContentReport(_ report: HolonContentReportRequest)
+        async throws -> HolonResponse<HolonContentReportResponse> {
+        try report.validate()
+        let data = try JSONEncoder().encode(report)
+        guard data.count <= 32 * 1024 else { throw HolonClientError.invalidRequest }
+        let body = try JSONDecoder().decode(JSONValue.self, from: data)
+        let result = try await request(path: ["content-reports"], method: "POST", body: body)
+        return try decoded(result) {
+            let receipt = try JSONDecoder().decode(HolonContentReportResponse.self, from: $0)
+            guard !receipt.reportID.isEmpty, receipt.status == "accepted",
+                  !receipt.createdAt.isEmpty else { throw HolonClientError.malformedResponse }
+            return receipt
+        }
+    }
+
     public func modelCatalog() async throws -> HolonResponse<HolonModelCatalog> {
         try await read(path: ["models"]) {
             try HolonModelCatalog(raw: JSONDecoder().decode(JSONValue.self, from: $0))

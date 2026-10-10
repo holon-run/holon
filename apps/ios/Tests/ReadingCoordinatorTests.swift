@@ -79,6 +79,14 @@ private actor ReadingFakeTransport: ReadingTransport {
     private(set) var closes = 0
     private(set) var maximumExpansions = 0
     private(set) var expansionCalls = 0
+    private(set) var reportRequests: [HolonContentReportRequest] = []
+
+    func createContentReport(_ request: HolonContentReportRequest) async throws -> HolonContentReportResponse {
+        reportRequests.append(request)
+        _ = await expansion("id", id: "report")
+        return try JSONDecoder().decode(HolonContentReportResponse.self, from: Data(
+            #"{"report_id":"report_1","status":"accepted","created_at":"2026-10-10T00:00:00Z"}"#.utf8))
+    }
 
     init(authority: HolonConnectionIdentity) { self.authority = authority }
     func setGate(_ gate: Gate, failure: (any Error)? = nil) {
@@ -1005,6 +1013,64 @@ final class ReadingCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.status, .offline)
         try await wait { await fake.counts() == (0, 0) }
         coordinator.disconnect()
+    }
+
+    private func reportDraft(_ coordinator: ReadingCoordinator) throws -> ContentReportDraft {
+        let scope = try XCTUnwrap(coordinator.contentReportScope)
+        let activity = try ReadingActivity(.object([
+            "id": .string("assistant:transcript_1"), "kind": .string("assistant"),
+            "revision": .integer(1), "summary": .string("preview"),
+            "key": .object(["event_seq": .integer(1), "activity_id": .string("assistant:transcript_1")])
+        ]))
+        let detail: JSONValue = .object(["id": .string("transcript_1"), "kind": .string("assistant_round"),
+                                        "data": .object(["text": .string("full response")])])
+        let target = try XCTUnwrap(ContentReportTarget(turnID: "turn", activity: activity, detail: detail))
+        return try XCTUnwrap(coordinator.contentReportDraft(target: target, scope: scope))
+    }
+
+    func testReportDraftSurvivesReopeningAndUsesOriginalScope() async throws {
+        let (coordinator, fake, _) = try await start()
+        let draft = try reportDraft(coordinator)
+        XCTAssertTrue(try reportDraft(coordinator) === draft)
+        draft.category = .privacy
+        await draft.submit { try await coordinator.createContentReport($0, scope: $1) }
+        XCTAssertEqual(draft.receipt?.reportID, "report_1")
+        let requests = await fake.reportRequests
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests.first?.agentID, "A")
+        XCTAssertTrue(try reportDraft(coordinator) === draft)
+        coordinator.disconnect()
+    }
+
+    func testOldReportScopeCannotSendAfterAgentOrConnectionChange() async throws {
+        let (coordinator, fake, authority) = try await start()
+        let draft = try reportDraft(coordinator); draft.category = .privacy
+        coordinator.selectAgent("B")
+        await draft.submit { try await coordinator.createContentReport($0, scope: $1) }
+        XCTAssertEqual(draft.errorKey, "report.contextChanged")
+        let firstRequests = await fake.reportRequests
+        XCTAssertTrue(firstRequests.isEmpty)
+        try await wait { coordinator.status == .live }
+        let other = try reportDraft(coordinator); other.category = .privacy
+        coordinator.activate(transport: fake, identity: authority, apiBaseURL: URL(string: "https://other.example/api")!)
+        await other.submit { try await coordinator.createContentReport($0, scope: $1) }
+        XCTAssertEqual(other.errorKey, "report.contextChanged")
+        let requests = await fake.reportRequests
+        XCTAssertTrue(requests.isEmpty)
+        coordinator.disconnect()
+    }
+
+    func testLateReportReceiptAfterDisconnectIsNotPresentedAsSuccess() async throws {
+        let (coordinator, fake, _) = try await start()
+        let draft = try reportDraft(coordinator); draft.category = .privacy
+        await fake.setGate(.expansions)
+        let task = Task { await draft.submit { try await coordinator.createContentReport($0, scope: $1) } }
+        try await wait { await fake.reportRequests.count == 1 }
+        coordinator.disconnect()
+        await fake.releaseExpansions()
+        await task.value
+        XCTAssertNil(draft.receipt)
+        XCTAssertEqual(draft.errorKey, "report.contextChanged")
     }
 
     func testCurrent401ClearsDisplayAndCallsConnectionOnce() async throws {
