@@ -98,17 +98,7 @@ impl RuntimeHandle {
         };
 
         let (blocked_by, blocked_by_wait_id) = match closure.waiting_reason {
-            Some(waiting_reason) => {
-                let blocker = waiting_reason_blocker(waiting_reason).to_string();
-                // An identical existing blocker keeps its provenance so a
-                // wait-derived blocker survives this idempotent rewrite.
-                match latest.blocked_by.as_deref() {
-                    Some(existing) if existing == blocker => {
-                        (Some(blocker), latest.blocked_by_wait_id.clone())
-                    }
-                    _ => (Some(blocker), None),
-                }
-            }
+            Some(waiting_reason) => turn_end_wait_blocker_state(&latest, waiting_reason),
             None if closure.outcome == crate::types::ClosureOutcome::Failed => {
                 (latest.blocked_by.clone(), latest.blocked_by_wait_id.clone())
             }
@@ -2204,6 +2194,16 @@ fn waiting_reason_blocker(reason: crate::types::WaitingReason) -> &'static str {
     }
 }
 
+fn turn_end_wait_blocker_state(
+    latest: &WorkItemRecord,
+    waiting_reason: crate::types::WaitingReason,
+) -> (Option<String>, Option<String>) {
+    let blocker = waiting_reason_blocker(waiting_reason).to_string();
+    // Turn-end normalization may change the display text, but it must not
+    // discard ownership established when the blocker was registered.
+    (Some(blocker), latest.blocked_by_wait_id.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2235,6 +2235,32 @@ mod tests {
             "wait_policy": wait_policy,
         }));
         task
+    }
+
+    #[test]
+    fn turn_end_wait_blocker_preserves_custom_reason_provenance() {
+        let mut work_item = WorkItemRecord::new("default", "wait", WorkItemState::Open);
+        work_item.blocked_by = Some("waiting for a custom task reason".into());
+        work_item.blocked_by_wait_id = Some("wait-1".into());
+
+        assert_eq!(
+            turn_end_wait_blocker_state(&work_item, WaitingReason::AwaitingTaskResult),
+            (
+                Some(crate::runtime::TASK_RESULT_WAIT_BLOCKER.into()),
+                Some("wait-1".into())
+            )
+        );
+    }
+
+    #[test]
+    fn turn_end_wait_blocker_does_not_invent_independent_provenance() {
+        let mut work_item = WorkItemRecord::new("default", "wait", WorkItemState::Open);
+        work_item.blocked_by = Some("operator-owned blocker".into());
+
+        assert_eq!(
+            turn_end_wait_blocker_state(&work_item, WaitingReason::AwaitingTaskResult),
+            (Some(crate::runtime::TASK_RESULT_WAIT_BLOCKER.into()), None)
+        );
     }
 
     #[test]

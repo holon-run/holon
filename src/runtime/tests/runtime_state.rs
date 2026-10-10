@@ -6371,7 +6371,6 @@ async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentr
         .latest_for_message(&result.id)
         .unwrap()
         .expect("late task result must keep a durable settlement record");
-    eprintln!("settlement after recovery: {settlement:#?}");
     assert_eq!(
         settlement.state,
         crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
