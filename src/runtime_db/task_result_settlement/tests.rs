@@ -557,6 +557,23 @@ fn reply_observations_wait_for_original_admission_instead_of_unrelated_owner_act
     db.task_result_settlements()
         .admit_reply_message(
             "agent-a",
+            Some("unrelated-owner"),
+            "original-reply",
+            "unrelated-activation",
+            Utc::now(),
+        )
+        .unwrap();
+    assert_eq!(
+        db.task_result_settlements()
+            .latest_for_message(&record.message_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        TaskResultSettlementState::PersistedPending,
+    );
+    db.task_result_settlements()
+        .admit_reply_message(
+            "agent-a",
             Some("work-a"),
             "original-reply",
             "reply-activation",

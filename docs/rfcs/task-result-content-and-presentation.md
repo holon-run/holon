@@ -18,7 +18,9 @@ before the original message can outrun its asynchronous monitor. The original
 message claims the existing exact-wait authority and resolves the wait in the
 same transaction as its canonical activation. Reference signals are reducer-only.
 Late WaitFor uses the same original message and reports continue-turn when that
-message was already consumed. Cancellation does not consume the peer delivery.
+message was already consumed. An explicit waiter in another WorkItem admits the
+promised task's settlement with its exact-wait activation; unrelated owners that
+observe the same reply retain their separate obligations. Cancellation does not consume the peer delivery.
 
 Task completion, caller admission, and successful activation settlement remain
 separate durable facts. The existing settlement ledger retains deferred results,

@@ -224,10 +224,21 @@ impl TaskResultSettlementRepository<'_> {
         now: DateTime<Utc>,
     ) -> Result<()> {
         self.db.transaction(|tx| {
+            // An exact task waiter may belong to another WorkItem (#3124).
+            // Admit its promised result as well as same-owner observations,
+            // without acknowledging unrelated owners that share the reply.
             let records = records_tx(tx,
                 "SELECT settlements.payload_json FROM task_result_settlements settlements
                  JOIN messages ON messages.message_id = settlements.message_id
-                 WHERE settlements.agent_id = ?1 AND settlements.work_item_id IS ?2
+                 WHERE settlements.agent_id = ?1
+                   AND (settlements.work_item_id IS ?2 OR settlements.task_id IN (
+                     SELECT json_extract(wake.value, '$.task_id')
+                     FROM wait_conditions AS waits, json_each(waits.wake_sources_json) AS wake
+                     WHERE waits.agent_id = ?1 AND waits.work_item_id IS ?2
+                       AND waits.status = 'resolved' AND waits.kind = 'task'
+                       AND waits.trigger_message_id = ?3
+                       AND json_extract(wake.value, '$.kind') = 'task_result'
+                   ))
                    AND json_extract(messages.payload_json, '$.metadata.task_detail.message_id') = ?3
                    AND json_extract(messages.payload_json, '$.metadata.task_kind') = 'agent_message_wait'
                    AND json_extract(messages.payload_json, '$.metadata.task_detail.reply_content_source') = 'original_message'
