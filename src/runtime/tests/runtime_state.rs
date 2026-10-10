@@ -5955,7 +5955,7 @@ async fn lifecycle_settlement_adopts_wait_without_work_item_turn_binding() {
 }
 
 #[tokio::test]
-async fn terminal_task_wait_handoffs_conversation_to_work_item_continue() {
+async fn terminal_task_wait_handoffs_conversation_to_work_item_wait() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -6032,11 +6032,15 @@ async fn terminal_task_wait_handoffs_conversation_to_work_item_continue() {
         )
         .await
         .unwrap();
-    assert!(matches!(
-        registration,
-        WaitForRegistrationOutcome::TaskResultQueued { ref task_id, .. }
-            if task_id == &terminal_task.id
-    ));
+    let WaitForRegistrationOutcome::TaskResultQueued {
+        task_id,
+        wait_condition_id,
+        ..
+    } = registration
+    else {
+        panic!("terminal task wait should queue the exact result wake");
+    };
+    assert_eq!(task_id, terminal_task.id);
 
     let execution = runtime
         .inner
@@ -6054,11 +6058,241 @@ async fn terminal_task_wait_handoffs_conversation_to_work_item_continue() {
     assert!(matches!(
         &execution.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
         crate::domain::execution_protocol::ExecutionOutcome::Conversation(
-            crate::domain::execution_protocol::ConversationOutcome::HandoffToWorkItemContinue {
+            crate::domain::execution_protocol::ConversationOutcome::HandoffToWorkItemWait {
                 work_item_id,
+                ..
             }
         ) if work_item_id == &work_item.id
     ));
+    // #3463: the late fast path must leave the same durable wait semantics
+    // as a normal registration: derived blocker on the waiter WorkItem and
+    // the canonical execution state waiting on the exact task wait.
+    let blocked = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        blocked.blocked_by.as_deref(),
+        Some("waiting for terminal task handoff")
+    );
+    assert!(matches!(
+        &execution.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. }
+            if wait.wait_id == wait_condition_id
+    ));
+}
+
+#[tokio::test]
+async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentry() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(CountingProvider {
+        calls: Mutex::new(0),
+        reply: "handled the late task result",
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    // First conversation turn: the agent opens its WorkItem and registers an
+    // independent external blocker wait on it (#3463 pre-state).
+    let first = runtime
+        .enqueue(trusted_operator_prompt(None, "open the work item"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    runtime
+        .begin_interactive_turn(Some(&first), None, None)
+        .await
+        .unwrap();
+    let work_item = runtime
+        .create_work_item("blocked PR follow-up".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::External,
+            Some("github:holon-run/holon#3461".into()),
+            "Waiting on an external change.".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let externally_blocked = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        externally_blocked.blocked_by.as_deref(),
+        Some("Waiting on an external change.")
+    );
+
+    // Second conversation turn while the WorkItem stays externally blocked:
+    // the task already reached terminal before the late WaitFor (#3463).
+    let second = runtime
+        .enqueue(trusted_operator_prompt(None, "check the finished task"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    runtime
+        .begin_interactive_turn(Some(&second), None, None)
+        .await
+        .unwrap();
+
+    let mut result = task_result_message("task-late-blocked").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    result.task_id = Some("task-late-blocked".into());
+    result.work_item_id = Some(work_item.id.clone());
+    result.turn_id = Some("turn-late-blocked-result".into());
+    let terminal_task = TaskRecord {
+        id: "task-late-blocked".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: Some(result.id.clone()),
+        work_item_id: Some(work_item.id.clone()),
+        summary: Some("late blocked task completed".into()),
+        detail: Some(serde_json::json!({
+            "rejoin_obligation_id": "task-late-blocked",
+            "rejoin_generation": 1,
+            "parent_turn_id": "turn-late-blocked",
+        })),
+        recovery: None,
+    };
+    runtime
+        .commit_terminal_task_result(&terminal_task, "task_completed", &result)
+        .await
+        .unwrap();
+
+    let registration = runtime
+        .register_wait_for_outcome(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some(terminal_task.id.clone()),
+            "Waiting on a task result.".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let WaitForRegistrationOutcome::TaskResultQueued {
+        task_id,
+        result_message_id,
+        wait_condition_id,
+    } = registration
+    else {
+        panic!("late task-result wait should queue the exact result wake");
+    };
+    assert_eq!(task_id, terminal_task.id);
+    assert_eq!(result_message_id, result.id);
+
+    // The late fast path must leave the normal registration's durable wait
+    // semantics: derived blocker replaces the independent one and the
+    // canonical execution state waits on the exact task wait.
+    let blocked = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        blocked.blocked_by.as_deref(),
+        Some("Waiting on a task result.")
+    );
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        &execution.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. }
+            if wait.wait_id == wait_condition_id
+    ));
+
+    // The exact wake must claim a canonical model turn even though the
+    // WorkItem carried an independent blocker before the late registration.
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("late task result with an exact wait should claim a canonical model turn");
+    };
+    assert_eq!(scheduled.message.id, result.id);
+    assert!(scheduled.scheduler_decision.model_reentry);
+    assert!(matches!(
+        scheduled.dispatch_plan.execution_admission_provenance,
+        Some(crate::types::ExecutionAdmissionProvenance::Canonical { .. })
+    ));
+    runtime
+        .process_message_with_plan(
+            scheduled.message,
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
+        )
+        .await
+        .unwrap();
+
+    let waits = runtime
+        .storage()
+        .latest_wait_conditions_for_agent("default")
+        .unwrap();
+    assert!(waits.iter().any(|wait| {
+        wait.id == wait_condition_id
+            && wait.status == WaitConditionStatus::Resolved
+            && wait.trigger_message_id().as_deref() == Some(result.id.as_str())
+    }));
+    let resumed = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resumed.blocked_by, None);
+    let settlement = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&result.id)
+        .unwrap()
+        .expect("late task result must keep a durable settlement record");
+    assert_ne!(
+        settlement.state,
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
+    );
+    assert_eq!(
+        settlement.work_item_id.as_deref(),
+        Some(work_item.id.as_str())
+    );
+    assert_eq!(*provider.calls.lock().await, 1);
 }
 
 #[tokio::test]
