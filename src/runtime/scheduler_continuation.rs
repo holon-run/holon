@@ -250,9 +250,15 @@ impl RuntimeHandle {
 
         match trigger {
             Some(IdleTickTrigger::WorkQueueActive(active, generation)) => {
-                let duplicate = self
-                    .duplicate_continue_active_result_brief_id(&active, generation)?
-                    .map(scheduler::SchedulerDuplicateEvidence::ContinueActiveBrief);
+                let has_due_recheck = due_rechecks
+                    .iter()
+                    .any(|work_item| work_item.id == active.id);
+                let duplicate = if has_due_recheck {
+                    None
+                } else {
+                    self.duplicate_continue_active_result_brief_id(&active, generation)?
+                        .map(scheduler::SchedulerDuplicateEvidence::ContinueActiveBrief)
+                };
                 let decision = scheduler::decide_next_action(
                     &scheduler_projection,
                     scheduler::SchedulerBoundary::IdleTick,
@@ -260,7 +266,8 @@ impl RuntimeHandle {
                         scheduler::SchedulerIdleSignal::ContinueActive {
                             work_item: &active,
                             work_item_generation: generation,
-                            suppressed_after_model_reentry_continuation: suppress_continue_active,
+                            suppressed_after_model_reentry_continuation: suppress_continue_active
+                                && !has_due_recheck,
                             duplicate: duplicate.clone(),
                         },
                     ),
