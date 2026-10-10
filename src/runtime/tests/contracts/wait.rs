@@ -486,8 +486,15 @@ async fn late_task_result_queue_and_execution_settlement_are_atomic() {
         assert!(matches!(
             &execution.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
             crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-                crate::domain::execution_protocol::WorkItemOutcome::Continue
+                // #3463: the late fast path settles with the same Wait
+                // semantics as a normal registration so the exact wake keeps
+                // its canonical model re-entry.
+                crate::domain::execution_protocol::WorkItemOutcome::Wait { .. }
             )
+        ));
+        assert!(matches!(
+            &execution.work_items[work_item.id.as_str()].state,
+            crate::domain::execution_protocol::WorkItemExecutionState::Waiting { .. }
         ));
     }
 }

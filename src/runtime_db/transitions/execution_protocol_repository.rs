@@ -548,7 +548,15 @@ fn validate_set_work_item_waiting(
             condition.id == wait.wait_id
                 && condition.agent_id == record.agent_id
                 && condition.work_item_id.as_deref() == Some(record.id.as_str())
-                && condition.status == crate::types::WaitConditionStatus::Active
+                && matches!(
+                    condition.status,
+                    crate::types::WaitConditionStatus::Active
+                        // #3463: the late terminal fast path registers the
+                        // exact task-result wake already Triggered by the
+                        // re-admitted result message; it is the same durable
+                        // wait promise as an Active registration.
+                        | crate::types::WaitConditionStatus::Triggered
+                )
         })
     {
         bail!("WorkItem waiting transition does not match its atomic wait condition");

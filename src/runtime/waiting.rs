@@ -744,6 +744,7 @@ impl RuntimeHandle {
         // The terminal fast path keeps the normal registration's waiter
         // restrictions: an explicit waiter must be an owned, still-open
         // WorkItem (#3124).
+        let mut existing_waiter_work_item = None;
         if let Some(work_item_id) = waiter_work_item_id.as_deref() {
             let existing = self.validate_owned_work_item(&task.agent_id, work_item_id)?;
             if existing.state != WorkItemState::Open {
@@ -754,6 +755,7 @@ impl RuntimeHandle {
                 .with_safe_context("work_item_id", work_item_id)
                 .into());
             }
+            existing_waiter_work_item = Some(existing);
         }
         let result_message_id = task.parent_message_id.clone().ok_or_else(|| {
             RuntimeError::validation(
@@ -967,13 +969,72 @@ impl RuntimeHandle {
                 "work_item_id": waiter_work_item_id,
             }),
         ));
+        // #3463: the late fast path must leave the same durable WorkItem
+        // wait semantics as a normal WaitFor registration. The re-queued
+        // result is the exact promised wake, so the waiter WorkItem carries
+        // this wait's derived blocker and its canonical execution state
+        // waits on this condition. Without that parity, an independent
+        // blocker left on the WorkItem keeps the canonical work state
+        // waiting on a replaced wait and the exact wake is downgraded to a
+        // reducer-only turn without model re-entry.
+        let mut work_items = Vec::new();
+        let mut index_changes = Vec::new();
+        let mut work_item = None;
+        let mut blocked_readiness = Value::Null;
+        if let Some(existing) = existing_waiter_work_item.as_ref() {
+            let mut updated = WorkItemRecord {
+                revision: existing.revision + 1,
+                blocked_by: Some(condition.waiting_for.clone()),
+                recheck_at: None,
+                recheck_consumed_at: None,
+                updated_at: now,
+                ..existing.clone()
+            };
+            let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
+                self.agent_home().as_path(),
+                &mut updated,
+            )?;
+            if plan_artifact_changed {
+                if let Some(event) = self.work_item_plan_artifact_refreshed_event(&updated) {
+                    audit_events.push(event);
+                }
+            }
+            let mut projection_waits = wait_conditions
+                .iter()
+                .filter(|record| record.status == WaitConditionStatus::Active)
+                .cloned()
+                .collect::<Vec<_>>();
+            projection_waits.push(condition.clone());
+            let readiness = crate::work_item_scheduling::readiness_from_facts(
+                &updated,
+                false,
+                &projection_waits,
+            );
+            blocked_readiness = serde_json::to_value(readiness).unwrap_or(Value::Null);
+            audit_events.push(self.work_item_written_event_with_readiness(
+                "wait_for_blocked",
+                &updated,
+                readiness,
+                Value::Null,
+            ));
+            index_changes.extend(self.inner.storage.index_changes_for_work_item(&updated)?);
+            work_items.push(crate::runtime_db::transitions::WorkItemMutation::Update {
+                expected_revision: existing.revision,
+                record: updated.clone(),
+            });
+            work_item = Some(updated);
+        }
         let expected_task = task_expectation(&task);
-        let execution_protocol = self.execution_continue_settlement_transition(
-            &task,
-            waiter_work_item_id.as_deref(),
-            &result_message,
-            now,
-        )?;
+        let execution_protocol = if work_item.is_some() {
+            self.execution_wait_settlement_transition(&condition, work_item.as_ref(), now)?
+        } else {
+            self.execution_continue_settlement_transition(
+                &task,
+                waiter_work_item_id.as_deref(),
+                &result_message,
+                now,
+            )?
+        };
         let guard = self.inner.agent.lock().await;
         let already_in_memory = guard
             .queue
@@ -988,6 +1049,23 @@ impl RuntimeHandle {
         committed_state.last_wake_reason = Some("TaskResult".into());
         committed_state.total_message_count = self.inner.storage.count_messages()?;
         scheduler::apply_message_wake_projection(&mut committed_state);
+        if let (Some(work_item_id), Some(updated)) =
+            (waiter_work_item_id.as_deref(), work_item.as_ref())
+        {
+            if committed_state.current_turn_work_item_id.as_deref() == Some(work_item_id) {
+                committed_state.current_turn_work_item_id = None;
+                audit_events.push(AuditEvent::legacy(
+                    "work_item_turn_binding_released",
+                    serde_json::json!({
+                        "agent_id": task.agent_id,
+                        "work_item_id": work_item_id,
+                        "reason": "work_item_waiting",
+                        "readiness": blocked_readiness,
+                        "revision": updated.revision,
+                    }),
+                ));
+            }
+        }
         let queue_entry = QueueEntryRecord {
             message_id: result_message_id,
             agent_id: task.agent_id.clone(),
@@ -1011,12 +1089,12 @@ impl RuntimeHandle {
                     condition,
                     recheck_after_ms: None,
                     recheck_at: None,
-                    work_item: None,
+                    work_item: work_item.clone(),
                     cancelled_wait_condition_ids,
                 },
                 command: crate::runtime_db::transitions::WaitTransitionCommand {
                     agent_id: task.agent_id,
-                    work_items: Vec::new(),
+                    work_items,
                     expected_wait_conditions: Vec::new(),
                     wait_conditions,
                     timer_wake: None,
@@ -1032,7 +1110,7 @@ impl RuntimeHandle {
                         record: Box::new(committed_state),
                     }),
                     audit_events,
-                    index_changes: Vec::new(),
+                    index_changes,
                     notify_scheduler: true,
                     fault: self.take_transition_fault(),
                 },
