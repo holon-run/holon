@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """Run build/archive and UI command contract regressions without starting Xcode."""
 import ast
+import base64
 from contextlib import nullcontext
+import hashlib
+import http.client
 import http.server
 import json
 import os
 import pathlib
 from pathlib import Path
 import subprocess
+import sqlite3
+import struct
 import tempfile
 import threading
 import unittest
+import uuid
 from unittest.mock import Mock, call, patch
 import urllib.error
 import urllib.request
@@ -23,6 +29,17 @@ from ios_simulator_text_size import (
 
 ROOT = Path(__file__).resolve().parent.parent
 UUID = "12345678-1234-1234-1234-123456789abc"
+
+
+def fixture_helpers():
+    # Load only definitions/imports, never the fixture's daemon/Xcode entrypoint.
+    source = ROOT / "scripts/ios_ui_fixture.py"
+    tree = ast.parse(source.read_text(), filename=str(source))
+    namespace = {}
+    exec(compile(ast.Module(body=[node for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef))],
+        type_ignores=[]), str(source), "exec"), namespace)
+    return namespace
 
 
 class BuildToolContracts(unittest.TestCase):
@@ -155,7 +172,7 @@ class UIFixtureSetupContracts(unittest.TestCase):
             release.set()  # The real UI explicitly releases before retrying.
             return Mock(returncode=0)
 
-        namespace = dict(
+        namespace = dict(fixture_helpers(),
             cases=[(method, "large") for method in methods],
             bundles=[Path(method + ".xcresult") for method in methods],
             release_lost_response=release, lost_receipts=receipts,
@@ -165,7 +182,7 @@ class UIFixtureSetupContracts(unittest.TestCase):
             simulator_text_size=lambda *args: nullcontext(),
             simulator_appearance=lambda *args: nullcontext(),
             runtime_text_size_control=lambda *args: nullcontext(("fixture", "fixture")),
-            subprocess=Mock(run=run),
+            subprocess=Mock(run=run), fixture_evidence=None,
         )
         with patch("builtins.print") as output:
             exec(compile(ast.Module(body=[loop], type_ignores=[]), str(source), "exec"), namespace)
@@ -264,6 +281,448 @@ class UIFixtureSetupContracts(unittest.TestCase):
         self.run_setup(initialize, install, share=False)
         initialize.assert_called_once_with(UUID)
         install.assert_not_called()
+
+
+class UIFixtureEvidenceContracts(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="holon-ios-evidence-contract-")
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name).resolve()
+        self.helpers = fixture_helpers()
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        self.tree = ast.parse(source.read_text(), filename=str(source))
+        self.source = str(source)
+
+    def execute(self, nodes, namespace):
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), self.source, "exec"), namespace)
+
+    def test_default_cleans_up_and_opt_in_retains_private_material_on_error(self):
+        for retain in (False, True):
+            for fail in (False, True):
+                target = self.directory / f"retained-{retain}-{fail}"
+                environment = {"IOS_UI_FIXTURE_PATH": str(target)} if retain else {}
+                with self.subTest(retain=retain, fail=fail), patch.dict(os.environ, environment, clear=True):
+                    original_umask = os.umask(0o022)
+                    try:
+                        with patch("builtins.print") as output:
+                            try:
+                                with self.helpers["fixture_directory"](ROOT) as root:
+                                    (root / "daemon-material").write_text("isolated daemon data")
+                                    self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+                                    if retain:
+                                        self.assertEqual((root / "daemon-material").stat().st_mode & 0o777, 0o600)
+                                    if fail:
+                                        raise RuntimeError("fixture failed")
+                            except RuntimeError:
+                                self.assertTrue(fail)
+                        self.assertEqual(root.exists(), retain)
+                        if retain:
+                            self.assertEqual((root / "daemon-material").read_text(), "isolated daemon data")
+                            self.assertIn(str(root), str(output.call_args_list))
+                        else:
+                            output.assert_not_called()
+                        self.assertEqual(os.umask(0o022), 0o022, "Restore the caller's umask")
+                    finally:
+                        os.umask(original_umask)
+
+    def test_rejects_collisions_and_dangerous_paths_without_touching_them(self):
+        repo = self.directory / "repo"
+        repo.mkdir()
+        existing = self.directory / "existing"
+        existing.mkdir(mode=0o755)
+        sentinel = existing / "sentinel"
+        sentinel.write_text("untouched")
+        alias = self.directory / "repo-alias"
+        alias.symlink_to(repo, target_is_directory=True)
+        dangling = self.directory / "dangling"
+        dangling.symlink_to(self.directory / "absent")
+        paths = ["", "/", "relative", str(self.directory / "absent" / ".." / "escape"),
+                 str(repo / "inside"), str(alias / "inside"), str(existing),
+                 str(sentinel), str(dangling), str(self.directory / "missing" / "child")]
+        for path in paths:
+            with self.subTest(path=path), patch.dict(os.environ, {"IOS_UI_FIXTURE_PATH": path}, clear=True):
+                with self.assertRaises((RuntimeError, OSError)):
+                    with self.helpers["fixture_directory"](repo):
+                        self.fail("Unsafe retention path accepted")
+        self.assertEqual(sentinel.read_text(), "untouched")
+        self.assertEqual(existing.stat().st_mode & 0o777, 0o755)
+        self.assertFalse((repo / "inside").exists())
+        self.assertFalse((self.directory / "escape").exists())
+
+    def test_retention_rejects_all_roots_of_a_linked_git_worktree(self):
+        canonical = self.directory / "canonical checkout"
+        linked = self.directory / "linked checkout"
+        sibling = self.directory / "sibling checkout"
+        subprocess.run(["git", "init", "-q", str(canonical)], check=True)
+        (canonical / "tracked").write_text("fixture")
+        subprocess.run(["git", "-C", str(canonical), "add", "tracked"], check=True)
+        subprocess.run(["git", "-C", str(canonical), "-c", "user.name=Fixture",
+                        "-c", "user.email=fixture@example.test", "commit", "-qm", "fixture"], check=True)
+        for worktree in (linked, sibling):
+            subprocess.run(["git", "-C", str(canonical), "worktree", "add", "-q",
+                            "--detach", str(worktree), "HEAD"], check=True)
+        alias = self.directory / "canonical-alias"
+        alias.symlink_to(canonical, target_is_directory=True)
+        for number, parent in enumerate((canonical, linked, sibling, alias)):
+            target = parent / f"private-evidence-{number}"
+            with self.subTest(parent=parent), patch.dict(os.environ, {"IOS_UI_FIXTURE_PATH": str(target)}):
+                with self.assertRaises(RuntimeError):
+                    with self.helpers["fixture_directory"](linked):
+                        self.fail("A related Git checkout must not retain raw databases")
+                self.assertFalse(target.exists())
+        target = self.directory / "safe-evidence"
+        with patch.dict(os.environ, {"IOS_UI_FIXTURE_PATH": str(target)}), patch("builtins.print"):
+            with self.helpers["fixture_directory"](linked) as retained:
+                self.assertEqual(retained, target)
+        self.assertEqual(target.stat().st_mode & 0o777, 0o700)
+
+    def test_real_case_loop_exports_sqlite_rows_and_zero_zero_zero_one_deltas(self):
+        evidence = self.directory / "evidence"
+        home = self.directory / "holon"
+        (home / "state").mkdir(parents=True)
+        database = home / "state" / "runtime.sqlite"
+        row = dict(
+            report_id="report_fixture", reporter_principal="isolated-test-principal",
+            agent_id="holon-tester", turn_id="turn-fixture", message_id="message-fixture",
+            category="spam_or_other", description="IOS_CONTENT_REPORT_ACCEPTANCE",
+            content_snapshot="IOS_RICH_ASSISTANT: actual stored test response",
+            content_snapshot_hash=hashlib.sha256(b"IOS_RICH_ASSISTANT: actual stored test response").hexdigest(),
+            snapshot_truncated=0, source_message_created_at="2026-10-10T00:00:00Z",
+            source_origin_json='{"kind":"model"}', source_authority_class="model_output",
+            status="received", client_request_id=UUID,
+            created_at="2026-10-10T00:01:00Z", updated_at="2026-10-10T00:01:00Z")
+        with sqlite3.connect(database) as connection:
+            connection.execute("CREATE TABLE content_reports (" + ", ".join(
+                name + (" INTEGER" if name == "snapshot_truncated" else " TEXT")
+                for name in row) + ")")
+            connection.execute("CREATE TABLE auth_records (token TEXT)")
+            connection.execute("INSERT INTO auth_records VALUES ('do-not-export-auth-token')")
+        methods = [
+            "testContentReportFullResponseIncludesTail",
+            "testContentReportConfirmationCancelDoesNotPersist",
+            "testContentReportInvalidExplanationCannotShowAccepted",
+            "testContentReportAcceptedReceiptCannotSubmitTwice",
+        ]
+
+        def run(command, env):
+            if "-only-testing:HolonUITests/HolonUITests/" + methods[-1] in command:
+                with sqlite3.connect(database) as connection:
+                    connection.execute("INSERT INTO content_reports VALUES (" +
+                                       ",".join("?" for _ in row) + ")", tuple(row.values()))
+            return Mock(returncode=0)
+
+        loop = next(node for node in ast.walk(self.tree) if isinstance(node, ast.For)
+                    and isinstance(node.target, ast.Tuple)
+                    and any(isinstance(item, ast.Name) and item.id == "case_bundle"
+                            for item in node.target.elts))
+        namespace = dict(self.helpers, cases=[(method, "large") for method in methods],
+            bundles=[Path(method + ".xcresult") for method in methods], home=home,
+            fixture_evidence=evidence, lost_response_acceptance=False,
+            simulator=UUID, repo=str(ROOT), agent="holon-tester", rich_turn="turn-fixture",
+            destination="fixture", derived="fixture", test_env={},
+            local=Mock(return_value={"ticket": "do-not-export-pairing-ticket"}),
+            simulator_text_size=lambda *args: nullcontext(),
+            simulator_appearance=lambda *args: nullcontext(),
+            runtime_text_size_control=lambda *args: nullcontext(("fixture", "do-not-export-control-token")),
+            subprocess=Mock(run=run))
+        with patch("builtins.print"):
+            self.execute([loop], namespace)
+        deltas = []
+        for method in methods:
+            snapshots = []
+            for phase in ("before", "after"):
+                value = json.loads((evidence / f"content-reports-{method}-{phase}.json").read_text())
+                exported = evidence / value["sqlite"]["path"]
+                self.assertEqual(value["sqlite"]["sha256"], hashlib.sha256(exported.read_bytes()).hexdigest())
+                self.assertIn("content_reports-only", value["source"])
+                self.assertEqual(value["columns"], list(row))
+                with sqlite3.connect(exported) as connection:
+                    self.assertEqual(connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'").fetchall(), [("content_reports",)])
+                    self.assertEqual(connection.execute("SELECT * FROM content_reports").fetchall(),
+                                     [tuple(item[column] for column in row) for item in value["rows"]])
+                self.assertEqual(value["row_count"], len(value["rows"]))
+                self.assertEqual(exported.stat().st_mode & 0o777, 0o600)
+                if value["rows"]:
+                    self.assertEqual(value["rows"], [row])
+                snapshots.append(value["row_count"])
+            deltas.append(snapshots[1] - snapshots[0])
+        self.assertEqual(deltas, [0, 0, 0, 1])
+        self.assertTrue(database.exists(), "Keep the original daemon database separate from table-only exports")
+        with sqlite3.connect(database) as connection:
+            self.assertEqual(connection.execute("SELECT token FROM auth_records").fetchone()[0],
+                             "do-not-export-auth-token")
+        for path in evidence.iterdir():
+            self.assertNotIn(b"do-not-export", path.read_bytes())
+
+        # An XCTest failure still leaves both factual snapshots, not an alleged pass.
+        failed_evidence = self.directory / "failed-evidence"
+        namespace.update(fixture_evidence=failed_evidence, cases=[(methods[0], "large")],
+                         bundles=[Path("failed.xcresult")], subprocess=Mock(run=Mock(return_value=Mock(returncode=65))))
+        with self.assertRaises(RuntimeError):
+            self.execute([loop], namespace)
+        self.assertEqual(len(list(failed_evidence.glob("*.sqlite"))), 2)
+
+    def test_conversation_inputs_merges_turn_windows_not_message_identities(self):
+        completed = {"turn_id": "turn-completed", "inputs": [{"message_id": "message-completed"}]}
+        historical = {"turn_id": "turn-live", "inputs": [{"message_id": "message-live"}]}
+        active = {"turn_id": "turn-live", "inputs": historical["inputs"] + [{"message_id": "message-added"}]}
+        pending = {"message_id": "message-pending"}
+        merge = self.helpers["conversation_inputs"]
+        for history, live in [([completed, historical], [active]), ([completed, active], []),
+                              ([completed], [active]), ([], [completed, active])]:
+            with self.subTest(history=history, active=live):
+                page = {"turns": history, "active_turns": live, "pending_inputs": [pending]}
+                self.assertEqual(merge(page), completed["inputs"] + active["inputs"] + [pending])
+        duplicate = historical["inputs"][0]
+        # Only repeated turn membership is merged. Real repeated inputs must
+        # remain visible to the strict per-message evidence validator.
+        for page in [
+            {"turns": [{"turn_id": "turn-live", "inputs": [duplicate, duplicate]}]},
+            {"turns": [historical], "active_turns": [{"turn_id": "turn-other", "inputs": [duplicate]}]},
+            {"turns": [historical], "pending_inputs": [duplicate]},
+        ]:
+            with self.subTest(duplicate=page):
+                self.assertEqual(merge(page), [duplicate, duplicate])
+
+    def test_proxy_keeps_raw_identity_chains_and_direct_share_material_without_headers(self):
+        evidence = self.directory / "evidence"
+        workspace = self.directory / "workspace"
+        workspace.mkdir()
+        # A passive, valid PNG produced by the same chunk format as the fixture.
+        def chunk(kind, data):
+            return struct.pack("!I", len(data)) + kind + data + struct.pack("!I", self.helpers["zlib"].crc32(kind + data))
+        image = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!2I5B", 16, 16, 8, 2, 0, 0, 0))
+                 + chunk(b"IDAT", self.helpers["zlib"].compress((b"\0" + bytes([40, 100, 190]) * 16) * 16))
+                 + chunk(b"IEND", b""))
+        inbox = workspace / "media" / "inbox"
+        inbox.mkdir(parents=True)
+        (inbox / "request-image.png").write_bytes(image)
+        (inbox / "request-file.txt").write_bytes(b"IOS_SHARED_FILE_BYTES")
+        inputs, receipts, messages = {}, {}, {}
+
+        class Upstream(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if self.path.endswith("/prompt"):
+                    request_id = body["client_request_id"]
+                    duplicate = request_id in receipts
+                    receipts.setdefault(request_id, "message-" + request_id)
+                    text = body["text"]
+                    for item in body.get("attachments", []):
+                        is_image = item["kind"] == "image"
+                        path = inbox / ("request-image.png" if is_image else "request-file.txt")
+                        if text and not text.endswith("\n"):
+                            text += "\n"
+                        label = item.get("name", "image 1" if is_image else "file 1")
+                        text += f"\n{'!' if is_image else ''}[{label}]({path.as_posix().replace(' ', '%20')})"
+                    inputs.setdefault(request_id, {"message_id": receipts[request_id], "preview": text})
+                    messages.setdefault(receipts[request_id], {"id": receipts[request_id],
+                        "agent_id": "holon-tester", "body": {"type": "text", "text": text}})
+                    data = json.dumps({"ok": True, "agent_id": "holon-tester",
+                        "message_id": receipts[request_id],
+                        "disposition": "duplicate" if duplicate else "accepted"}).encode()
+                else:
+                    data = b'{"ticket":"do-not-record-pairing-ticket"}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+        worker = threading.Thread(target=upstream.serve_forever, kwargs={"poll_interval": .05})
+        worker.start()
+        self.addCleanup(worker.join)
+        self.addCleanup(upstream.server_close)
+        self.addCleanup(upstream.shutdown)
+        release = threading.Event()
+        namespace = dict(self.helpers, port=upstream.server_port, fixture_evidence=evidence,
+            fixture_case="testLostResponseAndProcessRecovery", prompt_evidence=[],
+            lost_receipts=[], lost_lock=threading.Lock(), release_lost_response=release,
+            lost_response_acceptance=True, share_acceptance=True, proxy_control_token="do-not-record-control-token")
+        proxy_class = next(node for node in ast.walk(self.tree)
+                           if isinstance(node, ast.ClassDef) and node.name == "LostResponseProxy")
+        self.execute([proxy_class], namespace)
+        proxy = http.server.ThreadingHTTPServer(("127.0.0.1", 0), namespace["LostResponseProxy"])
+        worker = threading.Thread(target=proxy.serve_forever, kwargs={"poll_interval": .05})
+        worker.start()
+        self.addCleanup(worker.join)
+        self.addCleanup(proxy.server_close)
+        self.addCleanup(proxy.shutdown)
+
+        def send(request, path="/api/agents/holon-tester/prompt"):
+            body = json.dumps(request, ensure_ascii=False, indent=1).encode()
+            connection = http.client.HTTPConnection("127.0.0.1", proxy.server_port, timeout=5)
+            try:
+                connection.request("POST", path, body, {
+                    "Content-Type": "application/json", "Authorization": "Bearer do-not-record-session-token",
+                    "Cookie": "do-not-record-cookie"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                try:
+                    response.read()
+                except http.client.IncompleteRead:
+                    self.assertFalse(release.is_set())
+            finally:
+                connection.close()
+            return body
+
+        with patch("builtins.print"):
+            originals = []
+            for number, text in enumerate(["IOS_LOST_RESPONSE_SEND\nOriginal App body",
+                                          "IOS_SHARED_TEXT\nLiteral **operator** input"]):
+                namespace["fixture_case"] = ["testLostResponseAndProcessRecovery", "testDirectAgentShareWorkflow"][number]
+                release.clear()
+                request = {"text": text, "client_request_id": UUID if not number else str(uuid.UUID(int=1)), "attachments": []}
+                originals.extend([send(request)])
+                release.set()
+                originals.extend([send(request)])
+            for number, (kind, text, attachments) in enumerate([
+                ("url", "https://example.test/holon-share", []),
+                ("image", "", [{"kind": "image", "media_type": "image/png", "data_base64": base64.b64encode(image).decode()}]),
+                ("file", "", [{"kind": "file", "name": "shared-note.txt", "media_type": "text/plain",
+                              "data_base64": base64.b64encode(b"IOS_SHARED_FILE_BYTES").decode()}]),
+            ], 2):
+                originals.append(send({"text": text, "attachments": attachments, "client_request_id": str(uuid.UUID(int=number))}))
+            send({"pairing_ticket": "do-not-record-pairing-ticket"}, "/api/auth/pairing/issue")
+        records = namespace["prompt_evidence"]
+        self.assertEqual(len(records), 7)
+        for index, (record, body) in enumerate(zip(records, originals), 1):
+            self.assertEqual((evidence / record["request_body"]["path"]).read_bytes(), body)
+            for field in ("request_body", "receipt_body"):
+                path = evidence / record[field]["path"]
+                self.assertEqual(record[field]["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(json.loads((evidence / f"prompt-{index:04}.json").read_text()), record)
+            self.assertEqual(record["receipt"]["agent_id"], "holon-tester")
+        for first, retry in [(records[0], records[1]), (records[2], records[3])]:
+            self.assertEqual(first["request"], retry["request"])
+            self.assertEqual(first["receipt"]["message_id"], retry["receipt"]["message_id"])
+            self.assertEqual([first["receipt"]["disposition"], retry["receipt"]["disposition"]], ["accepted", "duplicate"])
+            self.assertEqual([first["delivered"], retry["delivered"]], [False, True])
+        self.assertEqual({record["kind"] for record in records},
+                         {"app-lost-response", "share-text", "share-url", "share-image", "share-file"})
+        # Execute the real post-run daemon material check/export, not a test-only exporter.
+        share_block = next(node for node in ast.walk(self.tree)
+                           if isinstance(node, ast.If) and isinstance(node.test, ast.BoolOp)
+                           and isinstance(node.test.values[0], ast.Name)
+                           and node.test.values[0].id == "share_acceptance"
+                           and any(isinstance(item, ast.Compare) for item in node.test.values))
+        def local(method, path, payload=None):
+            self.assertEqual(method, "GET")
+            if "/messages/" in path:
+                return messages[path.rsplit("/", 1)[-1]]
+            # The real history SQL includes running turns also returned in the
+            # active window. Native receipt delivery need not wait for completion.
+            turn = {"turn_id": "turn-sharing", "inputs": list(inputs.values())}
+            return {"turns": [turn], "active_turns": [turn]}
+
+        namespace.update(mode="--populated", root=self.directory, workspace=workspace, agent="holon-tester",
+                         local=local)
+        with patch("builtins.print"):
+            self.execute([share_block], namespace)
+        shared = json.loads((evidence / "direct-share.json").read_text())
+        self.assertEqual(len(shared["inputs"]), 4)
+        self.assertEqual(len(shared["files"]), 2)
+        self.assertEqual(len(shared["chains"]), 4)
+        self.assertEqual(len({chain["client_request_id"] for chain in shared["chains"]}), 4)
+        self.assertEqual(len({chain["message_id"] for chain in shared["chains"]}), 4)
+        for chain in shared["chains"]:
+            self.assertEqual(chain["message"]["id"], chain["input"]["message_id"])
+            expected = 1 if chain["kind"] in ("share-image", "share-file") else 0
+            self.assertEqual(len(chain["attachments"]), expected)
+        for item in shared["files"]:
+            self.assertEqual(item["sha256"], hashlib.sha256((self.directory / item["path"]).read_bytes()).hexdigest())
+        # Exercise the real acceptance block with invalid identity/material chains.
+        for fault in ("collapsed-message", "reused-uuid", "wrong-text", "swapped-attachment",
+                      "missing-input", "wrong-agent", "changed-retry", "invalid-uuid", "duplicate-input",
+                      "cross-turn-duplicate", "pending-duplicate"):
+            damaged = json.loads(json.dumps(records))
+            damaged_inputs = list(json.loads(json.dumps(inputs)).values())
+            damaged_messages = json.loads(json.dumps(messages))
+            share_records = [record for record in damaged if record["kind"].startswith("share-")]
+            text_id = share_records[0]["receipt"]["message_id"]
+            url_record = next(record for record in share_records if record["kind"] == "share-url")
+            image_id = next(record["receipt"]["message_id"] for record in share_records if record["kind"] == "share-image")
+            if fault == "collapsed-message":
+                for record in share_records:
+                    record["receipt"]["message_id"] = text_id
+                damaged_inputs = [value for value in damaged_inputs if value["message_id"] == text_id]
+                damaged_inputs[0]["preview"] += "\nhttps://example.test/holon-share shared-note"
+            elif fault == "reused-uuid":
+                url_record["request"]["client_request_id"] = share_records[0]["request"]["client_request_id"]
+            elif fault == "wrong-text":
+                damaged_messages[text_id]["body"]["text"] = "unrelated input"
+            elif fault == "swapped-attachment":
+                damaged_messages[image_id]["body"]["text"] = f"\n![shared]({inbox}/request-file.txt)"
+            elif fault == "missing-input":
+                damaged_inputs = [value for value in damaged_inputs if value["message_id"] != image_id]
+            elif fault == "wrong-agent":
+                url_record["receipt"]["agent_id"] = "another-agent"
+            elif fault == "changed-retry":
+                share_records[1]["request"]["text"] += "\nchanged on retry"
+            elif fault == "invalid-uuid":
+                url_record["request"]["client_request_id"] = "not-a-uuid"
+            elif fault == "duplicate-input":
+                damaged_inputs.append(next(value.copy() for value in damaged_inputs
+                                           if value["message_id"] == text_id))
+
+            def damaged_local(method, path, payload=None):
+                if "/messages/" in path:
+                    return damaged_messages[path.rsplit("/", 1)[-1]]
+                turn = {"turn_id": "turn-sharing", "inputs": damaged_inputs}
+                page = {"turns": [turn], "active_turns": [turn]}
+                duplicate = next(value.copy() for value in damaged_inputs if value["message_id"] == text_id)
+                if fault == "cross-turn-duplicate":
+                    page["active_turns"].append({"turn_id": "turn-other", "inputs": [duplicate]})
+                elif fault == "pending-duplicate":
+                    page["pending_inputs"] = [duplicate]
+                return page
+
+            destination = self.directory / ("invalid-" + fault)
+            namespace.update(prompt_evidence=damaged, local=damaged_local, fixture_evidence=destination)
+            with self.subTest(fault=fault), patch("builtins.print"):
+                with self.assertRaises(RuntimeError):
+                    self.execute([share_block], namespace)
+                self.assertFalse((destination / "direct-share.json").exists())
+        for path in evidence.iterdir():
+            self.assertNotIn(b"do-not-record", path.read_bytes())
+            self.assertNotIn(b"Authorization", path.read_bytes())
+        with self.assertRaises(RuntimeError):
+            self.helpers["record_fixture_prompt"](evidence, 99, None, "/prompt",
+                b'{"text":"IOS_SHARED_TEXT","session_token":"do-not-record"}',
+                b'{"message_id":"message-fixture"}', 200, True)
+        self.assertFalse((evidence / "prompt-0099-request.json").exists())
+
+    def test_real_finally_stops_services_and_daemon_even_if_task_stop_fails(self):
+        cleanup = next(node.finalbody for node in ast.walk(self.tree)
+                       if isinstance(node, ast.Try) and node.finalbody
+                       and isinstance(node.finalbody[0], ast.Try)
+                       and any(isinstance(item, ast.Call) and isinstance(item.func, ast.Attribute)
+                               and item.func.attr == "terminate"
+                               for item in ast.walk(ast.Module(body=node.finalbody, type_ignores=[]))))
+        for fail in (False, True):
+            daemon = Mock()
+            daemon.wait.side_effect = [subprocess.TimeoutExpired("isolated daemon", 8), None]
+            release, proxy, provider = threading.Event(), Mock(), Mock()
+            namespace = dict(task_id="fixture-task", agent="holon-tester", daemon=daemon,
+                             release_held_run=release, proxy=proxy, provider=provider,
+                             subprocess=subprocess, local=Mock(side_effect=RuntimeError("stop failed") if fail else None))
+            if fail:
+                with self.assertRaisesRegex(RuntimeError, "stop failed"):
+                    self.execute(cleanup, namespace)
+            else:
+                self.execute(cleanup, namespace)
+            self.assertTrue(release.is_set())
+            for server in (proxy, provider):
+                server.shutdown.assert_called_once()
+                server.server_close.assert_called_once()
+            daemon.terminate.assert_called_once()
+            daemon.kill.assert_called_once()
+            self.assertEqual(daemon.wait.call_args_list, [call(timeout=8), call()])
 
 
 class UIFixtureProviderContracts(unittest.TestCase):
