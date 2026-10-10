@@ -999,8 +999,8 @@ pub(crate) use retry::{
 };
 #[cfg(test)]
 pub(crate) use retry::{
-    provider_transport_error, provider_transport_error_with_code, ProviderFailureClassification,
-    ProviderFailureKind, RetryDisposition,
+    provider_transport_error_with_code, ProviderFailureClassification, ProviderFailureKind,
+    RetryDisposition,
 };
 #[cfg(test)]
 pub(crate) use tool_schema::validate_emitted_tool_schema;

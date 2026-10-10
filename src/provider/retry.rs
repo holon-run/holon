@@ -562,6 +562,12 @@ pub(crate) fn classify_status_error_with_trace(
         .filter(|detail| !detail.is_empty())
         .map(|detail| format!(": {detail}"))
         .unwrap_or_default();
+    let tool_protocol_hint = (status == StatusCode::BAD_REQUEST
+        && is_explicit_tool_protocol_rejection(detail.as_ref()))
+        .then_some(
+            ". This endpoint explicitly rejected the requested tool protocol; update the provider/model/endpoint or builtin_web_search configuration. Holon will not remove the tool or retry with a degraded request.",
+        )
+        .unwrap_or_default();
     provider_transport_error_with_code_and_retry_after(
         classification,
         code,
@@ -580,7 +586,7 @@ pub(crate) fn classify_status_error_with_trace(
             source_chain: status_error_source_chain(provider, status),
         }),
         retry_after,
-        format!("{context} with status {status}{detail_message}"),
+        format!("{context} with status {status}{detail_message}{tool_protocol_hint}"),
     )
 }
 
@@ -635,6 +641,15 @@ pub(crate) fn is_known_deterministic_provider_error_text(text: &str) -> bool {
     ]
     .iter()
     .any(|marker| text.contains(marker))
+}
+
+pub(crate) fn is_explicit_tool_protocol_rejection(detail: Option<&UpstreamErrorDetail>) -> bool {
+    detail.is_some_and(|detail| {
+        detail
+            .code
+            .as_deref()
+            .is_some_and(|code| matches!(code, "unsupported_tool" | "tool_not_supported"))
+    })
 }
 
 pub(crate) fn extract_upstream_error_detail(body: &str) -> Option<UpstreamErrorDetail> {
@@ -1278,6 +1293,51 @@ mod tests {
             ProviderFailureKind::RateLimited
         );
         assert_eq!(transport.retry_after, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn explicit_tool_protocol_rejection_is_fail_fast_with_configuration_guidance() {
+        let error = classify_status_error_with_trace(
+            "OpenAI request failed",
+            "response_status",
+            Some("openai"),
+            Some("openai/gpt-5"),
+            Some("https://example.test/v1/responses"),
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"code":"unsupported_tool","message":"tool protocol rejected"}}"#.into(),
+            None,
+            None,
+        );
+        let transport = error.downcast_ref::<ProviderTransportError>().unwrap();
+        assert_eq!(
+            transport.classification.kind,
+            ProviderFailureKind::ContractError
+        );
+        assert_eq!(
+            transport.classification.disposition,
+            super::RetryDisposition::FailFast
+        );
+        assert!(error
+            .to_string()
+            .contains("builtin_web_search configuration"));
+    }
+
+    #[test]
+    fn ordinary_bad_request_has_no_tool_configuration_guidance() {
+        let error = classify_status_error_with_trace(
+            "OpenAI request failed",
+            "response_status",
+            Some("openai"),
+            Some("openai/gpt-5"),
+            Some("https://example.test/v1/responses"),
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"code":"invalid_request","message":"bad input"}}"#.into(),
+            None,
+            None,
+        );
+        assert!(!error
+            .to_string()
+            .contains("builtin_web_search configuration"));
     }
 
     #[test]

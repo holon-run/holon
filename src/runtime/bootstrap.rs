@@ -752,7 +752,6 @@ impl RuntimeHandle {
                 turn_fallback_model: RwLock::new(None),
                 config_snapshot: ArcSwap::from(config_snapshot),
                 context_config: RwLock::new(resolved_context_config),
-                builtin_web_search_probe_cache: Mutex::new(HashMap::new()),
                 view_image_observation_cache: Mutex::new(HashMap::new()),
                 view_image_candidate_health: Mutex::new(ViewImageCandidateHealth::default()),
                 model_discovery_refreshes: Mutex::new(HashSet::new()),
