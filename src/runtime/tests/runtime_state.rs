@@ -1310,6 +1310,14 @@ async fn provider_recovery_conversation_pins_root_across_hops_without_claiming_f
     }
     let first = execute_queued_recovery(&runtime).await;
     let second = execute_queued_recovery(&runtime).await;
+    for recovery in [&first, &second] {
+        let MessageBody::Text { text } = &recovery.body else {
+            panic!("recovery must carry a text context");
+        };
+        assert!(text.contains("Continue the validated source task from persisted evidence"));
+        assert!(text.contains("Current focus is not the authority for choosing the recovery task"));
+        assert!(!text.contains("current work item"));
+    }
     assert!(first.work_item_id.is_none() && second.work_item_id.is_none());
     let execution = runtime
         .inner
@@ -1948,6 +1956,10 @@ async fn provider_recovery_wrong_owner_is_rejected_with_visible_failure_and_no_f
         .find(|brief| brief.related_message_id.as_deref() == Some(recovery.id.as_str()))
         .unwrap();
     assert_eq!(brief.kind, BriefKind::Failure);
+    assert!(brief.text.contains("Provider recovery rejected"));
+    assert!(brief
+        .text
+        .contains("no model request or unrelated focused task was executed"));
     assert!(brief.text.contains("binding mismatch"));
     assert!(brief.text.contains(recovery_source_turn_id(&recovery)));
     assert!(brief

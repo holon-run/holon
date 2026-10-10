@@ -1999,7 +1999,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 &message.agent_id,
                 crate::types::BriefKind::Failure,
                 format!(
-                    "Provider recovery 已拒绝，未执行模型请求或其他焦点任务。原因：{detail}。source turn={}，source message={}。",
+                    "Provider recovery rejected; no model request or unrelated focused task was executed. Reason: {detail}. source turn={}, source message={}.",
                     message.source_refs.get("source_turn_id").map(String::as_str).unwrap_or("missing"),
                     message.source_refs.get("source_message_id").map(String::as_str).unwrap_or("missing"),
                 ),
@@ -2627,7 +2627,9 @@ fn execution_attempt_matches_scenario(
         ) => recovery_id == &message.id && work_item_id == expected,
         (
             ExecutionSourceIdentity::RuntimeRecovery { recovery_id },
-            ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. },
+            ExecutionBinding::Conversation { .. }
+            | ExecutionBinding::AgentLifecycle { .. }
+            | ExecutionBinding::Command,
             scheduler::CanonicalActivationScenario::UnboundProviderRecovery { agent_id },
         ) => recovery_id == &message.id && agent_id == &message.agent_id,
         (
@@ -2973,6 +2975,102 @@ mod tests {
         );
         message.id = id.into();
         message
+    }
+
+    #[test]
+    fn provider_recovery_command_admission_replay_is_message_bound() {
+        use crate::domain::execution_protocol::*;
+
+        let mut message = queued_message(Priority::Next, "command-recovery");
+        message.kind = MessageKind::InternalFollowup;
+        message.origin = MessageOrigin::System {
+            subsystem: "model_lineage_recovery".into(),
+        };
+        message.authority_class = AuthorityClass::RuntimeInstruction;
+        let scenario = scheduler::CanonicalActivationScenario::UnboundProviderRecovery {
+            agent_id: message.agent_id.clone(),
+        };
+        let attempt = ExecutionAttempt {
+            attempt_id: canonical_activation_id(&message.id),
+            agent_id: message.agent_id.clone(),
+            source_message_id: Some(message.id.clone()),
+            source: ExecutionSource {
+                identity: ExecutionSourceIdentity::RuntimeRecovery {
+                    recovery_id: message.id.clone(),
+                },
+                generation: 1,
+            },
+            binding: ExecutionBinding::Command,
+            provenance: ExecutionProvenance {
+                origin: ExecutionOrigin::RuntimeRecovery,
+                trust: ExecutionTrust::RuntimeInstruction,
+                priority: ExecutionPriority::Next,
+                correlation_id: None,
+                causation_id: None,
+            },
+            admitted_fences: AdmittedFences {
+                source_revision: 1,
+                work_item_source_revision: None,
+                work_item_generation: None,
+                rejoin: None,
+                agent_control_revision: 1,
+                host_registry_revision: 1,
+            },
+            state: ExecutionAttemptState::Open,
+            run_id: None,
+            turn_id: None,
+            recovery_of_attempt_id: None,
+            terminal_outcome_id: None,
+            admitted_at: "2026-10-10T00:00:00Z".into(),
+            terminal_at: None,
+        };
+        let command = AdmitExecution {
+            attempt: attempt.clone(),
+        };
+        let admitted =
+            admit_execution(&ExecutionProtocolState::empty(&message.agent_id), &command).unwrap();
+        for _ in 0..2 {
+            assert!(execution_attempt_matches_scenario(
+                &admitted.state.attempts[&attempt.attempt_id],
+                &message,
+                &scenario,
+            ));
+        }
+        assert_eq!(admitted.state.attempts.len(), 1);
+
+        let mut wrong = attempt.clone();
+        wrong.source_message_id = Some("different-message".into());
+        assert!(!execution_attempt_matches_scenario(
+            &wrong, &message, &scenario
+        ));
+        wrong = attempt.clone();
+        wrong.source.identity = ExecutionSourceIdentity::RuntimeRecovery {
+            recovery_id: "different-source".into(),
+        };
+        assert!(!execution_attempt_matches_scenario(
+            &wrong, &message, &scenario
+        ));
+        wrong = attempt.clone();
+        wrong.agent_id = "different-agent".into();
+        assert!(!execution_attempt_matches_scenario(
+            &wrong, &message, &scenario
+        ));
+        let wrong_scenario = scheduler::CanonicalActivationScenario::UnboundProviderRecovery {
+            agent_id: "different-agent".into(),
+        };
+        assert!(!execution_attempt_matches_scenario(
+            &attempt,
+            &message,
+            &wrong_scenario,
+        ));
+        let new_command_scenario = scheduler::CanonicalActivationScenario::LifecycleExternalNudge {
+            agent_id: message.agent_id.clone(),
+        };
+        assert!(!execution_attempt_matches_scenario(
+            &attempt,
+            &message,
+            &new_command_scenario,
+        ));
     }
 
     #[test]
