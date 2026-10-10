@@ -9432,6 +9432,78 @@ DELETE FROM schema_migrations WHERE version = 67;
     }
 
     #[test]
+    fn provider_quota_incident_survives_reopen_and_resolves() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let recorded = db.record_provider_quota_failure(
+            "quota-key",
+            "provider-quota:quota-key",
+            "2026-10-10T17:00:00Z",
+            Some("2026-10-10T17:01:00Z"),
+            "rate_limited",
+            "openai:gpt",
+        )?;
+        assert_eq!(recorded.consecutive_failures, 1);
+        assert_eq!(
+            db.provider_quota_incident("quota-key")?.as_ref(),
+            Some(&recorded)
+        );
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let persisted = reopened
+            .provider_quota_incident("quota-key")?
+            .expect("incident should survive reopen");
+        assert_eq!(persisted.incident_id, recorded.incident_id);
+        assert_eq!(persisted.consecutive_failures, 1);
+        assert_eq!(
+            persisted.next_retry_at.as_deref(),
+            Some("2026-10-10T17:01:00Z")
+        );
+
+        reopened.resolve_provider_quota_incident("quota-key", "2026-10-10T17:02:00Z")?;
+        let resolved = reopened
+            .provider_quota_incident("quota-key")?
+            .expect("resolved incident remains auditable");
+        assert_eq!(resolved.consecutive_failures, 0);
+        assert_eq!(resolved.next_retry_at, None);
+        assert_eq!(
+            resolved.resolved_at.as_deref(),
+            Some("2026-10-10T17:02:00Z")
+        );
+
+        let next_episode = reopened.record_provider_quota_failure(
+            "quota-key",
+            "provider-quota:quota-key:next",
+            "2026-10-10T18:00:00Z",
+            Some("2026-10-10T18:01:00Z"),
+            "rate_limited",
+            "openai:gpt",
+        )?;
+        assert_eq!(next_episode.consecutive_failures, 1);
+        assert_eq!(next_episode.opened_at, "2026-10-10T18:00:00Z");
+        assert_eq!(next_episode.incident_id, "provider-quota:quota-key:next");
+        assert_ne!(next_episode.incident_id, resolved.incident_id);
+
+        let other_identity = reopened.record_provider_quota_failure(
+            "other-quota-key",
+            "provider-quota:other-quota-key",
+            "2026-10-10T18:00:00Z",
+            None,
+            "rate_limited",
+            "openai:gpt",
+        )?;
+        assert_eq!(other_identity.consecutive_failures, 1);
+        assert_eq!(
+            reopened
+                .provider_quota_incident("quota-key")?
+                .expect("primary incident should remain isolated")
+                .consecutive_failures,
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
     fn legacy_turn_owner_fallback_is_conservative() {
         let mut work_item_turn = TurnRecord::new("agent-owner", "turn-work", 1);
         work_item_turn.current_work_item_id = Some("work-1".into());

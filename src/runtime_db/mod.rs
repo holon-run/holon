@@ -378,6 +378,20 @@ pub struct RuntimeDb {
     observer_sync_self_heal_last_attempt_ms: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderQuotaIncident {
+    pub identity_key: String,
+    pub incident_id: String,
+    pub revision: i64,
+    pub consecutive_failures: i64,
+    pub next_retry_at: Option<String>,
+    pub last_failure_kind: Option<String>,
+    pub last_model_ref: Option<String>,
+    pub opened_at: String,
+    pub last_failed_at: String,
+    pub resolved_at: Option<String>,
+}
+
 impl fmt::Debug for RuntimeDb {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -605,6 +619,124 @@ impl RuntimeDb {
 
     pub fn connection(&self) -> Result<Connection> {
         self.writer.open_connection()
+    }
+
+    pub fn record_provider_quota_failure(
+        &self,
+        identity_key: &str,
+        incident_id: &str,
+        failed_at: &str,
+        next_retry_at: Option<&str>,
+        failure_kind: &str,
+        model_ref: &str,
+    ) -> Result<ProviderQuotaIncident> {
+        self.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO provider_quota_incidents (
+                    identity_key, incident_id, revision, consecutive_failures,
+                    next_retry_at, last_failure_kind, last_model_ref,
+                    opened_at, last_failed_at, resolved_at
+                 ) VALUES (?1, ?2, 1, 1, ?3, ?4, ?5, ?6, ?6, NULL)
+                 ON CONFLICT(identity_key) DO UPDATE SET
+                    revision = provider_quota_incidents.revision + 1,
+                    consecutive_failures = CASE
+                        WHEN provider_quota_incidents.resolved_at IS NULL
+                        THEN provider_quota_incidents.consecutive_failures + 1
+                        ELSE 1
+                    END,
+                    incident_id = CASE
+                        WHEN provider_quota_incidents.resolved_at IS NULL
+                        THEN provider_quota_incidents.incident_id
+                        ELSE excluded.incident_id
+                    END,
+                    next_retry_at = excluded.next_retry_at,
+                    last_failure_kind = excluded.last_failure_kind,
+                    last_model_ref = excluded.last_model_ref,
+                    last_failed_at = excluded.last_failed_at,
+                    opened_at = CASE
+                        WHEN provider_quota_incidents.resolved_at IS NULL
+                        THEN provider_quota_incidents.opened_at
+                        ELSE excluded.opened_at
+                    END,
+                    resolved_at = NULL",
+                rusqlite::params![
+                    identity_key,
+                    incident_id,
+                    next_retry_at,
+                    failure_kind,
+                    model_ref,
+                    failed_at
+                ],
+            )?;
+            Ok(tx.query_row(
+                "SELECT identity_key, incident_id, revision, consecutive_failures,
+                        next_retry_at, last_failure_kind, last_model_ref,
+                        opened_at, last_failed_at, resolved_at
+                 FROM provider_quota_incidents WHERE identity_key = ?1",
+                [identity_key],
+                |row| {
+                    Ok(ProviderQuotaIncident {
+                        identity_key: row.get(0)?,
+                        incident_id: row.get(1)?,
+                        revision: row.get(2)?,
+                        consecutive_failures: row.get(3)?,
+                        next_retry_at: row.get(4)?,
+                        last_failure_kind: row.get(5)?,
+                        last_model_ref: row.get(6)?,
+                        opened_at: row.get(7)?,
+                        last_failed_at: row.get(8)?,
+                        resolved_at: row.get(9)?,
+                    })
+                },
+            )?)
+        })
+    }
+
+    pub fn provider_quota_incident(
+        &self,
+        identity_key: &str,
+    ) -> Result<Option<ProviderQuotaIncident>> {
+        self.connection()?
+            .query_row(
+                "SELECT identity_key, incident_id, revision, consecutive_failures,
+                    next_retry_at, last_failure_kind, last_model_ref,
+                    opened_at, last_failed_at, resolved_at
+             FROM provider_quota_incidents WHERE identity_key = ?1",
+                [identity_key],
+                |row| {
+                    Ok(ProviderQuotaIncident {
+                        identity_key: row.get(0)?,
+                        incident_id: row.get(1)?,
+                        revision: row.get(2)?,
+                        consecutive_failures: row.get(3)?,
+                        next_retry_at: row.get(4)?,
+                        last_failure_kind: row.get(5)?,
+                        last_model_ref: row.get(6)?,
+                        opened_at: row.get(7)?,
+                        last_failed_at: row.get(8)?,
+                        resolved_at: row.get(9)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn resolve_provider_quota_incident(
+        &self,
+        identity_key: &str,
+        resolved_at: &str,
+    ) -> Result<()> {
+        self.transaction(|tx| {
+            tx.execute(
+                "UPDATE provider_quota_incidents
+                 SET revision = revision + 1, consecutive_failures = 0,
+                     next_retry_at = NULL, resolved_at = ?2
+                 WHERE identity_key = ?1",
+                rusqlite::params![identity_key, resolved_at],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn protection_status(&self) -> RuntimeDbProtectionStatus {

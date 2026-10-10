@@ -3884,6 +3884,26 @@ CREATE INDEX idx_task_result_settlements_due
   ON task_result_settlements(agent_id, next_recheck_at, state);
 "#,
     },
+    Migration {
+        version: 80,
+        name: "provider_quota_incidents",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS provider_quota_incidents (
+  identity_key TEXT PRIMARY KEY,
+  incident_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  consecutive_failures INTEGER NOT NULL CHECK (consecutive_failures >= 0),
+  next_retry_at TEXT,
+  last_failure_kind TEXT,
+  last_model_ref TEXT,
+  opened_at TEXT NOT NULL,
+  last_failed_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_provider_quota_incidents_retry
+  ON provider_quota_incidents(next_retry_at, consecutive_failures);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

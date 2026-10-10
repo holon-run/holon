@@ -17,8 +17,9 @@ use crate::prompt::{time::RuntimeTime, EffectivePrompt};
 use crate::provider::{
     provider_attempt_timeline, provider_error_is_context_length_exceeded, AgentProvider,
     ModelBlock, ProviderAttemptOutcome, ProviderAttemptTimeline, ProviderFallbackDisposition,
-    ProviderTurnRequest, ProviderTurnResponse, ToolResultBlock, PROVIDER_RECOVERY_BASE_BACKOFF_MS,
-    PROVIDER_RECOVERY_MAX_BACKOFF_MS, PROVIDER_RECOVERY_MAX_FALLBACKS,
+    ProviderQuotaIdentity, ProviderTurnRequest, ProviderTurnResponse, ToolResultBlock,
+    PROVIDER_RECOVERY_BASE_BACKOFF_MS, PROVIDER_RECOVERY_MAX_BACKOFF_MS,
+    PROVIDER_RECOVERY_MAX_FALLBACKS,
 };
 use crate::runtime::provider_turn::{
     append_inference_time, build_continuation_request, build_initial_provider_turn_request,
@@ -65,7 +66,7 @@ use super::{
 use super::{truncate_preview, CHECKPOINT_RESUME_PROMPT};
 use crate::runtime::{
     combine_text_history, is_max_output_stop_reason, message_dispatch::message_text, scheduler,
-    CurrentRunAborted, RuntimeHandle,
+    CurrentRunAborted, RuntimeHandle, WaitForWakeKind,
 };
 
 enum OperatorInterjectionPlan {
@@ -532,6 +533,118 @@ impl RuntimeHandle {
             side_effect_boundary_crossed,
             &provider_failure_text,
         );
+        let latest_rate_limit = timeline
+            .attempts
+            .iter()
+            .rev()
+            .find(|attempt| attempt.outcome != ProviderAttemptOutcome::Succeeded)
+            .and_then(|attempt| {
+                (attempt.failure_kind.as_deref() == Some("rate_limited")).then_some(attempt)
+            });
+        let quota_incident = if let Some(attempt) = latest_rate_limit {
+            let identity = attempt
+                .transport_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.quota_identity.clone())
+                .unwrap_or_else(|| {
+                    ProviderQuotaIdentity::coarse(
+                        "agent-provider-route",
+                        &format!("{agent_id}:{}", attempt.model_ref),
+                    )
+                });
+            let identity_key = serde_json::to_string(&identity)?;
+            let failed_at = self.now().to_rfc3339();
+            let retry_at = recovery_delay_ms.map(|delay| {
+                (self.now()
+                    + chrono::Duration::milliseconds(i64::try_from(delay).unwrap_or(i64::MAX)))
+                .to_rfc3339()
+            });
+            let incident_id = format!(
+                "provider-quota:{}:{}",
+                identity_key,
+                uuid::Uuid::new_v4().simple()
+            );
+            let incident = self.inner.runtime_db.record_provider_quota_failure(
+                &identity_key,
+                &incident_id,
+                &failed_at,
+                retry_at.as_deref(),
+                "rate_limited",
+                &attempt.model_ref,
+            )?;
+            Some((identity_key, incident))
+        } else {
+            None
+        };
+        if let Some((identity_key, incident)) = quota_incident.as_ref() {
+            if incident.consecutive_failures >= 3 {
+                let terminal = self
+                    .persist_turn_terminal_record(
+                        terminal_kind,
+                        Some(operator_message.clone()),
+                        None,
+                        duration_ms,
+                        None,
+                        persist_terminal,
+                    )
+                    .await?;
+                let work_item_id = {
+                    let guard = self.inner.agent.lock().await;
+                    guard
+                        .state
+                        .current_execution_binding
+                        .as_ref()
+                        .and_then(|binding| binding.work_item_id.clone())
+                };
+                let wait = self
+                    .register_wait_for(
+                        agent_id,
+                        work_item_id,
+                        WaitForWakeKind::System,
+                        Some((*identity_key).clone()),
+                        format!(
+                            "provider quota incident {} is parked until {}",
+                            incident.incident_id,
+                            incident
+                                .next_retry_at
+                                .as_deref()
+                                .unwrap_or("a later scheduler recheck")
+                        ),
+                        recovery_delay_ms.or(Some(1_000)),
+                    )
+                    .await?;
+                self.inner.storage.append_event(&AuditEvent::legacy(
+                    "provider_quota_exhausted",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "round": round,
+                        "incident_id": incident.incident_id,
+                        "identity_key": incident.identity_key,
+                        "consecutive_failures": incident.consecutive_failures,
+                        "next_retry_at": incident.next_retry_at,
+                        "wait_condition_id": wait.condition.id,
+                        "parked": true,
+                    }),
+                ))?;
+                return Ok(Some(AgentLoopOutcome {
+                    final_text: format!(
+                        "Provider quota is temporarily unavailable; the current WorkItem is parked until the next probe. {}",
+                        provider_failure_text
+                    ),
+                    final_citations: Vec::new(),
+                    final_text_source_assistant_round_id: None,
+                    turn_index: terminal.turn_index,
+                    terminal,
+                    should_sleep: false,
+                    sleep_duration_ms: None,
+                    allow_sleep_runnable_work_override: false,
+                    terminal_kind,
+                    prepared_work_item_completion: None,
+                    prepared_wait_for: None,
+                    terminal_tool_executions: Vec::new(),
+                }));
+            }
+        }
         self.inner.storage.append_event(&AuditEvent::legacy(
             "lineage_retry_exhausted",
             serde_json::json!({
@@ -2046,19 +2159,51 @@ impl TurnExecution<'_> {
                         &result,
                     );
                     break Ok(match result {
-                        Ok((response, attempt_timeline)) => ProviderRoundResult::Completed((
-                            response,
-                            attempt_timeline,
-                            context_management
-                                .as_object()
-                                .cloned()
-                                .unwrap_or_default(),
-                            context_build_ms,
-                            provider_started_at,
-                            provider_completed_at,
-                            provider_round_ms,
-                            None,
-                        )),
+                        Ok((response, attempt_timeline)) => {
+                            if let Some(timeline) = attempt_timeline.as_ref() {
+                                for attempt in timeline.attempts.iter().filter(|attempt| {
+                                    attempt.failure_kind.as_deref() == Some("rate_limited")
+                                }) {
+                                    let identity = attempt
+                                        .transport_diagnostics
+                                        .as_ref()
+                                        .and_then(|diagnostics| diagnostics.quota_identity.clone())
+                                        .unwrap_or_else(|| {
+                                            ProviderQuotaIdentity::coarse(
+                                                "agent-provider-route",
+                                                &format!("{agent_id}:{}", attempt.model_ref),
+                                            )
+                                        });
+                                    let identity_key = serde_json::to_string(&identity)?;
+                                    runtime.inner.runtime_db.resolve_provider_quota_incident(
+                                        &identity_key,
+                                        &runtime.now().to_rfc3339(),
+                                    )?;
+                                    runtime.inner.storage.append_event(&AuditEvent::legacy(
+                                        "provider_quota_resolved",
+                                        serde_json::json!({
+                                            "agent_id": agent_id,
+                                            "round": round,
+                                            "identity_key": identity_key,
+                                            "model_ref": attempt.model_ref,
+                                        }),
+                                    ))?;
+                                }
+                            }
+                            ProviderRoundResult::Completed((
+                                response,
+                                attempt_timeline,
+                                context_management
+                                    .as_object()
+                                    .cloned()
+                                    .unwrap_or_default(),
+                                context_build_ms,
+                                provider_started_at,
+                                provider_completed_at,
+                                provider_round_ms,
+                                None,
+                            ))
+                        }
                         Err(err) => {
                             if let Some(aborted) = err.downcast_ref::<CurrentRunAborted>() {
                                 runtime
