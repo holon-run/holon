@@ -375,6 +375,7 @@
 "report.selectResponse" = "请选择要举报的 AI 回复。仅能举报公开可见的助手回复。";
 "report.noResponses" = "本页暂无可举报的 AI 回复。";
 "report.response" = "选中的回复";
+"report.viewFullResponse" = "查看完整回复";
 "report.previewTruncated" = "预览仅显示前 8,000 个字符。举报引用的是这条完整回复，而不只是预览。";
 "report.destination" = "举报接收方";
 "report.disclosure" = "举报发送到您当前连接的 Holon runtime，仅提交 Agent、轮次和回复标识、所选原因及可选说明。runtime 会保存选中回复的有限长度快照；应用不会上传整段对话。";

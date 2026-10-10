@@ -161,6 +161,7 @@ class UIFixtureSetupContracts(unittest.TestCase):
         cases = self.run_setup(initialize, install, share=False, report=True)
         methods = {method for method, _ in cases}
         self.assertTrue({
+            "testContentReportFullResponseIncludesTail",
             "testContentReportConfirmationCancelDoesNotPersist",
             "testContentReportInvalidExplanationCannotShowAccepted",
             "testContentReportAcceptedReceiptCannotSubmitTwice",

@@ -44,6 +44,20 @@ final class ContentReportingTests: XCTestCase {
         XCTAssertNil(ContentReportTarget(turnID: "turn", activity: try activity(), detail: detail(id: "other")))
     }
 
+    func testFullResponseReaderKeepsContentBeyondPreviewWithoutActiveLinks() throws {
+        let full = String(repeating: "report body ", count: 1_000) + "\nREPORT_TAIL_SENTINEL"
+        let target = try XCTUnwrap(ContentReportTarget(turnID: "turn", activity: activity(),
+            detail: detail(data: .object(["text": .string(full)]))))
+        XCTAssertGreaterThan(target.text.count, 8_000)
+        XCTAssertFalse(String(target.text.prefix(8_000)).contains("REPORT_TAIL_SENTINEL"))
+        let native = RichTextSelectionView.makeTextView(text: target.text)
+        XCTAssertEqual(native.text, full)
+        XCTAssertTrue(native.text.hasSuffix("REPORT_TAIL_SENTINEL"))
+        XCTAssertFalse(native.isEditable)
+        XCTAssertTrue(native.isSelectable)
+        XCTAssertTrue(native.dataDetectorTypes.isEmpty)
+    }
+
     func testPrivateNonTextAndWrongTurnTargetsAreRejected() throws {
         for data: JSONValue in [
             .object(["visibility": .string("runtime_private"), "text": .string("private")]),

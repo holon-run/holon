@@ -18,19 +18,20 @@ After rebasing onto the real content-report API, run on the isolated simulator:
 
 ```sh
 IOS_RICH_ACCEPTANCE=1 IOS_CONTENT_REPORT_ACCEPTANCE=1 \
-IOS_UI_CASES=testContentReportConfirmationCancelDoesNotPersist,testContentReportInvalidExplanationCannotShowAccepted,testContentReportAcceptedReceiptCannotSubmitTwice \
+IOS_UI_CASES=testContentReportFullResponseIncludesTail,testContentReportConfirmationCancelDoesNotPersist,testContentReportInvalidExplanationCannotShowAccepted,testContentReportAcceptedReceiptCannotSubmitTwice \
 make ios-ui-test
 ```
 
 These English/light/system-`large` cases reuse shipped pairing and reading UI.
-They select a real assistant transcript, cancel native confirmation without a
+They select a real assistant transcript, verify its tail beyond the 8,000-character
+preview in the native full-response reader, cancel confirmation without a
 write, reject a 2,001-character explanation without fake acceptance, and confirm
 a real accepted receipt with a `report_…` ID. Accepted drafts cannot submit again,
 including after foreground restoration. The harness checks the actual SQLite
 report count after each case, and checks the accepted row's agent, turn, category,
 explanation, content snapshot, persisted `received` status and client request ID.
-It never prints credentials. This is not server-error or lost-response coverage:
-that requires a separately authorized failure fixture.
+It never prints credentials. These UI cases do not simulate server errors or a
+lost report response; those paths are covered by SDK/hosted tests instead.
 
 The harness must explicitly export the following `TEST_RUNNER_` variables to
 `xcodebuild`. Xcode forwards them into the test runner with that prefix removed.

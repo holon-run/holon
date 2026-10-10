@@ -90,6 +90,8 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     f"File: {root / 'holon' / 'agents' / 'holon-tester' / 'ios-populated.txt'}")
             if tool_calls:
                 text = f"IOS_RICH_ASSISTANT: read-only inspection batch {FakeProvider.rich_batches}."
+                if report_acceptance:
+                    text += "\n\n" + "safe-report-body " * 600 + "\nIOS_CONTENT_REPORT_TAIL"
             elif history_acceptance:
                 text = "IOS_POPULATED_BRIEF: History fixture result."
             finish_reason = "tool_calls" if tool_calls else "stop"
@@ -503,6 +505,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     cases.append(("testDirectAgentShareWorkflow", "large"))
                 if report_acceptance:
                     cases.extend([
+                        ("testContentReportFullResponseIncludesTail", "large"),
                         ("testContentReportConfirmationCancelDoesNotPersist", "large"),
                         ("testContentReportInvalidExplanationCannotShowAccepted", "large"),
                         ("testContentReportAcceptedReceiptCannotSubmitTwice", "large"),
@@ -547,6 +550,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                             if method in {"testAuthenticatedNativeWorkflow", "testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored",
                                           "testDirectAgentShareWorkflow", "testNetworkManagementWorkflow",
                                           "testTaskResultProcessWorkflow",
+                                          "testContentReportFullResponseIncludesTail",
                                           "testContentReportConfirmationCancelDoesNotPersist",
                                           "testContentReportInvalidExplanationCannotShowAccepted",
                                           "testContentReportAcceptedReceiptCannotSubmitTwice"}:

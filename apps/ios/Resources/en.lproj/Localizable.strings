@@ -375,6 +375,7 @@
 "report.selectResponse" = "Select the AI response you want to report. Only public assistant responses can be reported.";
 "report.noResponses" = "No reportable AI responses are available in this page.";
 "report.response" = "Selected response";
+"report.viewFullResponse" = "View full response";
 "report.previewTruncated" = "This preview shows the first 8,000 characters. The report refers to this entire response, not just the preview.";
 "report.destination" = "Report destination";
 "report.disclosure" = "This report goes to your connected Holon runtime. It sends the Agent, turn and response identifiers, selected reason and optional explanation. The runtime stores a bounded snapshot of the selected response; the app does not upload your whole conversation.";

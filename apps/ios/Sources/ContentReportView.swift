@@ -10,6 +10,7 @@ struct ContentReportView: View {
     @State private var draft: ContentReportDraft?
     @State private var targetUnavailable = false
     @State private var confirming = false
+    @State private var readingFullResponse = false
 
     var body: some View {
         NavigationStack {
@@ -86,6 +87,18 @@ struct ContentReportView: View {
         Section("report.response") {
             Text(verbatim: String(draft.target.text.prefix(8_000))).textSelection(.enabled)
             if draft.target.text.count > 8_000 { Text("report.previewTruncated").font(.caption) }
+            Button("report.viewFullResponse", systemImage: "text.alignleft") { readingFullResponse = true }
+                .accessibilityIdentifier("report.viewFullResponse")
+                .sheet(isPresented: $readingFullResponse) {
+                    NavigationStack {
+                        RichTextSelectionView(text: draft.target.text)
+                            .navigationTitle("report.response").navigationBarTitleDisplayMode(.inline)
+                            .toolbar {
+                                Button("files.dismiss") { readingFullResponse = false }
+                                    .accessibilityIdentifier("report.fullResponseDismiss")
+                            }
+                    }
+                }
         }
         Section("report.destination") {
             Text(verbatim: scope.partition.api).font(.caption).textSelection(.enabled)

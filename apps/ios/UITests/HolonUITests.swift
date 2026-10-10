@@ -719,6 +719,21 @@ final class HolonUITests: XCTestCase {
         return app
     }
 
+    func testContentReportFullResponseIncludesTail() throws {
+        let app = try openContentReport()
+        defer { app.terminate() }
+        let full = app.buttons["report.viewFullResponse"]
+        reveal(full, in: app); full.tap()
+        let source = app.textViews["reading.selectionText"]
+        XCTAssertTrue(source.waitForExistence(timeout: 10))
+        let content = try XCTUnwrap(source.value as? String)
+        XCTAssertGreaterThan(content.count, 8_000)
+        XCTAssertTrue(content.hasSuffix("IOS_CONTENT_REPORT_TAIL"), "Full preview must include the selected response's tail")
+        app.buttons["report.fullResponseDismiss"].tap()
+        XCTAssertFalse(app.descendants(matching: .any)["report.accepted"].firstMatch.exists)
+        app.buttons["report.dismiss"].tap()
+    }
+
     func testContentReportConfirmationCancelDoesNotPersist() throws {
         let app = try openContentReport()
         defer { app.terminate() }
