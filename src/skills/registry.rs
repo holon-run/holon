@@ -141,18 +141,23 @@ impl SkillsRegistry {
             return Ok(false);
         };
         let registration = self.roots[root_index].clone();
+        let input_fingerprint_before = Self::root_input_fingerprint(&registration);
         let (entries, scan_status) = Self::scan_root(&registration);
+        let input_fingerprint_after = Self::root_input_fingerprint(&registration);
 
         self.entries
             .retain(|entry| !entry.path.starts_with(&registration.root_path));
         self.entries.extend(entries);
         self.roots[root_index].scan_status = scan_status;
-        if let Some(fingerprint) = Self::root_input_fingerprint(&registration) {
-            self.root_fingerprints
-                .insert(normalize_path(&registration.root_path), fingerprint);
+        let root_key = normalize_path(&registration.root_path);
+        if input_fingerprint_before == input_fingerprint_after {
+            if let Some(fingerprint) = input_fingerprint_after {
+                self.root_fingerprints.insert(root_key, fingerprint);
+            } else {
+                self.root_fingerprints.remove(&root_key);
+            }
         } else {
-            self.root_fingerprints
-                .remove(&normalize_path(&registration.root_path));
+            self.root_fingerprints.remove(&root_key);
         }
         Ok(true)
     }
@@ -165,12 +170,16 @@ impl SkillsRegistry {
         let mut next_entries = Vec::new();
         self.root_fingerprints.clear();
         for root in &mut self.roots {
+            let input_fingerprint_before = Self::root_input_fingerprint(root);
             let (entries, scan_status) = Self::scan_root(root);
+            let input_fingerprint_after = Self::root_input_fingerprint(root);
             next_entries.extend(entries);
             root.scan_status = scan_status;
-            if let Some(fingerprint) = Self::root_input_fingerprint(root) {
-                self.root_fingerprints
-                    .insert(normalize_path(&root.root_path), fingerprint);
+            if input_fingerprint_before == input_fingerprint_after {
+                if let Some(fingerprint) = input_fingerprint_after {
+                    self.root_fingerprints
+                        .insert(normalize_path(&root.root_path), fingerprint);
+                }
             }
         }
         self.entries = next_entries;
