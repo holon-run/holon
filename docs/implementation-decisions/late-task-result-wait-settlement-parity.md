@@ -33,6 +33,8 @@ resolved/cancelled waits stay rejected.
 `Triggered -> Resolved` still happens only in the canonical consuming claim
 (`wait_resolution_transition_for_message`), and the claim still clears a
 WorkItem blocker only when it equals the wait's own `waiting_for` text.
-Independent blockers held by other owners or agent-scope waits keep the
-existing settlement-ledger deferred recheck path; `blocked_by` remains a
-compatibility/display field, not a new scheduler authority.
+The late fast path preserves an existing independent `blocked_by` value rather
+than replacing it. The scheduler therefore reduces an exact task result when
+that blocker does not match the task wait; the task-result settlement ledger
+then provides the owner-scoped recovery wake after the blocker is explicitly
+cleared. A matching derived blocker remains eligible for the canonical claim.

@@ -6213,8 +6213,7 @@ async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentr
     assert_eq!(task_id, terminal_task.id);
     assert_eq!(result_message_id, result.id);
 
-    // The late fast path must leave the normal registration's durable wait
-    // semantics: derived blocker replaces the independent one and the
+    // The late fast path must preserve an unrelated blocker while the
     // canonical execution state waits on the exact task wait.
     let blocked = runtime
         .latest_work_item(&work_item.id)
@@ -6223,7 +6222,7 @@ async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentr
         .unwrap();
     assert_eq!(
         blocked.blocked_by.as_deref(),
-        Some("Waiting on a task result.")
+        Some("Waiting on an external change.")
     );
     let execution = runtime
         .inner
@@ -6238,26 +6237,114 @@ async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentr
             if wait.wait_id == wait_condition_id
     ));
 
-    // The exact wake must claim a canonical model turn even though the
-    // WorkItem carried an independent blocker before the late registration.
+    // The exact wake must not bypass the independent blocker. It is reduced
+    // into the settlement ledger for an owner-scoped recovery wake.
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()
         .await
         .unwrap();
     let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
-        panic!("late task result with an exact wait should claim a canonical model turn");
+        panic!("late task result should remain durably queued");
     };
     assert_eq!(scheduled.message.id, result.id);
-    assert!(scheduled.scheduler_decision.model_reentry);
-    assert!(matches!(
-        scheduled.dispatch_plan.execution_admission_provenance,
-        Some(crate::types::ExecutionAdmissionProvenance::Canonical { .. })
-    ));
-    runtime
-        .process_message_with_plan(
-            scheduled.message,
+    assert!(!scheduled.scheduler_decision.model_reentry);
+    let scheduled_message = scheduled.message;
+    let scheduled_transition = runtime
+        .process_message_with_plan_deferred(
+            scheduled_message.clone(),
             scheduled.dispatch_plan,
             &scheduled.scheduler_decision,
+        )
+        .await
+        .unwrap();
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: scheduled_message.id,
+                agent_id: scheduled_message.agent_id,
+                priority: scheduled_message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: scheduled_message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&scheduled_transition),
+        )
+        .await
+        .unwrap();
+
+    let settlement = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&result.id)
+        .unwrap()
+        .expect("late task result must keep a durable settlement record");
+    assert_eq!(
+        settlement.state,
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
+    );
+    assert_eq!(
+        settlement.work_item_id.as_deref(),
+        Some(work_item.id.as_str())
+    );
+
+    runtime
+        .pick_work_item_with_reason_and_clear_blocker(
+            work_item.id.clone(),
+            Some("external blocker cleared".into()),
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .latest_work_item(&work_item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .blocked_by,
+        None
+    );
+    assert!(
+        runtime.emit_due_task_result_recovery().await.unwrap(),
+        "clearing the independent blocker should wake the owner-scoped settlement"
+    );
+    let recovery_poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(recovery) = recovery_poll else {
+        panic!("owner-scoped task-result recovery should be queued");
+    };
+    assert!(recovery.scheduler_decision.model_reentry);
+    assert!(matches!(
+        recovery.message.origin,
+        MessageOrigin::System { ref subsystem } if subsystem == "task_result_recovery"
+    ));
+    let recovery_message = recovery.message;
+    let recovery_transition = runtime
+        .process_message_with_plan_deferred(
+            recovery_message.clone(),
+            recovery.dispatch_plan,
+            &recovery.scheduler_decision,
+        )
+        .await
+        .unwrap();
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: recovery_message.id,
+                agent_id: recovery_message.agent_id,
+                priority: recovery_message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: recovery_message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&recovery_transition),
         )
         .await
         .unwrap();
@@ -6284,9 +6371,10 @@ async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentr
         .latest_for_message(&result.id)
         .unwrap()
         .expect("late task result must keep a durable settlement record");
-    assert_ne!(
+    eprintln!("settlement after recovery: {settlement:#?}");
+    assert_eq!(
         settlement.state,
-        crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
     );
     assert_eq!(
         settlement.work_item_id.as_deref(),

@@ -995,9 +995,12 @@ impl RuntimeHandle {
         if let Some(existing) = existing_waiter_work_item.as_ref() {
             let mut updated = WorkItemRecord {
                 revision: existing.revision + 1,
-                blocked_by: Some(condition.waiting_for.clone()),
-                recheck_at: None,
-                recheck_consumed_at: None,
+                blocked_by: existing
+                    .blocked_by
+                    .clone()
+                    .or_else(|| Some(condition.waiting_for.clone())),
+                recheck_at: existing.recheck_at,
+                recheck_consumed_at: existing.recheck_consumed_at,
                 updated_at: now,
                 ..existing.clone()
             };
