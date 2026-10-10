@@ -249,7 +249,8 @@ struct HolonApp: App {
                     openReference: { reference in
                         guard files.selectedAgentID == agent else { return }
                         router.path.append(.file(agent, .source(.reference(reference))))
-                    }, openWork: { workID in router.path.append(.workDetail(agent, .item(workID))) })
+                    }, openWork: { workID in router.path.append(.workDetail(agent, .item(workID))) },
+                    openTask: { taskID in router.path.append(.workDetail(agent, .task(taskID))) })
                     .id(agent)
             } else { ProgressView("reading.loadingConversation") }
         case .work(let agent), .workDetail(let agent, _):

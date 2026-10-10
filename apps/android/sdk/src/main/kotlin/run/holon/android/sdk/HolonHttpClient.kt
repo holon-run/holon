@@ -551,6 +551,7 @@ public class HolonHttpClient internal constructor(
             text = raw.string("text").orEmpty(),
             attachments = attachments,
             relatedTaskId = raw.string("related_task_id"),
+            relatedMessageId = raw.string("related_message_id"),
         )
     }
 

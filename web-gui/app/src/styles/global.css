@@ -7499,11 +7499,19 @@ code {
 .file-browser-location svg { flex-shrink: 0; }
 .file-browser-location-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.conversation-task-result { min-width: 0; margin: 8px 0 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font-size: 12px; }
+.conversation-task-result-row { min-width: 0; color: var(--muted); font-size: 12px; padding: 4px 0; }
 .conversation-task-result-heading { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
-.conversation-task-result-heading svg { flex-shrink: 0; }
-.conversation-task-result-heading strong { flex: 1; min-width: 0; color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
-.conversation-task-result-heading > span, .conversation-task-result-heading time { font-size: 11px; }
-.conversation-task-result-preview { white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin: 8px 0; }
-.conversation-task-result.is-failed, .conversation-task-result.is-interrupted { border-color: var(--danger); }
-.conversation-task-result.is-cancelled { opacity: .8; }
+.conversation-task-result-label { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.conversation-task-result-label svg { flex: none; }
+.conversation-task-result-title, .conversation-task-result-reason { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.conversation-task-result-title { max-width: 240px; }
+.conversation-task-result-reason { max-width: 280px; }
+.conversation-task-result-label > span:not(.conversation-task-result-title):not(.conversation-task-result-reason) { flex: none; }
+.conversation-task-result-heading time { font-size: 11px; }
+.conversation-task-result-preview { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0; }
+.conversation-task-result-label.is-failed, .conversation-task-result-label.is-interrupted { color: var(--danger); }
+@media (max-width: 640px) {
+  .conversation-detail-toggle:has(.conversation-task-result-label) { display: flex; flex-wrap: wrap; text-align: left; }
+  .conversation-task-result-title { max-width: 150px; }
+  .conversation-task-result-reason { max-width: 140px; }
+}

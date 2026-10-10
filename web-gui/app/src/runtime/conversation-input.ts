@@ -67,3 +67,27 @@ export function hydrateInputActivity(activity: AgentTimelineActivity, message: R
     detail: { label: i18next.t("inspector.fullDetail"), text: presentation.text, tone: "data" }, rawEvent: message,
   };
 }
+
+
+/** Command result previews have a stable text envelope; prefer its cause to the repeated title. */
+export function taskResultFailureReason(preview: string): string {
+  const lines = preview.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (!lines[0]?.startsWith("command task ")) return lines[0] ?? "";
+  const error = lines.find((line) => line.startsWith("error:"));
+  const outputIndex = lines.indexOf("output_summary:");
+  const stderrIndex = lines.indexOf("stderr:", outputIndex + 1);
+  const output = outputIndex >= 0 ? (stderrIndex >= 0 ? lines[stderrIndex + 1]
+    : lines.slice(outputIndex + 1).find((line) => line !== "stdout:" && line !== "stderr:")) : undefined;
+  return error ?? output
+    ?? lines.find((line) => line.startsWith("exit_status:")) ?? lines[0];
+}
+
+
+/** Keep command transport metadata in the inspector; the process shows available output. */
+export function taskResultPreview(preview: string): string {
+  if (!preview.startsWith("command task ")) return preview;
+  const marker = "\noutput_summary:\n";
+  const index = preview.indexOf(marker);
+  return index >= 0 ? preview.slice(index + marker.length)
+    : preview.split("\n").find((line) => line.startsWith("error:") || line.startsWith("exit_status:")) ?? "";
+}

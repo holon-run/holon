@@ -28,6 +28,7 @@ COPY web-gui/app/package.json web-gui/app/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm ci
 COPY web-gui/app/ ./
+COPY tests/fixtures/client-wire/task-result-inputs.json /src/tests/fixtures/client-wire/task-result-inputs.json
 RUN npm run build
 
 FROM rust:bookworm AS rust-builder

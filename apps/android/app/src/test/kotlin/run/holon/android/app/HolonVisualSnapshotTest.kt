@@ -33,6 +33,21 @@ import run.holon.android.sdk.HolonBriefAttachment
 import run.holon.android.sdk.HolonPendingInput
 
 class HolonVisualSnapshotTest {
+    @Test fun taskResultsCollapsedAndExpanded() {
+        val input = run.holon.android.sdk.HolonTurnInput("result", "", null, "task", taskResult = run.holon.android.sdk.HolonTaskResultPresentation("task", "completed", "检查依赖", "已安装所有依赖。", runtimeOnly = true))
+        val turn = run.holon.android.sdk.HolonConversationTurn("turn", "", "task", listOf(input), "terminal", "completed", "none", null, emptyList(), "2026-10-10T04:00:00Z", "2026-10-10T04:00:01Z", true, buildJsonObject {})
+        paparazzi.snapshot {
+            PreviewFrame {
+                TurnProcessHeader(turn, false) {}
+                TurnProcessHeader(turn.copy(inputs = listOf(input.copy(taskResult = input.taskResult!!.copy(status = "failed", summary = "构建项目", preview = "缺少 package.json，无法开始构建。")))), false) {}
+                HorizontalDivider()
+                TurnProcessHeader(turn, true) {}
+                TaskResultProcessRow(input, turn.startedAt) {}
+                TaskResultProcessRow(input.copy(taskResult = input.taskResult!!.copy(summary = "同事回复", responseMessageId = "original-reply", preview = "internal reference")), turn.startedAt) {}
+            }
+        }
+    }
+
     @Test fun pendingBackgroundMessagesCollapsed() {
         paparazzi.snapshot {
             PreviewFrame {

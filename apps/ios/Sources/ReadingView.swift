@@ -116,6 +116,7 @@ struct ConversationReadingView: View {
     let sender: SendingCoordinator?
     var openReference: (String) -> Void
     var openWork: (String) -> Void
+    var openTask: (String) -> Void
     @State private var nearBottom = true
     @State private var follow = ConversationFollowState()
     @State private var newContent = false
@@ -186,6 +187,7 @@ struct ConversationReadingView: View {
                     ReadingTurnView(turn: turn, reader: reader)
                         .environment(\.holonOpenReference, openReference)
                         .environment(\.holonOpenWork, openWork)
+                        .environment(\.holonOpenTask, openTask)
                         .id(turn.id)
                 }
                 if turnRange.upperBound < turns.count {
@@ -198,11 +200,13 @@ struct ConversationReadingView: View {
                         if !nextRange.isEmpty { scrollRequest = .top(ids[nextRange.lowerBound]) }
                     }.accessibilityIdentifier("conversation.newer")
                 }
-                ForEach(reader.snapshot?.raw["pending_inputs"].viewArray ?? [], id: \.viewMessageID) { input in
+                ForEach((reader.snapshot?.raw["pending_inputs"].viewArray ?? []).filter { $0["presentation_class"] == .string("operator") && TaskResultInput($0) == nil }, id: \.viewMessageID) { input in
                     ReadingInputView(input: input)
                         .environment(\.holonOpenReference, openReference)
                         .accessibilityIdentifier("pending." + input.viewMessageID)
                 }
+                PendingEventsView(inputs: (reader.snapshot?.raw["pending_inputs"].viewArray ?? []).filter { $0["presentation_class"] != .string("operator") || TaskResultInput($0) != nil }, agentID: reader.selectedAgentID)
+                    .environment(\.holonOpenTask, openTask)
                 if let sender {
                     LocalMessageView(sender: sender, canonicalIDs: LocalMessageProjection.canonicalIDs(reader.snapshot?.raw))
                         .environment(\.holonOpenReference, openReference)
@@ -354,6 +358,7 @@ private struct ReadingTurnView: View {
     @Bindable var reader: ReadingCoordinator
     @State private var showActivities = false
     @State private var fullActivities = false
+    @Environment(\.holonOpenTask) private var openTask
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -369,25 +374,26 @@ private struct ReadingTurnView: View {
             ForEach(turn.raw["inputs"].viewArray, id: \.viewMessageID) { input in
                 ReadingInputView(input: input, fallbackClass: turn.raw["presentation_class"].viewString)
             }
-            ForEach(turn.raw["brief_ids"].viewArray.compactMap(\.viewString), id: \.self) { briefID in
-                ReadingBriefView(briefID: briefID, reader: reader)
-            }
             DisclosureGroup(isExpanded: $showActivities) {
                 Button("reading.fullProcess", systemImage: "arrow.up.left.and.arrow.down.right") { fullActivities = true }
                     .font(.caption).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     .accessibilityIdentifier("activities.full." + turn.id)
-                TurnActivityView(turnID: turn.id, reader: reader)
+                TurnActivityView(turnID: turn.id, reader: reader, inputs: turn.raw["inputs"].viewArray, fallbackTime: turn.raw["started_at"].viewString)
             } label: {
-                Text("reading.activities").font(.caption).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .accessibilityIdentifier("activities." + turn.id)
+                Group {
+                    if let result = TaskResultInput.header(turn.raw["inputs"].viewArray) { TaskResultLabel(result: result, showReason: true) }
+                    else { Text("reading.activities").font(.caption).foregroundStyle(.secondary) }
+                }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .accessibilityIdentifier("activities." + turn.id)
             }
             .task(id: "\(showActivities)|\(reader.activityReadKey)") {
                 if showActivities, reader.status == .live { await reader.loadActivities(turn.id) }
             }
             .sheet(isPresented: $fullActivities) {
                 NavigationStack {
-                    ScrollView { TurnActivityView(turnID: turn.id, reader: reader).padding() }
+                    ScrollView { TurnActivityView(turnID: turn.id, reader: reader, inputs: turn.raw["inputs"].viewArray, fallbackTime: turn.raw["started_at"].viewString).padding() }
+                        .environment(\.holonOpenTask, { taskID in fullActivities = false; openTask?(taskID) })
                         .accessibilityIdentifier("activities.fullReader")
                         .task(id: reader.activityReadKey) {
                             if reader.status == .live { await reader.loadActivities(turn.id) }
@@ -395,6 +401,9 @@ private struct ReadingTurnView: View {
                         .navigationTitle("reading.activities").navigationBarTitleDisplayMode(.inline)
                         .toolbar { Button("files.dismiss") { fullActivities = false } }
                 }
+            }
+            ForEach(turn.raw["brief_ids"].viewArray.compactMap(\.viewString), id: \.self) { briefID in
+                ReadingBriefView(briefID: briefID, reader: reader, inputs: turn.raw["inputs"].viewArray)
             }
             Divider()
         }
@@ -465,6 +474,7 @@ struct OperatorMessageBubble<Content: View>: View {
 private struct ReadingBriefView: View {
     let briefID: String
     @Bindable var reader: ReadingCoordinator
+    var inputs: [JSONValue] = []
     @State private var isVisible = false
     @Environment(\.holonOpenReference) private var openReference
     @Environment(\.holonOpenWork) private var openWork
@@ -472,20 +482,22 @@ private struct ReadingBriefView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let brief = reader.briefs[briefID] {
-                RichTextContent(text: BriefPresentation.text(brief), openReference: openReference)
-                ForEach(Array(brief["attachments"].viewArray.enumerated()), id: \.offset) { _, attachment in
-                    if let reference = ReadingPresentation.attachmentReference(attachment) {
-                        Button { openReference?(reference) } label: {
-                            Label(attachment["name"].viewString ?? "", systemImage: "doc")
-                                .font(.callout).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6)
-                        }.disabled(openReference == nil)
-                    } else {
-                        Label(attachment["name"].viewString ?? "", systemImage: "paperclip").font(.callout)
+                if !TaskResultInput.isRuntimeBrief(brief, inputs: inputs) {
+                    RichTextContent(text: BriefPresentation.text(brief), openReference: openReference)
+                    ForEach(Array(brief["attachments"].viewArray.enumerated()), id: \.offset) { _, attachment in
+                        if let reference = ReadingPresentation.attachmentReference(attachment) {
+                            Button { openReference?(reference) } label: {
+                                Label(attachment["name"].viewString ?? "", systemImage: "doc")
+                                    .font(.callout).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6)
+                            }.disabled(openReference == nil)
+                        } else {
+                            Label(attachment["name"].viewString ?? "", systemImage: "paperclip").font(.callout)
+                        }
                     }
-                }
-                if let workID = brief["work_item_id"].viewString {
-                    Button("work.details", systemImage: "checklist") { openWork?(workID) }.font(.caption)
-                        .disabled(openWork == nil)
+                    if let workID = brief["work_item_id"].viewString {
+                        Button("work.details", systemImage: "checklist") { openWork?(workID) }.font(.caption)
+                            .disabled(openWork == nil)
+                    }
                 }
             } else if reader.loadingBriefs.contains(briefID) {
                 ProgressView("work.loading").font(.caption)
@@ -508,7 +520,7 @@ private struct ReadingBriefView: View {
     }
 
     private func updateReadVisibility() {
-        reader.setBriefVisible(briefID, visible: isVisible)
+        reader.setBriefVisible(briefID, visible: isVisible && !(reader.briefs[briefID].map { TaskResultInput.isRuntimeBrief($0, inputs: inputs) } ?? false))
     }
 }
 

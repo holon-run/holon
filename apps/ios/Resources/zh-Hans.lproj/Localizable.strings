@@ -354,3 +354,10 @@
 "sending.camera.permission" = "相机权限被拒绝，请在 iOS 设置中开启，或选择已有照片。";
 "share.originalDestination" = "此请求属于原连接和 Agent。请恢复原连接后重试，不能改发给其他目标。";
 "share.unknownReceipt" = "Agent 可能已经接收此分享，重试会沿用原请求和原目标。";
+
+"reading.taskResult" = "收到任务结果";
+"reading.replyReceived" = "收到 Agent 回复";
+"reading.originalReply" = "查看原回复";
+"reading.pendingEvents" = "后台事件";
+"reading.assigning" = "分配中";
+"reading.queued" = "排队中";
