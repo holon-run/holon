@@ -381,7 +381,10 @@ pub struct DirEntry {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopSignal {
-    Kill,
+    /// Ask the process to exit cleanly, then use a bounded SIGKILL fallback.
+    Graceful,
+    /// Terminate the process immediately without a grace period.
+    Force,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

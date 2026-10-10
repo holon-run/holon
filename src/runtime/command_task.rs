@@ -788,7 +788,7 @@ impl RuntimeHandle {
                     }
                 }
                 _ = &mut sleep => {
-                    let _ = running.process.stop(StopSignal::Kill).await;
+                    let _ = running.process.stop(StopSignal::Graceful).await;
                     let process_completed_at = chrono::Utc::now();
                     collect_remaining_output(&mut running, &mut captured).await;
                     record_command_trace(
@@ -1183,7 +1183,7 @@ impl RuntimeHandle {
                 }
             }
             Err(err) => {
-                let _ = running.process.stop(StopSignal::Kill).await;
+                let _ = running.process.stop(StopSignal::Graceful).await;
                 let _ = running.process.wait().await;
                 let process_completed_at = chrono::Utc::now();
                 collect_remaining_output(&mut running, &mut captured).await;
@@ -1313,7 +1313,7 @@ impl RuntimeHandle {
         }
         if let Some(failure) = output_failure.clone() {
             captured.fail(failure);
-            let _ = running.process.stop(StopSignal::Kill).await;
+            let _ = running.process.stop(StopSignal::Graceful).await;
         }
         let latest_status = self
             .inner
@@ -1398,7 +1398,7 @@ impl RuntimeHandle {
                                 captured.fail(failure);
                                 if !output_stop_requested {
                                     output_stop_requested = true;
-                                    let _ = running.process.stop(StopSignal::Kill).await;
+                                    let _ = running.process.stop(StopSignal::Graceful).await;
                                 }
                             }
                         }
@@ -1429,13 +1429,13 @@ impl RuntimeHandle {
                 _ = &mut *cancel_rx, if !cancellation_requested => {
                     cancelled = true;
                     cancellation_requested = true;
-                    let _ = running.process.stop(StopSignal::Kill).await;
+                    let _ = running.process.stop(StopSignal::Graceful).await;
                 }
                 _ = &mut *force_stop_rx, if !force_stop_requested => {
                     cancelled = true;
                     cancellation_requested = true;
                     force_stop_requested = true;
-                    let _ = running.process.stop(StopSignal::Kill).await;
+                    let _ = running.process.stop(StopSignal::Force).await;
                 }
             }
         }
@@ -2003,6 +2003,7 @@ mod tests {
         wait_status: RunningProcessExitStatus,
         try_status_error: Option<String>,
         stdin: Arc<Mutex<Vec<u8>>>,
+        stop_signals: Arc<Mutex<Vec<StopSignal>>>,
     }
 
     impl FakeRunningProcess {
@@ -2013,6 +2014,7 @@ mod tests {
                 wait_status: RunningProcessExitStatus::new(Some(143), None),
                 try_status_error: None,
                 stdin: Arc::new(Mutex::new(Vec::new())),
+                stop_signals: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
@@ -2067,7 +2069,8 @@ mod tests {
             Ok(self.status.lock().await.clone())
         }
 
-        async fn stop(&mut self, _signal: StopSignal) -> Result<()> {
+        async fn stop(&mut self, signal: StopSignal) -> Result<()> {
+            self.stop_signals.lock().await.push(signal);
             *self.status.lock().await = Some(self.stop_status.clone());
             Ok(())
         }
@@ -2702,12 +2705,13 @@ mod tests {
         let spec = command_spec(false, false);
         let resolved = resolved_command(&runtime, &spec).await;
         let tool_context = crate::observability::TraceContext::new_root(true);
+        let process = FakeRunningProcess::pending();
         let task = runtime
             .register_command_task(
                 "cancel with output".into(),
                 resolved,
                 traced_running_command(
-                    FakeRunningProcess::pending(),
+                    process.clone(),
                     "partial stdout\n",
                     "partial stderr\n",
                     &tool_context,
@@ -2740,6 +2744,10 @@ mod tests {
             detail["cancelled_reason"].as_str(),
             Some("cancel_requested")
         );
+        assert_eq!(
+            process.stop_signals.lock().await.as_slice(),
+            [StopSignal::Graceful]
+        );
         assert_eq!(detail["force_stop_requested"].as_bool(), None);
         assert!(detail["output_summary"]
             .as_str()
@@ -2770,11 +2778,12 @@ mod tests {
         let (_home, _workspace, runtime) = test_runtime();
         let spec = command_spec(false, false);
         let resolved = resolved_command(&runtime, &spec).await;
+        let process = FakeRunningProcess::pending();
         let task = runtime
             .register_command_task(
                 "force stop with output".into(),
                 resolved,
-                running_command(FakeRunningProcess::pending(), "before force stop\n", ""),
+                running_command(process.clone(), "before force stop\n", ""),
                 AuthorityClass::OperatorInstruction,
                 false,
                 CapturedOutput::default(),
@@ -2801,6 +2810,10 @@ mod tests {
         assert_eq!(
             detail["cancelled_reason"].as_str(),
             Some("force_stop_requested")
+        );
+        assert_eq!(
+            process.stop_signals.lock().await.as_slice(),
+            [StopSignal::Force]
         );
         assert!(detail["output_summary"]
             .as_str()
