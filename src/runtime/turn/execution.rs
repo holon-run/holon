@@ -450,57 +450,60 @@ impl RuntimeHandle {
         let Some(timeline) = provider_attempt_timeline(error).cloned() else {
             return Ok(None);
         };
-        let fallback_ref = timeline.pending_fallback_model_ref.as_deref();
+        let Some(fallback_ref) = timeline.pending_fallback_model_ref.as_deref() else {
+            return Ok(None);
+        };
         let fallback_attempt = recovery
             .map(|directive| directive.fallback_attempt)
             .unwrap_or(0);
-        if let Some(fallback_ref) = fallback_ref {
-            if fallback_attempt >= PROVIDER_RECOVERY_MAX_FALLBACKS {
-                self.inner.storage.append_event(&AuditEvent::legacy(
-                    "provider_recovery_budget_exhausted",
-                    serde_json::json!({
-                        "agent_id": agent_id,
-                        "round": round,
-                        "fallback_attempt": fallback_attempt,
-                        "max_lineage_fallbacks": PROVIDER_RECOVERY_MAX_FALLBACKS,
-                        "pending_fallback_model_ref": fallback_ref,
-                        "provider_attempt_timeline": timeline,
-                    }),
-                ))?;
-                let error_text = error.to_string();
-                let failure_text = error_text
-                    .strip_prefix("current provider failed for this turn: ")
-                    .unwrap_or(&error_text);
-                let final_text = format!(
+        if fallback_attempt >= PROVIDER_RECOVERY_MAX_FALLBACKS {
+            self.inner.storage.append_event(&AuditEvent::legacy(
+                "provider_recovery_budget_exhausted",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "round": round,
+                    "fallback_attempt": fallback_attempt,
+                    "max_lineage_fallbacks": PROVIDER_RECOVERY_MAX_FALLBACKS,
+                    "pending_fallback_model_ref": fallback_ref,
+                    "provider_attempt_timeline": timeline,
+                }),
+            ))?;
+            let error_text = error.to_string();
+            let failure_text = error_text
+                .strip_prefix("current provider failed for this turn: ")
+                .unwrap_or(&error_text);
+            let final_text = format!(
                 "Provider recovery budget exhausted for this turn; no further fallback will be attempted: {}.",
                 provider_lineage_failure_text(failure_text)
             );
-                let terminal = self
-                    .persist_turn_terminal_record(
-                        TurnTerminalKind::Aborted,
-                        Some(final_text.clone()),
-                        None,
-                        duration_ms,
-                        None,
-                        persist_terminal,
-                    )
-                    .await?;
-                return Ok(Some(AgentLoopOutcome {
-                    final_text,
-                    final_citations: Vec::new(),
-                    final_text_source_assistant_round_id: None,
-                    turn_index: terminal.turn_index,
-                    terminal,
-                    should_sleep: false,
-                    sleep_duration_ms: None,
-                    allow_sleep_runnable_work_override: false,
-                    terminal_kind: TurnTerminalKind::Aborted,
-                    prepared_work_item_completion: None,
-                    prepared_wait_for: None,
-                    terminal_tool_executions: Vec::new(),
-                }));
-            }
+            let terminal = self
+                .persist_turn_terminal_record(
+                    TurnTerminalKind::Aborted,
+                    Some(final_text.clone()),
+                    None,
+                    duration_ms,
+                    None,
+                    persist_terminal,
+                )
+                .await?;
+            return Ok(Some(AgentLoopOutcome {
+                final_text,
+                final_citations: Vec::new(),
+                final_text_source_assistant_round_id: None,
+                turn_index: terminal.turn_index,
+                terminal,
+                should_sleep: false,
+                sleep_duration_ms: None,
+                allow_sleep_runnable_work_override: false,
+                terminal_kind: TurnTerminalKind::Aborted,
+                prepared_work_item_completion: None,
+                prepared_wait_for: None,
+                terminal_tool_executions: Vec::new(),
+            }));
         }
+        let Ok(fallback_model) = ModelRouteRef::parse_compatible(fallback_ref) else {
+            return Ok(None);
+        };
         let terminal_kind = if side_effect_boundary_crossed {
             TurnTerminalKind::ProviderFailedNeedsRecovery
         } else {
@@ -517,25 +520,19 @@ impl RuntimeHandle {
                     })
             })
             .unwrap_or(agent_id);
-        let recovery_route_ref = fallback_ref
-            .or_else(|| {
-                timeline
-                    .attempts
-                    .last()
-                    .map(|attempt| attempt.model_ref.as_str())
-            })
-            .unwrap_or("provider");
         let recovery_delay_ms = matches!(
             timeline.pending_fallback_disposition,
             Some(ProviderFallbackDisposition::Deferred)
         )
         .then(|| {
-            provider_recovery_delay_ms(
-                fallback_attempt,
-                &format!("{recovery_seed}:{recovery_route_ref}"),
-            )
+            provider_recovery_delay_ms(fallback_attempt, &format!("{recovery_seed}:{fallback_ref}"))
         });
         let provider_failure_text = provider_lineage_failure_text(&error_text);
+        let operator_message = provider_lineage_operator_message(
+            fallback_ref,
+            side_effect_boundary_crossed,
+            &provider_failure_text,
+        );
         let latest_rate_limit = timeline
             .attempts
             .iter()
@@ -581,33 +578,6 @@ impl RuntimeHandle {
         };
         if let Some((identity_key, incident)) = quota_incident.as_ref() {
             if incident.consecutive_failures >= 3 {
-                let parking_delay_ms = provider_recovery_delay_ms(
-                    usize::try_from(incident.consecutive_failures.saturating_sub(3))
-                        .unwrap_or(usize::MAX),
-                    &format!("{recovery_seed}:{recovery_route_ref}"),
-                );
-                let parking_retry_at = (self.now()
-                    + chrono::Duration::milliseconds(
-                        i64::try_from(parking_delay_ms).unwrap_or(i64::MAX),
-                    ))
-                .to_rfc3339();
-                self.inner
-                    .runtime_db
-                    .update_provider_quota_retry_at(identity_key, &parking_retry_at)?;
-                let operator_message = fallback_ref
-                    .map(|fallback_ref| {
-                        provider_lineage_operator_message(
-                            fallback_ref,
-                            side_effect_boundary_crossed,
-                            &provider_failure_text,
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        format!(
-                            "Provider quota is temporarily unavailable; the current turn stopped before provider output was accepted: {}.",
-                            provider_failure_text
-                        )
-                    });
                 let terminal = self
                     .persist_turn_terminal_record(
                         terminal_kind,
@@ -634,9 +604,13 @@ impl RuntimeHandle {
                         Some((*identity_key).clone()),
                         format!(
                             "provider quota incident {} is parked until {}",
-                            incident.incident_id, parking_retry_at
+                            incident.incident_id,
+                            incident
+                                .next_retry_at
+                                .as_deref()
+                                .unwrap_or("a later scheduler recheck")
                         ),
-                        Some(parking_delay_ms),
+                        recovery_delay_ms.or(Some(1_000)),
                     )
                     .await?;
                 self.inner.storage.append_event(&AuditEvent::legacy(
@@ -671,17 +645,6 @@ impl RuntimeHandle {
                 }));
             }
         }
-        let Some(fallback_ref) = fallback_ref else {
-            return Ok(None);
-        };
-        let Ok(fallback_model) = ModelRouteRef::parse_compatible(fallback_ref) else {
-            return Ok(None);
-        };
-        let operator_message = provider_lineage_operator_message(
-            fallback_ref,
-            side_effect_boundary_crossed,
-            &provider_failure_text,
-        );
         self.inner.storage.append_event(&AuditEvent::legacy(
             "lineage_retry_exhausted",
             serde_json::json!({
@@ -2198,31 +2161,33 @@ impl TurnExecution<'_> {
                     break Ok(match result {
                         Ok((response, attempt_timeline)) => {
                             if let Some(timeline) = attempt_timeline.as_ref() {
-                                for (identity_key, model_ref) in
-                                    provider_quota_incident_identities_to_resolve(
-                                        timeline, agent_id,
-                                    )?
-                                {
-                                    let resolved = runtime
-                                        .inner
-                                        .runtime_db
-                                        .resolve_provider_quota_incident(
+                                for attempt in timeline.attempts.iter().filter(|attempt| {
+                                    attempt.failure_kind.as_deref() == Some("rate_limited")
+                                }) {
+                                    let identity = attempt
+                                        .transport_diagnostics
+                                        .as_ref()
+                                        .and_then(|diagnostics| diagnostics.quota_identity.clone())
+                                        .unwrap_or_else(|| {
+                                            ProviderQuotaIdentity::coarse(
+                                                "agent-provider-route",
+                                                &format!("{agent_id}:{}", attempt.model_ref),
+                                            )
+                                        });
+                                    let identity_key = serde_json::to_string(&identity)?;
+                                    runtime.inner.runtime_db.resolve_provider_quota_incident(
                                         &identity_key,
                                         &runtime.now().to_rfc3339(),
                                     )?;
-                                    if resolved {
-                                        runtime.inner.storage.append_event(
-                                            &AuditEvent::legacy(
-                                                "provider_quota_resolved",
-                                                serde_json::json!({
-                                                    "agent_id": agent_id,
-                                                    "round": round,
-                                                    "identity_key": identity_key,
-                                                    "model_ref": model_ref,
-                                                }),
-                                            ),
-                                        )?;
-                                    }
+                                    runtime.inner.storage.append_event(&AuditEvent::legacy(
+                                        "provider_quota_resolved",
+                                        serde_json::json!({
+                                            "agent_id": agent_id,
+                                            "round": round,
+                                            "identity_key": identity_key,
+                                            "model_ref": attempt.model_ref,
+                                        }),
+                                    ))?;
                                 }
                             }
                             ProviderRoundResult::Completed((
@@ -4698,67 +4663,10 @@ fn extend_unique_citations(
     );
 }
 
-fn provider_quota_incident_identities_to_resolve(
-    timeline: &ProviderAttemptTimeline,
-    agent_id: &str,
-) -> Result<Vec<(String, String)>> {
-    let Some(winning_model_ref) = timeline.winning_model_ref.as_deref() else {
-        return Ok(Vec::new());
-    };
-    if !timeline.attempts.iter().any(|attempt| {
-        attempt.model_ref == winning_model_ref
-            && attempt.outcome == ProviderAttemptOutcome::Succeeded
-    }) {
-        return Ok(Vec::new());
-    }
-
-    let rate_limit_candidates = timeline
-        .attempts
-        .iter()
-        .filter(|attempt| {
-            attempt.model_ref == winning_model_ref
-                && attempt.failure_kind.as_deref() == Some("rate_limited")
-        })
-        .map(|attempt| {
-            let identity = attempt
-                .transport_diagnostics
-                .as_ref()
-                .and_then(|diagnostics| diagnostics.quota_identity.clone())
-                .unwrap_or_else(|| {
-                    ProviderQuotaIdentity::coarse(
-                        "agent-provider-route",
-                        &format!("{agent_id}:{}", attempt.model_ref),
-                    )
-                });
-            let identity_key = serde_json::to_string(&identity)?;
-            Ok((identity_key, attempt.model_ref.clone()))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let mut candidates = rate_limit_candidates;
-    if winning_model_ref == timeline.requested_model_ref
-        || candidates
-            .iter()
-            .any(|(_, model_ref)| model_ref == winning_model_ref)
-    {
-        let coarse_identity = ProviderQuotaIdentity::coarse(
-            "agent-provider-route",
-            &format!("{agent_id}:{winning_model_ref}"),
-        );
-        let coarse_identity_key = serde_json::to_string(&coarse_identity)?;
-        candidates.push((coarse_identity_key, winning_model_ref.to_string()));
-    }
-    let mut resolved = HashSet::new();
-    Ok(candidates
-        .into_iter()
-        .filter(|result| resolved.insert(result.0.clone()))
-        .collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        corrective_replay_blocks, provider_error_is_safe_for_context_recovery,
-        provider_quota_incident_identities_to_resolve, report_tool_allowed,
+        corrective_replay_blocks, provider_error_is_safe_for_context_recovery, report_tool_allowed,
     };
     use crate::provider::{
         provider_turn_error, ModelBlock, ModelToolCallKind, ProviderAttemptOutcome,
@@ -4800,108 +4708,6 @@ mod tests {
         assert!(!report_tool_allowed(names::COMPLETE_WORK_ITEM));
         assert!(!report_tool_allowed(names::WAIT_FOR));
         assert!(!report_tool_allowed(names::EXEC_COMMAND));
-    }
-
-    fn quota_attempt(
-        model_ref: &str,
-        outcome: ProviderAttemptOutcome,
-        failure_kind: Option<&str>,
-    ) -> ProviderAttemptRecord {
-        ProviderAttemptRecord {
-            provider: "test".into(),
-            model_ref: model_ref.into(),
-            attempt: 1,
-            max_attempts: 1,
-            started_at: None,
-            completed_at: None,
-            duration_ms: None,
-            failure_kind: failure_kind.map(str::to_owned),
-            disposition: None,
-            outcome,
-            advanced_to_fallback: false,
-            backoff_ms: None,
-            backoff_source: None,
-            token_usage: None,
-            cache_usage: None,
-            provider_message_id: None,
-            provider_request_id: None,
-            provider_http_trace_id: None,
-            transport_diagnostics: None,
-            transport_timeline: None,
-        }
-    }
-
-    #[test]
-    fn fallback_success_does_not_resolve_primary_quota_incident() {
-        let timeline = ProviderAttemptTimeline {
-            attempts: vec![
-                quota_attempt(
-                    "primary/model",
-                    ProviderAttemptOutcome::RetriesExhausted,
-                    Some("rate_limited"),
-                ),
-                quota_attempt("fallback/model", ProviderAttemptOutcome::Succeeded, None),
-            ],
-            requested_model_ref: "primary/model".into(),
-            active_model_ref: Some("fallback/model".into()),
-            winning_model_ref: Some("fallback/model".into()),
-            pending_fallback_model_ref: None,
-            pending_fallback_disposition: None,
-            aggregated_token_usage: None,
-        };
-
-        assert!(
-            provider_quota_incident_identities_to_resolve(&timeline, "agent")
-                .expect("identity resolution should succeed")
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn winning_route_success_resolves_its_prior_quota_incident() {
-        let timeline = ProviderAttemptTimeline {
-            attempts: vec![
-                quota_attempt(
-                    "primary/model",
-                    ProviderAttemptOutcome::Retrying,
-                    Some("rate_limited"),
-                ),
-                quota_attempt("primary/model", ProviderAttemptOutcome::Succeeded, None),
-            ],
-            requested_model_ref: "primary/model".into(),
-            active_model_ref: Some("primary/model".into()),
-            winning_model_ref: Some("primary/model".into()),
-            pending_fallback_model_ref: None,
-            pending_fallback_disposition: None,
-            aggregated_token_usage: None,
-        };
-
-        let resolved = provider_quota_incident_identities_to_resolve(&timeline, "agent")
-            .expect("identity resolution should succeed");
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].1, "primary/model");
-    }
-
-    #[test]
-    fn clean_winning_route_success_resolves_its_prior_quota_incident() {
-        let timeline = ProviderAttemptTimeline {
-            attempts: vec![quota_attempt(
-                "primary/model",
-                ProviderAttemptOutcome::Succeeded,
-                None,
-            )],
-            requested_model_ref: "primary/model".into(),
-            active_model_ref: Some("primary/model".into()),
-            winning_model_ref: Some("primary/model".into()),
-            pending_fallback_model_ref: None,
-            pending_fallback_disposition: None,
-            aggregated_token_usage: None,
-        };
-
-        let resolved = provider_quota_incident_identities_to_resolve(&timeline, "agent")
-            .expect("identity resolution should succeed");
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].1, "primary/model");
     }
 
     fn context_error(provider_message_id: Option<&str>, streaming: bool) -> anyhow::Error {

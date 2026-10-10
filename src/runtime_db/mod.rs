@@ -722,36 +722,20 @@ impl RuntimeDb {
             .map_err(Into::into)
     }
 
-    pub fn update_provider_quota_retry_at(
-        &self,
-        identity_key: &str,
-        next_retry_at: &str,
-    ) -> Result<()> {
-        self.transaction(|tx| {
-            tx.execute(
-                "UPDATE provider_quota_incidents
-                 SET revision = revision + 1, next_retry_at = ?2
-                 WHERE identity_key = ?1 AND resolved_at IS NULL",
-                rusqlite::params![identity_key, next_retry_at],
-            )?;
-            Ok(())
-        })
-    }
-
     pub fn resolve_provider_quota_incident(
         &self,
         identity_key: &str,
         resolved_at: &str,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         self.transaction(|tx| {
-            let updated = tx.execute(
+            tx.execute(
                 "UPDATE provider_quota_incidents
                  SET revision = revision + 1, consecutive_failures = 0,
                      next_retry_at = NULL, resolved_at = ?2
-                 WHERE identity_key = ?1 AND resolved_at IS NULL",
+                 WHERE identity_key = ?1",
                 rusqlite::params![identity_key, resolved_at],
             )?;
-            Ok(updated == 1)
+            Ok(())
         })
     }
 
