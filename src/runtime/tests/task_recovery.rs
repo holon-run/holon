@@ -49,6 +49,7 @@ fn task_result_reentry_only_bypasses_derived_task_wait_blocker() {
     ));
 
     work_item.blocked_by = Some(TASK_RESULT_WAIT_BLOCKER.into());
+    work_item.blocked_by_wait_id = Some(wait.id.clone());
     assert!(task_result_reentry_is_allowed(
         &work_item,
         &work_item.id,
