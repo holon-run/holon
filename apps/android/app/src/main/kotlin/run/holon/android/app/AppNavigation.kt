@@ -55,9 +55,10 @@ internal data class NavigationBookmark(
     }
 }
 
-internal enum class BackTarget { Share, Artifact, AddingNetwork, MessageFile, Plan, Activity, FullScreenTurn, Task, WorkItem, Brief, Folder, Conversation, Agents, Exit }
+internal enum class BackTarget { Report, Share, Artifact, AddingNetwork, MessageFile, Plan, Activity, FullScreenTurn, Task, WorkItem, Brief, Folder, Conversation, Agents, Exit }
 
 internal fun HolonUiState.backTarget(artifactLoading: Boolean = false): BackTarget = when {
+    reportTarget != null -> BackTarget.Report
     pendingShare != null -> BackTarget.Share
     artifactLoading -> BackTarget.Artifact
     phase == AppPhase.AddingNetwork -> BackTarget.AddingNetwork

@@ -505,6 +505,24 @@ internal object UiCopy {
         预览文件已不存在，请重新读取后再保存|The preview file is missing. Reload it before saving.
         文件已不可用|File is unavailable
         未知|Unknown
+        举报|Report
+        消息操作|Message actions
+        举报这条内容|Report this content
+        选择最符合的原因，可附加说明。举报会提交到运行时的内容审核流程。|Pick the closest reason and add optional detail. It is sent to the runtime content-review flow.
+        有害或辱骂内容|Harmful or abusive
+        色情或性内容|Sexual content
+        仇恨或骚扰|Hate or harassment
+        自残或自杀|Self-harm or suicide
+        暴力内容|Violence
+        隐私泄露|Privacy leak
+        垃圾信息或其他|Spam or other
+        补充说明（可选）|Additional details (optional)
+        提交举报|Submit report
+        举报已提交，感谢反馈|Report submitted. Thank you.
+        请选择举报原因|Choose a reason for the report
+        举报信息无效，请重新选择原因后提交|The report was rejected. Choose a reason and try again.
+        这条内容已不可举报，可能已被移除|This content can no longer be reported. It may have been removed.
+        举报过于频繁，请稍后再试|Too many reports. Try again later.
         """.trimIndent().lineSequence().filter { it.isNotBlank() }.associate { line ->
             val separator = line.indexOf('|')
             check(separator > 0) { "Invalid UI translation: $line" }

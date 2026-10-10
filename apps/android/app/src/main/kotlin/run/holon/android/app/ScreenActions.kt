@@ -3,6 +3,7 @@ package run.holon.android.app
 import android.net.Uri
 import run.holon.android.sdk.AgentSummary
 import run.holon.android.sdk.HolonConversationActivity
+import run.holon.android.sdk.HolonContentReportCategory
 import run.holon.android.sdk.HolonConversationTurn
 import run.holon.android.sdk.HolonWorkItemSnapshot
 import run.holon.android.sdk.HolonTaskSnapshot
@@ -53,6 +54,11 @@ internal interface ConversationActions : WorkActions, FilesActions {
     fun closeBrief(): Unit
     fun closePlanFile(): Unit
     fun closeTurn(): Unit
+    fun beginContentReport(target: ContentReportTarget): Unit
+    fun dismissContentReport(): Unit
+    fun selectReportCategory(category: HolonContentReportCategory): Unit
+    fun submitContentReport(): Unit
+    fun updateReportDescription(value: String): Unit
     fun editFailedMessage(message: OutboxEntity): Unit
     fun ensureBriefs(ids: List<String>, retry: Boolean = false): Unit
     fun handleSystemBack(): Boolean
@@ -149,6 +155,11 @@ internal class AndroidScreenActions(private val delegate: HolonViewModel) {
         override fun closeTask(): Unit { delegate.closeTask() }
         override fun closeTurn(): Unit { delegate.closeTurn() }
         override fun closeWorkItem(): Unit { delegate.closeWorkItem() }
+        override fun beginContentReport(target: ContentReportTarget): Unit { delegate.beginContentReport(target) }
+        override fun dismissContentReport(): Unit { delegate.dismissContentReport() }
+        override fun selectReportCategory(category: HolonContentReportCategory): Unit { delegate.selectReportCategory(category) }
+        override fun submitContentReport(): Unit { delegate.submitContentReport() }
+        override fun updateReportDescription(value: String): Unit { delegate.updateReportDescription(value) }
         override fun editFailedMessage(message: OutboxEntity): Unit { delegate.editFailedMessage(message) }
         override fun ensureBriefs(ids: List<String>, retry: Boolean): Unit { delegate.ensureBriefs(ids, retry) }
         override fun handleSystemBack(): Boolean { return delegate.handleSystemBack() }
