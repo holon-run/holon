@@ -38,11 +38,19 @@ fn pending_record(index: usize) -> TaskResultSettlementRecord {
 }
 
 fn insert(db: &RuntimeDb, record: &TaskResultSettlementRecord) {
+    insert_with_kind(db, record, crate::types::TaskKind::CommandTask);
+}
+
+fn insert_with_kind(
+    db: &RuntimeDb,
+    record: &TaskResultSettlementRecord,
+    kind: crate::types::TaskKind,
+) {
     db.tasks()
         .upsert(&TaskRecord {
             id: record.task_id.clone(),
             agent_id: record.agent_id.clone(),
-            kind: crate::types::TaskKind::CommandTask,
+            kind,
             status: crate::types::TaskStatus::Completed,
             created_at: record.created_at,
             updated_at: record.updated_at,
@@ -464,5 +472,121 @@ fn stale_generation_is_settled_instead_of_admitted() {
     assert_eq!(
         latest.disposition,
         Some(TaskResultSettlementDisposition::InvalidOrStale)
+    );
+}
+
+fn reply_result_fixture(db: &RuntimeDb, record: &TaskResultSettlementRecord) -> MessageEnvelope {
+    use crate::types::{
+        AdmissionContext, AuthorityClass, MessageBody, MessageDeliverySurface, MessageKind,
+        MessageOrigin, Priority, TaskKind,
+    };
+    insert_with_kind(db, record, TaskKind::AgentMessageWait);
+    let mut message = MessageEnvelope::new(
+        "agent-a",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: record.task_id.clone(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "peer output".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.id = record.message_id.clone();
+    message.task_id = Some(record.task_id.clone());
+    message.metadata = Some(serde_json::json!({
+        "task_id": record.task_id, "task_kind":"agent_message_wait", "task_status":"completed",
+        "task_detail":{"message_id":"original-reply"},
+    }));
+    message
+}
+
+#[test]
+fn legacy_copied_reply_result_remains_admissible() {
+    let (_dir, db) = runtime_db();
+    let record = pending_record(0);
+    let message = reply_result_fixture(&db, &record);
+    assert!(crate::wake_contract::agent_message_reply_reference(&message).is_none());
+    db.messages().upsert(&message).unwrap();
+    let admitted = db
+        .task_result_settlements()
+        .admit_unsettled("agent-a", Some("work-a"), "legacy-activation", Utc::now())
+        .unwrap();
+    assert_eq!(admitted.len(), 1);
+    assert_eq!(
+        admitted[0].activation_id.as_deref(),
+        Some("legacy-activation")
+    );
+}
+
+#[test]
+fn reply_observations_wait_for_original_admission_instead_of_unrelated_owner_activation() {
+    let (_dir, db) = runtime_db();
+    let record = pending_record(0);
+    let mut message = reply_result_fixture(&db, &record);
+    message.metadata.as_mut().unwrap()["task_detail"]["reply_content_source"] =
+        serde_json::json!("original_message");
+    assert_eq!(
+        crate::wake_contract::agent_message_reply_reference(&message),
+        Some("original-reply")
+    );
+    db.messages().upsert(&message).unwrap();
+    assert!(db
+        .task_result_settlements()
+        .admit_unsettled(
+            "agent-a",
+            Some("work-a"),
+            "unrelated-activation",
+            Utc::now()
+        )
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        db.task_result_settlements()
+            .latest_for_message(&record.message_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        TaskResultSettlementState::PersistedPending
+    );
+    db.task_result_settlements()
+        .admit_reply_message(
+            "agent-a",
+            Some("unrelated-owner"),
+            "original-reply",
+            "unrelated-activation",
+            Utc::now(),
+        )
+        .unwrap();
+    assert_eq!(
+        db.task_result_settlements()
+            .latest_for_message(&record.message_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        TaskResultSettlementState::PersistedPending,
+    );
+    db.task_result_settlements()
+        .admit_reply_message(
+            "agent-a",
+            Some("work-a"),
+            "original-reply",
+            "reply-activation",
+            Utc::now(),
+        )
+        .unwrap();
+    assert_eq!(
+        db.task_result_settlements()
+            .latest_for_message(&record.message_id)
+            .unwrap()
+            .unwrap()
+            .activation_id
+            .as_deref(),
+        Some("reply-activation")
     );
 }

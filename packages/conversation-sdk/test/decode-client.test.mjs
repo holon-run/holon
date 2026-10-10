@@ -479,3 +479,26 @@ test("preserves send-time names on pending and assigned inputs, tolerating older
   }
   assert.equal(decoded.turns[0].inputs[1].interjected, true);
 });
+
+
+test("decodes optional task result cards and rejects invalid statuses", () => {
+  const task_result = { task_id: "task", status: "completed", summary: "Build", preview: "done", response_message_id: null };
+  const payload = summary({ pending_inputs: [{ message_id: "message", revision: 1, state: "queued", task_result }] });
+  assert.deepEqual(decodeConversationSummaryResponse(payload).pending_inputs[0].task_result, task_result);
+  payload.pending_inputs[0].task_result.status = "invalid";
+  assert.throws(() => decodeConversationSummaryResponse(payload), ConversationDecodeError);
+});
+
+test("task cards tolerate omitted nullable fields on pending and assigned inputs", () => {
+  const task_result = { task_id: "task", status: "completed", preview: "done", runtime_only: true };
+  const input = { message_id: "result", preview: "done", task_result };
+  const decoded = decodeConversationSummaryResponse(summary({
+    pending_inputs: [{ ...input, revision: 1, state: "queued" }],
+    turns: [turn("runtime", 1, 1, { inputs: [input] })],
+  }));
+  for (const card of [decoded.pending_inputs[0].task_result, decoded.turns[0].inputs[0].task_result]) {
+    assert.equal(card.summary, null);
+    assert.equal(card.response_message_id, null);
+    assert.equal(card.runtime_only, true);
+  }
+});

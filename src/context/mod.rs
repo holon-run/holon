@@ -1234,10 +1234,21 @@ fn render_pending_task_results(
     let records = runtime_db
         .task_result_settlements()
         .admitted_for_activation(&agent.id, activation_id)?;
-    let pending = records
-        .iter()
-        .filter(|record| record.message_id != current_message.id)
-        .collect::<Vec<_>>();
+    let mut pending = Vec::new();
+    for record in &records {
+        if record.message_id == current_message.id {
+            continue;
+        }
+        let message = storage.read_message_by_id(&record.message_id)?;
+        if message
+            .as_ref()
+            .and_then(crate::wake_contract::agent_message_reply_reference)
+            == Some(current_message.id.as_str())
+        {
+            continue;
+        }
+        pending.push((record, message));
+    }
     if pending.is_empty() {
         return Ok(None);
     }
@@ -1245,7 +1256,8 @@ fn render_pending_task_results(
     let mut lines = vec![format!(
         "Previously received terminal task results admitted to this execution (bounded to {PENDING_TASK_RESULTS_CONTEXT_LIMIT}; each result identity appears once):"
     )];
-    for record in pending.iter().take(PENDING_TASK_RESULTS_CONTEXT_LIMIT) {
+    let mut seen_reply_messages = std::collections::BTreeSet::new();
+    for (record, message) in pending.iter().take(PENDING_TASK_RESULTS_CONTEXT_LIMIT) {
         lines.push(format!(
             "- result_identity: {}",
             sanitize_inline(&record.result_identity)
@@ -1263,7 +1275,24 @@ fn render_pending_task_results(
                 .map(|work_item_id| format!("work_item:{work_item_id}"))
                 .unwrap_or_else(|| "agent_lifecycle".to_string())
         ));
-        if let Some(message) = storage.read_message_by_id(&record.message_id)? {
+        if let Some(message) = message {
+            if let Some(reply_id) = crate::wake_contract::agent_message_reply_reference(message) {
+                if seen_reply_messages.insert(reply_id.to_owned()) {
+                    if let Some(reply) = storage.read_message_by_id(reply_id)? {
+                        lines.push(format!(
+                            "  received_agent_message: {}",
+                            message_header(&reply)
+                        ));
+                        if let Some(route) = message_routing_context(&reply) {
+                            lines.push(route);
+                        }
+                        lines.push(format!(
+                            "  reply_preview: {}",
+                            sanitize_inline(&body_preview(&reply.body))
+                        ));
+                    }
+                }
+            }
             lines.push(format!(
                 "  summary: {}",
                 sanitize_inline(&body_preview(&message.body))

@@ -473,6 +473,7 @@ const zh: Record<string, any> = {
     duration: "耗时 {{duration}}",
     outputTruncated: "输出已截断，可打开详情查看可用内容",
     taskId: "任务 {{id}}",
+    taskReplyReceived: "收到 Agent 回复",
     taskStatus: {
       queued: "已排队",
       running: "运行中",

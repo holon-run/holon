@@ -93,8 +93,14 @@ scheduler blocking decisions.
 - For background tasks, use `WaitFor(wake=task_result,
   resource=<task_id>)` to wait for the terminal `TaskResult` instead of
   polling `TaskOutput`.
-- The terminal `TaskResult` event re-enters the agent as continuation context;
-  the runtime wakes the agent automatically.
+- Result-bearing terminal `TaskResult` events re-enter the agent as continuation
+  context when they hold the matching wait or independent rejoin authority.
+- `InvokeAgent(existing_agent)` completes its observation handle when the first
+  accepted later message from that sender arrives. Its TaskResult contains
+  message/delivery references, not a copy of the reply or business completion.
+  The original message carries the content and resumes an exact task wait once.
+  A late `WaitFor` uses that same message; an already consumed reply continues
+  the current turn. `TaskOutput` dereferences the original reply for retrieval.
 - `TaskOutput(block=true)` is for explicit current-turn synchronous waiting,
   not the default waiting strategy.
 

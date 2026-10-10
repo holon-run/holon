@@ -2480,3 +2480,54 @@ fn conversation_inputs_do_not_infer_sender_from_body_or_local_control() -> Resul
     }
     Ok(())
 }
+
+#[test]
+fn task_result_runtime_provenance_survives_legacy_null_task_brief_links() -> Result<()> {
+    for runtime_only in [false, true] {
+        let (_dir, _path, _lock, db) = runtime_db()?;
+        let mut message = MessageEnvelope::new(
+            AGENT_ID,
+            MessageKind::TaskResult,
+            MessageOrigin::Task {
+                task_id: "task".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "runtime output".into(),
+            },
+        );
+        message.metadata = Some(
+            serde_json::json!({ "task_id":"task", "task_status":"completed", "task_summary":"Build" }),
+        );
+        message.turn_id = Some("turn-task-card".into());
+        db.evidence().append_message(&message)?;
+        let mut source = terminal(turn("turn-task-card", 1), TurnTerminalKind::Completed, None);
+        source.trigger = Some(TurnTriggerSummary::from_message(&message));
+        source.input_message_ids = vec![message.id.clone()];
+        source.terminal.as_mut().unwrap().reason =
+            runtime_only.then(|| "reducer_only/task_result_without_model_reentry".into());
+        db.turn_records().upsert(&source)?;
+        let mut brief = BriefRecord::new(
+            AGENT_ID,
+            BriefKind::Result,
+            "same brief text",
+            Some(message.id),
+            None,
+        );
+        brief.turn_id = Some(source.turn_id.clone());
+        brief.turn_index = Some(1);
+        db.evidence().append_brief(&brief)?;
+        let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
+        assert_eq!(page.turns[0].result, ResultState::Available);
+        assert_eq!(
+            page.turns[0].inputs[0]
+                .task_result
+                .as_ref()
+                .unwrap()
+                .runtime_only,
+            Some(runtime_only)
+        );
+    }
+    Ok(())
+}

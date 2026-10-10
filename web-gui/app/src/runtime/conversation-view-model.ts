@@ -126,7 +126,8 @@ export function buildConversationSessionModel(
     turns: turns.filter((turn) => !(turn.presentationClass === "task"
       && turn.execution.kind === "terminal" && turn.execution.outcome === "completed"
       && turn.settled && !turn.attention && turn.briefIds.length === 0
-      && turn.result.kind === "none" && turn.result.reason.kind === "reducer_only")),
+      && turn.result.kind === "none" && turn.result.reason.kind === "reducer_only"
+      && !turn.inputs.some((input) => input.task_result !== undefined))),
     localPendingPrompts: (input.localPendingPrompts ?? []).filter(
       (entry) => entry.messageId === undefined || !serverEchoedMessageIds.has(entry.messageId),
     ),

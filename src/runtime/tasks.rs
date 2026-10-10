@@ -22,6 +22,12 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(super) enum ReplyReconciliation {
+    Ready,
+    Changed,
+    WaitingForReceipt,
+}
+
 const TASK_OUTPUT_POLL_INTERVAL_MS: u64 = 100;
 const TASK_OUTPUT_MESSAGE_SCAN_LIMIT: usize = 200;
 const TASK_OUTPUT_PREVIEW_CHAR_BUDGET: usize = 8_000;
@@ -547,6 +553,8 @@ impl RuntimeHandle {
         ))
         .await?;
 
+        self.inner.notify.notify_one();
+        let task_detail = queued_task.detail.clone().unwrap_or(task_detail);
         let runtime = self.clone();
         let task_record = queued_task.clone();
         let task_id = queued_task.id.clone();
@@ -1393,7 +1401,7 @@ impl RuntimeHandle {
         let result = bridge
             .await_agent_message(&agent_id, &target_agent_id, after_delivery_rowid)
             .await;
-        let (text, status, mut terminal_detail) = match result {
+        let (text, status, terminal_detail) = match result {
             Ok(result) => {
                 let mut detail = task_detail;
                 if let Some(result_detail) = result.task_detail {
@@ -1413,50 +1421,151 @@ impl RuntimeHandle {
                 task_detail,
             ),
         };
-        terminal_detail["output_summary"] = serde_json::json!(text.clone());
-        let result_message = MessageEnvelope {
-            turn_id: Some(crate::ids::turn_id()),
-            metadata: Some(serde_json::json!({
-                "task_id": task_record.id,
-                "task_kind": task_record.kind,
-                "task_status": status,
-                "task_summary": task_record.summary,
-                "task_recovery": task_record.recovery,
-                "work_item_id": task_record.work_item_id.clone(),
-                "task_detail": terminal_detail.clone(),
-            })),
-            ..MessageEnvelope::new(
-                agent_id,
-                MessageKind::TaskResult,
-                MessageOrigin::Task {
-                    task_id: task_record.id.clone(),
-                },
-                AuthorityClass::RuntimeInstruction,
-                Priority::Next,
-                MessageBody::Text { text },
-            )
-            .with_admission(
-                MessageDeliverySurface::TaskRejoin,
-                AdmissionContext::RuntimeOwned,
-            )
-        };
-        let terminal_task =
-            task_with_result_message(&task_record, status, Some(terminal_detail), &result_message);
-        if let Err(error) = self
-            .commit_terminal_task_result(
-                &terminal_task,
-                "task_agent_message_wait_completed",
-                &result_message,
-            )
-            .await
-        {
-            tracing::warn!(
-                task_id = %terminal_task.id,
-                error = %error,
-                "failed to persist terminal agent message wait before task result"
-            );
-        }
+        self.finish_agent_message_wait(&task_record, status, terminal_detail, text)
+            .await?;
         Ok(())
+    }
+
+    pub(super) async fn finish_agent_message_wait(
+        &self,
+        task: &TaskRecord,
+        status: TaskStatus,
+        mut detail: serde_json::Value,
+        failure_text: String,
+    ) -> Result<()> {
+        let task = self
+            .inner
+            .runtime_db
+            .tasks()
+            .latest(&task.id)?
+            .unwrap_or_else(|| task.clone());
+        if task_state_reducer::is_terminal_task_status(&task.status) {
+            return Ok(());
+        }
+        let response = detail
+            .get("message_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let text = if status == TaskStatus::Completed {
+            format!(
+                "Agent reply received; see message {} / delivery {}.",
+                response
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("agent reply reference is missing"))?,
+                detail
+                    .get("response_delivery_id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| anyhow!("agent reply delivery reference is missing"))?
+            )
+        } else {
+            failure_text
+        };
+        detail["output_summary"] = serde_json::json!(text);
+        detail["business_completion"] = serde_json::json!(false);
+        if status == TaskStatus::Completed {
+            detail["reply_content_source"] = serde_json::json!("original_message");
+        }
+        let mut message = MessageEnvelope::new(
+            task.agent_id.clone(),
+            MessageKind::TaskResult,
+            MessageOrigin::Task {
+                task_id: task.id.clone(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text { text },
+        )
+        .with_admission(
+            MessageDeliverySurface::TaskRejoin,
+            AdmissionContext::RuntimeOwned,
+        );
+        message.task_id = Some(task.id.clone());
+        message.id = format!("message:agent-message-wait:{}", task.id);
+        message.turn_id = Some(format!("turn:agent-message-wait:{}", task.id));
+        message.created_at = if status == TaskStatus::Completed {
+            self.inner
+                .storage
+                .read_message_by_id(response.as_deref().expect("validated reply"))?
+                .ok_or_else(|| anyhow!("agent reply evidence is missing"))?
+                .created_at
+        } else {
+            Utc::now()
+        };
+        message.work_item_id = task.work_item_id.clone();
+        message.metadata = Some(serde_json::json!({
+            "task_id": task.id, "task_kind": task.kind, "task_status": status,
+            "task_summary": task.summary, "task_recovery": task.recovery,
+            "work_item_id": task.work_item_id, "task_detail": detail,
+        }));
+        let terminal = task_with_result_message(&task, status, Some(detail), &message);
+        message.metadata.as_mut().expect("task result metadata")["task_detail"] =
+            serde_json::to_value(&terminal.detail)?;
+        self.commit_terminal_task_result(&terminal, "task_agent_message_wait_completed", &message)
+            .await
+    }
+
+    // Reconcile before admission, so a fast reply cannot outrun its monitor.
+    pub(super) async fn reconcile_agent_message_reply(
+        &self,
+        message: &MessageEnvelope,
+    ) -> Result<ReplyReconciliation> {
+        if !crate::wake_contract::is_agent_message(message) {
+            return Ok(ReplyReconciliation::Ready);
+        }
+        let Some(delivery) = self
+            .inner
+            .runtime_db
+            .agent_message_deliveries()
+            .latest_for_message(&message.id)?
+        else {
+            return Ok(ReplyReconciliation::Ready);
+        };
+        let mut changed = false;
+        for task in self
+            .inner
+            .runtime_db
+            .tasks()
+            .active_for_agent(&message.agent_id, i64::MAX as usize)?
+        {
+            let Some(TaskRecoverySpec::AgentMessageWait {
+                target_agent_id,
+                after_delivery_rowid,
+                ..
+            }) = &task.recovery
+            else {
+                continue;
+            };
+            if delivery.caller.caller_agent_id.as_deref() != Some(target_agent_id.as_str()) {
+                continue;
+            }
+            let Some(boundary) = after_delivery_rowid else {
+                // Invoke has accepted the request but has not attached its receipt yet.
+                return Ok(ReplyReconciliation::WaitingForReceipt);
+            };
+            let Some(reply) = self
+                .inner
+                .runtime_db
+                .agent_message_deliveries()
+                .first_accepted_from_sender_after(&message.agent_id, target_agent_id, *boundary)?
+            else {
+                continue;
+            };
+            let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
+            detail["message_wait_satisfied"] = serde_json::json!(true);
+            detail["sender_agent_id"] = serde_json::json!(target_agent_id);
+            detail["recipient_agent_id"] = serde_json::json!(message.agent_id);
+            detail["response_delivery_id"] = serde_json::json!(reply.delivery_id);
+            detail["message_id"] = serde_json::json!(reply.message_id);
+            detail["message_wait_after_delivery_rowid"] = serde_json::json!(boundary);
+            self.finish_agent_message_wait(&task, TaskStatus::Completed, detail, String::new())
+                .await?;
+            changed = true;
+        }
+        Ok(if changed {
+            ReplyReconciliation::Changed
+        } else {
+            ReplyReconciliation::Ready
+        })
     }
 
     pub(super) async fn monitor_spawned_child_agent_task(
@@ -2215,6 +2324,26 @@ impl RuntimeHandle {
                     .and_then(|value| value.as_i64())
                     .and_then(|value| i32::try_from(value).ok());
                 (output, output_path, result_summary, exit_status)
+            } else if task.kind == TaskKind::AgentMessageWait
+                && task.status == TaskStatus::Completed
+                && detail_string(&task.detail, "message_id").is_some()
+            {
+                let reply_id =
+                    detail_string(&task.detail, "message_id").expect("checked reply reference");
+                let reply = self
+                    .inner
+                    .storage
+                    .read_message_by_id(&reply_id)?
+                    .filter(|message| message.agent_id == task.agent_id)
+                    .ok_or_else(|| anyhow!("agent reply output evidence is missing"))?;
+                // Retrieval dereferences the original evidence; it does not
+                // publish a second copy into the runtime message stream.
+                (
+                    render_task_message_body(&reply.body),
+                    None,
+                    detail_string(&task.detail, "output_summary"),
+                    None,
+                )
             } else {
                 let output = latest_message
                     .as_ref()

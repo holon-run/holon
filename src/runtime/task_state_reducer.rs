@@ -680,10 +680,6 @@ impl RuntimeHandle {
             }
         };
         if model_reentry && !parent_turn_already_delivered {
-            if emit_result_brief {
-                let brief = brief::make_task_result(&message.agent_id, &task.id, &result_text);
-                self.persist_brief(&brief).await?;
-            }
             if let Some(work_item_id) = message
                 .work_item_id
                 .clone()
@@ -752,7 +748,8 @@ impl RuntimeHandle {
             return result;
         } else if !model_reentry {
             if emit_result_brief {
-                let brief = brief::make_result(&message.agent_id, message, result_text);
+                let mut brief = brief::make_task_result(&message.agent_id, &task.id, &result_text);
+                brief.related_message_id = Some(message.id.clone());
                 self.persist_brief(&brief).await?;
             }
         } else {
@@ -811,7 +808,7 @@ fn stable_terminal_task_event_id(event_kind: &str, task: &TaskRecord) -> String 
 }
 
 fn should_emit_task_result_brief(task: &TaskRecord) -> bool {
-    task.kind != TaskKind::CommandTask
+    task.kind != TaskKind::CommandTask && task.kind != TaskKind::AgentMessageWait
 }
 
 fn task_parent_turn_id(task: &TaskRecord) -> Option<&str> {
@@ -1262,7 +1259,8 @@ mod tests {
         let briefs = runtime.storage().read_recent_briefs(10).unwrap();
         assert!(briefs.iter().any(|brief| {
             brief.kind == crate::types::BriefKind::Result
-                && brief.related_task_id.is_none()
+                && brief.related_task_id.as_deref() == Some("task-1")
+                && brief.related_message_id.is_some()
                 && brief.text.contains("Task task-1 completed")
         }));
         let transcript = runtime.storage().read_recent_transcript(10).unwrap();

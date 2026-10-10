@@ -129,6 +129,33 @@ impl RuntimeHandle {
                 eligible = false;
                 reason = "owner_has_unresolved_wait";
             }
+            if let Some(reply_id) = self
+                .inner
+                .storage
+                .read_message_by_id(&record.message_id)?
+                .as_ref()
+                .and_then(crate::wake_contract::agent_message_reply_reference)
+            {
+                if self
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest(reply_id)?
+                    .is_some_and(|entry| entry.status == QueueEntryStatus::Processed)
+                {
+                    // Content was consumed by another execution owner. Preserve
+                    // that distinct outcome instead of claiming caller admission.
+                    self.inner
+                        .runtime_db
+                        .task_result_settlements()
+                        .settle_reply_consumed_elsewhere(&record.message_id, now)?;
+                    continue;
+                }
+                // The delivery ledger and original message own reply recovery.
+                // A reference observation must not create a second model wake.
+                eligible = false;
+                reason = "awaiting_original_agent_reply_admission";
+            }
             // Advance first: a crash or enqueue failure still leaves a bounded
             // retry, while an ineligible owner cannot create a hot loop.
             self.inner
@@ -294,6 +321,116 @@ mod tests {
         assert_eq!(
             outstanding_recovery_message_id(&runtime, "default", None, owner_key).unwrap(),
             None
+        );
+    }
+    #[tokio::test(start_paused = true)]
+    async fn consumed_reply_settles_other_owner_observations_without_rearming() {
+        use crate::runtime::tests::support::LifecycleHarness;
+        use crate::types::{TaskKind, TaskRecord, TaskStatus};
+        let harness = LifecycleHarness::new();
+        let runtime = harness.runtime();
+        let work = runtime
+            .create_work_item("non-selected reply observer".into(), None, None, Vec::new())
+            .await
+            .unwrap();
+        let reply = MessageEnvelope::new(
+            "default",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "agent_message".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "peer reply".into(),
+            },
+        );
+        runtime.storage().append_message(&reply).unwrap();
+        runtime
+            .runtime_db()
+            .queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: reply.id.clone(),
+                agent_id: "default".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Processed,
+                created_at: harness.now(),
+                updated_at: harness.now(),
+            })
+            .unwrap();
+        let mut signal = MessageEnvelope::new(
+            "default",
+            MessageKind::TaskResult,
+            MessageOrigin::Task {
+                task_id: "observer-task".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "reply received".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::TaskRejoin,
+            AdmissionContext::RuntimeOwned,
+        );
+        signal.task_id = Some("observer-task".into());
+        signal.work_item_id = Some(work.id.clone());
+        signal.metadata = Some(
+            serde_json::json!({"task_id":"observer-task", "task_kind":"agent_message_wait",
+            "task_status":"completed", "task_detail":{"message_id":reply.id, "reply_content_source":"original_message"}}),
+        );
+        let task = TaskRecord {
+            id: "observer-task".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::AgentMessageWait,
+            status: TaskStatus::Completed,
+            created_at: harness.now(),
+            updated_at: harness.now(),
+            parent_message_id: Some(signal.id.clone()),
+            work_item_id: Some(work.id),
+            summary: None,
+            detail: Some(
+                serde_json::json!({"rejoin_obligation_id":"observer-task", "rejoin_generation":1, "parent_turn_id":"parent"}),
+            ),
+            recovery: None,
+        };
+        runtime.runtime_db().tasks().upsert(&task).unwrap();
+        runtime.storage().append_message(&signal).unwrap();
+        runtime
+            .runtime_db()
+            .task_result_settlements()
+            .ensure_pending(
+                &task,
+                &signal,
+                harness.now() - chrono::Duration::seconds(31),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
+        let settled = runtime
+            .runtime_db()
+            .task_result_settlements()
+            .latest_for_message(&signal.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(settled.state, TaskResultSettlementState::Settled);
+        assert_eq!(
+            settled.disposition,
+            Some(TaskResultSettlementDisposition::ReplyConsumedElsewhere)
+        );
+        assert!(settled.next_recheck_at.is_none());
+        harness.advance(std::time::Duration::from_secs(60)).await;
+        assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
+        assert_eq!(
+            runtime
+                .runtime_db()
+                .task_result_settlements()
+                .latest_for_message(&signal.id)
+                .unwrap()
+                .unwrap()
+                .updated_at,
+            settled.updated_at
         );
     }
 }

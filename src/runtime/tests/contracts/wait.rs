@@ -1619,3 +1619,148 @@ async fn terminal_task_replay_repairs_wait_once_across_restart() {
         1
     );
 }
+
+#[tokio::test]
+async fn late_agent_reply_wait_resumes_original_message_with_exact_owner() {
+    for different_owner in [false, true] {
+        let harness = LifecycleHarness::new();
+        let work = harness
+            .runtime()
+            .create_work_item("late agent reply".into(), None, None, Vec::new())
+            .await
+            .unwrap();
+        let mut reply = MessageEnvelope::new(
+            "default",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "agent_message".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "original peer content".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        reply.turn_id = Some("turn-original-reply".into());
+        reply.routing_context = Some(crate::types::AgentMessageRoutingContext {
+            message_id: reply.id.clone(),
+            sender_agent_id: Some("peer".into()),
+            recipient_agent_id: "default".into(),
+            reply_to_agent_id: Some("peer".into()),
+            correlation_id: None,
+            in_reply_to_message_id: None,
+            original_sender_agent_id: None,
+            original_reply_to_agent_id: None,
+        });
+        reply.metadata =
+            Some(serde_json::json!({"agent_message_delivery": {"delivery_id":"reply-delivery"}}));
+        harness.runtime().storage().append_message(&reply).unwrap();
+        let task_owner = if different_owner {
+            harness
+                .runtime()
+                .create_work_item("reply task producer".into(), None, None, Vec::new())
+                .await
+                .unwrap()
+        } else {
+            work.clone()
+        };
+        let running = TaskRecord {
+            kind: TaskKind::AgentMessageWait,
+            ..running_task("task-agent-reply", &task_owner.id, harness.now())
+        };
+        harness
+            .runtime()
+            .persist_task_transition(&running, "task_created")
+            .await
+            .unwrap();
+        let mut signal = late_task_result_message(&running.id, &task_owner.id);
+        signal.metadata = Some(
+            serde_json::json!({ "task_id": running.id, "task_kind":"agent_message_wait",
+        "task_status":"completed", "task_detail": {"message_id":reply.id,"response_delivery_id":"reply-delivery", "reply_content_source":"original_message"} }),
+        );
+        let terminal = terminal_task_with_result(&running, &signal, harness.now());
+        harness
+            .runtime()
+            .persist_task_transition_with_message(&terminal, "task_status_updated", &signal)
+            .await
+            .unwrap();
+        harness
+            .runtime()
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .ensure_pending(&terminal, &signal, harness.now())
+            .unwrap()
+            .expect("reply settlement exists");
+        persist_open_work_execution(&harness, &work, "attempt-before-reply-wait");
+        let outcome = harness
+            .runtime()
+            .register_wait_for_outcome(
+                "default",
+                Some(work.id.clone()),
+                WaitForWakeKind::TaskResult,
+                Some(running.id),
+                "wait on completed reply handle".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, WaitForRegistrationOutcome::TaskResultQueued { result_message_id, .. } if result_message_id == reply.id)
+        );
+        let poll = super::super::super::scheduler_executor::SchedulerDecisionExecutor::new(
+            harness.runtime(),
+        )
+        .poll()
+        .await
+        .unwrap();
+        let super::super::super::scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+            panic!("original reply must have exact canonical admission");
+        };
+        assert_eq!(scheduled.message.id, reply.id);
+        assert_eq!(scheduled.message.body, reply.body);
+        let execution = harness
+            .runtime()
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap();
+        let attempt = execution
+            .open_attempt()
+            .expect("reply has canonical attempt");
+        assert!(
+            matches!(&attempt.binding, crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } if work_item_id == &work.id)
+        );
+        assert!(matches!(
+            &attempt.source.identity,
+            crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait { .. }
+        ));
+
+        let settlement = harness
+            .runtime()
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .latest_for_message(&signal.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            settlement.state,
+            crate::runtime_db::task_result_settlement::TaskResultSettlementState::CallerAdmitted
+        );
+        assert_eq!(
+            settlement.activation_id.as_deref(),
+            Some(attempt.attempt_id.as_str())
+        );
+        assert_eq!(
+            settlement.work_item_id.as_deref(),
+            Some(task_owner.id.as_str())
+        );
+    }
+}

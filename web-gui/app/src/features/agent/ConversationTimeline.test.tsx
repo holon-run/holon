@@ -547,3 +547,63 @@ describe("message timestamps", () => {
     expect(html).toContain(`>${created.toLocaleString([], { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}<`);
   });
 });
+
+
+describe("task result presentation", () => {
+  const input = { message_id: "result-message", preview: "raw body", presentation_class: "task" as const,
+    task_result: { task_id: "task-secret-id", status: "completed" as const, summary: "Run verification",
+      preview: "bounded runtime output", response_message_id: null } };
+  it("keeps a useful result card when the runtime does not enter the model", () => {
+    const html = renderTimeline([turnSummary("result-only", 1, { inputs: [input], presentation_class: "task",
+      execution: { kind: "terminal", outcome: "completed" }, settled: true,
+      result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
+    })]);
+    expect(html).toContain("Run verification");
+    expect(html).toContain("bounded runtime output");
+    expect(html).not.toContain("task-secret-id");
+    expect(html).not.toContain("conversation-turn-notice");
+    expect(html).not.toContain("conversation-response");
+  });
+  it("shows the model response once and reduces its task source to a compact card", () => {
+    const html = renderTimeline([turnSummary("response", 1, { inputs: [input], presentation_class: "task",
+      execution: { kind: "terminal", outcome: "completed" }, brief_ids: ["brief-1"],
+      result: { kind: "available" }, settled: true,
+    })]);
+    expect(html).toContain("Run verification");
+    expect(html).not.toContain("bounded runtime output");
+    expect(html.match(/这是结果内容 markdown/g)).toHaveLength(1);
+  });
+  it("uses durable runtime provenance to hide legacy synthetic briefs with a null task link", () => {
+    const legacyBrief = { ...brief, text: "Legacy synthetic runtime result", related_message_id: input.message_id };
+    const runtimeTurn = turnSummary("legacy-runtime", 1, { inputs: [{ ...input,
+      task_result: { ...input.task_result, runtime_only: true } }], presentation_class: "task",
+      execution: { kind: "terminal", outcome: "completed" }, brief_ids: ["brief-1"],
+      result: { kind: "available" }, settled: true });
+    const html = renderTimeline([runtimeTurn], { brief: legacyBrief });
+    expect(html).toContain("bounded runtime output");
+    expect(html).not.toContain("Legacy synthetic runtime result");
+    expect(html).not.toContain("conversation-response");
+    const modelTurn = { ...runtimeTurn, inputs: [{ ...input,
+      task_result: { ...input.task_result, runtime_only: false } }] };
+    const modelHtml = renderTimeline([modelTurn], { brief: legacyBrief });
+    expect(modelHtml).toContain("Legacy synthetic runtime result");
+    expect(modelHtml).not.toContain("bounded runtime output");
+  });
+  it("shows all terminal states and hides the reference signal body", () => {
+    for (const status of ["failed", "cancelled", "interrupted"] as const) {
+      const html = renderTimeline([turnSummary(status, 1, { inputs: [{ ...input, task_result: { ...input.task_result, status } }],
+        execution: { kind: "terminal", outcome: "completed" }, settled: true,
+        result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
+      })]);
+      expect(html).toContain(`conversation-task-result is-${status}`);
+      expect(html).toContain("bounded runtime output");
+    }
+    const html = renderTimeline([turnSummary("reference", 1, { inputs: [{ ...input, task_result: {
+      ...input.task_result, response_message_id: "reply-message", preview: "internal reference text" } }],
+      execution: { kind: "terminal", outcome: "completed" }, settled: true,
+      result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
+    })]);
+    expect(html).toContain("Agent reply received");
+    expect(html).not.toContain("internal reference text");
+  });
+});

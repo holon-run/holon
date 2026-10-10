@@ -243,9 +243,12 @@ async fn wait_at_delivery_checkpoint(agent_id: &str) {
     {
         return;
     }
+    let released = DELIVERY_ALLOW_CONTINUE.notified();
+    tokio::pin!(released);
+    released.as_mut().enable();
     DELIVERY_AT_CHECKPOINT.store(true, Ordering::SeqCst);
     DELIVERY_REACHED_CHECKPOINT.notify_one();
-    DELIVERY_ALLOW_CONTINUE.notified().await;
+    released.await;
     DELIVERY_AT_CHECKPOINT.store(false, Ordering::SeqCst);
 }
 
@@ -269,7 +272,9 @@ pub(crate) fn release_delivery_checkpoint() {
         return;
     }
     *DELIVERY_CHECKPOINT_AGENT_ID.lock().unwrap() = None;
-    DELIVERY_ALLOW_CONTINUE.notify_one();
+    // A recovery test may release without any delivery reaching the checkpoint.
+    // Wake registered arrivals without leaving a permit for the next test.
+    DELIVERY_ALLOW_CONTINUE.notify_waiters();
 }
 
 #[derive(Serialize)]

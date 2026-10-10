@@ -173,7 +173,7 @@ function PendingEvents({ inputs, onInspectActivity }: { inputs: readonly Pending
       </summary>
       <div className="conversation-pending-event-list">
         {inputs.map((input) => {
-          const text = inputPresentation(input.preview).summary;
+          const text = input.task_result?.summary ?? inputPresentation(input.preview).summary;
           return (
             <details key={input.message_id} className="conversation-pending-event"
               data-conversation-anchor={`input:${input.message_id}`}>
@@ -188,13 +188,40 @@ function PendingEvents({ inputs, onInspectActivity }: { inputs: readonly Pending
                 {t(input.state === "assigning" ? "agentPage.pendingAssigning" : "agentPage.pendingQueued")}
                 {input.created_at ? <time dateTime={input.created_at}>{new Date(input.created_at).toLocaleString()}</time> : null}
               </div>
-              <ConversationEventInput input={input} source={input.presentation_class ?? "external"} onInspectActivity={onInspectActivity} />
+              {input.task_result ? <TaskResultCard input={input} compact onInspectActivity={onInspectActivity} />
+                : <ConversationEventInput input={input} source={input.presentation_class ?? "external"} onInspectActivity={onInspectActivity} />}
             </details>
           );
         })}
       </div>
     </details>
   );
+}
+
+export function TaskResultCard({ input, compact = false, timestamp, onInspectActivity }: {
+  input: TurnInputSummary; compact?: boolean; timestamp?: string | null;
+  onInspectActivity?: ConversationTimelineActions["onInspectActivity"];
+}) {
+  const { t } = useTranslation();
+  const result = input.task_result;
+  if (!result) return null;
+  const failed = result.status === "failed" || result.status === "interrupted";
+  const label = result.response_message_id ? t("agentPage.taskReplyReceived")
+    : t(`agentPage.taskStatus.${result.status}`);
+  return <article className={`conversation-task-result is-${result.status}`}
+    data-conversation-anchor={`input:${input.message_id}`} aria-label={label}>
+    <div className="conversation-task-result-heading">
+      {failed ? <CircleAlert size={14} /> : result.status === "completed" ? <Check size={14} /> : <Clock size={14} />}
+      <strong>{result.summary?.trim() || label}</strong><span>{label}</span><InputTimestamp timestamp={timestamp} />
+    </div>
+    {!compact && !result.response_message_id && result.preview ? (
+      <p className="conversation-task-result-preview">{result.preview}</p>
+    ) : null}
+    <button type="button" className="conversation-event-link" disabled={!onInspectActivity}
+      onClick={() => onInspectActivity?.(inputInspectorActivity(input, "task"))}>
+      {t("agentPage.openEventDetail")}<ExternalLink size={13} />
+    </button>
+  </article>;
 }
 
 function ConversationEventInput({ input, source, onInspectActivity }: {
@@ -276,6 +303,17 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
   const [mounted, setMounted] = useState(expanded);
   const initialInputs = turn.inputs.filter((input) => !input.interjected);
   const interjections = turn.inputs.filter((input) => input.interjected);
+  const runtimeResultOnly = initialInputs.some((input) => input.task_result)
+    && interjections.length === 0 && (initialInputs.some((input) => input.task_result?.runtime_only === true)
+      || (turn.result.kind === "none" && turn.result.reason.kind === "reducer_only"));
+  const isRuntimeTaskBrief = (id: string) => {
+    const brief = actions.briefRecord(id);
+    return brief !== null && turn.inputs.some((input) => input.task_result && (
+      brief.related_task_id === input.task_result.task_id
+      || (input.task_result.runtime_only === true && brief.related_message_id === input.message_id)
+    ));
+  };
+  const responseBriefIds = turn.briefIds.filter((id) => !isRuntimeTaskBrief(id));
 
   useEffect(() => {
     if (turn.execution.kind === "active") wasActive.current = true;
@@ -318,7 +356,10 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
   return (
     <section className={`conversation-turn is-${execution}`} data-turn-id={turn.turnId}
       aria-label={t("agentPage.turnAria", { index: turn.turnIndex })}>
-      {initialInputs.map((input) => (input.presentation_class ?? turn.presentationClass) === "operator" ? (
+      {initialInputs.map((input) => input.task_result ? (
+        <TaskResultCard key={input.message_id} input={input} timestamp={turn.startedAt}
+          compact={responseBriefIds.some((id) => actions.briefRecord(id) !== null)} onInspectActivity={actions.onInspectActivity} />
+      ) : (input.presentation_class ?? turn.presentationClass) === "operator" ? (
         <ConversationInputLine key={input.message_id} input={input} />
       ) : (
         <details key={input.message_id} className="conversation-source" data-conversation-anchor={`input:${input.message_id}`}>
@@ -330,7 +371,7 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
           </span>
         </details>
       ))}
-      <div className="conversation-response">
+      {!runtimeResultOnly ? <div className="conversation-response">
         <button type="button" className={`conversation-detail-toggle ${expanded ? "is-expanded" : ""}`}
           data-conversation-anchor={`process:${turn.turnId}`} aria-expanded={expanded} aria-controls={detailId}
           title={t(expanded ? "agentPage.hideExecutionProcess" : "agentPage.executionProcess")}
@@ -359,14 +400,14 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
             {t(`agentPage.executionState.${execution === "waitingResult" && hasReadableBrief ? "finishingResult" : execution}`)}
           </div>
         ) : null}
-        {turn.briefIds.map((briefId) => <ConversationBriefCard key={briefId} briefId={briefId} actions={actions} />)}
-        {presentation.kind === "terminal_without_result" && execution === "completed" ? (
+        {responseBriefIds.map((briefId) => <ConversationBriefCard key={briefId} briefId={briefId} actions={actions} />)}
+        {presentation.kind === "terminal_without_result" && execution === "completed" && !turn.inputs.some((input) => input.task_result) ? (
           <div className="conversation-turn-notice">{t("agentPage.turnNoBrief", { outcome: t(`agentPage.outcome.${presentation.outcome}`) })}</div>
         ) : null}
         {presentation.kind === "unavailable" ? (
           <div className="conversation-turn-notice is-error" role="note">{t("agentPage.turnResultUnavailable")}</div>
         ) : null}
-      </div>
+      </div> : null}
     </section>
   );
 });

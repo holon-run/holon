@@ -782,6 +782,17 @@ impl RuntimeHandle {
                 .with_safe_context("task_id", &task.id)
                 .with_safe_context("result_message_id", &result_message_id)
             })?;
+        let result_message = if let Some(reply_id) =
+            crate::wake_contract::agent_message_reply_reference(&result_message)
+        {
+            self.inner
+                .storage
+                .read_message_by_id(reply_id)?
+                .ok_or_else(|| anyhow!("agent reply message is missing"))?
+        } else {
+            result_message
+        };
+        let result_message_id = result_message.id.clone();
         let existing_entry = self
             .inner
             .storage

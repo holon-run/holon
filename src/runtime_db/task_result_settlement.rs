@@ -36,6 +36,7 @@ impl TaskResultSettlementState {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum TaskResultSettlementDisposition {
     ModelDelivered,
+    ReplyConsumedElsewhere,
     OwnerClosed,
     OwnerMissing,
     InvalidOrStale,
@@ -52,6 +53,7 @@ impl TaskResultSettlementDisposition {
     fn as_str(self) -> &'static str {
         match self {
             Self::ModelDelivered => "model_delivered",
+            Self::ReplyConsumedElsewhere => "reply_consumed_elsewhere",
             Self::OwnerClosed => "owner_closed",
             Self::OwnerMissing => "owner_missing",
             Self::InvalidOrStale => "invalid_or_stale",
@@ -215,6 +217,62 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
+    pub(crate) fn admit_reply_message(
+        &self,
+        agent_id: &str,
+        work_item_id: Option<&str>,
+        message_id: &str,
+        activation_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            // An exact task waiter may belong to another WorkItem (#3124).
+            // Admit its promised result as well as same-owner observations,
+            // without acknowledging unrelated owners that share the reply.
+            let records = records_tx(tx,
+                "SELECT settlements.payload_json FROM task_result_settlements settlements
+                 JOIN messages ON messages.message_id = settlements.message_id
+                 WHERE settlements.agent_id = ?1
+                   AND (settlements.work_item_id IS ?2 OR settlements.task_id IN (
+                     SELECT json_extract(wake.value, '$.task_id')
+                     FROM wait_conditions AS waits, json_each(waits.wake_sources_json) AS wake
+                     WHERE waits.agent_id = ?1 AND waits.work_item_id IS ?2
+                       AND waits.status = 'resolved' AND waits.kind = 'task'
+                       AND waits.trigger_message_id = ?3
+                       AND json_extract(wake.value, '$.kind') = 'task_result'
+                   ))
+                   AND json_extract(messages.payload_json, '$.metadata.task_detail.message_id') = ?3
+                   AND json_extract(messages.payload_json, '$.metadata.task_kind') = 'agent_message_wait'
+                   AND json_extract(messages.payload_json, '$.metadata.task_detail.reply_content_source') = 'original_message'
+                   AND settlements.state != 'settled'", params![agent_id, work_item_id, message_id])?;
+            for mut record in records {
+                if !record_matches_durable_task_tx(tx, &record)? {
+                    continue;
+                }
+                if record.state == TaskResultSettlementState::CallerAdmitted
+                    && record.activation_id.as_deref() != Some(activation_id)
+                {
+                    if let Some(id) = record.activation_id.as_ref() {
+                        let open = tx.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM execution_protocol_attempts WHERE agent_id = ?1 AND attempt_id = ?2 AND lifecycle_state = 'open')",
+                            params![agent_id, id], |row| row.get::<_, bool>(0))?;
+                        if open {
+                            continue;
+                        }
+                    }
+                }
+                record.state = TaskResultSettlementState::CallerAdmitted;
+                record.activation_id = Some(activation_id.to_owned());
+                record.admitted_at = Some(now);
+                record.updated_at = now;
+                record.deferred_reason = None;
+                record.deferred_at = None;
+                update_tx(tx, &record)?;
+            }
+            Ok(())
+        })
+    }
+
     pub(crate) fn admitted_for_activation(
         &self,
         agent_id: &str,
@@ -318,6 +376,18 @@ impl TaskResultSettlementRepository<'_> {
             update_tx(tx, &record)?;
             Ok(true)
         })
+    }
+
+    pub(crate) fn settle_reply_consumed_elsewhere(
+        &self,
+        message_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        self.settle_owner_unavailable(
+            message_id,
+            TaskResultSettlementDisposition::ReplyConsumedElsewhere,
+            now,
+        )
     }
 
     pub(crate) fn mark_deferred(
@@ -739,6 +809,14 @@ fn unsettled_for_owner_tx(
          FROM task_result_settlements
          WHERE agent_id = ?1
            AND work_item_id IS ?2
+           AND NOT EXISTS (
+             SELECT 1 FROM messages
+             WHERE messages.message_id = task_result_settlements.message_id
+               AND json_extract(messages.payload_json, '$.metadata.task_kind') = 'agent_message_wait'
+               AND json_extract(messages.payload_json, '$.metadata.task_status') = 'completed'
+               AND json_extract(messages.payload_json, '$.metadata.task_detail.reply_content_source') = 'original_message'
+               AND json_extract(messages.payload_json, '$.metadata.task_detail.message_id') IS NOT NULL
+           )
            AND (
              state = 'persisted_pending'
              OR (

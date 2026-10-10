@@ -4516,6 +4516,17 @@ export interface components {
                     /** @enum {string|null} */
                     presentation_class?: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational" | null;
                     preview: string;
+                    /** @description Runtime task evidence, independently projected from any assistant response. */
+                    task_result?: {
+                        preview: string;
+                        response_message_id?: string | null;
+                        /** @description True only when durable turn provenance identifies a runtime-only result. */
+                        runtime_only?: boolean | null;
+                        /** @enum {string} */
+                        status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
+                        summary?: string | null;
+                        task_id: string;
+                    } | null;
                 }[];
                 /** @default false */
                 inputs_truncated: boolean;
@@ -4668,6 +4679,17 @@ export interface components {
                 revision: number;
                 /** @enum {string} */
                 state: "queued" | "assigning";
+                /** @description Runtime task evidence, independently projected from any assistant response. */
+                task_result?: {
+                    preview: string;
+                    response_message_id?: string | null;
+                    /** @description True only when durable turn provenance identifies a runtime-only result. */
+                    runtime_only?: boolean | null;
+                    /** @enum {string} */
+                    status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
+                    summary?: string | null;
+                    task_id: string;
+                } | null;
             };
             /** @constant */
             type: "operator_upsert";
@@ -4736,6 +4758,17 @@ export interface components {
                     /** @enum {string|null} */
                     presentation_class?: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational" | null;
                     preview: string;
+                    /** @description Runtime task evidence, independently projected from any assistant response. */
+                    task_result?: {
+                        preview: string;
+                        response_message_id?: string | null;
+                        /** @description True only when durable turn provenance identifies a runtime-only result. */
+                        runtime_only?: boolean | null;
+                        /** @enum {string} */
+                        status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
+                        summary?: string | null;
+                        task_id: string;
+                    } | null;
                 }[];
                 /** @default false */
                 inputs_truncated: boolean;
@@ -4936,6 +4969,17 @@ export interface components {
                     /** @enum {string|null} */
                     presentation_class?: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational" | null;
                     preview: string;
+                    /** @description Runtime task evidence, independently projected from any assistant response. */
+                    task_result?: {
+                        preview: string;
+                        response_message_id?: string | null;
+                        /** @description True only when durable turn provenance identifies a runtime-only result. */
+                        runtime_only?: boolean | null;
+                        /** @enum {string} */
+                        status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
+                        summary?: string | null;
+                        task_id: string;
+                    } | null;
                 }[];
                 /** @default false */
                 inputs_truncated: boolean;
@@ -5002,6 +5046,17 @@ export interface components {
                 revision: number;
                 /** @enum {string} */
                 state: "queued" | "assigning";
+                /** @description Runtime task evidence, independently projected from any assistant response. */
+                task_result?: {
+                    preview: string;
+                    response_message_id?: string | null;
+                    /** @description True only when durable turn provenance identifies a runtime-only result. */
+                    runtime_only?: boolean | null;
+                    /** @enum {string} */
+                    status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
+                    summary?: string | null;
+                    task_id: string;
+                } | null;
             }[];
             /** Format: uint32 */
             query_version: number;
@@ -5069,6 +5124,17 @@ export interface components {
                     /** @enum {string|null} */
                     presentation_class?: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational" | null;
                     preview: string;
+                    /** @description Runtime task evidence, independently projected from any assistant response. */
+                    task_result?: {
+                        preview: string;
+                        response_message_id?: string | null;
+                        /** @description True only when durable turn provenance identifies a runtime-only result. */
+                        runtime_only?: boolean | null;
+                        /** @enum {string} */
+                        status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
+                        summary?: string | null;
+                        task_id: string;
+                    } | null;
                 }[];
                 /** @default false */
                 inputs_truncated: boolean;

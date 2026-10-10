@@ -5977,11 +5977,10 @@ impl RuntimeHost {
                         message_id
                     )
                 })?;
-                let text = match &message.body {
-                    MessageBody::Text { text } => text.clone(),
-                    MessageBody::Brief { text, .. } => text.clone(),
-                    MessageBody::Json { value } => serde_json::to_string(value)?,
-                };
+                let text = format!(
+                    "Agent reply received; see message {} / delivery {}.",
+                    message.id, delivery.delivery_id
+                );
                 return Ok(ChildTaskTerminalResult {
                     status: TaskStatus::Completed,
                     text,
@@ -9593,17 +9592,30 @@ mod tests {
                 .await
         });
 
-        crate::runtime::wait_for_delivery_checkpoint().await;
-        let response = send_agent_message(
-            &child,
-            &parent_agent_id,
-            "reply-before-invoke-returns",
-            "fast reply",
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            crate::runtime::wait_for_delivery_checkpoint(),
         )
-        .await;
+        .await
+        .expect("existing-agent delivery should reach its receipt checkpoint");
+        let response = tokio::time::timeout(
+            Duration::from_secs(30),
+            send_agent_message(
+                &child,
+                &parent_agent_id,
+                "reply-before-invoke-returns",
+                "fast reply",
+            ),
+        )
+        .await
+        .expect("fast reply admission should finish while receipt attachment is paused");
 
         crate::runtime::release_delivery_checkpoint();
-        let receipt = invocation.await.unwrap().unwrap();
+        let receipt = tokio::time::timeout(Duration::from_secs(30), invocation)
+            .await
+            .expect("Invoke should finish after receipt checkpoint release")
+            .unwrap()
+            .unwrap();
         assert_eq!(receipt.task_handle.task_kind, AGENT_MESSAGE_WAIT_TASK_KIND);
         let terminal = wait_for_terminal_task(&parent, &receipt.task_handle.task_id).await;
         assert_eq!(terminal.status, TaskStatus::Completed);
@@ -9876,6 +9888,168 @@ mod tests {
         );
         assert_eq!(first_detail["business_completion"], false);
         assert_eq!(second_detail["business_completion"], false);
+    }
+
+    #[tokio::test]
+    async fn shared_reply_is_model_delivered_once_beyond_settlement_batch_limit() {
+        for use_wait in [false, true] {
+            let (_home, host) = test_host();
+            let parent = host.default_runtime().await.unwrap();
+            host.create_named_agent("shared-reply-target", None)
+                .await
+                .unwrap();
+            let target = host.get_public_agent("shared-reply-target").await.unwrap();
+            let parent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+            let mut tasks = Vec::new();
+            // More than the ordinary settlement context batch (8): a single
+            // original reply must settle every same-owner observation together.
+            for index in 0..10 {
+                let receipt = parent
+                    .agent_invocation_service()
+                    .invoke(InvokeAgentRequest {
+                        target: InvokeAgentTarget::ExistingAgent {
+                            agent_id: "shared-reply-target".into(),
+                        },
+                        message: format!("request {index}"),
+                        authority_class: AuthorityClass::OperatorInstruction,
+                    })
+                    .await
+                    .unwrap();
+                tasks.push(receipt.task_handle.task_id);
+            }
+            let registration = if use_wait {
+                Some(
+                    parent
+                        .register_wait_for(
+                            &parent_id,
+                            None,
+                            crate::runtime::WaitForWakeKind::TaskResult,
+                            Some(tasks[0].clone()),
+                            "waiting for peer reply".into(),
+                            None,
+                        )
+                        .await
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            let response =
+                send_agent_message(&target, &parent_id, "shared-reply", "unique reply body").await;
+            let reply_id = host
+                .runtime_db()
+                .agent_message_deliveries()
+                .latest(&response.delivery_id)
+                .unwrap()
+                .unwrap()
+                .message_id
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    if tasks.iter().all(|id| {
+                        parent
+                            .storage()
+                            .latest_task_record(id)
+                            .unwrap()
+                            .is_some_and(|task| {
+                                matches!(
+                                    task.status,
+                                    TaskStatus::Completed
+                                        | TaskStatus::Failed
+                                        | TaskStatus::Cancelled
+                                )
+                            })
+                    }) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("all concurrent observations should become terminal");
+            let mut signal_ids = Vec::new();
+            for id in tasks {
+                let terminal = wait_for_terminal_task(&parent, &id).await;
+                assert_eq!(terminal.status, TaskStatus::Completed);
+                assert_eq!(terminal.detail.as_ref().unwrap()["message_id"], reply_id);
+                let signal_id = terminal.parent_message_id.unwrap();
+                let signal = parent
+                    .storage()
+                    .read_message_by_id(&signal_id)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    crate::wake_contract::agent_message_reply_reference(&signal),
+                    Some(reply_id.as_str())
+                );
+                assert!(!serde_json::to_string(&signal.body)
+                    .unwrap()
+                    .contains("unique reply body"));
+                assert_eq!(
+                    parent
+                        .task_output(&id, false, 0)
+                        .await
+                        .unwrap()
+                        .task
+                        .output_preview,
+                    "unique reply body"
+                );
+                signal_ids.push(signal_id);
+            }
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let entries = parent.storage().latest_queue_entries().unwrap();
+                    if signal_ids
+                        .iter()
+                        .chain(std::iter::once(&reply_id))
+                        .all(|id| {
+                            entries.iter().any(|entry| {
+                                &entry.message_id == id
+                                    && entry.status == crate::types::QueueEntryStatus::Processed
+                            })
+                        })
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("reply and reference signals must drain");
+            let briefs = parent.storage().read_recent_briefs(100).unwrap();
+            assert_eq!(
+                briefs.len(),
+                1,
+                "one model response, without synthetic task briefs"
+            );
+            if let Some(registration) = registration {
+                let wait = parent
+                    .storage()
+                    .latest_wait_conditions_for_agent(&parent_id)
+                    .unwrap()
+                    .into_iter()
+                    .find(|wait| wait.id == registration.condition.id)
+                    .unwrap();
+                assert_eq!(wait.status, crate::types::WaitConditionStatus::Resolved);
+                assert_eq!(wait.trigger_message_id(), Some(reply_id.as_str()));
+            }
+            for signal_id in signal_ids {
+                let settlement = host
+                    .runtime_db()
+                    .task_result_settlements()
+                    .latest_for_message(&signal_id)
+                    .unwrap()
+                    .expect("reference settlement exists");
+                assert_eq!(
+                    settlement.state,
+                    crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+                );
+                assert_eq!(
+                    settlement.disposition,
+                    Some(crate::runtime_db::TaskResultSettlementDisposition::ModelDelivered)
+                );
+            }
+        }
     }
 
     #[tokio::test]

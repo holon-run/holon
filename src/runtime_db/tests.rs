@@ -166,6 +166,31 @@ mod tests {
     }
 
     #[test]
+    fn reply_settlement_disposition_migration_preserves_existing_obligations() -> Result<()> {
+        let mut connection = rusqlite::Connection::open_in_memory()?;
+        migrate_through(&mut connection, 78)?;
+        connection.execute_batch("INSERT INTO task_result_settlements (
+            result_identity, agent_id, task_id, message_id, rejoin_generation, parent_turn_id,
+            state, created_at, updated_at, deferred_reason, deferred_at, next_recheck_at, payload_json
+          ) VALUES ('result', 'agent', 'task', 'message', 1, 'parent', 'persisted_pending',
+            'before', 'before', 'awaiting_reply', 'deferred', 'deadline', '{\"sentinel\":true}')")?;
+        migrate_through(&mut connection, 79)?;
+        let preserved = connection.query_row("SELECT deferred_reason, deferred_at, next_recheck_at, payload_json FROM task_result_settlements", [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))?;
+        assert_eq!(
+            preserved,
+            (
+                "awaiting_reply".into(),
+                "deferred".into(),
+                "deadline".into(),
+                "{\"sentinel\":true}".into()
+            )
+        );
+        connection.execute_batch("UPDATE task_result_settlements SET state='settled', disposition='reply_consumed_elsewhere', settled_at='after', next_recheck_at=NULL")?;
+        Ok(())
+    }
+
+    #[test]
     fn deletion_retry_deadline_migration_backfills_retryable_jobs() -> Result<()> {
         let mut connection = rusqlite::Connection::open_in_memory()?;
         migrate_through(&mut connection, AGENT_DELETION_RETRY_DEADLINE_VERSION - 1)?;
