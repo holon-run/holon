@@ -463,6 +463,28 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
             self.execute([loop], namespace)
         self.assertEqual(len(list(failed_evidence.glob("*.sqlite"))), 2)
 
+    def test_conversation_inputs_merges_turn_windows_not_message_identities(self):
+        completed = {"turn_id": "turn-completed", "inputs": [{"message_id": "message-completed"}]}
+        historical = {"turn_id": "turn-live", "inputs": [{"message_id": "message-live"}]}
+        active = {"turn_id": "turn-live", "inputs": historical["inputs"] + [{"message_id": "message-added"}]}
+        pending = {"message_id": "message-pending"}
+        merge = self.helpers["conversation_inputs"]
+        for history, live in [([completed, historical], [active]), ([completed, active], []),
+                              ([completed], [active]), ([], [completed, active])]:
+            with self.subTest(history=history, active=live):
+                page = {"turns": history, "active_turns": live, "pending_inputs": [pending]}
+                self.assertEqual(merge(page), completed["inputs"] + active["inputs"] + [pending])
+        duplicate = historical["inputs"][0]
+        # Only repeated turn membership is merged. Real repeated inputs must
+        # remain visible to the strict per-message evidence validator.
+        for page in [
+            {"turns": [{"turn_id": "turn-live", "inputs": [duplicate, duplicate]}]},
+            {"turns": [historical], "active_turns": [{"turn_id": "turn-other", "inputs": [duplicate]}]},
+            {"turns": [historical], "pending_inputs": [duplicate]},
+        ]:
+            with self.subTest(duplicate=page):
+                self.assertEqual(merge(page), [duplicate, duplicate])
+
     def test_proxy_keeps_raw_identity_chains_and_direct_share_material_without_headers(self):
         evidence = self.directory / "evidence"
         workspace = self.directory / "workspace"
@@ -593,7 +615,10 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
             self.assertEqual(method, "GET")
             if "/messages/" in path:
                 return messages[path.rsplit("/", 1)[-1]]
-            return {"turns": [{"inputs": list(inputs.values())}]}
+            # The real history SQL includes running turns also returned in the
+            # active window. Native receipt delivery need not wait for completion.
+            turn = {"turn_id": "turn-sharing", "inputs": list(inputs.values())}
+            return {"turns": [turn], "active_turns": [turn]}
 
         namespace.update(mode="--populated", root=self.directory, workspace=workspace, agent="holon-tester",
                          local=local)
@@ -613,7 +638,8 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
             self.assertEqual(item["sha256"], hashlib.sha256((self.directory / item["path"]).read_bytes()).hexdigest())
         # Exercise the real acceptance block with invalid identity/material chains.
         for fault in ("collapsed-message", "reused-uuid", "wrong-text", "swapped-attachment",
-                      "missing-input", "wrong-agent", "changed-retry", "invalid-uuid", "duplicate-input"):
+                      "missing-input", "wrong-agent", "changed-retry", "invalid-uuid", "duplicate-input",
+                      "cross-turn-duplicate", "pending-duplicate"):
             damaged = json.loads(json.dumps(records))
             damaged_inputs = list(json.loads(json.dumps(inputs)).values())
             damaged_messages = json.loads(json.dumps(messages))
@@ -647,7 +673,14 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
             def damaged_local(method, path, payload=None):
                 if "/messages/" in path:
                     return damaged_messages[path.rsplit("/", 1)[-1]]
-                return {"turns": [{"inputs": damaged_inputs}]}
+                turn = {"turn_id": "turn-sharing", "inputs": damaged_inputs}
+                page = {"turns": [turn], "active_turns": [turn]}
+                duplicate = next(value.copy() for value in damaged_inputs if value["message_id"] == text_id)
+                if fault == "cross-turn-duplicate":
+                    page["active_turns"].append({"turn_id": "turn-other", "inputs": [duplicate]})
+                elif fault == "pending-duplicate":
+                    page["pending_inputs"] = [duplicate]
+                return page
 
             destination = self.directory / ("invalid-" + fault)
             namespace.update(prompt_evidence=damaged, local=damaged_local, fixture_evidence=destination)

@@ -115,6 +115,14 @@ def record_fixture_prompt(evidence, number, case, path, body, data, status, deli
     return record
 
 
+def conversation_inputs(conversation):
+    # History includes running turns. Overlay active membership by turn identity,
+    # never by message ID: duplicate logical inputs must still fail validation.
+    turns = {turn["turn_id"]: turn for turn in conversation["turns"]}
+    turns.update((turn["turn_id"], turn) for turn in conversation.get("active_turns", []))
+    return [value for turn in turns.values() for value in turn.get("inputs", [])] + conversation.get("pending_inputs", [])
+
+
 def direct_share_evidence(root, workspace, agent, prompts, inputs, local):
     """Join each native request to one real input/message and its own attachment."""
     kinds = ("share-text", "share-url", "share-image", "share-file")
@@ -843,8 +851,7 @@ with fixture_directory(repo) as root:
                 raise RuntimeError("Markdown renderer made an unconfirmed external image request")
             if share_acceptance and mode != "--sdk-only":
                 conversation = local("GET", f"/agents/{agent}/conversation?limit=60")
-                inputs = [value for turn in conversation["turns"] + conversation.get("active_turns", [])
-                          for value in turn.get("inputs", [])] + conversation.get("pending_inputs", [])
+                inputs = conversation_inputs(conversation)
                 previews = json.dumps(inputs, ensure_ascii=False)
                 for marker in ["IOS_SHARED_TEXT", "https://example.test/holon-share", "shared-note"]:
                     if marker not in previews:
