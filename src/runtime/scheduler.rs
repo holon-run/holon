@@ -1156,6 +1156,21 @@ fn matching_wait_conditions<'a>(
     matching_wait_conditions_for_work_item(projection, message, None)
 }
 
+pub(crate) fn task_wait_has_independent_blocker(
+    projection: &SchedulerProjection,
+    wait_id: &str,
+    work_item: &WorkItemRecord,
+) -> bool {
+    projection.activation_waits.iter().any(|condition| {
+        condition.id == wait_id
+            && condition.kind == WaitConditionKind::Task
+            && work_item
+                .blocked_by
+                .as_deref()
+                .is_some_and(|blocked_by| blocked_by != condition.waiting_for)
+    })
+}
+
 fn matching_wait_conditions_for_work_item<'a>(
     projection: &'a SchedulerProjection,
     message: &MessageEnvelope,

@@ -744,6 +744,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 return Err(error);
             }
         };
+        let settle_reducer_only_wait =
+            canonical_claim.is_none() && persisted_message.kind == MessageKind::TaskResult;
         if let Some(plan) = canonical_claim.as_ref() {
             dispatch_plan.execution_admission_provenance =
                 Some(ExecutionAdmissionProvenance::Canonical {
@@ -861,9 +863,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     .as_ref()
                     .map(|plan| plan.execution_protocol.clone())
                     .unwrap_or_default();
-                let wait_transition = canonical_claim
-                    .as_ref()
-                    .map(|_| {
+                let wait_transition = (canonical_claim.is_some() || settle_reducer_only_wait)
+                    .then(|| {
                         self.runtime
                             .wait_resolution_transition_for_message(&persisted_message)
                     })
@@ -1448,6 +1449,27 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 scenario_class,
                 reason: "canonical_work_item_not_open_same_agent",
             });
+        }
+        if message.kind == MessageKind::TaskResult {
+            let task_wait_id = match &scenario {
+                scheduler::CanonicalActivationScenario::ExactTaskRejoin {
+                    wait_id: Some(wait_id),
+                    ..
+                }
+                | scheduler::CanonicalActivationScenario::ExactWaitResume { wait_id, .. } => {
+                    Some(wait_id.as_str())
+                }
+                _ => None,
+            };
+            if task_wait_id.is_some_and(|wait_id| {
+                scheduler::task_wait_has_independent_blocker(projection, wait_id, &work_item)
+            }) {
+                // An unrelated WorkItem blocker remains authoritative. Reduce
+                // the result into the settlement ledger, then let the
+                // owner-scoped recovery wake re-enter after that blocker is
+                // explicitly cleared.
+                return Ok(CanonicalClaimOutcome::ReduceOnly);
+            }
         }
         if work_item.state != crate::types::WorkItemState::Open {
             if matches!(
