@@ -45,7 +45,11 @@ pub(crate) use lifecycle::{
     TERMINAL_PRE_COMMIT_FAULTS,
 };
 
-pub(crate) fn context_config() -> ContextConfig {
+/// Prompt budget estimated from the live PublicNamed tool registry, matching
+/// `context_config()`. Tool descriptions drift over time and shift this
+/// budget, so tests with size-sensitive fixtures should scale their fixtures
+/// from this value instead of pinning absolute sizes.
+pub(crate) fn public_tools_prompt_budget_estimated_tokens() -> usize {
     let available_tools =
         crate::tool::ToolRegistry::new(PathBuf::from("/tmp/holon-test-workspace"))
             .tool_specs_with_families()
@@ -57,8 +61,11 @@ pub(crate) fn context_config() -> ContextConfig {
             .filter(|(_, tool)| tool.name != crate::tool::names::X_SEARCH)
             .map(|(_, tool)| tool)
             .collect::<Vec<_>>();
-    let prompt_budget_estimated_tokens =
-        super::super::turn::estimate_tool_specs_tokens(&available_tools) + 4096;
+    super::super::turn::estimate_tool_specs_tokens(&available_tools) + 4096
+}
+
+pub(crate) fn context_config() -> ContextConfig {
+    let prompt_budget_estimated_tokens = public_tools_prompt_budget_estimated_tokens();
     ContextConfig {
         recent_messages: 8,
         recent_briefs: 8,
