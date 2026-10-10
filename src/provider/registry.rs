@@ -150,7 +150,8 @@ fn build_openai_codex_provider(
             openai_compaction_policy(route),
             route.policy.verbosity,
             route.policy.capabilities.supports_reasoning,
-        )?,
+        )?
+        .with_service_tier(route.service_tier),
     ))
 }
 
@@ -166,7 +167,8 @@ fn build_openai_provider(
             route.policy.context_window_tokens,
             home_dir,
             openai_compaction_policy(route),
-        )?,
+        )?
+        .with_service_tier(route.service_tier),
     ))
 }
 
@@ -197,7 +199,8 @@ fn build_openai_chat_completions_provider(
             route.policy.runtime_max_output_tokens,
             route.policy.context_window_tokens,
             home_dir,
-        )?,
+        )?
+        .with_service_tier(route.service_tier),
     ))
 }
 

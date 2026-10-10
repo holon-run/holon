@@ -830,7 +830,7 @@ export function App() {
             historyTruncated={false}
             conversationReady={conversationSession.conversationReady}
             onRefreshModels={refreshModelCatalog}
-            onSetModel={(model, reasoningEffort) => setAgentModel(activeAgent.id, model, reasoningEffort)}
+            onSetModel={(model, reasoningEffort, serviceTier) => setAgentModel(activeAgent.id, model, reasoningEffort, serviceTier)}
             onClearModel={() => clearAgentModel(activeAgent.id)}
             onRetrySync={() => retryAgentSync(activeAgent.id)}
             onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, attachments)}

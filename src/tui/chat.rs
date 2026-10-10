@@ -1534,6 +1534,8 @@ mod tests {
                 effective_fallback_models: Vec::new(),
                 override_model: None,
                 override_reasoning_effort: None,
+                override_service_tier: None,
+                effective_service_tier: None,
                 resolved_policy: crate::model_catalog::ResolvedRuntimeModelPolicy::default(),
             },
             token_usage: AgentTokenUsageSummary {

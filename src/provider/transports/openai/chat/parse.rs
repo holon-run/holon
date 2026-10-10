@@ -14,6 +14,10 @@ pub(crate) fn parse_chat_completion_response(response: Value) -> Result<ParsedOp
                 "missing message",
             )
         })?;
+    let served_service_tier = response
+        .get("service_tier")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let parsed = parse_response(response).map_err(map_model_client_parse_error)?;
     let response_id = parsed.id.clone();
     let mut blocks = Vec::new();
@@ -43,6 +47,7 @@ pub(crate) fn parse_chat_completion_response(response: Value) -> Result<ParsedOp
     });
 
     Ok(ParsedOpenAiResponse {
+        served_service_tier,
         response: ProviderTurnResponse {
             blocks,
             stop_reason: parsed.finish_reason,

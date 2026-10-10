@@ -55,7 +55,7 @@ interface AgentPageProps {
   historyTruncated?: boolean;
   conversationReady: boolean;
   onRefreshModels: () => Promise<void>;
-  onSetModel: (model: string, reasoningEffort?: string) => Promise<void>;
+  onSetModel: (model: string, reasoningEffort?: string, serviceTier?: string) => Promise<void>;
   onClearModel: () => Promise<void>;
   onRetrySync: () => void;
   onAcknowledgeTruncation?: () => void;
@@ -245,8 +245,10 @@ export function AgentPage({
   });
   const canStopCurrentRun = composerAction === "stop-run" && Boolean(activeAgent.currentRunId) && !abortingRun;
   const canSendPrompt = composerHasDraft && !sendingPrompt;
+  const selectedModelRoute = activeAgent.modelSelection ?? activeAgent.model;
+  const selectedModelOption = modelCatalog.options.find((option) => option.routeRef === selectedModelRoute);
+  const supportsFast = selectedModelOption?.serviceTierOptions?.includes("fast") ?? false;
   const activeModelOption = useMemo(() => modelCatalog.options.find((option) => option.routeRef === activeAgent.model), [activeAgent.model, modelCatalog.options]);
-  const selectedModelOption = modelCatalog.options.find((option) => option.routeRef === (activeAgent.modelSelection ?? activeAgent.model));
   const selectionLabel = selectedModelOption ? `${selectedModelOption.displayName} · ${modelSourceLabel(selectedModelOption)}` : activeAgent.modelSelection ?? activeAgent.model;
   const activeModelSupportsReasoning = activeModelOption?.supportsReasoningEffort ?? Boolean(activeAgent.modelReasoningEffort);
   const activeReasoningBadge = activeModelSupportsReasoning ? (activeAgent.modelReasoningEffort ?? "auto") : undefined;
@@ -567,7 +569,7 @@ export function AgentPage({
 
     setChangingModel(option.routeRef);
     try {
-      await onSetModel(option.routeRef, option.supportsReasoningEffort && reasoningEffort !== "auto" ? reasoningEffort : undefined);
+      await onSetModel(option.routeRef, option.supportsReasoningEffort && reasoningEffort !== "auto" ? reasoningEffort : undefined, option.routeRef === selectedModelRoute ? activeAgent.modelServiceTierOverride : undefined);
       rememberModel(option.routeRef);
       setModelPickerOpen(false);
     } catch {
@@ -590,13 +592,25 @@ export function AgentPage({
     }
   }
 
+  async function handleServiceTierChange(value: string) {
+    if (changingModel || !supportsFast) return;
+    setChangingModel("service_tier:" + value);
+    try {
+      await onSetModel(selectedModelRoute, activeAgent.modelReasoningEffort, value === "inherit" ? undefined : value);
+    } catch {
+      // Store exposes the error and retains the previous selection.
+    } finally {
+      setChangingModel(null);
+    }
+  }
+
   async function handleReasoningChange(effort: string) {
     setSelectedReasoningEffort(effort);
     setReasoningPopoverOpen(false);
     if (changingModel || !activeModelSupportsReasoning) return;
     setChangingModel("reasoning:" + effort);
     try {
-      await onSetModel(activeAgent.model, effort !== "auto" ? effort : undefined);
+      await onSetModel(selectedModelRoute, effort !== "auto" ? effort : undefined, activeAgent.modelServiceTierOverride);
     } catch {
       // Store exposes the user-facing error.
     } finally {
@@ -759,6 +773,21 @@ export function AgentPage({
                     <span className="model-button-label">{shortModelLabel(activeAgent.model)}</span>
                     <span aria-hidden="true">⌄</span>
                   </Button>
+                  {supportsFast ? (
+                    <label className="speed-picker" title={`${t("agent.fastUsageHint")}\n${selectedModelRoute}`}>
+                      <span>{t("agent.speedMode")}</span>
+                      <select
+                        aria-label={t("agent.speedMode")}
+                        value={activeAgent.modelServiceTierOverride ?? "inherit"}
+                        disabled={changingModel !== null}
+                        onChange={(event) => void handleServiceTierChange(event.target.value)}
+                      >
+                        <option value="inherit">{t("agent.speedInherit")}{activeAgent.model === selectedModelRoute && activeAgent.modelServiceTier ? ` (${activeAgent.modelServiceTier === "fast" ? "Fast" : t("agent.speedStandard")})` : ""}</option>
+                        <option value="default">{t("agent.speedStandard")}</option>
+                        <option value="fast">Fast</option>
+                      </select>
+                    </label>
+                  ) : null}
                   {activeModelSupportsReasoning ? (
                     <div className="thinking-picker">
                       <Button

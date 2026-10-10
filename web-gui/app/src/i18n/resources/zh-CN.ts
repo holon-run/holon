@@ -1237,6 +1237,10 @@ const zh: Record<string, any> = {
     sendInputPlaceholder: "给 {{id}} 发消息…",
     dropImageHint: "拖放文件以添加附件",
     // 思考级别
+    speedMode: "速度",
+    speedInherit: "继承",
+    speedStandard: "标准",
+    fastUsageHint: "Fast 会增加额度消耗或费用。设置绑定当前模型路由，从下一轮开始生效。",
     thinkingAria: "思考：{{level}}",
     thinkingLevelValue: "思考级别：{{level}}",
     thinkingLevel: "思考级别",

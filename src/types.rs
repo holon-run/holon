@@ -530,6 +530,8 @@ pub struct AgentBootstrapWorkspaceState {
     pub inherited_model_override: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherited_model_override_reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited_model_override_service_tier: Option<crate::config::ServiceTier>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2735,6 +2737,8 @@ pub struct AgentState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override_reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_override_service_tier: Option<crate::config::ServiceTier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_fallback_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_requested_model: Option<ModelRouteRef>,
@@ -2888,6 +2892,7 @@ impl AgentState {
             last_continuation: None,
             model_override: None,
             model_override_reasoning_effort: None,
+            model_override_service_tier: None,
             pending_fallback_model: None,
             last_requested_model: None,
             last_active_model: None,
@@ -5219,6 +5224,10 @@ pub struct AgentModelOverrideAuditEvent {
     pub override_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_service_tier: Option<crate::config::ServiceTier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_service_tier: Option<crate::config::ServiceTier>,
     #[serde(default)]
     pub fallback_active: bool,
     #[serde(default)]
@@ -5239,6 +5248,8 @@ impl AgentModelOverrideAuditEvent {
             active_model: model.active_model.clone(),
             override_model: model.override_model.clone(),
             override_reasoning_effort: model.override_reasoning_effort.clone(),
+            override_service_tier: model.override_service_tier,
+            effective_service_tier: model.effective_service_tier,
             fallback_active: model.fallback_active,
             pending_next_turn,
         }
@@ -5676,6 +5687,10 @@ pub struct AgentModelState {
     pub override_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_service_tier: Option<crate::config::ServiceTier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_service_tier: Option<crate::config::ServiceTier>,
     #[serde(default)]
     pub resolved_policy: ResolvedRuntimeModelPolicy,
 }
@@ -5860,6 +5875,10 @@ pub struct AgentListModelSummary {
     pub override_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_service_tier: Option<crate::config::ServiceTier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_service_tier: Option<crate::config::ServiceTier>,
 }
 
 impl From<&AgentModelState> for AgentListModelSummary {
@@ -5874,6 +5893,8 @@ impl From<&AgentModelState> for AgentListModelSummary {
             effective_fallback_models: value.effective_fallback_models.clone(),
             override_model: value.override_model.clone(),
             override_reasoning_effort: value.override_reasoning_effort.clone(),
+            override_service_tier: value.override_service_tier,
+            effective_service_tier: value.effective_service_tier,
         }
     }
 }
@@ -5890,6 +5911,8 @@ impl AgentListModelSummary {
             effective_fallback_models: self.effective_fallback_models,
             override_model: self.override_model,
             override_reasoning_effort: self.override_reasoning_effort,
+            override_service_tier: self.override_service_tier,
+            effective_service_tier: self.effective_service_tier,
             resolved_policy: ResolvedRuntimeModelPolicy::default(),
         }
     }

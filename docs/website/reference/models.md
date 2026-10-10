@@ -372,3 +372,33 @@ and capabilities.
 | `zai` | `glm-5.3` | `zai/glm-5.3` | 1000000 | 131072 | ✅ | — |
 | `zai` | `glm-5.3-flash` | `zai/glm-5.3-flash` | 1000000 | 131072 | ✅ | ✅ |
 | `zai` | `glm-5v-turbo` | `zai/glm-5v-turbo` | 202800 | 131072 | ✅ | ✅ |
+
+## Fast mode
+
+Supported OpenAI and OpenAI Codex model routes expose an independent **Speed**
+selector in the Web GUI. **Inherit** uses the route default, **Standard**
+overrides a Fast default, and **Fast** requests faster processing with higher
+quota consumption or cost. Thinking level remains independent.
+
+Runtime defaults are keyed by the complete model route:
+
+```json
+{
+  "model": {
+    "route_options": {
+      "openai-codex@default/gpt-6-astra": { "service_tier": "fast" }
+    }
+  }
+}
+```
+
+Use `holon config set model.route_options '<JSON object>'` to update these
+defaults. The agent model control API also accepts optional `service_tier`
+(`default` or `fast`) with `model` and `reasoning_effort`. An omitted value
+inherits the route default. `priority` is accepted as an alias for `fast`.
+Model changes replace the previous route override, and fallback candidates
+use their own route defaults. Compatible gateways do not inherit OpenAI's
+service-tier capability. Changes apply to future turns.
+
+Request diagnostics distinguish the requested and upstream-served tiers. An
+upstream service may serve standard processing even when Fast was requested.

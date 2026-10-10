@@ -30,6 +30,7 @@ mod file;
 mod models;
 mod providers;
 mod schema;
+mod service_tier;
 mod web;
 mod x_search;
 
@@ -39,6 +40,7 @@ pub use file::*;
 pub use models::*;
 pub use providers::*;
 pub use schema::*;
+pub use service_tier::*;
 pub use web::*;
 pub use x_search::*;
 
@@ -356,7 +358,7 @@ impl AppConfig {
             .unwrap_or(AltScreenMode::Auto);
         let web_config = crate::web::materialize_web_config(&stored_config.web, &credential_store)?;
 
-        Ok(Self {
+        let config = Self {
             default_agent_id,
             http_addr,
             callback_base_url,
@@ -400,7 +402,9 @@ impl AppConfig {
             validated_unknown_model_fallback,
             model_discovery_cache,
             providers,
-        })
+        };
+        config.validate_model_route_options()?;
+        Ok(config)
     }
 }
 

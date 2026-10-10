@@ -3557,6 +3557,7 @@ impl RuntimeHost {
                     ),
                 execution_profile: parent_state.execution_profile.clone(),
                 inherited_model_override: parent_state.model_override.clone(),
+                inherited_model_override_service_tier: parent_state.model_override_service_tier,
                 inherited_model_override_reasoning_effort: parent_state
                     .model_override_reasoning_effort
                     .clone(),
@@ -4008,6 +4009,7 @@ impl RuntimeHost {
             && current.model_override == desired.inherited_model_override
             && current.model_override_reasoning_effort
                 == desired.inherited_model_override_reasoning_effort
+            && current.model_override_service_tier == desired.inherited_model_override_service_tier
         {
             return Ok(());
         }
@@ -4019,7 +4021,8 @@ impl RuntimeHost {
                 && current.execution_profile == default_state.execution_profile
                 && current.model_override == default_state.model_override
                 && current.model_override_reasoning_effort
-                    == default_state.model_override_reasoning_effort,
+                    == default_state.model_override_reasoning_effort
+                && current.model_override_service_tier == default_state.model_override_service_tier,
             "agent {} workspace/profile changed after creation; repair refuses to overwrite user state",
             bootstrap.agent_id
         );
@@ -4029,6 +4032,7 @@ impl RuntimeHost {
                 desired.execution_profile.clone(),
                 desired.inherited_model_override.clone(),
                 desired.inherited_model_override_reasoning_effort.clone(),
+                desired.inherited_model_override_service_tier,
             )
             .await
     }
@@ -4067,8 +4071,14 @@ impl RuntimeHost {
             .workspace
             .as_ref()
             .and_then(|workspace| workspace.inherited_model_override_reasoning_effort.as_ref());
+        let inherited_tier = bootstrap
+            .desired
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.inherited_model_override_service_tier);
         anyhow::ensure!(
-            current.model_override.as_ref() == inherited_model
+            current.model_override_service_tier == inherited_tier
+                && current.model_override.as_ref() == inherited_model
                 && current.model_override_reasoning_effort.as_ref() == inherited_effort,
             "agent {} model changed after creation; repair refuses to overwrite user state",
             bootstrap.agent_id
@@ -5733,6 +5743,7 @@ impl RuntimeHost {
                     ),
                 execution_profile: parent_state.execution_profile.clone(),
                 inherited_model_override: parent_state.model_override.clone(),
+                inherited_model_override_service_tier: parent_state.model_override_service_tier,
                 inherited_model_override_reasoning_effort: parent_state
                     .model_override_reasoning_effort
                     .clone(),

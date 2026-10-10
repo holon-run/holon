@@ -1906,6 +1906,9 @@ pub(crate) fn work_item_lifecycle_error(error: anyhow::Error) -> (StatusCode, Js
 }
 
 pub(crate) fn agent_model_override_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+    if error.is::<crate::config::ServiceTierValidationError>() {
+        return bad_request(error.to_string());
+    }
     match error.downcast::<crate::model_catalog::ReasoningEffortValidationError>() {
         Ok(error) => bad_request(error.to_string()),
         Err(error) => error_response(error),

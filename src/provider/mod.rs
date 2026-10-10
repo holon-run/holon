@@ -28,7 +28,7 @@ mod wire_fingerprint;
 
 pub(crate) use catalog::{
     build_candidate_from_model_route, build_provider_from_model_chain_with_override,
-    ModelRouteReasoningEffortOverride,
+    ModelRouteParameterOverride,
 };
 pub use catalog::{build_provider_from_config, build_provider_from_model_chain};
 pub use diagnostics::{
@@ -406,8 +406,12 @@ pub struct ProviderIncrementalContinuationDiagnostics {
     pub mismatch_kind: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderOpenAiRequestControlsDiagnostics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub served_service_tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

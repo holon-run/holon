@@ -2215,6 +2215,98 @@ pub async fn control_agent_model_override_validates_codex_reasoning_effort() -> 
     Ok(())
 }
 
+pub async fn control_agent_model_service_tier_is_route_scoped() -> Result<()> {
+    let mut config = test_config();
+    config.default_model =
+        holon::config::ModelRouteRef::parse_compatible("anthropic/claude-sonnet-4-6").unwrap();
+    config
+        .providers
+        .get_mut(&holon::config::ProviderId::anthropic())
+        .unwrap()
+        .credential = Some("dummy".into());
+    config
+        .providers
+        .get_mut(&holon::config::ProviderId::openai_codex())
+        .unwrap()
+        .credential = Some(
+        r#"{"tokens":{"access_token":"test-token","refresh_token":"test-refresh","account_id":"test-account"}}"#
+            .into(),
+    );
+    let (_host, base, server) = spawn_server_with_runtime_config(config).await?;
+    let client = reqwest::Client::new();
+
+    let route = "openai-codex@default/gpt-6-astra";
+    let url = format!("{base}/api/control/agents/default/model");
+    for (input, expected) in [
+        ("fast", "fast"),
+        ("default", "default"),
+        ("priority", "fast"),
+    ] {
+        let response = client
+            .post(&url)
+            .json(&serde_json::json!({
+                "model": route, "reasoning_effort": "high", "service_tier": input,
+            }))
+            .send()
+            .await?;
+        assert!(response.status().is_success());
+        let body: serde_json::Value = response.json().await?;
+        assert_eq!(body["model"]["override_service_tier"], expected);
+        assert_eq!(body["model"]["effective_service_tier"], expected);
+        assert_eq!(body["model"]["override_reasoning_effort"], "high");
+        let fresh: serde_json::Value = client
+            .get(format!("{base}/api/agents/default/state"))
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert_eq!(fresh["agent"]["model"]["override_service_tier"], expected);
+    }
+    let rejected = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "model": "anthropic@default/claude-sonnet-4-6", "service_tier": "fast",
+        }))
+        .send()
+        .await?;
+    assert_eq!(rejected.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert!(rejected
+        .text()
+        .await?
+        .contains("does not support service_tier"));
+    let state: serde_json::Value = client
+        .get(format!("{base}/api/agents/default/state"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(state["agent"]["model"]["override_service_tier"], "fast");
+    let switched: serde_json::Value = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "model": "anthropic@default/claude-sonnet-4-6",
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert!(switched["model"]["override_service_tier"].is_null());
+    assert!(switched["model"]["effective_service_tier"].is_null());
+    let fresh: serde_json::Value = client
+        .get(format!("{base}/api/agents/default/state"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(
+        fresh["agent"]["model"]["effective_model"],
+        "anthropic@default/claude-sonnet-4-6"
+    );
+    assert!(fresh["agent"]["model"]["override_service_tier"].is_null());
+    server.abort();
+    Ok(())
+}
+
 pub async fn control_prompt_requires_bearer_token_when_required() -> Result<()> {
     let config = test_config_with_paths(
         tempdir().unwrap().keep(),

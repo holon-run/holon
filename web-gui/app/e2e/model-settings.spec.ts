@@ -6,16 +6,18 @@ const alternative = "dashscope@coding/shared-model";
 const provider = (id: string, configured: boolean) => ({ id, transport: "openai_responses", base_url: "https://example.test/v1", api_key_supported: true, oauth_supported: false, credential_source: "credential_profile", credential_kind: "api_key", credential_profile: `${id}:default`, credential_configured: configured, configured_in_config: configured });
 const providers = [provider("openai", true), provider("dashscope-coding-plan", true), provider("deepseek", false), ...Array.from({ length: 40 }, (_, i) => provider(`custom-${i}`, false))];
 const models = [
-  { model: "openai/shared-model", provider: "openai", provider_family: "openai", route_provider: "openai", endpoint: "default", display_name: "Shared Model", available: true, policy: { capabilities: { image_input: true, image_generation: true } } },
+  { model: "openai/shared-model", provider: "openai", provider_family: "openai", route_provider: "openai", endpoint: "default", display_name: "Shared Model", available: true, resolved_capabilities: { endpoint: { accepted_parameters: [{ name: "service_tier", allowed_values: ["default", "fast"] }] } }, policy: { reasoning_effort_options: ["low", "high"], capabilities: { image_input: true, image_generation: true } } },
   { model: "dashscope/shared-model", provider: "dashscope", provider_family: "dashscope", route_provider: "dashscope-coding-plan", endpoint: "coding", display_name: "Shared Model", available: true },
   { model: "deepseek/hidden-model", provider: "deepseek", endpoint: "default", display_name: "Unavailable Model", available: false, unavailable_reason: "Missing credentials" },
 ];
 async function setup(page: Page) {
   let selection = primary;
   let source = "runtime_default";
+  let tier: string | undefined;
+  let effort: string | undefined;
   const posts: unknown[] = [];
   const updates: { key: string; value?: unknown }[] = [];
-  const modelState = () => ({ active_model: primary, effective_model: selection, runtime_default_model: primary, source });
+  const modelState = () => ({ active_model: primary, effective_model: selection, runtime_default_model: primary, source, override_service_tier: tier, effective_service_tier: tier, override_reasoning_effort: effort });
   await page.route("**/api/models", (route) => route.fulfill({ json: { available_models: models.slice(0, 2), model_availability: models } }));
   await page.route("**/api/control/runtime/config", async (route) => {
     if (route.request().method() === "PATCH") updates.push(...route.request().postDataJSON().updates);
@@ -39,11 +41,11 @@ async function setup(page: Page) {
     await route.fulfill({ json: state });
   });
   await page.route("**/api/control/agents/bootstrap-agent/model", async (route) => {
-    const body = route.request().postDataJSON(); posts.push(body); selection = body.model; source = "agent_override";
+    const body = route.request().postDataJSON(); posts.push(body); selection = body.model; source = "agent_override"; tier = body.service_tier; effort = body.reasoning_effort;
     await route.fulfill({ json: { model: modelState() } });
   });
   await page.route("**/api/control/agents/bootstrap-agent/model/clear", async (route) => {
-    selection = primary; source = "runtime_default";
+    selection = primary; source = "runtime_default"; tier = undefined; effort = undefined;
     await route.fulfill({ json: { model: modelState() } });
   });
   return { posts, updates };
@@ -248,3 +250,33 @@ for (const kind of ["bearer_token", "api_key"] as const) {
     await expect(editor.getByRole("button", { name: "Remove Key", exact: true })).toHaveCount(0);
   });
 }
+
+
+test("fast stays on the selected route and reasoning changes preserve it", async ({ page }) => {
+  const { posts } = await setup(page);
+  await page.goto("/agents/bootstrap-agent/conversation");
+  const speed = page.getByRole("combobox", { name: "Speed", exact: true });
+  await expect(speed).toHaveValue("inherit");
+  await speed.selectOption("fast");
+  await expect(speed).toHaveValue("fast");
+  expect(posts.at(-1)).toMatchObject({ model: primary, service_tier: "fast" });
+  await page.locator(".thinking-button").click();
+  await page.getByRole("button", { name: "High", exact: true }).click();
+  await expect.poll(() => posts.at(-1)).toMatchObject({ model: primary, reasoning_effort: "high", service_tier: "fast" });
+  await page.reload();
+  await expect(speed).toHaveValue("fast");
+  await speed.selectOption("default");
+  await expect(speed).toHaveValue("default");
+  expect(posts.at(-1)).toMatchObject({ model: primary, service_tier: "default", reasoning_effort: "high" });
+  await speed.selectOption("fast");
+  await expect(speed).toHaveValue("fast");
+  await page.locator(".model-button").click();
+  await page.locator(".model-browser-row").filter({ hasText: "Coding Plan" }).locator("[data-model-choice]").click();
+  await expect(speed).toHaveCount(0);
+  expect(posts.at(-1)).toMatchObject({ model: alternative });
+  expect(posts.at(-1)).not.toHaveProperty("service_tier");
+  await page.locator(".model-button").click();
+  await page.locator(".model-browser-row").filter({ hasText: "OpenAI" }).locator("[data-model-choice]").click();
+  await expect(speed).toHaveValue("inherit");
+  expect(posts.at(-1)).not.toHaveProperty("service_tier");
+});

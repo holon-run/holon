@@ -39,6 +39,7 @@ http_async_tests!(
     skill_library_reconcile_and_check_lock_file,
     control_agent_model_override_set_and_clear_updates_status,
     control_agent_model_override_validates_codex_reasoning_effort,
+    control_agent_model_service_tier_is_route_scoped,
     control_agent_delete_fences_runtime_and_is_idempotent,
     control_agent_delete_rejects_default_and_reports_unknown,
     control_agent_recreate_after_completed_deletion_reincarnates,

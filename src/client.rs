@@ -943,6 +943,7 @@ impl LocalClient {
         self.post_control_json(
             &format!("/control/agents/{agent_id}/model"),
             &SetAgentModelRequest {
+                service_tier: None,
                 model: model.into(),
                 reasoning_effort,
                 authority_class: Some(AuthorityClass::OperatorInstruction),

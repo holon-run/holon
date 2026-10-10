@@ -318,6 +318,19 @@ fn supported_model_parameters(model: &ResolvedModelAvailability) -> Vec<String> 
     {
         parameters.push("max_output_tokens".to_string());
     }
+    if model
+        .resolved_capabilities
+        .as_ref()
+        .is_some_and(|capabilities| {
+            capabilities
+                .endpoint
+                .accepted_parameters
+                .iter()
+                .any(|p| p.name == "service_tier")
+        })
+    {
+        parameters.push("service_tier".to_string());
+    }
     parameters
 }
 

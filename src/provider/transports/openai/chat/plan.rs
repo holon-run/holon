@@ -68,23 +68,10 @@ pub(crate) fn build_chat_completion_request(
 }
 
 pub(crate) fn plan_chat_completion_request(
-    model: &str,
-    max_output_tokens: u32,
+    full_body: Value,
     request: &ProviderTurnRequest,
-    tool_schema_contract: ToolSchemaContract,
-    stream: bool,
-    reasoning_effort: Option<&str>,
     continuation: &Arc<Mutex<OpenAiContinuationState>>,
 ) -> Result<(Value, OpenAiRequestPlan)> {
-    let full_body = build_chat_completion_request(
-        model,
-        max_output_tokens,
-        request,
-        tool_schema_contract,
-        stream,
-        reasoning_effort,
-    )?;
-
     let body_messages = full_body
         .get("messages")
         .and_then(|messages| messages.as_array())

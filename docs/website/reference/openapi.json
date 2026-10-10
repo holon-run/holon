@@ -1673,6 +1673,16 @@
           "effective_model": {
             "type": "string"
           },
+          "effective_service_tier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ServiceTier"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "fallback_active": {
             "default": false,
             "type": "boolean"
@@ -1687,6 +1697,16 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "override_service_tier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ServiceTier"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "requested_model": {
@@ -2718,6 +2738,18 @@
                   "effective_model": {
                     "type": "string"
                   },
+                  "effective_service_tier": {
+                    "description": "User preference; adapters own wire values such as Codex's `priority`.",
+                    "enum": [
+                      "default",
+                      "fast",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "fallback_active": {
                     "default": false,
                     "type": "boolean"
@@ -2729,6 +2761,18 @@
                     ]
                   },
                   "override_reasoning_effort": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "override_service_tier": {
+                    "description": "User preference; adapters own wire values such as Codex's `priority`.",
+                    "enum": [
+                      "default",
+                      "fast",
+                      null
+                    ],
                     "type": [
                       "string",
                       "null"
@@ -3814,6 +3858,18 @@
                   "effective_model": {
                     "type": "string"
                   },
+                  "effective_service_tier": {
+                    "description": "User preference; adapters own wire values such as Codex's `priority`.",
+                    "enum": [
+                      "default",
+                      "fast",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "fallback_active": {
                     "default": false,
                     "type": "boolean"
@@ -3825,6 +3881,18 @@
                     ]
                   },
                   "override_reasoning_effort": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "override_service_tier": {
+                    "description": "User preference; adapters own wire values such as Codex's `priority`.",
+                    "enum": [
+                      "default",
+                      "fast",
+                      null
+                    ],
                     "type": [
                       "string",
                       "null"
@@ -4604,6 +4672,18 @@
                         "effective_model": {
                           "type": "string"
                         },
+                        "effective_service_tier": {
+                          "description": "User preference; adapters own wire values such as Codex's `priority`.",
+                          "enum": [
+                            "default",
+                            "fast",
+                            null
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "fallback_active": {
                           "default": false,
                           "type": "boolean"
@@ -4615,6 +4695,18 @@
                           ]
                         },
                         "override_reasoning_effort": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "override_service_tier": {
+                          "description": "User preference; adapters own wire values such as Codex's `priority`.",
+                          "enum": [
+                            "default",
+                            "fast",
+                            null
+                          ],
                           "type": [
                             "string",
                             "null"
@@ -14562,6 +14654,14 @@
         ],
         "title": "SearchResponse",
         "type": "object"
+      },
+      "ServiceTier": {
+        "description": "User preference; adapters own wire values such as Codex's `priority`.",
+        "enum": [
+          "default",
+          "fast"
+        ],
+        "type": "string"
       },
       "SessionExchangeRequest": {
         "properties": {
