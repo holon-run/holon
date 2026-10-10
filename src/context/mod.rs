@@ -489,20 +489,18 @@ pub fn build_context_with_default_external_ingress(
         }
     }
 
-    if work_queue_projection.has_non_current_candidates() {
-        let rendered_candidates = render_work_item_candidates(
-            &work_queue_projection,
-            storage,
-            &agent.id,
-            storage.data_dir(),
-        )?;
-        if let Some(content) = rendered_candidates {
-            candidates.push(context_candidate(
-                turn_section("queued_blocked_work_items", content),
-                None,
-                false,
-            ));
-        }
+    if let Some(content) = render_work_item_candidates(
+        &work_queue_projection,
+        current_work_item.map(|item| item.id.as_str()),
+        storage,
+        &agent.id,
+        storage.data_dir(),
+    )? {
+        candidates.push(context_candidate(
+            turn_section("queued_blocked_work_items", content),
+            None,
+            false,
+        ));
     }
 
     if let Some(worktree) = &agent.worktree_session {
@@ -1588,6 +1586,7 @@ fn is_projectable_assistant_round(entry: &TranscriptEntry) -> bool {
 
 fn render_work_item_candidates(
     projection: &crate::storage::WorkQueueReadModel,
+    displayed_work_item_id: Option<&str>,
     storage: &AppStorage,
     agent_id: &str,
     agent_home: &std::path::Path,
@@ -1598,6 +1597,15 @@ fn render_work_item_candidates(
         &mut lines,
         "Triggered work items:",
         &projection.triggered_blocked,
+        displayed_work_item_id,
+        &completion_reports,
+        agent_home,
+    )?;
+    append_candidate_group(
+        &mut lines,
+        "Focused runnable work items:",
+        projection.current_runnable.as_slice(),
+        displayed_work_item_id,
         &completion_reports,
         agent_home,
     )?;
@@ -1605,6 +1613,7 @@ fn render_work_item_candidates(
         &mut lines,
         "Queued runnable work items:",
         &projection.queued_runnable,
+        displayed_work_item_id,
         &completion_reports,
         agent_home,
     )?;
@@ -1612,6 +1621,7 @@ fn render_work_item_candidates(
         &mut lines,
         "Parked/Yielded work items:",
         &projection.yielded,
+        displayed_work_item_id,
         &completion_reports,
         agent_home,
     )?;
@@ -1619,6 +1629,7 @@ fn render_work_item_candidates(
         &mut lines,
         "Waiting for operator:",
         &projection.waiting_for_operator,
+        displayed_work_item_id,
         &completion_reports,
         agent_home,
     )?;
@@ -1626,6 +1637,7 @@ fn render_work_item_candidates(
         &mut lines,
         "Blocked work items:",
         &projection.blocked,
+        displayed_work_item_id,
         &completion_reports,
         agent_home,
     )?;
@@ -1633,6 +1645,7 @@ fn render_work_item_candidates(
         &mut lines,
         "Completing work items:",
         &projection.completing,
+        displayed_work_item_id,
         &completion_reports,
         agent_home,
     )?;
@@ -1640,6 +1653,7 @@ fn render_work_item_candidates(
         &mut lines,
         "Recently completed work items:",
         &projection.completed_recent,
+        displayed_work_item_id,
         &completion_reports,
         agent_home,
     )?;
@@ -1653,6 +1667,7 @@ fn append_candidate_group(
     lines: &mut Vec<String>,
     title: &str,
     items: &[crate::storage::WorkItemSchedulingProjection],
+    displayed_work_item_id: Option<&str>,
     completion_reports: &BTreeMap<String, CompletionReportProjection>,
     agent_home: &std::path::Path,
 ) -> Result<()> {
@@ -1661,7 +1676,7 @@ fn append_candidate_group(
     }
     let items = items
         .iter()
-        .filter(|item| !item.is_current)
+        .filter(|item| Some(item.record().id.as_str()) != displayed_work_item_id)
         .collect::<Vec<_>>();
     if items.is_empty() {
         return Ok(());
@@ -6973,17 +6988,30 @@ mod tests {
         assert!(!current_work_item
             .content
             .contains("unrelated globally focused work"));
+        let background = built
+            .sections
+            .iter()
+            .find(|section| section.name == "queued_blocked_work_items")
+            .expect("non-owner focus should remain visible as background");
+        assert!(background
+            .content
+            .contains("unrelated globally focused work"));
+        assert!(!background.content.contains(&execution_owner.id));
     }
 
     #[test]
     fn build_context_explicit_non_work_item_binding_does_not_fall_back_to_focus() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        let focused = crate::types::WorkItemRecord::new(
+        let mut focused = crate::types::WorkItemRecord::new(
             "default",
             "focused lifecycle work",
             WorkItemState::Open,
         );
+        focused.todo_list = vec![TodoItem {
+            text: "background lifecycle todo".into(),
+            state: TodoItemState::InProgress,
+        }];
         storage.append_work_item(&focused).unwrap();
 
         let mut agent = AgentState::new("default");
@@ -7024,24 +7052,42 @@ mod tests {
         ] {
             agent.current_execution_binding.as_mut().unwrap().owner = Some(owner);
             storage.write_agent(&agent).unwrap();
-            let built = build_context(
-                &storage,
-                &agent,
-                &execution_snapshot_for(&agent),
-                &crate::types::SkillsRuntimeView::default(),
-                &current_message,
-                None,
-                &ContextConfig::default(),
-                dir.path(),
-            )
-            .unwrap();
-            let current_work_item = built
-                .sections
-                .iter()
-                .find(|section| section.name == "current_work_item")
+            for blocked_by in [None, Some("focused background waits for CI")] {
+                focused.blocked_by = blocked_by.map(str::to_owned);
+                focused.revision += 1;
+                storage.append_work_item(&focused).unwrap();
+                let built = build_context(
+                    &storage,
+                    &agent,
+                    &execution_snapshot_for(&agent),
+                    &crate::types::SkillsRuntimeView::default(),
+                    &current_message,
+                    None,
+                    &ContextConfig::default(),
+                    dir.path(),
+                )
                 .unwrap();
-            assert_eq!(current_work_item.content, render_empty_current_work_item());
-            assert!(!current_work_item.content.contains("focused lifecycle work"));
+                let current_work_item = built
+                    .sections
+                    .iter()
+                    .find(|section| section.name == "current_work_item")
+                    .unwrap();
+                assert_eq!(current_work_item.content, render_empty_current_work_item());
+                assert!(!current_work_item.content.contains("focused lifecycle work"));
+                let background = built
+                    .sections
+                    .iter()
+                    .find(|section| section.name == "queued_blocked_work_items")
+                    .expect("the sole focused item should remain visible as background");
+                assert!(background.content.contains("focused lifecycle work"));
+                assert!(background.content.contains("background lifecycle todo"));
+                let view = if blocked_by.is_some() {
+                    "[blocked]"
+                } else {
+                    "[current_runnable]"
+                };
+                assert!(background.content.contains(view));
+            }
         }
 
         // Legacy contexts without an execution binding still use global focus.
@@ -7065,6 +7111,10 @@ mod tests {
             .find(|section| section.name == "current_work_item")
             .expect("current_work_item section should be present");
         assert!(current_work_item.content.contains("focused lifecycle work"));
+        assert!(!built
+            .sections
+            .iter()
+            .any(|section| section.name == "queued_blocked_work_items"));
     }
 
     #[test]

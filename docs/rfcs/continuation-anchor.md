@@ -160,7 +160,12 @@ source input keeps its original provenance and is not labeled operator intent.
 An execution-bound WorkItem remains the durable task record without duplicating
 its fields, but does not replace the pinned recovery input. A Conversation or
 AgentLifecycle execution may see queue background without treating the focused
-WorkItem as its current task. Resolve sources from durable runtime-owned
+WorkItem as its current task. Candidate projection excludes the WorkItem already
+shown as the execution's current task, not global focus. A non-owner focused
+WorkItem remains visible as background with its scheduler state and current todo,
+including when it is the only runnable or blocked candidate. This visibility
+does not change execution ownership or admission.
+Resolve sources from durable runtime-owned
 recovery facts, not arbitrary metadata or an unvalidated root-message pointer.
 
 ### 5.5 Budget Priority
