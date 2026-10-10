@@ -31,8 +31,12 @@ stderr 打印 `applied_via=daemon_api` 或 `applied_via=offline_store`，stdout 
 | `vision.default` | model_route_ref_or_auto | ViewImage 视觉观测的路由引用。未设置时自动发现支持图像的提供商 |
 | `image_generation.default` | model_route_ref_or_auto | GenerateImage 请求的路由引用。未设置时选择第一个支持图像生成的轮次模型 |
 | `model.default` | model_route_ref | 默认可执行路由，例如 `"anthropic@default/claude-sonnet-4-6"` |
-| `model.fallbacks` | model_route_ref_list | 有序的可执行回退路由 |
+| `model.fallbacks` | model_route_ref_list_or_auto | 有序的可执行回退路由；条目也可以是 `auto`。未设置或为空时默认为 `auto`，即每个已认证提供商展开一个首选路由 |
 | `runtime.disable_provider_fallback` | boolean | 禁用提供商/模型回退，要求确定性的单提供商执行 |
+
+提供商链是主模型（agent 覆盖，未设置覆盖时为 `model.default`）后跟 `model.fallbacks`。
+`model.default` 不会作为隐式回退加入链中；如需兜底，请在 `model.fallbacks` 中显式列出，
+或依赖 `auto` 默认值。
 
 ```bash
 # 设置默认模型
@@ -40,6 +44,9 @@ holon config set model.default "deepseek-anthropic@default/deepseek-v4-pro"
 
 # 添加回退模型（JSON 数组）
 holon config set model.fallbacks '["anthropic@default/claude-sonnet-4-6","minimax@default/MiniMax-M2.7"]'
+
+# 使用 auto 默认值（每个已认证提供商一个首选路由）
+holon config set model.fallbacks '["auto"]'
 
 # 读取当前默认值
 holon config get model.default

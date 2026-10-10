@@ -35,8 +35,13 @@ and description.
 | `vision.default` | model_route_ref_or_auto | Route ref for ViewImage visual observation. Unset auto-discovers an image-capable provider |
 | `image_generation.default` | model_route_ref_or_auto | Route ref for GenerateImage requests. Unset selects the first turn model that supports image generation |
 | `model.default` | model_route_ref | Default executable route, e.g. `"anthropic@default/claude-sonnet-4-6"` |
-| `model.fallbacks` | model_route_ref_list | Ordered executable fallback routes |
+| `model.fallbacks` | model_route_ref_list_or_auto | Ordered executable fallback routes; entries may also be `auto`. Unset or empty defaults to `auto`, which expands to one preferred route per authenticated provider |
 | `runtime.disable_provider_fallback` | boolean | Disable provider/model fallback; require deterministic single-provider execution |
+
+The provider chain is the primary model (agent override, or `model.default` when
+no override is set) followed by `model.fallbacks`. `model.default` never joins
+the chain as an implicit fallback; when you want it as a safety net, list it in
+`model.fallbacks` explicitly or rely on the `auto` default.
 
 ```bash
 # Set the default model
@@ -44,6 +49,9 @@ holon config set model.default "deepseek-anthropic@default/deepseek-v4-pro"
 
 # Add fallback models (JSON array)
 holon config set model.fallbacks '["anthropic@default/claude-sonnet-4-6","minimax@default/MiniMax-M2.7"]'
+
+# Use the auto default (one preferred route per authenticated provider)
+holon config set model.fallbacks '["auto"]'
 
 # Read current default
 holon config get model.default
