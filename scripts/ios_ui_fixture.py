@@ -533,6 +533,13 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     from ios_share_probe import install
                     install(simulator, repo, root)
                 for (method, content_size), case_bundle in zip(cases, bundles):
+                    loss_case = lost_response_acceptance and method in {
+                        "testLostResponseAndProcessRecovery", "testDirectAgentShareWorkflow"}
+                    if loss_case:
+                        # Each workflow owns a separate initial loss and explicit retry.
+                        release_lost_response.clear()
+                        with lost_lock:
+                            loss_receipts_start = len(lost_receipts)
                     report_rows_before = None
                     if method.startswith("testContentReport"):
                         # Read the real daemon database, never fabricate an accepted receipt.
@@ -584,6 +591,16 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                                 "-resultBundlePath", str(case_bundle), "CODE_SIGN_IDENTITY=-", "test"], env=test_env)
                             if result.returncode:
                                 raise RuntimeError(f"UI case {method} 失败（SDK 通过不能替代 UI）")
+                            if loss_case:
+                                with lost_lock:
+                                    receipts = lost_receipts[loss_receipts_start:]
+                                if len(receipts) < 2 or len({request for request, _ in receipts}) != 1:
+                                    raise RuntimeError("response loss retry must retain one immutable UUID")
+                                if len({receipt["message_id"] for _, receipt in receipts}) != 1:
+                                    raise RuntimeError("retry enqueued a duplicate message")
+                                if receipts[0][1]["disposition"] != "accepted" or receipts[-1][1]["disposition"] != "duplicate":
+                                    raise RuntimeError("retry must receive the real daemon's duplicate receipt")
+                                print(f"Lost-response acceptance ({method}): immutable UUID and one real message ID across explicit retry", flush=True)
                             if report_rows_before is not None:
                                 with sqlite3.connect(f"file:{report_db}?mode=ro", uri=True) as database:
                                     rows = database.execute(
@@ -623,14 +640,6 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                            struct.unpack(">II", data[16:24]) == (16, 16) for data in received_files):
                     raise RuntimeError("Direct-share image bytes were not materialized by the daemon")
                 print("Direct-share acceptance: OS extension text, URL, image and file received by isolated Agent", flush=True)
-            if lost_response_acceptance and mode != "--sdk-only":
-                if len(lost_receipts) < 2 or len({request for request, _ in lost_receipts}) != 1:
-                    raise RuntimeError("response loss retry must retain one immutable UUID")
-                if len({receipt["message_id"] for _, receipt in lost_receipts}) != 1:
-                    raise RuntimeError("retry enqueued a duplicate message")
-                if lost_receipts[0][1]["disposition"] != "accepted" or lost_receipts[-1][1]["disposition"] != "duplicate":
-                    raise RuntimeError("retry must receive the real daemon's duplicate receipt")
-                print("Lost-response acceptance: immutable UUID and one real message ID across explicit retry", flush=True)
         finally:
             try:
                 if task_id is not None:

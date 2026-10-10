@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run build/archive and UI command contract regressions without starting Xcode."""
 import ast
+from contextlib import nullcontext
 import http.server
 import json
 import os
@@ -126,6 +127,69 @@ class BuildToolContracts(unittest.TestCase):
 
 
 class UIFixtureSetupContracts(unittest.TestCase):
+    def run_loss_scenarios(self, invalid_receipts=None):
+        # Execute the real per-case loop; only external XCTest/services are mocked.
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        loop = next(node for node in ast.walk(tree)
+                    if isinstance(node, ast.For)
+                    and isinstance(node.target, ast.Tuple)
+                    and any(isinstance(target, ast.Name) and target.id == "case_bundle"
+                            for target in node.target.elts))
+        release = threading.Event()
+        release.set()  # A preceding workflow may already have released its response.
+        receipts = []
+        methods = ["testLostResponseAndProcessRecovery", "testDirectAgentShareWorkflow"]
+
+        def run(command, env):
+            method = next(argument.rsplit("/", 1)[-1] for argument in command
+                          if argument.startswith("-only-testing:"))
+            self.assertFalse(release.is_set(), method + " must begin with response loss armed")
+            request = method + "-request"
+            message = method + "-message"
+            current = [(request, {"message_id": message, "disposition": "accepted"}),
+                       (request, {"message_id": message, "disposition": "duplicate"})]
+            if invalid_receipts is not None and method == methods[-1]:
+                current = invalid_receipts(current)
+            receipts.extend(current)
+            release.set()  # The real UI explicitly releases before retrying.
+            return Mock(returncode=0)
+
+        namespace = dict(
+            cases=[(method, "large") for method in methods],
+            bundles=[Path(method + ".xcresult") for method in methods],
+            release_lost_response=release, lost_receipts=receipts,
+            lost_lock=threading.Lock(), lost_response_acceptance=True,
+            simulator=UUID, repo=str(ROOT), destination="fixture", derived="fixture",
+            test_env={}, local=Mock(return_value={"ticket": "fixture"}),
+            simulator_text_size=lambda *args: nullcontext(),
+            simulator_appearance=lambda *args: nullcontext(),
+            runtime_text_size_control=lambda *args: nullcontext(("fixture", "fixture")),
+            subprocess=Mock(run=run),
+        )
+        with patch("builtins.print") as output:
+            exec(compile(ast.Module(body=[loop], type_ignores=[]), str(source), "exec"), namespace)
+        return receipts, output.call_args_list
+
+    def test_loss_scenarios_rearm_and_verify_independent_requests(self):
+        receipts, output = self.run_loss_scenarios()
+        self.assertEqual(len(receipts), 4, "Keep both workflows' receipt evidence")
+        self.assertEqual(len({request for request, _ in receipts}), 2)
+        self.assertEqual(len(output), 2, "Verify App and Share independently")
+
+    def test_loss_scenario_rejects_invalid_retry_receipts(self):
+        invalid = {
+            "missing retry": lambda rows: rows[:1],
+            "changed UUID": lambda rows: [rows[0], ("different", rows[1][1])],
+            "duplicate message": lambda rows: [rows[0], (rows[1][0], {
+                "message_id": "different", "disposition": "duplicate"})],
+            "accepted twice": lambda rows: [rows[0], (rows[1][0], {
+                "message_id": rows[0][1]["message_id"], "disposition": "accepted"})],
+        }
+        for label, transform in invalid.items():
+            with self.subTest(label=label), self.assertRaises(RuntimeError):
+                self.run_loss_scenarios(transform)
+
     def run_setup(self, initialize, install, share=True, report=False):
         # Execute the fixture's real setup block without starting its daemon/XCTest.
         source = ROOT / "scripts/ios_ui_fixture.py"
