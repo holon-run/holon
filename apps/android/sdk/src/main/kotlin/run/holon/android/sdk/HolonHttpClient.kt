@@ -438,6 +438,28 @@ public class HolonHttpClient internal constructor(
             ),
         )
 
+    public fun createContentReport(request: HolonContentReportRequest): HolonContentReportReceipt {
+        val response = postJson(
+            "content-reports",
+            buildJsonObject {
+                put("agent_id", request.agentId)
+                put("turn_id", request.turnId)
+                put("message_id", request.messageId)
+                put("category", request.category.wireValue)
+                request.description?.let { put("description", it) }
+                put("client_request_id", request.clientRequestId)
+            },
+        ).objectOrNull ?: throw HolonProtocolException("Holon content report response is not an object")
+        return HolonContentReportReceipt(
+            accepted = response["accepted"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+                ?: (response["status"]?.jsonPrimitive?.contentOrNull == "accepted"),
+            reportId = response["report_id"]?.jsonPrimitive?.contentOrNull
+                ?: throw HolonProtocolException("Holon content report response is missing report_id"),
+            createdAt = response["created_at"]?.jsonPrimitive?.contentOrNull
+                ?: throw HolonProtocolException("Holon content report response is missing created_at"),
+        )
+    }
+
     public fun conversation(
         agentId: String,
         limit: Int? = null,

@@ -7,6 +7,31 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
+public enum class HolonContentReportCategory(public val wireValue: String) {
+    HARMFUL_OR_ABUSIVE("harmful_or_abusive"),
+    SEXUAL_CONTENT("sexual_content"),
+    HATE_OR_HARASSMENT("hate_or_harassment"),
+    SELF_HARM("self_harm"),
+    VIOLENCE("violence"),
+    PRIVACY("privacy"),
+    SPAM_OR_OTHER("spam_or_other"),
+}
+
+public data class HolonContentReportRequest(
+    public val agentId: String,
+    public val turnId: String,
+    public val messageId: String,
+    public val category: HolonContentReportCategory,
+    public val description: String? = null,
+    public val clientRequestId: String,
+)
+
+public data class HolonContentReportReceipt(
+    public val accepted: Boolean,
+    public val reportId: String,
+    public val createdAt: String,
+)
+
 public data class HolonCurrentUser(
     public val userId: String,
     public val displayName: String?,

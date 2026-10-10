@@ -24,6 +24,8 @@ import run.holon.android.sdk.CompatibilityResult
 import run.holon.android.sdk.HolonBrief
 import run.holon.android.sdk.HolonBriefAttachment
 import run.holon.android.sdk.HolonBriefReadState
+import run.holon.android.sdk.HolonContentReportCategory
+import run.holon.android.sdk.HolonContentReportReceipt
 import run.holon.android.sdk.HolonMarkBriefReadResult
 import run.holon.android.sdk.HolonConversationDetail
 import run.holon.android.sdk.HolonConversationSnapshot
@@ -792,6 +794,25 @@ internal class HolonRepository(
 
     suspend fun abortCurrentRun(agentId: String, runId: String) {
         requireClient().abortCurrentRun(agentId, runId)
+    }
+
+    suspend fun createContentReport(
+        target: ContentReportTarget,
+        category: HolonContentReportCategory,
+        description: String?,
+        clientRequestId: String,
+    ): HolonContentReportReceipt {
+        val lease = sessions.capture()
+        return sessions.read(lease) {
+            it.createContentReport(
+                contentReportRequest(
+                    target = target,
+                    category = category,
+                    description = description,
+                    clientRequestId = clientRequestId,
+                ),
+            )
+        }
     }
 
     suspend fun workspaces(agentId: String): List<HolonWorkspace> = files.workspaces(agentId)

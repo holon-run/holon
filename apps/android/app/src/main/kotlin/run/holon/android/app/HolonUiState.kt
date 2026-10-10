@@ -2,6 +2,7 @@ package run.holon.android.app
 
 import run.holon.android.sdk.AgentSummary
 import run.holon.android.sdk.HolonAgentEvent
+import run.holon.android.sdk.HolonContentReportCategory
 import run.holon.android.sdk.HolonModelCatalog
 import run.holon.android.sdk.HolonBrief
 import run.holon.android.sdk.HolonBriefReadState
@@ -105,6 +106,11 @@ internal data class ConversationUiState(
     val selectedActivity: HolonConversationActivity? = null,
     val selectedToolExecution: HolonToolExecutionSnapshot? = null,
     val detailBusy: Boolean = false,
+    val reportTarget: ContentReportTarget? = null,
+    val reportCategory: HolonContentReportCategory? = null,
+    val reportDescription: String = "",
+    val reportSubmitting: Boolean = false,
+    val reportError: String? = null,
 )
 
 internal data class WorkUiState(
@@ -298,6 +304,11 @@ internal data class HolonUiState(
     val selectedActivity: HolonConversationActivity? get() = conversationState.selectedActivity
     val selectedToolExecution: HolonToolExecutionSnapshot? get() = conversationState.selectedToolExecution
     val detailBusy: Boolean get() = conversationState.detailBusy
+    val reportTarget: ContentReportTarget? get() = conversationState.reportTarget
+    val reportCategory: HolonContentReportCategory? get() = conversationState.reportCategory
+    val reportDescription: String get() = conversationState.reportDescription
+    val reportSubmitting: Boolean get() = conversationState.reportSubmitting
+    val reportError: String? get() = conversationState.reportError
     val workItems: List<HolonWorkItemSnapshot> get() = workState.workItems
     val workItemsLimit: Int get() = workState.workItemsLimit
     val workItemsHasMore: Boolean get() = workState.workItemsHasMore
@@ -373,6 +384,11 @@ internal data class HolonUiState(
         selectedActivity: HolonConversationActivity? = this.selectedActivity,
         selectedToolExecution: HolonToolExecutionSnapshot? = this.selectedToolExecution,
         detailBusy: Boolean = this.detailBusy,
+        reportTarget: ContentReportTarget? = this.reportTarget,
+        reportCategory: HolonContentReportCategory? = this.reportCategory,
+        reportDescription: String = this.reportDescription,
+        reportSubmitting: Boolean = this.reportSubmitting,
+        reportError: String? = this.reportError,
         workItems: List<HolonWorkItemSnapshot> = this.workItems,
         workItemsLimit: Int = this.workItemsLimit,
         workItemsHasMore: Boolean = this.workItemsHasMore,
@@ -397,7 +413,7 @@ internal data class HolonUiState(
     ): HolonUiState = HolonUiState(
         connectionState = ConnectionUiState(phase = phase, baseUrl = baseUrl, token = token, showToken = showToken, allowInsecureHttp = allowInsecureHttp, pendingPairing = pendingPairing),
         agentsState = AgentsUiState(agents = agents, operatorPreviews = operatorPreviews, briefReadStates = briefReadStates, briefReadStatesLoaded = briefReadStatesLoaded, readBriefIds = readBriefIds, readBriefsLoaded = readBriefsLoaded, search = search),
-        conversationState = ConversationUiState(enqueueing = enqueueing, stagingAttachment = stagingAttachment, abortingRun = abortingRun, modelCatalog = modelCatalog, modelBusy = modelBusy, modelError = modelError, conversation = conversation, olderTurns = olderTurns, historyBeforeCursor = historyBeforeCursor, hasOlderTurns = hasOlderTurns, historyBusy = historyBusy, outbox = outbox, draft = draft, attachments = attachments, briefs = briefs, briefLoads = briefLoads, selectedBrief = selectedBrief, briefOriginWork = briefOriginWork, workOriginBrief = workOriginBrief, selectedTurn = selectedTurn, fullScreenTurn = fullScreenTurn, conversationDetail = conversationDetail, olderActivitiesBusy = olderActivitiesBusy, olderActivitiesLoaded = olderActivitiesLoaded, selectedActivity = selectedActivity, selectedToolExecution = selectedToolExecution, detailBusy = detailBusy),
+        conversationState = ConversationUiState(enqueueing = enqueueing, stagingAttachment = stagingAttachment, abortingRun = abortingRun, modelCatalog = modelCatalog, modelBusy = modelBusy, modelError = modelError, conversation = conversation, olderTurns = olderTurns, historyBeforeCursor = historyBeforeCursor, hasOlderTurns = hasOlderTurns, historyBusy = historyBusy, outbox = outbox, draft = draft, attachments = attachments, briefs = briefs, briefLoads = briefLoads, selectedBrief = selectedBrief, briefOriginWork = briefOriginWork, workOriginBrief = workOriginBrief, selectedTurn = selectedTurn, fullScreenTurn = fullScreenTurn, conversationDetail = conversationDetail, olderActivitiesBusy = olderActivitiesBusy, olderActivitiesLoaded = olderActivitiesLoaded, selectedActivity = selectedActivity, selectedToolExecution = selectedToolExecution, detailBusy = detailBusy, reportTarget = reportTarget, reportCategory = reportCategory, reportDescription = reportDescription, reportSubmitting = reportSubmitting, reportError = reportError),
         workState = WorkUiState(workItems = workItems, workItemsLimit = workItemsLimit, workItemsHasMore = workItemsHasMore, workItemsLoadingMore = workItemsLoadingMore, selectedWorkItem = selectedWorkItem, tasks = tasks, tasksBusy = tasksBusy, tasksError = tasksError, selectedTask = selectedTask, taskOutput = taskOutput, workItemsBusy = workItemsBusy),
         filesState = FilesUiState(planFile = planFile, workspaces = workspaces, selectedWorkspace = selectedWorkspace, workspaceDirectory = workspaceDirectory, workspaceBusy = workspaceBusy, preparedArtifact = preparedArtifact, fileLinkOrigin = fileLinkOrigin),
         shareState = ShareUiState(pendingShare = pendingShare, queuedShares = queuedShares, shareSending = shareSending, shareError = shareError),

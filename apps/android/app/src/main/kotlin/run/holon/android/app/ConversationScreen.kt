@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.foundation.BorderStroke
@@ -55,6 +56,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -63,6 +66,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -238,6 +242,7 @@ internal fun ConversationScreen(state: HolonUiState, viewModel: ConversationActi
             }
         }
     }
+    if (state.reportTarget != null) ContentReportSheet(state, viewModel)
     if (modelChooser) ModelPickerSheet(
         state = state,
         onDismiss = { modelChooser = false },
@@ -245,6 +250,84 @@ internal fun ConversationScreen(state: HolonUiState, viewModel: ConversationActi
         onSelect = { model, effort -> viewModel.setAgentModel(model, effort) },
         onAuto = viewModel::clearAgentModel,
     )
+}
+
+
+@Composable
+internal fun ContentReportSheet(state: HolonUiState, viewModel: ConversationActions) {
+    if (state.reportTarget == null) return
+    val keyboard = LocalSoftwareKeyboardController.current
+    ModalBottomSheet(
+        onDismissRequest = { if (!state.reportSubmitting) viewModel.dismissContentReport() },
+    ) {
+        Column(
+            Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(ui("举报这条内容"), style = MaterialTheme.typography.titleMedium)
+            Text(
+                ui("选择最符合的原因，可附加说明。举报会提交到运行时的内容审核流程。"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            contentReportCategoryOptions.forEach { option ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable(enabled = !state.reportSubmitting) {
+                        viewModel.selectReportCategory(option.category)
+                    },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(
+                        selected = state.reportCategory == option.category,
+                        onClick = { viewModel.selectReportCategory(option.category) },
+                        enabled = !state.reportSubmitting,
+                    )
+                    Text(ui(option.sourceLabel), style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+            OutlinedTextField(
+                value = state.reportDescription,
+                onValueChange = viewModel::updateReportDescription,
+                label = { Text(ui("补充说明（可选）")) },
+                enabled = !state.reportSubmitting,
+                minLines = 3,
+                maxLines = 6,
+                modifier = Modifier.fillMaxWidth(),
+                supportingText = { Text("${state.reportDescription.length} / $CONTENT_REPORT_DESCRIPTION_LIMIT") },
+            )
+            state.reportError?.let {
+                Text(
+                    ui(it),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(
+                    onClick = { viewModel.dismissContentReport() },
+                    enabled = !state.reportSubmitting,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(ui("取消"))
+                }
+                Button(
+                    onClick = {
+                        keyboard?.hide()
+                        viewModel.submitContentReport()
+                    },
+                    enabled = !state.reportSubmitting && state.reportCategory != null,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    if (state.reportSubmitting) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text(ui("提交举报"))
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+    }
 }
 
 
@@ -638,10 +721,17 @@ internal fun InlineTurnProcess(turn: HolonConversationTurn, state: HolonUiState,
                 if (it.hasMore || activities.size > 6) Text(ui("显示最近过程，更多内容可全屏查看"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 activities.takeLast(6).forEach { activity ->
                     val open = state.selectedActivity?.id == activity.id
-                    ActivityRow(activity, open, state.selectedToolExecution.takeIf { open }, open && state.detailBusy) {
-                        onInteraction()
-                        if (open) viewModel.closeActivity() else viewModel.inspectActivity(activity)
-                    }
+                    ActivityRow(
+                        activity = activity,
+                        expanded = open,
+                        detail = state.selectedToolExecution.takeIf { open },
+                        loading = open && state.detailBusy,
+                        onReport = contentReportAction(activity, state.selectedAgent?.id, turn.id, viewModel::beginContentReport),
+                        onOpen = {
+                            onInteraction()
+                            if (open) viewModel.closeActivity() else viewModel.inspectActivity(activity)
+                        },
+                    )
                 }
             }
             TextButton(onClick = { viewModel.setTurnFullScreen(true) }) { Text(ui("全屏查看过程")) }
@@ -804,6 +894,7 @@ internal fun TurnDetailScreen(state: HolonUiState, viewModel: ConversationAction
                         expanded = expanded,
                         detail = state.selectedToolExecution.takeIf { expanded },
                         loading = expanded && state.detailBusy,
+                        onReport = contentReportAction(activity, state.selectedAgent?.id, turn.id, viewModel::beginContentReport),
                         onOpen = {
                             if (expanded) viewModel.closeActivity() else viewModel.inspectActivity(activity)
                         },
@@ -850,6 +941,7 @@ internal fun ActivityRow(
     expanded: Boolean = false,
     detail: run.holon.android.sdk.HolonToolExecutionSnapshot? = null,
     loading: Boolean = false,
+    onReport: (() -> Unit)? = null,
     onOpen: () -> Unit,
 ) {
     val isTool = activity.kind == "tool"
@@ -887,6 +979,26 @@ internal fun ActivityRow(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
                     )
+                }
+                if (!isTool && onReport != null) {
+                    var reportMenuOpen by remember(activity.id) { mutableStateOf(false) }
+                    Box {
+                        IconButton(
+                            onClick = { reportMenuOpen = true },
+                            modifier = Modifier.size(32.dp),
+                        ) {
+                            Icon(Icons.Default.MoreVert, contentDescription = ui("消息操作"), modifier = Modifier.size(18.dp))
+                        }
+                        DropdownMenu(expanded = reportMenuOpen, onDismissRequest = { reportMenuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text(ui("举报")) },
+                                onClick = {
+                                    reportMenuOpen = false
+                                    onReport()
+                                },
+                            )
+                        }
+                    }
                 }
             }
             if (isTool) {

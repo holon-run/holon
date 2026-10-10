@@ -17,6 +17,33 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class HolonHttpClientTest {
+    @Test fun `content report posts authenticated request and decodes receipt`() {
+        MockWebServer().use { server ->
+            server.enqueue(jsonResponse("""{"accepted":true,"report_id":"report_1","created_at":"2026-10-09T16:00:00.000Z"}"""))
+            val client = HolonHttpClient(
+                server.url("/").toString(),
+                bearerTokenProvider = BearerTokenProvider { "session-token" },
+            )
+            val receipt = client.createContentReport(
+                HolonContentReportRequest(
+                    agentId = "agent_1",
+                    turnId = "turn_1",
+                    messageId = "transcript_1",
+                    category = HolonContentReportCategory.PRIVACY,
+                    description = "test",
+                    clientRequestId = "retry-1",
+                ),
+            )
+            val request = server.takeRequest(1, TimeUnit.SECONDS)
+            assertEquals("/content-reports", request?.path)
+            assertEquals("Bearer session-token", request?.getHeader("Authorization"))
+            val body = HolonWire.json.parseToJsonElement(request?.body?.readUtf8().orEmpty()).jsonObject
+            assertEquals("retry-1", body["client_request_id"]?.jsonPrimitive?.content)
+            assertEquals("report_1", receipt.reportId)
+            assertTrue(receipt.accepted)
+        }
+    }
+
     @Test fun `native exchange sends proof in body without authorizing the bootstrap request`() {
         MockWebServer().use { server ->
             server.enqueue(jsonResponse("""{"credential":"session","ok":true,"user_id":"u","expires_at":null}"""))

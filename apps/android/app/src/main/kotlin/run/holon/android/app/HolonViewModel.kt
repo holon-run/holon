@@ -34,6 +34,7 @@ import run.holon.android.sdk.HolonConversationActivity
 import run.holon.android.sdk.HolonConversationDetail
 import run.holon.android.sdk.HolonConversationSnapshot
 import run.holon.android.sdk.HolonConversationTurn
+import run.holon.android.sdk.HolonContentReportCategory
 import run.holon.android.sdk.HolonHttpException
 import run.holon.android.sdk.HolonFileReferenceResult
 import run.holon.android.sdk.HolonRosterSnapshot
@@ -1034,6 +1035,11 @@ internal class HolonViewModel(
                 olderActivitiesLoaded = false,
                 selectedActivity = null,
                 selectedToolExecution = null,
+                reportTarget = null,
+                reportCategory = null,
+                reportDescription = "",
+                reportSubmitting = false,
+                reportError = null,
                 preparedArtifact = null,
                 fileLinkOrigin = null,
                 workItems = emptyList(),
@@ -1471,6 +1477,11 @@ internal class HolonViewModel(
                 olderActivitiesLoaded = false,
                 selectedActivity = null,
                 selectedToolExecution = null,
+                reportTarget = null,
+                reportCategory = null,
+                reportDescription = "",
+                reportSubmitting = false,
+                reportError = null,
                 selectedWorkItem = null,
                 selectedTask = null,
                 taskOutput = null,
@@ -1590,6 +1601,11 @@ internal class HolonViewModel(
                 olderActivitiesLoaded = false,
                 selectedActivity = null,
                 selectedToolExecution = null,
+                reportTarget = null,
+                reportCategory = null,
+                reportDescription = "",
+                reportSubmitting = false,
+                reportError = null,
                 detailBusy = false,
             )
         }
@@ -1622,6 +1638,72 @@ internal class HolonViewModel(
 
     fun closeActivity() =
         mutableState.update { it.copy(selectedActivity = null, selectedToolExecution = null, detailBusy = false) }
+
+    fun beginContentReport(target: ContentReportTarget) {
+        mutableState.update {
+            it.copy(
+                reportTarget = target,
+                reportCategory = null,
+                reportDescription = "",
+                reportSubmitting = false,
+                reportError = null,
+                error = null,
+            )
+        }
+    }
+
+    fun selectReportCategory(category: HolonContentReportCategory) =
+        mutableState.update { it.copy(reportCategory = category, reportError = null) }
+
+    fun updateReportDescription(value: String) =
+        mutableState.update { it.copy(reportDescription = normalizeContentReportDescription(value)) }
+
+    fun dismissContentReport() =
+        mutableState.update {
+            it.copy(
+                reportTarget = null,
+                reportCategory = null,
+                reportDescription = "",
+                reportSubmitting = false,
+                reportError = null,
+            )
+        }
+
+    fun submitContentReport() {
+        val current = state.value
+        val target = current.reportTarget ?: return
+        if (current.reportSubmitting) return
+        val category =
+            current.reportCategory
+                ?: run {
+                    mutableState.update { it.copy(reportError = "请选择举报原因") }
+                    return
+                }
+        val description = current.reportDescription.trim().ifEmpty { null }
+        val clientRequestId = UUID.randomUUID().toString()
+        mutableState.update { it.copy(reportSubmitting = true, reportError = null) }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    repository.createContentReport(target, category, description, clientRequestId)
+                }
+            }.onSuccess {
+                mutableState.update {
+                    it.copy(
+                        reportTarget = null,
+                        reportCategory = null,
+                        reportDescription = "",
+                        reportSubmitting = false,
+                        reportError = null,
+                        statusMessage = "举报已提交，感谢反馈",
+                    )
+                }
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
+                mutableState.update { it.copy(reportSubmitting = false, reportError = contentReportError(error)) }
+            }
+        }
+    }
 
     fun openWorkItem(item: HolonWorkItemSnapshot) {
         val agent = state.value.selectedAgent ?: return
@@ -2007,6 +2089,7 @@ internal class HolonViewModel(
     fun handleSystemBack(): Boolean {
         val current = state.value
         when (current.backTarget(artifactJob?.isActive == true)) {
+            BackTarget.Report -> if (!current.reportSubmitting) dismissContentReport()
             BackTarget.Share -> dismissShare()
             BackTarget.Artifact -> clearPreparedArtifact()
             BackTarget.AddingNetwork -> cancelAddNetwork()
