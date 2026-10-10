@@ -27,6 +27,7 @@ import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -64,6 +65,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -80,6 +82,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
+import run.holon.android.sdk.HolonContentReportCategory
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -259,9 +262,35 @@ internal fun ContentReportSheet(state: HolonUiState, viewModel: ConversationActi
     val keyboard = LocalSoftwareKeyboardController.current
     ModalBottomSheet(
         onDismissRequest = { if (!state.reportSubmitting) viewModel.dismissContentReport() },
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    ) {
+        ContentReportForm(
+            state = state,
+            onCategorySelected = viewModel::selectReportCategory,
+            onDescriptionChanged = viewModel::updateReportDescription,
+            onDismiss = viewModel::dismissContentReport,
+            onSubmit = {
+                keyboard?.hide()
+                viewModel.submitContentReport()
+            },
+        )
+    }
+}
+
+@Composable
+internal fun ContentReportForm(
+    state: HolonUiState,
+    onCategorySelected: (HolonContentReportCategory) -> Unit,
+    onDescriptionChanged: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSubmit: () -> Unit,
+) {
+    Column(
+        Modifier.fillMaxWidth().imePadding().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Column(
-            Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 4.dp),
+            Modifier.fillMaxWidth().weight(1f, fill = false).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text(ui("举报这条内容"), style = MaterialTheme.typography.titleMedium)
@@ -273,13 +302,13 @@ internal fun ContentReportSheet(state: HolonUiState, viewModel: ConversationActi
             contentReportCategoryOptions.forEach { option ->
                 Row(
                     modifier = Modifier.fillMaxWidth().clickable(enabled = !state.reportSubmitting) {
-                        viewModel.selectReportCategory(option.category)
+                        onCategorySelected(option.category)
                     },
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     RadioButton(
                         selected = state.reportCategory == option.category,
-                        onClick = { viewModel.selectReportCategory(option.category) },
+                        onClick = { onCategorySelected(option.category) },
                         enabled = !state.reportSubmitting,
                     )
                     Text(ui(option.sourceLabel), style = MaterialTheme.typography.bodyMedium)
@@ -287,7 +316,7 @@ internal fun ContentReportSheet(state: HolonUiState, viewModel: ConversationActi
             }
             OutlinedTextField(
                 value = state.reportDescription,
-                onValueChange = viewModel::updateReportDescription,
+                onValueChange = onDescriptionChanged,
                 label = { Text(ui("补充说明（可选）")) },
                 enabled = !state.reportSubmitting,
                 minLines = 3,
@@ -302,31 +331,28 @@ internal fun ContentReportSheet(state: HolonUiState, viewModel: ConversationActi
                     color = MaterialTheme.colorScheme.error,
                 )
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(
-                    onClick = { viewModel.dismissContentReport() },
-                    enabled = !state.reportSubmitting,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(ui("取消"))
-                }
-                Button(
-                    onClick = {
-                        keyboard?.hide()
-                        viewModel.submitContentReport()
-                    },
-                    enabled = !state.reportSubmitting && state.reportCategory != null,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    if (state.reportSubmitting) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text(ui("提交举报"))
-                    }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(
+                onClick = onDismiss,
+                enabled = !state.reportSubmitting,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(ui("取消"))
+            }
+            Button(
+                onClick = onSubmit,
+                enabled = !state.reportSubmitting && state.reportCategory != null,
+                modifier = Modifier.weight(1f),
+            ) {
+                if (state.reportSubmitting) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Text(ui("提交举报"))
                 }
             }
-            Spacer(Modifier.height(8.dp))
         }
+        Spacer(Modifier.height(8.dp))
     }
 }
 
