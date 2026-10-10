@@ -1276,7 +1276,7 @@ fn render_pending_task_results(
                 .unwrap_or_else(|| "agent_lifecycle".to_string())
         ));
         if let Some(message) = message {
-            if let Some(reply_id) = crate::wake_contract::agent_message_reply_reference(&message) {
+            if let Some(reply_id) = crate::wake_contract::agent_message_reply_reference(message) {
                 if seen_reply_messages.insert(reply_id.to_owned()) {
                     if let Some(reply) = storage.read_message_by_id(reply_id)? {
                         lines.push(format!(
