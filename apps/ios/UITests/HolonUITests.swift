@@ -18,10 +18,6 @@ final class HolonUITests: XCTestCase {
         XCTAssertEqual(ProcessInfo.processInfo.environment["HOLON_UI_APPEARANCE"], dark ? "dark" : "light",
                        "The UI runner must configure and verify the system appearance")
         app.launch()
-        if app.buttons["settings.open"].waitForExistence(timeout: 5) ||
-            app.buttons["conversation.more"].exists {
-            approveSharingThroughSettings(app)
-        }
         return app
     }
 
@@ -797,8 +793,17 @@ final class HolonUITests: XCTestCase {
         let turn = try required("RICH_TURN_ID")
         let app = launch(language: "en", dark: false, large: false)
         // Existing credentials came only from the preceding shipped onboarding flow.
-        // Wait for confirmed route restoration, not the transient home while
-        // roster authority is still loading after launch.
+        // Diagnostics may leave home with no saved Agent. Establish selection
+        // through the shipped UI before testing confirmed route restoration.
+        if !app.buttons["conversation.more"].waitForExistence(timeout: 30) {
+            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15))
+            let agentRow = app.buttons["agent." + agent]
+            XCTAssertTrue(agentRow.waitForExistence(timeout: 15))
+            reveal(agentRow, in: app); agentRow.tap()
+        }
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        app.terminate()
+        app.launch()
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15))
