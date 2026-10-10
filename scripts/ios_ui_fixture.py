@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import secrets
 import socket
 import sqlite3
@@ -15,6 +16,8 @@ import tempfile
 import threading
 import time
 import urllib.request
+import urllib.parse
+import uuid
 import struct
 import zlib
 
@@ -41,6 +44,14 @@ def fixture_directory(repo):
     root = parent / path.name
     if root.is_relative_to(pathlib.Path(repo).resolve()):
         raise RuntimeError("IOS_UI_FIXTURE_PATH must be outside the repository")
+    # A linked checkout must not retain raw databases in the canonical checkout
+    # or any sibling worktree, including through a symlinked parent.
+    worktrees = subprocess.run(["git", "-C", str(repo), "worktree", "list", "--porcelain", "-z"],
+                              check=True, capture_output=True, text=True).stdout
+    roots = [pathlib.Path(entry.removeprefix("worktree ")).resolve()
+             for entry in worktrees.split("\0") if entry.startswith("worktree ")]
+    if not roots or any(root.is_relative_to(checkout) for checkout in roots):
+        raise RuntimeError("IOS_UI_FIXTURE_PATH must be outside all related Git checkouts")
     # mkdir is exclusive: never reuse, chmod or delete an existing evidence path.
     root.mkdir(mode=0o700)
     previous_umask = os.umask(0o077)
@@ -102,6 +113,81 @@ def record_fixture_prompt(evidence, number, case, path, body, data, status, deli
               "receipt_body": write_fixture_bytes(evidence, stem + "-receipt.json", data)}
     write_fixture_json(evidence, stem + ".json", record)
     return record
+
+
+def direct_share_evidence(root, workspace, agent, prompts, inputs, local):
+    """Join each native request to one real input/message and its own attachment."""
+    kinds = ("share-text", "share-url", "share-image", "share-file")
+    if {record["kind"] for record in prompts} != set(kinds):
+        raise RuntimeError("Direct-share evidence must cover four request kinds")
+    chains, files, seen_requests, seen_messages = [], [], set(), set()
+    for kind in kinds:
+        attempts = [record for record in prompts if record["kind"] == kind]
+        request = attempts[0]["request"]
+        try:
+            request_id = str(uuid.UUID(request["client_request_id"]))
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
+            raise RuntimeError("Direct-share evidence lacks a native request UUID") from error
+        message_id = attempts[0]["receipt"].get("message_id")
+        if not message_id or request_id in seen_requests or message_id in seen_messages:
+            raise RuntimeError("Direct-share kinds must have independent UUIDs and messages")
+        seen_requests.add(request_id)
+        seen_messages.add(message_id)
+        for index, attempt in enumerate(attempts):
+            receipt = attempt["receipt"]
+            if (attempt["request"] != request or fixture_prompt_kind(request) != kind
+                    or attempt["case"] != "testDirectAgentShareWorkflow"
+                    or not attempt["path"].endswith(f"/agents/{agent}/prompt")
+                    or attempt["status"] != 200 or receipt.get("ok") is not True
+                    or receipt.get("agent_id") != agent or receipt.get("message_id") != message_id
+                    or receipt.get("disposition") != ("accepted" if index == 0 else "duplicate")):
+                raise RuntimeError("Direct-share retry changed request, identity or receipt")
+        if not any(attempt["delivered"] for attempt in attempts):
+            raise RuntimeError("Direct-share receipt was never delivered")
+        matching = [value for value in inputs if value.get("message_id") == message_id]
+        if len(matching) != 1:
+            raise RuntimeError("Direct-share receipt must match exactly one conversation input")
+        message = local("GET", f"/agents/{agent}/messages/{urllib.parse.quote(message_id, safe='')}")
+        if (message.get("id") != message_id or message.get("agent_id") != agent
+                or message.get("body", {}).get("type") != "text"):
+            raise RuntimeError("Direct-share canonical message identity does not match")
+        text = message["body"]["text"]
+        attachments = request.get("attachments", [])
+        material = []
+        if kind in ("share-text", "share-url"):
+            if attachments or text != request["text"]:
+                raise RuntimeError("Direct-share canonical text differs from the native request")
+        else:
+            attachment_kind = kind.removeprefix("share-")
+            if len(attachments) != 1 or attachments[0]["kind"] != attachment_kind:
+                raise RuntimeError("Direct-share attachment does not match its request kind")
+            prefix = request["text"]
+            if prefix and not prefix.endswith("\n"):
+                prefix += "\n"
+            prefix += "\n"
+            link = re.fullmatch(r"(!?)\[[^\]\n]*\]\(([^)\n]+)\)", text.removeprefix(prefix))
+            if not text.startswith(prefix) or not link or bool(link[1]) != (attachment_kind == "image"):
+                raise RuntimeError("Direct-share canonical input lacks its attachment link")
+            path = pathlib.Path(urllib.parse.unquote(link[2])).resolve(strict=True)
+            inbox = (workspace / "media" / "inbox").resolve(strict=True)
+            if not path.is_relative_to(inbox) or not path.name.startswith("request-"):
+                raise RuntimeError("Direct-share attachment path is outside the real daemon inbox")
+            data = path.read_bytes()
+            if data != base64.b64decode(attachments[0]["data_base64"], validate=True):
+                raise RuntimeError("Direct-share linked attachment differs from the native request bytes")
+            item = {"kind": attachment_kind, "path": str(path.relative_to(root)),
+                    "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            if any(previous["path"] == item["path"] for previous in files):
+                raise RuntimeError("Direct-share kinds must not reuse an attachment path")
+            material.append(item)
+            files.append(item)
+        chains.append({"kind": kind, "client_request_id": request["client_request_id"],
+                       "message_id": message_id, "input": matching[0],
+                       "message": {"id": message["id"], "agent_id": message["agent_id"], "body": message["body"]},
+                       "attachments": material})
+    return {"source": "real daemon request/receipt/conversation/message and linked attachment bytes",
+            "chains": chains, "inputs": [chain["input"] for chain in chains],
+            "prompts": prompts, "files": files}
 
 
 def content_report_snapshot(report_db, evidence, method, phase):
@@ -773,19 +859,8 @@ with fixture_directory(repo) as root:
                 if fixture_evidence is not None:
                     with lost_lock:
                         share_prompts = [record for record in prompt_evidence if record["kind"].startswith("share-")]
-                    message_ids = {record["receipt"]["message_id"] for record in share_prompts}
-                    share_inputs = [value for value in inputs if value.get("message_id") in message_ids]
-                    if ({record["kind"] for record in share_prompts}
-                            != {"share-text", "share-url", "share-image", "share-file"}
-                            or {value["message_id"] for value in share_inputs} != message_ids):
-                        raise RuntimeError("Direct-share evidence lacks a real request/receipt/input identity chain")
-                    write_fixture_json(fixture_evidence, "direct-share.json", {
-                        "source": "real daemon conversation inputs and materialized attachment bytes",
-                        "inputs": share_inputs,
-                        "prompts": share_prompts,
-                        "files": [{"path": str(path.relative_to(root)), "size": len(data),
-                                   "sha256": hashlib.sha256(data).hexdigest()}
-                                  for path, data in zip(received_paths, received_files)]})
+                    write_fixture_json(fixture_evidence, "direct-share.json",
+                                       direct_share_evidence(root, workspace, agent, share_prompts, inputs, local))
                 print("Direct-share acceptance: OS extension text, URL, image and file received by isolated Agent", flush=True)
         finally:
             try:

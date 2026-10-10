@@ -16,6 +16,7 @@ import struct
 import tempfile
 import threading
 import unittest
+import uuid
 from unittest.mock import Mock, call, patch
 import urllib.error
 import urllib.request
@@ -348,6 +349,33 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
         self.assertFalse((repo / "inside").exists())
         self.assertFalse((self.directory / "escape").exists())
 
+    def test_retention_rejects_all_roots_of_a_linked_git_worktree(self):
+        canonical = self.directory / "canonical checkout"
+        linked = self.directory / "linked checkout"
+        sibling = self.directory / "sibling checkout"
+        subprocess.run(["git", "init", "-q", str(canonical)], check=True)
+        (canonical / "tracked").write_text("fixture")
+        subprocess.run(["git", "-C", str(canonical), "add", "tracked"], check=True)
+        subprocess.run(["git", "-C", str(canonical), "-c", "user.name=Fixture",
+                        "-c", "user.email=fixture@example.test", "commit", "-qm", "fixture"], check=True)
+        for worktree in (linked, sibling):
+            subprocess.run(["git", "-C", str(canonical), "worktree", "add", "-q",
+                            "--detach", str(worktree), "HEAD"], check=True)
+        alias = self.directory / "canonical-alias"
+        alias.symlink_to(canonical, target_is_directory=True)
+        for number, parent in enumerate((canonical, linked, sibling, alias)):
+            target = parent / f"private-evidence-{number}"
+            with self.subTest(parent=parent), patch.dict(os.environ, {"IOS_UI_FIXTURE_PATH": str(target)}):
+                with self.assertRaises(RuntimeError):
+                    with self.helpers["fixture_directory"](linked):
+                        self.fail("A related Git checkout must not retain raw databases")
+                self.assertFalse(target.exists())
+        target = self.directory / "safe-evidence"
+        with patch.dict(os.environ, {"IOS_UI_FIXTURE_PATH": str(target)}), patch("builtins.print"):
+            with self.helpers["fixture_directory"](linked) as retained:
+                self.assertEqual(retained, target)
+        self.assertEqual(target.stat().st_mode & 0o777, 0o700)
+
     def test_real_case_loop_exports_sqlite_rows_and_zero_zero_zero_one_deltas(self):
         evidence = self.directory / "evidence"
         home = self.directory / "holon"
@@ -445,9 +473,11 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
         image = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!2I5B", 16, 16, 8, 2, 0, 0, 0))
                  + chunk(b"IDAT", self.helpers["zlib"].compress((b"\0" + bytes([40, 100, 190]) * 16) * 16))
                  + chunk(b"IEND", b""))
-        (workspace / "request-image.png").write_bytes(image)
-        (workspace / "request-file.txt").write_bytes(b"IOS_SHARED_FILE_BYTES")
-        inputs, receipts = {}, {}
+        inbox = workspace / "media" / "inbox"
+        inbox.mkdir(parents=True)
+        (inbox / "request-image.png").write_bytes(image)
+        (inbox / "request-file.txt").write_bytes(b"IOS_SHARED_FILE_BYTES")
+        inputs, receipts, messages = {}, {}, {}
 
         class Upstream(http.server.BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -459,7 +489,17 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
                     request_id = body["client_request_id"]
                     duplicate = request_id in receipts
                     receipts.setdefault(request_id, "message-" + request_id)
-                    inputs.setdefault(request_id, {"message_id": receipts[request_id], "body": body})
+                    text = body["text"]
+                    for item in body.get("attachments", []):
+                        is_image = item["kind"] == "image"
+                        path = inbox / ("request-image.png" if is_image else "request-file.txt")
+                        if text and not text.endswith("\n"):
+                            text += "\n"
+                        label = item.get("name", "image 1" if is_image else "file 1")
+                        text += f"\n{'!' if is_image else ''}[{label}]({path.as_posix().replace(' ', '%20')})"
+                    inputs.setdefault(request_id, {"message_id": receipts[request_id], "preview": text})
+                    messages.setdefault(receipts[request_id], {"id": receipts[request_id],
+                        "agent_id": "holon-tester", "body": {"type": "text", "text": text}})
                     data = json.dumps({"ok": True, "agent_id": "holon-tester",
                         "message_id": receipts[request_id],
                         "disposition": "duplicate" if duplicate else "accepted"}).encode()
@@ -514,17 +554,17 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
                                           "IOS_SHARED_TEXT\nLiteral **operator** input"]):
                 namespace["fixture_case"] = ["testLostResponseAndProcessRecovery", "testDirectAgentShareWorkflow"][number]
                 release.clear()
-                request = {"text": text, "client_request_id": UUID if not number else UUID.upper(), "attachments": []}
+                request = {"text": text, "client_request_id": UUID if not number else str(uuid.UUID(int=1)), "attachments": []}
                 originals.extend([send(request)])
                 release.set()
                 originals.extend([send(request)])
-            for kind, text, attachments in [
+            for number, (kind, text, attachments) in enumerate([
                 ("url", "https://example.test/holon-share", []),
                 ("image", "", [{"kind": "image", "media_type": "image/png", "data_base64": base64.b64encode(image).decode()}]),
                 ("file", "", [{"kind": "file", "name": "shared-note.txt", "media_type": "text/plain",
                               "data_base64": base64.b64encode(b"IOS_SHARED_FILE_BYTES").decode()}]),
-            ]:
-                originals.append(send({"text": text, "attachments": attachments, "client_request_id": "share-" + kind}))
+            ], 2):
+                originals.append(send({"text": text, "attachments": attachments, "client_request_id": str(uuid.UUID(int=number))}))
             send({"pairing_ticket": "do-not-record-pairing-ticket"}, "/api/auth/pairing/issue")
         records = namespace["prompt_evidence"]
         self.assertEqual(len(records), 7)
@@ -549,15 +589,72 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
                            and isinstance(node.test.values[0], ast.Name)
                            and node.test.values[0].id == "share_acceptance"
                            and any(isinstance(item, ast.Compare) for item in node.test.values))
+        def local(method, path, payload=None):
+            self.assertEqual(method, "GET")
+            if "/messages/" in path:
+                return messages[path.rsplit("/", 1)[-1]]
+            return {"turns": [{"inputs": list(inputs.values())}]}
+
         namespace.update(mode="--populated", root=self.directory, workspace=workspace, agent="holon-tester",
-                         local=Mock(return_value={"turns": [{"inputs": list(inputs.values())}]}))
+                         local=local)
         with patch("builtins.print"):
             self.execute([share_block], namespace)
         shared = json.loads((evidence / "direct-share.json").read_text())
         self.assertEqual(len(shared["inputs"]), 4)
         self.assertEqual(len(shared["files"]), 2)
+        self.assertEqual(len(shared["chains"]), 4)
+        self.assertEqual(len({chain["client_request_id"] for chain in shared["chains"]}), 4)
+        self.assertEqual(len({chain["message_id"] for chain in shared["chains"]}), 4)
+        for chain in shared["chains"]:
+            self.assertEqual(chain["message"]["id"], chain["input"]["message_id"])
+            expected = 1 if chain["kind"] in ("share-image", "share-file") else 0
+            self.assertEqual(len(chain["attachments"]), expected)
         for item in shared["files"]:
             self.assertEqual(item["sha256"], hashlib.sha256((self.directory / item["path"]).read_bytes()).hexdigest())
+        # Exercise the real acceptance block with invalid identity/material chains.
+        for fault in ("collapsed-message", "reused-uuid", "wrong-text", "swapped-attachment",
+                      "missing-input", "wrong-agent", "changed-retry", "invalid-uuid", "duplicate-input"):
+            damaged = json.loads(json.dumps(records))
+            damaged_inputs = list(json.loads(json.dumps(inputs)).values())
+            damaged_messages = json.loads(json.dumps(messages))
+            share_records = [record for record in damaged if record["kind"].startswith("share-")]
+            text_id = share_records[0]["receipt"]["message_id"]
+            url_record = next(record for record in share_records if record["kind"] == "share-url")
+            image_id = next(record["receipt"]["message_id"] for record in share_records if record["kind"] == "share-image")
+            if fault == "collapsed-message":
+                for record in share_records:
+                    record["receipt"]["message_id"] = text_id
+                damaged_inputs = [value for value in damaged_inputs if value["message_id"] == text_id]
+                damaged_inputs[0]["preview"] += "\nhttps://example.test/holon-share shared-note"
+            elif fault == "reused-uuid":
+                url_record["request"]["client_request_id"] = share_records[0]["request"]["client_request_id"]
+            elif fault == "wrong-text":
+                damaged_messages[text_id]["body"]["text"] = "unrelated input"
+            elif fault == "swapped-attachment":
+                damaged_messages[image_id]["body"]["text"] = f"\n![shared]({inbox}/request-file.txt)"
+            elif fault == "missing-input":
+                damaged_inputs = [value for value in damaged_inputs if value["message_id"] != image_id]
+            elif fault == "wrong-agent":
+                url_record["receipt"]["agent_id"] = "another-agent"
+            elif fault == "changed-retry":
+                share_records[1]["request"]["text"] += "\nchanged on retry"
+            elif fault == "invalid-uuid":
+                url_record["request"]["client_request_id"] = "not-a-uuid"
+            elif fault == "duplicate-input":
+                damaged_inputs.append(next(value.copy() for value in damaged_inputs
+                                           if value["message_id"] == text_id))
+
+            def damaged_local(method, path, payload=None):
+                if "/messages/" in path:
+                    return damaged_messages[path.rsplit("/", 1)[-1]]
+                return {"turns": [{"inputs": damaged_inputs}]}
+
+            destination = self.directory / ("invalid-" + fault)
+            namespace.update(prompt_evidence=damaged, local=damaged_local, fixture_evidence=destination)
+            with self.subTest(fault=fault), patch("builtins.print"):
+                with self.assertRaises(RuntimeError):
+                    self.execute([share_block], namespace)
+                self.assertFalse((destination / "direct-share.json").exists())
         for path in evidence.iterdir():
             self.assertNotIn(b"do-not-record", path.read_bytes())
             self.assertNotIn(b"Authorization", path.read_bytes())
