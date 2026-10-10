@@ -78,7 +78,9 @@ final class HolonUITests: XCTestCase {
             let editor = app.descendants(matching: .any)["sending.text"].firstMatch
             let targetID = element.exists ? element.identifier : ""
             let insideComposer = !targetID.isEmpty && composer.exists
-                && composer.descendants(matching: .any).matching(identifier: targetID).count > 0
+                && composer.descendants(matching: .any).matching(
+                    NSPredicate(format: "identifier == %@", targetID)
+                ).count > 0
             if !insideComposer && composer.exists && !composer.frame.isEmpty && editor.exists && editor.isHittable {
                 bottom = min(bottom, composer.frame.minY)
             }
