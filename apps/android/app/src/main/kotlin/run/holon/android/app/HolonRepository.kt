@@ -1063,6 +1063,7 @@ internal class HolonRepository(
                 brief.text,
                 brief.attachments.map { CachedAttachment(it.kind, it.name, it.uri, it.value?.toString()) },
                 brief.relatedTaskId,
+                brief.relatedMessageId,
             ),
         )
 
@@ -1084,6 +1085,7 @@ internal class HolonRepository(
                 )
             },
             brief.relatedTaskId,
+            brief.relatedMessageId,
         )
     }
 }
@@ -1106,6 +1108,7 @@ private data class CachedBrief(
     val text: String,
     val attachments: List<CachedAttachment>,
     val relatedTaskId: String?,
+    val relatedMessageId: String? = null,
 )
 
 internal fun normalizeAddress(

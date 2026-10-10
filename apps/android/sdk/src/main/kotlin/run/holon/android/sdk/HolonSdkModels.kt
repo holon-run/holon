@@ -106,6 +106,43 @@ public data class HolonPromptReceipt(
     public val disposition: String,
 )
 
+/** Bounded task outcome metadata; its message remains the canonical turn input. */
+public data class HolonTaskResultPresentation(
+    public val taskId: String,
+    public val status: String,
+    public val summary: String?,
+    public val preview: String,
+    public val responseMessageId: String? = null,
+    public val runtimeOnly: Boolean? = null,
+) {
+    public companion object {
+        internal fun from(value: JsonElement?): HolonTaskResultPresentation? {
+            if (value == null || value == kotlinx.serialization.json.JsonNull) return null
+            val raw = value as? JsonObject ?: throw HolonProtocolException("Task result is not an object")
+            fun text(field: String, required: Boolean = false): String? {
+                val value = raw[field]
+                if (value == null || value == kotlinx.serialization.json.JsonNull) {
+                    if (required) throw HolonProtocolException("Task result is missing $field")
+                    return null
+                }
+                val primitive = value as? kotlinx.serialization.json.JsonPrimitive
+                if (primitive?.isString != true) throw HolonProtocolException("Task result has invalid $field")
+                return primitive.contentOrNull
+            }
+            val id = text("task_id", required = true)?.takeIf(String::isNotBlank)
+                ?: throw HolonProtocolException("Task result is missing identity")
+            val status = text("status", required = true)?.takeIf { it in setOf("queued", "running", "cancelling", "completed", "failed", "cancelled", "interrupted") }
+                ?: throw HolonProtocolException("Task result has invalid status")
+            val preview = text("preview", required = true)!!
+            val runtimeOnly = raw["runtime_only"]?.takeUnless { it == kotlinx.serialization.json.JsonNull }?.let {
+                (it as? kotlinx.serialization.json.JsonPrimitive)?.takeUnless { it.isString }?.contentOrNull?.toBooleanStrictOrNull()
+                    ?: throw HolonProtocolException("Task result has invalid runtime provenance")
+            }
+            return HolonTaskResultPresentation(id, status, text("summary"), preview, text("response_message_id"), runtimeOnly)
+        }
+    }
+}
+
 public data class HolonPendingInput(
     public val messageId: String,
     public val state: String,
@@ -114,6 +151,7 @@ public data class HolonPendingInput(
     public val presentationClass: String? = null,
     public val actorDisplayName: String? = null,
     public val revision: Long? = null,
+    public val taskResult: HolonTaskResultPresentation? = null,
 )
 
 public data class HolonTurnInput(
@@ -124,6 +162,7 @@ public data class HolonTurnInput(
     public val createdAt: String? = null,
     public val interjected: Boolean = false,
     public val activityKey: HolonActivityKey? = null,
+    public val taskResult: HolonTaskResultPresentation? = null,
 )
 
 public data class HolonActivityKey(public val eventSeq: Long, public val activityId: String)
@@ -386,6 +425,7 @@ public data class HolonConversationSnapshot(
                                     actorDisplayName = input.stringValue("actor_display_name"),
                                     presentationClass = input.stringValue("presentation_class"),
                                     createdAt = input.stringValue("created_at"),
+                                    taskResult = HolonTaskResultPresentation.from(input["task_result"]),
                                     interjected = input["interjected"]?.jsonPrimitive?.contentOrNull == "true",
                                     activityKey = (input["activity_key"] as? JsonObject)?.let { key ->
                                         key.longValue("event_seq")?.let { seq ->
@@ -424,6 +464,7 @@ public data class HolonConversationSnapshot(
                         presentationClass = input.stringValue("presentation_class"),
                         actorDisplayName = input.stringValue("actor_display_name"),
                         revision = input.longValue("revision"),
+                        taskResult = HolonTaskResultPresentation.from(input["task_result"]),
                     )
                 }
             return HolonConversationSnapshot(
@@ -548,6 +589,7 @@ public data class HolonBrief(
     public val text: String,
     public val attachments: List<HolonBriefAttachment>,
     public val relatedTaskId: String?,
+    public val relatedMessageId: String? = null,
 )
 
 public sealed interface HolonConversationStreamEvent {

@@ -1041,6 +1041,63 @@ final class HolonUITests: XCTestCase {
         app.terminate()
     }
 
+    func testTaskResultProcessWorkflow() throws {
+        let app = launch(language: "en", dark: false, large: false)
+        if app.buttons["onboarding.scan"].waitForExistence(timeout: 5) {
+            let endpoint = try required("ENDPOINT")
+            var components = try XCTUnwrap(URLComponents(string: endpoint))
+            components.path = String(components.path.dropLast(4)) + "/login"
+            components.fragment = "pair=" + (try required("PAIRING_CODE"))
+            let paste = app.buttons["onboarding.pasteEntry"]
+            reveal(paste, in: app); paste.tap()
+            let payload = app.secureTextFields["onboarding.payload"]
+            reveal(payload, in: app); payload.tap()
+            payload.typeText(try XCTUnwrap(components.string) + "\n")
+            app.buttons["onboarding.preview"].tap()
+            let permission = app.switches["onboarding.pairingHTTP"]
+            reveal(permission, in: app); permission.switches.firstMatch.tap()
+            let confirm = app.buttons["onboarding.confirmPairing"]
+            reveal(confirm, in: app); confirm.tap()
+            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
+        }
+        let agent = try required("AGENT_ID")
+        if app.buttons["agent." + agent].waitForExistence(timeout: 5) { app.buttons["agent." + agent].tap() }
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        let turn = try required("RESULT_COMPLETED_TURN")
+        let message = try required("RESULT_COMPLETED_MESSAGE")
+        let failureTurn = try required("RESULT_FAILED_TURN")
+        let process = app.descendants(matching: .any)["activities." + turn].firstMatch
+        // Results precede the prompt sent by the onboarding test.
+        for _ in 0..<20 {
+            if process.exists && process.isHittable { break }
+            app.swipeDown()
+        }
+        XCTAssertTrue(process.isHittable)
+        XCTAssertFalse(app.buttons["taskResult.source." + message].exists, "Completed results start folded")
+        let failure = app.descendants(matching: .any)["activities." + failureTurn].firstMatch
+        XCTAssertTrue(failure.exists)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_TASK_FAILURE_REASON")).firstMatch.exists, "Task failure stays visible although the receiving turn completed")
+        capture(app, "task-results-collapsed")
+        process.tap()
+        let output = app.buttons["taskResult.source." + message]
+        reveal(output, in: app)
+        XCTAssertTrue(output.isHittable)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_TASK_OUTPUT_COMPLETE")).firstMatch.exists)
+        capture(app, "task-result-expanded")
+        output.tap()
+        let taskOutput = app.staticTexts["work.output"]
+        XCTAssertTrue(taskOutput.waitForExistence(timeout: 20))
+        XCTAssertTrue(taskOutput.label.contains("IOS_TASK_OUTPUT_COMPLETE"), "Explicit detail opens the authorized task output reader")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        for _ in 0..<20 {
+            if app.descendants(matching: .any)["activities." + turn].firstMatch.isHittable { break }
+            app.swipeDown()
+        }
+        XCTAssertFalse(app.buttons["taskResult.source." + message].exists, "Cold launch folds completed process again")
+    }
+
     func testConversationHistoryWindowPosition() throws {
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }

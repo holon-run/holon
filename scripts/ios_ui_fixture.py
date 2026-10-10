@@ -24,6 +24,7 @@ rich_acceptance = os.environ.get("IOS_RICH_ACCEPTANCE") == "1"
 rich_activity_acceptance = rich_acceptance and (
     mode == "--sdk-only" or not os.environ.get("IOS_UI_CASES")
     or "testRichActivityWorkflow" in os.environ["IOS_UI_CASES"].split(","))
+task_result_acceptance = os.environ.get("IOS_TASK_RESULT_ACCEPTANCE") == "1"
 lost_response_acceptance = os.environ.get("IOS_LOST_RESPONSE_ACCEPTANCE") == "1"
 history_acceptance = os.environ.get("IOS_HISTORY_ACCEPTANCE") == "1"
 share_acceptance = os.environ.get("IOS_SHARE_ACCEPTANCE") == "1"
@@ -402,6 +403,32 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 "cmd": "printf 'IOS_POPULATED_OUTPUT\\n'; while :; do sleep 30; done",
                 "workdir": str(root), "login": False, "yield_time_ms": 1})
             task_id = task["id"]
+            result_turns = {}
+            if task_result_acceptance:
+                for name, command in [("COMPLETED", "printf 'IOS_TASK_OUTPUT_COMPLETE\\n'"),
+                                      ("FAILED", "printf 'IOS_TASK_FAILURE_REASON\\n' >&2; exit 7")]:
+                    completed_task = local("POST", f"/control/agents/{agent}/tasks", {
+                        "summary": "IOS_TASK_PROCESS_" + name, "cmd": command,
+                        "workdir": str(root), "login": False, "yield_time_ms": 1})
+                    result_turns[name] = {"task": completed_task["id"]}
+                for attempt in range(300):
+                    conversation = local("GET", f"/agents/{agent}/conversation")
+                    for turn in conversation.get("turns", []):
+                        for value in turn.get("inputs", []):
+                            for record in result_turns.values():
+                                if value.get("task_result", {}).get("task_id") == record["task"]:
+                                    record.update(turn=turn["turn_id"], message=value["message_id"])
+                    if all("turn" in record for record in result_turns.values()):
+                        break
+                    time.sleep(.1)
+                else:
+                    diagnostics = {
+                        "tasks": result_turns,
+                        "inputs": [{"turn": turn["turn_id"], "task_results": [value.get("task_result") for value in turn.get("inputs", [])]}
+                                   for turn in conversation.get("turns", [])],
+                        "pending": [value.get("task_result") for value in conversation.get("pending_inputs", [])],
+                    }
+                    raise RuntimeError("task results did not project into receipt turns: " + json.dumps(diagnostics))
             test_env = dict(os.environ)
             test_env.update(HOLON_UI_BASE_URL=base, HOLON_UI_PAIRING_TICKET=pairing["ticket"],
                 HOLON_UI_AGENT_ID=agent, HOLON_UI_WORK_ID=work_id, HOLON_UI_TASK_ID=task["id"],
@@ -432,6 +459,9 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     runner_inputs["RICH_DIRECTORY"] = "rich-files"
                 for key, value in runner_inputs.items():
                     test_env["TEST_RUNNER_HOLON_UI_" + key] = value
+                for name, record in result_turns.items():
+                    for key, value in record.items():
+                        test_env["TEST_RUNNER_HOLON_UI_RESULT_" + name + "_" + key.upper()] = value
                 simulator = os.environ.get("IOS_SIMULATOR_ID")
                 if not simulator:
                     raise RuntimeError("IOS_SIMULATOR_ID must identify a dedicated fresh iOS 18+ simulator")
@@ -458,6 +488,8 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 if rich_acceptance:
                     cases.extend([("testRichActivityWorkflow", "large"), ("testRichFilesWorkflow", "large"),
                                   ("testPopulatedComposerMaximumTextSize", MAXIMUM_TEXT_SIZE)])
+                if task_result_acceptance:
+                    cases.append(("testTaskResultProcessWorkflow", "large"))
                 if lost_response_acceptance:
                     cases.append(("testLostResponseAndProcessRecovery", "large"))
                 if history_acceptance:
@@ -494,7 +526,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                             test_env["TEST_RUNNER_HOLON_UI_TEXT_SIZE_TOKEN"] = control_token
                             test_env["TEST_RUNNER_HOLON_UI_CONTENT_SIZE"] = content_size
                             test_env["TEST_RUNNER_HOLON_UI_APPEARANCE"] = appearance
-                            if method in {"testAuthenticatedNativeWorkflow", "testDirectAgentShareWorkflow", "testNetworkManagementWorkflow"}:
+                            if method in {"testAuthenticatedNativeWorkflow", "testDirectAgentShareWorkflow", "testNetworkManagementWorkflow", "testTaskResultProcessWorkflow"}:
                                 # Tickets expire after two minutes. The preceding cases also
                                 # warm the build; issue only when redemption is about to run.
                                 ticket = local("POST", "/auth/pairing/issue")["ticket"]

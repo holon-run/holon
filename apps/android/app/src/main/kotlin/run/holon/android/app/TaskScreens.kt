@@ -16,7 +16,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import run.holon.android.sdk.HolonTaskSnapshot
 
-private fun taskLabel(status: String): String = ui(when (status) {
+internal fun taskLabel(status: String): String = ui(when (status) {
     "queued" -> "排队中"
     "running" -> "运行中"
     "cancelling" -> "正在取消"

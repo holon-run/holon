@@ -2,8 +2,13 @@ import SwiftUI
 import HolonClient
 
 private struct OpenReferenceKey: EnvironmentKey { static var defaultValue: ((String) -> Void)? { nil } }
+private struct OpenTaskKey: EnvironmentKey { static var defaultValue: ((String) -> Void)? { nil } }
 private struct OpenWorkKey: EnvironmentKey { static var defaultValue: ((String) -> Void)? { nil } }
 extension EnvironmentValues {
+    var holonOpenTask: ((String) -> Void)? {
+        get { self[OpenTaskKey.self] }
+        set { self[OpenTaskKey.self] = newValue }
+    }
     var holonOpenReference: ((String) -> Void)? {
         get { self[OpenReferenceKey.self] }
         set { self[OpenReferenceKey.self] = newValue }
@@ -17,6 +22,8 @@ extension EnvironmentValues {
 struct TurnActivityView: View {
     let turnID: String
     @Bindable var reader: ReadingCoordinator
+    var inputs: [JSONValue] = []
+    var fallbackTime: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -33,8 +40,11 @@ struct TurnActivityView: View {
             if page?["coverage"]?["kind"] != nil && page?["coverage"]?["kind"] != .string("complete") {
                 Text("reading.partialActivities").font(.caption).foregroundStyle(.secondary)
             }
-            ForEach(ActivityPresentation.items(page).filter { $0.kind != "operator" }) { activity in
-                ActivityRowView(activity: activity, turnID: turnID, reader: reader)
+            ForEach(ReadingProcessEntry.items(inputs: inputs, activities: ActivityPresentation.items(page))) { entry in
+                switch entry {
+                case .task(let result): TaskResultRowView(result: result, agentID: reader.selectedAgentID, fallbackTime: fallbackTime)
+                case .activity(let activity): ActivityRowView(activity: activity, turnID: turnID, reader: reader)
+                }
             }
             if reader.loadingActivities.contains(turnID) { ProgressView() }
             if reader.failedActivities.contains(turnID) || page == nil && !reader.loadingActivities.contains(turnID) {

@@ -193,6 +193,9 @@ internal object UiCopy {
         暂无进行中的任务|No active tasks
         任务详情|Task details
         刷新任务|Refresh tasks
+        查看原回复|View original reply
+        收到任务结果|Task result received
+        收到 Agent 回复|Agent reply received
         查看任务输出|View task output
         刷新任务输出|Refresh task output
         任务输出为截断预览|Task output is a truncated preview

@@ -13,7 +13,10 @@ import type {
 } from "@holon/conversation-sdk";
 
 import "../../i18n";
-import { ConversationTimeline, executionProcessActivities, parseInputPreview, summarizeActivity, conversationActivityToInspectorActivity } from "./ConversationTimeline";
+import { taskResultFailureReason, taskResultPreview } from "../../runtime/conversation-input";
+import taskResultInputs from "../../../../../tests/fixtures/client-wire/task-result-inputs.json";
+import { decodeTurnInputSummary } from "@holon/conversation-sdk";
+import { ConversationTimeline, TaskResultRow, executionProcessActivities, parseInputPreview, summarizeActivity, conversationActivityToInspectorActivity } from "./ConversationTimeline";
 import { buildConversationSessionModel } from "../../runtime/conversation-view-model";
 
 function renderToStaticMarkup(node: ReactNode): string {
@@ -553,18 +556,20 @@ describe("task result presentation", () => {
   const input = { message_id: "result-message", preview: "raw body", presentation_class: "task" as const,
     task_result: { task_id: "task-secret-id", status: "completed" as const, summary: "Run verification",
       preview: "bounded runtime output", response_message_id: null } };
-  it("keeps a useful result card when the runtime does not enter the model", () => {
+  it("keeps a collapsed process header without an empty response for runtime results", () => {
     const html = renderTimeline([turnSummary("result-only", 1, { inputs: [input], presentation_class: "task",
       execution: { kind: "terminal", outcome: "completed" }, settled: true,
       result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
     })]);
     expect(html).toContain("Run verification");
-    expect(html).toContain("bounded runtime output");
+    expect(html).not.toContain("bounded runtime output");
     expect(html).not.toContain("task-secret-id");
     expect(html).not.toContain("conversation-turn-notice");
     expect(html).not.toContain("conversation-response");
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain('class="conversation-task-result-row');
   });
-  it("shows the model response once and reduces its task source to a compact card", () => {
+  it("shows the model response once and folds its task source into the process", () => {
     const html = renderTimeline([turnSummary("response", 1, { inputs: [input], presentation_class: "task",
       execution: { kind: "terminal", outcome: "completed" }, brief_ids: ["brief-1"],
       result: { kind: "available" }, settled: true,
@@ -573,14 +578,14 @@ describe("task result presentation", () => {
     expect(html).not.toContain("bounded runtime output");
     expect(html.match(/这是结果内容 markdown/g)).toHaveLength(1);
   });
-  it("uses durable runtime provenance to hide legacy synthetic briefs with a null task link", () => {
-    const legacyBrief = { ...brief, text: "Legacy synthetic runtime result", related_message_id: input.message_id };
+  it("uses durable runtime provenance to hide legacy briefs and preserves explicit model replies", () => {
+    const legacyBrief = { ...brief, text: "Legacy synthetic runtime result", related_message_id: input.message_id, related_task_id: input.task_result.task_id };
     const runtimeTurn = turnSummary("legacy-runtime", 1, { inputs: [{ ...input,
       task_result: { ...input.task_result, runtime_only: true } }], presentation_class: "task",
       execution: { kind: "terminal", outcome: "completed" }, brief_ids: ["brief-1"],
       result: { kind: "available" }, settled: true });
     const html = renderTimeline([runtimeTurn], { brief: legacyBrief });
-    expect(html).toContain("bounded runtime output");
+    expect(html).not.toContain("bounded runtime output");
     expect(html).not.toContain("Legacy synthetic runtime result");
     expect(html).not.toContain("conversation-response");
     const modelTurn = { ...runtimeTurn, inputs: [{ ...input,
@@ -595,15 +600,43 @@ describe("task result presentation", () => {
         execution: { kind: "terminal", outcome: "completed" }, settled: true,
         result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
       })]);
-      expect(html).toContain(`conversation-task-result is-${status}`);
-      expect(html).toContain("bounded runtime output");
+      expect(html).toContain(`conversation-task-result-label is-${status}`);
+      expect(html).toContain(status === "cancelled" ? "Cancelled" : status === "failed" ? "Failed" : "Interrupted");
+      expect(html.includes("bounded runtime output")).toBe(status !== "cancelled");
     }
     const html = renderTimeline([turnSummary("reference", 1, { inputs: [{ ...input, task_result: {
       ...input.task_result, response_message_id: "reply-message", preview: "internal reference text" } }],
       execution: { kind: "terminal", outcome: "completed" }, settled: true,
       result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
     })]);
-    expect(html).toContain("Agent reply received");
+    expect(html).toContain("Run verification");
     expect(html).not.toContain("internal reference text");
   });
+});
+
+
+describe("shared task result input fixtures", () => {
+  it("renders bounded detail and links original replies without copying their signal preview", () => {
+    for (const raw of taskResultInputs) {
+      const input = decodeTurnInputSummary(raw);
+      const html = renderToStaticMarkup(<TaskResultRow input={input} />);
+      expect(html).toContain(input.task_result!.summary ?? "Completed");
+      if (input.task_result!.response_message_id) {
+        expect(html).toContain("View original reply");
+        expect(html).not.toContain(input.task_result!.preview);
+      } else {
+        expect(html).toContain(input.task_result!.preview.split("\n")[0]);
+      }
+    }
+  });
+});
+
+
+it("keeps a command failure cause visible without repeating its output path", () => {
+  expect(taskResultFailureReason("command task failed: Build\noutput_path: /host/output\nexit_status: 7\noutput_summary:\nstderr:\nMissing manifest")).toBe("Missing manifest");
+  expect(taskResultFailureReason("command task failed: Build\noutput_path: /host/output\nexit_status: 7")).toBe("exit_status: 7");
+});
+
+it("shows command output with its line breaks and keeps the host path in source details", () => {
+  expect(taskResultPreview("command task completed: Check\noutput_path: /host/output\nexit_status: 0\noutput_summary:\nfirst\nsecond")).toBe("first\nsecond");
 });

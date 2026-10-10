@@ -58,7 +58,7 @@ internal fun PendingMessagesCard(
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("${ui("后台消息")} · ${inputs.size}", style = MaterialTheme.typography.labelLarge)
                     Text(
-                        if (expanded) ui("点击消息查看详情") else inputs.first().preview.ifBlank { ui("暂无消息预览") },
+                        if (expanded) ui("点击消息查看详情") else inputs.first().let { it.taskResult?.summary ?: it.preview }.ifBlank { ui("暂无消息预览") },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -79,7 +79,7 @@ internal fun PendingMessagesCard(
                         ) {
                             PendingMessageMeta(input)
                             Text(
-                                input.preview.ifBlank { ui("暂无消息预览") },
+                                (input.taskResult?.summary ?: input.preview).ifBlank { ui("暂无消息预览") },
                                 style = MaterialTheme.typography.bodySmall,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
@@ -93,14 +93,16 @@ internal fun PendingMessagesCard(
 }
 
 @Composable
-internal fun PendingMessageDetails(input: HolonPendingInput) {
+internal fun PendingMessageDetails(input: HolonPendingInput, onOpenTask: ((run.holon.android.sdk.HolonTaskSnapshot) -> Unit)? = null) {
     Column(
         Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(ui("消息详情"), style = MaterialTheme.typography.titleLarge)
         PendingMessageMeta(input)
-        SelectionContainer {
+        if (input.taskResult != null && onOpenTask != null) {
+            TaskResultProcessRow(run.holon.android.sdk.HolonTurnInput(input.messageId, input.preview, input.actorDisplayName, input.presentationClass, input.createdAt, taskResult = input.taskResult), input.createdAt, onOpenTask)
+        } else SelectionContainer {
             Text(input.preview.ifBlank { ui("暂无消息预览") }, style = MaterialTheme.typography.bodyMedium)
         }
     }
@@ -111,6 +113,7 @@ private fun PendingMessageMeta(input: HolonPendingInput) {
     Text(
         listOfNotNull(
             ui(if (input.state == "queued") "排队中" else "待处理"),
+            input.taskResult?.let(::taskResultStatus),
             input.actorDisplayName?.takeIf { it.isNotBlank() },
             input.createdAt?.let(::localTimestamp),
         ).joinToString(" · "),

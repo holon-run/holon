@@ -354,3 +354,10 @@
 "sending.camera.permission" = "Camera access is denied. Enable it in iOS Settings or choose an existing photo.";
 "share.originalDestination" = "This request belongs to its original connection and Agent. Reconnect there to retry; it cannot be reassigned.";
 "share.unknownReceipt" = "The Agent may already have received this share. Retry uses the same request and original destination.";
+
+"reading.taskResult" = "Task result received";
+"reading.replyReceived" = "Agent reply received";
+"reading.originalReply" = "View original reply";
+"reading.pendingEvents" = "Background events";
+"reading.assigning" = "Assigning";
+"reading.queued" = "Queued";

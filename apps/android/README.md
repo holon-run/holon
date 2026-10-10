@@ -31,6 +31,11 @@ Task updates are foreground/event-driven; the refresh controls can also reload
 status and output. Read-receipt transport failures retry without error banners
 and remain available in the diagnostic trace.
 
+Task results appear inside the receiving turn's collapsed process. Task status
+and a short failure/interruption reason remain visible before expansion; genuine
+model responses remain in the main conversation. Source actions open the task
+output reader on demand, including the original reply for reference-only results.
+
 Pending background messages are grouped into a collapsed count card rather than
 long paragraphs in the conversation. Expand the card for two-line previews,
 then tap a message to read and copy the preview supplied by the runtime. Pending

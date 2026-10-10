@@ -1,0 +1,97 @@
+[
+  {
+    "message_id": "command",
+    "presentation_class": "task",
+    "preview": "raw body",
+    "task_result": {
+      "task_id": "task-command",
+      "status": "completed",
+      "preview": "All dependencies installed.",
+      "runtime_only": true,
+      "summary": "Check dependencies"
+    }
+  },
+  {
+    "message_id": "failure",
+    "presentation_class": "task",
+    "preview": "raw body",
+    "task_result": {
+      "task_id": "task-failure",
+      "status": "failed",
+      "preview": "Missing package manifest\nfull bounded reason",
+      "runtime_only": true,
+      "summary": "Build project"
+    }
+  },
+  {
+    "message_id": "cancelled",
+    "presentation_class": "task",
+    "preview": "raw body",
+    "task_result": {
+      "task_id": "task-cancelled",
+      "status": "cancelled",
+      "preview": "Stopped by operator",
+      "runtime_only": true,
+      "summary": "Run tests"
+    }
+  },
+  {
+    "message_id": "interrupted",
+    "presentation_class": "task",
+    "preview": "raw body",
+    "task_result": {
+      "task_id": "task-interrupted",
+      "status": "interrupted",
+      "preview": "Host restarted",
+      "runtime_only": true,
+      "summary": "Check release"
+    }
+  },
+  {
+    "message_id": "reference",
+    "presentation_class": "task",
+    "preview": "raw body",
+    "task_result": {
+      "task_id": "task-reference",
+      "status": "completed",
+      "preview": "Internal reference signal",
+      "response_message_id": "peer-reply",
+      "runtime_only": true,
+      "summary": "Peer review"
+    }
+  },
+  {
+    "message_id": "model",
+    "presentation_class": "task",
+    "preview": "raw body",
+    "task_result": {
+      "task_id": "task-model",
+      "status": "completed",
+      "preview": "Same text as the model response",
+      "runtime_only": false,
+      "summary": "Model continuation"
+    }
+  },
+  {
+    "message_id": "legacy",
+    "presentation_class": "task",
+    "preview": "raw body",
+    "task_result": {
+      "task_id": "task-legacy",
+      "status": "completed",
+      "preview": "Historical preview",
+      "runtime_only": true,
+      "summary": "Historical outcome"
+    }
+  },
+  {
+    "message_id": "old-daemon",
+    "presentation_class": "task",
+    "preview": "raw body",
+    "task_result": {
+      "task_id": "task-old-daemon",
+      "status": "completed",
+      "preview": "Optional fields omitted"
+    }
+  }
+]

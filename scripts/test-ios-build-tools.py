@@ -149,6 +149,7 @@ class UIFixtureSetupContracts(unittest.TestCase):
                              root=Path(directory), bundle=Path(directory) / "UI.xcresult",
                              MAXIMUM_TEXT_SIZE=MAXIMUM_TEXT_SIZE, rich_acceptance=False,
                              lost_response_acceptance=False, history_acceptance=False,
+                             task_result_acceptance=False,
                              share_acceptance=share, initialize_simulator_text_size=initialize)
             with patch.dict(os.environ, {}, clear=True), patch("ios_share_probe.install", install):
                 exec(compile(setup, str(source), "exec"), namespace)

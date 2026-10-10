@@ -7,7 +7,11 @@ native organization login, and scoped Keychain recovery.
 The searchable Agent home provides recent activity, reply/result filters and
 identity-partitioned offline caching, without global bottom tabs. Conversations
 show operator input and full Markdown briefs, with structured execution activity
-available by turn. The inline composer includes persistent drafts, local
+available by turn. Task results are folded into their receiving turn's process;
+failed/interrupted tasks retain a status and short reason while collapsed.
+Pending background events have a separate expandable group. Original-reply links
+reuse the authorized task-output reader without copying peer content into chat.
+The inline composer includes persistent drafts, local
 attachment staging, model selection, an explicit current-run stop and a durable
 sending queue. Work, tasks and files belong to the selected Agent and are opened
 from its conversation actions. Settings, sharing, connections and diagnostics

@@ -642,7 +642,7 @@ test("unmatched historical input opens complete text and does not repeat represe
 });
 
 
-test("task result cards distinguish runtime outcomes from model responses on desktop and mobile", async ({ page, context, request }, info) => {
+test("task results fold into receipt processes with lazy source reads on desktop and mobile", async ({ page, context, request }, info) => {
   const session = sessionFor(info, "task-result-cards");
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
@@ -655,7 +655,7 @@ test("task result cards distinguish runtime outcomes from model responses on des
     execution: { kind: "terminal", outcome: "completed" }, settled: true,
     result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
   });
-  const turns = [resultTurn("command", 1, "completed", "Command verification"),
+  const turns: ConversationTurnSummary[] = [resultTurn("command", 1, "completed", "Command verification"),
     resultTurn("failed-task", 2, "failed", "Build failed"), resultTurn("cancelled-task", 3, "cancelled", "Stopped by operator"),
     resultTurn("interrupted-task", 4, "interrupted", "Interrupted run"),
     { ...resultTurn("model-result", 5, "completed", "Review source"), brief_ids: ["model-brief"], result: { kind: "available" as const } },
@@ -663,6 +663,7 @@ test("task result cards distinguish runtime outcomes from model responses on des
       inputs: [{ ...input("legacy-runtime", "completed", "Historical command result"), task_result: {
         ...input("legacy-runtime", "completed", "Historical command result").task_result, runtime_only: true,
       } }], brief_ids: ["legacy-brief"], result: { kind: "available" as const } }];
+  turns.push({ ...resultTurn("reference", 7, "completed", "Peer review received"), inputs: [{ ...input("reference", "completed", "Peer review received"), task_result: { ...input("reference", "completed", "Peer review received").task_result, response_message_id: "original-reply" } }] });
   await request.post(control("/__e2e__/configure"), { data: { briefsById: { "model-brief": {
     id: "model-brief", agent_id: agentId, workspace_id: "holon", kind: "result", text: "Reviewed: ready to merge.",
     related_task_id: null, related_message_id: "model-result", created_at: "2026-10-10T04:00:00Z", content_source: { kind: "inline" },
@@ -673,34 +674,54 @@ test("task result cards distinguish runtime outcomes from model responses on des
   await request.post(control("/__e2e__/conversation"), { data: { agentId, turns, pending_inputs: [
     { ...input("pending-task", "completed", "Background verification"), revision: 1, state: "queued", created_at: "2026-10-10T04:00:00Z" },
   ] } });
-  await page.route("**/api/agents/bootstrap-agent/messages:batchGet", (route) => route.fulfill({ json: {
-    messages: [{ id: "command", agent_id: agentId, kind: "task_result", origin: { kind: "task", task_id: "task-command" },
-      body: { type: "text", text: "COMPLETE OUTPUT AVAILABLE IN INSPECTOR" } }], missing_message_ids: [],
-  } }));
+  const sourceRequests: string[] = [];
+  await page.route("**/api/agents/bootstrap-agent/messages:batchGet", async (route) => {
+    const data = route.request().postDataJSON() as { message_ids: string[] };
+    sourceRequests.push(...data.message_ids);
+    await route.fulfill({ json: { messages: data.message_ids.map((id) => ({ id, agent_id: agentId, kind: "task_result",
+      body: { type: "text", text: id === "original-reply" ? "ORIGINAL PEER REPLY" : "COMPLETE OUTPUT AVAILABLE IN INSPECTOR" } })), missing_message_ids: [] } });
+  });
   await page.goto(`/agents/${agentId}/conversation`);
   const command = page.locator('[data-turn-id="command"]');
-  await expect(command.locator(".conversation-task-result-preview")).toContainText("Useful bounded output.");
+  await expect(command.locator(".conversation-detail-toggle")).toHaveAttribute("aria-expanded", "false");
+  await expect(command.locator(".conversation-task-result-row")).toHaveCount(0);
   await expect(command.locator(".conversation-turn-notice")).toHaveCount(0);
   await expect(command.locator(".conversation-response")).toHaveCount(0);
   await expect(page.locator('[data-turn-id="model-result"] .conversation-task-result-preview')).toHaveCount(0);
   await expect(page.getByText("Reviewed: ready to merge.", { exact: true })).toHaveCount(1);
   await expect(page.locator(".conversation-pending-events")).toContainText("Background verification");
   const legacy = page.locator('[data-turn-id="legacy-runtime"]');
-  await expect(legacy.locator(".conversation-task-result-preview")).toContainText("Useful bounded output.");
+  await expect(legacy.locator(".conversation-task-result-row")).toHaveCount(0);
   await expect(legacy.locator(".conversation-response")).toHaveCount(0);
   await expect(page.getByText("Historical synthetic result", { exact: true })).toHaveCount(0);
   for (const status of ["failed", "cancelled", "interrupted"]) {
-    await expect(page.locator(`.conversation-task-result.is-${status}`)).toHaveCount(1);
+    await expect(page.locator(`.conversation-detail-toggle .conversation-task-result-label.is-${status}`)).toHaveCount(1);
   }
+  expect(sourceRequests).toEqual([]);
+  await command.locator(".conversation-detail-toggle").click();
+  await expect(command.locator(".conversation-task-result-preview")).toContainText("Useful bounded output.");
+  expect(sourceRequests).toEqual([]);
   await command.getByRole("button", { name: "Open full event details" }).click();
   await expect(page.locator(".side-panel")).toContainText("COMPLETE OUTPUT AVAILABLE IN INSPECTOR");
   await page.getByRole("button", { name: "Close side panel", exact: true }).click();
-  await page.screenshot({ path: info.outputPath("task-results-desktop.png"), fullPage: true });
+  await expect.poll(() => sourceRequests).toContain("command");
+  const reference = page.locator('[data-turn-id="reference"]');
+  await reference.locator(".conversation-detail-toggle").click();
+  await expect(reference.locator(".conversation-task-result-preview")).toHaveCount(0);
+  await reference.getByRole("button", { name: "View original reply" }).click();
+  await expect(page.locator(".side-panel")).toContainText("ORIGINAL PEER REPLY");
+  expect(sourceRequests).toContain("original-reply");
+  expect(sourceRequests).not.toContain("reference");
+  await page.getByRole("button", { name: "Close side panel", exact: true }).click();
+  await command.locator(".conversation-detail-toggle").click();
+  await page.screenshot({ path: info.outputPath("task-results-desktop.png"), fullPage: true, animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   await command.scrollIntoViewIfNeeded();
+  await expect(command.locator(".conversation-detail-toggle")).toHaveAttribute("aria-expanded", "false");
+  await command.locator(".conversation-detail-toggle").click();
   await expect(command.locator(".conversation-task-result-preview")).toBeInViewport();
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
   await expect(page.locator("form.composer")).toBeVisible();
-  await page.screenshot({ path: info.outputPath("task-results-mobile.png"), fullPage: true });
+  await page.screenshot({ path: info.outputPath("task-results-mobile.png"), fullPage: true, animations: "disabled" });
 });

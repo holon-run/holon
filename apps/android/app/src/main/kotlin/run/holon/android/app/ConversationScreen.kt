@@ -487,7 +487,7 @@ internal fun ConversationTimeline(
     val dragging by listState.interactionSource.collectIsDraggedAsState()
     val scope = rememberCoroutineScope()
     val turns = run.holon.android.sdk.mergeConversationTurns(state.olderTurns, snapshot?.turns.orEmpty())
-    val rows = conversationRows(turns)
+    val rows = conversationRows(turns, briefs = state.briefs)
     val latestBriefId = state.selectedAgent?.latestBrief?.briefId
     val latestBriefEventSeq = state.selectedAgent?.latestBrief?.createdEventSeq
     val agentId = state.selectedAgent?.id
@@ -623,7 +623,11 @@ internal fun ConversationTimeline(
     }
     pending.background.firstOrNull { it.messageId == selectedPendingId }?.let { input ->
         ModalBottomSheet(onDismissRequest = { selectedPendingId = null }) {
-            PendingMessageDetails(input)
+            PendingMessageDetails(input) { task ->
+                selectedPendingId = null
+                viewModel.openTask(task)
+                viewModel.loadTaskOutput()
+            }
         }
     }
 }
@@ -631,7 +635,7 @@ internal fun ConversationTimeline(
 @Composable
 internal fun OperatorInput(turn: HolonConversationTurn) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        turn.inputs.filter { it.presentationClass == "operator" || (it.presentationClass == null && turn.presentationClass == "operator") }.forEach { input ->
+        turn.inputs.filter { !it.interjected && (it.presentationClass == "operator" || (it.presentationClass == null && turn.presentationClass == "operator")) }.forEach { input ->
             OperatorInputText(input.preview, input.createdAt, input.actorDisplayName)
         }
     }
@@ -702,40 +706,42 @@ internal fun BriefContent(brief: run.holon.android.sdk.HolonBrief, onFile: (Stri
 @Composable
 internal fun InlineTurnProcess(turn: HolonConversationTurn, state: HolonUiState, viewModel: ConversationActions, onInteraction: () -> Unit) {
     val expanded = state.selectedTurn?.id == turn.id
+    val detail = state.conversationDetail.takeIf { expanded }
+    val activities = detail?.activities.orEmpty().filter { it.kind != "operator" && !(it.kind == "assistant" && it.summary.isBlank()) }
+    val openResult: (run.holon.android.sdk.HolonTaskSnapshot) -> Unit = { task -> viewModel.openTask(task); viewModel.loadTaskOutput() }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { onInteraction(); if (expanded) viewModel.closeTurn() else viewModel.openTurn(turn) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(6.dp))
-            Text(ui("本轮过程"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.weight(1f))
-            val status = turn.exceptionStatus()?.first ?: if (turn.isRunning()) ui("执行中") else if (turn.briefIds.isEmpty()) turn.compactStatusText() else null
-            status?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        }
+        TurnProcessHeader(turn, expanded) { onInteraction(); if (expanded) viewModel.closeTurn() else viewModel.openTurn(turn) }
         if (expanded) {
-            val detail = state.conversationDetail
             if (detail == null && state.detailBusy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             if (detail == null && !state.detailBusy) TextButton(onClick = { viewModel.openTurn(turn) }) { Text(ui("重试")) }
             detail?.let {
                 if (it.coverageKind != "complete") Text(detailCoverageMessage(it.coverageKind, it.coverageReason), style = MaterialTheme.typography.bodySmall)
-                val activities = it.activities.filter { activity -> activity.kind != "operator" && !(activity.kind == "assistant" && activity.summary.isBlank()) }
                 if (it.hasMore || activities.size > 6) Text(ui("显示最近过程，更多内容可全屏查看"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                activities.takeLast(6).forEach { activity ->
+            }
+        }
+        turnProcessRows(turn, if (expanded) activities.takeLast(6) else emptyList()).forEach { row ->
+            when (row) {
+                is TurnProcessRow.TaskResult -> if (expanded) TaskResultProcessRow(row.input, row.input.createdAt ?: turn.startedAt, openResult)
+                is TurnProcessRow.Interjection -> {
+                    if (row.input.presentationClass == "operator" || row.input.presentationClass == null && turn.presentationClass == "operator")
+                        OperatorInputText(row.input.preview, row.input.createdAt, row.input.actorDisplayName, ui("补充输入"))
+                    else Text(row.input.preview, style = MaterialTheme.typography.bodySmall)
+                }
+                is TurnProcessRow.Activity -> {
+                    val activity = row.activity
                     val open = state.selectedActivity?.id == activity.id
-                    ActivityRow(
-                        activity = activity,
-                        expanded = open,
-                        detail = state.selectedToolExecution.takeIf { open },
+                    ActivityRow(activity = activity, expanded = open, detail = state.selectedToolExecution.takeIf { open },
                         loading = open && state.detailBusy,
                         onReport = contentReportAction(activity, state.selectedAgent?.id, turn.id, viewModel::beginContentReport),
-                        onOpen = {
-                            onInteraction()
-                            if (open) viewModel.closeActivity() else viewModel.inspectActivity(activity)
-                        },
-                    )
+                        onOpen = { onInteraction(); if (open) viewModel.closeActivity() else viewModel.inspectActivity(activity) })
                 }
             }
-            TextButton(onClick = { viewModel.setTurnFullScreen(true) }) { Text(ui("全屏查看过程")) }
         }
+        // Older summaries have no canonical interjection key, but their input stays readable.
+        turn.inputs.filter { it.interjected && it.activityKey == null && it.taskResult == null && (it.presentationClass == "operator" || it.presentationClass == null && turn.presentationClass == "operator") }.forEach { input ->
+            OperatorInputText(input.preview, input.createdAt, input.actorDisplayName, ui("补充输入"))
+        }
+        if (expanded) TextButton(onClick = { viewModel.setTurnFullScreen(true) }) { Text(ui("全屏查看过程")) }
     }
 }
 
@@ -761,6 +767,7 @@ internal fun HolonConversationTurn.compactStatusText(): String? =
         terminalOutcome in setOf("aborted", "interrupted", "baseline_over_budget") -> ui("本轮未完成")
         briefIds.isNotEmpty() || resultKind == "available" -> ui("结果载入中")
         resultKind == "unavailable" -> ui("结果暂不可用")
+        taskResultHeader() != null -> taskLabel(taskResultHeader()!!.taskResult!!.status)
         resultKind == "none" -> ui("没有结果摘要")
         else -> null
     }
@@ -835,7 +842,7 @@ internal fun TurnDetailScreen(state: HolonUiState, viewModel: ConversationAction
                     }
                 }
             }
-            turn.inputs.filter { it.presentationClass != "internal" && (!it.interjected || it.activityKey == null) }.forEach { input ->
+            turn.inputs.filter { it.taskResult == null && it.presentationClass != "internal" && (!it.interjected || it.activityKey == null) }.forEach { input ->
                 item(key = input.messageId) {
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -861,6 +868,9 @@ internal fun TurnDetailScreen(state: HolonUiState, viewModel: ConversationAction
             if (state.detailBusy && state.conversationDetail == null) {
                 item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
             }
+            turn.inputs.filter { it.taskResult != null && !it.interjected }.forEach { input ->
+                item(key = "input:${input.messageId}") { TaskResultProcessRow(input, input.createdAt ?: turn.startedAt) { task -> viewModel.openTask(task); viewModel.loadTaskOutput() } }
+            }
             detail?.let {
                 if (detail.hasMore) item(key = "load-older-activities") {
                     TextButton(onClick = viewModel::loadOlderActivities, enabled = !state.olderActivitiesBusy && detail.nextBeforeCursor != null) {
@@ -877,7 +887,11 @@ internal fun TurnDetailScreen(state: HolonUiState, viewModel: ConversationAction
                         )
                     }
                 }
-                items(processRows, key = TurnProcessRow::key) { row ->
+                items(processRows.filterNot { it is TurnProcessRow.TaskResult && !it.input.interjected }, key = TurnProcessRow::key) { row ->
+                    if (row is TurnProcessRow.TaskResult) {
+                        TaskResultProcessRow(row.input, row.input.createdAt) { task -> viewModel.openTask(task); viewModel.loadTaskOutput() }
+                        return@items
+                    }
                     if (row is TurnProcessRow.Interjection) {
                         Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp)) {
                             Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1310,4 +1324,24 @@ internal fun shareBrief(context: Context, text: String) {
         putExtra(Intent.EXTRA_TEXT, text)
     }
     context.startActivity(Intent.createChooser(intent, ui("分享结果")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+}
+
+@Composable
+internal fun TurnProcessHeader(turn: HolonConversationTurn, expanded: Boolean, onToggle: () -> Unit) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = onToggle).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        val task = turn.taskResultHeader()?.taskResult
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(task?.summary ?: if (task?.responseMessageId != null) ui("收到 Agent 回复") else ui(if (task != null) "收到任务结果" else "本轮过程"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (task != null) {
+                Text(taskResultStatus(task), style = MaterialTheme.typography.labelSmall, color = if (task.status in setOf("failed", "interrupted")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                if (task.status in setOf("failed", "interrupted") && task.responseMessageId == null && task.preview.isNotBlank())
+                    Text(taskResultFailureReason(task.preview), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        val status = turn.exceptionStatus()?.first ?: if (turn.isRunning()) ui("执行中") else if (turn.briefIds.isEmpty() && turn.taskResultHeader() == null) turn.compactStatusText() else null
+        status?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+    }
 }
