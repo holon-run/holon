@@ -330,19 +330,24 @@ async fn agent_summary(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    if matches!(detail, AgentSummaryDetail::Compact) {
+        let projection = state
+            .host
+            .local_agent_lightweight_projection(&agent_id)
+            .await
+            .map_err(agent_access_error)?;
+        return traced_json(
+            route,
+            started_at,
+            crate::http_dto::SlimAgentDto::from(&projection),
+        );
+    }
     let agent = state
         .host
         .local_agent_summary(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    match detail {
-        AgentSummaryDetail::Compact => traced_json(
-            route,
-            started_at,
-            crate::http_dto::SlimAgentDto::from(&agent),
-        ),
-        AgentSummaryDetail::Full => traced_json(route, started_at, agent),
-    }
+    traced_json(route, started_at, agent)
 }
 
 pub async fn state_default(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AxumResponse {

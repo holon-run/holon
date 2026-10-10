@@ -664,34 +664,61 @@ impl RuntimeHandle {
         let active_task_count = self.inner.storage.active_task_count_for_agent(&agent.id)?;
         let model = self.model_state_for(&agent);
         let scheduling_posture = self.inner.storage.agent_posture_projection(&agent)?;
-        let closure = self.current_closure_decision().await?;
-        let execution = self.execution_snapshot().await?;
-        let loaded_agents_md = self.loaded_agents_md().await?;
-        let identity = self.agent_identity_view().await?;
-        let skills = self.skills_runtime_view(&identity).await?;
-        let active_workspace_occupancy = if let (Some(bridge), Some(entry)) = (
-            self.inner.host_bridge.as_ref(),
-            agent.active_workspace_entry.as_ref(),
-        ) {
-            if let Some(occupancy_id) = entry.occupancy_id.as_deref() {
-                bridge.workspace_occupancy_by_id(occupancy_id).await?
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let active_children = if let Some(bridge) = self.inner.host_bridge.as_ref() {
-            bridge.child_summaries(&agent.id).await?
-        } else {
-            Vec::new()
-        };
+        let (closure, identity) =
+            tokio::join!(self.current_closure_decision(), self.agent_identity_view());
+        let closure = closure?;
+        let identity = identity?;
+        let (
+            execution,
+            loaded_agents_md,
+            skills,
+            active_workspace_occupancy,
+            active_children,
+            active_external_triggers,
+            active_wait_conditions,
+            recent_operator_notifications,
+        ) = tokio::join!(
+            self.execution_snapshot(),
+            self.loaded_agents_md(),
+            self.skills_runtime_view(&identity),
+            async {
+                if let (Some(bridge), Some(entry)) = (
+                    self.inner.host_bridge.as_ref(),
+                    agent.active_workspace_entry.as_ref(),
+                ) {
+                    if let Some(occupancy_id) = entry.occupancy_id.as_deref() {
+                        bridge.workspace_occupancy_by_id(occupancy_id).await
+                    } else {
+                        Ok(None)
+                    }
+                } else {
+                    Ok(None)
+                }
+            },
+            async {
+                if let Some(bridge) = self.inner.host_bridge.as_ref() {
+                    bridge.child_summaries(&agent.id).await
+                } else {
+                    Ok(Vec::new())
+                }
+            },
+            self.active_external_trigger_summaries(),
+            self.active_wait_condition_summaries(),
+            self.recent_operator_notifications(10),
+        );
+        let execution = execution?;
+        let loaded_agents_md = loaded_agents_md?;
+        let skills = skills?;
+        let active_workspace_occupancy = active_workspace_occupancy?;
+        let active_children = active_children?;
+        let active_external_triggers = active_external_triggers?;
+        let active_wait_conditions = active_wait_conditions?;
+        let recent_operator_notifications = recent_operator_notifications?;
         let token_usage = AgentTokenUsageSummary {
             total: TokenUsage::new(agent.total_input_tokens, agent.total_output_tokens),
             total_model_rounds: agent.total_model_rounds,
             last_turn: agent.last_turn_token_usage.clone(),
         };
-        let active_external_triggers = self.active_external_trigger_summaries().await?;
         let summary = AgentSummary {
             identity,
             lifecycle: crate::types::AgentLifecycleHint::from_status(
@@ -709,9 +736,9 @@ impl RuntimeHandle {
             loaded_agents_md: (&loaded_agents_md).into(),
             skills,
             active_children,
-            active_wait_conditions: self.active_wait_condition_summaries().await?,
+            active_wait_conditions,
             active_external_triggers,
-            recent_operator_notifications: self.recent_operator_notifications(10).await?,
+            recent_operator_notifications,
             recent_brief_count: self.inner.storage.read_recent_briefs(50)?.len(),
             recent_event_count: self.inner.storage.read_recent_events(100)?.len(),
         };
