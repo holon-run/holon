@@ -24,6 +24,43 @@ pub(crate) enum WaitTriggerSelection<'a> {
     },
 }
 
+pub(crate) fn is_agent_message(message: &MessageEnvelope) -> bool {
+    message.kind == MessageKind::InternalFollowup
+        && message.delivery_surface == Some(MessageDeliverySurface::RuntimeSystem)
+        && message.admission_context == Some(AdmissionContext::RuntimeOwned)
+        && message.routing_context.is_some()
+        && message
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("agent_message_delivery"))
+            .is_some()
+}
+
+pub(crate) fn agent_message_reply_reference(message: &MessageEnvelope) -> Option<&str> {
+    if message.kind != MessageKind::TaskResult
+        || message.delivery_surface != Some(MessageDeliverySurface::TaskRejoin)
+        || message.admission_context != Some(AdmissionContext::RuntimeOwned)
+        || message.authority_class != AuthorityClass::RuntimeInstruction
+        || !matches!(&message.origin, MessageOrigin::Task { task_id } if Some(task_id) == message.task_id.as_ref())
+    {
+        return None;
+    }
+    let metadata = message.metadata.as_ref()?;
+    if metadata.get("task_id")?.as_str()? != message.task_id.as_deref()? {
+        return None;
+    }
+    if metadata.get("task_kind")?.as_str()? != crate::types::AGENT_MESSAGE_WAIT_TASK_KIND
+        || metadata.get("task_status")?.as_str()? != "completed"
+    {
+        return None;
+    }
+    let detail = metadata.get("task_detail")?;
+    if detail.get("reply_content_source")?.as_str()? != "original_message" {
+        return None;
+    }
+    detail.get("message_id")?.as_str()
+}
+
 pub(crate) fn select_wait_to_trigger<'a>(
     message: &MessageEnvelope,
     conditions: &'a [WaitConditionRecord],
@@ -144,10 +181,14 @@ pub(crate) fn matching_wake_source(
     // WorkItem (or agent lifecycle) inside the same agent may hold the
     // dependency wait (#3124): match task waits by task identity instead of
     // the message's WorkItem binding.
-    let task_result_message = matches!(
-        (&message.kind, &message.origin),
-        (MessageKind::TaskResult, MessageOrigin::Task { .. })
-    );
+    let exact_reply = is_agent_message(message)
+        && condition.kind == crate::types::WaitConditionKind::Task
+        && condition.trigger_message_id() == Some(message.id.as_str());
+    let task_result_message = exact_reply
+        || matches!(
+            (&message.kind, &message.origin),
+            (MessageKind::TaskResult, MessageOrigin::Task { .. })
+        );
     if message.agent_id != condition.agent_id
         || (!task_result_message
             && message.work_item_id.as_deref() != condition.work_item_id.as_deref())
@@ -160,6 +201,9 @@ pub(crate) fn matching_wake_source(
         source: source.to_string(),
         subject_ref,
     };
+    if exact_reply {
+        return Some(matched("task_result", condition.subject_ref.clone()));
+    }
     match (&message.kind, &message.origin) {
         (MessageKind::TaskResult, MessageOrigin::Task { task_id }) => condition
             .wake_sources

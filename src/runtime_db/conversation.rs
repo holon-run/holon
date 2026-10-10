@@ -1835,7 +1835,8 @@ fn pending_input_rows(connection: &Connection, agent_id: &str) -> Result<Vec<Pen
                 json_extract(messages.payload_json, '$.trigger_kind'),
                 queue.created_at,
                 CASE WHEN json_extract(messages.payload_json, '$.origin.kind') = 'operator'
-                     THEN json_extract(messages.payload_json, '$.origin.actor_display_name') END
+                     THEN json_extract(messages.payload_json, '$.origin.actor_display_name') END,
+                messages.payload_json
          FROM queue_entries AS queue
          LEFT JOIN conversation_input_assignments AS assignments
            ON assignments.message_id = queue.message_id
@@ -1863,6 +1864,10 @@ fn pending_input_rows(connection: &Connection, agent_id: &str) -> Result<Vec<Pen
                     PendingInputState::Assigning
                 };
                 Ok(PendingInput {
+                    task_result:
+                        crate::domain::conversation::TaskResultPresentation::from_message_payload(
+                            row.get(8)?,
+                        ),
                     message_id: row.get(0)?,
                     revision: u64::try_from(row.get::<_, i64>(1)?).map_err(sql_integer_error)?,
                     state,
@@ -2039,7 +2044,8 @@ fn turn_input_previews(
                 json_extract(messages.payload_json, '$.trigger_kind'),
                 sources.activity_seq, COALESCE(queue.status = 'interjected', 0),
                 CASE WHEN json_extract(messages.payload_json, '$.origin.kind') = 'operator'
-                     THEN json_extract(messages.payload_json, '$.origin.actor_display_name') END
+                     THEN json_extract(messages.payload_json, '$.origin.actor_display_name') END,
+                messages.payload_json
          FROM conversation_input_assignments AS assignments
          LEFT JOIN messages
            ON messages.evidence_id = assignments.message_id
@@ -2065,6 +2071,10 @@ fn turn_input_previews(
                 });
                 let activity_seq = row.get::<_, Option<i64>>(4)?;
                 Ok(TurnInputSummary {
+                    task_result:
+                        crate::domain::conversation::TaskResultPresentation::from_message_payload(
+                            row.get(7)?,
+                        ),
                     activity_key: activity_seq
                         .map(|seq| {
                             Ok::<_, rusqlite::Error>(ActivityKey {

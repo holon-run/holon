@@ -129,6 +129,19 @@ impl RuntimeHandle {
                 eligible = false;
                 reason = "owner_has_unresolved_wait";
             }
+            if self
+                .inner
+                .storage
+                .read_message_by_id(&record.message_id)?
+                .as_ref()
+                .and_then(crate::wake_contract::agent_message_reply_reference)
+                .is_some()
+            {
+                // The delivery ledger and original message own reply recovery.
+                // A reference observation must not create a second model wake.
+                eligible = false;
+                reason = "awaiting_original_agent_reply_admission";
+            }
             // Advance first: a crash or enqueue failure still leaves a bounded
             // retry, while an ineligible owner cannot create a hot loop.
             self.inner

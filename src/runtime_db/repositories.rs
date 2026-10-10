@@ -2318,6 +2318,23 @@ impl TaskRepository<'_> {
         self.query_for_agent(agent_id, "owner_agent_id = ?1", [agent_id], limit)
     }
 
+    pub(crate) fn message_waits_for_reply(
+        &self,
+        agent_id: &str,
+        message_id: &str,
+    ) -> Result<Vec<TaskRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json FROM tasks
+             WHERE owner_agent_id = ?1 AND kind = 'agent_message_wait' AND status = 'completed'
+               AND json_extract(payload_json, '$.detail.message_id') = ?2
+             ORDER BY created_at ASC, task_id ASC",
+        )?;
+        let rows =
+            statement.query_map(params![agent_id, message_id], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_task_payload(&row?)).collect()
+    }
+
     pub fn activity_watermark_for_agent(&self, agent_id: Option<&str>) -> Result<(u64, u128)> {
         let connection = self.db.connection()?;
         let mut hasher = Sha256::new();

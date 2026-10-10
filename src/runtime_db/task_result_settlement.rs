@@ -215,6 +215,51 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
+    pub(crate) fn admit_reply_message(
+        &self,
+        agent_id: &str,
+        work_item_id: Option<&str>,
+        message_id: &str,
+        activation_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            let records = records_tx(tx,
+                "SELECT settlements.payload_json FROM task_result_settlements settlements
+                 JOIN messages ON messages.message_id = settlements.message_id
+                 WHERE settlements.agent_id = ?1 AND settlements.work_item_id IS ?2
+                   AND json_extract(messages.payload_json, '$.metadata.task_detail.message_id') = ?3
+                   AND json_extract(messages.payload_json, '$.metadata.task_kind') = 'agent_message_wait'
+                   AND json_extract(messages.payload_json, '$.metadata.task_detail.reply_content_source') = 'original_message'
+                   AND settlements.state != 'settled'", params![agent_id, work_item_id, message_id])?;
+            for mut record in records {
+                if !record_matches_durable_task_tx(tx, &record)? {
+                    continue;
+                }
+                if record.state == TaskResultSettlementState::CallerAdmitted
+                    && record.activation_id.as_deref() != Some(activation_id)
+                {
+                    if let Some(id) = record.activation_id.as_ref() {
+                        let open = tx.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM execution_protocol_attempts WHERE agent_id = ?1 AND attempt_id = ?2 AND lifecycle_state = 'open')",
+                            params![agent_id, id], |row| row.get::<_, bool>(0))?;
+                        if open {
+                            continue;
+                        }
+                    }
+                }
+                record.state = TaskResultSettlementState::CallerAdmitted;
+                record.activation_id = Some(activation_id.to_owned());
+                record.admitted_at = Some(now);
+                record.updated_at = now;
+                record.deferred_reason = None;
+                record.deferred_at = None;
+                update_tx(tx, &record)?;
+            }
+            Ok(())
+        })
+    }
+
     pub(crate) fn admitted_for_activation(
         &self,
         agent_id: &str,
@@ -739,6 +784,14 @@ fn unsettled_for_owner_tx(
          FROM task_result_settlements
          WHERE agent_id = ?1
            AND work_item_id IS ?2
+           AND NOT EXISTS (
+             SELECT 1 FROM messages
+             WHERE messages.message_id = task_result_settlements.message_id
+               AND json_extract(messages.payload_json, '$.metadata.task_kind') = 'agent_message_wait'
+               AND json_extract(messages.payload_json, '$.metadata.task_status') = 'completed'
+               AND json_extract(messages.payload_json, '$.metadata.task_detail.reply_content_source') = 'original_message'
+               AND json_extract(messages.payload_json, '$.metadata.task_detail.message_id') IS NOT NULL
+           )
            AND (
              state = 'persisted_pending'
              OR (

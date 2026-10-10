@@ -6419,6 +6419,50 @@
                     },
                     "preview": {
                       "type": "string"
+                    },
+                    "task_result": {
+                      "description": "Runtime task evidence, independently projected from any assistant response.",
+                      "properties": {
+                        "preview": {
+                          "type": "string"
+                        },
+                        "response_message_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "queued",
+                            "running",
+                            "cancelling",
+                            "completed",
+                            "failed",
+                            "cancelled",
+                            "interrupted"
+                          ],
+                          "type": "string"
+                        },
+                        "summary": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "task_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "task_id",
+                        "status",
+                        "preview"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
                     }
                   },
                   "required": [
@@ -7016,6 +7060,50 @@
                       "assigning"
                     ],
                     "type": "string"
+                  },
+                  "task_result": {
+                    "description": "Runtime task evidence, independently projected from any assistant response.",
+                    "properties": {
+                      "preview": {
+                        "type": "string"
+                      },
+                      "response_message_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "status": {
+                        "enum": [
+                          "queued",
+                          "running",
+                          "cancelling",
+                          "completed",
+                          "failed",
+                          "cancelled",
+                          "interrupted"
+                        ],
+                        "type": "string"
+                      },
+                      "summary": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "task_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "task_id",
+                      "status",
+                      "preview"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
@@ -7313,6 +7401,50 @@
                         },
                         "preview": {
                           "type": "string"
+                        },
+                        "task_result": {
+                          "description": "Runtime task evidence, independently projected from any assistant response.",
+                          "properties": {
+                            "preview": {
+                              "type": "string"
+                            },
+                            "response_message_id": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "status": {
+                              "enum": [
+                                "queued",
+                                "running",
+                                "cancelling",
+                                "completed",
+                                "failed",
+                                "cancelled",
+                                "interrupted"
+                              ],
+                              "type": "string"
+                            },
+                            "summary": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "task_id": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "task_id",
+                            "status",
+                            "preview"
+                          ],
+                          "type": [
+                            "object",
+                            "null"
+                          ]
                         }
                       },
                       "required": [
@@ -8121,6 +8253,50 @@
                       },
                       "preview": {
                         "type": "string"
+                      },
+                      "task_result": {
+                        "description": "Runtime task evidence, independently projected from any assistant response.",
+                        "properties": {
+                          "preview": {
+                            "type": "string"
+                          },
+                          "response_message_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "status": {
+                            "enum": [
+                              "queued",
+                              "running",
+                              "cancelling",
+                              "completed",
+                              "failed",
+                              "cancelled",
+                              "interrupted"
+                            ],
+                            "type": "string"
+                          },
+                          "summary": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "task_id": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "task_id",
+                          "status",
+                          "preview"
+                        ],
+                        "type": [
+                          "object",
+                          "null"
+                        ]
                       }
                     },
                     "required": [
@@ -8383,6 +8559,50 @@
                     "assigning"
                   ],
                   "type": "string"
+                },
+                "task_result": {
+                  "description": "Runtime task evidence, independently projected from any assistant response.",
+                  "properties": {
+                    "preview": {
+                      "type": "string"
+                    },
+                    "response_message_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "enum": [
+                        "queued",
+                        "running",
+                        "cancelling",
+                        "completed",
+                        "failed",
+                        "cancelled",
+                        "interrupted"
+                      ],
+                      "type": "string"
+                    },
+                    "summary": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "task_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "task_id",
+                    "status",
+                    "preview"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -8669,6 +8889,50 @@
                       },
                       "preview": {
                         "type": "string"
+                      },
+                      "task_result": {
+                        "description": "Runtime task evidence, independently projected from any assistant response.",
+                        "properties": {
+                          "preview": {
+                            "type": "string"
+                          },
+                          "response_message_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "status": {
+                            "enum": [
+                              "queued",
+                              "running",
+                              "cancelling",
+                              "completed",
+                              "failed",
+                              "cancelled",
+                              "interrupted"
+                            ],
+                            "type": "string"
+                          },
+                          "summary": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "task_id": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "task_id",
+                          "status",
+                          "preview"
+                        ],
+                        "type": [
+                          "object",
+                          "null"
+                        ]
                       }
                     },
                     "required": [

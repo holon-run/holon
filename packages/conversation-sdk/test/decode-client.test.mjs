@@ -479,3 +479,12 @@ test("preserves send-time names on pending and assigned inputs, tolerating older
   }
   assert.equal(decoded.turns[0].inputs[1].interjected, true);
 });
+
+
+test("decodes optional task result cards and rejects invalid statuses", () => {
+  const task_result = { task_id: "task", status: "completed", summary: "Build", preview: "done", response_message_id: null };
+  const payload = summary({ pending_inputs: [{ message_id: "message", revision: 1, state: "queued", task_result }] });
+  assert.deepEqual(decodeConversationSummaryResponse(payload).pending_inputs[0].task_result, task_result);
+  payload.pending_inputs[0].task_result.status = "invalid";
+  assert.throws(() => decodeConversationSummaryResponse(payload), ConversationDecodeError);
+});

@@ -20,6 +20,7 @@ import {
   type ConversationSummaryResponse,
   type ConversationTurnSummary,
   type TurnInputSummary,
+  type TaskResultPresentation,
   type DetailCoverage,
   type DetailCoverageReason,
   type ExecutionState,
@@ -290,6 +291,19 @@ export function decodeDetailCoverage(
   }
 }
 
+function decodeTaskResultPresentation(value: unknown, path: string): TaskResultPresentation {
+  const source = record(value, path);
+  return {
+    task_id: nonEmptyString(source.task_id, `${path}.task_id`),
+    status: enumValue(source.status, new Set<TaskResultPresentation["status"]>([
+      "queued", "running", "cancelling", "completed", "failed", "cancelled", "interrupted",
+    ]), `${path}.status`),
+    summary: nullableString(source.summary, `${path}.summary`),
+    preview: stringValue(source.preview, `${path}.preview`),
+    response_message_id: nullableString(source.response_message_id, `${path}.response_message_id`),
+  };
+}
+
 export function decodePendingInput(
   value: unknown,
   path = "$",
@@ -300,6 +314,7 @@ export function decodePendingInput(
     fail(`${path}.state`, `unsupported value ${JSON.stringify(state)}`);
   }
   return {
+    ...(source.task_result == null ? {} : { task_result: decodeTaskResultPresentation(source.task_result, `${path}.task_result`) }),
     message_id: nonEmptyString(source.message_id, `${path}.message_id`),
     revision: safeInteger(source.revision, `${path}.revision`),
     state,
@@ -323,6 +338,7 @@ export function decodeTurnInputSummary(
 ): TurnInputSummary {
   const source = record(value, path);
   return {
+    ...(source.task_result == null ? {} : { task_result: decodeTaskResultPresentation(source.task_result, `${path}.task_result`) }),
     message_id: nonEmptyString(source.message_id, `${path}.message_id`),
     ...(source.presentation_class == null ? {} : { presentation_class: enumValue(source.presentation_class, presentationClasses, `${path}.presentation_class`) }),
     ...(source.activity_key == null ? {} : { activity_key: decodeActivityKey(source.activity_key, `${path}.activity_key`) }),

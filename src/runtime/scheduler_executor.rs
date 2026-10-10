@@ -646,6 +646,48 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         } else {
             false
         };
+        match self
+            .runtime
+            .reconcile_agent_message_reply(&persisted_message)
+            .await?
+        {
+            super::tasks::ReplyReconciliation::Ready => {}
+            super::tasks::ReplyReconciliation::Changed => return Ok(PrepareMessageOutcome::Replan),
+            // Receipt attachment notifies the scheduler. This is an in-flight
+            // producer, not a failed canonical claim or a poison queue head.
+            super::tasks::ReplyReconciliation::WaitingForReceipt => {
+                return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::AuthorityBlocked))
+            }
+        }
+        if crate::wake_contract::is_agent_message(&persisted_message)
+            && persisted_message.work_item_id.is_none()
+        {
+            for task in self
+                .runtime
+                .inner
+                .runtime_db
+                .tasks()
+                .message_waits_for_reply(&persisted_message.agent_id, &persisted_message.id)?
+            {
+                let Some(owner_id) = task.work_item_id else {
+                    continue;
+                };
+                if self
+                    .runtime
+                    .inner
+                    .runtime_db
+                    .work_items()
+                    .latest(&owner_id)?
+                    .is_some_and(|owner| {
+                        owner.agent_id == persisted_message.agent_id
+                            && owner.state == crate::types::WorkItemState::Open
+                    })
+                {
+                    persisted_message.work_item_id = Some(owner_id);
+                    break;
+                }
+            }
+        }
         let prior_closure = self
             .runtime
             .closure_decision_for_state(&candidate.prior_state, None)
@@ -985,6 +1027,19 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             // Admission intentionally follows the canonical claim commit. If the
             // process stops here, restart recovery closes the open attempt and a
             // later canonical activation reclaims its unsettled results.
+            if crate::wake_contract::is_agent_message(&message) {
+                self.runtime
+                    .inner
+                    .runtime_db
+                    .task_result_settlements()
+                    .admit_reply_message(
+                        &message.agent_id,
+                        work_item_id,
+                        &message.id,
+                        activation_id,
+                        self.runtime.now(),
+                    )?;
+            }
             let admitted = self
                 .runtime
                 .inner
@@ -1233,6 +1288,17 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         agent_id: &str,
         record: &crate::runtime_db::TaskResultSettlementRecord,
     ) -> Result<bool> {
+        if self
+            .runtime
+            .inner
+            .storage
+            .read_message_by_id(&record.message_id)?
+            .as_ref()
+            .and_then(crate::wake_contract::agent_message_reply_reference)
+            .is_some()
+        {
+            return Ok(false);
+        }
         let task = self
             .runtime
             .inner
@@ -1270,6 +1336,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"
         ) && !self.task_result_recovery_is_deliverable(message)?
         {
+            return Ok(CanonicalClaimOutcome::ReduceOnly);
+        }
+        if crate::wake_contract::agent_message_reply_reference(message).is_some() {
             return Ok(CanonicalClaimOutcome::ReduceOnly);
         }
         let task = match &dispatch_plan.task {

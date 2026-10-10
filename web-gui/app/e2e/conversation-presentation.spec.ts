@@ -640,3 +640,56 @@ test("unmatched historical input opens complete text and does not repeat represe
   await expect(panel.locator(".inspector-detail pre")).toHaveText(fullText);
   await page.screenshot({ path: info.outputPath("event-detail.png") });
 });
+
+
+test("task result cards distinguish runtime outcomes from model responses on desktop and mobile", async ({ page, context, request }, info) => {
+  const session = sessionFor(info, "task-result-cards");
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  const input = (id: string, status: "completed" | "failed" | "cancelled" | "interrupted", summary: string) => ({
+    message_id: id, preview: "raw task output", presentation_class: "task" as const,
+    task_result: { task_id: `task-${id}`, status, summary, preview: "Useful bounded output. " + "detail ".repeat(30), response_message_id: null },
+  });
+  const resultTurn = (id: string, index: number, status: "completed" | "failed" | "cancelled" | "interrupted", summary: string) => turn(id, index, {
+    presentation_class: "task", inputs: [input(id, status, summary)], started_at: "2026-10-10T04:00:00Z",
+    execution: { kind: "terminal", outcome: "completed" }, settled: true,
+    result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
+  });
+  const turns = [resultTurn("command", 1, "completed", "Command verification"),
+    resultTurn("failed-task", 2, "failed", "Build failed"), resultTurn("cancelled-task", 3, "cancelled", "Stopped by operator"),
+    resultTurn("interrupted-task", 4, "interrupted", "Interrupted run"),
+    { ...resultTurn("model-result", 5, "completed", "Review source"), brief_ids: ["model-brief"], result: { kind: "available" as const } }];
+  await request.post(control("/__e2e__/configure"), { data: { briefsById: { "model-brief": {
+    id: "model-brief", agent_id: agentId, workspace_id: "holon", kind: "result", text: "Reviewed: ready to merge.",
+    related_task_id: null, related_message_id: "model-result", created_at: "2026-10-10T04:00:00Z", content_source: { kind: "inline" },
+  } } } });
+  await request.post(control("/__e2e__/conversation"), { data: { agentId, turns, pending_inputs: [
+    { ...input("pending-task", "completed", "Background verification"), revision: 1, state: "queued", created_at: "2026-10-10T04:00:00Z" },
+  ] } });
+  await page.route("**/api/agents/bootstrap-agent/messages:batchGet", (route) => route.fulfill({ json: {
+    messages: [{ id: "command", agent_id: agentId, kind: "task_result", origin: { kind: "task", task_id: "task-command" },
+      body: { type: "text", text: "COMPLETE OUTPUT AVAILABLE IN INSPECTOR" } }], missing_message_ids: [],
+  } }));
+  await page.goto(`/agents/${agentId}/conversation`);
+  const command = page.locator('[data-turn-id="command"]');
+  await expect(command.locator(".conversation-task-result-preview")).toContainText("Useful bounded output.");
+  await expect(command.locator(".conversation-turn-notice")).toHaveCount(0);
+  await expect(command.locator(".conversation-response")).toHaveCount(0);
+  await expect(page.locator('[data-turn-id="model-result"] .conversation-task-result-preview')).toHaveCount(0);
+  await expect(page.getByText("Reviewed: ready to merge.", { exact: true })).toHaveCount(1);
+  await expect(page.locator(".conversation-pending-events")).toContainText("Background verification");
+  for (const status of ["failed", "cancelled", "interrupted"]) {
+    await expect(page.locator(`.conversation-task-result.is-${status}`)).toHaveCount(1);
+  }
+  await command.getByRole("button", { name: "Open full event details" }).click();
+  await expect(page.locator(".side-panel")).toContainText("COMPLETE OUTPUT AVAILABLE IN INSPECTOR");
+  await page.getByRole("button", { name: "Close side panel", exact: true }).click();
+  await page.screenshot({ path: info.outputPath("task-results-desktop.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await command.scrollIntoViewIfNeeded();
+  await expect(command.locator(".conversation-task-result-preview")).toBeInViewport();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
+  await expect(page.locator("form.composer")).toBeVisible();
+  await page.screenshot({ path: info.outputPath("task-results-mobile.png"), fullPage: true });
+});

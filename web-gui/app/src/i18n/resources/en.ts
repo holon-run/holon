@@ -472,6 +472,7 @@ const en = {
     duration: "Duration {{duration}}",
     outputTruncated: "Output truncated; open details to inspect the available content",
     taskId: "Task {{id}}",
+    taskReplyReceived: "Agent reply received",
     taskStatus: {
       queued: "Queued",
       running: "Running",

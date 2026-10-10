@@ -2676,7 +2676,23 @@ pub(super) fn trigger_wait_and_enqueue_tx(
                 TriggerWaitAndEnqueueOutcome::DuplicateMessage
             } else {
                 let mut triggered = condition.clone();
-                triggered.mark_triggered(&message.id, queue_entry.updated_at);
+                let trigger_id = agent_message_reply_trigger_tx(tx, message)?
+                    .unwrap_or_else(|| message.id.clone());
+                let already_claimed = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM wait_conditions WHERE agent_id = ?1 AND trigger_message_id = ?2 AND wait_condition_id != ?3)",
+                    params![message.agent_id, trigger_id, condition.id], |row| row.get::<_, bool>(0))?;
+                if already_claimed {
+                    let (message, message_inserted) = append_message_tx(tx, message)?;
+                    let queue_applied = upsert_queue_entry_tx(tx, queue_entry)?;
+                    return Ok(TriggerWaitAndEnqueueResult {
+                        message,
+                        message_inserted,
+                        queue_applied,
+                        wait_applied: false,
+                        outcome: TriggerWaitAndEnqueueOutcome::DuplicateMessage,
+                    });
+                }
+                triggered.mark_triggered(&trigger_id, queue_entry.updated_at);
                 validate_wait_condition_tx(tx, &triggered)?;
                 let wait_id = triggered.id.clone();
                 triggered_waits.push((triggered, wake));
@@ -2708,7 +2724,7 @@ pub(super) fn trigger_wait_and_enqueue_tx(
             serde_json::json!({
                 "agent_id": message.agent_id,
                 "wait_condition_id": triggered.id,
-                "trigger_message_id": message.id,
+                "trigger_message_id": triggered.trigger_message_id(),
                 "work_item_id": triggered.work_item_id,
                 "wake_source": wake.source,
                 "subject_ref": wake.subject_ref,
@@ -2745,6 +2761,58 @@ pub(super) fn trigger_wait_and_enqueue_tx(
         wait_applied,
         outcome,
     })
+}
+
+fn agent_message_reply_trigger_tx(
+    tx: &Transaction<'_>,
+    message: &MessageEnvelope,
+) -> Result<Option<String>> {
+    let Some(reference) = crate::wake_contract::agent_message_reply_reference(message) else {
+        return Ok(None);
+    };
+    let Some(delivery) = delivery_by_message_id_tx(tx, reference)? else {
+        bail!("agent reply reference has no durable delivery");
+    };
+    if delivery.target_agent_id != message.agent_id
+        || delivery.outcome != crate::types::AgentMessageDeliveryOutcome::Accepted
+    {
+        bail!("agent reply reference is not an accepted same-agent delivery");
+    }
+    let task_id = message
+        .task_id
+        .as_deref()
+        .expect("validated task reply identity");
+    let task: TaskRecord = serde_json::from_str(&tx.query_row(
+        "SELECT payload_json FROM tasks WHERE task_id = ?1",
+        [task_id],
+        |row| row.get::<_, String>(0),
+    )?)?;
+    let detail = message.metadata.as_ref().and_then(|m| m.get("task_detail"));
+    let response_delivery_id = detail
+        .and_then(|d| d.get("response_delivery_id"))
+        .and_then(serde_json::Value::as_str);
+    let Some(crate::types::TaskRecoverySpec::AgentMessageWait {
+        target_agent_id,
+        after_delivery_rowid: Some(boundary),
+        ..
+    }) = task.recovery.as_ref()
+    else {
+        bail!("agent reply reference has no durable request boundary");
+    };
+    let reply_rowid: i64 = tx.query_row(
+        "SELECT rowid FROM agent_message_deliveries WHERE delivery_id = ?1",
+        [&delivery.delivery_id],
+        |row| row.get(0),
+    )?;
+    if task.agent_id != message.agent_id
+        || task.kind != crate::types::TaskKind::AgentMessageWait
+        || response_delivery_id != Some(delivery.delivery_id.as_str())
+        || delivery.caller.caller_agent_id.as_deref() != Some(target_agent_id.as_str())
+        || reply_rowid <= *boundary
+    {
+        bail!("agent reply reference does not match the durable observation");
+    }
+    Ok(Some(reference.to_owned()))
 }
 
 fn wait_generation_matches_tx(

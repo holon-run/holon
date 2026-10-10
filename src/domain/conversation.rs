@@ -14,10 +14,53 @@ use crate::types::{
 pub const CONVERSATION_SCHEMA_VERSION: u32 = 2;
 pub const CONVERSATION_QUERY_VERSION: u32 = 2;
 
+/// Runtime task evidence, independently projected from any assistant response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TaskResultPresentation {
+    pub task_id: String,
+    pub status: crate::types::TaskStatus,
+    pub summary: Option<String>,
+    pub preview: String,
+    pub response_message_id: Option<String>,
+}
+
+impl TaskResultPresentation {
+    pub(crate) fn from_message_payload(payload: Option<String>) -> Option<Self> {
+        let message: crate::types::MessageEnvelope =
+            serde_json::from_str(payload.as_deref()?).ok()?;
+        if message.kind != MessageKind::TaskResult {
+            return None;
+        }
+        let metadata = message.metadata.as_ref()?;
+        let status = serde_json::from_value(metadata.get("task_status")?.clone()).ok()?;
+        let preview = match &message.body {
+            crate::types::MessageBody::Text { text }
+            | crate::types::MessageBody::Brief { text, .. } => text.clone(),
+            crate::types::MessageBody::Json { value } => value.to_string(),
+        }
+        .chars()
+        .take(320)
+        .collect();
+        Some(Self {
+            task_id: metadata.get("task_id")?.as_str()?.to_owned(),
+            status,
+            summary: metadata
+                .get("task_summary")
+                .and_then(serde_json::Value::as_str)
+                .map(|s| s.chars().take(160).collect()),
+            preview,
+            response_message_id: crate::wake_contract::agent_message_reply_reference(&message)
+                .map(str::to_owned),
+        })
+    }
+}
+
 /// Canonical operator input attached to a turn, for summary-level rendering
 /// without loading turn activity detail. Bounded per turn by the read model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TurnInputSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_result: Option<TaskResultPresentation>,
     pub message_id: String,
     pub preview: String,
     /// Operator display name snapshotted in the canonical message origin.
@@ -115,6 +158,8 @@ pub enum ConversationShadowMismatchKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PendingInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_result: Option<TaskResultPresentation>,
     pub message_id: String,
     pub revision: u64,
     pub state: PendingInputState,
@@ -612,6 +657,38 @@ mod tests {
             trigger_kind,
             task_id: None,
         }
+    }
+
+    #[test]
+    fn task_result_presentation_is_bounded_and_optional() {
+        let mut message = crate::types::MessageEnvelope::new(
+            "agent",
+            MessageKind::TaskResult,
+            MessageOrigin::Task {
+                task_id: "task".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            crate::types::MessageBody::Text {
+                text: "界".repeat(1000),
+            },
+        );
+        message.metadata = Some(
+            serde_json::json!({"task_id":"task", "task_status":"failed", "task_summary":"摘要".repeat(200)}),
+        );
+        let result = TaskResultPresentation::from_message_payload(Some(
+            serde_json::to_string(&message).unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(result.preview.chars().count(), 320);
+        assert_eq!(result.summary.unwrap().chars().count(), 160);
+        assert_eq!(result.status, crate::types::TaskStatus::Failed);
+        assert!(TaskResultPresentation::from_message_payload(None).is_none());
+        message.kind = MessageKind::InternalFollowup;
+        assert!(TaskResultPresentation::from_message_payload(Some(
+            serde_json::to_string(&message).unwrap()
+        ))
+        .is_none());
     }
 
     #[test]

@@ -943,6 +943,24 @@ pub(crate) fn resolve_canonical_activation_scenario(
     message: &MessageEnvelope,
     candidate: CanonicalActivationCandidate,
 ) -> Result<Option<CanonicalActivationScenario>> {
+    if crate::wake_contract::is_agent_message(message) {
+        if let Some(wait) = projection.activation_waits.iter().find(|wait| {
+            wait.status == WaitConditionStatus::Triggered
+                && wait.trigger_message_id() == Some(message.id.as_str())
+                && message_matches_wait_condition(message, wait)
+        }) {
+            return Ok(Some(CanonicalActivationScenario::ExactWaitResume {
+                owner: wait
+                    .work_item_id
+                    .clone()
+                    .map(|work_item_id| SchedulerOwner::WorkItem { work_item_id })
+                    .unwrap_or_else(|| SchedulerOwner::AgentLifecycle {
+                        agent_id: message.agent_id.clone(),
+                    }),
+                wait_id: wait.id.clone(),
+            }));
+        }
+    }
     if let CanonicalActivationCandidate::WorkItemAutonomousContinuation {
         work_item_id,
         expected_work_item_revision,
@@ -1312,6 +1330,9 @@ pub(super) fn message_matches_wait_condition(
     message: &MessageEnvelope,
     condition: &WaitConditionRecord,
 ) -> bool {
+    if crate::wake_contract::is_agent_message(message) {
+        return crate::wake_contract::matching_wake_source(message, condition).is_some();
+    }
     if matches!(
         (&message.kind, &message.origin),
         (

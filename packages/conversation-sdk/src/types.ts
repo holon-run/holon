@@ -26,7 +26,16 @@ export interface ActivityKey {
 
 export type PendingInputState = "queued" | "assigning";
 
+export interface TaskResultPresentation {
+  readonly task_id: string;
+  readonly status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
+  readonly summary: string | null;
+  readonly preview: string;
+  readonly response_message_id: string | null;
+}
+
 export interface PendingInput {
+  readonly task_result?: TaskResultPresentation;
   readonly message_id: string;
   readonly revision: number;
   readonly state: PendingInputState;
@@ -116,6 +125,7 @@ export type PresentationClass =
   | "operational";
 
 export interface TurnInputSummary {
+  readonly task_result?: TaskResultPresentation;
   readonly message_id: string;
   readonly preview: string;
   /** Send-time operator attribution; absent for local control and older daemons. */

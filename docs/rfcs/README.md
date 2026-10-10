@@ -31,6 +31,7 @@ implementation and tests.
 - [Scheduler–WorkItem Unified Execution Protocol](./scheduler-work-item-unified-execution-protocol.md)
 - [Agent Activation, Settlement, and Dispatch](./agent-activation-settlement-and-dispatch.md)
 - [Result Closure](./result-closure.md)
+- [Task Result Content and Presentation](./task-result-content-and-presentation.md)
 - [Continuation Trigger](./continuation-trigger.md)
 - [Objective, Delta, and Acceptance Boundary](./objective-delta-and-acceptance-boundary.md)
 - [Work Item Runtime Model](./work-item-runtime-model.md)
