@@ -265,6 +265,33 @@ async fn plan_task_is_none_for_non_task_kinds() {
 // ── process_message_with_plan: kind routing ────────────────────────
 
 #[tokio::test]
+async fn message_dispatch_future_is_heap_bounded() {
+    let (_dir, _ws, runtime) = fresh_runtime().await;
+    let message = message_of_kind(
+        MessageKind::BriefAck,
+        MessageBody::Text { text: "ack".into() },
+    );
+    let plan = runtime
+        .build_message_dispatch_plan(
+            &message,
+            closure_decision(),
+            &runtime.agent_state().await.unwrap(),
+        )
+        .unwrap();
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::Noop,
+        "test_heap_bound",
+    );
+    let dispatch = runtime.process_message_with_plan_deferred(message, plan, &decision);
+    let bytes = std::mem::size_of_val(&dispatch);
+    assert!(
+        bytes <= std::mem::size_of::<[usize; 2]>(),
+        "message dispatch must retain only a heap pointer in the runtime loop, got {bytes} bytes"
+    );
+    dispatch.await.expect("boxed dispatch should still execute");
+}
+
+#[tokio::test]
 async fn dispatch_brief_ack_is_noop() {
     let (_dir, _ws, runtime) = fresh_runtime().await;
     let msg = message_of_kind(
