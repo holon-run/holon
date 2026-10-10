@@ -1,5 +1,6 @@
 use super::*;
 use crate::types::ExecutionAdmissionProvenance;
+use std::{future::Future, pin::Pin};
 
 pub(super) struct MessageDispatchPlan {
     pub(super) prior_closure: ClosureDecision,
@@ -183,66 +184,70 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub(super) async fn process_message_with_plan_deferred(
-        &self,
+    pub(super) fn process_message_with_plan_deferred<'a>(
+        &'a self,
         message: MessageEnvelope,
         plan: MessageDispatchPlan,
-        scheduler_decision: &scheduler::SchedulerDecision,
-    ) -> Result<turn::TurnTerminalTransition> {
-        let trace_context = message.trace_context.clone();
-        let attributes = crate::observability::TraceAttributes {
-            agent_id: Some(message.agent_id.clone()),
-            message_id: Some(message.id.clone()),
-            turn_id: message.turn_id.clone(),
-            work_item_id: message.work_item_id.clone(),
-            task_id: message.task_id.clone(),
-            ..Default::default()
-        };
-        if let Some(parent) = trace_context.as_ref() {
-            let queue_context = parent.child();
-            crate::observability::record_span(
-                &queue_context,
-                crate::observability::completed_span(
-                    "holon.scheduler.queue_wait",
-                    &queue_context,
-                    Some(parent.span_id.clone()),
-                    message.created_at,
-                    crate::observability::TraceSpanStatus::Ok,
-                    attributes.clone(),
-                ),
-            );
-        }
-        let turn_context = trace_context
-            .as_ref()
-            .map(crate::observability::TraceContext::child);
-        let turn_started_at = chrono::Utc::now();
-        let result = self
-            .process_message_with_plan_deferred_in_turn(
-                message,
-                plan,
-                scheduler_decision,
-                turn_context.clone(),
-            )
-            .await;
-        if let Some(context) = turn_context.as_ref() {
-            let status = if result.is_ok() {
-                crate::observability::TraceSpanStatus::Ok
-            } else {
-                crate::observability::TraceSpanStatus::Error
+        scheduler_decision: &'a scheduler::SchedulerDecision,
+    ) -> Pin<Box<impl Future<Output = Result<turn::TurnTerminalTransition>> + Send + 'a>> {
+        // Box at this synchronous boundary so construction frames unwind before
+        // polling and the runtime loop retains only a heap pointer.
+        Box::pin(async move {
+            let trace_context = message.trace_context.clone();
+            let attributes = crate::observability::TraceAttributes {
+                agent_id: Some(message.agent_id.clone()),
+                message_id: Some(message.id.clone()),
+                turn_id: message.turn_id.clone(),
+                work_item_id: message.work_item_id.clone(),
+                task_id: message.task_id.clone(),
+                ..Default::default()
             };
-            crate::observability::record_span(
-                context,
-                crate::observability::completed_span(
-                    "holon.turn",
+            if let Some(parent) = trace_context.as_ref() {
+                let queue_context = parent.child();
+                crate::observability::record_span(
+                    &queue_context,
+                    crate::observability::completed_span(
+                        "holon.scheduler.queue_wait",
+                        &queue_context,
+                        Some(parent.span_id.clone()),
+                        message.created_at,
+                        crate::observability::TraceSpanStatus::Ok,
+                        attributes.clone(),
+                    ),
+                );
+            }
+            let turn_context = trace_context
+                .as_ref()
+                .map(crate::observability::TraceContext::child);
+            let turn_started_at = chrono::Utc::now();
+            let result = self
+                .process_message_with_plan_deferred_in_turn(
+                    message,
+                    plan,
+                    scheduler_decision,
+                    turn_context.clone(),
+                )
+                .await;
+            if let Some(context) = turn_context.as_ref() {
+                let status = if result.is_ok() {
+                    crate::observability::TraceSpanStatus::Ok
+                } else {
+                    crate::observability::TraceSpanStatus::Error
+                };
+                crate::observability::record_span(
                     context,
-                    trace_context.as_ref().map(|parent| parent.span_id.clone()),
-                    turn_started_at,
-                    status,
-                    attributes,
-                ),
-            );
-        }
-        result
+                    crate::observability::completed_span(
+                        "holon.turn",
+                        context,
+                        trace_context.as_ref().map(|parent| parent.span_id.clone()),
+                        turn_started_at,
+                        status,
+                        attributes,
+                    ),
+                );
+            }
+            result
+        })
     }
 
     async fn process_message_with_plan_deferred_in_turn(

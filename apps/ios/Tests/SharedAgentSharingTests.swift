@@ -7,6 +7,25 @@ import XCTest
 
 @MainActor
 final class SharedAgentSharingTests: XCTestCase {
+    func testDirectShareRequiresConsentBeforeNetworkOrDeliveryMutation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try SharedImportStore(container: directory)
+        let payload = try store.stage(text: "local only", urls: [], files: [])
+        let vault = SharedSessionVault(accessGroup: "unavailable.test.group", service: UUID().uuidString)
+        let sender = try SharedAgentSender(session: session(), vault: vault,
+            consent: SharingConsent(defaults: nil))
+        do {
+            try await sender.send(payloadID: payload.id, agentID: "A", store: store)
+            XCTFail("Sending without consent must fail")
+        } catch {
+            XCTAssertTrue(error is SharingConsentRequired)
+        }
+        XCTAssertNil(try store.load().first?.delivery)
+        XCTAssertEqual(try store.load().first?.text, "local only")
+        await sender.close()
+    }
+
     private func session(generation: UUID = UUID(), user: String = "user") -> SharedSession {
         SharedSession(generation: generation, networkID: "network", connectionName: "Fixture",
             apiBaseURL: URL(string: "http://127.0.0.1:7878/api/")!, allowInsecureHTTP: true,

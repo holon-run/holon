@@ -12,6 +12,27 @@ Set `IOS_SIMULATOR_ID`, `IOS_DERIVED_DATA_PATH`, and an unused
 make ios-ui-test
 ```
 
+### Content-report acceptance
+
+After rebasing onto the real content-report API, run on the isolated simulator:
+
+```sh
+IOS_RICH_ACCEPTANCE=1 IOS_CONTENT_REPORT_ACCEPTANCE=1 \
+IOS_UI_CASES=testContentReportFullResponseIncludesTail,testContentReportConfirmationCancelDoesNotPersist,testContentReportInvalidExplanationCannotShowAccepted,testContentReportAcceptedReceiptCannotSubmitTwice \
+make ios-ui-test
+```
+
+These English/light/system-`large` cases reuse shipped pairing and reading UI.
+They select a real assistant transcript, verify its tail beyond the 8,000-character
+preview in the native full-response reader, cancel confirmation without a
+write, reject a 2,001-character explanation without fake acceptance, and confirm
+a real accepted receipt with a `report_…` ID. Accepted drafts cannot submit again,
+including after foreground restoration. The harness checks the actual SQLite
+report count after each case, and checks the accepted row's agent, turn, category,
+explanation, content snapshot, persisted `received` status and client request ID.
+It never prints credentials. These UI cases do not simulate server errors or a
+lost report response; those paths are covered by SDK/hosted tests instead.
+
 The harness must explicitly export the following `TEST_RUNNER_` variables to
 `xcodebuild`. Xcode forwards them into the test runner with that prefix removed.
 The runner reads `HOLON_UI_*`; ordinary shell `HOLON_UI_*` variables alone are
@@ -71,3 +92,24 @@ covered by simulator success.
 Test activity logs may include the manually typed, ephemeral pairing payload:
 keep xcresult local/restricted; do not publish it as a sanitized diagnostic.
 Static parsing/project validation is not evidence these UI tests passed.
+
+## Opt-in review demo
+
+`DemoReviewUITests/testDemoReviewWorkflow` is separate from the isolated CI
+fixture. Run it only with explicit permission to interact with
+`https://demo.holon.run`, on a new task-owned simulator, selecting
+`-only-testing:HolonUITests/DemoReviewUITests/testDemoReviewWorkflow`.
+Forward `TEST_RUNNER_HOLON_DEMO_ENDPOINT` (`https://demo.holon.run/api`),
+`TEST_RUNNER_HOLON_DEMO_PAIRING_TICKET`, `TEST_RUNNER_HOLON_DEMO_AGENT_ID`, and
+`TEST_RUNNER_HOLON_DEMO_REPLY_MARKER` to `xcodebuild`. Missing inputs fail rather
+than skip; the ordinary CI harness does not select this live test.
+
+Issue a short-lived, single-use pairing ticket using an authorized temporary
+native session. Do not pass the administrator/reviewer token into XCUITest,
+application launch arguments, command arguments, screenshots, or public logs.
+The ticket can appear in local XCTest activities; retain results privately,
+consume it once, revoke the temporary issuance session, and delete the owned
+simulator after testing. The test uses the shipped pairing UI, explicit data
+sharing consent, one non-sensitive prompt, the server receipt and actual Agent
+reply, then removes the saved connection. It does not establish demo isolation,
+provider retention rules, physical-camera behavior, or App Store compliance.

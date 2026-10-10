@@ -47,7 +47,12 @@ final class ExternalSendingTests: XCTestCase {
         return store
     }
     private func makeSender(_ store: SendingStore, transport: ExternalSendingTransport) -> SendingCoordinator {
-        let sender = SendingCoordinator(store: store)
+        let suite = "ExternalConsentTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        let consent = SharingConsent(defaults: defaults)
+        consent.approve(baseURL)
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let sender = SendingCoordinator(store: store, consent: consent)
         addTeardownBlock { await MainActor.run { sender.disconnect() } }
         sender.activate(transport: transport, identity: identity(), apiBaseURL: baseURL)
         sender.selectAgent("A")

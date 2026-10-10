@@ -5,6 +5,7 @@ import os
 import pathlib
 import secrets
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -21,13 +22,16 @@ from ios_simulator_text_size import (
 
 binary, repo, mode = sys.argv[1:]
 rich_acceptance = os.environ.get("IOS_RICH_ACCEPTANCE") == "1"
+report_acceptance = os.environ.get("IOS_CONTENT_REPORT_ACCEPTANCE") == "1"
 rich_activity_acceptance = rich_acceptance and (
-    mode == "--sdk-only" or not os.environ.get("IOS_UI_CASES")
+    report_acceptance or mode == "--sdk-only" or not os.environ.get("IOS_UI_CASES")
     or "testRichActivityWorkflow" in os.environ["IOS_UI_CASES"].split(","))
 task_result_acceptance = os.environ.get("IOS_TASK_RESULT_ACCEPTANCE") == "1"
 lost_response_acceptance = os.environ.get("IOS_LOST_RESPONSE_ACCEPTANCE") == "1"
 history_acceptance = os.environ.get("IOS_HISTORY_ACCEPTANCE") == "1"
 share_acceptance = os.environ.get("IOS_SHARE_ACCEPTANCE") == "1"
+if report_acceptance and not rich_acceptance:
+    raise RuntimeError("Content-report acceptance requires IOS_RICH_ACCEPTANCE=1")
 with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
     root = pathlib.Path(temporary)
     # Do not inherit provider credentials, production paths or daemon settings.
@@ -45,6 +49,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
     base = f"http://127.0.0.1:{port}/api"
     held_run_started = root / "held-run-started"
     release_held_run = threading.Event()
+    history_seed_active = threading.Event()
 
     class FakeProvider(http.server.BaseHTTPRequestHandler):
         image_requests = 0
@@ -86,8 +91,10 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     f"File: {root / 'holon' / 'agents' / 'holon-tester' / 'ios-populated.txt'}")
             if tool_calls:
                 text = f"IOS_RICH_ASSISTANT: read-only inspection batch {FakeProvider.rich_batches}."
-            elif history_acceptance:
-                text = "IOS_POPULATED_BRIEF: History fixture result."
+                if report_acceptance:
+                    text += "\n\n" + "safe-report-body " * 600 + "\nIOS_CONTENT_REPORT_TAIL"
+            elif history_seed_active.is_set():
+                text = "IOS_HISTORY_BRIEF: History fixture result."
             finish_reason = "tool_calls" if tool_calls else "stop"
             if request.get("stream"):
                 chunks = [
@@ -306,17 +313,21 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
             rich_turn = None
             rich_additional_work = None
             if history_acceptance:
-                for number in range(25):
-                    marker = f"IOS_HISTORY_{number:03}"
-                    local("POST", f"/agents/{agent}/enqueue", {"text": marker})
-                    for attempt in range(200):
-                        history = local("GET", f"/agents/{agent}/conversation")
-                        if any(marker in json.dumps(turn) and turn.get("brief_ids")
-                               for turn in history.get("turns", [])):
-                            break
-                        time.sleep(.1)
-                    else:
-                        raise RuntimeError("history fixture turn did not finish")
+                history_seed_active.set()
+                try:
+                    for number in range(25):
+                        marker = f"IOS_HISTORY_{number:03}"
+                        local("POST", f"/agents/{agent}/enqueue", {"text": marker})
+                        for attempt in range(200):
+                            history = local("GET", f"/agents/{agent}/conversation")
+                            if any(marker in json.dumps(turn) and turn.get("brief_ids")
+                                   for turn in history.get("turns", [])):
+                                break
+                            time.sleep(.1)
+                        else:
+                            raise RuntimeError("history fixture turn did not finish")
+                finally:
+                    history_seed_active.clear()
             if rich_activity_acceptance:
                 # All rich data lives in this temporary daemon, never a production Agent.
                 for number in range(90):
@@ -481,6 +492,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                          ("testPairingPreviewStaysOfflineAndCanCancel", "large"),
                          # Authenticate through shipped onboarding before diagnostics.
                          ("testAuthenticatedNativeWorkflow", "large"),
+                         ("testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored", "large"),
                          ("testChineseDiagnosticsDarkAccessibilitySize", MAXIMUM_TEXT_SIZE),
                          ("testDiagnosticsControlsRespondToRuntimeTextSize", MAXIMUM_TEXT_SIZE),
                          ("testPreparedDiagnosticsRespondToRuntimeTextSize", "large"),
@@ -496,6 +508,13 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     cases.append(("testConversationHistoryWindowPosition", "large"))
                 if share_acceptance:
                     cases.append(("testDirectAgentShareWorkflow", "large"))
+                if report_acceptance:
+                    cases.extend([
+                        ("testContentReportFullResponseIncludesTail", "large"),
+                        ("testContentReportConfirmationCancelDoesNotPersist", "large"),
+                        ("testContentReportInvalidExplanationCannotShowAccepted", "large"),
+                        ("testContentReportAcceptedReceiptCannotSubmitTwice", "large"),
+                    ])
                 # Deletes the saved fixture session, so run last in a full sweep.
                 cases.append(("testNetworkManagementWorkflow", "large"))
                 selected_cases = os.environ.get("IOS_UI_CASES")
@@ -514,6 +533,20 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                     from ios_share_probe import install
                     install(simulator, repo, root)
                 for (method, content_size), case_bundle in zip(cases, bundles):
+                    loss_case = lost_response_acceptance and method in {
+                        "testLostResponseAndProcessRecovery", "testDirectAgentShareWorkflow"}
+                    if loss_case:
+                        # Each workflow owns a separate initial loss and explicit retry.
+                        release_lost_response.clear()
+                        with lost_lock:
+                            loss_receipts_start = len(lost_receipts)
+                    report_rows_before = None
+                    if method.startswith("testContentReport"):
+                        # Read the real daemon database, never fabricate an accepted receipt.
+                        report_db = home / "state" / "runtime.sqlite"
+                        with sqlite3.connect(f"file:{report_db}?mode=ro", uri=True) as database:
+                            report_rows_before = database.execute(
+                                "SELECT report_id FROM content_reports").fetchall()
                     appearance = "dark" if method in {
                         "testDisconnectedChineseDarkAccessibilitySize",
                         "testChineseDiagnosticsDarkAccessibilitySize",
@@ -526,13 +559,20 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                             test_env["TEST_RUNNER_HOLON_UI_TEXT_SIZE_TOKEN"] = control_token
                             test_env["TEST_RUNNER_HOLON_UI_CONTENT_SIZE"] = content_size
                             test_env["TEST_RUNNER_HOLON_UI_APPEARANCE"] = appearance
-                            if method in {"testAuthenticatedNativeWorkflow", "testDirectAgentShareWorkflow", "testNetworkManagementWorkflow", "testTaskResultProcessWorkflow"}:
+                            if method in {"testAuthenticatedNativeWorkflow", "testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored",
+                                          "testDirectAgentShareWorkflow", "testNetworkManagementWorkflow",
+                                          "testTaskResultProcessWorkflow",
+                                          "testContentReportFullResponseIncludesTail",
+                                          "testContentReportConfirmationCancelDoesNotPersist",
+                                          "testContentReportInvalidExplanationCannotShowAccepted",
+                                          "testContentReportAcceptedReceiptCannotSubmitTwice"}:
                                 # Tickets expire after two minutes. The preceding cases also
                                 # warm the build; issue only when redemption is about to run.
                                 ticket = local("POST", "/auth/pairing/issue")["ticket"]
                                 test_env["TEST_RUNNER_HOLON_UI_PAIRING_CODE"] = ticket
                             if method == "testConversationHistoryWindowPosition":
-                                history = local("GET", f"/agents/{agent}/conversation")
+                                # Match ReadingTransport's bounded summary, not the server default.
+                                history = local("GET", f"/agents/{agent}/conversation?limit=60")
                                 turns = sorted(history["turns"], key=lambda turn: turn["key"]["turn_index"])
                                 if len(turns) <= 20:
                                     raise RuntimeError("native history acceptance needs more than one window")
@@ -552,6 +592,36 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                                 "-resultBundlePath", str(case_bundle), "CODE_SIGN_IDENTITY=-", "test"], env=test_env)
                             if result.returncode:
                                 raise RuntimeError(f"UI case {method} 失败（SDK 通过不能替代 UI）")
+                            if loss_case:
+                                with lost_lock:
+                                    receipts = lost_receipts[loss_receipts_start:]
+                                if len(receipts) < 2 or len({request for request, _ in receipts}) != 1:
+                                    raise RuntimeError("response loss retry must retain one immutable UUID")
+                                if len({receipt["message_id"] for _, receipt in receipts}) != 1:
+                                    raise RuntimeError("retry enqueued a duplicate message")
+                                if receipts[0][1]["disposition"] != "accepted" or receipts[-1][1]["disposition"] != "duplicate":
+                                    raise RuntimeError("retry must receive the real daemon's duplicate receipt")
+                                print(f"Lost-response acceptance ({method}): immutable UUID and one real message ID across explicit retry", flush=True)
+                            if report_rows_before is not None:
+                                with sqlite3.connect(f"file:{report_db}?mode=ro", uri=True) as database:
+                                    rows = database.execute(
+                                        "SELECT report_id, agent_id, turn_id, category, description, "
+                                        "content_snapshot, status, client_request_id FROM content_reports"
+                                    ).fetchall()
+                                before = {row[0] for row in report_rows_before}
+                                new_rows = [row for row in rows if row[0] not in before]
+                                expected = int(method == "testContentReportAcceptedReceiptCannotSubmitTwice")
+                                if len(rows) != len(before) + expected or len(new_rows) != expected:
+                                    raise RuntimeError("Content-report cancel/submit persisted an unexpected report count")
+                                if expected:
+                                    receipt = new_rows[0]
+                                    if (not receipt[0].startswith("report_")
+                                            or receipt[1:5] != (agent, rich_turn, "spam_or_other",
+                                                               "IOS_CONTENT_REPORT_ACCEPTANCE")
+                                            or "IOS_RICH_ASSISTANT:" not in receipt[5]
+                                            or receipt[6] != "received" or not receipt[7]):
+                                        raise RuntimeError("Content-report receipt lacks the real target, snapshot or request ID")
+                                print(f"Content-report SQLite acceptance: {method}, {expected} new reports", flush=True)
             else:
                 print(f"{5 if rich_turn else 4} 项真实 SDK probes 已运行；SDK-only 未运行 UI", flush=True)
             if FakeProvider.image_requests:
@@ -571,14 +641,6 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                            struct.unpack(">II", data[16:24]) == (16, 16) for data in received_files):
                     raise RuntimeError("Direct-share image bytes were not materialized by the daemon")
                 print("Direct-share acceptance: OS extension text, URL, image and file received by isolated Agent", flush=True)
-            if lost_response_acceptance and mode != "--sdk-only":
-                if len(lost_receipts) < 2 or len({request for request, _ in lost_receipts}) != 1:
-                    raise RuntimeError("response loss retry must retain one immutable UUID")
-                if len({receipt["message_id"] for _, receipt in lost_receipts}) != 1:
-                    raise RuntimeError("retry enqueued a duplicate message")
-                if lost_receipts[0][1]["disposition"] != "accepted" or lost_receipts[-1][1]["disposition"] != "duplicate":
-                    raise RuntimeError("retry must receive the real daemon's duplicate receipt")
-                print("Lost-response acceptance: immutable UUID and one real message ID across explicit retry", flush=True)
         finally:
             try:
                 if task_id is not None:

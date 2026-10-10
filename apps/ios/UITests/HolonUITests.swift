@@ -21,6 +21,42 @@ final class HolonUITests: XCTestCase {
         return app
     }
 
+    private func approveSharingThroughSettings(_ app: XCUIApplication) {
+        openSettings(app)
+        let review = app.buttons["privacy.review"]
+        // Form rows are lazy; reveal either state before deciding which is active.
+        let consentAction = app.buttons.matching(NSPredicate(
+            format: "identifier IN %@", ["privacy.review", "privacy.revoke"]
+        )).firstMatch
+        reveal(consentAction, in: app)
+        if review.exists {
+            review.tap()
+            let agree = app.alerts.buttons["privacy.agree"].firstMatch
+            XCTAssertTrue(agree.waitForExistence(timeout: 5))
+            agree.tap()
+        }
+        XCTAssertTrue(app.buttons["privacy.revoke"].waitForExistence(timeout: 5))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+    }
+
+    func testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored() throws {
+        try connectForSharing()
+        let app = launch(language: "en", dark: false, large: false)
+        openSettings(app)
+        let revoke = app.buttons["privacy.revoke"]
+        reveal(revoke, in: app)
+        XCTAssertTrue(app.links["privacy.policy"].exists || app.buttons["privacy.policy"].exists)
+        revoke.tap()
+        let review = app.buttons["privacy.review"]
+        XCTAssertTrue(review.waitForExistence(timeout: 5))
+        review.tap()
+        let alert = app.alerts.firstMatch
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        XCTAssertTrue(alert.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "third-party AI")).firstMatch.exists)
+        alert.buttons["privacy.agree"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["privacy.revoke"].waitForExistence(timeout: 5))
+    }
+
     private func capture(_ app: XCUIApplication, _ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name
@@ -513,6 +549,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(confirm.isEnabled)
         confirm.tap()
         XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
+        approveSharingThroughSettings(app)
         XCTAssertFalse(app.tabBars.firstMatch.exists, "Agent home has no global bottom tabs")
         let manage = app.buttons["connection.manage"]
         XCTAssertTrue(manage.waitForExistence(timeout: 10))
@@ -641,13 +678,140 @@ final class HolonUITests: XCTestCase {
         app.terminate()
     }
 
+    private func openContentReport() throws -> XCUIApplication {
+        try connectForSharing()
+        let app = launch(language: "en", dark: false, large: false)
+        let agent = try required("AGENT_ID")
+        let turn = try required("RICH_TURN_ID")
+        if app.buttons["conversation.more"].waitForExistence(timeout: 30) {
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+        }
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15))
+        let search = app.searchFields.firstMatch
+        app.swipeDown()
+        XCTAssertTrue(search.waitForExistence(timeout: 10))
+        search.tap(); search.typeText(agent + "\n")
+        let row = app.buttons["agent." + agent]
+        XCTAssertTrue(row.waitForExistence(timeout: 15)); row.tap()
+        if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
+        let report = app.buttons["report.open." + turn]
+        for _ in 0..<40 {
+            // Once loaded, reveal the row instead of paging past its turn.
+            if report.exists { break }
+            let older = app.buttons["conversation.older"]
+            if older.exists && older.isHittable { older.tap() } else { app.swipeDown() }
+        }
+        reveal(report, in: app); XCTAssertTrue(report.isHittable); report.tap()
+        let target = app.buttons.matching(NSPredicate(format:
+            "identifier BEGINSWITH %@", "report.target.assistant:")).firstMatch
+        XCTAssertTrue(target.waitForExistence(timeout: 20))
+        reveal(target, in: app); target.tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format:
+            "label CONTAINS %@", "IOS_RICH_ASSISTANT:")).firstMatch.waitForExistence(timeout: 20),
+                      "Reporting must load the real assistant transcript")
+        let category = app.buttons["report.category"]
+        reveal(category, in: app); category.tap()
+        let reason = app.buttons["Spam or other"]
+        XCTAssertTrue(reason.waitForExistence(timeout: 10)); reason.tap()
+        return app
+    }
+
+    func testContentReportFullResponseIncludesTail() throws {
+        let app = try openContentReport()
+        defer { app.terminate() }
+        let full = app.buttons["report.viewFullResponse"]
+        reveal(full, in: app); full.tap()
+        let source = app.textViews["reading.selectionText"]
+        XCTAssertTrue(source.waitForExistence(timeout: 10))
+        let content = try XCTUnwrap(source.value as? String)
+        XCTAssertGreaterThan(content.count, 8_000)
+        XCTAssertTrue(content.hasSuffix("IOS_CONTENT_REPORT_TAIL"), "Full preview must include the selected response's tail")
+        app.buttons["report.fullResponseDismiss"].tap()
+        XCTAssertFalse(app.descendants(matching: .any)["report.accepted"].firstMatch.exists)
+        app.buttons["report.dismiss"].tap()
+    }
+
+    func testContentReportConfirmationCancelDoesNotPersist() throws {
+        let app = try openContentReport()
+        defer { app.terminate() }
+        let submit = app.buttons["report.submit"]
+        reveal(submit, in: app); XCTAssertTrue(submit.isEnabled); submit.tap()
+        let confirm = app.alerts.buttons["report.confirm"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        app.alerts.buttons["Cancel"].tap()
+        XCTAssertFalse(confirm.exists)
+        XCTAssertFalse(app.descendants(matching: .any)["report.accepted"].firstMatch.exists)
+        XCTAssertFalse(app.staticTexts["report.error"].exists)
+        XCTAssertTrue(submit.isEnabled, "Cancel must leave an editable, unsubmitted draft")
+        app.buttons["report.dismiss"].tap()
+    }
+
+    func testContentReportInvalidExplanationCannotShowAccepted() throws {
+        let app = try openContentReport()
+        defer { app.terminate() }
+        let explanation = app.textViews["report.explanation"]
+        reveal(explanation, in: app); explanation.tap()
+        explanation.typeText(String(repeating: "x", count: 2_001))
+        app.swipeDown()
+        let submit = app.buttons["report.submit"]
+        reveal(submit, in: app)
+        XCTAssertFalse(submit.isEnabled, "An invalid draft must not issue a report")
+        XCTAssertFalse(app.alerts.buttons["report.confirm"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["report.accepted"].firstMatch.exists)
+        app.buttons["report.dismiss"].tap()
+    }
+
+    func testContentReportAcceptedReceiptCannotSubmitTwice() throws {
+        let app = try openContentReport()
+        defer { app.terminate() }
+        let explanation = app.textViews["report.explanation"]
+        reveal(explanation, in: app); explanation.tap()
+        explanation.typeText("IOS_CONTENT_REPORT_ACCEPTANCE")
+        // Dismiss the keyboard through the native form before seeking Submit.
+        app.swipeDown()
+        let submit = app.buttons["report.submit"]
+        reveal(submit, in: app); XCTAssertTrue(submit.isEnabled); submit.tap()
+        // SwiftUI exposes the native alert control as nested Button nodes.
+        let confirm = app.alerts.buttons["report.confirm"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10)); confirm.tap()
+        // Assert the receipt text, not the Label's decorative, non-hittable icon.
+        let accepted = app.staticTexts["report.accepted"].firstMatch
+        XCTAssertTrue(accepted.waitForExistence(timeout: 30))
+        reveal(accepted, in: app, fullyVisible: true)
+        let receipt = app.staticTexts.matching(NSPredicate(format:
+            "label MATCHES %@", "report_[0-9a-f]+")).firstMatch
+        reveal(receipt, in: app)
+        XCTAssertTrue(receipt.label.hasPrefix("report_"), "Accepted must show the server report ID")
+        let receiptID = receipt.label
+        XCTAssertFalse(submit.exists, "An accepted draft cannot be submitted again")
+        XCTAssertFalse(app.staticTexts["report.error"].exists)
+        XCUIDevice.shared.press(.home); app.activate()
+        // Foreground refresh may reset the Form offset; receipt rows are lazy.
+        reveal(accepted, in: app, fullyVisible: true)
+        XCTAssertTrue(accepted.waitForExistence(timeout: 30))
+        reveal(receipt, in: app)
+        XCTAssertEqual(receipt.label, receiptID, "Foreground restoration must preserve the accepted receipt")
+        XCTAssertFalse(submit.exists, "Foreground restoration must not resend an accepted report")
+        capture(app, "content-report-real-accepted-receipt")
+        app.buttons["report.dismiss"].tap()
+    }
+
     func testRichActivityWorkflow() throws {
         let agent = try required("AGENT_ID")
         let turn = try required("RICH_TURN_ID")
         let app = launch(language: "en", dark: false, large: false)
         // Existing credentials came only from the preceding shipped onboarding flow.
-        // Wait for confirmed route restoration, not the transient home while
-        // roster authority is still loading after launch.
+        // Diagnostics may leave home with no saved Agent. Establish selection
+        // through the shipped UI before testing confirmed route restoration.
+        if !app.buttons["conversation.more"].waitForExistence(timeout: 30) {
+            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15))
+            let agentRow = app.buttons["agent." + agent]
+            XCTAssertTrue(agentRow.waitForExistence(timeout: 15))
+            reveal(agentRow, in: app); agentRow.tap()
+        }
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        app.terminate()
+        app.launch()
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15))
@@ -690,8 +854,12 @@ final class HolonUITests: XCTestCase {
             if olderTurns.exists && olderTurns.isHittable { olderTurns.tap() }
             else { app.swipeDown() }
         }
+        // Hittable can include a sliver above the navigation bar.
+        // Reveal the whole disclosure row before asking it to expand.
+        reveal(activity, in: app, fullyVisible: true)
         XCTAssertTrue(activity.isHittable); activity.tap()
         let fullProcess = app.buttons["activities.full." + turn]
+        XCTAssertTrue(fullProcess.waitForExistence(timeout: 10))
         reveal(fullProcess, in: app); fullProcess.tap()
         let fullReader = app.scrollViews["activities.fullReader"]
         XCTAssertTrue(fullReader.waitForExistence(timeout: 10))
@@ -809,6 +977,7 @@ final class HolonUITests: XCTestCase {
         let confirm = app.buttons["onboarding.confirmPairing"]
         reveal(confirm, in: app); confirm.tap()
         XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
+        approveSharingThroughSettings(app)
         app.terminate()
     }
 
@@ -1134,9 +1303,20 @@ final class HolonUITests: XCTestCase {
     func testLostResponseAndProcessRecovery() async throws {
         let marker = "IOS_LOST_RESPONSE_SEND"
         let app = launch(language: "en", dark: false, large: false)
+        // The maximum-size composer case intentionally returns to Agents.
+        // Establish selection before testing restoration after process death.
+        if !app.buttons["conversation.more"].waitForExistence(timeout: 30) {
+            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15))
+            let agent = app.buttons["agent." + (try required("AGENT_ID"))]
+            XCTAssertTrue(agent.waitForExistence(timeout: 15))
+            reveal(agent, in: app); agent.tap()
+        }
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
         let editor = app.descendants(matching: .any)["sending.text"].firstMatch
         editor.tap(); editor.typeText(marker)
+        // The preceding composer case legitimately preserves its unsent draft.
+        let frozenText = try XCTUnwrap(editor.value as? String)
+        XCTAssertTrue(frozenText.contains(marker))
         app.buttons["sending.enqueue"].tap()
         func openQueue() {
             app.buttons["sending.options"].tap(); app.buttons["sending.queue"].tap()
@@ -1144,8 +1324,9 @@ final class HolonUITests: XCTestCase {
         openQueue()
         let unknown = app.staticTexts["sending.state.unknown"]
         XCTAssertTrue(unknown.waitForExistence(timeout: 30))
-        let row = app.cells.containing(.staticText, identifier: marker).firstMatch
+        let row = app.cells.containing(.staticText, identifier: frozenText).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 10))
+        XCTAssertTrue(row.staticTexts["sending.state.unknown"].exists)
         let uuid = row.staticTexts.matching(NSPredicate(format:
             "label MATCHES %@", "[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")).firstMatch.label
         XCTAssertNotNil(UUID(uuidString: uuid))
@@ -1153,15 +1334,17 @@ final class HolonUITests: XCTestCase {
         app.terminate(); app.launch()
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
         openQueue()
-        XCTAssertTrue(unknown.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts[uuid].exists, "Process death retains the original UUID")
+        let entry = app.cells.containing(.staticText, identifier: frozenText).firstMatch
+        XCTAssertTrue(entry.waitForExistence(timeout: 10), "Process death retains the frozen text")
+        XCTAssertTrue(entry.staticTexts["sending.state.unknown"].waitForExistence(timeout: 10))
+        XCTAssertTrue(entry.staticTexts["sending.requestID." + uuid].exists,
+                      "Process death retains the original UUID")
         var request = URLRequest(url: try XCTUnwrap(URL(string: required("LOSS_CONTROL_URL"))))
         request.httpMethod = "POST"
         request.setValue("Bearer " + (try required("LOSS_CONTROL_TOKEN")), forHTTPHeaderField: "Authorization")
         let (_, response) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 204)
-        let entry = app.cells.containing(.staticText, identifier: marker).firstMatch
-        let retry = app.buttons["sending.retry." + uuid]
+        let retry = entry.buttons["sending.retry." + uuid]
         XCTAssertTrue(retry.waitForExistence(timeout: 10))
         XCTAssertTrue(retry.isEnabled, "The original request must be explicitly retryable after restoration")
         let queueGeometry = XCTAttachment(string: app.debugDescription)
@@ -1169,7 +1352,7 @@ final class HolonUITests: XCTestCase {
         queueGeometry.lifetime = .keepAlways; add(queueGeometry)
         reveal(retry, in: app); retry.tap()
         XCTAssertTrue(entry.staticTexts["sending.state.received"].waitForExistence(timeout: 30))
-        XCTAssertTrue(app.staticTexts[uuid].exists)
+        XCTAssertTrue(entry.staticTexts["sending.requestID." + uuid].exists)
         capture(app, "lost-response-explicit-retry-received")
         app.terminate()
     }

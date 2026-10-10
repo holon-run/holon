@@ -1,17 +1,17 @@
 ---
-title: Holon Android Privacy Policy
-summary: Data handling in the Holon Android client.
+title: Holon Mobile Privacy Policy
+summary: Data handling in the Holon Android and iOS clients.
 order: 100
 ---
 
-# Holon Android Privacy Policy
+# Holon Mobile Privacy Policy
 
-Updated: October 7, 2026
+Updated: October 9, 2026
 
 [中文](/zh-CN/privacy)
 
-Holon Android is developed by jolestar. Contact: **hello@holon.run**.
-This policy covers the Android client, which connects to a Holon host you
+Holon Android and iOS are developed by jolestar. Contact: **hello@holon.run**.
+This policy covers the Android and iOS clients, which connect to a Holon host you
 choose. It does not replace the policies of your host operator, identity
 provider, or model and integration providers configured on that host.
 
@@ -40,15 +40,22 @@ Choose a host and providers you trust; their processing and retention depend
 on their configuration and policies.
 
 Personal access tokens are exchanged for revocable native sessions; the original
-token is not written to disk. Native session credentials and browser-login proof
+token is not written to disk. On Android, native session credentials and browser-login proof
 material are encrypted using Android Keystore-backed storage. Browser sign-in
 uses the host's OIDC flow and identity provider, which process login information.
 The app also stores connection profiles, preferences, cached conversation and
 brief data, and pending outgoing messages locally.
 
+On iOS, session credentials and pending browser-login proof material are stored
+in Keychain; connection profiles and preferences use UserDefaults. Pending
+messages and attachments are stored locally. The app and its share extension
+use an App Group container for imported content and sharing state, and a shared
+Keychain access group for the session used to send from the extension. These
+are local app/extension storage mechanisms, not a central developer database.
+
 ## Files, camera and diagnostics
 
-Files and images are selected through Android's document picker. Taking a photo
+On Android, files and images are selected through the document picker. Taking a photo
 opens a camera app; connection QR scanning uses Google Play services' code
 scanner. The app manifest requests internet and network-state access, not
 camera, microphone, contacts or location permissions. Camera capture and QR
@@ -56,7 +63,17 @@ scanning still involve camera use through those separate system/provider flows.
 Google Play services may have its own data handling; see your device's Google
 privacy information.
 
-The client records local connection diagnostics and redacted traces. You can
+On iOS, system file and photo pickers let you select attachments. Taking a photo
+and scanning a connection QR code use the camera with your permission. QR
+scanning reads connection information locally; attaching a captured photo sends
+it to the selected host when you send the message. The share extension can
+receive text, URLs, images and files from other apps, copy imported content to
+the App Group container, and send it to a selected agent on your host or prepare
+it for confirmation in the app. Sharing or exporting content through system
+share sheets makes it available to the destination you choose; that
+destination's data handling is outside this client's control.
+
+The Android client records local connection diagnostics and redacted traces. You can
 choose to export diagnostics through Android's share sheet; inspect exports
 before sharing. Holon Android has no ads. No advertising or analytics SDK is
 declared in the Android app's build dependencies. This is not a claim that
@@ -64,8 +81,13 @@ your host, browser, Google Play services, or external providers collect no data.
 
 ## Retention and deletion
 
-Local storage can be removed through Android's **Clear storage** action or by
-uninstalling the app. Android application backup is disabled. Removing local
+On Android, local storage can be removed through **Clear storage** or by
+uninstalling the app. Android application backup is disabled.
+On iOS, removing a connection profile removes its associated app session
+credentials. Deleting the app removes its app-container data, but must not be
+treated as a guarantee that Keychain items or shared App Group data are erased.
+Local data may also be subject to your device's backup and restore settings.
+Removing local
 data does not delete host-side messages, files, accounts or provider records,
 and does not necessarily revoke an existing server-side session. Ask your
 host operator to delete server records or revoke access. If you operate the

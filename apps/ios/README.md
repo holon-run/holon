@@ -21,6 +21,25 @@ Markdown links remain directly tappable in the normal reader.
 Internal TestFlight delivery does not establish physical-device or App Store
 acceptance: see [release preparation](RELEASE.md) for the remaining gates.
 
+## Report AI content
+
+Long-press an AI result and choose **Report AI content**, or use the turn's flag
+button. Select the exact assistant response, review its text and destination,
+choose a reason, optionally explain, then explicitly confirm submission.
+Only operator-visible assistant transcript entries are eligible, not user input,
+tools, private checkpoints or local drafts. The app sends response identifiers,
+the reason and optional explanation to the connected runtime; the server saves
+a bounded snapshot of that response, not the whole conversation.
+Reports require a runtime with `POST /api/content-reports`. An inaccessible
+response or older runtime is shown as unavailable, never as a successful report.
+Unknown outcomes retain the same request for manual retry, including when the
+report screen is reopened in the same live connection and Agent. Switching
+connections or identities prevents reassignment. Received means accepted by the
+runtime, not moderated; this API has no progress or withdrawal endpoint. Ask
+the runtime administrator about handling and retention, and do not add secrets
+to the explanation. Reporting is a separate explicit confirmation, not an AI
+message send or an implicit restoration of withdrawn message-sharing consent.
+
 ## Using the client
 
 1. On first launch, use **Scan connection QR code**, paste a connection invitation,

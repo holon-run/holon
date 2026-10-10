@@ -202,6 +202,7 @@ struct RichTextContent: View {
     let text: String
     var openReference: ((String) -> Void)? = nil
     var openRelative: ((String) -> Void)? = nil
+    var onReport: (() -> Void)? = nil
     @State private var unsupportedLink = false
     @State private var selectingText = false
 
@@ -235,6 +236,7 @@ struct RichTextContent: View {
             }
             .contextMenu {
                 Button("reading.selectText", systemImage: "text.cursor") { selectingText = true }
+                if let onReport { Button("report.title", systemImage: "flag") { onReport() } }
             }
             .accessibilityAction(named: Text("reading.selectText")) { selectingText = true }
             .sheet(isPresented: $selectingText) {

@@ -36,7 +36,18 @@ final class SendingCoordinator {
     @ObservationIgnored private var activeRequestID: UUID?
     @ObservationIgnored private var catalogTask: Task<Void, Never>?
 
-    init(store: SendingStore) { self.store = store }
+    @ObservationIgnored private let consent: SharingConsent
+    @ObservationIgnored private var consentURL: URL?
+
+    init(store: SendingStore, consent: SharingConsent = .shared) {
+        self.store = store
+        self.consent = consent
+    }
+
+    private func requireConsent() throws {
+        guard let consentURL else { throw SharingConsentRequired() }
+        try consent.require(consentURL)
+    }
     private var scope: SendingScope? {
         guard let partition, let selectedAgentID else { return nil }
         return SendingScope(partition: partition, agentID: selectedAgentID)
@@ -48,12 +59,14 @@ final class SendingCoordinator {
     }
 
     func activate(client: HolonClient, identity: HolonConnectionIdentity, apiBaseURL: URL) {
-        activate(transport: SendingClientTransport(client: client, authority: identity),
+        activate(transport: SendingClientTransport(client: client, authority: identity,
+                                                  apiBaseURL: apiBaseURL, consent: consent),
                  identity: identity, apiBaseURL: apiBaseURL)
     }
 
     func activate(transport: any SendingTransport, identity: HolonConnectionIdentity, apiBaseURL: URL) {
         disconnect()
+        consentURL = apiBaseURL
         self.transport = transport
         self.identity = identity
         partition = ReadingPartition(apiBaseURL: apiBaseURL, identity: identity)
@@ -91,6 +104,7 @@ final class SendingCoordinator {
         catalogTask?.cancel()
         catalogTask = nil
         transport = nil
+        consentURL = nil
         identity = nil
         partition = nil
         draft = SendingDraft()
@@ -148,6 +162,7 @@ final class SendingCoordinator {
     func enqueue() {
         guard let scope else { return }
         do {
+            try requireConsent()
             let entry = try store.enqueue(scope)
             attachmentRevision += 1
             error = nil
@@ -185,6 +200,7 @@ final class SendingCoordinator {
               context.confirmationRevision == confirmationRevision,
               context.scope.partition == partition,
               !sendNow || context.scope == scope else { throw SendingFailure.unavailable }
+        if sendNow { try requireConsent() }
         let entry = try store.enqueueExternal(requestID: requestID, scope: context.scope,
                                               text: text, attachments: attachments,
                                               previousOutcomeUnknown: previousOutcomeUnknown)
@@ -274,6 +290,7 @@ final class SendingCoordinator {
                   !Task.isCancelled else { return }
             var entry = original
             do {
+                try self.requireConsent()
                 entry.state = .sending
                 entry.error = nil
                 try self.store.update(entry)
@@ -282,6 +299,7 @@ final class SendingCoordinator {
                     for attachment in entry.draft.attachments {
                         if entry.uploaded[attachment.id] != nil { continue }
                         try self.store.validate(attachment)
+                        try self.requireConsent()
                         let uploaded = try await transport.upload(agentID: entry.scope.agentID,
                             attachment: attachment, file: self.store.attachmentURL(attachment))
                         guard self.revision == token, !Task.isCancelled else { return }
@@ -293,6 +311,7 @@ final class SendingCoordinator {
                     try self.store.update(entry)
                 }
                 guard self.revision == token, !Task.isCancelled, let payload = entry.payload else { return }
+                try self.requireConsent()
                 let receipt = try await transport.send(agentID: entry.scope.agentID,
                                                       requestID: entry.requestID, payload: payload)
                 guard self.revision == token, !Task.isCancelled else { return }

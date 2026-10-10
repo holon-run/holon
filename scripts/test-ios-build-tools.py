@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Run build/archive and UI command contract regressions without starting Xcode."""
 import ast
+from contextlib import nullcontext
+import http.server
 import json
 import os
 import pathlib
@@ -125,7 +127,70 @@ class BuildToolContracts(unittest.TestCase):
 
 
 class UIFixtureSetupContracts(unittest.TestCase):
-    def run_setup(self, initialize, install, share=True):
+    def run_loss_scenarios(self, invalid_receipts=None):
+        # Execute the real per-case loop; only external XCTest/services are mocked.
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        loop = next(node for node in ast.walk(tree)
+                    if isinstance(node, ast.For)
+                    and isinstance(node.target, ast.Tuple)
+                    and any(isinstance(target, ast.Name) and target.id == "case_bundle"
+                            for target in node.target.elts))
+        release = threading.Event()
+        release.set()  # A preceding workflow may already have released its response.
+        receipts = []
+        methods = ["testLostResponseAndProcessRecovery", "testDirectAgentShareWorkflow"]
+
+        def run(command, env):
+            method = next(argument.rsplit("/", 1)[-1] for argument in command
+                          if argument.startswith("-only-testing:"))
+            self.assertFalse(release.is_set(), method + " must begin with response loss armed")
+            request = method + "-request"
+            message = method + "-message"
+            current = [(request, {"message_id": message, "disposition": "accepted"}),
+                       (request, {"message_id": message, "disposition": "duplicate"})]
+            if invalid_receipts is not None and method == methods[-1]:
+                current = invalid_receipts(current)
+            receipts.extend(current)
+            release.set()  # The real UI explicitly releases before retrying.
+            return Mock(returncode=0)
+
+        namespace = dict(
+            cases=[(method, "large") for method in methods],
+            bundles=[Path(method + ".xcresult") for method in methods],
+            release_lost_response=release, lost_receipts=receipts,
+            lost_lock=threading.Lock(), lost_response_acceptance=True,
+            simulator=UUID, repo=str(ROOT), destination="fixture", derived="fixture",
+            test_env={}, local=Mock(return_value={"ticket": "fixture"}),
+            simulator_text_size=lambda *args: nullcontext(),
+            simulator_appearance=lambda *args: nullcontext(),
+            runtime_text_size_control=lambda *args: nullcontext(("fixture", "fixture")),
+            subprocess=Mock(run=run),
+        )
+        with patch("builtins.print") as output:
+            exec(compile(ast.Module(body=[loop], type_ignores=[]), str(source), "exec"), namespace)
+        return receipts, output.call_args_list
+
+    def test_loss_scenarios_rearm_and_verify_independent_requests(self):
+        receipts, output = self.run_loss_scenarios()
+        self.assertEqual(len(receipts), 4, "Keep both workflows' receipt evidence")
+        self.assertEqual(len({request for request, _ in receipts}), 2)
+        self.assertEqual(len(output), 2, "Verify App and Share independently")
+
+    def test_loss_scenario_rejects_invalid_retry_receipts(self):
+        invalid = {
+            "missing retry": lambda rows: rows[:1],
+            "changed UUID": lambda rows: [rows[0], ("different", rows[1][1])],
+            "duplicate message": lambda rows: [rows[0], (rows[1][0], {
+                "message_id": "different", "disposition": "duplicate"})],
+            "accepted twice": lambda rows: [rows[0], (rows[1][0], {
+                "message_id": rows[0][1]["message_id"], "disposition": "accepted"})],
+        }
+        for label, transform in invalid.items():
+            with self.subTest(label=label), self.assertRaises(RuntimeError):
+                self.run_loss_scenarios(transform)
+
+    def run_setup(self, initialize, install, share=True, report=False):
         # Execute the fixture's real setup block without starting its daemon/XCTest.
         source = ROOT / "scripts/ios_ui_fixture.py"
         tree = ast.parse(source.read_text(), filename=str(source))
@@ -147,12 +212,27 @@ class UIFixtureSetupContracts(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="holon-ios-ui-setup-") as directory:
             namespace = dict(os=os, pathlib=pathlib, simulator=UUID, repo=str(ROOT),
                              root=Path(directory), bundle=Path(directory) / "UI.xcresult",
-                             MAXIMUM_TEXT_SIZE=MAXIMUM_TEXT_SIZE, rich_acceptance=False,
+                             MAXIMUM_TEXT_SIZE=MAXIMUM_TEXT_SIZE, rich_acceptance=report,
+                             report_acceptance=report,
                              lost_response_acceptance=False, history_acceptance=False,
                              task_result_acceptance=False,
                              share_acceptance=share, initialize_simulator_text_size=initialize)
             with patch.dict(os.environ, {}, clear=True), patch("ios_share_probe.install", install):
                 exec(compile(setup, str(source), "exec"), namespace)
+            return namespace["cases"]
+
+    def test_report_acceptance_selects_real_report_cases(self):
+        initialize, install = Mock(), Mock()
+        cases = self.run_setup(initialize, install, share=False, report=True)
+        methods = {method for method, _ in cases}
+        self.assertTrue({
+            "testContentReportFullResponseIncludesTail",
+            "testContentReportConfirmationCancelDoesNotPersist",
+            "testContentReportInvalidExplanationCannotShowAccepted",
+            "testContentReportAcceptedReceiptCannotSubmitTwice",
+        }.issubset(methods))
+        initialize.assert_called_once_with(UUID)
+        install.assert_not_called()
 
     def test_cold_simulator_is_initialized_before_share_install(self):
         events = []
@@ -184,6 +264,109 @@ class UIFixtureSetupContracts(unittest.TestCase):
         self.run_setup(initialize, install, share=False)
         initialize.assert_called_once_with(UUID)
         install.assert_not_called()
+
+
+class UIFixtureProviderContracts(unittest.TestCase):
+    def test_history_window_oracle_matches_reader_snapshot_limit(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        block = next(node for node in ast.walk(tree)
+                     if isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
+                     and isinstance(node.test.left, ast.Name) and node.test.left.id == "method"
+                     and any(isinstance(value, ast.Constant)
+                             and value.value == "testConversationHistoryWindowPosition"
+                             for value in node.test.comparators))
+        code = compile(ast.Module(body=[block], type_ignores=[]), str(source), "exec")
+        for count, older, newer in [(25, 0, 5), (33, 0, 13), (60, 25, 40)]:
+            with self.subTest(turns=count):
+                turns = [{"turn_id": f"turn-{index}", "key": {"turn_index": index}}
+                         for index in range(count)]
+
+                def snapshot(method, path):
+                    self.assertEqual(method, "GET")
+                    # The daemon defaults to 30; ReadingTransport explicitly reads 60.
+                    limit = 60 if path.endswith("?limit=60") else 30
+                    return {"turns": list(reversed(turns[-limit:]))}
+
+                local = Mock(side_effect=snapshot)
+                environment = {}
+                exec(code, dict(method="testConversationHistoryWindowPosition",
+                                agent="holon-tester", local=local, test_env=environment))
+                self.assertEqual(environment["TEST_RUNNER_HOLON_UI_HISTORY_OLDER_TOP"],
+                                 f"turn-{older}")
+                self.assertEqual(environment["TEST_RUNNER_HOLON_UI_HISTORY_NEWER_TOP"],
+                                 f"turn-{newer}")
+                local.assert_called_once_with("GET", "/agents/holon-tester/conversation?limit=60")
+
+    def test_failed_history_seed_clears_scope(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        seed_block = next(node for node in ast.walk(tree)
+                          if isinstance(node, ast.If) and isinstance(node.test, ast.Name)
+                          and node.test.id == "history_acceptance")
+        history_seed_active = threading.Event()
+
+        def fail_seed(*args):
+            self.assertTrue(history_seed_active.is_set())
+            raise RuntimeError("seed stopped")
+
+        namespace = dict(history_acceptance=True, history_seed_active=history_seed_active,
+                         agent="holon-tester", local=fail_seed)
+        with self.assertRaisesRegex(RuntimeError, "seed stopped"):
+            exec(compile(ast.Module(body=[seed_block], type_ignores=[]),
+                         str(source), "exec"), namespace)
+        self.assertFalse(history_seed_active.is_set())
+
+    def test_history_seed_scope_preserves_normal_and_streaming_markdown(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        provider_class = next(node for node in ast.walk(tree)
+                              if isinstance(node, ast.ClassDef) and node.name == "FakeProvider")
+        history_seed_active = threading.Event()
+        with tempfile.TemporaryDirectory(prefix="holon-ios-ui-provider-") as directory:
+            namespace = dict(http=http, json=json, root=Path(directory),
+                             rich_activity_acceptance=False, report_acceptance=True,
+                             history_acceptance=True, history_seed_active=history_seed_active)
+            exec(compile(ast.Module(body=[provider_class], type_ignores=[]),
+                         str(source), "exec"), namespace)
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), namespace["FakeProvider"])
+            namespace["provider"] = server
+            worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .05})
+            worker.start()
+            try:
+                for streaming in (False, True):
+                    for seeding in (False, True, False):
+                        if seeding:
+                            history_seed_active.set()
+                        else:
+                            history_seed_active.clear()
+                        request = urllib.request.Request(
+                            f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
+                            data=json.dumps({"model": "fixture-model", "stream": streaming,
+                                             "messages": [
+                                                 {"role": "user", "content": "IOS_HISTORY_024"},
+                                                 {"role": "user", "content": "Produce the reading brief"},
+                                             ]}).encode(),
+                            headers={"Authorization": "Bearer isolated-test-only",
+                                     "Content-Type": "application/json"})
+                        with urllib.request.urlopen(request, timeout=5) as response:
+                            body = response.read().decode()
+                        with self.subTest(streaming=streaming, seeding=seeding):
+                            if seeding:
+                                self.assertIn("IOS_HISTORY_BRIEF", body)
+                                self.assertNotIn("IOS_POPULATED_BRIEF", body)
+                                self.assertIn("History fixture result.", body)
+                                self.assertNotIn("Open fixture file", body)
+                            else:
+                                self.assertIn("IOS_POPULATED_BRIEF", body)
+                                self.assertNotIn("IOS_HISTORY_BRIEF", body)
+                                self.assertIn("Open fixture file", body)
+                                self.assertNotIn("History fixture result.", body)
+            finally:
+                server.shutdown()
+                server.server_close()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
 
 
 class SimulatorAppearanceContracts(unittest.TestCase):

@@ -189,7 +189,7 @@ final class ShareViewController: UIViewController, UITableViewDataSource, UITabl
     @objc private func confirmSend() {
         guard ready, !busy, !cancelled, let selected else { return }
         let alert = UIAlertController(title: String(format: localized("share.sendTo"), selected.name),
-            message: connectionDescription + "\n\n" + preview.text, preferredStyle: .alert)
+            message: connectionDescription + "\n\n" + localized("privacy.disclosure") + "\n\n" + preview.text, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: localized("share.cancel"), style: .cancel))
         alert.addAction(UIAlertAction(title: localized("share.send"), style: .default) { [weak self] _ in
             self?.startSending()
@@ -232,6 +232,7 @@ final class ShareViewController: UIViewController, UITableViewDataSource, UITabl
         }
     }
     private func message(for error: Error) -> String {
+        if error is SharingConsentRequired { return localized("privacy.required") }
         if let failure = error as? HolonHTTPFailure {
             if failure.statusCode == 401 { return localized("share.loginRequired") }
             if failure.statusCode == 403 { return localized("share.denied") }

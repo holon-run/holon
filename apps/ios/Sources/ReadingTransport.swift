@@ -15,11 +15,15 @@ protocol ReadingTransport: Sendable {
     func activities(agentID: String, turnID: String, before: String?) async throws -> JSONValue
     func activityDetail(agentID: String, turnID: String, activity: ReadingActivity) async throws -> JSONValue
     func markRead(agentID: String, through: Int64) async throws -> JSONValue
+    func createContentReport(_ request: HolonContentReportRequest) async throws -> HolonContentReportResponse
     func stream(agentID: String?, after: String?) async throws -> ReadingStream
     func close() async
 }
 
 extension ReadingTransport {
+    func createContentReport(_ request: HolonContentReportRequest) async throws -> HolonContentReportResponse {
+        throw HolonClientError.invalidRequest
+    }
     func operatorPreview(agentID: String) async throws -> ReadingOperatorPreview? { nil }
     func activities(agentID: String, turnID: String, before: String?) async throws -> JSONValue {
         guard before == nil else { throw HolonClientError.invalidRequest }
@@ -251,6 +255,10 @@ actor ReadingClientTransport: ReadingTransport {
     }
     func markRead(agentID: String, through: Int64) async throws -> JSONValue {
         try await request { try await $0.markBriefRead(agentID: agentID, readThroughEventSeq: through) }
+    }
+
+    func createContentReport(_ body: HolonContentReportRequest) async throws -> HolonContentReportResponse {
+        try await request { try await $0.createContentReport(body) }
     }
     func stream(agentID: String?, after: String?) async throws -> ReadingStream {
         let identity = try await expected()

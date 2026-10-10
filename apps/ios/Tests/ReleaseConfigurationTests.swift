@@ -66,6 +66,24 @@ final class ReleaseConfigurationTests: XCTestCase {
         XCTAssertEqual(shareInfo["CFBundleVersion"] as? String, build)
     }
 
+    func testEmbeddedShareExtensionDeclaresAppGroupPreferencesUse() throws {
+        let plugins = Bundle.main.bundleURL.appendingPathComponent("PlugIns")
+        let extensions = try FileManager.default.contentsOfDirectory(
+            at: plugins, includingPropertiesForKeys: nil, options: .skipsHiddenFiles
+        ).filter { $0.pathExtension == "appex" }
+        XCTAssertEqual(extensions.count, 1)
+        let share = try XCTUnwrap(extensions.first)
+        let url = share.appendingPathComponent("PrivacyInfo.xcprivacy")
+        let manifest = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil) as? [String: Any]
+        )
+        let accessedAPIs = try XCTUnwrap(manifest["NSPrivacyAccessedAPITypes"] as? [[String: Any]])
+        XCTAssertEqual(accessedAPIs.count, 1)
+        let defaults = try XCTUnwrap(accessedAPIs.first)
+        XCTAssertEqual(defaults["NSPrivacyAccessedAPIType"] as? String, "NSPrivacyAccessedAPICategoryUserDefaults")
+        XCTAssertEqual(defaults["NSPrivacyAccessedAPITypeReasons"] as? [String], ["1C8F.1"])
+    }
+
     private func packagedInfoDictionary(in bundleURL: URL = Bundle.main.bundleURL) throws -> [String: Any] {
         // Bundle's runtime lookup resolves device qualifiers; inspect both variants as shipped.
         let url = bundleURL.appendingPathComponent("Info.plist")
