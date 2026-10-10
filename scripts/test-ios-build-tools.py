@@ -267,6 +267,37 @@ class UIFixtureSetupContracts(unittest.TestCase):
 
 
 class UIFixtureProviderContracts(unittest.TestCase):
+    def test_history_window_oracle_matches_reader_snapshot_limit(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        block = next(node for node in ast.walk(tree)
+                     if isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
+                     and isinstance(node.test.left, ast.Name) and node.test.left.id == "method"
+                     and any(isinstance(value, ast.Constant)
+                             and value.value == "testConversationHistoryWindowPosition"
+                             for value in node.test.comparators))
+        code = compile(ast.Module(body=[block], type_ignores=[]), str(source), "exec")
+        for count, older, newer in [(25, 0, 5), (33, 0, 13), (60, 25, 40)]:
+            with self.subTest(turns=count):
+                turns = [{"turn_id": f"turn-{index}", "key": {"turn_index": index}}
+                         for index in range(count)]
+
+                def snapshot(method, path):
+                    self.assertEqual(method, "GET")
+                    # The daemon defaults to 30; ReadingTransport explicitly reads 60.
+                    limit = 60 if path.endswith("?limit=60") else 30
+                    return {"turns": list(reversed(turns[-limit:]))}
+
+                local = Mock(side_effect=snapshot)
+                environment = {}
+                exec(code, dict(method="testConversationHistoryWindowPosition",
+                                agent="holon-tester", local=local, test_env=environment))
+                self.assertEqual(environment["TEST_RUNNER_HOLON_UI_HISTORY_OLDER_TOP"],
+                                 f"turn-{older}")
+                self.assertEqual(environment["TEST_RUNNER_HOLON_UI_HISTORY_NEWER_TOP"],
+                                 f"turn-{newer}")
+                local.assert_called_once_with("GET", "/agents/holon-tester/conversation?limit=60")
+
     def test_failed_history_seed_clears_scope(self):
         source = ROOT / "scripts/ios_ui_fixture.py"
         tree = ast.parse(source.read_text(), filename=str(source))

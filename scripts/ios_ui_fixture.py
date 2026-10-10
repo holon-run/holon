@@ -571,7 +571,8 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                                 ticket = local("POST", "/auth/pairing/issue")["ticket"]
                                 test_env["TEST_RUNNER_HOLON_UI_PAIRING_CODE"] = ticket
                             if method == "testConversationHistoryWindowPosition":
-                                history = local("GET", f"/agents/{agent}/conversation")
+                                # Match ReadingTransport's bounded summary, not the server default.
+                                history = local("GET", f"/agents/{agent}/conversation?limit=60")
                                 turns = sorted(history["turns"], key=lambda turn: turn["key"]["turn_index"])
                                 if len(turns) <= 20:
                                     raise RuntimeError("native history acceptance needs more than one window")
