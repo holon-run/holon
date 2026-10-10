@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -50,54 +50,37 @@ impl LocalSystem {
         Ok(())
     }
 
-    /// Kill entire process group by process group ID (Unix only)
+    /// Send one signal to an entire process group by process group ID.
     #[cfg(unix)]
-    fn kill_process_group(pgid: u32) -> Result<()> {
-        // Send SIGTERM to entire process group using negative PGID
+    fn send_process_group_signal(pgid: u32, signal: libc::c_int, signal_name: &str) -> Result<()> {
         let pgid_neg = -(pgid as i32);
         unsafe {
-            if libc::kill(pgid_neg, libc::SIGTERM) != 0 {
+            if libc::kill(pgid_neg, signal) != 0 {
                 let err = std::io::Error::last_os_error();
                 // ESRCH = no such process - already exited, treat as success
-                if err.raw_os_error() != Some(libc::ESRCH) {
-                    return Err(anyhow!(
-                        "failed to send SIGTERM to process group {}: {}",
-                        pgid,
-                        err
-                    ));
-                }
-            }
-        }
-
-        // Give processes 100ms to exit cleanly
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        // Force kill any remaining processes with SIGKILL
-        unsafe {
-            if libc::kill(pgid_neg, libc::SIGKILL) != 0 {
-                let err = std::io::Error::last_os_error();
-                // On macOS, sending SIGKILL to a process group whose leader has already
-                // exited can return EPERM instead of ESRCH. Treat both as "already dead".
-                let already_dead =
-                    matches!(err.raw_os_error(), Some(libc::ESRCH) | Some(libc::EPERM));
+                let already_dead = err.raw_os_error() == Some(libc::ESRCH)
+                    || (signal == libc::SIGKILL && err.raw_os_error() == Some(libc::EPERM));
                 if !already_dead {
                     return Err(anyhow!(
-                        "failed to send SIGKILL to process group {}: {}",
-                        pgid,
-                        err
+                        "failed to send {signal_name} to process group {pgid}: {err}"
                     ));
                 }
             }
         }
-
         Ok(())
     }
 
-    #[cfg(windows)]
-    fn kill_process_group(_pgid: u32) -> Result<()> {
-        // On Windows, process group termination is handled differently
-        // For now, this is a no-op since Windows handles job objects differently
-        Ok(())
+    /// Stop a Unix process group without blocking an async worker during the grace period.
+    #[cfg(unix)]
+    async fn stop_process_group(pgid: u32, signal: StopSignal) -> Result<()> {
+        match signal {
+            StopSignal::Graceful => {
+                Self::send_process_group_signal(pgid, libc::SIGTERM, "SIGTERM")?;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Self::send_process_group_signal(pgid, libc::SIGKILL, "SIGKILL")
+            }
+            StopSignal::Force => Self::send_process_group_signal(pgid, libc::SIGKILL, "SIGKILL"),
+        }
     }
 
     pub async fn open_output_file(&self, path: &Path) -> Result<tokio::fs::File> {
@@ -569,10 +552,10 @@ impl RunningProcess for LocalRunningProcess {
             .map(|status| status.map(Into::into))
     }
 
-    async fn stop(&mut self, _signal: StopSignal) -> Result<()> {
+    async fn stop(&mut self, signal: StopSignal) -> Result<()> {
         #[cfg(unix)]
         if let Some(ref pgid) = self.process_group_id {
-            return LocalSystem::kill_process_group(pgid.pid);
+            return LocalSystem::stop_process_group(pgid.pid, signal).await;
         }
         #[cfg(unix)]
         {
@@ -635,10 +618,10 @@ impl RunningProcess for LocalPtyRunningProcess {
         cached_exit_status(&self.exit_state).and_then(Option::transpose)
     }
 
-    async fn stop(&mut self, _signal: StopSignal) -> Result<()> {
+    async fn stop(&mut self, signal: StopSignal) -> Result<()> {
         #[cfg(unix)]
         if let Some(ref pgid) = self.process_group_id {
-            return LocalSystem::kill_process_group(pgid.pid);
+            return LocalSystem::stop_process_group(pgid.pid, signal).await;
         }
         #[cfg(unix)]
         {
@@ -893,7 +876,37 @@ mod tests {
             .await
             .unwrap();
         assert!(process.try_status().await.unwrap().is_none());
-        process.stop(StopSignal::Kill).await.unwrap();
+        process.stop(StopSignal::Graceful).await.unwrap();
+        let status = process.wait().await.unwrap();
+        assert!(!status.success());
+    }
+
+    #[tokio::test]
+    async fn force_stops_background_process_without_grace_period() {
+        let (_dir, execution) = effective_execution();
+        let system = LocalSystem::new();
+        let mut process = system
+            .spawn(
+                &execution,
+                ProcessRequest {
+                    program: ProgramInvocation::Shell {
+                        command: "trap '' TERM; sleep 5".into(),
+                        shell: Some("sh".into()),
+                        login: false,
+                    },
+                    cwd: None,
+                    env: vec![],
+                    stdin: StdioSpec::Null,
+                    tty: false,
+                    capture: CaptureSpec::NONE,
+                    timeout: None,
+                    purpose: ProcessPurpose::CommandTask,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(process.try_status().await.unwrap().is_none());
+        process.stop(StopSignal::Force).await.unwrap();
         let status = process.wait().await.unwrap();
         assert!(!status.success());
     }
