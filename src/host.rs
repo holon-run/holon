@@ -12603,6 +12603,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deletion_phase_home_refuses_live_home_colliding_with_trash_name() {
+        let (_home, host) = test_host();
+        let agents_root = host.config().data_dir.join("agents");
+        // Legacy live agent whose id equals the trash name of "customer".
+        let colliding = AgentIdentityRecord::new(
+            "customer.deleting_trash",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&colliding).unwrap();
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&colliding)
+            .unwrap();
+        let colliding_home = agents_root.join("customer.deleting_trash");
+        std::fs::create_dir_all(colliding_home.join("nested")).unwrap();
+        std::fs::write(colliding_home.join("nested/file.txt"), "live").unwrap();
+
+        let customer = AgentIdentityRecord::new(
+            "customer",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&customer).unwrap();
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&customer)
+            .unwrap();
+        std::fs::create_dir_all(agents_root.join("customer")).unwrap();
+
+        let (_identity, job, _created) = host
+            .begin_public_agent_deletion("customer", false, "operator")
+            .await
+            .unwrap();
+        let result = host.execute_deletion_job(job).await;
+
+        // The job must fail rather than remove the colliding live home.
+        assert!(result.is_err());
+        assert!(colliding_home.join("nested/file.txt").exists());
+    }
+
+    #[tokio::test]
     async fn daemon_deletion_coordinator_is_singleton_and_admission_wakes_it() {
         let (_home, host) = test_host();
         host.spawn_daemon_deletion_coordinator();
