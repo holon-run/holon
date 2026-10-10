@@ -147,6 +147,7 @@ pub(crate) fn provider_fallback_disposition(
         ProviderFailureKind::Timeout | ProviderFailureKind::Connection => {
             ProviderFallbackDisposition::Deferred
         }
+        ProviderFailureKind::RateLimited => ProviderFallbackDisposition::Deferred,
         _ => ProviderFallbackDisposition::Immediate,
     }
 }
@@ -1070,7 +1071,7 @@ mod tests {
         );
         assert_eq!(
             provider_fallback_disposition(ProviderFailureKind::RateLimited),
-            ProviderFallbackDisposition::Immediate
+            ProviderFallbackDisposition::Deferred
         );
     }
 
