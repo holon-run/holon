@@ -1303,9 +1303,20 @@ final class HolonUITests: XCTestCase {
     func testLostResponseAndProcessRecovery() async throws {
         let marker = "IOS_LOST_RESPONSE_SEND"
         let app = launch(language: "en", dark: false, large: false)
+        // The maximum-size composer case intentionally returns to Agents.
+        // Establish selection before testing restoration after process death.
+        if !app.buttons["conversation.more"].waitForExistence(timeout: 30) {
+            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15))
+            let agent = app.buttons["agent." + (try required("AGENT_ID"))]
+            XCTAssertTrue(agent.waitForExistence(timeout: 15))
+            reveal(agent, in: app); agent.tap()
+        }
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
         let editor = app.descendants(matching: .any)["sending.text"].firstMatch
         editor.tap(); editor.typeText(marker)
+        // The preceding composer case legitimately preserves its unsent draft.
+        let frozenText = try XCTUnwrap(editor.value as? String)
+        XCTAssertTrue(frozenText.contains(marker))
         app.buttons["sending.enqueue"].tap()
         func openQueue() {
             app.buttons["sending.options"].tap(); app.buttons["sending.queue"].tap()
@@ -1313,8 +1324,9 @@ final class HolonUITests: XCTestCase {
         openQueue()
         let unknown = app.staticTexts["sending.state.unknown"]
         XCTAssertTrue(unknown.waitForExistence(timeout: 30))
-        let row = app.cells.containing(.staticText, identifier: marker).firstMatch
+        let row = app.cells.containing(.staticText, identifier: frozenText).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 10))
+        XCTAssertTrue(row.staticTexts["sending.state.unknown"].exists)
         let uuid = row.staticTexts.matching(NSPredicate(format:
             "label MATCHES %@", "[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")).firstMatch.label
         XCTAssertNotNil(UUID(uuidString: uuid))
@@ -1322,15 +1334,17 @@ final class HolonUITests: XCTestCase {
         app.terminate(); app.launch()
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
         openQueue()
-        XCTAssertTrue(unknown.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts[uuid].exists, "Process death retains the original UUID")
+        let entry = app.cells.containing(.staticText, identifier: frozenText).firstMatch
+        XCTAssertTrue(entry.waitForExistence(timeout: 10), "Process death retains the frozen text")
+        XCTAssertTrue(entry.staticTexts["sending.state.unknown"].waitForExistence(timeout: 10))
+        XCTAssertTrue(entry.staticTexts["sending.requestID." + uuid].exists,
+                      "Process death retains the original UUID")
         var request = URLRequest(url: try XCTUnwrap(URL(string: required("LOSS_CONTROL_URL"))))
         request.httpMethod = "POST"
         request.setValue("Bearer " + (try required("LOSS_CONTROL_TOKEN")), forHTTPHeaderField: "Authorization")
         let (_, response) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 204)
-        let entry = app.cells.containing(.staticText, identifier: marker).firstMatch
-        let retry = app.buttons["sending.retry." + uuid]
+        let retry = entry.buttons["sending.retry." + uuid]
         XCTAssertTrue(retry.waitForExistence(timeout: 10))
         XCTAssertTrue(retry.isEnabled, "The original request must be explicitly retryable after restoration")
         let queueGeometry = XCTAttachment(string: app.debugDescription)
@@ -1338,7 +1352,7 @@ final class HolonUITests: XCTestCase {
         queueGeometry.lifetime = .keepAlways; add(queueGeometry)
         reveal(retry, in: app); retry.tap()
         XCTAssertTrue(entry.staticTexts["sending.state.received"].waitForExistence(timeout: 30))
-        XCTAssertTrue(app.staticTexts[uuid].exists)
+        XCTAssertTrue(entry.staticTexts["sending.requestID." + uuid].exists)
         capture(app, "lost-response-explicit-retry-received")
         app.terminate()
     }
