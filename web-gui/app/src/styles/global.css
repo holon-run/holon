@@ -2669,11 +2669,11 @@ code {
   line-height: 1.35;
 }
 
-.thinking-picker {
+.composer-option-picker {
   position: relative;
 }
 
-.thinking-button {
+.composer-option-button {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -2683,24 +2683,26 @@ code {
   transition: opacity 0.15s;
 }
 
-.thinking-icon {
+.composer-option-icon {
   flex: 0 0 auto;
   color: var(--accent);
 }
 
-.thinking-button:hover,
-.thinking-button[aria-expanded="true"] {
+.composer-option-button:hover,
+.composer-option-button[aria-expanded="true"] {
   opacity: 1;
 }
 
-.thinking-button small {
+.composer-option-button small {
   font-size: 11px;
   font-weight: 700;
   text-transform: capitalize;
   color: var(--muted);
 }
 
-.thinking-popover {
+.composer-option-popover {
+  width: max-content;
+  max-width: min(280px, calc(100vw - 24px));
   position: absolute;
   right: 0;
   bottom: calc(100% + 8px);
@@ -2713,9 +2715,24 @@ code {
   backdrop-filter: blur(16px);
 }
 
-.thinking-popover .reasoning-options button.is-saving {
-  opacity: 0.55;
-  pointer-events: none;
+.composer-option-title {
+  display: block;
+  margin: 2px 2px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.composer-option-description {
+  max-width: 264px;
+  margin: 9px 2px 2px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.composer-option-picker button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .model-menu {
@@ -7419,9 +7436,9 @@ code {
   .model-picker { min-width: 0; flex: 1 1 auto; }
   .model-button { min-width: 0; max-width: none; flex: 1 1 auto; }
   .model-button-label { max-width: 100%; }
-  .thinking-button { padding-inline: 5px; }
-  .thinking-button small { display: none; }
-  .thinking-popover { right: 0; max-width: calc(100vw - 24px); }
+  .composer-option-button { padding-inline: 5px; }
+  .composer-option-button small { display: none; }
+  .composer-option-popover { right: 0; max-width: calc(100vw - 24px); }
   .model-menu {
     box-sizing: border-box;
     max-width: calc(100vw - 24px);

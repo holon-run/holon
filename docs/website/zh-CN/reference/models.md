@@ -380,7 +380,8 @@ and capabilities.
 ## Fast mode
 
 Supported OpenAI and OpenAI Codex model routes expose an independent **Speed**
-selector in the Web GUI. **Inherit** uses the route default, **Standard**
+button and popover in the Web GUI, matching Thinking level. **Auto** uses the
+exact route default (or the upstream default when unset), **Standard**
 overrides a Fast default, and **Fast** requests faster processing with higher
 quota consumption or cost. Thinking level remains independent.
 
@@ -397,7 +398,9 @@ Runtime defaults are keyed by the complete model route:
 ```
 
 Use `holon config set model.route_options '<JSON object>'` to update these
-defaults. The agent model control API also accepts optional `service_tier`
+defaults. There is currently no dedicated Web GUI editor for route speed
+defaults and no provider-wide `openai.speed` setting. The agent model control
+API also accepts optional `service_tier`
 (`default` or `fast`) with `model` and `reasoning_effort`. An omitted value
 inherits the route default. `priority` is accepted as an alias for `fast`.
 Model changes replace the previous route override, and fallback candidates

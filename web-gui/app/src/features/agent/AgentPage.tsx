@@ -5,6 +5,8 @@ import {
   Paperclip,
   Square,
   Unplug,
+  Gauge,
+  Zap,
 } from "lucide-react";
 import {
   useEffect, useLayoutEffect, useMemo, useRef, useState,
@@ -18,6 +20,7 @@ import { rememberModel } from "../../lib/model-preferences";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
+import { ComposerOptionPicker } from "./ComposerOptionPicker";
 import { CurrentWorkBar } from "./CurrentWorkBar";
 import { ConversationSyncStatus, ConversationTimeline, type ConversationTimelineActions } from "./ConversationTimeline";
 import type { ConversationSessionModel } from "../../runtime/conversation-view-model";
@@ -173,7 +176,7 @@ export function AgentPage({
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [changingModel, setChangingModel] = useState<string | null>(null);
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("auto");
-  const [reasoningPopoverOpen, setReasoningPopoverOpen] = useState(false);
+  const [optionPopover, setOptionPopover] = useState<"speed" | "thinking" | null>(null);
   const [modelMenuStyle, setModelMenuStyle] = useState<CSSProperties | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const messageContentRef = useRef<HTMLDivElement | null>(null);
@@ -248,6 +251,8 @@ export function AgentPage({
   const selectedModelRoute = activeAgent.modelSelection ?? activeAgent.model;
   const selectedModelOption = modelCatalog.options.find((option) => option.routeRef === selectedModelRoute);
   const supportsFast = selectedModelOption?.serviceTierOptions?.includes("fast") ?? false;
+  const speedValue = activeAgent.modelServiceTierOverride ?? "inherit";
+  const speedLabel = speedValue === "fast" ? "Fast" : t(speedValue === "default" ? "agent.speedStandard" : "agent.speedAuto");
   const activeModelOption = useMemo(() => modelCatalog.options.find((option) => option.routeRef === activeAgent.model), [activeAgent.model, modelCatalog.options]);
   const selectionLabel = selectedModelOption ? `${selectedModelOption.displayName} · ${modelSourceLabel(selectedModelOption)}` : activeAgent.modelSelection ?? activeAgent.model;
   const activeModelSupportsReasoning = activeModelOption?.supportsReasoningEffort ?? Boolean(activeAgent.modelReasoningEffort);
@@ -257,9 +262,13 @@ export function AgentPage({
 
   useEffect(() => {
     setModelPickerOpen(false);
-    setReasoningPopoverOpen(false);
+    setOptionPopover(null);
     setSelectedReasoningEffort(activeAgent.modelReasoningEffort ?? "auto");
   }, [activeAgent.id, activeAgent.modelReasoningEffort]);
+
+  useEffect(() => {
+    setOptionPopover(null);
+  }, [selectedModelRoute]);
 
   useEffect(() => {
     return () => {
@@ -552,7 +561,7 @@ export function AgentPage({
 
   function toggleModelPicker() {
     const opening = !modelPickerOpen;
-    if (opening) setReasoningPopoverOpen(false);
+    if (opening) setOptionPopover(null);
     setModelPickerOpen(opening);
     if (opening && !modelCatalogLoading && modelCatalog.options.length === 0) {
       void onRefreshModels();
@@ -594,6 +603,7 @@ export function AgentPage({
 
   async function handleServiceTierChange(value: string) {
     if (changingModel || !supportsFast) return;
+    setOptionPopover(null);
     setChangingModel("service_tier:" + value);
     try {
       await onSetModel(selectedModelRoute, activeAgent.modelReasoningEffort, value === "inherit" ? undefined : value);
@@ -606,7 +616,7 @@ export function AgentPage({
 
   async function handleReasoningChange(effort: string) {
     setSelectedReasoningEffort(effort);
-    setReasoningPopoverOpen(false);
+    setOptionPopover(null);
     if (changingModel || !activeModelSupportsReasoning) return;
     setChangingModel("reasoning:" + effort);
     try {
@@ -774,54 +784,43 @@ export function AgentPage({
                     <span aria-hidden="true">⌄</span>
                   </Button>
                   {supportsFast ? (
-                    <label className="speed-picker" title={`${t("agent.fastUsageHint")}\n${selectedModelRoute}`}>
-                      <span>{t("agent.speedMode")}</span>
-                      <select
-                        aria-label={t("agent.speedMode")}
-                        value={activeAgent.modelServiceTierOverride ?? "inherit"}
-                        disabled={changingModel !== null}
-                        onChange={(event) => void handleServiceTierChange(event.target.value)}
-                      >
-                        <option value="inherit">{t("agent.speedInherit")}{activeAgent.model === selectedModelRoute && activeAgent.modelServiceTier ? ` (${activeAgent.modelServiceTier === "fast" ? "Fast" : t("agent.speedStandard")})` : ""}</option>
-                        <option value="default">{t("agent.speedStandard")}</option>
-                        <option value="fast">Fast</option>
-                      </select>
-                    </label>
+                    <ComposerOptionPicker
+                      kind="speed"
+                      title={t("agent.speedMode")}
+                      label={speedLabel}
+                      triggerLabel={t("agent.speedAria", { speed: speedLabel })}
+                      icon={speedValue === "fast" ? <Zap className="composer-option-icon" size={14} aria-hidden="true" /> : <Gauge size={14} aria-hidden="true" />}
+                      value={speedValue}
+                      options={[
+                        { value: "inherit", label: t("agent.speedAuto") },
+                        { value: "default", label: t("agent.speedStandard") },
+                        { value: "fast", label: "Fast" },
+                      ]}
+                      description={`${t("agent.speedAutoHint")} ${t("agent.fastUsageHint")}`}
+                      disabled={changingModel !== null}
+                      open={optionPopover === "speed"}
+                      onOpenChange={(open) => { if (open) setModelPickerOpen(false); setOptionPopover(open ? "speed" : null); }}
+                      onChange={(value) => void handleServiceTierChange(value)}
+                    />
                   ) : null}
                   {activeModelSupportsReasoning ? (
-                    <div className="thinking-picker">
-                      <Button
-                        className="thinking-button"
-                        type="button"
-                        variant="ghost"
-                        aria-expanded={reasoningPopoverOpen}
-                        aria-label={t("agent.thinkingAria", { level: activeReasoningBadge ?? "auto" })}
-                        title={t("agent.thinkingLevelValue", { level: activeReasoningBadge ?? "auto" })}
-                        onClick={() => setReasoningPopoverOpen((prev) => !prev)}
-                      >
-                        <svg className="thinking-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                          <path d="M8 1.5L6 6H2.5L5.5 8.5L4 13L8 10L12 13L10.5 8.5L13.5 6H10L8 1.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/>
+                    <ComposerOptionPicker
+                      kind="thinking"
+                      title={t("agent.thinkingLevel")}
+                      label={titleCase(activeReasoningBadge ?? "auto")}
+                      triggerLabel={t("agent.thinkingAria", { level: activeReasoningBadge ?? "auto" })}
+                      icon={(
+                        <svg className="composer-option-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                          <path d="M8 1.5L6 6H2.5L5.5 8.5L4 13L8 10L12 13L10.5 8.5L13.5 6H10L8 1.5Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" fill="none" />
                         </svg>
-                        <small>{titleCase(activeReasoningBadge ?? "auto")}</small>
-                      </Button>
-                      {reasoningPopoverOpen ? (
-                        <div className="thinking-popover" role="dialog" aria-label={t("agent.thinkingLevel")}>
-                          <div className="reasoning-options">
-                            {["auto", ...(activeModelOption?.reasoningEffortOptions ?? [])].map((effort) => (
-                              <button
-                                className={`${(activeReasoningBadge ?? "auto") === effort ? "is-active" : ""} ${changingModel === "reasoning:" + effort ? "is-saving" : ""}`}
-                                key={effort}
-                                type="button"
-                                disabled={changingModel !== null}
-                                onClick={() => void handleReasoningChange(effort)}
-                              >
-                                {titleCase(effort)}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
+                      )}
+                      value={activeReasoningBadge ?? "auto"}
+                      options={["auto", ...(activeModelOption?.reasoningEffortOptions ?? [])].map((effort) => ({ value: effort, label: titleCase(effort) }))}
+                      disabled={changingModel !== null}
+                      open={optionPopover === "thinking"}
+                      onOpenChange={(open) => { if (open) setModelPickerOpen(false); setOptionPopover(open ? "thinking" : null); }}
+                      onChange={(effort) => void handleReasoningChange(effort)}
+                    />
                   ) : null}
                   {modelPickerOpen && modelMenuStyle ? (
                     createPortal(
