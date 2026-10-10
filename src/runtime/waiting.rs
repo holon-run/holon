@@ -201,12 +201,17 @@ impl RuntimeHandle {
         let mut index_changes = Vec::new();
         if let Some(work_item_id) = resolved.work_item_id.as_deref() {
             if let Some(existing) = self.inner.runtime_db.work_items().latest(work_item_id)? {
+                // The blocker is cleared only when this wait derived it
+                // (`blocked_by_wait_id`), never by display-text equality: a
+                // same-text independent blocker stays authoritative together
+                // with its recheck deadline.
                 if existing.state == WorkItemState::Open
-                    && existing.blocked_by.as_deref() == Some(resolved.waiting_for.as_str())
+                    && existing.blocked_by_wait_id.as_deref() == Some(resolved.id.as_str())
                 {
                     let mut record = WorkItemRecord {
                         revision: existing.revision + 1,
                         blocked_by: None,
+                        blocked_by_wait_id: None,
                         recheck_at: None,
                         recheck_consumed_at: None,
                         updated_at: now,
@@ -580,6 +585,7 @@ impl RuntimeHandle {
             let mut updated = WorkItemRecord {
                 revision: existing.revision + 1,
                 blocked_by: Some(reason.clone()),
+                blocked_by_wait_id: Some(condition.id.clone()),
                 recheck_at,
                 recheck_consumed_at: None,
                 updated_at: now,
@@ -993,11 +999,38 @@ impl RuntimeHandle {
         let mut work_item = None;
         let mut blocked_readiness = Value::Null;
         if let Some(existing) = existing_waiter_work_item.as_ref() {
+            // A pre-existing blocker survives only when it is independent of
+            // this task wait: either no wait derived it, or it was derived by
+            // a replaced non-task wait (for example an external dependency
+            // the model keeps watching). A blocker derived by a replaced task
+            // wait is taken over by this wait so the settlement of the exact
+            // task result can still clear it.
+            let blocker_taken_over =
+                existing
+                    .blocked_by_wait_id
+                    .as_deref()
+                    .is_some_and(|owner_wait_id| {
+                        wait_conditions.iter().any(|record| {
+                            record.id == owner_wait_id
+                                && record.id != condition.id
+                                && record.kind == crate::types::WaitConditionKind::Task
+                        })
+                    });
+            let (blocked_by, blocked_by_wait_id) = match existing.blocked_by.clone() {
+                Some(blocker) if !blocker_taken_over => {
+                    (Some(blocker), existing.blocked_by_wait_id.clone())
+                }
+                _ => (
+                    Some(condition.waiting_for.clone()),
+                    Some(condition.id.clone()),
+                ),
+            };
             let mut updated = WorkItemRecord {
                 revision: existing.revision + 1,
-                blocked_by: Some(condition.waiting_for.clone()),
-                recheck_at: None,
-                recheck_consumed_at: None,
+                blocked_by,
+                blocked_by_wait_id,
+                recheck_at: existing.recheck_at,
+                recheck_consumed_at: existing.recheck_consumed_at,
                 updated_at: now,
                 ..existing.clone()
             };
@@ -1342,6 +1375,7 @@ impl RuntimeHandle {
             record = WorkItemRecord {
                 revision: existing.revision + 1,
                 blocked_by: None,
+                blocked_by_wait_id: None,
                 recheck_at: None,
                 recheck_consumed_at: None,
                 updated_at: now,

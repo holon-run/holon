@@ -30,9 +30,19 @@ resolved/cancelled waits stay rejected.
 
 ## Preserved boundary
 
-`Triggered -> Resolved` still happens only in the canonical consuming claim
-(`wait_resolution_transition_for_message`), and the claim still clears a
-WorkItem blocker only when it equals the wait's own `waiting_for` text.
-Independent blockers held by other owners or agent-scope waits keep the
-existing settlement-ledger deferred recheck path; `blocked_by` remains a
-compatibility/display field, not a new scheduler authority.
+`Triggered -> Resolved` happens in the canonical consuming claim
+(`wait_resolution_transition_for_message`) and in one deferred-settlement
+exception: when an exact task result meets an independent WorkItem blocker,
+the scheduler applies the same transition without opening a consuming
+attempt, and the task-result settlement ledger provides the owner-scoped
+recovery wake after the blocker is explicitly cleared
+(`docs/rfcs/scheduler-work-item-unified-execution-protocol.md`).
+
+Blocker ownership is decided by registration provenance
+(`WorkItemRecord::blocked_by_wait_id`), never by display-text equality: the
+claim clears a WorkItem blocker only when the settling wait derived it, so a
+same-text independent blocker stays authoritative together with its recheck
+deadline. The late fast path preserves such an independent `blocked_by`
+value; a blocker derived by a replaced task wait is taken over by the new
+wait so its settlement can still clear it. A blocker owned by the task wait
+remains eligible for the canonical claim.

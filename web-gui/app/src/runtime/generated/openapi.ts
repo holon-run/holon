@@ -6029,6 +6029,13 @@ export interface components {
             current_work_item: {
                 agent_id: string;
                 blocked_by?: string | null;
+                /**
+                 * @description The wait condition whose registration derived the current `blocked_by`.
+                 *      `None` when the blocker was set independently (operator update, turn
+                 *      closure, scheduler) or predates blocker provenance. Blocker ownership
+                 *      is decided by this identity, never by display-text equality.
+                 */
+                blocked_by_wait_id?: string | null;
                 completion_intent?: {
                     /** Format: date-time */
                     created_at: string;
@@ -6112,6 +6119,13 @@ export interface components {
             previous_work_item?: {
                 agent_id: string;
                 blocked_by?: string | null;
+                /**
+                 * @description The wait condition whose registration derived the current `blocked_by`.
+                 *      `None` when the blocker was set independently (operator update, turn
+                 *      closure, scheduler) or predates blocker provenance. Blocker ownership
+                 *      is decided by this identity, never by display-text equality.
+                 */
+                blocked_by_wait_id?: string | null;
                 completion_intent?: {
                     /** Format: date-time */
                     created_at: string;
@@ -7815,6 +7829,13 @@ export interface components {
         WorkItemRecord: {
             agent_id: string;
             blocked_by?: string | null;
+            /**
+             * @description The wait condition whose registration derived the current `blocked_by`.
+             *      `None` when the blocker was set independently (operator update, turn
+             *      closure, scheduler) or predates blocker provenance. Blocker ownership
+             *      is decided by this identity, never by display-text equality.
+             */
+            blocked_by_wait_id?: string | null;
             completion_intent?: {
                 /** Format: date-time */
                 created_at: string;

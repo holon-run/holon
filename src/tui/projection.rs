@@ -1522,6 +1522,7 @@ fn tui_work_item_from_dto(item: SlimWorkItemDto) -> WorkItemSchedulingProjection
             todo_list: Vec::new(),
             work_refs: Vec::new(),
             blocked_by: item.blocked_by,
+            blocked_by_wait_id: None,
             recheck_at: item.recheck_at,
             recheck_consumed_at: None,
             result_brief_id: item.result_brief_id,

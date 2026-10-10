@@ -11572,6 +11572,13 @@
                   "null"
                 ]
               },
+              "blocked_by_wait_id": {
+                "description": "The wait condition whose registration derived the current `blocked_by`.\n `None` when the blocker was set independently (operator update, turn\n closure, scheduler) or predates blocker provenance. Blocker ownership\n is decided by this identity, never by display-text equality.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "completion_intent": {
                 "properties": {
                   "created_at": {
@@ -11878,6 +11885,13 @@
                 "type": "string"
               },
               "blocked_by": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "blocked_by_wait_id": {
+                "description": "The wait condition whose registration derived the current `blocked_by`.\n `None` when the blocker was set independently (operator update, turn\n closure, scheduler) or predates blocker provenance. Blocker ownership\n is decided by this identity, never by display-text equality.",
                 "type": [
                   "string",
                   "null"
@@ -18259,6 +18273,13 @@
             "type": "string"
           },
           "blocked_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "blocked_by_wait_id": {
+            "description": "The wait condition whose registration derived the current `blocked_by`.\n `None` when the blocker was set independently (operator update, turn\n closure, scheduler) or predates blocker provenance. Blocker ownership\n is decided by this identity, never by display-text equality.",
             "type": [
               "string",
               "null"

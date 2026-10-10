@@ -3795,6 +3795,8 @@ impl RuntimeHandle {
         if let Some(blocked_by) = blocked_by {
             let now = self.now();
             record.blocked_by = blocked_by;
+            // An explicit operator/agent blocker is never wait-derived.
+            record.blocked_by_wait_id = None;
             match record.blocked_by {
                 Some(_) => {
                     let recheck_after_ms = recheck_after_ms.unwrap_or(60 * 60 * 1000);
