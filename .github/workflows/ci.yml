@@ -108,7 +108,10 @@ on:
     - cron: "40 2 * * *"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Main pushes get a per-commit group: a group allows only one running and
+  # one pending run, so queued main CI runs were cancelled when the next push
+  # arrived. PRs keep the per-PR group with cancel-on-update.
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -595,6 +598,7 @@ jobs:
           load: true
           push: false
           tags: holon:ci
+          labels: org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=holon-docker
           cache-to: type=gha,mode=max,scope=holon-docker
 
@@ -620,13 +624,16 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-      - name: Publish latest image
+      - name: Publish images
         if: github.event_name == 'push'
         run: |
           set -euo pipefail
           repository="$(printf '%s' "ghcr.io/${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          commit_tag="${repository}:main-${GITHUB_SHA:0:8}"
           docker tag holon:ci "${repository}:latest"
+          docker tag holon:ci "${commit_tag}"
           docker push "${repository}:latest"
+          docker push "${commit_tag}"
 
   template-validation:
     name: Agent templates
