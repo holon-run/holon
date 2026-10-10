@@ -126,21 +126,6 @@ pub struct WorkQueueReadModel {
     pub completed_recent: Vec<WorkItemSchedulingProjection>,
 }
 
-impl WorkQueueReadModel {
-    pub fn has_non_current_candidates(&self) -> bool {
-        self.triggered_blocked.iter().any(|item| !item.is_current)
-            || self.queued_runnable.iter().any(|item| !item.is_current)
-            || self.yielded.iter().any(|item| !item.is_current)
-            || self
-                .waiting_for_operator
-                .iter()
-                .any(|item| !item.is_current)
-            || self.blocked.iter().any(|item| !item.is_current)
-            || self.completing.iter().any(|item| !item.is_current)
-            || self.completed_recent.iter().any(|item| !item.is_current)
-    }
-}
-
 impl WorkItemRecord {
     pub fn readiness(&self) -> WorkItemReadiness {
         record_only_readiness(self)
