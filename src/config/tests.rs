@@ -1142,6 +1142,30 @@ fn set_get_and_unset_round_trip_web_config() {
 }
 
 #[test]
+fn set_get_and_unset_round_trip_model_fallbacks_accepts_auto_marker() {
+    let mut config = HolonConfigFile::default();
+    set_config_key(
+        &mut config,
+        "model.fallbacks",
+        r#"["auto","anthropic/claude-sonnet-4"]"#,
+    )
+    .unwrap();
+    assert_eq!(
+        get_config_key(&config, "model.fallbacks").unwrap(),
+        Value::Array(vec![
+            Value::String("auto".to_string()),
+            Value::String("anthropic@default/claude-sonnet-4".to_string()),
+        ])
+    );
+
+    unset_config_key(&mut config, "model.fallbacks").unwrap();
+    assert_eq!(
+        get_config_key(&config, "model.fallbacks").unwrap(),
+        Value::Array(Vec::new())
+    );
+}
+
+#[test]
 fn set_get_and_unset_round_trip_unknown_model_fallback_field() {
     let mut config = HolonConfigFile::default();
     set_config_key(
@@ -2150,8 +2174,8 @@ fn model_selection_explicit_config_wins() {
     let (default_model, fallback_models) = super::resolve_model_selection_from_explicit(
         Some(route_ref("anthropic/claude-sonnet-4-6")),
         Some(vec![
-            route_ref("openai/gpt-5.4"),
-            route_ref("anthropic/claude-sonnet-4-6"),
+            super::FallbackEntry::Route(route_ref("openai/gpt-5.4")),
+            super::FallbackEntry::Route(route_ref("anthropic/claude-sonnet-4-6")),
         ]),
         &providers,
         &HashMap::new(),
@@ -2167,7 +2191,10 @@ fn model_selection_explicit_config_wins() {
             .into_iter()
             .map(|model| model.as_string())
             .collect::<Vec<_>>(),
-        vec!["openai@default/gpt-5.4"]
+        vec![
+            "openai@default/gpt-5.4",
+            "anthropic@default/claude-sonnet-4-6"
+        ]
     );
 }
 
@@ -2189,7 +2216,69 @@ fn model_selection_derives_from_authenticated_providers() {
             .into_iter()
             .map(|model| model.as_string())
             .collect::<Vec<_>>(),
-        vec!["anthropic@default/claude-fable-5"]
+        vec!["openai@default/gpt-5.4", "anthropic@default/claude-fable-5"]
+    );
+}
+
+#[test]
+fn model_selection_explicit_auto_expands_to_authenticated_candidates() {
+    let providers = provider_registry_for_tests(
+        Some("openai-key"),
+        Some("anthropic-token"),
+        tempdir().unwrap().path().join("codex-home"),
+    );
+
+    let (default_model, fallback_models) = super::resolve_model_selection_from_explicit(
+        Some(route_ref("anthropic/claude-sonnet-4-6")),
+        Some(vec![super::FallbackEntry::Auto]),
+        &providers,
+        &HashMap::new(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        default_model.as_string(),
+        "anthropic@default/claude-sonnet-4-6"
+    );
+    assert_eq!(
+        fallback_models
+            .into_iter()
+            .map(|model| model.as_string())
+            .collect::<Vec<_>>(),
+        vec!["openai@default/gpt-5.4", "anthropic@default/claude-fable-5"]
+    );
+}
+
+#[test]
+fn model_selection_mixed_auto_and_explicit_fallbacks_expand_in_order() {
+    let providers = provider_registry_for_tests(
+        Some("openai-key"),
+        Some("anthropic-token"),
+        tempdir().unwrap().path().join("codex-home"),
+    );
+
+    let (default_model, fallback_models) = super::resolve_model_selection_from_explicit(
+        Some(route_ref("openai/gpt-5.4")),
+        Some(vec![
+            super::FallbackEntry::Route(route_ref("minimax/MiniMax-M3")),
+            super::FallbackEntry::Auto,
+        ]),
+        &providers,
+        &HashMap::new(),
+    )
+    .unwrap();
+
+    assert_eq!(default_model.as_string(), "openai@default/gpt-5.4");
+    assert_eq!(
+        fallback_models
+            .into_iter()
+            .map(|model| model.as_string())
+            .collect::<Vec<_>>(),
+        vec![
+            "minimax@default/MiniMax-M3",
+            "openai@default/gpt-5.4",
+            "anthropic@default/claude-fable-5"
+        ]
     );
 }
 
@@ -2346,7 +2435,13 @@ fn model_selection_derives_custom_provider_from_catalog_override() {
         super::resolve_model_selection_from_explicit(None, None, &providers, &overrides).unwrap();
 
     assert_eq!(default_model.as_string(), "custom-openai@default/model-a");
-    assert!(fallback_models.is_empty());
+    assert_eq!(
+        fallback_models
+            .into_iter()
+            .map(|model| model.as_string())
+            .collect::<Vec<_>>(),
+        vec!["custom-openai@default/model-a"]
+    );
 }
 
 #[test]
@@ -2438,7 +2533,7 @@ fn provider_chain_returns_only_effective_model_when_fallback_disabled() {
 }
 
 #[test]
-fn provider_chain_with_override_inserts_override_before_runtime_default() {
+fn provider_chain_with_override_follows_fallbacks_without_runtime_default() {
     let fixture = test_app_config(
         "anthropic@default/claude-sonnet-4-6",
         &[
@@ -2459,8 +2554,8 @@ fn provider_chain_with_override_inserts_override_before_runtime_default() {
         chain,
         vec![
             "openai@default/gpt-5.4-mini",
-            "anthropic@default/claude-sonnet-4-6",
             "openai@default/gpt-5.4",
+            "anthropic@default/claude-sonnet-4-6",
         ]
     );
 }

@@ -198,11 +198,11 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         },
         ConfigSchemaEntry {
             key: "model.fallbacks",
-            kind: "model_route_ref_list",
+            kind: "model_route_ref_list_or_auto",
             description:
-                "Explicit fallback provider@endpoint/model route refs. Legacy provider/model input remains accepted. Null or an empty persisted list means unset; when unset, the runtime derives fallbacks from authenticated providers.",
+                "Ordered fallback provider@endpoint/model route refs; entries may also be the auto marker. Legacy provider/model input remains accepted. Unset or empty defaults to auto, which expands to one preferred route per authenticated provider. The provider chain is the primary (agent override or model.default) followed by these fallbacks; model.default never joins the chain as an implicit fallback.",
             default: Value::Null,
-            allowed_values: vec![],
+            allowed_values: vec!["auto"],
         },
         ConfigSchemaEntry {
             key: "vision.default",
@@ -1552,9 +1552,12 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
             config.model.default = Some(parsed.as_string());
         }
         "model.fallbacks" => {
-            config.model.fallbacks = parse_model_ref_list(raw_value)?
+            config.model.fallbacks = parse_fallback_entry_list(raw_value)?
                 .into_iter()
-                .map(|model| model.as_string())
+                .map(|entry| match entry {
+                    FallbackEntry::Auto => "auto".to_string(),
+                    FallbackEntry::Route(route) => route.as_string(),
+                })
                 .collect();
         }
         "vision.default" => {

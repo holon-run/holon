@@ -582,11 +582,9 @@ impl RuntimeModelCatalog {
         if self.disable_provider_fallback {
             return vec![self.effective_model(model_override)];
         }
-        let mut chain = Vec::new();
-        if let Some(model_override) = model_override {
-            chain.push(model_override.clone());
-        }
-        chain.push(self.default_model.clone());
+        // The default model is only the primary when no override is set; it
+        // never joins the chain as an implicit fallback entry.
+        let mut chain = vec![self.effective_model(model_override)];
         for model in &self.fallback_models {
             if !chain.iter().any(|existing| existing == model) {
                 chain.push(model.clone());
@@ -1047,9 +1045,53 @@ pub(crate) fn validate_optional_model_runtime_override(
         .map(|value| value.filter(|entry| !entry.is_empty()))
 }
 
+/// A configured fallback entry: an explicit route ref or the `auto` marker,
+/// which expands to one preferred route per authenticated provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FallbackEntry {
+    Auto,
+    Route(ModelRouteRef),
+}
+
+pub(crate) fn parse_fallback_entry(value: &str) -> Result<FallbackEntry> {
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("auto") {
+        return Ok(FallbackEntry::Auto);
+    }
+    ModelRouteRef::parse_compatible(trimmed).map(FallbackEntry::Route)
+}
+
+pub(crate) fn parse_fallback_entry_list(raw_value: &str) -> Result<Vec<FallbackEntry>> {
+    let trimmed = raw_value.trim();
+    if trimmed.starts_with('[') {
+        let values: Vec<String> =
+            serde_json::from_str(trimmed).context("expected a JSON string array")?;
+        let parsed: Vec<FallbackEntry> = values
+            .iter()
+            .map(|s| s.trim())
+            .filter(|value| !value.is_empty())
+            .map(parse_fallback_entry)
+            .collect::<Result<Vec<_>>>()?;
+        if parsed.is_empty() {
+            return Err(anyhow!("model ref list must not be empty"));
+        }
+        return Ok(parsed);
+    }
+    let values = raw_value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(parse_fallback_entry)
+        .collect::<Result<Vec<_>>>()?;
+    if values.is_empty() {
+        return Err(anyhow!("model ref list must not be empty"));
+    }
+    Ok(values)
+}
+
 pub(crate) fn resolve_model_selection_for_load_mode(
     explicit_default: Option<ModelRouteRef>,
-    explicit_fallbacks: Option<Vec<ModelRouteRef>>,
+    explicit_fallbacks: Option<Vec<FallbackEntry>>,
     providers: &ProviderRegistry,
     model_overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
     mode: ConfigLoadMode,
@@ -1062,10 +1104,19 @@ pub(crate) fn resolve_model_selection_for_load_mode(
                 "unknown",
             )
         });
-        let fallback_models = explicit_fallbacks.unwrap_or_default();
+        // Auto entries cannot expand without authenticated providers; keep
+        // only explicit routes in modes that skip authenticated resolution.
+        let fallback_models = explicit_fallbacks
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|entry| match entry {
+                FallbackEntry::Route(route) => Some(route),
+                FallbackEntry::Auto => None,
+            })
+            .collect();
         return Ok((
             default_model.clone(),
-            dedupe_fallback_models(fallback_models, &default_model),
+            dedupe_fallback_models(fallback_models),
         ));
     }
 
@@ -1079,11 +1130,16 @@ pub(crate) fn resolve_model_selection_for_load_mode(
 
 pub(crate) fn resolve_model_selection_from_explicit(
     explicit_default: Option<ModelRouteRef>,
-    explicit_fallbacks: Option<Vec<ModelRouteRef>>,
+    explicit_fallbacks: Option<Vec<FallbackEntry>>,
     providers: &ProviderRegistry,
     model_overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
 ) -> Result<(ModelRouteRef, Vec<ModelRouteRef>)> {
-    let auth_candidates = if explicit_default.is_none() || explicit_fallbacks.is_none() {
+    let needs_auth_candidates = explicit_default.is_none()
+        || explicit_fallbacks
+            .as_ref()
+            .map(|entries| entries.iter().any(|entry| *entry == FallbackEntry::Auto))
+            .unwrap_or(true);
+    let auth_candidates = if needs_auth_candidates {
         authenticated_model_route_candidates(providers, model_overrides)
     } else {
         Vec::new()
@@ -1096,16 +1152,20 @@ pub(crate) fn resolve_model_selection_from_explicit(
                 "no default model configured and no authenticated provider with a known model is available; set HOLON_MODEL or model.default, or configure provider credentials"
             )
         })?;
-    let fallback_models = explicit_fallbacks.unwrap_or_else(|| {
-        auth_candidates
-            .into_iter()
-            .filter(|model| model != &default_model)
-            .collect()
-    });
+    // Unset fallbacks default to auto; auto entries expand in place to the
+    // authenticated candidates without excluding the default model.
+    let fallback_entries = explicit_fallbacks.unwrap_or_else(|| vec![FallbackEntry::Auto]);
+    let mut fallback_models = Vec::new();
+    for entry in fallback_entries {
+        match entry {
+            FallbackEntry::Auto => fallback_models.extend(auth_candidates.iter().cloned()),
+            FallbackEntry::Route(route) => fallback_models.push(route),
+        }
+    }
 
     Ok((
         default_model.clone(),
-        dedupe_fallback_models(fallback_models, &default_model),
+        dedupe_fallback_models(fallback_models),
     ))
 }
 
@@ -1123,16 +1183,16 @@ pub(crate) fn resolve_default_model(
 
 pub(crate) fn resolve_fallback_models(
     stored_config: &HolonConfigFile,
-) -> Result<Option<Vec<ModelRouteRef>>> {
+) -> Result<Option<Vec<FallbackEntry>>> {
     if let Ok(value) = env::var("HOLON_MODEL_FALLBACKS") {
-        Ok(Some(parse_model_ref_list(&value)?))
+        Ok(Some(parse_fallback_entry_list(&value)?))
     } else if !stored_config.model.fallbacks.is_empty() {
         Ok(Some(
             stored_config
                 .model
                 .fallbacks
                 .iter()
-                .map(|value| ModelRouteRef::parse_compatible(value))
+                .map(|value| parse_fallback_entry(value))
                 .collect::<Result<Vec<_>>>()?,
         ))
     } else {
@@ -1221,47 +1281,13 @@ pub(crate) fn preferred_override_model_for_provider(
     models.into_iter().next()
 }
 
-pub(crate) fn dedupe_fallback_models(
-    configured: Vec<ModelRouteRef>,
-    default_model: &ModelRouteRef,
-) -> Vec<ModelRouteRef> {
-    configured
-        .into_iter()
-        .filter(|model| model != default_model)
-        .fold(Vec::new(), |mut acc, model| {
-            if !acc.iter().any(|existing| existing == &model) {
-                acc.push(model);
-            }
-            acc
-        })
-}
-
-pub(crate) fn parse_model_ref_list(raw_value: &str) -> Result<Vec<ModelRouteRef>> {
-    let trimmed = raw_value.trim();
-    if trimmed.starts_with('[') {
-        let values: Vec<String> =
-            serde_json::from_str(trimmed).context("expected a JSON string array")?;
-        let parsed: Vec<ModelRouteRef> = values
-            .iter()
-            .map(|s| s.trim())
-            .filter(|value| !value.is_empty())
-            .map(ModelRouteRef::parse_compatible)
-            .collect::<Result<Vec<_>>>()?;
-        if parsed.is_empty() {
-            return Err(anyhow!("model ref list must not be empty"));
+pub(crate) fn dedupe_fallback_models(configured: Vec<ModelRouteRef>) -> Vec<ModelRouteRef> {
+    configured.into_iter().fold(Vec::new(), |mut acc, model| {
+        if !acc.iter().any(|existing| existing == &model) {
+            acc.push(model);
         }
-        return Ok(parsed);
-    }
-    let values = raw_value
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ModelRouteRef::parse_compatible)
-        .collect::<Result<Vec<_>>>()?;
-    if values.is_empty() {
-        return Err(anyhow!("model ref list must not be empty"));
-    }
-    Ok(values)
+        acc
+    })
 }
 
 #[cfg(test)]
@@ -1540,32 +1566,59 @@ mod tests {
     }
 
     #[test]
-    fn parse_model_ref_list_json_array() {
-        let refs =
-            parse_model_ref_list(r#"["openai-codex/gpt-5","anthropic/claude-sonnet-4"]"#).unwrap();
-        assert_eq!(refs.len(), 2);
-        assert_eq!(refs[0].provider.as_str(), "openai-codex");
-        assert_eq!(refs[1].provider.as_str(), "anthropic");
+    fn parse_fallback_entry_list_json_array() {
+        let entries =
+            parse_fallback_entry_list(r#"["openai-codex/gpt-5","anthropic/claude-sonnet-4"]"#)
+                .unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                FallbackEntry::Route(ModelRouteRef::parse("openai-codex@default/gpt-5").unwrap()),
+                FallbackEntry::Route(
+                    ModelRouteRef::parse("anthropic@default/claude-sonnet-4").unwrap()
+                ),
+            ]
+        );
     }
 
     #[test]
-    fn parse_model_ref_list_json_array_single() {
-        let refs = parse_model_ref_list(r#"["openai-codex/gpt-5"]"#).unwrap();
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].provider.as_str(), "openai-codex");
+    fn parse_fallback_entry_list_accepts_auto_marker() {
+        let entries = parse_fallback_entry_list(r#"["auto","openai-codex/gpt-5"]"#).unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                FallbackEntry::Auto,
+                FallbackEntry::Route(ModelRouteRef::parse("openai-codex@default/gpt-5").unwrap()),
+            ]
+        );
     }
 
     #[test]
-    fn parse_model_ref_list_comma_separated() {
-        let refs = parse_model_ref_list("openai-codex/gpt-5, anthropic/claude-sonnet-4").unwrap();
-        assert_eq!(refs.len(), 2);
-        assert_eq!(refs[0].provider.as_str(), "openai-codex");
-        assert_eq!(refs[1].provider.as_str(), "anthropic");
+    fn parse_fallback_entry_list_auto_marker_is_case_insensitive() {
+        let entries = parse_fallback_entry_list("AUTO, anthropic/claude-sonnet-4").unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                FallbackEntry::Auto,
+                FallbackEntry::Route(
+                    ModelRouteRef::parse("anthropic@default/claude-sonnet-4").unwrap()
+                ),
+            ]
+        );
     }
 
     #[test]
-    fn parse_model_ref_list_empty_json_array_rejected() {
-        assert!(parse_model_ref_list("[]").is_err());
+    fn parse_fallback_entry_list_comma_separated() {
+        let entries =
+            parse_fallback_entry_list("openai-codex/gpt-5, anthropic/claude-sonnet-4").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(entries[0], FallbackEntry::Route(_)));
+        assert!(matches!(entries[1], FallbackEntry::Route(_)));
+    }
+
+    #[test]
+    fn parse_fallback_entry_list_empty_json_array_rejected() {
+        assert!(parse_fallback_entry_list("[]").is_err());
     }
 }
 

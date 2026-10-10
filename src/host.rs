@@ -10721,7 +10721,12 @@ mod tests {
 
     #[tokio::test]
     async fn agent_summary_reports_runtime_default_then_override_and_clear() {
-        let fixture = provider_test_config(Some("dummy-token"));
+        let mut fixture = provider_test_config(Some("dummy-token"));
+        // Mirror a load-time materialized fallback list: unset fallbacks
+        // default to auto, so production configs still keep an available
+        // provider when the override route itself is unauthenticated.
+        fixture.config.fallback_models =
+            vec![ModelRouteRef::parse_compatible("anthropic/claude-sonnet-5").unwrap()];
         let host = RuntimeHost::new(fixture.config).unwrap();
         let runtime = host.default_runtime().await.unwrap();
 
@@ -10833,10 +10838,7 @@ mod tests {
 
         assert_eq!(
             runtime.current_provider().await.configured_model_refs(),
-            vec![
-                "anthropic@default/claude-haiku-4-5".to_string(),
-                "anthropic@default/claude-sonnet-5".to_string(),
-            ]
+            vec!["anthropic@default/claude-haiku-4-5".to_string()]
         );
     }
 
@@ -10915,10 +10917,7 @@ mod tests {
 
         assert_eq!(
             child.current_provider().await.configured_model_refs(),
-            vec![
-                "anthropic@default/claude-haiku-4-5".to_string(),
-                "anthropic@default/claude-sonnet-5".to_string(),
-            ]
+            vec!["anthropic@default/claude-haiku-4-5".to_string()]
         );
     }
 
