@@ -639,11 +639,11 @@ no retention duration. `GetAgent` on the current parent includes a bounded
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `runtime.reclamation.reminders_enabled` | boolean | `false` | Deliver durable, deduplicated internal reminders; at most one batch of 16 children per parent per day |
+| `runtime.reclamation.reminders_enabled` | boolean | `true` | Deliver durable, deduplicated internal reminders; at most one batch of 16 children per parent per day |
 | `runtime.reclamation.idle_retirement_enabled` | boolean | `false` | Cooperatively exit fully idle child runtime instances, preserving identity, history and files |
 | `runtime.reclamation.idle_grace_seconds` | positive_integer | `600` | Observation grace before a reminder or idle instance retirement; does not expire identities |
 
-Both background actions are opt-in and use runtime config reload. Stopped or
+Reminders are enabled by default; idle retirement is opt-in. Both actions use runtime config reload. Stopped or
 budget-exhausted parents are deferred. Missing supervision and repeatedly failed
 parent cleanup produce deduplicated operator attention without an extra model
 call. Disabling an action stops new admissions; accepted deletion jobs continue.

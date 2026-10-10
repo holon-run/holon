@@ -13731,9 +13731,45 @@ mod tests {
                 Some(Utc::now() + chrono::Duration::hours(1)),
             ))
             .unwrap();
-        host.begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+        let wake_created_at = crate::runtime_db::migrations::timestamp(Utc::now());
+        host.runtime_db()
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO timer_wakes (timer_id, message_id, fire_count, status, created_at, updated_at) \
+                     VALUES ('cleanup-active-timer', 'cleanup-timer-wake-message', 1, 'pending', ?1, ?1)",
+                    [wake_created_at.as_str()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let job = host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
             .await
             .unwrap();
+        // Run the job to completion: admitted timers must be cancelled
+        // instead of surviving as active rows behind the deleted identity.
+        host.execute_deletion_job(job).await.unwrap();
+        assert_eq!(
+            host.runtime_db()
+                .timers()
+                .latest("cleanup-active-timer")
+                .unwrap()
+                .unwrap()
+                .status,
+            TimerStatus::Cancelled
+        );
+        let wake_status = host
+            .runtime_db()
+            .transaction(|tx| {
+                let status: String = tx.query_row(
+                    "SELECT status FROM timer_wakes WHERE message_id = 'cleanup-timer-wake-message'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                Ok(status)
+            })
+            .unwrap();
+        assert_eq!(wake_status, "cancelled");
 
         // Protected artifacts still block.
         let child = retained_cleanup_fixture(&host, "parent-cleanup-protected-artifact");

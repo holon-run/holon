@@ -731,14 +731,29 @@ impl RuntimeHost {
     /// deletion first.
     async fn deletion_phase_quiesce(&self, agent_id: &str, job: &AgentDeletionJob) -> Result<()> {
         if job.mode == AgentDeletionMode::ParentCleanup {
-            return self.runtime_db().transaction(|tx| {
+            self.runtime_db().transaction(|tx| {
                 if let Some(blocker) =
                     crate::runtime_db::reclamation::parent_cleanup_blocker_tx(tx, agent_id)?
                 {
                     anyhow::bail!("agent_cleanup_blocked: {blocker}");
                 }
                 Ok(())
-            });
+            })?;
+            // Admitted retention state is not quiesced by any later
+            // ParentCleanup phase; cancel active timers and their pending
+            // wakes so they cannot outlive the deleted identity.
+            let cancelled_timers = self
+                .runtime_db()
+                .timers()
+                .cancel_active_for_agent(agent_id, Utc::now())?;
+            if cancelled_timers > 0 {
+                debug!(
+                    agent_id,
+                    count = cancelled_timers,
+                    "cancelled admitted timers"
+                );
+            }
+            return Ok(());
         }
         // Cascade private children first.
         if job.cascade_private_children {
