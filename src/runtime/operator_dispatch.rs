@@ -130,6 +130,11 @@ impl RuntimeHandle {
         self.reconfigure_provider_for_turn(model_selection.fallback_model())
             .await?;
         if let Some(recovery) = model_selection.recovery.as_ref() {
+            let source = crate::runtime::provider_recovery::resolve_for_context(
+                &self.inner.storage,
+                message,
+            )?
+            .ok_or_else(|| anyhow!("provider recovery source resolution missing"))?;
             let (turn_id, run_id) = {
                 let guard = self.inner.agent.lock().await;
                 (
@@ -147,6 +152,9 @@ impl RuntimeHandle {
                     "fallback_model_ref": recovery.fallback_model_ref,
                     "source_turn_id": recovery.source_turn_id,
                     "source_message_id": recovery.source_message_id,
+                    "root_message_id": source.root_message.id,
+                    "predecessor_attempt_id": source.predecessor.attempt_id,
+                    "source_binding": source.predecessor.binding,
                     "source_terminal_kind": recovery.source_terminal_kind,
                     "source_round": recovery.source_round,
                 }),

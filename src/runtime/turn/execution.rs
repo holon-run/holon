@@ -592,7 +592,7 @@ impl RuntimeHandle {
             AuthorityClass::RuntimeInstruction,
             Priority::Next,
             MessageBody::Text {
-                text: "Runtime recovery: the previous turn stopped after the active provider failed. Continue from the persisted transcript, current work item, and workspace state. Do not assume hidden provider continuation state is still available. Do not repeat completed tool work unless current evidence shows it is necessary.".into(),
+                text: "Runtime recovery: the previous turn stopped after the active provider failed. Continue the validated source task from persisted evidence and workspace state. Current focus is not the authority for choosing the recovery task. Do not assume hidden provider continuation state is still available. Do not repeat completed tool work unless current evidence shows it is necessary.".into(),
             },
         )
         .with_admission(
@@ -606,8 +606,6 @@ impl RuntimeHandle {
                 .current_execution_binding
                 .as_ref()
                 .and_then(|binding| binding.work_item_id.clone())
-                .or_else(|| guard.state.current_turn_work_item_id.clone())
-                .or_else(|| guard.state.current_work_item_id.clone())
         };
         let source_message_id = {
             let guard = self.inner.agent.lock().await;

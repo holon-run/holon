@@ -232,7 +232,8 @@ Suggested recovery context:
 
 ```text
 Runtime recovery: the previous turn stopped after the active provider failed.
-Continue from the persisted transcript, current work item, and workspace state.
+Continue the validated source task from persisted evidence and workspace state.
+Current focus is not the authority for choosing the recovery task.
 Do not assume hidden provider continuation state is still available. Do not
 repeat completed tool work unless current evidence shows it is necessary.
 ```
@@ -254,6 +255,33 @@ the provider, context policy, tool surface, and prompt are built. Those surfaces
 all use the same snapshot. `AgentState.pending_fallback_model` remains readable
 for state-schema compatibility, but it is not a model-routing source and new
 execution paths do not write it.
+
+### 5.7 Recovery Task And Owner Are Source-Bound
+
+The directive identifies the direct failed source Turn, not whichever Turn was
+most recent in an owner-filtered history window. Resolve it against durable
+same-agent message, Turn terminal, and predecessor execution records before
+admission. The recovery attempt inherits the predecessor's complete binding,
+including Conversation identity or explicit AgentLifecycle ownership. An
+absent source WorkItem must not fall back to the current focus.
+
+For repeated fallback, follow validated predecessor links to the original task
+input with a bounded, cycle-checked traversal. Intermediate recovery messages
+and unrelated later operator messages cannot replace that input. Preserve its
+original origin and trust: lifecycle or external input does not become operator
+input merely because the runtime is recovering it.
+
+The original task body and source relation are pinned context truth independent
+of the recent-history window, WorkItemScoped reprojection, and compact anchors.
+Hydrate the direct source Turn through the existing history path; its tool
+evidence remains subject to ordinary context budgeting. This does not merge all
+other-owner history or create a second recovery-history store.
+
+Missing or conflicting source facts, terminal/binding mismatches, and invalid
+lineage fail closed with a visible reason and source references. If the pinned
+minimum cannot fit, use the existing explicit context-budget failure path;
+never call a provider with a silently truncated or missing recovery task.
+Diagnostic records carry identifiers and reasons, not additional task bodies.
 
 Recovery audit lifecycle is explicit:
 
@@ -373,8 +401,12 @@ queued wake is admitted. The recovery directive must bind to a durable
 same-agent source message, matching provider-failure terminal Turn, and
 terminal execution attempt; the recovery attempt records that predecessor.
 `Paused`, `NeedsRepair`, `Terminal`, and already `InFlight` WorkItems remain
-ineligible. Missing, malformed, or unbound recovery directives fail closed
-rather than falling back to ordinary internal-follow-up scheduling.
+ineligible. Conversation and AgentLifecycle recovery are also typed recovery
+admissions: they inherit their validated predecessor binding and carry no
+WorkItem revision or generation fences. Missing, malformed, or source-conflicting
+directives fail closed rather than falling back to ordinary internal-follow-up
+scheduling. These rules do not broaden ordinary timer, task, or external wake
+authority.
 
 ## 8. Runtime State Model
 

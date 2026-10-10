@@ -28,6 +28,9 @@ pub(crate) const EXPLICITLY_BOUND_OPERATOR_INPUT_SCENARIO: SchedulerScenarioClas
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CanonicalActivationScenario {
+    UnboundProviderRecovery {
+        agent_id: String,
+    },
     WorkItemAutonomousContinuation {
         work_item_id: String,
         expected_work_item_revision: u64,
@@ -63,6 +66,9 @@ pub(crate) enum CanonicalActivationScenario {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CanonicalActivationCandidate {
+    UnboundProviderRecovery {
+        agent_id: String,
+    },
     UnboundTaskResultWaitOrReduce,
     WorkItemAutonomousContinuation {
         work_item_id: String,
@@ -123,7 +129,7 @@ impl CanonicalActivationScenario {
             | Self::ExactTaskRejoin { work_item_id, .. }
             | Self::ExplicitlyBoundOperatorInput { work_item_id, .. } => Some(work_item_id),
             Self::ExactWaitResume { owner, .. } => owner.work_item_id(),
-            Self::LifecycleExternalNudge { .. } => None,
+            Self::LifecycleExternalNudge { .. } | Self::UnboundProviderRecovery { .. } => None,
         }
     }
 }
@@ -137,9 +143,9 @@ impl CanonicalActivationCandidate {
             | Self::ProviderRecovery { .. }
             | Self::InternalFollowup { .. } => WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
             Self::ExactTaskRejoin { .. } => EXACT_TASK_REJOIN_SCENARIO,
-            Self::ExactWaitResume { .. } | Self::LifecycleExternalNudge { .. } => {
-                EXACT_WAIT_RESUME_SCENARIO
-            }
+            Self::ExactWaitResume { .. }
+            | Self::LifecycleExternalNudge { .. }
+            | Self::UnboundProviderRecovery { .. } => EXACT_WAIT_RESUME_SCENARIO,
             Self::ExplicitlyBoundOperatorInput { .. } => EXPLICITLY_BOUND_OPERATOR_INPUT_SCENARIO,
         }
     }
@@ -157,7 +163,7 @@ impl CanonicalActivationCandidate {
                 expected_work_item_id,
                 ..
             } => expected_work_item_id.as_deref(),
-            Self::LifecycleExternalNudge { .. } => None,
+            Self::LifecycleExternalNudge { .. } | Self::UnboundProviderRecovery { .. } => None,
         }
     }
 }
@@ -815,12 +821,15 @@ pub(crate) fn canonical_activation_candidate(
         // nudge rather than being rejected as an unclassified model re-entry.
     }
     if message.kind == MessageKind::InternalFollowup {
-        if let Some(work_item_id) = message.work_item_id.clone() {
-            if super::turn::TurnModelSelection::message_has_provider_recovery_provenance(message) {
-                return Ok(Some(CanonicalActivationCandidate::ProviderRecovery {
-                    work_item_id,
-                }));
-            }
+        if super::turn::TurnModelSelection::message_has_provider_recovery_provenance(message) {
+            return Ok(Some(match message.work_item_id.clone() {
+                Some(work_item_id) => {
+                    CanonicalActivationCandidate::ProviderRecovery { work_item_id }
+                }
+                None => CanonicalActivationCandidate::UnboundProviderRecovery {
+                    agent_id: message.agent_id.clone(),
+                },
+            }));
         }
         return Ok(if let Some(work_item_id) = message.work_item_id.clone() {
             Some(CanonicalActivationCandidate::InternalFollowup { work_item_id })
@@ -988,6 +997,11 @@ pub(crate) fn resolve_canonical_activation_scenario(
     if let CanonicalActivationCandidate::ProviderRecovery { work_item_id } = candidate {
         return Ok(Some(CanonicalActivationScenario::ProviderRecovery {
             work_item_id,
+        }));
+    }
+    if let CanonicalActivationCandidate::UnboundProviderRecovery { agent_id } = candidate {
+        return Ok(Some(CanonicalActivationScenario::UnboundProviderRecovery {
+            agent_id,
         }));
     }
     if let CanonicalActivationCandidate::InternalFollowup { work_item_id } = candidate {

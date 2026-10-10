@@ -1106,6 +1106,902 @@ impl AgentProvider for WorkItemReentryProbeProvider {
     }
 }
 
+struct SourceBoundRecoveryProvider {
+    requests: Arc<Mutex<Vec<ProviderTurnRequest>>>,
+    failures: usize,
+}
+
+#[async_trait]
+impl AgentProvider for SourceBoundRecoveryProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let count = {
+            let mut requests = self.requests.lock().await;
+            requests.push(request);
+            requests.len()
+        };
+        if count <= self.failures {
+            return DeferredFallbackProvider
+                .complete_turn(ProviderTurnRequest::plain("unused", Vec::new(), Vec::new()))
+                .await;
+        }
+        Ok(ProviderTurnResponse {
+            blocks: vec![ModelBlock::Text {
+                text: "Recovered the source task.".into(),
+            }],
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+
+    fn select_model_lineage(
+        &self,
+        _: &crate::config::ModelRouteRef,
+    ) -> Option<Arc<dyn AgentProvider>> {
+        Some(Arc::new(Self {
+            requests: self.requests.clone(),
+            failures: self.failures,
+        }))
+    }
+
+    fn prompt_capabilities(&self) -> Vec<crate::provider::ProviderPromptCapability> {
+        vec![crate::provider::ProviderPromptCapability::FullRequestOnly]
+    }
+}
+
+async fn execute_queued_recovery(runtime: &RuntimeHandle) -> MessageEnvelope {
+    execute_source_bound_round(runtime, true).await
+}
+
+async fn execute_source_bound_round(runtime: &RuntimeHandle, recovery: bool) -> MessageEnvelope {
+    let queued = runtime
+        .inner
+        .agent
+        .lock()
+        .await
+        .queue
+        .peek()
+        .cloned()
+        .expect("queued recovery");
+    if recovery {
+        let state = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap();
+        super::super::provider_recovery::resolve(runtime.storage(), &queued, &state)
+            .expect("durable recovery source must resolve before admission");
+    }
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!(
+            "provider recovery must be admitted: {:?}",
+            runtime
+                .storage()
+                .read_recent_events(20)
+                .unwrap()
+                .iter()
+                .filter_map(|event| event.data.get("reason").cloned())
+                .collect::<Vec<_>>()
+        );
+    };
+    if recovery {
+        assert!(
+            crate::runtime::turn::TurnModelSelection::message_has_provider_recovery_provenance(
+                &scheduled.message
+            )
+        );
+    }
+    let terminal = runtime
+        .process_interactive_message_deferred_with_cleanup(
+            &scheduled.message,
+            scheduled.dispatch_plan.continuation_resolution.as_ref(),
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: scheduled.message.id.clone(),
+                agent_id: scheduled.message.agent_id.clone(),
+                priority: scheduled.message.priority.clone(),
+                status: QueueEntryStatus::Processed,
+                created_at: scheduled.message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
+    scheduled.message
+}
+
+async fn execute_source_bound_input(runtime: &RuntimeHandle, root: &MessageEnvelope) {
+    runtime.enqueue(root.clone()).await.unwrap();
+    execute_source_bound_round(runtime, false).await;
+}
+
+#[tokio::test]
+async fn provider_recovery_conversation_pins_root_across_hops_without_claiming_focus() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut config = context_config();
+    config.recent_messages = 1;
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(SourceBoundRecoveryProvider {
+            requests: requests.clone(),
+            failures: 2,
+        }),
+        "default".into(),
+        config,
+    )
+    .unwrap();
+    let focus = runtime
+        .create_work_item(
+            "unrelated focus task".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(focus.id.clone()).await.unwrap();
+    let before = runtime.latest_work_item(&focus.id).await.unwrap().unwrap();
+    let mut root = trusted_operator_prompt(
+        None,
+        "SOURCE_BOUND_ROOT_TASK_UNIQUE: perform the new task, not the focus task.",
+    );
+    root.priority = Priority::Interject;
+    execute_source_bound_input(&runtime, &root).await;
+    let source_execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let source_attempt = source_execution
+        .attempts
+        .values()
+        .find(|attempt| attempt.source_message_id.as_deref() == Some(root.id.as_str()))
+        .unwrap();
+    assert!(matches!(
+        source_attempt.binding,
+        crate::domain::execution_protocol::ExecutionBinding::Conversation { .. }
+    ));
+    let binding = source_attempt.binding.clone();
+
+    // Later operator input is history, not a replacement task source.
+    let mut unrelated = trusted_operator_prompt(None, "UNRELATED_LATER_OPERATOR_TASK");
+    unrelated.message_seq = Some(999);
+    runtime.storage().append_message(&unrelated).unwrap();
+    for index in 10..14 {
+        let mut turn = TurnRecord::new("default", format!("unrelated-window-{index}"), index);
+        turn.owner = Some(crate::types::TurnOwner::WorkItem {
+            work_item_id: focus.id.clone(),
+        });
+        turn.current_work_item_id = Some(focus.id.clone());
+        runtime.storage().append_turn(&turn).unwrap();
+    }
+    let first = execute_queued_recovery(&runtime).await;
+    let second = execute_queued_recovery(&runtime).await;
+    for recovery in [&first, &second] {
+        let MessageBody::Text { text } = &recovery.body else {
+            panic!("recovery must carry a text context");
+        };
+        assert!(text.contains("Continue the validated source task from persisted evidence"));
+        assert!(text.contains("Current focus is not the authority for choosing the recovery task"));
+        assert!(!text.contains("current work item"));
+    }
+    assert!(first.work_item_id.is_none() && second.work_item_id.is_none());
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    for recovery in [&first, &second] {
+        let attempt = execution
+            .attempts
+            .values()
+            .find(|attempt| attempt.source_message_id.as_deref() == Some(recovery.id.as_str()))
+            .unwrap();
+        assert_eq!(attempt.binding, binding);
+        assert!(attempt.recovery_of_attempt_id.is_some());
+        assert_eq!(
+            attempt.provenance.origin,
+            crate::domain::execution_protocol::ExecutionOrigin::RuntimeRecovery
+        );
+    }
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 3);
+    for (request, recovery) in requests[1..].iter().zip([&first, &second]) {
+        let blocks = &request.prompt_frame.context_blocks;
+        let anchor = blocks
+            .iter()
+            .find(|block| block.text.starts_with("## continuation_anchor\n"))
+            .unwrap();
+        let MessageBody::Text { text: root_text } = &root.body else {
+            panic!("text root");
+        };
+        assert!(anchor.text.contains(root_text));
+        assert!(anchor.text.contains("operator_instruction"));
+        assert!(!anchor.text.contains("UNRELATED_LATER_OPERATOR_TASK"));
+        assert!(!blocks
+            .iter()
+            .any(|block| block.text.starts_with("## current_work_item\n")
+                && block.text.contains(&focus.id)));
+        let direct_source = runtime
+            .storage()
+            .read_message_by_id(&recovery.source_refs["source_message_id"])
+            .unwrap()
+            .unwrap();
+        let MessageBody::Text { text: source_text } = &direct_source.body else {
+            panic!("text source");
+        };
+        assert!(blocks
+            .iter()
+            .any(|block| block.text.starts_with("## recent_turns\n")
+                && block.text.contains(recovery_source_turn_id(recovery))
+                && block.text.contains(source_text)));
+    }
+    assert_eq!(
+        runtime.latest_work_item(&focus.id).await.unwrap().unwrap(),
+        before
+    );
+    assert_eq!(
+        runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .current_work_item_id
+            .as_deref(),
+        Some(focus.id.as_str())
+    );
+    assert!(!runtime
+        .storage()
+        .read_recent_events(200)
+        .unwrap()
+        .iter()
+        .any(|event| event
+            .data
+            .to_string()
+            .contains("provider_projection_capability_unavailable")));
+    assert!(!runtime
+        .storage()
+        .read_recent_events(200)
+        .unwrap()
+        .iter()
+        .filter(|event| event.kind == "recovery_turn_started")
+        .any(|event| event
+            .data
+            .to_string()
+            .contains("SOURCE_BOUND_ROOT_TASK_UNIQUE")));
+}
+
+#[tokio::test]
+async fn provider_recovery_work_item_scoped_request_pins_source_outside_owner_window() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut config = context_config();
+    config.recent_messages = 1;
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(SourceBoundRecoveryProvider {
+            requests: requests.clone(),
+            failures: 1,
+        }),
+        "default".into(),
+        config,
+    )
+    .unwrap();
+    let source = runtime
+        .create_work_item(
+            "source task".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(source.id.clone()).await.unwrap();
+    let root = trusted_operator_prompt(
+        Some(&source.id),
+        "SCOPED_SOURCE_ROOT: recover this exact source task.",
+    );
+    execute_source_bound_input(&runtime, &root).await;
+    let other = runtime
+        .create_work_item(
+            "unrelated new focus".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(other.id.clone()).await.unwrap();
+    let other_before = runtime.latest_work_item(&other.id).await.unwrap().unwrap();
+    // Fill more than the scoped window as well as the agent history window.
+    for index in 100..135 {
+        let mut turn = TurnRecord::new("default", format!("scoped-window-{index}"), index);
+        turn.owner = Some(crate::types::TurnOwner::WorkItem {
+            work_item_id: source.id.clone(),
+        });
+        turn.current_work_item_id = Some(source.id.clone());
+        runtime.storage().append_turn(&turn).unwrap();
+    }
+    let recovery = execute_queued_recovery(&runtime).await;
+    assert_eq!(recovery.work_item_id.as_deref(), Some(source.id.as_str()));
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let source_attempt = execution
+        .attempts
+        .values()
+        .find(|attempt| attempt.source_message_id.as_deref() == Some(root.id.as_str()))
+        .unwrap();
+    let recovery_attempt = execution
+        .attempts
+        .values()
+        .find(|attempt| attempt.source_message_id.as_deref() == Some(recovery.id.as_str()))
+        .unwrap();
+    assert_eq!(recovery_attempt.binding, source_attempt.binding);
+    assert_eq!(
+        recovery_attempt.recovery_of_attempt_id.as_deref(),
+        Some(source_attempt.attempt_id.as_str())
+    );
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    let blocks = &requests[1].prompt_frame.context_blocks;
+    let anchor = blocks
+        .iter()
+        .find(|block| block.text.starts_with("## continuation_anchor\n"))
+        .unwrap();
+    let MessageBody::Text { text: root_text } = &root.body else {
+        panic!("text root");
+    };
+    assert!(anchor.text.contains(root_text));
+    let history = blocks
+        .iter()
+        .find(|block| block.text.starts_with("## recent_turns\n"))
+        .unwrap();
+    assert!(history.text.contains(recovery_source_turn_id(&recovery)));
+    assert!(history.text.contains(root_text));
+    let current = blocks
+        .iter()
+        .find(|block| block.text.starts_with("## current_work_item\n"))
+        .unwrap();
+    assert!(current.text.contains(&source.id));
+    assert!(!current.text.contains(&other.id));
+    let events = runtime.storage().read_recent_events(200).unwrap();
+    assert!(
+        events.iter().any(
+            |event| event.data["context_management"]["history_projection"]["history_selector"]
+                == "work_item_scoped"
+                && event.data["context_management"]["history_projection"]["fallback_reason"]
+                    .is_null()
+        ),
+        "scoped projection must actually be adopted"
+    );
+    assert!(!events.iter().any(|event| event
+        .data
+        .to_string()
+        .contains("provider_projection_capability_unavailable")));
+    assert_eq!(
+        runtime.latest_work_item(&other.id).await.unwrap().unwrap(),
+        other_before
+    );
+    assert_eq!(
+        runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .current_work_item_id
+            .as_deref(),
+        Some(other.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn provider_recovery_lifecycle_keeps_root_trust_and_no_work_item_fences() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(SourceBoundRecoveryProvider {
+            requests: requests.clone(),
+            failures: 1,
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let focus = runtime
+        .create_work_item(
+            "unrelated lifecycle focus".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(focus.id.clone()).await.unwrap();
+    let before = runtime.latest_work_item(&focus.id).await.unwrap().unwrap();
+    let root = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "source-bound-lifecycle".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "LIFECYCLE_ROOT_TASK: retain runtime provenance.".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    execute_source_bound_input(&runtime, &root).await;
+    let recovery = execute_queued_recovery(&runtime).await;
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let attempt = execution
+        .attempts
+        .values()
+        .find(|attempt| attempt.source_message_id.as_deref() == Some(recovery.id.as_str()))
+        .unwrap();
+    assert_eq!(
+        attempt.binding,
+        crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
+            agent_id: "default".into()
+        }
+    );
+    assert!(attempt.admitted_fences.work_item_generation.is_none());
+    assert!(attempt.admitted_fences.work_item_source_revision.is_none());
+    let requests = requests.lock().await;
+    let anchor = requests[1]
+        .prompt_frame
+        .context_blocks
+        .iter()
+        .find(|block| block.text.starts_with("## continuation_anchor\n"))
+        .unwrap();
+    assert!(anchor.text.contains("LIFECYCLE_ROOT_TASK"));
+    assert!(anchor.text.contains("runtime_instruction"));
+    assert!(!anchor.text.contains("operator_instruction"));
+    assert_eq!(
+        runtime.latest_work_item(&focus.id).await.unwrap().unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn provider_recovery_pinned_root_minimum_fails_closed_before_provider_request() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(SourceBoundRecoveryProvider {
+            requests: requests.clone(),
+            failures: 1,
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let root_text = "PINNED_ROOT_MUST_REMAIN_COMPLETE ".repeat(80);
+    let root = trusted_operator_prompt(None, &root_text);
+    execute_source_bound_input(&runtime, &root).await;
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!("recoverable source must be admitted");
+    };
+    let mut state = runtime.agent_state().await.unwrap();
+    state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+        activation_id: None,
+        admission_provenance: None,
+        source_message_id: scheduled.message.id.clone(),
+        turn_id: "budget-context-projection".into(),
+        owner: None,
+        work_item_id: None,
+        claimed_work_revision: None,
+    });
+    let view = runtime.workspace_view_from_state(&state).unwrap();
+    let execution = runtime.execution_snapshot_for_view(
+        state.execution_profile.clone(),
+        &view,
+        &state.attached_workspaces,
+    );
+    let build = |budget| {
+        let mut config = context_config();
+        config.prompt_budget_estimated_tokens = budget;
+        crate::context::build_context(
+            runtime.storage(),
+            &state,
+            &execution,
+            &crate::types::SkillsRuntimeView::default(),
+            &scheduled.message,
+            scheduled.dispatch_plan.continuation_resolution.as_ref(),
+            &config,
+            runtime.agent_home().as_path(),
+        )
+    };
+    let initial = build(16000).unwrap();
+    let minimum = initial
+        .plan_evidence
+        .decisions
+        .iter()
+        .filter(|decision| {
+            ["current_input", "continuation_anchor"].contains(&decision.candidate_id.as_str())
+        })
+        .map(|decision| decision.minimum_estimated_tokens)
+        .sum::<usize>();
+    let exact = build(minimum).unwrap();
+    let anchor = exact
+        .sections
+        .iter()
+        .find(|section| section.id == "continuation_anchor")
+        .unwrap();
+    assert!(anchor.content.contains(&root_text));
+    assert!(build(minimum - 1)
+        .unwrap_err()
+        .to_string()
+        .contains("pinned_minimum_over_budget"));
+    runtime
+        .inner
+        .context_config
+        .write()
+        .await
+        .prompt_budget_estimated_tokens = minimum - 1;
+    let error = runtime
+        .process_interactive_message_deferred_with_cleanup(
+            &scheduled.message,
+            scheduled.dispatch_plan.continuation_resolution.as_ref(),
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("pinned_minimum_over_budget"));
+    assert_eq!(requests.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn provider_recovery_source_validation_rejects_invalid_partitions_owners_terminals_and_cycles(
+) {
+    use crate::domain::execution_protocol::{
+        ExecutionAttemptState, ExecutionBinding, ExecutionSourceIdentity,
+    };
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item(
+            "source validation".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let recovery = provider_recovery_message(&runtime, &work.id);
+    let state = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let resolve =
+        |message: &MessageEnvelope,
+         state: &crate::domain::execution_protocol::ExecutionProtocolState| {
+            super::super::provider_recovery::resolve(runtime.storage(), message, state)
+        };
+    let valid = resolve(&recovery, &state).unwrap();
+    let mut forged_root = recovery.clone();
+    forged_root.metadata.as_mut().unwrap()["provider_recovery"]["root_message_id"] =
+        serde_json::json!("unrelated-root");
+    assert_eq!(
+        resolve(&forged_root, &state).unwrap().root_message.id,
+        valid.root_message.id
+    );
+    let predecessor_id = valid.predecessor.attempt_id.clone();
+    let mut wrong = state.clone();
+    wrong.agent_id = "other-agent".into();
+    assert!(resolve(&recovery, &wrong).is_err());
+    let mut wrong = state.clone();
+    wrong.attempts.get_mut(&predecessor_id).unwrap().agent_id = "other-agent".into();
+    assert!(resolve(&recovery, &wrong).is_err());
+    let mut wrong = state.clone();
+    wrong.attempts.get_mut(&predecessor_id).unwrap().binding = ExecutionBinding::Conversation {
+        interaction_id: "wrong-owner".into(),
+    };
+    assert!(resolve(&recovery, &wrong)
+        .unwrap_err()
+        .to_string()
+        .contains("binding"));
+    let mut wrong = state.clone();
+    wrong.attempts.get_mut(&predecessor_id).unwrap().state = ExecutionAttemptState::Open;
+    assert!(resolve(&recovery, &wrong).is_err());
+    let mut wrong = state.clone();
+    wrong.outcomes.clear();
+    assert!(resolve(&recovery, &wrong).is_err());
+    let mut wrong_message = recovery.clone();
+    wrong_message.metadata.as_mut().unwrap()["provider_recovery"]["source_terminal_kind"] =
+        serde_json::json!("completed");
+    assert!(resolve(&wrong_message, &state).is_err());
+
+    let mut cycle = recovery.clone();
+    cycle.turn_id = Some("cycle-turn".into());
+    cycle.causation_id = Some(cycle.id.clone());
+    cycle
+        .source_refs
+        .insert("source_turn_id".into(), "cycle-turn".into());
+    cycle
+        .source_refs
+        .insert("source_message_id".into(), cycle.id.clone());
+    cycle.metadata.as_mut().unwrap()["provider_recovery"]["source_turn_id"] =
+        serde_json::json!("cycle-turn");
+    cycle.metadata.as_mut().unwrap()["provider_recovery"]["source_message_id"] =
+        serde_json::json!(cycle.id);
+    runtime.storage().append_message(&cycle).unwrap();
+    let mut cycle_turn = valid.source_turn.clone();
+    cycle_turn.turn_id = "cycle-turn".into();
+    cycle_turn.turn_index = 2;
+    cycle_turn.input_message_ids = vec![cycle.id.clone()];
+    cycle_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&cycle));
+    runtime.storage().append_turn(&cycle_turn).unwrap();
+    let mut cyclic_state = state.clone();
+    let mut cyclic_attempt = valid.predecessor.clone();
+    cyclic_attempt.attempt_id = "cycle-attempt".into();
+    cyclic_attempt.source_message_id = Some(cycle.id.clone());
+    cyclic_attempt.turn_id = Some("cycle-turn".into());
+    cyclic_attempt.source.identity = ExecutionSourceIdentity::RuntimeRecovery {
+        recovery_id: cycle.id.clone(),
+    };
+    cyclic_attempt.recovery_of_attempt_id = Some("cycle-attempt".into());
+    cyclic_attempt.terminal_outcome_id = Some("cycle-outcome".into());
+    let mut outcome =
+        state.outcomes[valid.predecessor.terminal_outcome_id.as_ref().unwrap()].clone();
+    outcome.outcome_id = "cycle-outcome".into();
+    outcome.attempt_id = cyclic_attempt.attempt_id.clone();
+    cyclic_state
+        .outcomes
+        .insert(outcome.outcome_id.clone(), outcome);
+    cyclic_state
+        .attempts
+        .insert(cyclic_attempt.attempt_id.clone(), cyclic_attempt);
+    assert!(resolve(&cycle, &cyclic_state)
+        .unwrap_err()
+        .to_string()
+        .contains("cyclic"));
+}
+
+#[tokio::test]
+async fn provider_recovery_wrong_owner_is_rejected_with_visible_failure_and_no_focus_mutation() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(SourceBoundRecoveryProvider {
+            requests: requests.clone(),
+            failures: 0,
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let source = runtime
+        .create_work_item(
+            "actual source".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let focus = runtime
+        .create_work_item(
+            "unrelated target".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(focus.id.clone()).await.unwrap();
+    let before = runtime.latest_work_item(&focus.id).await.unwrap().unwrap();
+    let mut recovery = provider_recovery_message(&runtime, &source.id);
+    recovery.work_item_id = Some(focus.id.clone());
+    let recovery = runtime.enqueue(recovery).await.unwrap();
+    let before_queue = runtime
+        .inner
+        .runtime_db
+        .queue_entries()
+        .latest(&recovery.id)
+        .unwrap()
+        .unwrap();
+    runtime.inject_next_transition_fault(
+        crate::runtime_db::transitions::TransitionFaultPoint::AfterAuditWrites,
+    );
+    assert!(scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .err()
+        .expect("injected transition fault must reject the poll")
+        .to_string()
+        .contains("injected runtime transition fault"));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&recovery.id)
+            .unwrap()
+            .unwrap(),
+        before_queue
+    );
+    assert!(!runtime
+        .storage()
+        .read_recent_briefs(10)
+        .unwrap()
+        .iter()
+        .any(|brief| brief.related_message_id.as_deref() == Some(recovery.id.as_str())));
+    assert!(!runtime
+        .storage()
+        .read_recent_events(200)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_input_rejected"
+                && event.data["message_id"] == recovery.id
+        }));
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(!matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&recovery.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Dropped
+    );
+    assert!(requests.lock().await.is_empty());
+    assert_eq!(
+        runtime.latest_work_item(&focus.id).await.unwrap().unwrap(),
+        before
+    );
+    let brief = runtime
+        .storage()
+        .read_recent_briefs(10)
+        .unwrap()
+        .into_iter()
+        .find(|brief| brief.related_message_id.as_deref() == Some(recovery.id.as_str()))
+        .unwrap();
+    assert_eq!(brief.kind, BriefKind::Failure);
+    assert!(brief.text.contains("Provider recovery rejected"));
+    assert!(brief
+        .text
+        .contains("no model request or unrelated focused task was executed"));
+    assert!(brief.text.contains("binding mismatch"));
+    assert!(brief.text.contains(recovery_source_turn_id(&recovery)));
+    assert!(brief
+        .text
+        .contains(&recovery.source_refs["source_message_id"]));
+    assert!(!brief.text.contains("source provider failure"));
+    assert!(!runtime
+        .storage()
+        .read_recent_events(200)
+        .unwrap()
+        .iter()
+        .any(|event| event.data.to_string().contains("source provider failure")));
+    assert!(runtime
+        .storage()
+        .read_recent_events(200)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_input_rejected"
+                && event.data["message_id"] == recovery.id
+                && event.data["queue_disposition"] == "dropped"
+        }));
+    scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .storage()
+            .read_recent_briefs(10)
+            .unwrap()
+            .iter()
+            .filter(|brief| brief.related_message_id.as_deref() == Some(recovery.id.as_str()))
+            .count(),
+        1
+    );
+}
+
+fn recovery_source_turn_id(message: &MessageEnvelope) -> &str {
+    message.source_refs["source_turn_id"].as_str()
+}
+
 fn trusted_operator_prompt(work_item_id: Option<&str>, text: &str) -> MessageEnvelope {
     let mut message = MessageEnvelope::new(
         "default",
@@ -1128,17 +2024,21 @@ fn trusted_operator_prompt(work_item_id: Option<&str>, text: &str) -> MessageEnv
 
 fn provider_recovery_message(runtime: &RuntimeHandle, work_item_id: &str) -> MessageEnvelope {
     use crate::domain::execution_protocol::{
-        AdmitExecution, AdmittedFences, ConversationOutcome, ExecutionAttempt,
-        ExecutionAttemptState, ExecutionBinding, ExecutionOrigin, ExecutionOutcome,
-        ExecutionOutcomeRecord, ExecutionPriority, ExecutionProvenance, ExecutionSource,
-        ExecutionSourceIdentity, ExecutionTrust, SettleExecution,
+        AdmitExecution, AdmittedFences, ExecutionAttempt, ExecutionAttemptState, ExecutionBinding,
+        ExecutionOrigin, ExecutionOutcome, ExecutionOutcomeRecord, ExecutionPriority,
+        ExecutionProvenance, ExecutionSource, ExecutionSourceIdentity, ExecutionTrust,
+        SettleExecution,
     };
 
-    let mut source = trusted_operator_prompt(None, "source provider failure");
+    let mut source = trusted_operator_prompt(Some(work_item_id), "source provider failure");
     source.turn_id = Some("turn-provider-failure".into());
     source.message_seq = Some(1);
     runtime.storage().append_message(&source).unwrap();
     let mut source_turn = TurnRecord::new("default", "turn-provider-failure", 1);
+    source_turn.owner = Some(crate::types::TurnOwner::WorkItem {
+        work_item_id: work_item_id.into(),
+    });
+    source_turn.current_work_item_id = Some(work_item_id.into());
     source_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&source));
     source_turn.input_message_ids = vec![source.id.clone()];
     source_turn.terminal = Some(crate::types::TurnTerminalSummary {
@@ -1150,7 +2050,7 @@ fn provider_recovery_message(runtime: &RuntimeHandle, work_item_id: &str) -> Mes
     });
     runtime.storage().append_turn(&source_turn).unwrap();
 
-    let state = runtime
+    let mut state = runtime
         .inner
         .runtime_db
         .transitions()
@@ -1159,6 +2059,29 @@ fn provider_recovery_message(runtime: &RuntimeHandle, work_item_id: &str) -> Mes
         .unwrap_or_else(|| {
             crate::domain::execution_protocol::ExecutionProtocolState::empty("default")
         });
+    // Model a prior bound failure while preserving current wait authority.
+    let retained_work = state.work_items.get(work_item_id).cloned();
+    let source_work = retained_work.clone().unwrap_or_else(|| {
+        crate::domain::execution_protocol::WorkItemExecutionRecord {
+            source_revision: 1,
+            state: crate::domain::execution_protocol::WorkItemExecutionState::Runnable {
+                generation: 1,
+                recovery_ref: None,
+            },
+        }
+    });
+    let source_generation = source_work.generation();
+    let source_revision = source_work.source_revision;
+    state.work_items.insert(
+        work_item_id.into(),
+        crate::domain::execution_protocol::WorkItemExecutionRecord {
+            source_revision,
+            state: crate::domain::execution_protocol::WorkItemExecutionState::Runnable {
+                generation: source_generation,
+                recovery_ref: None,
+            },
+        },
+    );
     let source_attempt_id = format!("attempt-provider-failure:{}", source.id);
     let admitted = crate::domain::execution_protocol::admit_execution(
         &state,
@@ -1173,8 +2096,8 @@ fn provider_recovery_message(runtime: &RuntimeHandle, work_item_id: &str) -> Mes
                     },
                     generation: 1,
                 },
-                binding: ExecutionBinding::AgentLifecycle {
-                    agent_id: "default".into(),
+                binding: ExecutionBinding::WorkItem {
+                    work_item_id: work_item_id.into(),
                 },
                 provenance: ExecutionProvenance {
                     origin: ExecutionOrigin::Operator,
@@ -1185,8 +2108,8 @@ fn provider_recovery_message(runtime: &RuntimeHandle, work_item_id: &str) -> Mes
                 },
                 admitted_fences: AdmittedFences {
                     source_revision: 1,
-                    work_item_source_revision: None,
-                    work_item_generation: None,
+                    work_item_source_revision: Some(source_revision),
+                    work_item_generation: Some(source_generation),
                     rejoin: None,
                     agent_control_revision: 1,
                     host_registry_revision: 1,
@@ -1202,18 +2125,26 @@ fn provider_recovery_message(runtime: &RuntimeHandle, work_item_id: &str) -> Mes
         },
     )
     .unwrap();
-    let settled = crate::domain::execution_protocol::settle_execution(
+    let mut settled = crate::domain::execution_protocol::settle_execution(
         &admitted.state,
         &SettleExecution {
             outcome: ExecutionOutcomeRecord {
                 outcome_id: format!("outcome-provider-failure:{}", source.id),
                 attempt_id: source_attempt_id,
-                outcome: ExecutionOutcome::Conversation(ConversationOutcome::Replied),
+                outcome: ExecutionOutcome::WorkItem(
+                    crate::domain::execution_protocol::WorkItemOutcome::Continue,
+                ),
                 created_at: Utc::now().to_rfc3339(),
             },
         },
     )
     .unwrap();
+    if let Some(retained_work) = retained_work {
+        settled
+            .state
+            .work_items
+            .insert(work_item_id.into(), retained_work);
+    }
     runtime
         .inner
         .runtime_db

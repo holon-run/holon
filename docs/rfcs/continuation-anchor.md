@@ -38,12 +38,12 @@ continuing.
 
 ## 2. Goals
 
-- Preserve the latest trusted operator input as an intent anchor when it is
-  needed for continuation.
+- Preserve the trusted task input as an intent anchor when it is needed for
+  continuation; provider recovery uses its validated source, not global recency.
 - Make the relation between `current_input` and the latest trusted operator
   input explicit.
-- Use the current WorkItem as the authoritative continuation record when one is
-  active.
+- Use the execution-bound WorkItem as the authoritative continuation record
+  when one is active; current focus alone is not an execution binding.
 - Keep recovery and fallback messages from replacing trusted operator intent.
 - Avoid creating a second continuation-state system beside WorkItems.
 - Require no new agent-maintained continuity tool.
@@ -117,7 +117,7 @@ input.
 
 ### 5.3 Active WorkItem: Use Existing WorkItem Projection
 
-When a current WorkItem is active, the WorkItem is the authoritative durable
+When an execution-bound WorkItem is active, it is the authoritative durable
 record for what is being continued. The prompt already has a WorkItem
 projection for that state; the continuation anchor should not render another
 `Current WorkItem` line or repeat WorkItem fields.
@@ -150,6 +150,24 @@ with either:
 - the existing active WorkItem projection, or
 - the latest trusted operator input anchor.
 
+For typed provider recovery, the validated execution lineage selects the task
+anchor before either ordinary branch. Preserve the complete original input body
+and identify the direct failed source Turn, predecessor attempt, and root task
+input. Repeated fallback must not anchor on an intermediate recovery message;
+an unrelated later operator input must not replace the source task. Non-operator
+source input keeps its original provenance and is not labeled operator intent.
+
+An execution-bound WorkItem remains the durable task record without duplicating
+its fields, but does not replace the pinned recovery input. A Conversation or
+AgentLifecycle execution may see queue background without treating the focused
+WorkItem as its current task. Candidate projection excludes the WorkItem already
+shown as the execution's current task, not global focus. A non-owner focused
+WorkItem remains visible as background with its scheduler state and current todo,
+including when it is the only runnable or blocked candidate. This visibility
+does not change execution ownership or admission.
+Resolve sources from durable runtime-owned
+recovery facts, not arbitrary metadata or an unvalidated root-message pointer.
+
 ### 5.5 Budget Priority
 
 When prompt budget is tight, keep these before low-authority recent transcript
@@ -164,6 +182,13 @@ details:
 The anchor does not need to preserve arbitrary old conversation. It only needs
 to prevent the task source from being trimmed away or hidden behind a runtime
 continuation.
+
+The recovery task body and source relation are pinned across initial context
+assembly, owner-scoped reprojection, and budget reduction. If that minimum does
+not fit, fail explicitly before calling the provider rather than reducing it to
+an excerpt or a bare message sequence number. The direct source Turn uses the
+existing continuity hydration/rendering path; its other evidence still follows
+normal retention and budget rules.
 
 ## 6. Implementation Boundary
 
@@ -184,12 +209,20 @@ The implementation should cover these scenarios:
 
 1. A fallback or recovery turn after a trusted operator request with no active
    WorkItem still shows the operator request as the task anchor.
-2. A fallback or recovery turn with an active WorkItem points to the WorkItem as
-   authoritative and does not duplicate WorkItem fields.
+2. A recovery turn with an execution-bound WorkItem points to that WorkItem as
+   authoritative, retains the source task input, and does not duplicate
+   WorkItem fields.
 3. A trusted operator follow-up is classified as the current task source, not
    as a runtime continuation.
 4. A runtime wake or task-result turn is classified as continuation input and
    does not override trusted operator intent.
 5. Under a tight context budget, the continuation anchor is retained ahead of
    lower-authority transcript history.
+6. A Conversation recovery with a different focused WorkItem preserves its
+   source binding and full task input; the focus is not projected as current.
+7. Multi-hop fallback, a source outside the recent window, and a later unrelated
+   operator message still preserve the original source task in the final
+   provider request with owner-scoped history enabled.
+8. Invalid source lineage or insufficient pinned budget fails visibly without a
+   provider request that lacks its task.
 
