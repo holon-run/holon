@@ -257,11 +257,14 @@ class UIFixtureProviderContracts(unittest.TestCase):
                         with urllib.request.urlopen(request, timeout=5) as response:
                             body = response.read().decode()
                         with self.subTest(streaming=streaming, seeding=seeding):
-                            self.assertIn("IOS_POPULATED_BRIEF", body)
                             if seeding:
+                                self.assertIn("IOS_HISTORY_BRIEF", body)
+                                self.assertNotIn("IOS_POPULATED_BRIEF", body)
                                 self.assertIn("History fixture result.", body)
                                 self.assertNotIn("Open fixture file", body)
                             else:
+                                self.assertIn("IOS_POPULATED_BRIEF", body)
+                                self.assertNotIn("IOS_HISTORY_BRIEF", body)
                                 self.assertIn("Open fixture file", body)
                                 self.assertNotIn("History fixture result.", body)
             finally:

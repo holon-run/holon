@@ -94,7 +94,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-ui-") as temporary:
                 if report_acceptance:
                     text += "\n\n" + "safe-report-body " * 600 + "\nIOS_CONTENT_REPORT_TAIL"
             elif history_seed_active.is_set():
-                text = "IOS_POPULATED_BRIEF: History fixture result."
+                text = "IOS_HISTORY_BRIEF: History fixture result."
             finish_reason = "tool_calls" if tool_calls else "stop"
             if request.get("stream"):
                 chunks = [
