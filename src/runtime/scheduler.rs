@@ -1174,6 +1174,11 @@ fn matching_wait_conditions<'a>(
     matching_wait_conditions_for_work_item(projection, message, None)
 }
 
+/// Whether the WorkItem's current blocker is independent of the given task
+/// wait. Independence is decided by blocker provenance
+/// (`blocked_by_wait_id`), never by display-text equality: an unrelated
+/// blocker that happens to share the wait's `waiting_for` text stays
+/// authoritative until it is explicitly cleared.
 pub(crate) fn task_wait_has_independent_blocker(
     projection: &SchedulerProjection,
     wait_id: &str,
@@ -1182,10 +1187,8 @@ pub(crate) fn task_wait_has_independent_blocker(
     projection.activation_waits.iter().any(|condition| {
         condition.id == wait_id
             && condition.kind == WaitConditionKind::Task
-            && work_item
-                .blocked_by
-                .as_deref()
-                .is_some_and(|blocked_by| blocked_by != condition.waiting_for)
+            && work_item.blocked_by.is_some()
+            && work_item.blocked_by_wait_id.as_deref() != Some(condition.id.as_str())
     })
 }
 

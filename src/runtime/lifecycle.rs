@@ -97,12 +97,22 @@ impl RuntimeHandle {
             return Ok(None);
         };
 
-        let blocked_by = match closure.waiting_reason {
-            Some(waiting_reason) => Some(waiting_reason_blocker(waiting_reason).to_string()),
-            None if closure.outcome == crate::types::ClosureOutcome::Failed => {
-                latest.blocked_by.clone()
+        let (blocked_by, blocked_by_wait_id) = match closure.waiting_reason {
+            Some(waiting_reason) => {
+                let blocker = waiting_reason_blocker(waiting_reason).to_string();
+                // An identical existing blocker keeps its provenance so a
+                // wait-derived blocker survives this idempotent rewrite.
+                match latest.blocked_by.as_deref() {
+                    Some(existing) if existing == blocker => {
+                        (Some(blocker), latest.blocked_by_wait_id.clone())
+                    }
+                    _ => (Some(blocker), None),
+                }
             }
-            None => None,
+            None if closure.outcome == crate::types::ClosureOutcome::Failed => {
+                (latest.blocked_by.clone(), latest.blocked_by_wait_id.clone())
+            }
+            None => (None, None),
         };
         let mut refreshed = latest.clone();
         let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
@@ -116,6 +126,7 @@ impl RuntimeHandle {
             let record = crate::types::WorkItemRecord {
                 revision: latest.revision + 1,
                 blocked_by,
+                blocked_by_wait_id,
                 updated_at: chrono::Utc::now(),
                 turn_id: current_turn_id,
                 ..refreshed

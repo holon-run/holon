@@ -1483,7 +1483,11 @@ pub(crate) fn task_result_reentry_is_allowed(
     }
     match work_item.blocked_by.as_deref() {
         None => true,
-        Some(TASK_RESULT_WAIT_BLOCKER) => {
+        // The blocker must still be the one this wait derived; a same-text
+        // independent blocker keeps the WorkItem ineligible for reentry.
+        Some(TASK_RESULT_WAIT_BLOCKER)
+            if work_item.blocked_by_wait_id.as_deref() == Some(wait.id.as_str()) =>
+        {
             wait.work_item_id.as_deref() == Some(work_item_id)
                 && wait.kind == crate::types::WaitConditionKind::Task
                 && wait.status == WaitConditionStatus::Resolved

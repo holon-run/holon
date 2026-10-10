@@ -6383,6 +6383,551 @@ async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentr
     assert_eq!(*provider.calls.lock().await, 1);
 }
 
+// A same-text independent blocker must stay authoritative: blocker ownership
+// is decided by registration provenance (`blocked_by_wait_id`), never by
+// display-text equality.
+#[tokio::test]
+async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(CountingProvider {
+        calls: Mutex::new(0),
+        reply: "handled the late task result",
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    // First conversation turn: the agent opens its WorkItem and registers an
+    // independent external blocker whose text equals the task wait's
+    // `waiting_for`.
+    let first = runtime
+        .enqueue(trusted_operator_prompt(None, "open the work item"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    runtime
+        .begin_interactive_turn(Some(&first), None, None)
+        .await
+        .unwrap();
+    let work_item = runtime
+        .create_work_item("same-text blocked follow-up".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let external_registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::External,
+            Some("github:holon-run/holon#3462".into()),
+            "Waiting on a task result.".into(),
+            Some(3_600_000),
+        )
+        .await
+        .unwrap();
+    let external_wait_id = external_registration.condition.id.clone();
+    let externally_blocked = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        externally_blocked.blocked_by.as_deref(),
+        Some("Waiting on a task result.")
+    );
+    assert_eq!(
+        externally_blocked.blocked_by_wait_id.as_deref(),
+        Some(external_wait_id.as_str())
+    );
+    assert!(externally_blocked.recheck_at.is_some());
+
+    // Second conversation turn while the WorkItem stays blocked on the
+    // same-text external dependency: the task already reached terminal
+    // before the late WaitFor (#3463).
+    let second = runtime
+        .enqueue(trusted_operator_prompt(None, "check the finished task"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    runtime
+        .begin_interactive_turn(Some(&second), None, None)
+        .await
+        .unwrap();
+
+    let mut result = task_result_message("task-late-same-text").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    result.task_id = Some("task-late-same-text".into());
+    result.work_item_id = Some(work_item.id.clone());
+    result.turn_id = Some("turn-late-same-text-result".into());
+    let terminal_task = TaskRecord {
+        id: "task-late-same-text".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: Some(result.id.clone()),
+        work_item_id: Some(work_item.id.clone()),
+        summary: Some("late same-text blocked task completed".into()),
+        detail: Some(serde_json::json!({
+            "rejoin_obligation_id": "task-late-same-text",
+            "rejoin_generation": 1,
+            "parent_turn_id": "turn-late-same-text",
+        })),
+        recovery: None,
+    };
+    runtime
+        .commit_terminal_task_result(&terminal_task, "task_completed", &result)
+        .await
+        .unwrap();
+
+    let registration = runtime
+        .register_wait_for_outcome(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some(terminal_task.id.clone()),
+            "Waiting on a task result.".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let WaitForRegistrationOutcome::TaskResultQueued {
+        task_id,
+        result_message_id,
+        wait_condition_id,
+    } = registration
+    else {
+        panic!("late task-result wait should queue the exact result wake");
+    };
+    assert_eq!(task_id, terminal_task.id);
+    assert_eq!(result_message_id, result.id);
+
+    // The late fast path preserves the same-text independent blocker with its
+    // external-wait provenance instead of taking it over.
+    let blocked = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        blocked.blocked_by.as_deref(),
+        Some("Waiting on a task result.")
+    );
+    assert_eq!(
+        blocked.blocked_by_wait_id.as_deref(),
+        Some(external_wait_id.as_str())
+    );
+    assert!(blocked.recheck_at.is_some());
+
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        &execution.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. }
+            if wait.wait_id == wait_condition_id
+    ));
+
+    // The exact wake must not bypass the same-text independent blocker. It is
+    // reduced into the settlement ledger for an owner-scoped recovery wake.
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("late task result should remain durably queued");
+    };
+    assert_eq!(scheduled.message.id, result.id);
+    assert!(!scheduled.scheduler_decision.model_reentry);
+    let scheduled_message = scheduled.message;
+    let scheduled_transition = runtime
+        .process_message_with_plan_deferred(
+            scheduled_message.clone(),
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
+        )
+        .await
+        .unwrap();
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: scheduled_message.id,
+                agent_id: scheduled_message.agent_id,
+                priority: scheduled_message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: scheduled_message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&scheduled_transition),
+        )
+        .await
+        .unwrap();
+
+    let settlement = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&result.id)
+        .unwrap()
+        .expect("late task result must keep a durable settlement record");
+    assert_eq!(
+        settlement.state,
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
+    );
+    assert_eq!(
+        settlement.work_item_id.as_deref(),
+        Some(work_item.id.as_str())
+    );
+
+    // The reducer-only settlement must not release the same-text independent
+    // blocker or its recheck deadline.
+    let still_blocked = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        still_blocked.blocked_by.as_deref(),
+        Some("Waiting on a task result.")
+    );
+    assert_eq!(
+        still_blocked.blocked_by_wait_id.as_deref(),
+        Some(external_wait_id.as_str())
+    );
+    assert!(still_blocked.recheck_at.is_some());
+
+    runtime
+        .pick_work_item_with_reason_and_clear_blocker(
+            work_item.id.clone(),
+            Some("same-text external blocker cleared".into()),
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .latest_work_item(&work_item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .blocked_by,
+        None
+    );
+    assert!(
+        runtime.emit_due_task_result_recovery().await.unwrap(),
+        "clearing the independent blocker should wake the owner-scoped settlement"
+    );
+    let recovery_poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(recovery) = recovery_poll else {
+        panic!("owner-scoped task-result recovery should be queued");
+    };
+    assert!(recovery.scheduler_decision.model_reentry);
+    assert!(matches!(
+        recovery.message.origin,
+        MessageOrigin::System { ref subsystem } if subsystem == "task_result_recovery"
+    ));
+    let recovery_message = recovery.message;
+    let recovery_transition = runtime
+        .process_message_with_plan_deferred(
+            recovery_message.clone(),
+            recovery.dispatch_plan,
+            &recovery.scheduler_decision,
+        )
+        .await
+        .unwrap();
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: recovery_message.id,
+                agent_id: recovery_message.agent_id,
+                priority: recovery_message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: recovery_message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&recovery_transition),
+        )
+        .await
+        .unwrap();
+
+    let waits = runtime
+        .storage()
+        .latest_wait_conditions_for_agent("default")
+        .unwrap();
+    assert!(waits.iter().any(|wait| {
+        wait.id == wait_condition_id
+            && wait.status == WaitConditionStatus::Resolved
+            && wait.trigger_message_id().as_deref() == Some(result.id.as_str())
+    }));
+    let resumed = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resumed.blocked_by, None);
+    let settlement = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&result.id)
+        .unwrap()
+        .expect("late task result must keep a durable settlement record");
+    assert_eq!(
+        settlement.state,
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+    );
+    assert_eq!(
+        settlement.work_item_id.as_deref(),
+        Some(work_item.id.as_str())
+    );
+    assert_eq!(*provider.calls.lock().await, 1);
+}
+
+// A blocker derived by a replaced task wait is taken over by the new task
+// wait, so the settlement of the exact task result can still clear it.
+#[tokio::test]
+async fn late_task_result_wait_replacing_task_wait_takes_over_derived_blocker() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(CountingProvider {
+        calls: Mutex::new(0),
+        reply: "handled the replacement task result",
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    // First conversation turn: the agent opens its WorkItem and registers a
+    // normal task wait on a still-running task.
+    let first = runtime
+        .enqueue(trusted_operator_prompt(None, "open the work item"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    runtime
+        .begin_interactive_turn(Some(&first), None, None)
+        .await
+        .unwrap();
+    let work_item = runtime
+        .create_work_item("blocked on running task".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    append_running_rejoin_task(&runtime, "task-replace-origin", &work_item.id);
+    let origin_registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-replace-origin".into()),
+            "Waiting on a task result.".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let origin_wait_id = origin_registration.condition.id.clone();
+    let origin_blocked = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        origin_blocked.blocked_by.as_deref(),
+        Some("Waiting on a task result.")
+    );
+    assert_eq!(
+        origin_blocked.blocked_by_wait_id.as_deref(),
+        Some(origin_wait_id.as_str())
+    );
+
+    // Second conversation turn: a different task is already terminal when the
+    // late WaitFor replaces the running-task wait.
+    let second = runtime
+        .enqueue(trusted_operator_prompt(
+            None,
+            "check the finished replacement",
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    runtime
+        .begin_interactive_turn(Some(&second), None, None)
+        .await
+        .unwrap();
+
+    let mut result = task_result_message("task-replace-target").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    result.task_id = Some("task-replace-target".into());
+    result.work_item_id = Some(work_item.id.clone());
+    result.turn_id = Some("turn-late-replace-result".into());
+    let terminal_task = TaskRecord {
+        id: "task-replace-target".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: Some(result.id.clone()),
+        work_item_id: Some(work_item.id.clone()),
+        summary: Some("replacement task completed".into()),
+        detail: Some(serde_json::json!({
+            "rejoin_obligation_id": "task-replace-target",
+            "rejoin_generation": 1,
+            "parent_turn_id": "turn-late-replace",
+        })),
+        recovery: None,
+    };
+    runtime
+        .commit_terminal_task_result(&terminal_task, "task_completed", &result)
+        .await
+        .unwrap();
+
+    let registration = runtime
+        .register_wait_for_outcome(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some(terminal_task.id.clone()),
+            "Waiting on a task result.".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let WaitForRegistrationOutcome::TaskResultQueued {
+        task_id,
+        result_message_id,
+        wait_condition_id,
+    } = registration
+    else {
+        panic!("late task-result wait should queue the exact result wake");
+    };
+    assert_eq!(task_id, terminal_task.id);
+    assert_eq!(result_message_id, result.id);
+
+    // The replaced task wait's derived blocker is taken over by the new wait.
+    let taken_over = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        taken_over.blocked_by.as_deref(),
+        Some("Waiting on a task result.")
+    );
+    assert_eq!(
+        taken_over.blocked_by_wait_id.as_deref(),
+        Some(wait_condition_id.as_str())
+    );
+
+    // The exact wake takes the canonical path: the blocker is not
+    // independent of the task wait.
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("late task result should remain durably queued");
+    };
+    assert_eq!(scheduled.message.id, result.id);
+    assert!(scheduled.scheduler_decision.model_reentry);
+    let scheduled_message = scheduled.message;
+    let scheduled_transition = runtime
+        .process_message_with_plan_deferred(
+            scheduled_message.clone(),
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
+        )
+        .await
+        .unwrap();
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: scheduled_message.id,
+                agent_id: scheduled_message.agent_id,
+                priority: scheduled_message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: scheduled_message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&scheduled_transition),
+        )
+        .await
+        .unwrap();
+
+    // The settlement cleared the taken-over blocker.
+    let settled = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(settled.blocked_by, None);
+    let waits = runtime
+        .storage()
+        .latest_wait_conditions_for_agent("default")
+        .unwrap();
+    assert!(waits.iter().any(|wait| {
+        wait.id == wait_condition_id
+            && wait.status == WaitConditionStatus::Resolved
+            && wait.trigger_message_id().as_deref() == Some(result.id.as_str())
+    }));
+    assert_eq!(*provider.calls.lock().await, 1);
+}
+
 #[tokio::test]
 async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_restart_safe() {
     let dir = tempdir().unwrap();

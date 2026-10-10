@@ -116,11 +116,11 @@ use crate::runtime_db::connection::{
 };
 use crate::runtime_db::migrations::{
     apply_migration, apply_release_baseline, backfill_wait_condition_payload_columns,
-    backfill_work_item_recheck_columns, current_schema_version, ensure_migration_table,
-    max_known_migration_version, AGENT_CANONICAL_RELATIONS_SCHEMA_VERSION,
-    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME, CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION,
-    MIGRATIONS, PUBLISHED_MIGRATION_FLOOR, RELEASE_BASELINE_TARGET,
-    RETIRED_SCHEDULER_SCHEMA_PREDECESSOR,
+    backfill_work_item_blocker_wait_provenance, backfill_work_item_recheck_columns,
+    current_schema_version, ensure_migration_table, max_known_migration_version,
+    AGENT_CANONICAL_RELATIONS_SCHEMA_VERSION, CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME,
+    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION, MIGRATIONS, PUBLISHED_MIGRATION_FLOOR,
+    RELEASE_BASELINE_TARGET, RETIRED_SCHEDULER_SCHEMA_PREDECESSOR,
 };
 use crate::runtime_db::storage_domain::{
     read_storage_domain_connection, upsert_storage_domain, upsert_storage_domain_checkpoint_json,
@@ -1223,6 +1223,7 @@ impl RuntimeDb {
         ensure_runtime_identity_metadata(&connection)?;
         backfill_wait_condition_payload_columns(&connection)?;
         backfill_work_item_recheck_columns(&connection)?;
+        backfill_work_item_blocker_wait_provenance(&connection)?;
         observer_sync::verify_observer_sync_foundations(&mut connection)?;
         Ok(())
     }

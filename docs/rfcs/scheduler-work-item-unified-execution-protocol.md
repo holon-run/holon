@@ -176,9 +176,14 @@ Active | Triggered
 
 Ingress performs `Active -> Triggered` and enqueues the exact trigger message
 in one transaction. Admission performs `Triggered -> Resolved` while opening
-the consuming attempt. Duplicate, cancelled, expired, unknown, or legacy wait
-correlations are typed terminal no-ops. A scheduler-specific wait mirror,
-generation, or dispatch reservation must not participate in admission.
+the consuming attempt. One deferred-settlement exception exists: an exact
+task result that meets an independent WorkItem blocker settles its wait with
+the same `Triggered -> Resolved` transition without opening a consuming
+attempt; the task-result settlement ledger then carries the owner-scoped
+recovery wake after the blocker is explicitly cleared. Duplicate, cancelled,
+expired, unknown, or legacy wait correlations are typed terminal no-ops. A
+scheduler-specific wait mirror, generation, or dispatch reservation must not
+participate in admission.
 
 Each agent-lifecycle owner and each WorkItem owner has at most one unresolved
 wait (`Active` or `Triggered`). This is enforced by database uniqueness, not

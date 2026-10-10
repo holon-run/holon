@@ -188,6 +188,12 @@ pub struct WorkItemRecord {
     pub work_refs: Vec<WorkItemRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_by: Option<String>,
+    /// The wait condition whose registration derived the current `blocked_by`.
+    /// `None` when the blocker was set independently (operator update, turn
+    /// closure, scheduler) or predates blocker provenance. Blocker ownership
+    /// is decided by this identity, never by display-text equality.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_by_wait_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recheck_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -224,6 +230,7 @@ impl WorkItemRecord {
             todo_list: Vec::new(),
             work_refs: Vec::new(),
             blocked_by: None,
+            blocked_by_wait_id: None,
             recheck_at: None,
             recheck_consumed_at: None,
             result_brief_id: None,

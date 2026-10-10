@@ -6518,6 +6518,68 @@ pub(crate) fn backfill_wait_condition_payload_columns(connection: &Connection) -
     Ok(())
 }
 
+/// Backfills `blocked_by_wait_id` for work items whose blocker predates
+/// blocker provenance. The blocker is attributed to the most recent wait on
+/// the same work item whose `waiting_for` equals the blocker text; blockers
+/// without a matching wait keep `None` (independent). Idempotent: payloads
+/// that already carry provenance are left untouched.
+pub(crate) fn backfill_work_item_blocker_wait_provenance(connection: &Connection) -> Result<()> {
+    let work_items_exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'work_items')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !work_items_exists {
+        return Ok(());
+    }
+    let wait_conditions_exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'wait_conditions')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !wait_conditions_exists {
+        return Ok(());
+    }
+    let rows: Vec<(String, String)> = connection
+        .prepare("SELECT work_item_id, payload_json FROM work_items WHERE blocked_by IS NOT NULL")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut updates = 0usize;
+    for (work_item_id, payload) in rows {
+        let mut record: crate::types::WorkItemRecord = serde_json::from_str(&payload)
+            .context("decoding work item payload for blocker provenance backfill")?;
+        if record.blocked_by_wait_id.is_some() {
+            continue;
+        }
+        let Some(blocked_by) = record.blocked_by.clone() else {
+            continue;
+        };
+        let owner_wait_id: Option<String> = connection
+            .query_row(
+                "SELECT wait_condition_id FROM wait_conditions
+                 WHERE work_item_id = ?1 AND waiting_for = ?2
+                 ORDER BY updated_at DESC
+                 LIMIT 1",
+                params![work_item_id, blocked_by],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(owner_wait_id) = owner_wait_id else {
+            continue;
+        };
+        record.blocked_by_wait_id = Some(owner_wait_id);
+        connection.execute(
+            "UPDATE work_items SET payload_json = ?1 WHERE work_item_id = ?2",
+            params![serde_json::to_string(&record)?, work_item_id],
+        )?;
+        updates += 1;
+    }
+    if updates > 0 {
+        tracing::info!(updates, "backfilled work item blocker wait provenance");
+    }
+    Ok(())
+}
+
 pub(crate) fn backfill_work_item_recheck_columns(connection: &Connection) -> Result<()> {
     // Check if work_items table exists (may not exist in test databases)
     let table_exists: bool = connection.query_row(
