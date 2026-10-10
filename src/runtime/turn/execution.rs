@@ -606,8 +606,6 @@ impl RuntimeHandle {
                 .current_execution_binding
                 .as_ref()
                 .and_then(|binding| binding.work_item_id.clone())
-                .or_else(|| guard.state.current_turn_work_item_id.clone())
-                .or_else(|| guard.state.current_work_item_id.clone())
         };
         let source_message_id = {
             let guard = self.inner.agent.lock().await;

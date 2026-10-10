@@ -1669,6 +1669,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. } => {
                 unreachable!("lifecycle scenario is planned before WorkItem lookup")
             }
+            scheduler::CanonicalActivationScenario::UnboundProviderRecovery { .. } => {
+                unreachable!("provider recovery lifecycle is planned before WorkItem lookup")
+            }
         };
         if let Some(wait_id) = wait_id {
             let Some(authoritative_work) = authoritative_work else {
@@ -1714,7 +1717,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .as_ref()
             .and_then(|state| state.attempts.get(&activation_id))
         {
-            if execution_attempt_matches_scenario(existing_attempt, message, &scenario) {
+            if execution_attempt_matches_scenario(existing_attempt, message, &scenario)
+                && (!matches!(
+                    scenario,
+                    scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
+                ) || existing_attempt.recovery_of_attempt_id == recovery_of_attempt_id)
+            {
                 return Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
                     activation_id,
                     scenario_class,
@@ -1805,6 +1813,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 Some(wait_id.as_str())
             }
             scheduler::CanonicalActivationScenario::LifecycleExternalNudge { agent_id }
+            | scheduler::CanonicalActivationScenario::UnboundProviderRecovery { agent_id }
                 if agent_id == &message.agent_id =>
             {
                 None
@@ -1816,13 +1825,36 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 })
             }
         };
+        let provider_source = if matches!(
+            scenario,
+            scheduler::CanonicalActivationScenario::UnboundProviderRecovery { .. }
+        ) {
+            let resolved = existing_execution.as_ref().and_then(|state| {
+                super::provider_recovery::resolve(&self.runtime.inner.storage, message, state).ok()
+            });
+            let Some(source) = resolved else {
+                return Ok(CanonicalClaimOutcome::RejectQueued {
+                    scenario_class,
+                    reason: "canonical_provider_recovery_source_invalid",
+                });
+            };
+            Some(source)
+        } else {
+            None
+        };
         let activation_id =
             canonical_execution_attempt_id_for_message(existing_execution.as_ref(), &message.id);
         if let Some(existing_attempt) = existing_execution
             .as_ref()
             .and_then(|state| state.attempts.get(&activation_id))
         {
-            if execution_attempt_matches_scenario(existing_attempt, message, &scenario) {
+            if execution_attempt_matches_scenario(existing_attempt, message, &scenario)
+                && provider_source.as_ref().is_none_or(|source| {
+                    existing_attempt.binding == source.predecessor.binding
+                        && existing_attempt.recovery_of_attempt_id.as_deref()
+                            == Some(source.predecessor.attempt_id.as_str())
+                })
+            {
                 return Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
                     activation_id,
                     scenario_class,
@@ -1837,18 +1869,22 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 reason: "canonical_execution_attempt_replay_conflict",
             });
         }
-        let recovery_of_attempt_id = match self.canonical_lifecycle_recovery(
-            message,
-            &scenario,
-            existing_execution.as_ref(),
-        )? {
-            CanonicalLifecycleRecovery::None => None,
-            CanonicalLifecycleRecovery::RecoverFrom(attempt_id) => Some(attempt_id),
-            CanonicalLifecycleRecovery::Invalid => {
-                return Ok(CanonicalClaimOutcome::RejectQueued {
-                    scenario_class,
-                    reason: "canonical_lifecycle_recovery_source_invalid",
-                });
+        let recovery_of_attempt_id = if let Some(source) = provider_source {
+            Some(source.predecessor.attempt_id)
+        } else {
+            match self.canonical_lifecycle_recovery(
+                message,
+                &scenario,
+                existing_execution.as_ref(),
+            )? {
+                CanonicalLifecycleRecovery::None => None,
+                CanonicalLifecycleRecovery::RecoverFrom(attempt_id) => Some(attempt_id),
+                CanonicalLifecycleRecovery::Invalid => {
+                    return Ok(CanonicalClaimOutcome::RejectQueued {
+                        scenario_class,
+                        reason: "canonical_lifecycle_recovery_source_invalid",
+                    });
+                }
             }
         };
         let execution_protocol = self.plan_execution_protocol_claim(
@@ -1939,6 +1975,40 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let mut dropped = expected.clone();
         dropped.status = QueueEntryStatus::Dropped;
         dropped.updated_at = self.runtime.now();
+        let recovery_failure =
+            if crate::runtime::turn::TurnModelSelection::message_has_provider_recovery_provenance(
+                message,
+            ) {
+                let detail = self
+                    .runtime
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .load_execution_protocol_state_if_initialized(&message.agent_id)?
+                    .and_then(|state| {
+                        super::provider_recovery::resolve(
+                            &self.runtime.inner.storage,
+                            message,
+                            &state,
+                        )
+                        .err()
+                    })
+                    .map(|error| error.to_string())
+                    .unwrap_or_else(|| reason.to_string());
+                Some(crate::types::BriefRecord::new(
+                &message.agent_id,
+                crate::types::BriefKind::Failure,
+                format!(
+                    "Provider recovery 已拒绝，未执行模型请求或其他焦点任务。原因：{detail}。source turn={}，source message={}。",
+                    message.source_refs.get("source_turn_id").map(String::as_str).unwrap_or("missing"),
+                    message.source_refs.get("source_message_id").map(String::as_str).unwrap_or("missing"),
+                ),
+                Some(message.id.clone()),
+                None,
+            ))
+            } else {
+                None
+            };
         let invariant_event = scheduler::scheduler_invariant_diagnostic_event(
             &message.agent_id,
             reason,
@@ -1997,10 +2067,18 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         }),
                     ),
                     invariant_event,
-                ],
+                ]
+                .into_iter()
+                .chain(
+                    recovery_failure
+                        .as_ref()
+                        .map(crate::types::brief_created_event_for)
+                        .transpose()?,
+                )
+                .collect(),
                 notify_scheduler: true,
                 fault: self.runtime.take_transition_fault(),
-                brief_evidence: Vec::new(),
+                brief_evidence: recovery_failure.into_iter().collect(),
             },
         )?;
         if !commit.applied {
@@ -2082,6 +2160,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     recovery_id: message.id.clone(),
                 }
             }
+            scheduler::CanonicalActivationScenario::UnboundProviderRecovery { .. } => {
+                ExecutionSourceIdentity::RuntimeRecovery {
+                    recovery_id: message.id.clone(),
+                }
+            }
             scheduler::CanonicalActivationScenario::ExactTaskRejoin { task_id, .. } => {
                 ExecutionSourceIdentity::TaskResult {
                     task_id: task_id.clone(),
@@ -2130,12 +2213,26 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 }
             }
         };
-        let binding = work_item.map_or_else(
-            || unbound_execution_binding(message, admitted_wait_id),
-            |(work_item, _)| ExecutionBinding::WorkItem {
-                work_item_id: work_item.id.clone(),
-            },
-        );
+        let binding = if matches!(
+            scenario,
+            scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
+                | scheduler::CanonicalActivationScenario::UnboundProviderRecovery { .. }
+        ) {
+            let predecessor = recovery_of_attempt_id
+                .as_ref()
+                .and_then(|id| existing.as_ref()?.attempts.get(id))
+                .ok_or_else(|| {
+                    anyhow!("provider recovery requires validated predecessor binding")
+                })?;
+            predecessor.binding.clone()
+        } else {
+            work_item.map_or_else(
+                || unbound_execution_binding(message, admitted_wait_id),
+                |(work_item, _)| ExecutionBinding::WorkItem {
+                    work_item_id: work_item.id.clone(),
+                },
+            )
+        };
         // Retained first-attempt queue input must keep its replay lineage too,
         // even when it has no lifecycle delivery or TaskResult rejoin record.
         let interrupted_queue = recovery_of_attempt_id.is_none()
@@ -2261,77 +2358,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         message: &MessageEnvelope,
         execution: Option<&crate::domain::execution_protocol::ExecutionProtocolState>,
     ) -> Result<Option<String>> {
-        use crate::domain::execution_protocol::ExecutionAttemptState;
-
-        let selection = crate::runtime::turn::TurnModelSelection::from_message(message)?;
-        let Some(recovery) = selection.recovery.as_ref() else {
-            return Ok(None);
-        };
-        if !matches!(
-            recovery.source_terminal_kind,
-            crate::types::TurnTerminalKind::DeferredToFallback
-                | crate::types::TurnTerminalKind::ProviderFailedNeedsRecovery
-        ) || message.source_refs.get("source_turn_id") != Some(&recovery.source_turn_id)
-            || message.source_refs.get("source_message_id") != Some(&recovery.source_message_id)
-            || message.causation_id.as_deref() != Some(recovery.source_message_id.as_str())
-        {
-            return Ok(None);
-        }
-        let Some(source_message) = self
-            .runtime
-            .inner
-            .storage
-            .read_message_by_id(&recovery.source_message_id)?
-        else {
-            return Ok(None);
-        };
-        if source_message.agent_id != message.agent_id
-            || source_message.turn_id.as_deref() != Some(recovery.source_turn_id.as_str())
-        {
-            return Ok(None);
-        }
-        let Some(source_turn) = self
-            .runtime
-            .inner
-            .storage
-            .read_turn_by_id(&recovery.source_turn_id)?
-        else {
-            return Ok(None);
-        };
-        if source_turn.agent_id != message.agent_id
-            || source_turn
-                .trigger
-                .as_ref()
-                .and_then(|trigger| trigger.message_id.as_deref())
-                != Some(recovery.source_message_id.as_str())
-            || source_turn.terminal.as_ref().map(|terminal| terminal.kind)
-                != Some(recovery.source_terminal_kind)
-        {
-            return Ok(None);
-        }
         let Some(execution) = execution else {
             return Ok(None);
         };
-        let matching_attempts = execution
-            .attempts
-            .values()
-            .filter(|attempt| {
-                attempt.agent_id == message.agent_id
-                    && attempt.source_message_id.as_deref()
-                        == Some(recovery.source_message_id.as_str())
-                    && attempt.turn_id.as_deref() == Some(recovery.source_turn_id.as_str())
-                    && matches!(
-                        attempt.state,
-                        ExecutionAttemptState::Settled | ExecutionAttemptState::Interrupted
-                    )
-                    && attempt.terminal_outcome_id.is_some()
-            })
-            .map(|attempt| attempt.attempt_id.clone())
-            .collect::<Vec<_>>();
-        Ok(match matching_attempts.as_slice() {
-            [attempt_id] => Some(attempt_id.clone()),
-            _ => None,
-        })
+        Ok(
+            super::provider_recovery::resolve(&self.runtime.inner.storage, message, execution)
+                .ok()
+                .map(|source| source.predecessor.attempt_id),
+        )
     }
 
     async fn defer_or_quarantine_queue_head(
@@ -2592,6 +2626,11 @@ fn execution_attempt_matches_scenario(
             },
         ) => recovery_id == &message.id && work_item_id == expected,
         (
+            ExecutionSourceIdentity::RuntimeRecovery { recovery_id },
+            ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. },
+            scheduler::CanonicalActivationScenario::UnboundProviderRecovery { agent_id },
+        ) => recovery_id == &message.id && agent_id == &message.agent_id,
+        (
             ExecutionSourceIdentity::InternalFollowup { message_id },
             ExecutionBinding::WorkItem { work_item_id },
             scheduler::CanonicalActivationScenario::InternalFollowup {
@@ -2838,6 +2877,9 @@ fn canonical_execution_origin_for_scenario(
         scheduler::CanonicalActivationScenario::ProviderRecovery { .. } => {
             ExecutionOrigin::RuntimeRecovery
         }
+        scheduler::CanonicalActivationScenario::UnboundProviderRecovery { .. } => {
+            ExecutionOrigin::RuntimeRecovery
+        }
         scheduler::CanonicalActivationScenario::InternalFollowup { .. }
             if !scheduler::runtime_owned_internal_followup(message) =>
         {
@@ -2864,6 +2906,7 @@ fn canonical_execution_trust_for_scenario(
         scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
         | scheduler::CanonicalActivationScenario::BlockedRecheck { .. }
         | scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
+        | scheduler::CanonicalActivationScenario::UnboundProviderRecovery { .. }
         | scheduler::CanonicalActivationScenario::ExactTaskRejoin { .. } => {
             ExecutionTrust::RuntimeInstruction
         }

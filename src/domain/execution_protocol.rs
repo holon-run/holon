@@ -864,7 +864,10 @@ fn validate_source_binding(
             QueueMessage { .. } | InternalFollowup { .. },
             Conversation { .. } | WorkItem { .. } | AgentLifecycle { .. },
         ) => true,
-        (RuntimeRecovery { .. }, WorkItem { .. } | Command) => true,
+        (
+            RuntimeRecovery { .. },
+            WorkItem { .. } | Command | Conversation { .. } | AgentLifecycle { .. },
+        ) => true,
         (TaskResult { .. }, Conversation { .. } | WorkItem { .. } | Command) => true,
         (ChildResult { .. }, Conversation { .. } | WorkItem { .. } | Command) => true,
         (TriggeredWait { .. }, Conversation { .. } | WorkItem { .. } | AgentLifecycle { .. }) => {
@@ -994,6 +997,21 @@ pub fn admit_execution(
         if prior.state == ExecutionAttemptState::Open {
             return Err("recovery attempt cannot reference an open attempt".into());
         }
+        if matches!(
+            attempt.source.identity,
+            ExecutionSourceIdentity::RuntimeRecovery { .. }
+        ) && (prior.agent_id != attempt.agent_id || prior.binding != attempt.binding)
+        {
+            return Err("runtime recovery must inherit its predecessor binding".into());
+        }
+    } else if matches!(
+        attempt.source.identity,
+        ExecutionSourceIdentity::RuntimeRecovery { .. }
+    ) && matches!(
+        attempt.binding,
+        ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. }
+    ) {
+        return Err("unbound runtime recovery requires a validated predecessor".into());
     }
 
     let mut next = state.clone();
@@ -1909,12 +1927,12 @@ mod tests {
         assert!(validate_source_binding(&continuation, &work_item, &fences).is_ok());
         assert!(validate_source_binding(&recovery, &ExecutionBinding::Command, &fences).is_ok());
         assert!(validate_source_binding(&recovery, &work_item, &fences).is_ok());
+        assert!(validate_source_binding(&recovery, &conversation, &fences).is_ok());
+        assert!(validate_source_binding(&recovery, &agent_lifecycle, &fences).is_ok());
 
         // Rejected combinations
         assert!(validate_source_binding(&queue, &ExecutionBinding::Command, &fences).is_err());
         assert!(validate_source_binding(&continuation, &conversation, &fences).is_err());
-        assert!(validate_source_binding(&recovery, &conversation, &fences).is_err());
-        assert!(validate_source_binding(&recovery, &agent_lifecycle, &fences).is_err());
     }
 
     #[test]
@@ -2064,6 +2082,77 @@ mod tests {
         )
         .unwrap_err()
         .contains("unsupported source-binding"));
+    }
+
+    #[test]
+    fn provider_recovery_inherits_complete_unbound_predecessor_binding() {
+        for binding in [
+            ExecutionBinding::Conversation {
+                interaction_id: "original-interaction".into(),
+            },
+            ExecutionBinding::AgentLifecycle {
+                agent_id: "agent-a".into(),
+            },
+        ] {
+            let mut source = attempt("source", None);
+            source.source.identity = ExecutionSourceIdentity::QueueMessage {
+                message_id: "message:source".into(),
+            };
+            source.binding = binding.clone();
+            source.admitted_fences.work_item_source_revision = None;
+            source.admitted_fences.work_item_generation = None;
+            let admitted = admit_execution(
+                &ExecutionProtocolState::empty("agent-a"),
+                &AdmitExecution { attempt: source },
+            )
+            .unwrap();
+            let settled = settle_execution(
+                &admitted.state,
+                &SettleExecution {
+                    outcome: ExecutionOutcomeRecord {
+                        outcome_id: "source-outcome".into(),
+                        attempt_id: "source".into(),
+                        outcome: ExecutionOutcome::Conversation(ConversationOutcome::Failed {
+                            policy: "provider-failure".into(),
+                        }),
+                        created_at: "2026-10-10T00:00:00Z".into(),
+                    },
+                },
+            )
+            .unwrap();
+            let mut recovery = attempt("recovery", Some("source"));
+            recovery.source.identity = ExecutionSourceIdentity::RuntimeRecovery {
+                recovery_id: "message:recovery".into(),
+            };
+            recovery.binding = binding;
+            recovery.provenance.origin = ExecutionOrigin::RuntimeRecovery;
+            recovery.admitted_fences.work_item_source_revision = None;
+            recovery.admitted_fences.work_item_generation = None;
+            assert!(admit_execution(
+                &settled.state,
+                &AdmitExecution {
+                    attempt: recovery.clone()
+                }
+            )
+            .is_ok());
+            recovery.binding = ExecutionBinding::Conversation {
+                interaction_id: "unrelated-interaction".into(),
+            };
+            assert!(admit_execution(
+                &settled.state,
+                &AdmitExecution {
+                    attempt: recovery.clone()
+                }
+            )
+            .unwrap_err()
+            .contains("inherit"));
+            recovery.recovery_of_attempt_id = None;
+            assert!(
+                admit_execution(&settled.state, &AdmitExecution { attempt: recovery })
+                    .unwrap_err()
+                    .contains("predecessor")
+            );
+        }
     }
 
     #[test]

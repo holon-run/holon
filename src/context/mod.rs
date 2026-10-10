@@ -192,11 +192,22 @@ pub(crate) fn reproject_work_item_scoped_with_limit(
     let owner = crate::types::TurnOwner::WorkItem {
         work_item_id: work_item.id.clone(),
     };
-    let turn_records = history_turns_without_current_input(
+    let mut turn_records = history_turns_without_current_input(
         storage.read_recent_turns_for_owner(&owner, window_limit.saturating_add(1))?,
         &reprojection.current_message.id,
         window_limit,
     );
+    if let Some(source) = crate::runtime::provider_recovery::resolve_for_context(
+        storage,
+        &reprojection.current_message,
+    )? {
+        if !turn_records
+            .iter()
+            .any(|record| record.turn_id == source.source_turn.turn_id)
+        {
+            turn_records.push(source.source_turn);
+        }
+    }
     if turn_records.is_empty() {
         return Ok(WorkItemScopedReprojection::NoOwnedTurnRecords);
     }
@@ -320,14 +331,28 @@ pub fn build_context_with_default_external_ingress(
     default_external_ingress_override: Option<&ExternalTriggerRecord>,
 ) -> Result<BuiltContext> {
     let mut messages = Vec::new();
-    let continuation_anchor_messages = storage.read_all_messages()?;
+    let recovery_source =
+        crate::runtime::provider_recovery::resolve_for_context(storage, current_message)?;
+    let continuation_anchor_messages = if recovery_source.is_some() {
+        Vec::new()
+    } else {
+        storage.read_all_messages()?
+    };
     let mut briefs = storage.read_recent_briefs(config.recent_briefs)?;
     let mut tools = storage.read_recent_tool_executions(config.recent_messages)?;
-    let turn_records = history_turns_without_current_input(
+    let mut turn_records = history_turns_without_current_input(
         storage.read_recent_turns(config.recent_messages.saturating_add(1))?,
         &current_message.id,
         config.recent_messages,
     );
+    if let Some(source) = recovery_source.as_ref() {
+        if !turn_records
+            .iter()
+            .any(|record| record.turn_id == source.source_turn.turn_id)
+        {
+            turn_records.push(source.source_turn.clone());
+        }
+    }
     hydrate_recent_turn_references(
         storage,
         &turn_records,
@@ -335,7 +360,14 @@ pub fn build_context_with_default_external_ingress(
         &mut briefs,
         &mut tools,
     )?;
-    let transcript = storage.read_recent_transcript(config.recent_messages)?;
+    let mut transcript = storage.read_recent_transcript(config.recent_messages)?;
+    if let Some(source) = recovery_source.as_ref() {
+        for entry in storage.read_transcript_for_turns(&[source.source_turn.turn_id.clone()])? {
+            if !transcript.iter().any(|existing| existing == &entry) {
+                transcript.push(entry);
+            }
+        }
+    }
     let active_wait_conditions = storage
         .active_wait_conditions_for_agent(&agent.id)?
         .into_iter()
@@ -351,11 +383,12 @@ pub fn build_context_with_default_external_ingress(
         .map(|work_item_id| storage.latest_work_item(work_item_id))
         .transpose()?
         .flatten();
-    let current_work_item = if execution_work_item_id.is_some() {
-        execution_work_item.as_ref()
-    } else {
-        work_queue_projection.current.as_ref()
-    };
+    let current_work_item =
+        if agent.current_execution_binding.is_some() || recovery_source.is_some() {
+            execution_work_item.as_ref()
+        } else {
+            work_queue_projection.current.as_ref()
+        };
 
     let mut candidates = Vec::new();
     candidates.push(context_candidate(
@@ -609,7 +642,22 @@ pub fn build_context_with_default_external_ingress(
         false,
     ));
 
-    if let Some(anchor) = render_continuation_anchor(
+    if let Some(source) = recovery_source.as_ref() {
+        let root = &source.root_message;
+        let anchor = format!(
+            "Provider recovery: continue the task of source turn {}, predecessor attempt {}. The current focus is not the recovery authority.\nRoot task input {} (original provenance):\n{}\n{}",
+            source.source_turn.turn_id,
+            source.predecessor.attempt_id,
+            root.id,
+            message_header(root),
+            render_message_body_for_anchor(&root.body),
+        );
+        candidates.push(context_candidate(
+            turn_section("continuation_anchor", anchor.clone()),
+            Some(turn_section("continuation_anchor", anchor)),
+            true,
+        ));
+    } else if let Some(anchor) = render_continuation_anchor(
         &continuation_anchor_messages,
         current_message,
         continuation,
@@ -1826,6 +1874,13 @@ fn render_recent_turn_input_line(
                 "  - operator input preview: {preview} [truncated; full via message_ref={message_ref}]"
             )
         }
+    } else if matches!(mode, RecentTurnProjectionMode::Continuity)
+        && crate::runtime::provider_recovery::continuity_turn_id(message).is_some()
+    {
+        format!(
+            "  - input full: {} message_ref={message_ref}",
+            sanitize_inline(&message_body_text(&message.body))
+        )
     } else {
         render_recent_turn_runtime_input_line(message, &message_ref).unwrap_or_else(|| {
             format!(
@@ -2478,9 +2533,11 @@ fn render_turn_records_with_budget(
         return None;
     }
 
-    let latest_operator_for_continuation = (!is_trusted_operator_input(current_message))
-        .then(|| latest_trusted_operator_input(messages, current_message))
-        .flatten();
+    let recovery_turn_id = crate::runtime::provider_recovery::continuity_turn_id(current_message);
+    let latest_operator_for_continuation = (recovery_turn_id.is_none()
+        && !is_trusted_operator_input(current_message))
+    .then(|| latest_trusted_operator_input(messages, current_message))
+    .flatten();
     let continuation_turn_id = latest_operator_for_continuation
         .and_then(|operator| {
             turn_records
@@ -2493,9 +2550,11 @@ fn render_turn_records_with_budget(
         .rev()
         .map(|record| record.turn_id.clone())
         .next();
-    let continuity_turn_id = continuation_turn_id
-        .clone()
-        .or_else(|| latest_previous_turn_id.clone());
+    let continuity_turn_id = recovery_turn_id.map(str::to_owned).or_else(|| {
+        continuation_turn_id
+            .clone()
+            .or_else(|| latest_previous_turn_id.clone())
+    });
     let nearby_turn_ids = turn_records
         .iter()
         .rev()
@@ -6917,7 +6976,7 @@ mod tests {
     }
 
     #[test]
-    fn build_context_falls_back_to_global_focus_for_lifecycle_execution_binding() {
+    fn build_context_explicit_non_work_item_binding_does_not_fall_back_to_focus() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let focused = crate::types::WorkItemRecord::new(
@@ -6955,6 +7014,39 @@ mod tests {
                 text: "resume lifecycle work".into(),
             },
         );
+        for owner in [
+            crate::types::TurnOwner::Conversation {
+                interaction_id: "interaction-normal".into(),
+            },
+            crate::types::TurnOwner::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+        ] {
+            agent.current_execution_binding.as_mut().unwrap().owner = Some(owner);
+            storage.write_agent(&agent).unwrap();
+            let built = build_context(
+                &storage,
+                &agent,
+                &execution_snapshot_for(&agent),
+                &crate::types::SkillsRuntimeView::default(),
+                &current_message,
+                None,
+                &ContextConfig::default(),
+                dir.path(),
+            )
+            .unwrap();
+            let current_work_item = built
+                .sections
+                .iter()
+                .find(|section| section.name == "current_work_item")
+                .unwrap();
+            assert_eq!(current_work_item.content, render_empty_current_work_item());
+            assert!(!current_work_item.content.contains("focused lifecycle work"));
+        }
+
+        // Legacy contexts without an execution binding still use global focus.
+        agent.current_execution_binding = None;
+        storage.write_agent(&agent).unwrap();
         let built = build_context(
             &storage,
             &agent,

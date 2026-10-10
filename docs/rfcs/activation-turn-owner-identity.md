@@ -34,9 +34,18 @@ Owner selection follows trusted admission facts:
 1. an exact WorkItem binding always selects `WorkItem`
 2. a trusted operator prompt without a WorkItem or exact wait selects
    `Conversation`
-3. external, timer, recovery, task, internal lifecycle, and exact wait
+3. external, timer, task, internal lifecycle, and exact wait
    activations remain `AgentLifecycle` unless exactly bound to a WorkItem
 4. `Command` remains independent
+
+Typed provider recovery is a source-bound exception, not an ordinary lifecycle
+wake. After validating runtime provenance, the same-agent source message,
+provider-failure terminal Turn, and terminal predecessor attempt, admission
+inherits that attempt's entire `ExecutionBinding`. This includes a Conversation
+interaction id or an explicit AgentLifecycle binding without a WorkItem.
+Recovery cannot choose an owner from current focus or message metadata.
+Conflicting queued WorkItem bindings fail closed; absence of a source WorkItem
+is not permission to adopt the focused one.
 
 Conversation identity is opaque and derived from authenticated server-side
 facts. Local CLI, run-once, and authenticated control prompts use a stable local
@@ -76,6 +85,8 @@ An existing explicit owner is immutable.
 - untrusted or external metadata cannot create or merge Conversation identity
 - WorkItem owner semantics and settlement remain unchanged
 - owner reconstruction is deterministic across restart
+- provider recovery binding equals its validated predecessor binding; this
+  narrow rule does not change task-result or exact-wait reentry admission
 
 ## Evaluation
 

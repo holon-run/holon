@@ -16,6 +16,7 @@ mod lifecycle;
 mod message_dispatch;
 mod operator;
 mod operator_dispatch;
+pub(crate) mod provider_recovery;
 mod provider_turn;
 mod repair;
 mod scheduler;
