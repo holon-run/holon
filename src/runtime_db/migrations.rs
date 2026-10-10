@@ -3823,6 +3823,67 @@ CREATE INDEX IF NOT EXISTS idx_content_reports_reporter_created
   ON content_reports(reporter_principal, created_at);
 "#,
     },
+    Migration {
+        version: 79,
+        name: "task_reply_consumed_elsewhere_settlement",
+        sql: r#"
+ALTER TABLE task_result_settlements RENAME TO task_result_settlements_v78;
+
+CREATE TABLE task_result_settlements (
+  result_identity TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  message_id TEXT NOT NULL UNIQUE,
+  work_item_id TEXT,
+  rejoin_generation INTEGER NOT NULL CHECK (rejoin_generation > 0),
+  parent_turn_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('persisted_pending', 'caller_admitted', 'settled')),
+  activation_id TEXT,
+  disposition TEXT CHECK (
+    disposition IS NULL OR disposition IN (
+      'model_delivered', 'owner_closed', 'owner_missing', 'invalid_or_stale', 'reply_consumed_elsewhere'
+    )
+  ),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  admitted_at TEXT,
+  settled_at TEXT,
+  deferred_reason TEXT,
+  deferred_at TEXT,
+  next_recheck_at TEXT,
+  payload_json TEXT NOT NULL,
+  CHECK (
+    (state = 'persisted_pending' AND activation_id IS NULL AND admitted_at IS NULL
+      AND disposition IS NULL AND settled_at IS NULL)
+    OR (state = 'caller_admitted' AND activation_id IS NOT NULL AND admitted_at IS NOT NULL
+      AND disposition IS NULL AND settled_at IS NULL)
+    OR (state = 'settled' AND disposition IS NOT NULL AND settled_at IS NOT NULL)
+  )
+);
+
+INSERT INTO task_result_settlements (
+  result_identity, agent_id, task_id, message_id, work_item_id,
+  rejoin_generation, parent_turn_id, state, activation_id, disposition,
+  created_at, updated_at, admitted_at, settled_at,
+  deferred_reason, deferred_at, next_recheck_at, payload_json
+)
+SELECT
+  result_identity, agent_id, task_id, message_id, work_item_id,
+  rejoin_generation, parent_turn_id, state, activation_id, disposition,
+  created_at, updated_at, admitted_at, settled_at,
+  deferred_reason, deferred_at, next_recheck_at, payload_json
+FROM task_result_settlements_v78;
+
+DROP TABLE task_result_settlements_v78;
+
+CREATE INDEX idx_task_result_settlements_owner_state
+  ON task_result_settlements(agent_id, work_item_id, state, created_at);
+CREATE INDEX idx_task_result_settlements_activation
+  ON task_result_settlements(agent_id, activation_id, state, created_at);
+CREATE INDEX idx_task_result_settlements_due
+  ON task_result_settlements(agent_id, next_recheck_at, state);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

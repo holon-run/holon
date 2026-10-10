@@ -573,6 +573,22 @@ describe("task result presentation", () => {
     expect(html).not.toContain("bounded runtime output");
     expect(html.match(/这是结果内容 markdown/g)).toHaveLength(1);
   });
+  it("uses durable runtime provenance to hide legacy synthetic briefs with a null task link", () => {
+    const legacyBrief = { ...brief, text: "Legacy synthetic runtime result", related_message_id: input.message_id };
+    const runtimeTurn = turnSummary("legacy-runtime", 1, { inputs: [{ ...input,
+      task_result: { ...input.task_result, runtime_only: true } }], presentation_class: "task",
+      execution: { kind: "terminal", outcome: "completed" }, brief_ids: ["brief-1"],
+      result: { kind: "available" }, settled: true });
+    const html = renderTimeline([runtimeTurn], { brief: legacyBrief });
+    expect(html).toContain("bounded runtime output");
+    expect(html).not.toContain("Legacy synthetic runtime result");
+    expect(html).not.toContain("conversation-response");
+    const modelTurn = { ...runtimeTurn, inputs: [{ ...input,
+      task_result: { ...input.task_result, runtime_only: false } }] };
+    const modelHtml = renderTimeline([modelTurn], { brief: legacyBrief });
+    expect(modelHtml).toContain("Legacy synthetic runtime result");
+    expect(modelHtml).not.toContain("bounded runtime output");
+  });
   it("shows all terminal states and hides the reference signal body", () => {
     for (const status of ["failed", "cancelled", "interrupted"] as const) {
       const html = renderTimeline([turnSummary(status, 1, { inputs: [{ ...input, task_result: { ...input.task_result, status } }],

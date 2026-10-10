@@ -32,6 +32,7 @@ export interface TaskResultPresentation {
   readonly summary: string | null;
   readonly preview: string;
   readonly response_message_id: string | null;
+  readonly runtime_only?: boolean;
 }
 
 export interface PendingInput {

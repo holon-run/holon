@@ -27,13 +27,17 @@ separate durable facts. The existing settlement ledger retains deferred results,
 restart recovery, and generation fences. A reply can satisfy concurrent observer
 handles without copying its content. One trigger marker per response remains the
 current same-agent wait constraint; this change does not introduce general
-multi-owner notification fan-out or strict request/reply matching.
+multi-owner notification fan-out or strict request/reply matching. Once the original
+reply is processed, non-selected observations settle as `reply_consumed_elsewhere`
+without claiming delivery to those owners or scheduling further rechecks.
 
 Runtime task results are presentation data, distinct from assistant responses.
 Model-reentry tasks publish their normal model response without a synthetic
 assistant brief. Reducer-only results are explicitly task-linked. Conversation
 projections expose bounded task status/summary/preview metadata, and the Web
 renders task results as compact events or outcome cards with inspectable source
-messages. No-model results, including command results, retain a visible outcome.
+messages. Durable reducer-only turn reasons classify historical runtime-generated
+briefs independently of their text or missing task link. No-model results, including
+command results, retain a visible outcome.
 Task IDs and complete raw output belong in the inspector. Pending inputs retain
 their existing background-event placement. Historical evidence is preserved.

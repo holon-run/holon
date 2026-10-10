@@ -22,6 +22,9 @@ pub struct TaskResultPresentation {
     pub summary: Option<String>,
     pub preview: String,
     pub response_message_id: Option<String>,
+    /// True only when durable turn provenance identifies a runtime-only result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_only: Option<bool>,
 }
 
 impl TaskResultPresentation {
@@ -42,6 +45,7 @@ impl TaskResultPresentation {
         .take(320)
         .collect();
         Some(Self {
+            runtime_only: None,
             task_id: metadata.get("task_id")?.as_str()?.to_owned(),
             status,
             summary: metadata

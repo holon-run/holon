@@ -4488,6 +4488,8 @@ export interface components {
                     task_result?: {
                         preview: string;
                         response_message_id?: string | null;
+                        /** @description True only when durable turn provenance identifies a runtime-only result. */
+                        runtime_only?: boolean | null;
                         /** @enum {string} */
                         status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
                         summary?: string | null;
@@ -4649,6 +4651,8 @@ export interface components {
                 task_result?: {
                     preview: string;
                     response_message_id?: string | null;
+                    /** @description True only when durable turn provenance identifies a runtime-only result. */
+                    runtime_only?: boolean | null;
                     /** @enum {string} */
                     status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
                     summary?: string | null;
@@ -4726,6 +4730,8 @@ export interface components {
                     task_result?: {
                         preview: string;
                         response_message_id?: string | null;
+                        /** @description True only when durable turn provenance identifies a runtime-only result. */
+                        runtime_only?: boolean | null;
                         /** @enum {string} */
                         status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
                         summary?: string | null;
@@ -4935,6 +4941,8 @@ export interface components {
                     task_result?: {
                         preview: string;
                         response_message_id?: string | null;
+                        /** @description True only when durable turn provenance identifies a runtime-only result. */
+                        runtime_only?: boolean | null;
                         /** @enum {string} */
                         status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
                         summary?: string | null;
@@ -5010,6 +5018,8 @@ export interface components {
                 task_result?: {
                     preview: string;
                     response_message_id?: string | null;
+                    /** @description True only when durable turn provenance identifies a runtime-only result. */
+                    runtime_only?: boolean | null;
                     /** @enum {string} */
                     status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
                     summary?: string | null;
@@ -5086,6 +5096,8 @@ export interface components {
                     task_result?: {
                         preview: string;
                         response_message_id?: string | null;
+                        /** @description True only when durable turn provenance identifies a runtime-only result. */
+                        runtime_only?: boolean | null;
                         /** @enum {string} */
                         status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
                         summary?: string | null;

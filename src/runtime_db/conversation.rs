@@ -1992,6 +1992,17 @@ fn hydrate_turn_summary(connection: &Connection, row: &mut TurnSummaryRow) -> Re
     row.summary.brief_ids = brief_ids(connection, &row.record.agent_id, &row.record.turn_id)?;
     row.summary.inputs =
         turn_input_previews(connection, &row.record.agent_id, &row.record.turn_id)?;
+    let runtime_only = row.record.terminal.as_ref().is_some_and(|terminal| {
+        terminal
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("reducer_only/"))
+    });
+    for input in &mut row.summary.inputs {
+        if let Some(task_result) = input.task_result.as_mut() {
+            task_result.runtime_only = Some(runtime_only);
+        }
+    }
     row.summary.inputs_truncated = row.summary.inputs.len() > MAX_INPUTS_PER_TURN;
     row.summary.inputs.truncate(MAX_INPUTS_PER_TURN);
     let (result, settled) = map_result(

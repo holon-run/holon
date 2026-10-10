@@ -488,3 +488,17 @@ test("decodes optional task result cards and rejects invalid statuses", () => {
   payload.pending_inputs[0].task_result.status = "invalid";
   assert.throws(() => decodeConversationSummaryResponse(payload), ConversationDecodeError);
 });
+
+test("task cards tolerate omitted nullable fields on pending and assigned inputs", () => {
+  const task_result = { task_id: "task", status: "completed", preview: "done", runtime_only: true };
+  const input = { message_id: "result", preview: "done", task_result };
+  const decoded = decodeConversationSummaryResponse(summary({
+    pending_inputs: [{ ...input, revision: 1, state: "queued" }],
+    turns: [turn("runtime", 1, 1, { inputs: [input] })],
+  }));
+  for (const card of [decoded.pending_inputs[0].task_result, decoded.turns[0].inputs[0].task_result]) {
+    assert.equal(card.summary, null);
+    assert.equal(card.response_message_id, null);
+    assert.equal(card.runtime_only, true);
+  }
+});

@@ -298,9 +298,10 @@ function decodeTaskResultPresentation(value: unknown, path: string): TaskResultP
     status: enumValue(source.status, new Set<TaskResultPresentation["status"]>([
       "queued", "running", "cancelling", "completed", "failed", "cancelled", "interrupted",
     ]), `${path}.status`),
-    summary: nullableString(source.summary, `${path}.summary`),
+    summary: nullableString(source.summary ?? null, `${path}.summary`),
     preview: stringValue(source.preview, `${path}.preview`),
-    response_message_id: nullableString(source.response_message_id, `${path}.response_message_id`),
+    response_message_id: nullableString(source.response_message_id ?? null, `${path}.response_message_id`),
+    ...(source.runtime_only == null ? {} : { runtime_only: booleanValue(source.runtime_only, `${path}.runtime_only`) }),
   };
 }
 

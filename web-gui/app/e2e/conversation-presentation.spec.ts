@@ -658,10 +658,17 @@ test("task result cards distinguish runtime outcomes from model responses on des
   const turns = [resultTurn("command", 1, "completed", "Command verification"),
     resultTurn("failed-task", 2, "failed", "Build failed"), resultTurn("cancelled-task", 3, "cancelled", "Stopped by operator"),
     resultTurn("interrupted-task", 4, "interrupted", "Interrupted run"),
-    { ...resultTurn("model-result", 5, "completed", "Review source"), brief_ids: ["model-brief"], result: { kind: "available" as const } }];
+    { ...resultTurn("model-result", 5, "completed", "Review source"), brief_ids: ["model-brief"], result: { kind: "available" as const } },
+    { ...resultTurn("legacy-runtime", 6, "completed", "Historical command result"),
+      inputs: [{ ...input("legacy-runtime", "completed", "Historical command result"), task_result: {
+        ...input("legacy-runtime", "completed", "Historical command result").task_result, runtime_only: true,
+      } }], brief_ids: ["legacy-brief"], result: { kind: "available" as const } }];
   await request.post(control("/__e2e__/configure"), { data: { briefsById: { "model-brief": {
     id: "model-brief", agent_id: agentId, workspace_id: "holon", kind: "result", text: "Reviewed: ready to merge.",
     related_task_id: null, related_message_id: "model-result", created_at: "2026-10-10T04:00:00Z", content_source: { kind: "inline" },
+  }, "legacy-brief": {
+    id: "legacy-brief", agent_id: agentId, workspace_id: "holon", kind: "result", text: "Historical synthetic result",
+    related_task_id: null, related_message_id: "legacy-runtime", created_at: "2026-10-10T04:00:00Z", content_source: { kind: "inline" },
   } } } });
   await request.post(control("/__e2e__/conversation"), { data: { agentId, turns, pending_inputs: [
     { ...input("pending-task", "completed", "Background verification"), revision: 1, state: "queued", created_at: "2026-10-10T04:00:00Z" },
@@ -678,6 +685,10 @@ test("task result cards distinguish runtime outcomes from model responses on des
   await expect(page.locator('[data-turn-id="model-result"] .conversation-task-result-preview')).toHaveCount(0);
   await expect(page.getByText("Reviewed: ready to merge.", { exact: true })).toHaveCount(1);
   await expect(page.locator(".conversation-pending-events")).toContainText("Background verification");
+  const legacy = page.locator('[data-turn-id="legacy-runtime"]');
+  await expect(legacy.locator(".conversation-task-result-preview")).toContainText("Useful bounded output.");
+  await expect(legacy.locator(".conversation-response")).toHaveCount(0);
+  await expect(page.getByText("Historical synthetic result", { exact: true })).toHaveCount(0);
   for (const status of ["failed", "cancelled", "interrupted"]) {
     await expect(page.locator(`.conversation-task-result.is-${status}`)).toHaveCount(1);
   }

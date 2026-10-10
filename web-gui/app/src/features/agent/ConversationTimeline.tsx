@@ -303,8 +303,17 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
   const [mounted, setMounted] = useState(expanded);
   const initialInputs = turn.inputs.filter((input) => !input.interjected);
   const interjections = turn.inputs.filter((input) => input.interjected);
-  const runtimeResultOnly = turn.result.kind === "none" && turn.result.reason.kind === "reducer_only"
-    && initialInputs.some((input) => input.task_result) && interjections.length === 0;
+  const runtimeResultOnly = initialInputs.some((input) => input.task_result)
+    && interjections.length === 0 && (initialInputs.some((input) => input.task_result?.runtime_only === true)
+      || (turn.result.kind === "none" && turn.result.reason.kind === "reducer_only"));
+  const isRuntimeTaskBrief = (id: string) => {
+    const brief = actions.briefRecord(id);
+    return brief !== null && turn.inputs.some((input) => input.task_result && (
+      brief.related_task_id === input.task_result.task_id
+      || (input.task_result.runtime_only === true && brief.related_message_id === input.message_id)
+    ));
+  };
+  const responseBriefIds = turn.briefIds.filter((id) => !isRuntimeTaskBrief(id));
 
   useEffect(() => {
     if (turn.execution.kind === "active") wasActive.current = true;
@@ -349,10 +358,7 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
       aria-label={t("agentPage.turnAria", { index: turn.turnIndex })}>
       {initialInputs.map((input) => input.task_result ? (
         <TaskResultCard key={input.message_id} input={input} timestamp={turn.startedAt}
-          compact={turn.briefIds.some((id) => {
-            const brief = actions.briefRecord(id);
-            return brief !== null && brief.related_task_id === null;
-          })} onInspectActivity={actions.onInspectActivity} />
+          compact={responseBriefIds.some((id) => actions.briefRecord(id) !== null)} onInspectActivity={actions.onInspectActivity} />
       ) : (input.presentation_class ?? turn.presentationClass) === "operator" ? (
         <ConversationInputLine key={input.message_id} input={input} />
       ) : (
@@ -394,10 +400,7 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
             {t(`agentPage.executionState.${execution === "waitingResult" && hasReadableBrief ? "finishingResult" : execution}`)}
           </div>
         ) : null}
-        {turn.briefIds.filter((id) => {
-          const brief = actions.briefRecord(id);
-          return !(brief?.related_task_id && turn.inputs.some((input) => input.task_result?.task_id === brief.related_task_id));
-        }).map((briefId) => <ConversationBriefCard key={briefId} briefId={briefId} actions={actions} />)}
+        {responseBriefIds.map((briefId) => <ConversationBriefCard key={briefId} briefId={briefId} actions={actions} />)}
         {presentation.kind === "terminal_without_result" && execution === "completed" && !turn.inputs.some((input) => input.task_result) ? (
           <div className="conversation-turn-notice">{t("agentPage.turnNoBrief", { outcome: t(`agentPage.outcome.${presentation.outcome}`) })}</div>
         ) : null}

@@ -6432,6 +6432,13 @@
                             "null"
                           ]
                         },
+                        "runtime_only": {
+                          "description": "True only when durable turn provenance identifies a runtime-only result.",
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
                         "status": {
                           "enum": [
                             "queued",
@@ -7073,6 +7080,13 @@
                           "null"
                         ]
                       },
+                      "runtime_only": {
+                        "description": "True only when durable turn provenance identifies a runtime-only result.",
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
                       "status": {
                         "enum": [
                           "queued",
@@ -7411,6 +7425,13 @@
                             "response_message_id": {
                               "type": [
                                 "string",
+                                "null"
+                              ]
+                            },
+                            "runtime_only": {
+                              "description": "True only when durable turn provenance identifies a runtime-only result.",
+                              "type": [
+                                "boolean",
                                 "null"
                               ]
                             },
@@ -8266,6 +8287,13 @@
                               "null"
                             ]
                           },
+                          "runtime_only": {
+                            "description": "True only when durable turn provenance identifies a runtime-only result.",
+                            "type": [
+                              "boolean",
+                              "null"
+                            ]
+                          },
                           "status": {
                             "enum": [
                               "queued",
@@ -8569,6 +8597,13 @@
                     "response_message_id": {
                       "type": [
                         "string",
+                        "null"
+                      ]
+                    },
+                    "runtime_only": {
+                      "description": "True only when durable turn provenance identifies a runtime-only result.",
+                      "type": [
+                        "boolean",
                         "null"
                       ]
                     },
@@ -8899,6 +8934,13 @@
                           "response_message_id": {
                             "type": [
                               "string",
+                              "null"
+                            ]
+                          },
+                          "runtime_only": {
+                            "description": "True only when durable turn provenance identifies a runtime-only result.",
+                            "type": [
+                              "boolean",
                               "null"
                             ]
                           },

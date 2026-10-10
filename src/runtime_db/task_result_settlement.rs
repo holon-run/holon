@@ -36,6 +36,7 @@ impl TaskResultSettlementState {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum TaskResultSettlementDisposition {
     ModelDelivered,
+    ReplyConsumedElsewhere,
     OwnerClosed,
     OwnerMissing,
     InvalidOrStale,
@@ -52,6 +53,7 @@ impl TaskResultSettlementDisposition {
     fn as_str(self) -> &'static str {
         match self {
             Self::ModelDelivered => "model_delivered",
+            Self::ReplyConsumedElsewhere => "reply_consumed_elsewhere",
             Self::OwnerClosed => "owner_closed",
             Self::OwnerMissing => "owner_missing",
             Self::InvalidOrStale => "invalid_or_stale",
@@ -374,6 +376,18 @@ impl TaskResultSettlementRepository<'_> {
             update_tx(tx, &record)?;
             Ok(true)
         })
+    }
+
+    pub(crate) fn settle_reply_consumed_elsewhere(
+        &self,
+        message_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        self.settle_owner_unavailable(
+            message_id,
+            TaskResultSettlementDisposition::ReplyConsumedElsewhere,
+            now,
+        )
     }
 
     pub(crate) fn mark_deferred(
