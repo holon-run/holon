@@ -16,6 +16,7 @@
         <key>CFBundleURLName</key><string>run.holon.ios.oidc</string>
         <key>CFBundleURLSchemes</key><array><string>run.holon.ios</string></array>
     </dict></array>
+    <key>ITSAppUsesNonExemptEncryption</key><false/>
     <key>LSRequiresIPhoneOS</key><true/>
     <key>UILaunchScreen</key><dict/>
     <key>UIApplicationSceneManifest</key>

@@ -10,6 +10,7 @@ import json
 import os
 import pathlib
 from pathlib import Path
+import plistlib
 import subprocess
 import sqlite3
 import struct
@@ -40,6 +41,12 @@ def fixture_helpers():
         if isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef))],
         type_ignores=[]), str(source), "exec"), namespace)
     return namespace
+
+
+class AppMetadataContracts(unittest.TestCase):
+    def test_app_declares_only_exempt_encryption(self):
+        info = plistlib.loads((ROOT / "apps/ios/Info.plist").read_bytes())
+        self.assertIs(info["ITSAppUsesNonExemptEncryption"], False)
 
 
 class BuildToolContracts(unittest.TestCase):
