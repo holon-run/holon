@@ -1457,6 +1457,7 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
             crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
                 wait_id: source_wait_id,
                 trigger_message_id,
+                ..
             } if source_wait_id == &wait_id && trigger_message_id == &trigger.id
         )
         && matches!(
@@ -1682,6 +1683,7 @@ async fn seed_scheduler_post_commit_notification_restart_fixture(
                         crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
                             wait_id: source_wait_id,
                             trigger_message_id,
+                            ..
                         } if source_wait_id == &wait_id
                             && trigger_message_id == &progress_message.id
                     )

@@ -86,6 +86,7 @@ pub(super) fn validate_execution_commands_tx(
         }
         if let ExecutionProtocolCommand::Admit(command) = command {
             validate_admission_authority_tx(tx, agent_id, &command.attempt.admitted_fences)?;
+            validate_wait_ingress_tx(tx, agent_id, &command.attempt)?;
         }
         if let ExecutionProtocolCommand::RegisterWorkItem(command) = command {
             validate_register_work_item(tx, agent_id, command, work_item_mutations)?;
@@ -961,6 +962,56 @@ pub(crate) fn authority_fences_tx(
     })
 }
 
+fn validate_wait_ingress_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    attempt: &execution_protocol::ExecutionAttempt,
+) -> Result<()> {
+    use crate::domain::execution_protocol::{
+        ExecutionOrigin, ExecutionSourceIdentity, ExecutionTrust, ExecutionWaitIngress,
+    };
+    use crate::types::{AuthorityClass, MessageEnvelope, MessageOrigin};
+
+    let ExecutionSourceIdentity::TriggeredWait {
+        trigger_message_id,
+        ingress: Some(ExecutionWaitIngress::RuntimeOwnedInternalFollowup),
+        ..
+    } = &attempt.source.identity
+    else {
+        return Ok(());
+    };
+    let payload = tx
+        .query_row(
+            "SELECT payload_json FROM messages WHERE agent_id = ?1 AND message_id = ?2",
+            [agent_id, trigger_message_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("wait ingress requires a durable trigger message"))?;
+    let message: MessageEnvelope = serde_json::from_str(&payload)?;
+    let origin = match &message.origin {
+        MessageOrigin::System { .. } => ExecutionOrigin::System,
+        MessageOrigin::Task { .. } => ExecutionOrigin::Task,
+        _ => bail!("wait ingress requires a runtime-owned trigger origin"),
+    };
+    let trust = match message.authority_class {
+        AuthorityClass::OperatorInstruction => ExecutionTrust::OperatorInstruction,
+        AuthorityClass::RuntimeInstruction => ExecutionTrust::RuntimeInstruction,
+        AuthorityClass::IntegrationSignal => ExecutionTrust::IntegrationSignal,
+        AuthorityClass::ExternalEvidence => ExecutionTrust::ExternalEvidence,
+    };
+    if !message.is_runtime_owned_internal_followup()
+        || message.agent_id != attempt.agent_id
+        || attempt.source_message_id.as_deref() != Some(trigger_message_id.as_str())
+        || message.message_seq != Some(attempt.source.generation)
+        || attempt.provenance.origin != origin
+        || attempt.provenance.trust != trust
+    {
+        bail!("wait ingress does not match its durable runtime-owned trigger");
+    }
+    Ok(())
+}
+
 fn validate_admission_authority_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -1315,6 +1366,150 @@ mod tests {
         );
         identity.status = AgentRegistryStatus::Active;
         db.agent_identities().upsert(&identity)?;
+        Ok(())
+    }
+
+    #[test]
+    fn marked_wait_ingress_requires_durable_envelope_evidence() -> Result<()> {
+        use crate::domain::execution_protocol::*;
+        use crate::types::{
+            AdmissionContext, AuthorityClass, MessageBody, MessageDeliverySurface, MessageEnvelope,
+            MessageKind, MessageOrigin, Priority,
+        };
+
+        for case in [
+            "valid_system",
+            "valid_task",
+            "surface",
+            "admission",
+            "kind",
+            "origin",
+            "trust",
+            "source",
+            "revision",
+            "missing",
+        ] {
+            let home = tempdir()?;
+            let db = RuntimeDb::open_and_migrate(
+                home.path().join("state/runtime.sqlite"),
+                home.path().join("state/runtime.lock"),
+            )?;
+            let agent_id = "agent-wait-ingress";
+            setup_agent(&db, agent_id)?;
+            let mut message = MessageEnvelope::new(
+                agent_id,
+                MessageKind::InternalFollowup,
+                MessageOrigin::System {
+                    subsystem: "agent_message".into(),
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text { text: case.into() },
+            );
+            message.delivery_surface = Some(MessageDeliverySurface::RuntimeSystem);
+            message.admission_context = Some(AdmissionContext::RuntimeOwned);
+            match case {
+                "valid_task" => {
+                    message.origin = MessageOrigin::Task {
+                        task_id: "peer-task".into(),
+                    };
+                }
+                "surface" => message.delivery_surface = None,
+                "admission" => message.admission_context = None,
+                "kind" => message.kind = MessageKind::OperatorPrompt,
+                "origin" => {
+                    message.origin = MessageOrigin::Operator {
+                        actor_id: None,
+                        actor_display_name: None,
+                    };
+                }
+                _ => {}
+            }
+            if case != "missing" {
+                message = db.messages().append_with_index_changes(&message, &[])?;
+            }
+            let fences = db.transitions().load_execution_authority_fences(agent_id)?;
+            let revision = message.message_seq.unwrap_or(1) + u64::from(case == "revision");
+            let commands = [ExecutionProtocolCommand::Admit(Box::new(AdmitExecution {
+                attempt: ExecutionAttempt {
+                    attempt_id: format!("attempt-{case}"),
+                    agent_id: agent_id.into(),
+                    source_message_id: Some(if case == "source" {
+                        "different-message".into()
+                    } else {
+                        message.id.clone()
+                    }),
+                    source: ExecutionSource {
+                        identity: ExecutionSourceIdentity::TriggeredWait {
+                            wait_id: "peer-wait".into(),
+                            trigger_message_id: message.id.clone(),
+                            ingress: Some(ExecutionWaitIngress::RuntimeOwnedInternalFollowup),
+                        },
+                        generation: revision,
+                    },
+                    binding: ExecutionBinding::AgentLifecycle {
+                        agent_id: agent_id.into(),
+                    },
+                    provenance: ExecutionProvenance {
+                        origin: if case == "valid_task" {
+                            ExecutionOrigin::Task
+                        } else {
+                            ExecutionOrigin::System
+                        },
+                        trust: if case == "trust" {
+                            ExecutionTrust::RuntimeInstruction
+                        } else {
+                            ExecutionTrust::OperatorInstruction
+                        },
+                        priority: ExecutionPriority::Normal,
+                        correlation_id: None,
+                        causation_id: None,
+                    },
+                    admitted_fences: AdmittedFences {
+                        source_revision: revision,
+                        work_item_source_revision: None,
+                        work_item_generation: None,
+                        rejoin: None,
+                        agent_control_revision: fences.agent_control_revision,
+                        host_registry_revision: fences.host_registry_revision,
+                    },
+                    state: ExecutionAttemptState::Open,
+                    run_id: None,
+                    turn_id: None,
+                    recovery_of_attempt_id: None,
+                    terminal_outcome_id: None,
+                    admitted_at: Utc::now().to_rfc3339(),
+                    terminal_at: None,
+                },
+            }))];
+            let result = db.transaction(|tx| {
+                let prepared = validate_execution_commands_tx(
+                    tx,
+                    agent_id,
+                    Some(&ExecutionProtocolState::empty(agent_id)),
+                    &commands,
+                    &[],
+                    &[],
+                    &[],
+                )?;
+                persist_execution_commands_tx(tx, prepared)?;
+                Ok(())
+            });
+            let persisted = db
+                .transitions()
+                .load_execution_protocol_state_if_initialized(agent_id)?;
+            if case.starts_with("valid_") {
+                result?;
+                assert!(persisted.unwrap().open_attempt().is_some(), "{case}");
+            } else {
+                let error = result.unwrap_err();
+                assert!(
+                    error.to_string().contains("wait ingress"),
+                    "{case}: {error}"
+                );
+                assert!(persisted.is_none(), "{case}");
+            }
+        }
         Ok(())
     }
 

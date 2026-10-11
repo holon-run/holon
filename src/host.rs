@@ -9597,6 +9597,317 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_message_wait_preserves_reply_authority_with_late_status() {
+        for (use_wait, reply_authority) in [
+            (false, AuthorityClass::OperatorInstruction),
+            (true, AuthorityClass::RuntimeInstruction),
+            (true, AuthorityClass::OperatorInstruction),
+        ] {
+            struct GateProvider {
+                started: Arc<Notify>,
+                release: Arc<Notify>,
+                gated: AtomicBool,
+            }
+            #[async_trait]
+            impl AgentProvider for GateProvider {
+                async fn complete_turn(
+                    &self,
+                    request: ProviderTurnRequest,
+                ) -> anyhow::Result<ProviderTurnResponse> {
+                    if !self.gated.swap(true, Ordering::SeqCst) {
+                        self.started.notify_one();
+                        self.release.notified().await;
+                    }
+                    StubProvider::new("issue-3484-fixture-done")
+                        .complete_turn(request)
+                        .await
+                }
+            }
+            let home = tempdir().unwrap();
+            write_test_model_config(home.path());
+            let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+            config.user_home_dir = Some(home.path().to_path_buf());
+            let provider = Arc::new(GateProvider {
+                started: Arc::new(Notify::new()),
+                release: Arc::new(Notify::new()),
+                gated: AtomicBool::new(false),
+            });
+            config.default_agent_id = "default".into();
+            let host = RuntimeHost::new_with_provider(config, provider.clone()).unwrap();
+            let parent = host.default_runtime().await.unwrap();
+            parent
+                .enqueue(MessageEnvelope::new(
+                    "default",
+                    MessageKind::OperatorPrompt,
+                    MessageOrigin::Operator {
+                        actor_id: None,
+                        actor_display_name: None,
+                    },
+                    AuthorityClass::OperatorInstruction,
+                    Priority::Normal,
+                    MessageBody::Text {
+                        text: "issue-3484-parent-gate".into(),
+                    },
+                ))
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(10), provider.started.notified())
+                .await
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "parent provider did not start: {error:?}; state={:?}; events={:?}",
+                        parent.storage().read_agent().unwrap(),
+                        parent.storage().read_recent_events(10).unwrap()
+                    )
+                });
+            let parent_turn_id = parent.agent_state().await.unwrap().current_turn_id.unwrap();
+            let created = parent
+                .agent_invocation_service()
+                .invoke(InvokeAgentRequest {
+                    target: InvokeAgentTarget::NewSubagent {
+                        template: None,
+                        workspace_mode: ChildAgentWorkspaceMode::Inherit,
+                        model_resolution: Some(inherited_model_resolution("openai", "gpt-5.4")),
+                    },
+                    message: "bootstrap peer".into(),
+                    authority_class: AuthorityClass::OperatorInstruction,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                wait_for_terminal_task(&parent, &created.task_handle.task_id)
+                    .await
+                    .status,
+                TaskStatus::Completed
+            );
+            let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
+            let receipt = parent
+                .agent_invocation_service()
+                .invoke(InvokeAgentRequest {
+                    target: InvokeAgentTarget::ExistingAgent {
+                        agent_id: created.agent_id,
+                    },
+                    message: "check and reply".into(),
+                    authority_class: AuthorityClass::OperatorInstruction,
+                })
+                .await
+                .unwrap();
+            let task_id = &receipt.task_handle.task_id;
+            let registration = if use_wait {
+                Some(
+                    parent
+                        .register_wait_for(
+                            "default",
+                            None,
+                            crate::runtime::WaitForWakeKind::TaskResult,
+                            Some(task_id.clone()),
+                            "issue-3484 real peer reply wait".into(),
+                            None,
+                        )
+                        .await
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            for index in 0..3 {
+                child
+                    .agent_messaging_service()
+                    .send(
+                        AgentMessageSendRequest {
+                            target_agent_id: "default".into(),
+                            content: MessageBody::Text {
+                                text: format!("peer report {index}"),
+                            },
+                            client_idempotency_key: format!("issue-3484-report-{index}"),
+                            correlation_id: None,
+                            causation_id: None,
+                            requested_priority: Some(Priority::Normal),
+                            forward: false,
+                        },
+                        reply_authority,
+                    )
+                    .await
+                    .unwrap();
+            }
+            let terminal = wait_for_terminal_task(&parent, task_id).await;
+            assert_eq!(terminal.status, TaskStatus::Completed);
+            assert!(terminal.work_item_id.is_none());
+            assert_eq!(
+                terminal.rejoin_fence().unwrap().parent_turn_id,
+                parent_turn_id
+            );
+            let messages = parent.storage().read_recent_messages(30).unwrap();
+            let status = messages
+            .iter()
+            .find(|message| {
+                message.kind == MessageKind::TaskStatus
+                    && matches!(&message.origin, MessageOrigin::Task { task_id: id } if id == task_id)
+            })
+            .expect("real monitor should enqueue its started status")
+            .clone();
+            assert_eq!(status.authority_class, AuthorityClass::OperatorInstruction);
+            assert_eq!(status.priority, Priority::Background);
+            assert_eq!(
+                parent
+                    .runtime_db()
+                    .queue_entries()
+                    .latest(&status.id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                QueueEntryStatus::Queued
+            );
+            let result_id = format!("message:agent-message-wait:{task_id}");
+            println!(
+                "3484 matrix: use_wait={use_wait}, reply_authority={reply_authority:?}, wait={:?}",
+                registration.as_ref().map(|registration| parent
+                    .storage()
+                    .latest_wait_conditions_for_agent("default")
+                    .unwrap()
+                    .into_iter()
+                    .find(|condition| condition.id == registration.condition.id)
+                    .unwrap()),
+            );
+            provider.release.notify_one();
+            tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if parent
+                    .runtime_db()
+                    .queue_entries()
+                    .latest(&status.id)
+                    .unwrap()
+                    .unwrap()
+                    .status
+                    == QueueEntryStatus::Processed
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|error| {
+            let events = parent.storage().read_recent_events(50).unwrap();
+            let relevant: Vec<_> = events
+                .into_iter()
+                .filter(|event| {
+                    matches!(
+                        event.kind.as_str(),
+                        "agent_runtime_loop_failed" | "queue_entry_claimed" | "queue_entry_settled"
+                    )
+                })
+                .collect();
+            panic!(
+                "real message-wait matrix stalled: use_wait={use_wait}, reply_authority={reply_authority:?}, error={error:?}, events={relevant:?}"
+            )
+        });
+            let events = parent.storage().read_recent_events(400).unwrap();
+            let claimed: Vec<_> = events
+                .iter()
+                .filter(|event| event.kind == "queue_entry_claimed")
+                .filter_map(|event| event.data["message_id"].as_str())
+                .collect();
+            let result_position = claimed.iter().position(|id| *id == result_id).unwrap();
+            let status_position = claimed.iter().position(|id| *id == status.id).unwrap();
+            assert!(
+                result_position < status_position,
+                "result must precede late status"
+            );
+            let result_turn = parent
+                .storage()
+                .read_turn_by_id(&format!("turn:agent-message-wait:{task_id}"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                result_turn.terminal.unwrap().reason.as_deref(),
+                Some("reducer_only/parent_turn_already_delivered")
+            );
+            let stored_task = parent
+                .runtime_db()
+                .tasks()
+                .latest(task_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored_task.status, TaskStatus::Completed);
+            let partition = parent
+                .runtime_db()
+                .transitions()
+                .load_execution_protocol_state_if_initialized("default")
+                .unwrap()
+                .unwrap();
+            assert!(!partition.attempts.values().any(|attempt| {
+                attempt.source_message_id.as_deref() == Some(status.id.as_str())
+            }));
+            if let Some(registration) = &registration {
+                let wait = parent
+                    .storage()
+                    .latest_wait_conditions_for_agent("default")
+                    .unwrap()
+                    .into_iter()
+                    .find(|wait| wait.id == registration.condition.id)
+                    .unwrap();
+                assert_eq!(wait.status, WaitConditionStatus::Resolved);
+                let reply_id = wait.trigger_message_id().unwrap();
+                assert_ne!(reply_id, result_id);
+                let reply_attempt = partition
+                    .attempts
+                    .values()
+                    .find(|attempt| attempt.source_message_id.as_deref() == Some(reply_id))
+                    .unwrap();
+                use crate::domain::execution_protocol::{
+                    ExecutionOrigin, ExecutionSourceIdentity, ExecutionTrust, ExecutionWaitIngress,
+                };
+                assert_eq!(
+                    reply_attempt.source.identity,
+                    ExecutionSourceIdentity::TriggeredWait {
+                        wait_id: wait.id.clone(),
+                        trigger_message_id: reply_id.into(),
+                        ingress: Some(ExecutionWaitIngress::RuntimeOwnedInternalFollowup),
+                    }
+                );
+                assert_eq!(reply_attempt.provenance.origin, ExecutionOrigin::System);
+                assert_eq!(
+                    reply_attempt.provenance.trust,
+                    match reply_authority {
+                        AuthorityClass::OperatorInstruction => ExecutionTrust::OperatorInstruction,
+                        AuthorityClass::RuntimeInstruction => ExecutionTrust::RuntimeInstruction,
+                        _ => unreachable!(),
+                    }
+                );
+            }
+            let result_has_attempt = partition
+                .attempts
+                .values()
+                .any(|attempt| attempt.source_message_id.as_deref() == Some(result_id.as_str()));
+            assert!(
+                !result_has_attempt,
+                "parent-delivered result is reducer-only"
+            );
+            let settlement = parent
+                .runtime_db()
+                .task_result_settlements()
+                .latest_for_message(&result_id)
+                .unwrap();
+            println!(
+            "3484 real durable evidence: task_fence={:?}; result_has_attempt={result_has_attempt}; settlement={:?}",
+            stored_task.rejoin_fence().unwrap(),
+            settlement.as_ref().map(|record| (
+                record.state,
+                record.disposition,
+                record.rejoin_generation,
+                record.activation_id.as_deref(),
+            ))
+        );
+            assert!(!events
+                .iter()
+                .any(|event| event.kind == "agent_runtime_loop_failed"));
+            println!("3484 real fixture: result before late OperatorInstruction TaskStatus; parent_turn_already_delivered; status processed; task remains completed; no canonical status attempt; no loop failure");
+            host.shutdown().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn agent_message_wait_for_existing_agent_captures_reply_before_invoke_returns() {
         let _delivery_checkpoint_test_lock = DELIVERY_CHECKPOINT_TEST_LOCK.lock().await;
 

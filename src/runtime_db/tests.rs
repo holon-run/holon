@@ -5038,6 +5038,7 @@ CREATE TABLE working_memory_deltas (
             ExecutionSourceIdentity::TriggeredWait {
                 wait_id: "wait-cutover-history".into(),
                 trigger_message_id: "message-cutover-trigger".into(),
+                ingress: None,
             }
         );
         assert_eq!(

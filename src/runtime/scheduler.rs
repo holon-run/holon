@@ -938,13 +938,7 @@ fn trusted_operator_prompt(message: &MessageEnvelope) -> bool {
 }
 
 pub(crate) fn runtime_owned_internal_followup(message: &MessageEnvelope) -> bool {
-    message.kind == MessageKind::InternalFollowup
-        && message.delivery_surface == Some(MessageDeliverySurface::RuntimeSystem)
-        && message.admission_context == Some(AdmissionContext::RuntimeOwned)
-        && matches!(
-            message.origin,
-            MessageOrigin::System { .. } | MessageOrigin::Task { .. }
-        )
+    message.is_runtime_owned_internal_followup()
 }
 
 pub(crate) fn resolve_canonical_activation_scenario(

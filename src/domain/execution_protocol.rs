@@ -303,6 +303,8 @@ pub enum ExecutionSourceIdentity {
     TriggeredWait {
         wait_id: String,
         trigger_message_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ingress: Option<ExecutionWaitIngress>,
     },
     WorkItemContinuation {
         work_item_id: String,
@@ -315,6 +317,12 @@ pub enum ExecutionSourceIdentity {
     RuntimeRecovery {
         recovery_id: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionWaitIngress {
+    RuntimeOwnedInternalFollowup,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -933,8 +941,8 @@ fn validate_provenance(attempt: &ExecutionAttempt) -> Result<(), String> {
         Timer | System => matches!(provenance.trust, RuntimeInstruction | IntegrationSignal),
         Task | RuntimeRecovery => provenance.trust == RuntimeInstruction,
     };
-    // InternalFollowup identities are runtime-only: the scheduler constructs them
-    // from persisted ingress evidence while preserving, never upgrading, trust.
+    // Runtime-owned followups retain their ingress identity through exact waits,
+    // preserving, never upgrading, the original message trust.
     let runtime_owned_followup = matches!(
         (
             &attempt.source.identity,
@@ -942,7 +950,11 @@ fn validate_provenance(attempt: &ExecutionAttempt) -> Result<(), String> {
             provenance.origin
         ),
         (
-            ExecutionSourceIdentity::InternalFollowup { .. },
+            ExecutionSourceIdentity::InternalFollowup { .. }
+                | ExecutionSourceIdentity::TriggeredWait {
+                    ingress: Some(ExecutionWaitIngress::RuntimeOwnedInternalFollowup),
+                    ..
+                },
             ExecutionBinding::WorkItem { .. } | ExecutionBinding::AgentLifecycle { .. },
             System | Task
         )
@@ -1852,6 +1864,7 @@ mod tests {
         wait_attempt.source.identity = ExecutionSourceIdentity::TriggeredWait {
             wait_id: "wait-1".into(),
             trigger_message_id: "trigger-1".into(),
+            ingress: None,
         };
         let admitted = admit_execution(
             &state,
@@ -2008,6 +2021,66 @@ mod tests {
                 .unwrap_err()
                 .contains("provenance")
         );
+    }
+
+    #[test]
+    fn triggered_wait_followup_ingress_keeps_provenance_boundary() {
+        let mut followup = attempt("followup-wait", None);
+        followup.source.identity = ExecutionSourceIdentity::TriggeredWait {
+            wait_id: "wait-1".into(),
+            trigger_message_id: "reply-1".into(),
+            ingress: None,
+        };
+        followup.provenance.trust = ExecutionTrust::OperatorInstruction;
+        assert!(validate_provenance(&followup).is_err());
+
+        followup.source.identity = ExecutionSourceIdentity::TriggeredWait {
+            wait_id: "wait-1".into(),
+            trigger_message_id: "reply-1".into(),
+            ingress: Some(ExecutionWaitIngress::RuntimeOwnedInternalFollowup),
+        };
+        for origin in [ExecutionOrigin::System, ExecutionOrigin::Task] {
+            followup.provenance.origin = origin;
+            for binding in [
+                ExecutionBinding::WorkItem {
+                    work_item_id: "work-a".into(),
+                },
+                ExecutionBinding::AgentLifecycle {
+                    agent_id: "agent-a".into(),
+                },
+            ] {
+                followup.binding = binding;
+                assert!(validate_provenance(&followup).is_ok());
+            }
+            followup.binding = ExecutionBinding::Conversation {
+                interaction_id: "interaction-a".into(),
+            };
+            assert!(validate_provenance(&followup).is_err());
+        }
+        followup.binding = ExecutionBinding::WorkItem {
+            work_item_id: "work-a".into(),
+        };
+        followup.provenance.origin = ExecutionOrigin::Channel;
+        assert!(validate_provenance(&followup).is_err());
+    }
+
+    #[test]
+    fn triggered_wait_ingress_serialization_is_backward_compatible() {
+        let legacy = serde_json::json!({
+            "kind": "triggered_wait",
+            "wait_id": "wait-1",
+            "trigger_message_id": "reply-1"
+        });
+        let source: ExecutionSourceIdentity = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&source).unwrap(), legacy);
+        let marked = ExecutionSourceIdentity::TriggeredWait {
+            wait_id: "wait-1".into(),
+            trigger_message_id: "reply-1".into(),
+            ingress: Some(ExecutionWaitIngress::RuntimeOwnedInternalFollowup),
+        };
+        let restored: ExecutionSourceIdentity =
+            serde_json::from_value(serde_json::to_value(&marked).unwrap()).unwrap();
+        assert_eq!(restored, marked);
     }
 
     #[test]
