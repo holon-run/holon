@@ -81,8 +81,9 @@ internal class HolonViewModel(
         application.getSharedPreferences("holon_oidc_login", Context.MODE_PRIVATE)
     private val nativeProofStore = createSessionStore(application)
     private var conversationJob: Job? = null
-    private var conversationStreamJob: Job? = null
-    private var conversationStream: HolonSseConnection? = null
+    private var conversationSync: ConversationSyncCoordinator<ConversationBundle>? = null
+    private var conversationSyncGeneration = 0L
+    @Volatile private var conversationStream: HolonSseConnection? = null
     // SSE readers block threads; keep them off the pool used by foreground sends and file staging.
     private val eventStreamIo = Dispatchers.IO.limitedParallelism(2)
     @Volatile private var liveEventLogEpoch: String? = null
@@ -485,7 +486,7 @@ internal class HolonViewModel(
                 ) {
                     startLiveSync(state.value.agents)
                     state.value.selectedAgent?.let { agent ->
-                        if (conversationStreamJob?.isActive != true) {
+                        if (conversationSync?.isActive != true) {
                             startConversationStream(agent, state.value.conversation?.snapshotCursor)
                         }
                     }
@@ -898,12 +899,21 @@ internal class HolonViewModel(
         }
         conversationJob?.cancel()
         stopConversationStream()
+        val selectionGeneration = conversationSyncGeneration
+        val expectedScope = state.value.session?.scopeKey
+        fun isCurrentSelection(): Boolean =
+            selectionGeneration == conversationSyncGeneration &&
+                state.value.session?.scopeKey == expectedScope &&
+                state.value.selectedAgent?.id == agent.id
         mutableState.update { original ->
             val current = savedReading?.restore(original, agent) ?: original
             val sameConversation = current.selectedAgent?.id == agent.id
             current.copy(
                 selectedAgent = agent,
                 conversation = current.conversation.takeIf { sameConversation },
+                conversationSyncState = current.conversationSyncState.takeIf { sameConversation }
+                    ?: ConversationSyncState.Reconnecting,
+                conversationLastSyncedAt = current.conversationLastSyncedAt.takeIf { sameConversation },
                 olderTurns = current.olderTurns.takeIf { sameConversation }.orEmpty(),
                 historyBeforeCursor = current.historyBeforeCursor.takeIf { sameConversation },
                 hasOlderTurns = sameConversation && current.hasOlderTurns,
@@ -950,6 +960,7 @@ internal class HolonViewModel(
                 runCatching {
                     withContext(Dispatchers.IO) { repository.conversation(agent) }
                 }.onSuccess { bundle ->
+                    if (!isCurrentSelection()) return@onSuccess
                     mutableState.update {
                         val keepHistory = it.conversation?.eventLogEpoch == bundle.snapshot.eventLogEpoch &&
                             it.conversation?.runtimeId == bundle.snapshot.runtimeId
@@ -963,7 +974,8 @@ internal class HolonViewModel(
                             draft = if (sameAgentBeforeLoad) it.draft else bundle.draft,
                             attachments = if (sameAgentBeforeLoad) it.attachments else bundle.attachments,
                             busy = false,
-                            online = true,
+                            conversationSyncState = ConversationSyncState.Reconnecting,
+                            conversationLastSyncedAt = System.currentTimeMillis(),
                         )
                     }
                     hydrateBriefs(agent, bundle.snapshot)
@@ -971,6 +983,7 @@ internal class HolonViewModel(
                     startConversationStream(agent, bundle.snapshot.snapshotCursor)
                 }.onFailure { error ->
                     if (error is CancellationException) return@onFailure
+                    if (!isCurrentSelection()) return@onFailure
                     if ((error.isAuthenticationFailure()) ||
                         error is SessionScopeChangedException
                     ) {
@@ -980,6 +993,7 @@ internal class HolonViewModel(
                     val cached = runCatching {
                         withContext(Dispatchers.IO) { repository.cachedConversation(agent.id) }
                     }.getOrNull()
+                    if (!isCurrentSelection()) return@onFailure
                     if (cached != null) {
                         mutableState.update {
                             it.copy(
@@ -988,8 +1002,8 @@ internal class HolonViewModel(
                                 draft = cached.draft,
                                 attachments = cached.attachments,
                                 busy = false,
-                                online = false,
-                                statusMessage = "会话暂时离线，显示缓存",
+                                conversationSyncState = ConversationSyncState.Cached,
+                                conversationLastSyncedAt = System.currentTimeMillis(),
                             )
                         }
                         if (foreground) startConversationStream(agent, cached.snapshot.snapshotCursor)
@@ -1015,6 +1029,8 @@ internal class HolonViewModel(
             it.copy(
                 selectedAgent = null,
                 conversation = null,
+                conversationSyncState = ConversationSyncState.Cached,
+                conversationLastSyncedAt = null,
                 olderTurns = emptyList(),
                 historyBeforeCursor = null,
                 hasOlderTurns = false,
@@ -1336,9 +1352,9 @@ internal class HolonViewModel(
                             },
                         )
                     }
-                    if (state.value.selectedAgent?.id == agent.id) openAgent(agent)
-                    delay(250)
-                    refresh(showProgress = false)
+                    if (state.value.selectedAgent?.id == agent.id && conversationSync?.isActive != true) {
+                        startConversationStream(agent, state.value.conversation?.snapshotCursor)
+                    }
                 }.onFailure(::handleRuntimeFailure)
             }.onFailure { error ->
                 mutableState.update { it.copy(enqueueing = false, error = humanError(error)) }
@@ -2134,156 +2150,92 @@ internal class HolonViewModel(
         generation: Long = liveSyncGeneration,
     ) {
         stopConversationStream()
-        conversationStreamJob =
-            viewModelScope.launch(Dispatchers.IO) {
-                var cursor = after
-                var retryDelay = 1_000L
-                while (
-                    isActive &&
-                        foreground &&
-                        generation == liveSyncGeneration &&
-                        state.value.selectedAgent?.id == agent.id
-                ) {
-                    var historyBoundaryRefresh = false
-                    try {
-                        if (!state.value.online) {
-                            val (session, roster) = repository.refreshSessionAndRoster()
-                            withContext(Dispatchers.Main) {
-                                if (
-                                    generation == liveSyncGeneration &&
-                                        state.value.selectedAgent?.id == agent.id
-                                ) {
-                                    mutableState.update { it.copy(session = session, agents = roster.agents) }
-                                }
-                            }
+        val selectionGeneration = conversationSyncGeneration
+        val expectedScope = state.value.session?.scopeKey
+        fun isCurrent(): Boolean =
+            isCurrentLiveSync(foreground, state.value.phase, generation, liveSyncGeneration) &&
+                selectionGeneration == conversationSyncGeneration &&
+                state.value.session?.scopeKey == expectedScope &&
+                state.value.selectedAgent?.id == agent.id
+        if (!isCurrent()) return
+        conversationSync = ConversationSyncCoordinator(
+            scope = viewModelScope,
+            isCurrent = ::isCurrent,
+            stream = { cursor, accept ->
+                withContext(eventStreamIo) {
+                    val opened = repository.openConversationStream(agent.id, cursor)
+                    val connection = opened.connection
+                    withOwnedConnection(connection) {
+                        val admitted = withContext(Dispatchers.Main) {
+                            if (isCurrent()) {
+                                conversationStream = connection
+                                true
+                            } else false
                         }
-                        val opened = repository.openConversationStream(agent.id, cursor)
-                        val connection = opened.connection
-                        conversationStream = connection
+                        if (!admitted) return@withOwnedConnection
                         try {
-                            withOwnedConnection(connection) {
-                                val seed = state.value.conversation ?: repository.conversation(agent, opened.lease).snapshot
-                                repository.sessions.requireCurrent(opened.lease)
-                                val reducer = run.holon.android.sdk.ConversationStreamReducer(seed)
-                                for (event in connection.events()) {
-                                    val committed = reducer.accept(event)
-                                    if (committed != null) {
-                                        val bundle = repository.acceptConversation(agent, committed, opened.lease)
-                                        cursor = bundle.snapshot.snapshotCursor
-                                        withContext(Dispatchers.Main) {
-                                            if (
-                                                generation == liveSyncGeneration &&
-                                                    state.value.selectedAgent?.id == agent.id
-                                            ) {
-                                                mutableState.update {
-                                                    val selectedTurnId = it.selectedTurn?.id
-                                                    val keepHistory = it.conversation?.eventLogEpoch == bundle.snapshot.eventLogEpoch &&
-                                                        it.conversation?.runtimeId == bundle.snapshot.runtimeId
-                                                    it.copy(
-                                                        conversation = bundle.snapshot,
-                                                        briefs = it.briefs.takeIf { keepHistory }.orEmpty(),
-                                                        olderTurns = it.olderTurns.takeIf { keepHistory }.orEmpty(),
-                                                        historyBeforeCursor = if (keepHistory && it.olderTurns.isNotEmpty()) it.historyBeforeCursor else bundle.snapshot.nextBeforeCursor,
-                                                        hasOlderTurns = if (keepHistory && it.olderTurns.isNotEmpty()) it.hasOlderTurns else bundle.snapshot.hasMore,
-                                                        selectedTurn =
-                                                            selectedTurnId?.let { id ->
-                                                                bundle.snapshot.turns.firstOrNull { turn -> turn.id == id }
-                                                            } ?: it.selectedTurn,
-                                                        outbox = bundle.outbox,
-                                                        online = true,
-                                                        lastSyncedAt = System.currentTimeMillis(),
-                                                        statusMessage = null,
-                                                    )
-                                                }
-                                                state.value.selectedTurn?.id?.let { turnId ->
-                                                    scheduleTurnDetailRefresh(agent, turnId)
-                                                }
-                                                hydrateBriefs(agent, bundle.snapshot)
-                                            }
-                                        }
-                                        retryDelay = 1_000L
-                                    }
-                                }
+                            val seed = state.value.conversation ?: repository.conversation(agent, opened.lease).snapshot
+                            repository.sessions.requireCurrent(opened.lease)
+                            val reducer = run.holon.android.sdk.ConversationStreamReducer(seed)
+                            for (event in connection.events()) {
+                                val committed = reducer.accept(event) ?: continue
+                                val bundle = repository.acceptConversation(agent, committed, opened.lease)
+                                withContext(Dispatchers.Main) { accept(bundle) }
                             }
                         } finally {
                             if (conversationStream === connection) conversationStream = null
                         }
-                        withContext(Dispatchers.Main) { markConnectionInterrupted(agent.id) }
-                    } catch (_: run.holon.android.sdk.ConversationHistoryBoundaryRequiredException) {
-                        // Keep the old window visible until bootstrap supplies a fresh history cursor.
-                        historyBoundaryRefresh = true
-                    } catch (_: CancellationException) {
-                        break
-                    } catch (error: Throwable) {
-                        if ((error.isAuthenticationFailure()) ||
-                            error is SessionScopeChangedException
-                        ) {
-                            withContext(Dispatchers.Main) { handleRuntimeFailure(error) }
-                            break
-                        }
-                        withContext(Dispatchers.Main) { markConnectionInterrupted(agent.id) }
-                    }
-                    if (!historyBoundaryRefresh) delay(retryDelay)
-                    retryDelay = (retryDelay * 2).coerceAtMost(30_000L)
-                    if (
-                        !isActive ||
-                            !isCurrentLiveSync(
-                                foreground,
-                                state.value.phase,
-                                generation,
-                                liveSyncGeneration,
-                            ) ||
-                            state.value.selectedAgent?.id != agent.id
-                    ) {
-                        break
-                    }
-                    try {
-                        val (session, roster) = repository.refreshSessionAndRoster()
-                        val bundle = repository.conversation(agent, freshWindow = historyBoundaryRefresh)
-                        cursor = bundle.snapshot.snapshotCursor
-                        withContext(Dispatchers.Main) {
-                            if (
-                                generation == liveSyncGeneration &&
-                                    state.value.selectedAgent?.id == agent.id
-                            ) {
-                                mutableState.update {
-                                    val keepHistory = !historyBoundaryRefresh && it.conversation?.eventLogEpoch == bundle.snapshot.eventLogEpoch &&
-                                        it.conversation?.runtimeId == bundle.snapshot.runtimeId
-                                    it.copy(
-                                        session = session,
-                                        agents = roster.agents,
-                                        conversation = bundle.snapshot,
-                                        olderTurns = it.olderTurns.takeIf { keepHistory }.orEmpty(),
-                                        historyBeforeCursor = if (keepHistory && it.olderTurns.isNotEmpty()) it.historyBeforeCursor else bundle.snapshot.nextBeforeCursor,
-                                        hasOlderTurns = if (keepHistory && it.olderTurns.isNotEmpty()) it.hasOlderTurns else bundle.snapshot.hasMore,
-                                        outbox = bundle.outbox,
-                                        online = true,
-                                        lastSyncedAt = System.currentTimeMillis(),
-                                        statusMessage = null,
-                                    )
-                                }
-                                hydrateBriefs(agent, bundle.snapshot)
-                            }
-                        }
-                    } catch (_: CancellationException) {
-                        break
-                    } catch (error: Throwable) {
-                        if ((error.isAuthenticationFailure()) ||
-                            error is SessionScopeChangedException
-                        ) {
-                            withContext(Dispatchers.Main) { handleRuntimeFailure(error) }
-                            break
-                        }
                     }
                 }
-            }
-    }
-
-    private fun markConnectionInterrupted(agentId: String) {
-        if (state.value.selectedAgent?.id != agentId) return
-        mutableState.update {
-            it.copy(online = false, statusMessage = "连接中断，正在重连；当前显示上次同步的内容")
-        }
+            },
+            snapshot = { fresh -> withContext(Dispatchers.IO) { repository.conversation(agent, freshWindow = fresh) } },
+            cursorOf = { it.snapshot.snapshotCursor },
+            onSnapshot = { bundle, fresh, live ->
+                mutableState.update {
+                    val keepHistory = !fresh && it.conversation?.eventLogEpoch == bundle.snapshot.eventLogEpoch &&
+                        it.conversation?.runtimeId == bundle.snapshot.runtimeId
+                    val selectedTurnId = it.selectedTurn?.id
+                    it.copy(
+                        conversation = bundle.snapshot,
+                        briefs = it.briefs.takeIf { keepHistory }.orEmpty(),
+                        olderTurns = it.olderTurns.takeIf { keepHistory }.orEmpty(),
+                        historyBeforeCursor = if (keepHistory && it.olderTurns.isNotEmpty()) it.historyBeforeCursor else bundle.snapshot.nextBeforeCursor,
+                        hasOlderTurns = if (keepHistory && it.olderTurns.isNotEmpty()) it.hasOlderTurns else bundle.snapshot.hasMore,
+                        selectedTurn = selectedTurnId?.let { id -> bundle.snapshot.turns.firstOrNull { turn -> turn.id == id } }
+                            ?: it.selectedTurn.takeIf { keepHistory },
+                        conversationDetail = it.conversationDetail.takeIf { keepHistory },
+                        olderActivitiesLoaded = keepHistory && it.olderActivitiesLoaded,
+                        outbox = bundle.outbox,
+                        conversationLastSyncedAt = System.currentTimeMillis(),
+                    )
+                }
+                state.value.selectedTurn?.id?.let { scheduleTurnDetailRefresh(agent, it) }
+                hydrateBriefs(agent, bundle.snapshot)
+            },
+            onState = { next -> mutableState.update { it.copy(conversationSyncState = next) } },
+            onFailure = ::handleRuntimeFailure,
+            closeStream = {
+                conversationStream?.close()
+                conversationStream = null
+            },
+            trace = { name, error, hasCursor, attempt ->
+                val http = error as? HolonHttpException
+                traceRecorder.record(
+                    state.value.session?.networkId?.let(TraceScope::Network) ?: TraceScope.Global,
+                    if (error == null) TraceLevel.INFO else TraceLevel.WARN,
+                    "conversation", name, statusCode = http?.statusCode,
+                    attributes = mapOf(
+                        "agent" to TraceRedactor.path("/api/agents/${agent.id}"),
+                        "state" to state.value.conversationSyncState.name,
+                        "generation" to selectionGeneration.toString(),
+                        "cursorPresent" to hasCursor.toString(),
+                        "resetAttempt" to attempt.toString(),
+                        "errorCode" to http?.apiError?.code.orEmpty(),
+                        "errorType" to error?.javaClass?.simpleName.orEmpty(),
+                    ),
+                )
+            },
+        ).also { it.start(after) }
     }
 
     private fun scheduleTurnDetailRefresh(
@@ -2327,10 +2279,11 @@ internal class HolonViewModel(
     }
 
     private fun stopConversationStream() {
+        conversationSyncGeneration++
+        conversationSync?.stop()
+        conversationSync = null
         conversationStream?.close()
         conversationStream = null
-        conversationStreamJob?.cancel()
-        conversationStreamJob = null
     }
 
     private fun hydrateBriefs(agent: AgentSummary, snapshot: HolonConversationSnapshot) {

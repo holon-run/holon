@@ -472,6 +472,9 @@ internal object UiCopy {
         daemon 未报告消息大小限制，请升级 daemon|The daemon did not report a message size limit. Upgrade the daemon.
         daemon 未报告附件大小限制，请升级 daemon|The daemon did not report attachment size limits. Upgrade the daemon.
         会话暂时离线，显示缓存|Conversation offline; showing cached content
+        会话实时同步恢复中；发送不受影响，回复将通过快照刷新|Restoring live conversation sync; messages can still be submitted and replies will refresh through snapshots
+        正在通过会话快照同步，实时连接恢复后自动切换|Syncing conversation snapshots; live updates will resume automatically
+        会话实时同步不可用，正在刷新会话快照|Live conversation sync unavailable; refreshing conversation snapshots
         会话记录已重置，请刷新后重试|Conversation history was reset. Refresh and try again.
         只有未发送成功的消息可以移除|Only messages that failed to send can be removed
         只有未发送成功的消息可以编辑|Only messages that failed to send can be edited
