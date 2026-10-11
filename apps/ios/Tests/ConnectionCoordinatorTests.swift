@@ -625,6 +625,7 @@ final class ConnectionCoordinatorTests: XCTestCase {
         let c = coordinator(f, transport: transport)
         let payload = "http://pair.example.test/login#pair=\(String(repeating: "b", count: 64))"
         try c.previewPairing(payload)
+        XCTAssertEqual(c.pairingTargetURL?.absoluteString, "http://pair.example.test/api/")
         await c.confirmPairing(allowInsecureHTTP: false)
         XCTAssertEqual(c.status, .loginFailed)
         XCTAssertNil(c.selectedProfile)
@@ -637,6 +638,36 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(c.selectedProfile?.allowInsecureHTTP, true)
         let accepted = await transport.redemptions
         XCTAssertEqual(accepted.count, 1)
+    }
+
+    func testPairingConsentUsesExactReusedProfileURLWithoutMutatingPreview() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        let transport = CoordinatorTransport()
+        let c = coordinator(f, transport: transport)
+        let consent = SharingConsent(defaults: f.defaults)
+        try c.previewPairing("https://a.example.test/login#pair=\(String(repeating: "a", count: 64))")
+        let invitationURL = try XCTUnwrap(c.pendingPairing?.apiBaseURL)
+        let target = try XCTUnwrap(c.pairingTargetURL)
+        XCTAssertNotEqual(invitationURL, p.apiBaseURL)
+        XCTAssertEqual(target, p.apiBaseURL)
+        XCTAssertEqual(c.profiles, [p])
+        XCTAssertEqual(try f.reopen().profiles, [p])
+        XCTAssertNil(c.selectedProfile)
+        XCTAssertEqual(try f.store.session(for: p)?.credential, "saved-session")
+        let redemptions = await transport.redemptions
+        let bindings = await transport.bindings
+        XCTAssertTrue(redemptions.isEmpty)
+        XCTAssertTrue(bindings.isEmpty)
+        consent.approve(target)
+        XCTAssertFalse(consent.approved(invitationURL))
+        XCTAssertFalse(consent.approved(URL(string: "https://other.example.test/api")!))
+        await c.confirmPairing(allowInsecureHTTP: false)
+        XCTAssertEqual(c.status, .connected)
+        XCTAssertEqual(c.selectedProfile, p)
+        XCTAssertTrue(consent.approved(try XCTUnwrap(c.selectedProfile).apiBaseURL))
+        XCTAssertNil(c.pairingTargetURL)
     }
 
     func testAddAndPairAgainReuseSavedNetworkWithoutBindingOldCredentialToTicket() async throws {

@@ -284,6 +284,15 @@ final class ConnectionCoordinator {
 
     func cancelPairing() { pendingPairing = nil }
 
+    var pairingTargetURL: URL? {
+        guard let invitation = pendingPairing,
+              let endpoint = try? invitation.endpoint(allowInsecureHTTP: true),
+              let profile = try? ConnectionProfile(name: endpoint.apiBaseURL.host ?? "Holon",
+                                                   apiBaseURL: endpoint.apiBaseURL,
+                                                   allowInsecureHTTP: true) else { return nil }
+        return try? store.resolveProfile(profile).apiBaseURL
+    }
+
     func confirmPairing(allowInsecureHTTP: Bool) async {
         guard !isBusy, let invitation = pendingPairing else { return }
         do {

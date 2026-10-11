@@ -150,13 +150,20 @@ final class ConnectionStore {
         self.selectedID = selectedID
     }
 
-    @discardableResult
-    func saveProfile(_ profile: ConnectionProfile) throws -> ConnectionProfile {
+    /// Resolve reuse without persisting a preview or changing the stored URL.
+    func resolveProfile(_ profile: ConnectionProfile) throws -> ConnectionProfile {
         let key = try profile.endpointKey
         if let existing = try profiles.first(where: { try $0.endpointKey == key && $0.id != profile.id }) {
             guard !profiles.contains(where: { $0.id == profile.id }) else { throw Failure.duplicateEndpoint }
             return existing
         }
+        return profile
+    }
+
+    @discardableResult
+    func saveProfile(_ profile: ConnectionProfile) throws -> ConnectionProfile {
+        let resolved = try resolveProfile(profile)
+        guard resolved.id == profile.id else { return resolved }
         var updated = profiles
         if let position = updated.firstIndex(where: { $0.id == profile.id }) {
             let previous = updated[position]

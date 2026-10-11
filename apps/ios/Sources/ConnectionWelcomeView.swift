@@ -269,7 +269,7 @@ struct ConnectionWelcomeView: View {
             Section("pairing.title") {
                 if let invitation = coordinator.pendingPairing {
                     Text("pairing.confirmHelp")
-                    Text(verbatim: invitation.apiBaseURL.absoluteString)
+                    Text(verbatim: sharingTarget?.absoluteString ?? invitation.apiBaseURL.absoluteString)
                         .textSelection(.enabled).accessibilityIdentifier("onboarding.pairingTarget")
                     if invitation.apiBaseURL.scheme == "http" {
                         Toggle("connection.allowHTTP", isOn: $allowHTTP)
@@ -293,7 +293,7 @@ struct ConnectionWelcomeView: View {
     }
 
     private var sharingTarget: URL? {
-        step == .pairing ? coordinator.pendingPairing?.apiBaseURL : coordinator.selectedProfile?.apiBaseURL
+        step == .pairing ? coordinator.pairingTargetURL : coordinator.selectedProfile?.apiBaseURL
     }
 
     private var canApproveSharing: Bool {
