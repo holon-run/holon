@@ -39,6 +39,15 @@ final class HolonUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
     }
 
+    private func agreeToSharingAtLogin(_ app: XCUIApplication) {
+        let consent = app.switches["privacy.accept"]
+        reveal(consent, in: app)
+        XCTAssertTrue(consent.isHittable)
+        XCTAssertEqual(consent.value as? String, "0", "Consent must never be preselected")
+        consent.switches.firstMatch.tap()
+        XCTAssertEqual(consent.value as? String, "1")
+    }
+
     func testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored() throws {
         try connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
@@ -426,9 +435,23 @@ final class HolonUITests: XCTestCase {
         XCTAssertEqual(target.label, "http://pair.example.test/api/")
         XCTAssertFalse(app.buttons["onboarding.confirmPairing"].isEnabled)
         XCTAssertFalse(app.tabBars.firstMatch.exists)
+        let permission = app.switches["onboarding.pairingHTTP"]
+        reveal(permission, in: app); permission.switches.firstMatch.tap()
+        XCTAssertFalse(app.buttons["onboarding.confirmPairing"].isEnabled,
+                       "HTTP permission is not agreement to AI data sharing")
+        agreeToSharingAtLogin(app)
+        XCTAssertTrue(app.buttons["onboarding.confirmPairing"].isEnabled)
         app.buttons["onboarding.back"].tap()
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 10))
         XCTAssertFalse(target.exists)
+        reveal(pasteEntry, in: app); pasteEntry.tap()
+        reveal(payload, in: app); payload.tap()
+        payload.typeText("https://other.example.test/login#pair=" + String(repeating: "b", count: 64))
+        app.buttons["onboarding.preview"].tap()
+        XCTAssertEqual(app.staticTexts["onboarding.pairingTarget"].label, "https://other.example.test/api/")
+        XCTAssertEqual(app.switches["privacy.accept"].value as? String, "0")
+        XCTAssertFalse(app.buttons["onboarding.confirmPairing"].isEnabled,
+                       "A new server must not inherit the previous checkbox")
     }
 
     private func audit(_ app: XCUIApplication, name: String) throws {
@@ -547,6 +570,8 @@ final class HolonUITests: XCTestCase {
         XCTAssertEqual(permission.value as? String, "0")
         permission.switches.firstMatch.tap()
         XCTAssertEqual(permission.value as? String, "1")
+        XCTAssertFalse(confirm.isEnabled, "Login also requires explicit AI data sharing agreement")
+        agreeToSharingAtLogin(app)
         reveal(confirm, in: app)
         XCTAssertTrue(confirm.isEnabled)
         confirm.tap()
@@ -696,14 +721,18 @@ final class HolonUITests: XCTestCase {
         let row = app.buttons["agent." + agent]
         XCTAssertTrue(row.waitForExistence(timeout: 15)); row.tap()
         if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
-        let report = app.buttons["report.open." + turn]
+        let message = app.staticTexts["conversation.time." + turn]
         for _ in 0..<40 {
             // Once loaded, reveal the row instead of paging past its turn.
-            if report.exists { break }
+            if message.exists { break }
             let older = app.buttons["conversation.older"]
             if older.exists && older.isHittable { older.tap() } else { app.swipeDown() }
         }
-        reveal(report, in: app); XCTAssertTrue(report.isHittable); report.tap()
+        reveal(message, in: app); XCTAssertTrue(message.isHittable)
+        let report = app.buttons["report.open." + turn]
+        XCTAssertFalse(report.exists, "Report must not be a permanent message-row button")
+        message.press(forDuration: 1)
+        XCTAssertTrue(report.waitForExistence(timeout: 5)); report.tap()
         let target = app.buttons.matching(NSPredicate(format:
             "identifier BEGINSWITH %@", "report.target.assistant:")).firstMatch
         XCTAssertTrue(target.waitForExistence(timeout: 20))
@@ -976,11 +1005,37 @@ final class HolonUITests: XCTestCase {
         app.buttons["onboarding.preview"].tap()
         let permission = app.switches["onboarding.pairingHTTP"]
         reveal(permission, in: app); permission.switches.firstMatch.tap()
+        agreeToSharingAtLogin(app)
         let confirm = app.buttons["onboarding.confirmPairing"]
         reveal(confirm, in: app); confirm.tap()
         XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
-        approveSharingThroughSettings(app)
+        XCTAssertFalse(app.switches["privacy.accept"].exists, "Agreement was completed before login")
         app.terminate()
+    }
+
+    func testLoginConsentRestorationAndWithdrawal() throws {
+        try connectForSharing()
+        let app = launch(language: "en", dark: false, large: false)
+        defer { app.terminate() }
+        openSettings(app)
+        let revoke = app.buttons["privacy.revoke"]
+        reveal(revoke, in: app); revoke.tap()
+        app.terminate(); app.launch()
+        let consent = app.switches["privacy.accept"]
+        XCTAssertTrue(consent.waitForExistence(timeout: 20),
+                      "A restored session without consent must review it before using the app")
+        XCTAssertEqual(app.staticTexts["privacy.target"].label, try required("ENDPOINT") + "/")
+        let proceed = app.buttons["privacy.continue"]
+        reveal(proceed, in: app)
+        XCTAssertFalse(proceed.isEnabled)
+        agreeToSharingAtLogin(app)
+        reveal(proceed, in: app); XCTAssertTrue(proceed.isEnabled); proceed.tap()
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15) ||
+                      app.buttons["conversation.more"].waitForExistence(timeout: 15))
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15) ||
+                      app.buttons["conversation.more"].waitForExistence(timeout: 15))
+        XCTAssertFalse(consent.exists, "Explicit approval is persistent for this server")
     }
 
     func testNetworkManagementWorkflow() throws {
@@ -1227,6 +1282,7 @@ final class HolonUITests: XCTestCase {
             app.buttons["onboarding.preview"].tap()
             let permission = app.switches["onboarding.pairingHTTP"]
             reveal(permission, in: app); permission.switches.firstMatch.tap()
+            agreeToSharingAtLogin(app)
             let confirm = app.buttons["onboarding.confirmPairing"]
             reveal(confirm, in: app); confirm.tap()
             XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))

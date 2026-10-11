@@ -371,6 +371,8 @@
 "privacy.agree" = "我同意分享数据";
 "privacy.revoke" = "撤回数据分享同意";
 "privacy.cancel" = "取消";
+"privacy.continue" = "进入 Holon";
+"privacy.storageUnavailable" = "无法保存数据分享同意。请重新打开应用或联系支持。";
 "report.title" = "举报 AI 内容";
 "report.selectResponse" = "请选择要举报的 AI 回复。仅能举报公开可见的助手回复。";
 "report.noResponses" = "本页暂无可举报的 AI 回复。";
@@ -406,4 +408,4 @@
 "report.unknownOutcome" = "无法确认举报结果，runtime 可能已经收到。";
 "report.contextChanged" = "连接、身份或对话已改变。请关闭此页面，在正确连接中重新打开举报。";
 "report.retryNotice" = "重试会保留原举报及请求标识；关闭页面不会撤回已发送的举报。";
-"privacy.required" = "发送前需要明确同意数据分享。请打开主应用 Settings 的「隐私与数据分享」，先向 runtime 管理员确认 AI 供应商及保留规则，再明确同意。您仍可仅将分享内容保存到本地。";
+"privacy.required" = "发送前请打开 Holon 主应用，查看并同意数据分享。请先向 runtime 管理员确认 AI 供应商及保留规则。您仍可仅将分享内容保存到本地。";

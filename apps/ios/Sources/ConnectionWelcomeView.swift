@@ -14,6 +14,7 @@ struct ConnectionWelcomeView: View {
     @State private var inputError = false
     @State private var addressOnly = false
     @State private var pairingAttempt = false
+    @State private var sharingAccepted = false
     @State private var anchor: UIWindow?
     @FocusState private var payloadFocused: Bool
 
@@ -77,6 +78,7 @@ struct ConnectionWelcomeView: View {
                 Button("action.ok", role: .cancel) {}
             } message: { Text("onboarding.invalidInput") }
             .onChange(of: address) { allowHTTP = false }
+            .onChange(of: sharingTarget) { sharingAccepted = false }
             .onDisappear {
                 token = ""
                 payload = ""
@@ -210,6 +212,9 @@ struct ConnectionWelcomeView: View {
 
     private var authentication: some View {
         Group {
+            if let url = sharingTarget {
+                LoginSharingConsentSection(apiBaseURL: url, agreed: $sharingAccepted)
+            }
             Section("onboarding.loginStep") {
                 ConnectionStatusView(coordinator: coordinator)
                 if pairingAttempt && !coordinator.isBusy {
@@ -218,12 +223,12 @@ struct ConnectionWelcomeView: View {
                 } else if coordinator.authenticationMode == "oidc" {
                     if coordinator.supportsOIDC {
                         Button("login.organization") {
-                            guard let anchor else { return }
+                            guard let anchor, approveSharing() else { return }
                             token = ""
                             coordinator.startOrganizationLogin(anchor: anchor)
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(coordinator.isBusy || anchor == nil)
+                        .disabled(coordinator.isBusy || anchor == nil || !canApproveSharing)
                     } else {
                         Text("onboarding.oidcHTTPS")
                     }
@@ -233,12 +238,13 @@ struct ConnectionWelcomeView: View {
                         .accessibilityIdentifier("onboarding.token")
                     Text("onboarding.tokenHelp").font(.caption).foregroundStyle(.secondary)
                     Button {
+                        guard approveSharing() else { return }
                         let submitted = token
                         token = ""
                         Task { await coordinator.login(token: submitted) }
                     } label: { actionLabel("login.tokenSubmit") }
                     .buttonStyle(.borderedProminent)
-                    .disabled(coordinator.isBusy || token.isEmpty)
+                    .disabled(coordinator.isBusy || token.isEmpty || !canApproveSharing)
                     .accessibilityIdentifier("onboarding.login")
                 }
                 if coordinator.isBusy {
@@ -256,27 +262,48 @@ struct ConnectionWelcomeView: View {
     }
 
     private var pairing: some View {
-        Section("pairing.title") {
-            if let invitation = coordinator.pendingPairing {
-                Text("pairing.confirmHelp")
-                Text(verbatim: invitation.apiBaseURL.absoluteString)
-                    .textSelection(.enabled).accessibilityIdentifier("onboarding.pairingTarget")
-                if invitation.apiBaseURL.scheme == "http" {
-                    Toggle("connection.allowHTTP", isOn: $allowHTTP)
-                        .accessibilityIdentifier("onboarding.pairingHTTP")
-                    Text("connection.httpWarning").font(.caption)
+        Group {
+            if let url = sharingTarget {
+                LoginSharingConsentSection(apiBaseURL: url, agreed: $sharingAccepted)
+            }
+            Section("pairing.title") {
+                if let invitation = coordinator.pendingPairing {
+                    Text("pairing.confirmHelp")
+                    Text(verbatim: invitation.apiBaseURL.absoluteString)
+                        .textSelection(.enabled).accessibilityIdentifier("onboarding.pairingTarget")
+                    if invitation.apiBaseURL.scheme == "http" {
+                        Toggle("connection.allowHTTP", isOn: $allowHTTP)
+                            .accessibilityIdentifier("onboarding.pairingHTTP")
+                        Text("connection.httpWarning").font(.caption)
+                    }
+                    Button {
+                        guard approveSharing() else { return }
+                        pairingAttempt = true
+                        step = .authentication
+                        Task { await coordinator.confirmPairing(allowInsecureHTTP: allowHTTP) }
+                    } label: { actionLabel("pairing.confirm") }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(coordinator.isBusy || !canApproveSharing ||
+                              (invitation.apiBaseURL.scheme == "http" && !allowHTTP))
+                    .accessibilityIdentifier("onboarding.confirmPairing")
+                    Button("pairing.cancel", role: .cancel) { back() }
                 }
-                Button {
-                    pairingAttempt = true
-                    step = .authentication
-                    Task { await coordinator.confirmPairing(allowInsecureHTTP: allowHTTP) }
-                } label: { actionLabel("pairing.confirm") }
-                .buttonStyle(.borderedProminent)
-                .disabled(coordinator.isBusy || (invitation.apiBaseURL.scheme == "http" && !allowHTTP))
-                .accessibilityIdentifier("onboarding.confirmPairing")
-                Button("pairing.cancel", role: .cancel) { back() }
             }
         }
+    }
+
+    private var sharingTarget: URL? {
+        step == .pairing ? coordinator.pendingPairing?.apiBaseURL : coordinator.selectedProfile?.apiBaseURL
+    }
+
+    private var canApproveSharing: Bool {
+        sharingAccepted && sharingTarget != nil && SharingConsent.shared.defaults != nil
+    }
+
+    private func approveSharing() -> Bool {
+        guard canApproveSharing, let url = sharingTarget else { return false }
+        SharingConsent.shared.approve(url)
+        return SharingConsent.shared.approved(url)
     }
 
     private func receive(_ payload: String) {
@@ -313,6 +340,7 @@ struct ConnectionWelcomeView: View {
     }
 
     private func back() {
+        sharingAccepted = false
         token = ""
         payload = ""
         if coordinator.isBusy { coordinator.cancelLogin() }

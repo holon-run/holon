@@ -78,3 +78,56 @@ struct SettingsView: View {
             }
     }
 }
+
+struct LoginSharingConsentSection: View {
+    let apiBaseURL: URL
+    @Binding var agreed: Bool
+    @AppStorage("ui.language") private var language = "system"
+
+    private var policyURL: URL {
+        let effective = language == "system" ? Locale.current.language.languageCode?.identifier ?? "en" : language
+        return URL(string: effective.hasPrefix("zh") ? "https://holon.run/zh-CN/privacy" : "https://holon.run/privacy")!
+    }
+
+    var body: some View {
+        Section("privacy.title") {
+            Text("privacy.disclosure").font(.footnote)
+            Text(verbatim: apiBaseURL.absoluteString).font(.footnote)
+                .accessibilityIdentifier("privacy.target")
+            Link("privacy.policy", destination: policyURL)
+                .accessibilityIdentifier("privacy.policy")
+            Toggle("privacy.agree", isOn: $agreed)
+                .accessibilityIdentifier("privacy.accept")
+            Text("privacy.withdrawal").font(.footnote)
+            if SharingConsent.shared.defaults == nil {
+                Text("privacy.storageUnavailable").foregroundStyle(.red)
+            }
+        }
+    }
+}
+
+/// Restored sessions and servers without authentication still need explicit consent.
+struct ConnectionSharingConsentView: View {
+    let apiBaseURL: URL
+    let onApproved: () -> Void
+    let onChangeConnection: () -> Void
+    @State private var agreed = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                LoginSharingConsentSection(apiBaseURL: apiBaseURL, agreed: $agreed)
+                Button("privacy.continue") {
+                    guard agreed else { return }
+                    SharingConsent.shared.approve(apiBaseURL)
+                    if SharingConsent.shared.approved(apiBaseURL) { onApproved() }
+                }
+                .disabled(!agreed || SharingConsent.shared.defaults == nil)
+                .accessibilityIdentifier("privacy.continue")
+                Button("onboarding.otherConnection", action: onChangeConnection)
+                    .accessibilityIdentifier("privacy.otherConnection")
+            }
+            .navigationTitle("onboarding.loginStep")
+        }
+    }
+}

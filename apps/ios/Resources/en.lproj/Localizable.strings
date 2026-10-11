@@ -371,6 +371,8 @@
 "privacy.agree" = "I agree to data sharing";
 "privacy.revoke" = "Withdraw data sharing consent";
 "privacy.cancel" = "Cancel";
+"privacy.continue" = "Continue to Holon";
+"privacy.storageUnavailable" = "Data sharing consent cannot be saved. Reopen the app or contact support.";
 "report.title" = "Report AI content";
 "report.selectResponse" = "Select the AI response you want to report. Only public assistant responses can be reported.";
 "report.noResponses" = "No reportable AI responses are available in this page.";
@@ -406,4 +408,4 @@
 "report.unknownOutcome" = "The report could not be confirmed. The runtime may already have received it.";
 "report.contextChanged" = "The connection, identity or conversation changed. Close this screen and reopen reporting in the correct connection.";
 "report.retryNotice" = "Retry keeps the original report and request ID. Closing this screen does not withdraw a report.";
-"privacy.required" = "Data sharing consent is required. Open Privacy and data sharing in the main app Settings, confirm AI providers and retention rules with your runtime administrator, then explicitly agree before sending. You can save this share locally without sending.";
+"privacy.required" = "Before sending, open the Holon app to review and agree to data sharing. Confirm AI providers and retention rules with your runtime administrator. You can still save this share locally without sending.";

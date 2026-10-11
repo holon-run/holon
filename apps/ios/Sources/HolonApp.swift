@@ -15,6 +15,7 @@ struct HolonApp: App {
     @State private var addingConnection = false
     @State private var previousProfile: ConnectionProfile?
     @State private var returningConnection = false
+    @State private var consentRevision = 0
 
     init() {
         let reading = ReadingCoordinator()
@@ -62,6 +63,15 @@ struct HolonApp: App {
                             ConnectionWelcomeView(coordinator: coordinator, cancel: addingConnection ? {
                                 returnToPreviousConnection(coordinator)
                             } : nil)
+                        } else if let url = coordinator.selectedProfile?.apiBaseURL,
+                                  !SharingConsent.shared.approved(url) {
+                            ConnectionSharingConsentView(apiBaseURL: url, onApproved: {
+                                consentRevision += 1
+                            }, onChangeConnection: {
+                                previousProfile = coordinator.selectedProfile
+                                addingConnection = true
+                            })
+                            .id(url)
                         } else {
                             NavigationStack(path: $router.path) {
                                 ReadingView(reader: reader, connection: coordinator)
@@ -104,6 +114,7 @@ struct HolonApp: App {
                                 previousProfile = nil
                             }
                         }
+                        .id(consentRevision)
                         .onChange(of: reader.agents) { _, agents in
                             router.restore(agents: agents, authoritative: reader.status == .live)
                         }

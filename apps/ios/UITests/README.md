@@ -12,6 +12,11 @@ Set `IOS_SIMULATOR_ID`, `IOS_DERIVED_DATA_PATH`, and an unused
 make ios-ui-test
 ```
 
+Login checks cover default-unchecked agreement, independent HTTP permission,
+reset when a pairing destination changes, and review after restoring a session
+with withdrawn consent (`testLoginConsentRestorationAndWithdrawal`).
+Content-report tests open the long-press menu and assert no permanent row button.
+
 ### Content-report acceptance
 
 After rebasing onto the real content-report API, run on the isolated simulator:
