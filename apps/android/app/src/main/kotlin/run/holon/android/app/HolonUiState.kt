@@ -78,6 +78,13 @@ internal data class AgentsUiState(
     val search: String = "",
 )
 
+internal enum class ConversationSyncState {
+    Live,
+    Reconnecting,
+    Cached,
+    NeedsRefresh,
+}
+
 internal data class ConversationUiState(
     val enqueueing: Boolean = false,
     val stagingAttachment: Boolean = false,
@@ -86,6 +93,8 @@ internal data class ConversationUiState(
     val modelBusy: Boolean = false,
     val modelError: String? = null,
     val conversation: HolonConversationSnapshot? = null,
+    val syncState: ConversationSyncState = ConversationSyncState.Reconnecting,
+    val lastSyncedAt: Long? = null,
     val olderTurns: List<HolonConversationTurn> = emptyList(),
     val historyBeforeCursor: String? = null,
     val hasOlderTurns: Boolean = false,
@@ -195,6 +204,8 @@ internal data class HolonUiState(
         modelBusy: Boolean = false,
         modelError: String? = null,
         conversation: HolonConversationSnapshot? = null,
+        conversationSyncState: ConversationSyncState = ConversationSyncState.Reconnecting,
+        conversationLastSyncedAt: Long? = null,
         olderTurns: List<HolonConversationTurn> = emptyList(),
         historyBeforeCursor: String? = null,
         hasOlderTurns: Boolean = false,
@@ -244,7 +255,7 @@ internal data class HolonUiState(
     ) : this(
         connectionState = ConnectionUiState(phase = phase, baseUrl = baseUrl, token = token, showToken = showToken, allowInsecureHttp = allowInsecureHttp, pendingPairing = pendingPairing),
         agentsState = AgentsUiState(agents = agents, operatorPreviews = operatorPreviews, briefReadStates = briefReadStates, briefReadStatesLoaded = briefReadStatesLoaded, readBriefIds = readBriefIds, readBriefsLoaded = readBriefsLoaded, search = search),
-        conversationState = ConversationUiState(enqueueing = enqueueing, stagingAttachment = stagingAttachment, abortingRun = abortingRun, modelCatalog = modelCatalog, modelBusy = modelBusy, modelError = modelError, conversation = conversation, olderTurns = olderTurns, historyBeforeCursor = historyBeforeCursor, hasOlderTurns = hasOlderTurns, historyBusy = historyBusy, outbox = outbox, draft = draft, attachments = attachments, briefs = briefs, briefLoads = briefLoads, selectedBrief = selectedBrief, briefOriginWork = briefOriginWork, workOriginBrief = workOriginBrief, selectedTurn = selectedTurn, fullScreenTurn = fullScreenTurn, conversationDetail = conversationDetail, olderActivitiesBusy = olderActivitiesBusy, olderActivitiesLoaded = olderActivitiesLoaded, selectedActivity = selectedActivity, selectedToolExecution = selectedToolExecution, detailBusy = detailBusy),
+        conversationState = ConversationUiState(enqueueing = enqueueing, stagingAttachment = stagingAttachment, abortingRun = abortingRun, modelCatalog = modelCatalog, modelBusy = modelBusy, modelError = modelError, conversation = conversation, syncState = conversationSyncState, lastSyncedAt = conversationLastSyncedAt, olderTurns = olderTurns, historyBeforeCursor = historyBeforeCursor, hasOlderTurns = hasOlderTurns, historyBusy = historyBusy, outbox = outbox, draft = draft, attachments = attachments, briefs = briefs, briefLoads = briefLoads, selectedBrief = selectedBrief, briefOriginWork = briefOriginWork, workOriginBrief = workOriginBrief, selectedTurn = selectedTurn, fullScreenTurn = fullScreenTurn, conversationDetail = conversationDetail, olderActivitiesBusy = olderActivitiesBusy, olderActivitiesLoaded = olderActivitiesLoaded, selectedActivity = selectedActivity, selectedToolExecution = selectedToolExecution, detailBusy = detailBusy),
         workState = WorkUiState(workItems = workItems, workItemsLimit = workItemsLimit, workItemsHasMore = workItemsHasMore, workItemsLoadingMore = workItemsLoadingMore, selectedWorkItem = selectedWorkItem, tasks = tasks, tasksBusy = tasksBusy, tasksError = tasksError, selectedTask = selectedTask, taskOutput = taskOutput, workItemsBusy = workItemsBusy),
         filesState = FilesUiState(planFile = planFile, workspaces = workspaces, selectedWorkspace = selectedWorkspace, workspaceDirectory = workspaceDirectory, workspaceBusy = workspaceBusy, preparedArtifact = preparedArtifact, fileLinkOrigin = fileLinkOrigin),
         shareState = ShareUiState(pendingShare = pendingShare, queuedShares = queuedShares, shareSending = shareSending, shareError = shareError),
@@ -279,6 +290,14 @@ internal data class HolonUiState(
     val modelBusy: Boolean get() = conversationState.modelBusy
     val modelError: String? get() = conversationState.modelError
     val conversation: HolonConversationSnapshot? get() = conversationState.conversation
+    val conversationSyncState: ConversationSyncState get() = conversationState.syncState
+    val conversationLastSyncedAt: Long? get() = conversationState.lastSyncedAt
+    val conversationStatusMessage: String? get() = when (conversationSyncState) {
+        ConversationSyncState.Live -> null
+        ConversationSyncState.Reconnecting -> "会话实时同步恢复中；发送不受影响，回复将通过快照刷新"
+        ConversationSyncState.Cached -> "正在通过会话快照同步，实时连接恢复后自动切换"
+        ConversationSyncState.NeedsRefresh -> "会话实时同步不可用，正在刷新会话快照"
+    }
     val olderTurns: List<HolonConversationTurn> get() = conversationState.olderTurns
     val historyBeforeCursor: String? get() = conversationState.historyBeforeCursor
     val hasOlderTurns: Boolean get() = conversationState.hasOlderTurns
@@ -359,6 +378,8 @@ internal data class HolonUiState(
         modelBusy: Boolean = this.modelBusy,
         modelError: String? = this.modelError,
         conversation: HolonConversationSnapshot? = this.conversation,
+        conversationSyncState: ConversationSyncState = this.conversationSyncState,
+        conversationLastSyncedAt: Long? = this.conversationLastSyncedAt,
         olderTurns: List<HolonConversationTurn> = this.olderTurns,
         historyBeforeCursor: String? = this.historyBeforeCursor,
         hasOlderTurns: Boolean = this.hasOlderTurns,
@@ -413,7 +434,7 @@ internal data class HolonUiState(
     ): HolonUiState = HolonUiState(
         connectionState = ConnectionUiState(phase = phase, baseUrl = baseUrl, token = token, showToken = showToken, allowInsecureHttp = allowInsecureHttp, pendingPairing = pendingPairing),
         agentsState = AgentsUiState(agents = agents, operatorPreviews = operatorPreviews, briefReadStates = briefReadStates, briefReadStatesLoaded = briefReadStatesLoaded, readBriefIds = readBriefIds, readBriefsLoaded = readBriefsLoaded, search = search),
-        conversationState = ConversationUiState(enqueueing = enqueueing, stagingAttachment = stagingAttachment, abortingRun = abortingRun, modelCatalog = modelCatalog, modelBusy = modelBusy, modelError = modelError, conversation = conversation, olderTurns = olderTurns, historyBeforeCursor = historyBeforeCursor, hasOlderTurns = hasOlderTurns, historyBusy = historyBusy, outbox = outbox, draft = draft, attachments = attachments, briefs = briefs, briefLoads = briefLoads, selectedBrief = selectedBrief, briefOriginWork = briefOriginWork, workOriginBrief = workOriginBrief, selectedTurn = selectedTurn, fullScreenTurn = fullScreenTurn, conversationDetail = conversationDetail, olderActivitiesBusy = olderActivitiesBusy, olderActivitiesLoaded = olderActivitiesLoaded, selectedActivity = selectedActivity, selectedToolExecution = selectedToolExecution, detailBusy = detailBusy, reportTarget = reportTarget, reportCategory = reportCategory, reportDescription = reportDescription, reportSubmitting = reportSubmitting, reportError = reportError),
+        conversationState = ConversationUiState(enqueueing = enqueueing, stagingAttachment = stagingAttachment, abortingRun = abortingRun, modelCatalog = modelCatalog, modelBusy = modelBusy, modelError = modelError, conversation = conversation, syncState = conversationSyncState, lastSyncedAt = conversationLastSyncedAt, olderTurns = olderTurns, historyBeforeCursor = historyBeforeCursor, hasOlderTurns = hasOlderTurns, historyBusy = historyBusy, outbox = outbox, draft = draft, attachments = attachments, briefs = briefs, briefLoads = briefLoads, selectedBrief = selectedBrief, briefOriginWork = briefOriginWork, workOriginBrief = workOriginBrief, selectedTurn = selectedTurn, fullScreenTurn = fullScreenTurn, conversationDetail = conversationDetail, olderActivitiesBusy = olderActivitiesBusy, olderActivitiesLoaded = olderActivitiesLoaded, selectedActivity = selectedActivity, selectedToolExecution = selectedToolExecution, detailBusy = detailBusy, reportTarget = reportTarget, reportCategory = reportCategory, reportDescription = reportDescription, reportSubmitting = reportSubmitting, reportError = reportError),
         workState = WorkUiState(workItems = workItems, workItemsLimit = workItemsLimit, workItemsHasMore = workItemsHasMore, workItemsLoadingMore = workItemsLoadingMore, selectedWorkItem = selectedWorkItem, tasks = tasks, tasksBusy = tasksBusy, tasksError = tasksError, selectedTask = selectedTask, taskOutput = taskOutput, workItemsBusy = workItemsBusy),
         filesState = FilesUiState(planFile = planFile, workspaces = workspaces, selectedWorkspace = selectedWorkspace, workspaceDirectory = workspaceDirectory, workspaceBusy = workspaceBusy, preparedArtifact = preparedArtifact, fileLinkOrigin = fileLinkOrigin),
         shareState = ShareUiState(pendingShare = pendingShare, queuedShares = queuedShares, shareSending = shareSending, shareError = shareError),

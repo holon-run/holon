@@ -174,7 +174,7 @@ internal fun ConversationScreen(state: HolonUiState, viewModel: ConversationActi
         // Resize the timeline and composer together; padding only the composer leaves an IME-sized gap.
         Column(Modifier.fillMaxSize().padding(padding).then(if (isDetail) Modifier.statusBarsPadding() else Modifier).imePadding()) {
             state.error?.let { ErrorBanner(it, viewModel::clearError) }
-            state.statusMessage?.let { Text(ui(it), modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            (state.conversationStatusMessage ?: state.statusMessage)?.let { Text(ui(it), modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             if (state.busy && state.conversation != null) LinearProgressIndicator(Modifier.fillMaxWidth())
             BoxWithConstraints(Modifier.weight(1f)) {
                 val wideWorkLayout = maxWidth >= 720.dp && state.agentSection == AgentSection.Work
