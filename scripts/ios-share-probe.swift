@@ -3,13 +3,22 @@ import UIKit
 /// Independent sender app for testing the actual OS sheet, not a production hook.
 @main @MainActor
 final class ShareProbeApp: UIResponder, UIApplicationDelegate {
+    func application(_ application: UIApplication, configurationForConnecting session: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: "Share Probe", sessionRole: session.role)
+        configuration.delegateClass = ShareProbeScene.self
+        return configuration
+    }
+}
+
+@MainActor
+final class ShareProbeScene: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
-    func application(_ application: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        let window = UIWindow(frame: UIScreen.main.bounds)
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
+        guard let scene = scene as? UIWindowScene else { return }
+        let window = UIWindow(windowScene: scene)
         window.rootViewController = ShareProbeView()
         window.makeKeyAndVisible()
         self.window = window
-        return true
     }
 }
 @MainActor

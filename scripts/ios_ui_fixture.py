@@ -732,6 +732,7 @@ with fixture_directory(repo) as root:
                         ("testContentReportInvalidExplanationCannotShowAccepted", "large"),
                         ("testContentReportAcceptedReceiptCannotSubmitTwice", "large"),
                     ])
+                cases.append(("testLoginConsentRestorationAndWithdrawal", "large"))
                 # Deletes the saved fixture session, so run last in a full sweep.
                 cases.append(("testNetworkManagementWorkflow", "large"))
                 selected_cases = os.environ.get("IOS_UI_CASES")

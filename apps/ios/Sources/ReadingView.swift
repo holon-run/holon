@@ -410,11 +410,13 @@ private struct ReadingTurnView: View {
                 ReadingBriefView(briefID: briefID, reader: reader, inputs: turn.raw["inputs"].viewArray,
                                  onReport: { reportScope = reader.contentReportScope })
             }
-            Button("report.title", systemImage: "flag") { reportScope = reader.contentReportScope }
-                .font(.caption)
-                .disabled(reader.contentReportScope == nil)
-                .accessibilityIdentifier("report.open." + turn.id)
             Divider()
+        }
+        .contextMenu {
+            if reader.contentReportScope != nil {
+                Button("report.title", systemImage: "flag") { reportScope = reader.contentReportScope }
+                    .accessibilityIdentifier("report.open." + turn.id)
+            }
         }
     }
 }
@@ -510,11 +512,11 @@ private struct ReadingBriefView: View {
                             .disabled(openWork == nil)
                     }
                 }
-            } else if reader.loadingBriefs.contains(briefID) {
-                ProgressView("work.loading").font(.caption)
             } else {
-                Text("reading.detailUnavailable")
-                Button("reading.retry") { Task { await reader.loadBrief(briefID) } }
+                BriefPlaceholderView(briefID: briefID, state: BriefPlaceholderState(
+                    isLoading: reader.loadingBriefs.contains(briefID),
+                    hasFailed: reader.failedBriefs.contains(briefID)
+                )) { Task { await reader.loadBrief(briefID) } }
             }
         }
         // Native accessibility can materialize offscreen lazy rows. Fetch/render only

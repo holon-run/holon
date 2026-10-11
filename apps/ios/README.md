@@ -23,8 +23,8 @@ acceptance: see [release preparation](RELEASE.md) for the remaining gates.
 
 ## Report AI content
 
-Long-press an AI result and choose **Report AI content**, or use the turn's flag
-button. Select the exact assistant response, review its text and destination,
+Long-press an AI result or its turn and choose **Report AI content**.
+There is no permanent report button below messages. Select the exact assistant response, review its text and destination,
 choose a reason, optionally explain, then explicitly confirm submission.
 Only operator-visible assistant transcript entries are eligible, not user input,
 tools, private checkpoints or local drafts. The app sends response identifiers,
@@ -47,7 +47,13 @@ message send or an implicit restoration of withdrawn message-sharing consent.
    Holon's connection QR entry. For manual connection, supply the full daemon
    API base, for example `https://example.com/proxy/api`, then authenticate with
    a daemon-issued token or organization sign-in when the server offers OIDC.
-   After identity is confirmed, the app opens Agents. An empty agent roster is
+   Review the destination's AI data-sharing disclosure and privacy policy, then
+   explicitly check the agreement before token login, organization sign-in or
+   pairing redemption. Agreement is never preselected or reused for another
+   server. Restored sessions without agreement, and servers without authentication,
+   show the same review before opening Agents; no first-send detour to Settings is
+   needed. Settings still lets you withdraw consent and stops subsequent sends.
+   After identity and agreement are confirmed, the app opens Agents. An empty agent roster is
    not a login failure. Saved sessions are restored before choosing the screen;
    failed recovery offers explicit retry and connection actions.
    A phone's loopback address points to the phone, not your development computer.

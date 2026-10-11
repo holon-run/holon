@@ -39,6 +39,15 @@ final class HolonUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
     }
 
+    private func agreeToSharingAtLogin(_ app: XCUIApplication) {
+        let consent = app.switches["privacy.accept"]
+        reveal(consent, in: app)
+        XCTAssertTrue(consent.isHittable)
+        XCTAssertEqual(consent.value as? String, "0", "Consent must never be preselected")
+        consent.switches.firstMatch.tap()
+        XCTAssertEqual(consent.value as? String, "1")
+    }
+
     func testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored() throws {
         try connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
@@ -74,6 +83,13 @@ final class HolonUITests: XCTestCase {
             let keyboard = app.keyboards.firstMatch
             let top = navigation.exists ? max(window.minY, navigation.frame.maxY) : window.minY
             var bottom = tabs.exists ? min(window.maxY, tabs.frame.minY) : window.maxY
+            // Native searchable can dock over list rows while the toolbar's
+            // AX frame spans the entire window. Use its actual search field.
+            let dockedSearch = app.toolbars.searchFields.firstMatch
+            if dockedSearch.exists && dockedSearch.isHittable
+                && dockedSearch.frame.minY > window.midY {
+                bottom = min(bottom, dockedSearch.frame.minY)
+            }
             let composer = app.otherElements["sending.composer"].firstMatch
             let editor = app.descendants(matching: .any)["sending.text"].firstMatch
             let targetID = element.exists ? element.identifier : ""
@@ -165,6 +181,8 @@ final class HolonUITests: XCTestCase {
         }
         XCTAssertTrue(settings.waitForExistence(timeout: 10))
         settings.tap()
+        XCTAssertTrue(app.buttons["settings.connection"].waitForExistence(timeout: 10),
+                      "Settings must finish opening before revealing its controls")
     }
 
     private func openDiagnostics(_ app: XCUIApplication) {
@@ -426,9 +444,23 @@ final class HolonUITests: XCTestCase {
         XCTAssertEqual(target.label, "http://pair.example.test/api/")
         XCTAssertFalse(app.buttons["onboarding.confirmPairing"].isEnabled)
         XCTAssertFalse(app.tabBars.firstMatch.exists)
+        let permission = app.switches["onboarding.pairingHTTP"]
+        reveal(permission, in: app); permission.switches.firstMatch.tap()
+        XCTAssertFalse(app.buttons["onboarding.confirmPairing"].isEnabled,
+                       "HTTP permission is not agreement to AI data sharing")
+        agreeToSharingAtLogin(app)
+        XCTAssertTrue(app.buttons["onboarding.confirmPairing"].isEnabled)
         app.buttons["onboarding.back"].tap()
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 10))
         XCTAssertFalse(target.exists)
+        reveal(pasteEntry, in: app); pasteEntry.tap()
+        reveal(payload, in: app); payload.tap()
+        payload.typeText("https://other.example.test/login#pair=" + String(repeating: "b", count: 64))
+        app.buttons["onboarding.preview"].tap()
+        XCTAssertEqual(app.staticTexts["onboarding.pairingTarget"].label, "https://other.example.test/api/")
+        XCTAssertEqual(app.switches["privacy.accept"].value as? String, "0")
+        XCTAssertFalse(app.buttons["onboarding.confirmPairing"].isEnabled,
+                       "A new server must not inherit the previous checkbox")
     }
 
     private func audit(_ app: XCUIApplication, name: String) throws {
@@ -547,6 +579,8 @@ final class HolonUITests: XCTestCase {
         XCTAssertEqual(permission.value as? String, "0")
         permission.switches.firstMatch.tap()
         XCTAssertEqual(permission.value as? String, "1")
+        XCTAssertFalse(confirm.isEnabled, "Login also requires explicit AI data sharing agreement")
+        agreeToSharingAtLogin(app)
         reveal(confirm, in: app)
         XCTAssertTrue(confirm.isEnabled)
         confirm.tap()
@@ -598,13 +632,25 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(editor.waitForExistence(timeout: 10))
         editor.tap()
         editor.typeText("P6 native UI explicit operator message")
+        // The native Outbox action clears composer focus without relying on
+        // a scroll gesture whose origin can fall outside the conversation.
+        let queue = app.buttons["sending.queue"]
+        app.buttons["sending.options"].tap()
+        XCTAssertTrue(queue.waitForExistence(timeout: 10))
+        queue.tap()
+        let closeQueue = app.buttons["Close"]
+        XCTAssertTrue(closeQueue.waitForExistence(timeout: 10))
+        closeQueue.tap()
+        let composerKeyboardDismissed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [composerKeyboardDismissed], timeout: 5), .completed)
+        XCTAssertEqual(editor.value as? String, "P6 native UI explicit operator message")
         let enqueue = app.buttons["sending.enqueue"]
         reveal(enqueue, in: app)
         XCTAssertTrue(enqueue.isEnabled)
         enqueue.tap()
         // Returning from the native editor is not evidence of server acceptance.
         // Outbox must expose a concrete accepted state.
-        let queue = app.buttons["sending.queue"]
         app.buttons["sending.options"].tap()
         XCTAssertTrue(queue.waitForExistence(timeout: 10))
         queue.tap()
@@ -696,14 +742,18 @@ final class HolonUITests: XCTestCase {
         let row = app.buttons["agent." + agent]
         XCTAssertTrue(row.waitForExistence(timeout: 15)); row.tap()
         if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
-        let report = app.buttons["report.open." + turn]
+        let message = app.staticTexts["conversation.time." + turn]
         for _ in 0..<40 {
             // Once loaded, reveal the row instead of paging past its turn.
-            if report.exists { break }
+            if message.exists { break }
             let older = app.buttons["conversation.older"]
             if older.exists && older.isHittable { older.tap() } else { app.swipeDown() }
         }
-        reveal(report, in: app); XCTAssertTrue(report.isHittable); report.tap()
+        reveal(message, in: app); XCTAssertTrue(message.isHittable)
+        let report = app.buttons["report.open." + turn]
+        XCTAssertFalse(report.exists, "Report must not be a permanent message-row button")
+        message.press(forDuration: 1)
+        XCTAssertTrue(report.waitForExistence(timeout: 5)); report.tap()
         let target = app.buttons.matching(NSPredicate(format:
             "identifier BEGINSWITH %@", "report.target.assistant:")).firstMatch
         XCTAssertTrue(target.waitForExistence(timeout: 20))
@@ -851,7 +901,8 @@ final class HolonUITests: XCTestCase {
         let activity = app.descendants(matching: .any)["activities." + turn].firstMatch
         // This completed turn precedes the baseline's freshly sent messages.
         for _ in 0..<40 {
-            if activity.exists && activity.isHittable { break }
+            // Do not page away from a loaded turn just because it is offscreen.
+            if activity.exists { break }
             let olderTurns = app.buttons["conversation.older"]
             if olderTurns.exists && olderTurns.isHittable { olderTurns.tap() }
             else { app.swipeDown() }
@@ -976,11 +1027,37 @@ final class HolonUITests: XCTestCase {
         app.buttons["onboarding.preview"].tap()
         let permission = app.switches["onboarding.pairingHTTP"]
         reveal(permission, in: app); permission.switches.firstMatch.tap()
+        agreeToSharingAtLogin(app)
         let confirm = app.buttons["onboarding.confirmPairing"]
         reveal(confirm, in: app); confirm.tap()
         XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
-        approveSharingThroughSettings(app)
+        XCTAssertFalse(app.switches["privacy.accept"].exists, "Agreement was completed before login")
         app.terminate()
+    }
+
+    func testLoginConsentRestorationAndWithdrawal() throws {
+        try connectForSharing()
+        let app = launch(language: "en", dark: false, large: false)
+        defer { app.terminate() }
+        openSettings(app)
+        let revoke = app.buttons["privacy.revoke"]
+        reveal(revoke, in: app); revoke.tap()
+        app.terminate(); app.launch()
+        let consent = app.switches["privacy.accept"]
+        XCTAssertTrue(consent.waitForExistence(timeout: 20),
+                      "A restored session without consent must review it before using the app")
+        XCTAssertEqual(app.staticTexts["privacy.target"].label, try required("ENDPOINT") + "/")
+        let proceed = app.buttons["privacy.continue"]
+        reveal(proceed, in: app)
+        XCTAssertFalse(proceed.isEnabled)
+        agreeToSharingAtLogin(app)
+        reveal(proceed, in: app); XCTAssertTrue(proceed.isEnabled); proceed.tap()
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15) ||
+                      app.buttons["conversation.more"].waitForExistence(timeout: 15))
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15) ||
+                      app.buttons["conversation.more"].waitForExistence(timeout: 15))
+        XCTAssertFalse(consent.exists, "Explicit approval is persistent for this server")
     }
 
     func testNetworkManagementWorkflow() throws {
@@ -1106,7 +1183,7 @@ final class HolonUITests: XCTestCase {
         let folder = app.buttons["files.entry." + directory]
         reveal(folder, in: app); folder.tap()
         let lastNote = app.buttons["files.entry." + directory + "/note-079.txt"]
-        reveal(lastNote, in: app)
+        reveal(lastNote, in: app, fullyVisible: true)
         let savedY = lastNote.frame.minY
         lastNote.tap()
         XCTAssertTrue(app.staticTexts["IOS_RICH_NOTE_079\n"].waitForExistence(timeout: 20))
@@ -1227,6 +1304,7 @@ final class HolonUITests: XCTestCase {
             app.buttons["onboarding.preview"].tap()
             let permission = app.switches["onboarding.pairingHTTP"]
             reveal(permission, in: app); permission.switches.firstMatch.tap()
+            agreeToSharingAtLogin(app)
             let confirm = app.buttons["onboarding.confirmPairing"]
             reveal(confirm, in: app); confirm.tap()
             XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
@@ -1237,19 +1315,31 @@ final class HolonUITests: XCTestCase {
         let turn = try required("RESULT_COMPLETED_TURN")
         let message = try required("RESULT_COMPLETED_MESSAGE")
         let failureTurn = try required("RESULT_FAILED_TURN")
-        let process = app.descendants(matching: .any)["activities." + turn].firstMatch
-        // Results precede the prompt sent by the onboarding test.
-        for _ in 0..<20 {
-            if process.exists && process.isHittable { break }
-            app.swipeDown()
-        }
+        // Composite task-result labels expose the same identifier on their
+        // status icon. Select the disclosure button, not that decorative image.
+        let process = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "activities." + turn
+        )).firstMatch
+        reveal(process, in: app, fullyVisible: true)
+        // The preceding visible brief replaces its placeholder asynchronously.
+        // Wait for real content before locating the disclosure's tap position.
+        let read = app.staticTexts.containing(NSPredicate(
+            format: "label CONTAINS %@", try required("READ_MARKER")
+        )).firstMatch
+        XCTAssertTrue(read.waitForExistence(timeout: 30),
+                      "Visible preceding brief loads before tapping task result controls")
+        reveal(process, in: app, fullyVisible: true)
         XCTAssertTrue(process.isHittable)
         XCTAssertFalse(app.buttons["taskResult.source." + message].exists, "Completed results start folded")
-        let failure = app.descendants(matching: .any)["activities." + failureTurn].firstMatch
+        let failure = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "activities." + failureTurn
+        )).firstMatch
         XCTAssertTrue(failure.exists)
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_TASK_FAILURE_REASON")).firstMatch.exists, "Task failure stays visible although the receiving turn completed")
         capture(app, "task-results-collapsed")
         process.tap()
+        XCTAssertTrue(app.buttons["activities.full." + turn].waitForExistence(timeout: 10),
+                      "Process disclosure expands before looking for task output")
         let output = app.buttons["taskResult.source." + message]
         reveal(output, in: app)
         XCTAssertTrue(output.isHittable)
@@ -1262,10 +1352,8 @@ final class HolonUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.terminate(); app.launch()
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
-        for _ in 0..<20 {
-            if app.descendants(matching: .any)["activities." + turn].firstMatch.isHittable { break }
-            app.swipeDown()
-        }
+        reveal(process, in: app, fullyVisible: true)
+        XCTAssertTrue(process.isHittable)
         XCTAssertFalse(app.buttons["taskResult.source." + message].exists, "Cold launch folds completed process again")
     }
 
