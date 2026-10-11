@@ -5976,6 +5976,7 @@ fn migration_execution_source(
             ExecutionSourceIdentity::TriggeredWait {
                 wait_id: wait_id.clone(),
                 trigger_message_id: trigger_id.clone(),
+                ingress: None,
             },
             None,
             None,

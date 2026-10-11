@@ -2271,6 +2271,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 ExecutionSourceIdentity::TriggeredWait {
                     wait_id: wait_id.clone(),
                     trigger_message_id: message.id.clone(),
+                    ingress: execution_wait_ingress(message),
                 }
             }
             scheduler::CanonicalActivationScenario::InternalFollowup { .. } => {
@@ -2284,6 +2285,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             } => ExecutionSourceIdentity::TriggeredWait {
                 wait_id: wait_id.clone(),
                 trigger_message_id: message.id.clone(),
+                ingress: None,
             },
             scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput {
                 wait_id: None,
@@ -2343,7 +2345,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     && prior.state == ExecutionAttemptState::Interrupted
                     && prior.recovery_of_attempt_id.is_none()
                     && prior.source_message_id.as_deref() == Some(message.id.as_str())
-                    && prior.source.identity == source_identity
+                    && execution_attempt_matches_scenario(prior, message, scenario)
                     && prior.source.generation == source_revision
                     && prior.binding == binding
                     && prior.provenance.origin
@@ -2674,6 +2676,14 @@ fn canonical_execution_attempt_id_for_message(
     }
 }
 
+fn execution_wait_ingress(
+    message: &MessageEnvelope,
+) -> Option<crate::domain::execution_protocol::ExecutionWaitIngress> {
+    scheduler::runtime_owned_internal_followup(message).then_some(
+        crate::domain::execution_protocol::ExecutionWaitIngress::RuntimeOwnedInternalFollowup,
+    )
+}
+
 fn execution_attempt_matches_scenario(
     attempt: &crate::domain::execution_protocol::ExecutionAttempt,
     message: &MessageEnvelope,
@@ -2687,6 +2697,15 @@ fn execution_attempt_matches_scenario(
         || attempt.provenance.trust != canonical_execution_trust_for_scenario(message, scenario)
     {
         return false;
+    }
+    if let ExecutionSourceIdentity::TriggeredWait {
+        ingress: Some(ingress),
+        ..
+    } = &attempt.source.identity
+    {
+        if Some(*ingress) != execution_wait_ingress(message) {
+            return false;
+        }
     }
     match (&attempt.source.identity, &attempt.binding, scenario) {
         (
@@ -2750,6 +2769,7 @@ fn execution_attempt_matches_scenario(
             ExecutionSourceIdentity::TriggeredWait {
                 wait_id,
                 trigger_message_id,
+                ..
             },
             ExecutionBinding::WorkItem { work_item_id },
             scheduler::CanonicalActivationScenario::ExactWaitResume {
@@ -2768,6 +2788,7 @@ fn execution_attempt_matches_scenario(
             ExecutionSourceIdentity::TriggeredWait {
                 wait_id,
                 trigger_message_id,
+                ..
             },
             ExecutionBinding::AgentLifecycle { agent_id },
             scheduler::CanonicalActivationScenario::ExactWaitResume {
@@ -2802,6 +2823,7 @@ fn execution_attempt_matches_scenario(
             ExecutionSourceIdentity::TriggeredWait {
                 wait_id,
                 trigger_message_id,
+                ..
             },
             ExecutionBinding::WorkItem { work_item_id },
             scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput {
@@ -3066,6 +3088,255 @@ mod tests {
         );
         message.id = id.into();
         message
+    }
+
+    #[test]
+    fn runtime_owned_followup_exact_wait_preserves_provenance() {
+        use crate::domain::execution_protocol::*;
+
+        let home = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            home.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let mut message = queued_message(Priority::Normal, "peer-reply");
+        message.kind = MessageKind::InternalFollowup;
+        message.origin = MessageOrigin::System {
+            subsystem: "agent_message".into(),
+        };
+        message.delivery_surface = Some(crate::types::MessageDeliverySurface::RuntimeSystem);
+        message.admission_context = Some(crate::types::AdmissionContext::RuntimeOwned);
+        message.message_seq = Some(1);
+        let scenario = scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner: crate::domain::scheduler::SchedulerOwner::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            wait_id: "wait-peer-reply".into(),
+        };
+        let planned = SchedulerDecisionExecutor::new(&runtime)
+            .plan_execution_protocol_claim(
+                &message,
+                &scenario,
+                "attempt-peer-reply",
+                None,
+                Some("wait-peer-reply"),
+                None,
+            )
+            .unwrap();
+        let ExecutionProtocolCommand::Admit(command) = planned.commands.last().unwrap() else {
+            panic!("expected exact-wait admission");
+        };
+        assert_eq!(command.attempt.provenance.origin, ExecutionOrigin::System);
+        assert_eq!(
+            command.attempt.provenance.trust,
+            ExecutionTrust::OperatorInstruction
+        );
+        assert_eq!(
+            command.attempt.source.identity,
+            ExecutionSourceIdentity::TriggeredWait {
+                wait_id: "wait-peer-reply".into(),
+                trigger_message_id: message.id.clone(),
+                ingress: Some(ExecutionWaitIngress::RuntimeOwnedInternalFollowup),
+            }
+        );
+        assert!(execution_attempt_matches_scenario(
+            &command.attempt,
+            &message,
+            &scenario
+        ));
+        let restored: AdmitExecution =
+            serde_json::from_value(serde_json::to_value(command).unwrap()).unwrap();
+        assert_eq!(&restored, command.as_ref());
+        admit_execution(&ExecutionProtocolState::empty("default"), command).unwrap_or_else(
+            |error| {
+                panic!(
+                    "runtime-owned peer reply rejected: {error}; source={:?}; provenance={:?}",
+                    command.attempt.source.identity, command.attempt.provenance
+                )
+            },
+        );
+        let mut legacy = command.as_ref().clone();
+        let ExecutionSourceIdentity::TriggeredWait { ingress, .. } =
+            &mut legacy.attempt.source.identity
+        else {
+            panic!("expected exact-wait source");
+        };
+        *ingress = None;
+        assert!(
+            admit_execution(&ExecutionProtocolState::empty("default"), &legacy)
+                .unwrap_err()
+                .contains("provenance")
+        );
+        legacy.attempt.provenance.trust = ExecutionTrust::RuntimeInstruction;
+        let legacy: AdmitExecution =
+            serde_json::from_value(serde_json::to_value(&legacy).unwrap()).unwrap();
+        admit_execution(&ExecutionProtocolState::empty("default"), &legacy).unwrap();
+        let mut legacy_message = message.clone();
+        legacy_message.authority_class = AuthorityClass::RuntimeInstruction;
+        assert!(execution_attempt_matches_scenario(
+            &legacy.attempt,
+            &legacy_message,
+            &scenario
+        ));
+        assert!(!execution_attempt_matches_scenario(
+            &legacy.attempt,
+            &message,
+            &scenario
+        ));
+        for strip_surface in [false, true] {
+            let mut unverified = message.clone();
+            if strip_surface {
+                unverified.delivery_surface = None;
+            } else {
+                unverified.admission_context = None;
+            }
+            assert_eq!(execution_wait_ingress(&unverified), None);
+            assert!(!execution_attempt_matches_scenario(
+                &command.attempt,
+                &unverified,
+                &scenario
+            ));
+            let unverified_claim = SchedulerDecisionExecutor::new(&runtime)
+                .plan_execution_protocol_claim(
+                    &unverified,
+                    &scenario,
+                    "attempt-unverified",
+                    None,
+                    Some("wait-peer-reply"),
+                    None,
+                )
+                .unwrap();
+            let ExecutionProtocolCommand::Admit(unverified_command) =
+                unverified_claim.commands.last().unwrap()
+            else {
+                panic!("expected unverified wait admission");
+            };
+            assert!(admit_execution(
+                &ExecutionProtocolState::empty("default"),
+                unverified_command
+            )
+            .unwrap_err()
+            .contains("provenance"));
+        }
+    }
+
+    #[test]
+    fn legacy_runtime_owned_exact_wait_recovers_after_restart() {
+        use crate::domain::execution_protocol::*;
+
+        let home = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let open_runtime = || {
+            RuntimeHandle::new(
+                "default",
+                home.path().to_path_buf(),
+                workspace.path().to_path_buf(),
+                "http://127.0.0.1:7878".into(),
+                Arc::new(crate::provider::StubProvider::new("unused")),
+                "default".into(),
+                context_config(),
+            )
+            .unwrap()
+        };
+        let runtime = open_runtime();
+        let mut message = queued_message(Priority::Normal, "legacy-peer-reply");
+        message.kind = MessageKind::InternalFollowup;
+        message.origin = MessageOrigin::System {
+            subsystem: "agent_message".into(),
+        };
+        message.authority_class = AuthorityClass::RuntimeInstruction;
+        message.delivery_surface = Some(crate::types::MessageDeliverySurface::RuntimeSystem);
+        message.admission_context = Some(crate::types::AdmissionContext::RuntimeOwned);
+        message.message_seq = Some(1);
+        let scenario = scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner: crate::domain::scheduler::SchedulerOwner::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            wait_id: "legacy-peer-wait".into(),
+        };
+        let root_id = canonical_activation_id(&message.id);
+        let planned = SchedulerDecisionExecutor::new(&runtime)
+            .plan_execution_protocol_claim(
+                &message,
+                &scenario,
+                &root_id,
+                None,
+                Some("legacy-peer-wait"),
+                None,
+            )
+            .unwrap();
+        let ExecutionProtocolCommand::Admit(command) = planned.commands.last().unwrap() else {
+            panic!("expected exact-wait admission");
+        };
+        let mut old_record = serde_json::to_value(command).unwrap();
+        old_record["attempt"]["source"]["identity"]
+            .as_object_mut()
+            .unwrap()
+            .remove("ingress");
+        let legacy: AdmitExecution = serde_json::from_value(old_record).unwrap();
+        let admitted = admit_execution(&ExecutionProtocolState::empty("default"), &legacy).unwrap();
+        let interrupted = interrupt_execution(
+            &admitted.state,
+            &InterruptExecution {
+                attempt_id: root_id.clone(),
+                outcome_id: "legacy-interruption".into(),
+                reason: "restart".into(),
+                interrupted_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .unwrap();
+        runtime
+            .runtime_db()
+            .transaction(|tx| {
+                crate::runtime_db::transitions::persist_state_tx(tx, &interrupted.state)
+            })
+            .unwrap();
+        runtime.storage().append_message(&message).unwrap();
+        runtime
+            .storage()
+            .append_queue_entry(&crate::types::QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority.clone(),
+                status: QueueEntryStatus::Interrupted,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            })
+            .unwrap();
+        drop(runtime);
+
+        let restarted = open_runtime();
+        let recovered = SchedulerDecisionExecutor::new(&restarted)
+            .plan_execution_protocol_claim(
+                &message,
+                &scenario,
+                "legacy-recovery",
+                None,
+                Some("legacy-peer-wait"),
+                None,
+            )
+            .unwrap();
+        let ExecutionProtocolCommand::Admit(command) = recovered.commands.last().unwrap() else {
+            panic!("expected interrupted exact-wait recovery");
+        };
+        assert_eq!(
+            command.attempt.recovery_of_attempt_id.as_deref(),
+            Some(root_id.as_str())
+        );
+        let recovered = admit_execution(&interrupted.state, command).unwrap();
+        assert!(canonical_lifecycle_attempt_lineage_is_valid(
+            &recovered.state,
+            &message,
+            &scenario,
+            "legacy-recovery"
+        ));
     }
 
     #[test]

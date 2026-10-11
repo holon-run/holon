@@ -152,6 +152,7 @@ async fn open_external_wake_claim_fixture() -> OpenExternalWakeClaimFixture {
             crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
                 wait_id: admitted_wait_id,
                 trigger_message_id,
+                ..
             } if admitted_wait_id == &wait_id && trigger_message_id == &wake_message.id
         ));
 
@@ -200,6 +201,7 @@ async fn bootstrap_recovers_open_external_wake_claim_and_releases_execution_lane
         crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
             wait_id,
             trigger_message_id,
+            ..
         } if wait_id == &fixture.wait_id && trigger_message_id == &fixture.message_id
     ));
     assert!(matches!(
@@ -9623,6 +9625,7 @@ async fn terminal_task_result_resumes_exact_agent_lifecycle_task_wait() {
         crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
             wait_id,
             trigger_message_id,
+            ..
         } if wait_id == &registration.condition.id && trigger_message_id == &message.id
     ));
 }
@@ -9950,6 +9953,7 @@ async fn authoritative_explicit_operator_binding_ignores_unrelated_waits() {
         crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
             wait_id,
             trigger_message_id,
+            ..
         } if trigger_message_id == &message.id && wait_id == &target_wait.condition.id
     ));
     runtime
