@@ -2345,7 +2345,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     && prior.state == ExecutionAttemptState::Interrupted
                     && prior.recovery_of_attempt_id.is_none()
                     && prior.source_message_id.as_deref() == Some(message.id.as_str())
-                    && execution_attempt_matches_scenario(prior, message, scenario)
+                    && (prior.source.identity == source_identity
+                        || execution_attempt_matches_scenario(prior, message, scenario))
                     && prior.source.generation == source_revision
                     && prior.binding == binding
                     && prior.provenance.origin
