@@ -128,12 +128,35 @@ A typical parent-child interaction:
    completion
 4. **Deliver** — Parent aggregates child results into the final user-facing
    answer
+5. **Clean up** — Once child work is incorporated, the parent owns cleanup.
+   Inspect `GetAgent(detail="full")` to check the child's `identity.incarnation`
+   and blockers, then call `DeleteAgent(agent_id, incarnation)` to release
+   its resources.
 
 The parent remains responsible for:
 
 - **Verification** — Child output is evidence, not authority
 - **Aggregation** — Combining results from multiple children
 - **Final delivery** — The parent produces the user-facing answer
+
+### Subagent Lifecycle and Cleanup
+
+Newly invoked subagents are private, reusable instances retained after their
+tasks complete. They do not expire automatically by age:
+
+- **Parent ownership:** Only the supervising parent can delete a retained child.
+  The runtime validates canonical supervision and both agent incarnations.
+- **Cleanup inspection:** Calling `GetAgent` on the parent surfaces a bounded
+  `subagent_cleanup` list (up to 16 supervised children) with any blockers.
+- **Blocker checks:** Active execution, unresolved descendant responsibilities,
+  and dirty or shared worktrees block cleanup until settled. Open work items
+  or completed tasks do not block cleanup if the parent decides they are no
+  longer needed.
+- **Background reminders and retirement:** The daemon can send deduplicated
+  daily reminders to parents with lingering children (`reminders_enabled`). If
+  configured, fully idle child runtimes can cooperatively exit memory
+  (`idle_retirement_enabled`) while preserving durable identity and history on
+  disk.
 
 ## Best Practices
 
@@ -143,8 +166,8 @@ The parent remains responsible for:
   user.
 - **Limit parallelism.** Invoke only as many agents as the task actually
   benefits from.
-- **Stop idle children.** Use `TaskStop` for children that are no longer
-  needed.
+- **Clean up retained children.** When a child's mission ends, check
+  `subagent_cleanup` and call `DeleteAgent` rather than leaving idle identities.
 
 ## See Also
 

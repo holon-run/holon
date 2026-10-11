@@ -27,6 +27,8 @@ Common scenarios:
 - **Maintaining marketing context and campaign briefs** — `holon agent create marketing --template marketing-steward`
 - **Maintaining community health and contributor experience** — `holon agent create community --template community-steward`
 - **Organizing legal operations and contract intake** — `holon agent create legal --template legal-ops-steward`
+- **Maintaining a source-linked knowledge base** — `holon agent create knowledge --template knowledge-steward`
+- **Guiding deliberate practice and spaced learning** — `holon agent create coach --template learning-coach`
 - **Owning defensive security review** — `holon agent create security --template security-reviewer`
 - **Owning the dependency update queue** — `holon agent create deps --template dependency-steward`
 - **Turning a goal into a spec** — `holon agent create pm --template product-manager`
@@ -244,6 +246,41 @@ qualified legal counsel without giving legal advice or taking external action.
 - **Hard constraints:** Never gives legal advice, definitive legal
   conclusions, or jurisdictional determinations. Does not send external
   communications or access external systems without human review and approval.
+
+## Knowledge operations
+
+`knowledge-steward` maintains an auditable, source-linked Markdown knowledge base
+for teams and projects, producing reviewable drafts, derived indexes, freshness
+signals, and health briefs without making policy or deletion decisions.
+
+- **First-use workspace contract:** On initial run, the agent records the
+  knowledge root, target audience, source boundaries, review owners, and review
+  cadence into a durable `workspace-scope.md` file before proposing edits.
+- **Core maintenance loop:** Captures source snapshots before synthesizing
+  claims, maintains `[[wikilink]]` connections and backlinks, rebuilds indexes,
+  and checks for broken links, orphan pages, stale reviews, and missing citations.
+- **Pre-installed tools:** Pre-installs `interlinked-markdown-wiki`, `ghx`,
+  `sview`, `agentinbox`, and knowledge-work skills (`knowledge-synthesis`,
+  `memory-management`, `source-management`).
+- **Hard constraints:** Defaults to read-only inspection, drafts, and health
+  reports. Never overwrites source snapshots, fabricates citations, or
+  deletes/archives pages without explicit human decisions.
+
+## Learning coaching
+
+`learning-coach` is an evidence-driven personal coach that guides learners
+through deliberate practice, retrieval, reflection, and spaced review.
+
+- **First-use contract:** Confirms the learner's starting point, available time,
+  concrete target outcomes, observable evidence formats (e.g. rubrics, worked
+  problems, code tests), and privacy boundaries before drafting study plans.
+- **Evidence over assumption:** Never infers mastery from reading speed,
+  attendance, or fluent chat. Mastery remains marked as unknown until the
+  learner demonstrates independent performance.
+- **Pre-installed tools:** Pre-installs `learning-coach`.
+- **Hard constraints:** Focuses on improving learner competence rather than
+  consuming material or completing assignments on the learner's behalf.
+  Progress stays private to the workspace by default.
 
 ## Template Naming
 

@@ -86,4 +86,8 @@ order: 30
   安装并配置原生 Android 客户端，通过扫码配对连接运行中的 Holon 守护进程，在移动端管理 Agent 与对话。
   <!-- mdorigin:index kind=article -->
 
+- [连接 iOS 客户端](./connect-ios-client.md)
+  安装并配置原生 iOS 客户端，与运行中的 Holon 守护进程配对，在 iPhone 和 iPad 上浏览成果、阅读文件并举报 AI 内容。
+  <!-- mdorigin:index kind=article -->
+
 <!-- INDEX:END -->

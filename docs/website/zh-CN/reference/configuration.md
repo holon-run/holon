@@ -3,7 +3,7 @@ title: 配置
 summary: Holon 的配置文件、配置键、凭据、环境变量与诊断。
 order: 15
 ---
-<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.48.0. -->
+<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.50.0. -->
 
 # 配置参考
 
@@ -581,7 +581,38 @@ Decision 子系统在 Agent 面临高歧义选择时提供非权威的咨询性�
 - **路由隔离：** Decision 模型需要显式能力声明与独立路由，避免决策流量与主 Agent 对话上下文产生资源争用。
 - **防御性防护：** 可配置 `decision.tools.max_calls_per_turn` 限制每轮最大调用次数，并通过 `decision.tools.min_confidence` 在置信度不足时强制弃权。
 
+## 受监督子 Agent 维护
+
+守护进程的清理协调器负责观察被保留的私有子 Agent。父级 Agent 可以直接调用 `DeleteAgent` 发起清理，创建子 Agent 时无需指定保留时长。父级调用 `GetAgent` 时会包含受控的 `subagent_cleanup` 责任列表，无需提前拉起子 Agent。
+
+| 配置键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `runtime.reclamation.reminders_enabled` | boolean | `true` | 发送持久化、去重的内部提醒；每个父级每天最多收到一批（最多 16 个）待清理子 Agent 提醒 |
+| `runtime.reclamation.idle_retirement_enabled` | boolean | `false` | 协作式退出完全空闲的子 Agent 运行时实例，保留身份、历史记录与磁盘文件 |
+| `runtime.reclamation.idle_grace_seconds` | positive_integer | `600` | 发出提醒或空闲退役前的观察宽限期（秒）；不会主动注销或删除 Agent 身份 |
+
+清理提醒默认开启；空闲退役默认关闭（需显式 opt-in）。两项功能均支持运行时配置热重载。已停止或预算耗尽的父级会被顺延。若父级监督关系缺失或反复清理失败，系统会生成去重后的运维通知，而无需额外调用大模型。关闭功能会阻止新的清理接纳，但已接纳的删除任务会继续执行。空闲退役会拒绝活动中的工作、等待、定时器与待处理唤醒义务。默认的回调端点在退役后依然有效，可在外部事件到达时通过宿主入口重新加载 Agent。
+
+## 身份认证与 API 安全
+
+Holon 对 HTTP 端点实施会话超时控制与可选的 CSRF 跨站请求防护：
+
+| 配置键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `auth.session.idle_ttl_seconds` | positive_integer | `604800`（7 天） | 会话空闲超时时间（秒），超时后需要重新认证 |
+| `auth.session.absolute_ttl_seconds` | positive_integer 或 null | `null` | 会话绝对生命周期（秒）；为 null 时仅按空闲超时过期 |
+| `api.csrf.trusted_origins` | string_list | `[]` | 允许执行带 Cookie 认证修改请求的 HTTP Origin 列表。为空时禁用 Origin 守卫；同源请求始终受信任；不支持通配符 |
+
+### 会话空闲策略
+
+经认证的 Web GUI 与原生客户端会话默认在无活动 7 天后过期。每次有效请求都会重置空闲计时器，直至达到可选的 `auth.session.absolute_ttl_seconds` 上限。
+
+### Cookie Origin 守卫
+
+若你的部署涉及跨域 Cookie 认证访问，可在 `api.csrf.trusted_origins` 中配置受信任的完整 Origin（例如 `["https://app.example.com"]`）。带有会话 Cookie 的不安全变更请求（`POST`、`PUT`、`DELETE`、`PATCH`）必须附带匹配的 `Origin` 请求头；若缺少 Origin 或不在列表中，请求会被拒绝并返回 HTTP 403。
+
 ## 另请参阅
 
 - [CLI 参考](/zh-CN/reference/cli.md)：完整的 CLI 命令参考
 - [入门指南](/zh-CN/getting-started/first-agent.md)：分步设置教程
+- [Agent 模板](/zh-CN/reference/agent-templates.md)：内置 Agent 角色目录

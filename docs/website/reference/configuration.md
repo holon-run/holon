@@ -3,7 +3,7 @@ title: Configuration
 summary: Holon configuration files, keys, credentials, environment variables, and diagnostics.
 order: 15
 ---
-<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.48.0. -->
+<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.50.0. -->
 
 # Configuration Reference
 
@@ -633,12 +633,7 @@ The Decision subsystem provides non-authoritative advisory second opinions to ag
 - **Route isolation:** Decision models require explicit capability advertisement and dedicated routes, preventing decision traffic from competing with primary agent context.
 - **Defensive guardrails:** Configure `decision.tools.max_calls_per_turn` to cap per-turn invocations and `decision.tools.min_confidence` to force explicit abstentions when confidence is low.
 
-## See Also
-
-- [CLI Reference](/reference/cli.md) — Complete CLI command reference
-- [Getting Started](/getting-started/first-agent.md) — Step-by-step setup tutorial
-
-### Supervised subagent maintenance
+## Supervised Subagent Maintenance
 
 The daemon's existing deletion coordinator also observes retained private
 subagents. Parent agents can call `DeleteAgent` directly; creating a child needs
@@ -659,3 +654,27 @@ Idle retirement rejects active work, waits, timers and pending wake obligations.
 The durable default callback endpoint survives and reloads the agent through
 host ingress. Validate residency and reload latency on the deployment before
 enabling automatic retirement.
+
+## Authentication and API Security
+
+Holon enforces session lifetimes and optional CSRF protection for HTTP endpoints:
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `auth.session.idle_ttl_seconds` | positive_integer | `604800` (7 days) | Idle session lifetime before re-authentication is required |
+| `auth.session.absolute_ttl_seconds` | positive_integer or null | `null` | Absolute session lifetime; null means sessions only expire on idle timeout |
+| `api.csrf.trusted_origins` | string_list | `[]` | Allowed HTTP origins for cookie-authenticated mutating requests. Empty disables the Origin guard; same-origin is always trusted; wildcards are rejected |
+
+### Session Inactivity Policy
+
+Authenticated Web GUI and native client sessions expire after 7 days of inactivity by default. Any valid request refreshes the idle timer up to the optional `auth.session.absolute_ttl_seconds` ceiling.
+
+### Cookie Origin Guard
+
+When your deployment serves cookie-authenticated sessions across origins, populate `api.csrf.trusted_origins` with exact trusted origins (e.g. `["https://app.example.com"]`). Unsafe mutating requests (`POST`, `PUT`, `DELETE`, `PATCH`) with session cookies must present an exact matching `Origin` header. Requests without an Origin or with an unlisted origin fail closed with HTTP 403.
+
+## See Also
+
+- [CLI Reference](/reference/cli.md) — Complete CLI command reference
+- [Getting Started](/getting-started/first-agent.md) — Step-by-step setup tutorial
+- [Agent Templates](/reference/agent-templates.md) — Catalog of built-in agent roles
