@@ -20,7 +20,11 @@ def install(simulator, repo, directory):
             "CFBundleName": "Holon Share Probe", "CFBundlePackageType": "APPL",
             "CFBundleVersion": "1", "CFBundleShortVersionString": "1.0",
             "MinimumOSVersion": "18.0", "LSRequiresIPhoneOS": True,
-            "UIDeviceFamily": [1, 2], "UILaunchScreen": {}}
+            "UIDeviceFamily": [1, 2], "UILaunchScreen": {},
+            "UIApplicationSceneManifest": {
+                "UIApplicationSupportsMultipleScenes": False,
+                "UISceneConfigurations": {"UIWindowSceneSessionRoleApplication": [
+                    {"UISceneConfigurationName": "Share Probe"}]}}}
     (app / "Info.plist").write_bytes(plistlib.dumps(info))
     subprocess.run(["codesign", "--force", "--sign", "-", str(app)], check=True)
     subprocess.run(["xcrun", "simctl", "install", simulator, str(app)], check=True)

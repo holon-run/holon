@@ -512,11 +512,11 @@ private struct ReadingBriefView: View {
                             .disabled(openWork == nil)
                     }
                 }
-            } else if reader.loadingBriefs.contains(briefID) {
-                ProgressView("work.loading").font(.caption)
             } else {
-                Text("reading.detailUnavailable")
-                Button("reading.retry") { Task { await reader.loadBrief(briefID) } }
+                BriefPlaceholderView(briefID: briefID, state: BriefPlaceholderState(
+                    isLoading: reader.loadingBriefs.contains(briefID),
+                    hasFailed: reader.failedBriefs.contains(briefID)
+                )) { Task { await reader.loadBrief(briefID) } }
             }
         }
         // Native accessibility can materialize offscreen lazy rows. Fetch/render only

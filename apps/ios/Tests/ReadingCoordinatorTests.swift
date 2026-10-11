@@ -1,5 +1,6 @@
 import Foundation
 import HolonClient
+import Observation
 import XCTest
 @testable import Holon
 
@@ -1044,6 +1045,35 @@ final class ReadingCoordinatorTests: XCTestCase {
         XCTAssertEqual(requests.first?.agentID, "A")
         XCTAssertTrue(try reportDraft(coordinator) === draft)
         coordinator.disconnect()
+    }
+
+    func testAcceptedReportScopeNotifiesObserversAfterForegroundRestoration() async throws {
+        let (coordinator, fake, _) = try await start()
+        defer { coordinator.disconnect() }
+        let draft = try reportDraft(coordinator)
+        draft.category = .privacy
+        await draft.submit { try await coordinator.createContentReport($0, scope: $1) }
+        XCTAssertEqual(draft.receipt?.reportID, "report_1")
+        coordinator.setForeground(false)
+        XCTAssertNil(coordinator.contentReportScope)
+
+        // A report sheet renders while inactive and must observe its return.
+        let scopeChanged = expectation(description: "Report scope observation resumes")
+        withObservationTracking {
+            _ = coordinator.contentReportScope
+        } onChange: {
+            scopeChanged.fulfill()
+        }
+        coordinator.setForeground(true)
+        await fulfillment(of: [scopeChanged], timeout: 1)
+        try await wait { coordinator.status == .live }
+        XCTAssertEqual(coordinator.contentReportScope, draft.scope)
+        let restored = try reportDraft(coordinator)
+        XCTAssertTrue(restored === draft)
+        XCTAssertFalse(restored.canSubmit)
+        await restored.submit { try await coordinator.createContentReport($0, scope: $1) }
+        let requests = await fake.reportRequests
+        XCTAssertEqual(requests.count, 1, "Foreground restoration must not resend an accepted report")
     }
 
     func testAttemptedReportDraftsCannotBeEvictedAtCapacity() async throws {

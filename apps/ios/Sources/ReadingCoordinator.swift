@@ -41,7 +41,7 @@ final class ReadingCoordinator {
     @ObservationIgnored private var partition: ReadingPartition?
     @ObservationIgnored private var reportSessionID = UUID()
     @ObservationIgnored private var reportDrafts: [ContentReportKey: ContentReportDraft] = [:]
-    @ObservationIgnored private var foreground = true
+    private var foreground = true
     @ObservationIgnored private var revision = 0
     @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var streams: [ReadingStream] = []

@@ -73,6 +73,10 @@
 "reading.turn" = "Turn";
 "reading.operator" = "Operator";
 "reading.brief" = "Brief";
+"reading.brief.unloaded" = "Brief 未加载";
+"reading.brief.loading" = "正在加载 Brief…";
+"reading.brief.failed" = "Brief 暂不可用";
+"reading.brief.load" = "加载";
 "reading.activities" = "本轮过程";
 "reading.linkUnavailable" = "这里无法打开此链接。相对路径需要服务端提供的文件位置。";
 "reading.selectText" = "选择原文";

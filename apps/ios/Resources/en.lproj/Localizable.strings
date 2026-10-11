@@ -73,6 +73,10 @@
 "reading.turn" = "Turn";
 "reading.operator" = "Operator";
 "reading.brief" = "Brief";
+"reading.brief.unloaded" = "Brief not loaded";
+"reading.brief.loading" = "Loading brief…";
+"reading.brief.failed" = "Brief unavailable";
+"reading.brief.load" = "Load";
 "reading.activities" = "Turn activity";
 "reading.linkUnavailable" = "This link cannot be opened here. Relative files require a server-provided file location.";
 "reading.selectText" = "Select source text";

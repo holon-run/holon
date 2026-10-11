@@ -83,6 +83,13 @@ final class HolonUITests: XCTestCase {
             let keyboard = app.keyboards.firstMatch
             let top = navigation.exists ? max(window.minY, navigation.frame.maxY) : window.minY
             var bottom = tabs.exists ? min(window.maxY, tabs.frame.minY) : window.maxY
+            // Native searchable can dock over list rows while the toolbar's
+            // AX frame spans the entire window. Use its actual search field.
+            let dockedSearch = app.toolbars.searchFields.firstMatch
+            if dockedSearch.exists && dockedSearch.isHittable
+                && dockedSearch.frame.minY > window.midY {
+                bottom = min(bottom, dockedSearch.frame.minY)
+            }
             let composer = app.otherElements["sending.composer"].firstMatch
             let editor = app.descendants(matching: .any)["sending.text"].firstMatch
             let targetID = element.exists ? element.identifier : ""
@@ -174,6 +181,8 @@ final class HolonUITests: XCTestCase {
         }
         XCTAssertTrue(settings.waitForExistence(timeout: 10))
         settings.tap()
+        XCTAssertTrue(app.buttons["settings.connection"].waitForExistence(timeout: 10),
+                      "Settings must finish opening before revealing its controls")
     }
 
     private func openDiagnostics(_ app: XCUIApplication) {
@@ -623,13 +632,25 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(editor.waitForExistence(timeout: 10))
         editor.tap()
         editor.typeText("P6 native UI explicit operator message")
+        // The native Outbox action clears composer focus without relying on
+        // a scroll gesture whose origin can fall outside the conversation.
+        let queue = app.buttons["sending.queue"]
+        app.buttons["sending.options"].tap()
+        XCTAssertTrue(queue.waitForExistence(timeout: 10))
+        queue.tap()
+        let closeQueue = app.buttons["Close"]
+        XCTAssertTrue(closeQueue.waitForExistence(timeout: 10))
+        closeQueue.tap()
+        let composerKeyboardDismissed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [composerKeyboardDismissed], timeout: 5), .completed)
+        XCTAssertEqual(editor.value as? String, "P6 native UI explicit operator message")
         let enqueue = app.buttons["sending.enqueue"]
         reveal(enqueue, in: app)
         XCTAssertTrue(enqueue.isEnabled)
         enqueue.tap()
         // Returning from the native editor is not evidence of server acceptance.
         // Outbox must expose a concrete accepted state.
-        let queue = app.buttons["sending.queue"]
         app.buttons["sending.options"].tap()
         XCTAssertTrue(queue.waitForExistence(timeout: 10))
         queue.tap()
@@ -880,7 +901,8 @@ final class HolonUITests: XCTestCase {
         let activity = app.descendants(matching: .any)["activities." + turn].firstMatch
         // This completed turn precedes the baseline's freshly sent messages.
         for _ in 0..<40 {
-            if activity.exists && activity.isHittable { break }
+            // Do not page away from a loaded turn just because it is offscreen.
+            if activity.exists { break }
             let olderTurns = app.buttons["conversation.older"]
             if olderTurns.exists && olderTurns.isHittable { olderTurns.tap() }
             else { app.swipeDown() }
@@ -1161,7 +1183,7 @@ final class HolonUITests: XCTestCase {
         let folder = app.buttons["files.entry." + directory]
         reveal(folder, in: app); folder.tap()
         let lastNote = app.buttons["files.entry." + directory + "/note-079.txt"]
-        reveal(lastNote, in: app)
+        reveal(lastNote, in: app, fullyVisible: true)
         let savedY = lastNote.frame.minY
         lastNote.tap()
         XCTAssertTrue(app.staticTexts["IOS_RICH_NOTE_079\n"].waitForExistence(timeout: 20))
@@ -1293,19 +1315,31 @@ final class HolonUITests: XCTestCase {
         let turn = try required("RESULT_COMPLETED_TURN")
         let message = try required("RESULT_COMPLETED_MESSAGE")
         let failureTurn = try required("RESULT_FAILED_TURN")
-        let process = app.descendants(matching: .any)["activities." + turn].firstMatch
-        // Results precede the prompt sent by the onboarding test.
-        for _ in 0..<20 {
-            if process.exists && process.isHittable { break }
-            app.swipeDown()
-        }
+        // Composite task-result labels expose the same identifier on their
+        // status icon. Select the disclosure button, not that decorative image.
+        let process = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "activities." + turn
+        )).firstMatch
+        reveal(process, in: app, fullyVisible: true)
+        // The preceding visible brief replaces its placeholder asynchronously.
+        // Wait for real content before locating the disclosure's tap position.
+        let read = app.staticTexts.containing(NSPredicate(
+            format: "label CONTAINS %@", try required("READ_MARKER")
+        )).firstMatch
+        XCTAssertTrue(read.waitForExistence(timeout: 30),
+                      "Visible preceding brief loads before tapping task result controls")
+        reveal(process, in: app, fullyVisible: true)
         XCTAssertTrue(process.isHittable)
         XCTAssertFalse(app.buttons["taskResult.source." + message].exists, "Completed results start folded")
-        let failure = app.descendants(matching: .any)["activities." + failureTurn].firstMatch
+        let failure = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "activities." + failureTurn
+        )).firstMatch
         XCTAssertTrue(failure.exists)
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_TASK_FAILURE_REASON")).firstMatch.exists, "Task failure stays visible although the receiving turn completed")
         capture(app, "task-results-collapsed")
         process.tap()
+        XCTAssertTrue(app.buttons["activities.full." + turn].waitForExistence(timeout: 10),
+                      "Process disclosure expands before looking for task output")
         let output = app.buttons["taskResult.source." + message]
         reveal(output, in: app)
         XCTAssertTrue(output.isHittable)
@@ -1318,10 +1352,8 @@ final class HolonUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.terminate(); app.launch()
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
-        for _ in 0..<20 {
-            if app.descendants(matching: .any)["activities." + turn].firstMatch.isHittable { break }
-            app.swipeDown()
-        }
+        reveal(process, in: app, fullyVisible: true)
+        XCTAssertTrue(process.isHittable)
         XCTAssertFalse(app.buttons["taskResult.source." + message].exists, "Cold launch folds completed process again")
     }
 
