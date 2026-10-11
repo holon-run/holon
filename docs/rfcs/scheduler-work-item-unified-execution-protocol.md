@@ -97,6 +97,18 @@ Only `Open` owns the agent lane. All other states are terminal and lane-free.
 The attempt records execution authority and evidence; it does not own future
 WorkItem, queue, wait, or task lifecycle.
 
+An exact wait source retains its `wait_id` and `trigger_message_id`. When the
+trigger is a runtime-owned `InternalFollowup`, it also records the typed
+`runtime_owned_internal_followup` ingress. The scheduler derives this marker
+from the persisted message kind, runtime delivery surface, admission context,
+and system/task origin; matching a wait alone never grants it. This preserves
+the original message trust and the existing WorkItem/lifecycle followup
+admission boundary. Ordinary wait sources gain no provenance exemption.
+Admission revalidates marked sources against the durable trigger envelope
+inside the transaction, including source identity, revision, origin, and trust.
+Older serialized wait sources without the optional marker retain their
+previous validation rules.
+
 ### WorkItemExecutionState
 
 ```text

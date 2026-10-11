@@ -2140,6 +2140,7 @@ impl RuntimeHandle {
         let ExecutionSourceIdentity::TriggeredWait {
             wait_id,
             trigger_message_id,
+            ..
         } = &attempt.source.identity
         else {
             return Ok(None);

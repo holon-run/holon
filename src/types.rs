@@ -1951,6 +1951,16 @@ pub struct MessageEnvelope {
 }
 
 impl MessageEnvelope {
+    pub(crate) fn is_runtime_owned_internal_followup(&self) -> bool {
+        self.kind == MessageKind::InternalFollowup
+            && self.delivery_surface == Some(MessageDeliverySurface::RuntimeSystem)
+            && self.admission_context == Some(AdmissionContext::RuntimeOwned)
+            && matches!(
+                self.origin,
+                MessageOrigin::System { .. } | MessageOrigin::Task { .. }
+            )
+    }
+
     pub fn new(
         agent_id: impl Into<String>,
         kind: MessageKind,

@@ -152,6 +152,7 @@ async fn open_external_wake_claim_fixture() -> OpenExternalWakeClaimFixture {
             crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
                 wait_id: admitted_wait_id,
                 trigger_message_id,
+                ..
             } if admitted_wait_id == &wait_id && trigger_message_id == &wake_message.id
         ));
 
@@ -200,6 +201,7 @@ async fn bootstrap_recovers_open_external_wake_claim_and_releases_execution_lane
         crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
             wait_id,
             trigger_message_id,
+            ..
         } if wait_id == &fixture.wait_id && trigger_message_id == &fixture.message_id
     ));
     assert!(matches!(
@@ -650,7 +652,7 @@ async fn startup_recovery_retained_task_result_obeys_exact_rejoin_wait_and_revis
 #[tokio::test]
 async fn startup_recovery_preserves_operator_claim_while_interrupting_its_active_turn() {
     let mut harness = LifecycleHarness::new();
-    let (message_id, attempt_id) = {
+    let (message_id, attempt_id, source, binding) = {
         let runtime = harness.runtime();
         let mut message = trusted_operator_prompt(None, "retained operator input");
         message.turn_id = Some("turn-startup-retained-operator".into());
@@ -672,9 +674,23 @@ async fn startup_recovery_preserves_operator_claim_while_interrupting_its_active
             .turn_records()
             .upsert(&turn)
             .unwrap();
+        let state = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap();
+        let attempt = state.open_attempt().unwrap();
+        assert!(matches!(
+            attempt.binding,
+            crate::domain::execution_protocol::ExecutionBinding::Conversation { .. }
+        ));
         (
             message.id.clone(),
             scheduler_executor::canonical_activation_id(&message.id),
+            attempt.source.clone(),
+            attempt.binding.clone(),
         )
     };
     harness.restart();
@@ -728,6 +744,8 @@ async fn startup_recovery_preserves_operator_claim_while_interrupting_its_active
         recovery.recovery_of_attempt_id.as_deref(),
         Some(attempt_id.as_str())
     );
+    assert_eq!(recovery.source, source);
+    assert_eq!(recovery.binding, binding);
     finish_claimed_test_run(runtime).await;
     assert_eq!(
         runtime
@@ -9623,6 +9641,7 @@ async fn terminal_task_result_resumes_exact_agent_lifecycle_task_wait() {
         crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
             wait_id,
             trigger_message_id,
+            ..
         } if wait_id == &registration.condition.id && trigger_message_id == &message.id
     ));
 }
@@ -9950,6 +9969,7 @@ async fn authoritative_explicit_operator_binding_ignores_unrelated_waits() {
         crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
             wait_id,
             trigger_message_id,
+            ..
         } if trigger_message_id == &message.id && wait_id == &target_wait.condition.id
     ));
     runtime
