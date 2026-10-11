@@ -403,7 +403,6 @@ fn validate_recover_interrupted_task_result_claim(
         .ok_or_else(|| anyhow!("TaskResult claim recovery WorkItem is missing"))?;
     if work_item.state != crate::types::WorkItemState::Open
         || work_item.revision != command.source_revision
-        || work_item.blocked_by.is_some()
     {
         bail!("TaskResult claim recovery durable WorkItem fence is stale");
     }

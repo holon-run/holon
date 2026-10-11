@@ -247,6 +247,23 @@ owner, generation, host, and agent-control gates pass.
 There is no separate authority issuance, slot claim, dispatch reservation, or
 WorkDemand reservation.
 
+An exact current wait continuation and ordinary WorkItem runnability are
+different admission sources. A matching effective wait may admit its bounded
+continuation while a business blocker remains; the blocker is not an agent
+pause or a revocation. The current canonical execution wait identity, open
+owner, agent-control posture, and source/consumption fences remain mandatory.
+Do not downgrade an exact task-wait continuation solely because of an unrelated
+blocker, and do not grant this authority to unwaited or stale task results.
+Admission and settlement preserve independent business blockers and do not
+authorize unrelated autonomous WorkItem execution.
+
+When no new wait is registered and a business blocker remains, terminal
+settlement produces `WorkItemOutcome::Pause`. Recovery of an interrupted exact
+task-result claim restores `Waiting` on its resolved wait, preserving bounded
+reentry without exposing a general `Runnable` state. Both advanced and
+unadvanced revision recovery keep the attempt/rejoin/provenance and wait fences;
+they do not require business blocker clearance.
+
 Trusted operator interjection attaches durable input evidence to an existing
 attempt at an allowed boundary. It does not create a second open attempt.
 

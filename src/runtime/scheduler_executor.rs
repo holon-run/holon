@@ -1519,27 +1519,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 reason: "canonical_work_item_not_open_same_agent",
             });
         }
-        if message.kind == MessageKind::TaskResult {
-            let task_wait_id = match &scenario {
-                scheduler::CanonicalActivationScenario::ExactTaskRejoin {
-                    wait_id: Some(wait_id),
-                    ..
-                }
-                | scheduler::CanonicalActivationScenario::ExactWaitResume { wait_id, .. } => {
-                    Some(wait_id.as_str())
-                }
-                _ => None,
-            };
-            if task_wait_id.is_some_and(|wait_id| {
-                scheduler::task_wait_has_independent_blocker(projection, wait_id, &work_item)
-            }) {
-                // An unrelated WorkItem blocker remains authoritative. Reduce
-                // the result into the settlement ledger, then let the
-                // owner-scoped recovery wake re-enter after that blocker is
-                // explicitly cleared.
-                return Ok(CanonicalClaimOutcome::ReduceOnly);
-            }
-        }
         if work_item.state != crate::types::WorkItemState::Open {
             if matches!(
                 scenario,
@@ -1669,14 +1648,24 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             None
         };
         let interrupted_task_result_replay = interrupted_task_result_attempt.is_some()
-            && authoritative_work.is_some_and(|record| {
-                matches!(
-                    &record.state,
+            && authoritative_work.is_some_and(|record| match (&record.state, &scenario) {
+                (
+                    crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+                        wait, ..
+                    },
+                    scheduler::CanonicalActivationScenario::ExactTaskRejoin {
+                        wait_id: Some(wait_id),
+                        ..
+                    },
+                ) => &wait.wait_id == wait_id,
+                (
                     crate::domain::execution_protocol::WorkItemExecutionState::Runnable {
                         recovery_ref: Some(recovery_ref),
                         ..
-                    } if recovery_ref == "interrupted"
-                )
+                    },
+                    _,
+                ) => recovery_ref == "interrupted",
+                _ => false,
             });
         if let scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation {
             expected_work_item_revision,
@@ -1765,6 +1754,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
         };
         if let Some(wait_id) = wait_id {
+            // A matching durable wait authorizes this continuation, not
+            // ordinary WorkItem work. Business blockers survive settlement;
+            // stop, owner closure and wait replacement remain fenced.
             let Some(authoritative_work) = authoritative_work else {
                 return Ok(CanonicalClaimOutcome::RejectQueued {
                     scenario_class,

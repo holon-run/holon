@@ -1084,7 +1084,14 @@ fn execution_protocol_settlement_transition_from_facts(
                                             "work_item_execution_revision_mismatch",
                                         ));
                                     }
-                                    ExecutionOutcome::WorkItem(WorkItemOutcome::Continue)
+                                    ExecutionOutcome::WorkItem(
+                                        match work_item.blocked_by.as_ref() {
+                                            Some(reason) => WorkItemOutcome::Pause {
+                                                reason: reason.clone(),
+                                            },
+                                            None => WorkItemOutcome::Continue,
+                                        },
+                                    )
                                 }
                                 ([_], [wait]) => {
                                     ExecutionOutcome::WorkItem(WorkItemOutcome::Wait {
@@ -1477,22 +1484,11 @@ pub(crate) fn task_result_reentry_is_allowed(
     work_item_id: &str,
     wait: &WaitConditionRecord,
 ) -> bool {
-    if work_item.state != WorkItemState::Open || work_item.id != work_item_id {
-        return false;
-    }
-    match work_item.blocked_by.as_deref() {
-        None => true,
-        // The blocker must still be the one this wait derived; a same-text
-        // independent blocker keeps the WorkItem ineligible for reentry.
-        Some(TASK_RESULT_WAIT_BLOCKER)
-            if work_item.blocked_by_wait_id.as_deref() == Some(wait.id.as_str()) =>
-        {
-            wait.work_item_id.as_deref() == Some(work_item_id)
-                && wait.kind == crate::types::WaitConditionKind::Task
-                && wait.status == WaitConditionStatus::Resolved
-        }
-        Some(_) => false,
-    }
+    work_item.state == WorkItemState::Open
+        && work_item.id == work_item_id
+        && wait.work_item_id.as_deref() == Some(work_item_id)
+        && wait.kind == crate::types::WaitConditionKind::Task
+        && wait.status == WaitConditionStatus::Resolved
 }
 
 fn exact_task_result_claim_recovery(
@@ -1636,10 +1632,7 @@ pub(crate) fn exact_task_result_claim_recovery_from_facts(
     let Some(wait) = wait else {
         return Ok(TaskResultClaimRecovery::MissingWait);
     };
-    if work_item.state != WorkItemState::Open
-        || (work_item.blocked_by.is_some()
-            && !task_result_reentry_is_allowed(work_item, work_item_id, &wait))
-    {
+    if !task_result_reentry_is_allowed(work_item, work_item_id, &wait) {
         return Ok(TaskResultClaimRecovery::Ineligible {
             reason: "task_result_work_item_not_runnable",
         });

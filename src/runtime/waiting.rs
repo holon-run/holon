@@ -14,6 +14,21 @@ struct ReplacedWaitConditions {
     resolved_after_trigger_ids: Vec<String>,
 }
 
+/// Preserve independent business blockers in both task-wait registration
+/// paths. Replaced task waits only own a scheduling blocker. This bookkeeping
+/// does not decide whether an exact wait continuation may enter the model.
+fn task_wait_preserves_blocker(
+    existing: &WorkItemRecord,
+    replaced: &[WaitConditionRecord],
+) -> bool {
+    existing.blocked_by.is_some()
+        && !existing.blocked_by_wait_id.as_deref().is_some_and(|id| {
+            replaced
+                .iter()
+                .any(|wait| wait.id == id && wait.kind == WaitConditionKind::Task)
+        })
+}
+
 impl PreparedWaitForSettlement {
     pub(crate) fn outcome(&self) -> WaitForRegistrationOutcome {
         if let Some(admission) = self.command.task_result_admission.as_ref() {
@@ -582,12 +597,30 @@ impl RuntimeHandle {
                 .with_safe_context("work_item_id", work_item_id)
                 .into());
             }
+            let preserve_blocker = wake == WaitForWakeKind::TaskResult
+                && task_wait_preserves_blocker(&existing, &wait_conditions);
             let mut updated = WorkItemRecord {
                 revision: existing.revision + 1,
-                blocked_by: Some(reason.clone()),
-                blocked_by_wait_id: Some(condition.id.clone()),
-                recheck_at,
-                recheck_consumed_at: None,
+                blocked_by: if preserve_blocker {
+                    existing.blocked_by.clone()
+                } else {
+                    Some(reason.clone())
+                },
+                blocked_by_wait_id: if preserve_blocker {
+                    existing.blocked_by_wait_id.clone()
+                } else {
+                    Some(condition.id.clone())
+                },
+                recheck_at: if preserve_blocker {
+                    existing.recheck_at
+                } else {
+                    recheck_at
+                },
+                recheck_consumed_at: if preserve_blocker {
+                    existing.recheck_consumed_at
+                } else {
+                    None
+                },
                 updated_at: now,
                 ..existing.clone()
             };
@@ -986,38 +1019,15 @@ impl RuntimeHandle {
                 "work_item_id": waiter_work_item_id,
             }),
         ));
-        // #3463: the late fast path must leave the same durable WorkItem
-        // wait semantics as a normal WaitFor registration. The re-queued
-        // result is the exact promised wake, so the waiter WorkItem carries
-        // this wait's derived blocker and its canonical execution state
-        // waits on this condition. Without that parity, an independent
-        // blocker left on the WorkItem keeps the canonical work state
-        // waiting on a replaced wait and the exact wake is downgraded to a
-        // reducer-only turn without model re-entry.
+        // Like ordinary registration, the execution waits on this exact
+        // condition while an independent business blocker stays unchanged.
         let mut work_items = Vec::new();
         let mut index_changes = Vec::new();
         let mut work_item = None;
         let mut blocked_readiness = Value::Null;
         if let Some(existing) = existing_waiter_work_item.as_ref() {
-            // A pre-existing blocker survives only when it is independent of
-            // this task wait: either no wait derived it, or it was derived by
-            // a replaced non-task wait (for example an external dependency
-            // the model keeps watching). A blocker derived by a replaced task
-            // wait is taken over by this wait so the settlement of the exact
-            // task result can still clear it.
-            let blocker_taken_over =
-                existing
-                    .blocked_by_wait_id
-                    .as_deref()
-                    .is_some_and(|owner_wait_id| {
-                        wait_conditions.iter().any(|record| {
-                            record.id == owner_wait_id
-                                && record.id != condition.id
-                                && record.kind == crate::types::WaitConditionKind::Task
-                        })
-                    });
             let (blocked_by, blocked_by_wait_id) = match existing.blocked_by.clone() {
-                Some(blocker) if !blocker_taken_over => {
+                Some(blocker) if task_wait_preserves_blocker(existing, &wait_conditions) => {
                     (Some(blocker), existing.blocked_by_wait_id.clone())
                 }
                 _ => (

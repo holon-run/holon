@@ -4,8 +4,8 @@
 
 The terminal fast path of `WaitFor(wake=task_result)` (the task is already
 terminal when the wait is registered) settles with the same durable WorkItem
-wait semantics as a normal registration: the waiter WorkItem record carries
-the wait's derived `blocked_by`, and the canonical execution state advances to
+wait semantics as a normal registration: both preserve independent business
+blockers, and the canonical execution state advances to
 `Waiting` on the exact task wait via the shared `execution_wait_settlement_transition`.
 The previous `Continue`/`HandoffToWorkItemContinue` settlement is kept only for
 agent-scope late waits with no WorkItem waiter.
@@ -31,18 +31,32 @@ resolved/cancelled waits stay rejected.
 ## Preserved boundary
 
 `Triggered -> Resolved` happens in the canonical consuming claim
-(`wait_resolution_transition_for_message`) and in one deferred-settlement
-exception: when an exact task result meets an independent WorkItem blocker,
-the scheduler applies the same transition without opening a consuming
-attempt, and the task-result settlement ledger provides the owner-scoped
-recovery wake after the blocker is explicitly cleared
-(`docs/rfcs/scheduler-work-item-unified-execution-protocol.md`).
+(`wait_resolution_transition_for_message`). A valid exact wait resumes its
+model continuation even when an independent business blocker remains. The
+previous blocker-based deferred-settlement exception is removed: it made a
+successful `yield_and_reenter` depend on manual blocker clearance and made
+ordinary and late registration behave differently.
+
+The canonical execution must still be waiting on that exact wait identity.
+Stop, completed owners, replaced/cancelled waits, and result-consumption
+fences remain authoritative. Unwaited results receive no new bypass. A
+business blocker is not a hard pause; the resume does not satisfy it or make
+ordinary WorkItem work runnable.
 
 Blocker ownership is decided by registration provenance
 (`WorkItemRecord::blocked_by_wait_id`), never by display-text equality: the
 claim clears a WorkItem blocker only when the settling wait derived it, so a
 same-text independent blocker stays authoritative together with its recheck
-deadline. The late fast path preserves such an independent `blocked_by`
+deadline. Both task-wait registration paths preserve such an independent `blocked_by`
 value; a blocker derived by a replaced task wait is taken over by the new
 wait so its settlement can still clear it. A blocker owned by the task wait
-remains eligible for the canonical claim.
+remains eligible for the canonical claim, as does an exact task wait with
+an independent blocker. The task-wait replacement bookkeeping is not an
+admission policy; no classification of historical blocker prose is needed
+to authorize a current exact continuation.
+
+Interrupted exact consuming claims recover to the same wait identity, not a
+general runnable WorkItem. If the resumed turn ends without registering another
+wait and an independent blocker remains, canonical settlement is `Pause`.
+This keeps normal admission, late registration, startup recovery, and post-turn
+eligibility aligned without erasing a business dependency.
