@@ -30,7 +30,7 @@ fn task_wait(work_item_id: &str, status: WaitConditionStatus) -> WaitConditionRe
 }
 
 #[test]
-fn task_result_reentry_only_bypasses_derived_task_wait_blocker() {
+fn task_result_reentry_requires_exact_resolved_wait_not_blocker_clearance() {
     let mut work_item = WorkItemRecord::new("default", "rejoin", WorkItemState::Open);
     work_item.id = "work-1".into();
     let wait = task_wait(&work_item.id, WaitConditionStatus::Resolved);
@@ -42,7 +42,7 @@ fn task_result_reentry_only_bypasses_derived_task_wait_blocker() {
     ));
 
     work_item.blocked_by = Some("Waiting on operator input.".into());
-    assert!(!task_result_reentry_is_allowed(
+    assert!(task_result_reentry_is_allowed(
         &work_item,
         &work_item.id,
         &wait
@@ -71,6 +71,13 @@ fn task_result_reentry_only_bypasses_derived_task_wait_blocker() {
         &work_item,
         &work_item.id,
         &pending_wait
+    ));
+
+    let cancelled_wait = task_wait(&work_item.id, WaitConditionStatus::Cancelled);
+    assert!(!task_result_reentry_is_allowed(
+        &work_item,
+        &work_item.id,
+        &cancelled_wait
     ));
 
     let other_work_item_wait = task_wait("other-work-item", WaitConditionStatus::Resolved);

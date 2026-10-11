@@ -449,6 +449,8 @@ async fn startup_recovery_retained_task_result_obeys_exact_rejoin_wait_and_revis
     for (case, expected_status) in [
         ("unadvanced", QueueEntryStatus::Queued),
         ("advanced", QueueEntryStatus::Queued),
+        ("blocked-unadvanced", QueueEntryStatus::Queued),
+        ("blocked-advanced", QueueEntryStatus::Queued),
         ("cancelled", QueueEntryStatus::Quarantined),
         ("missing", QueueEntryStatus::Quarantined),
         ("bounded", QueueEntryStatus::Quarantined),
@@ -458,11 +460,16 @@ async fn startup_recovery_retained_task_result_obeys_exact_rejoin_wait_and_revis
     ] {
         let task_id = format!("task-startup-{case}-claim");
         let mut fixture = match case {
-            "unadvanced" => unadvanced_task_result_claim_fixture(&task_id).await,
+            "unadvanced" | "blocked-unadvanced" => {
+                unadvanced_task_result_claim_fixture(&task_id).await
+            }
             "cancelled" => cancelled_wait_task_result_claim_fixture(&task_id).await,
             "missing" => missing_wait_task_result_claim_fixture(&task_id).await,
             _ => stale_task_result_claim_fixture(&task_id).await,
         };
+        if case.starts_with("blocked-") {
+            add_claim_fixture_business_blocker(&fixture).await;
+        }
         if matches!(case, "wrong-owner" | "wrong-rejoin") {
             let mut task = fixture
                 .runtime
@@ -590,6 +597,33 @@ async fn startup_recovery_retained_task_result_obeys_exact_rejoin_wait_and_revis
             ExecutionAttemptState::Interrupted,
             "{case}"
         );
+        if expected_status == QueueEntryStatus::Queued {
+            assert!(
+                matches!(
+                    &state.work_items[&fixture.work_item_id].state,
+                    crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. }
+                        if waits_before.iter().any(|condition| {
+                            condition.id == wait.wait_id
+                                && condition.trigger_message_id() == Some(fixture.result.id.as_str())
+                        })
+                ),
+                "{case}"
+            );
+        }
+        if case.starts_with("blocked-") {
+            assert_eq!(
+                fixture
+                    .runtime
+                    .latest_work_item(&fixture.work_item_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .blocked_by
+                    .as_deref(),
+                Some("Waiting for business approval."),
+                "{case}"
+            );
+        }
         assert_eq!(
             fixture
                 .runtime
@@ -4416,11 +4450,9 @@ async fn bootstrap_recovery_replays_task_result_claim_after_canonical_revision_s
         current_work.revision
     );
     assert!(matches!(
-        recovered.work_items[&work_item.id].state,
-        WorkItemExecutionState::Runnable {
-            recovery_ref: Some(ref recovery_ref),
-            ..
-        } if recovery_ref == "interrupted"
+        &recovered.work_items[&work_item.id].state,
+        WorkItemExecutionState::Waiting { wait, .. }
+            if wait.wait_id == registration.condition.id
     ));
 
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -4784,6 +4816,153 @@ fn isolated_task_result_claim_report(runtime: &RuntimeHandle) -> SchedulerRecove
     report
 }
 
+async fn add_claim_fixture_business_blocker(fixture: &StaleTaskResultClaimFixture) {
+    // Model a blocker already present at the admitted revision; the attempt,
+    // queue, task/rejoin and resolved wait retain their original exact fences.
+    let mut work = fixture
+        .runtime
+        .latest_work_item(&fixture.work_item_id)
+        .await
+        .unwrap()
+        .unwrap();
+    work.blocked_by = Some("Waiting for business approval.".into());
+    work.blocked_by_wait_id = None;
+    fixture
+        .runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE work_items SET payload_json = ?1 WHERE work_item_id = ?2",
+                rusqlite::params![serde_json::to_string(&work)?, work.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn bootstrap_task_result_claim_with_business_blocker_recovers_exact_wait_once() {
+    use crate::domain::execution_protocol::WorkItemExecutionState;
+
+    for unadvanced in [false, true] {
+        let fixture = if unadvanced {
+            unadvanced_task_result_claim_fixture("task-blocked-unadvanced-claim").await
+        } else {
+            stale_task_result_claim_fixture("task-blocked-advanced-claim").await
+        };
+        add_claim_fixture_business_blocker(&fixture).await;
+        assert_eq!(
+            fixture
+                .runtime
+                .recover_scheduler_bootstrap_claims()
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            fixture
+                .runtime
+                .recover_scheduler_bootstrap_claims()
+                .await
+                .unwrap(),
+            0
+        );
+        let state = fixture
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            &state.work_items[&fixture.work_item_id].state,
+            WorkItemExecutionState::Waiting { .. }
+        ));
+        let poll = scheduler_executor::SchedulerDecisionExecutor::new(&fixture.runtime)
+            .poll()
+            .await
+            .unwrap();
+        let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+            panic!("the exact interrupted task result must resume through the business blocker");
+        };
+        assert_eq!(scheduled.message.id, fixture.result.id);
+        assert!(scheduled.scheduler_decision.model_reentry);
+        let message = scheduled.message;
+        let transition = fixture
+            .runtime
+            .process_message_with_plan_deferred(
+                message.clone(),
+                scheduled.dispatch_plan,
+                &scheduled.scheduler_decision,
+            )
+            .await
+            .unwrap();
+        fixture
+            .runtime
+            .commit_queue_terminal_settlement(
+                QueueEntryRecord {
+                    message_id: message.id,
+                    agent_id: message.agent_id,
+                    priority: message.priority,
+                    status: QueueEntryStatus::Processed,
+                    created_at: message.created_at,
+                    updated_at: Utc::now(),
+                },
+                Vec::new(),
+                true,
+                Some(&transition),
+            )
+            .await
+            .unwrap();
+        let state = fixture
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            &state.work_items[&fixture.work_item_id].state,
+            WorkItemExecutionState::Paused { reason, .. }
+                if reason == "Waiting for business approval."
+        ));
+        assert_eq!(
+            fixture
+                .runtime
+                .latest_work_item(&fixture.work_item_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .blocked_by
+                .as_deref(),
+            Some("Waiting for business approval.")
+        );
+        assert!(!fixture
+            .runtime
+            .emit_due_task_result_recovery()
+            .await
+            .unwrap());
+        assert!(matches!(
+            fixture
+                .runtime
+                .register_wait_for_outcome(
+                    "default",
+                    Some(fixture.work_item_id.clone()),
+                    WaitForWakeKind::TaskResult,
+                    fixture.result.task_id.clone(),
+                    "Already handled result.".into(),
+                    None,
+                )
+                .await
+                .unwrap(),
+            WaitForRegistrationOutcome::TaskResultAlreadyConsumed { .. }
+        ));
+    }
+}
+
 #[tokio::test]
 async fn bootstrap_recovers_unadvanced_task_result_claim_but_diagnostic_apply_does_not() {
     use crate::domain::execution_protocol::{ExecutionAttemptState, WorkItemExecutionState};
@@ -4833,10 +5012,7 @@ async fn bootstrap_recovers_unadvanced_task_result_claim_but_diagnostic_apply_do
     );
     assert!(matches!(
         recovered.work_items[&fixture.work_item_id].state,
-        WorkItemExecutionState::Runnable {
-            recovery_ref: Some(ref recovery_ref),
-            ..
-        } if recovery_ref == "interrupted"
+        WorkItemExecutionState::Waiting { .. }
     ));
     assert_eq!(
         fixture
@@ -5001,7 +5177,7 @@ async fn scheduler_recovery_task_result_claim_is_atomic_fenced_and_idempotent() 
     );
     assert!(matches!(
         recovered_execution.work_items[&fixture.work_item_id].state,
-        WorkItemExecutionState::Runnable { .. }
+        WorkItemExecutionState::Waiting { .. }
     ));
     assert_eq!(
         fixture
@@ -7034,6 +7210,57 @@ async fn terminal_task_wait_handoffs_conversation_to_work_item_wait() {
 
 #[tokio::test]
 async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentry() {
+    Box::pin(task_result_wait_preserves_business_blocker(
+        true, false, false,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn task_result_wait_with_independent_blocker_keeps_exact_model_reentry() {
+    Box::pin(task_result_wait_preserves_business_blocker(
+        false, false, false,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn late_task_result_wait_with_independent_blocker_survives_restart() {
+    Box::pin(task_result_wait_preserves_business_blocker(
+        true, true, false,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn task_result_wait_with_independent_blocker_survives_restart() {
+    Box::pin(task_result_wait_preserves_business_blocker(
+        false, true, false,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn late_task_result_wait_with_explicit_blocker_keeps_exact_model_reentry() {
+    Box::pin(task_result_wait_preserves_business_blocker(
+        true, false, true,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn task_result_wait_with_explicit_blocker_keeps_exact_model_reentry() {
+    Box::pin(task_result_wait_preserves_business_blocker(
+        false, false, true,
+    ))
+    .await;
+}
+
+async fn task_result_wait_preserves_business_blocker(
+    completed_before_wait: bool,
+    restart: bool,
+    explicit_blocker: bool,
+) {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let provider = Arc::new(CountingProvider {
@@ -7053,36 +7280,52 @@ async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentr
 
     // First conversation turn: the agent opens its WorkItem and registers an
     // independent external blocker wait on it (#3463 pre-state).
-    let first = runtime
-        .enqueue(trusted_operator_prompt(None, "open the work item"))
-        .await
-        .unwrap();
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
+    if !explicit_blocker {
+        let first = runtime
+            .enqueue(trusted_operator_prompt(None, "open the work item"))
             .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
-    runtime
-        .begin_interactive_turn(Some(&first), None, None)
-        .await
-        .unwrap();
+            .unwrap();
+        assert!(matches!(
+            scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap(),
+            scheduler_executor::RunLoopPoll::Message(_)
+        ));
+        runtime
+            .begin_interactive_turn(Some(&first), None, None)
+            .await
+            .unwrap();
+    }
     let work_item = runtime
         .create_work_item("blocked PR follow-up".into(), None, None, Vec::new())
         .await
         .unwrap();
-    runtime
-        .register_wait_for(
-            "default",
-            Some(work_item.id.clone()),
-            WaitForWakeKind::External,
-            Some("github:holon-run/holon#3461".into()),
-            "Waiting on an external change.".into(),
-            None,
-        )
-        .await
-        .unwrap();
+    if explicit_blocker {
+        runtime
+            .update_work_item_fields(
+                work_item.id.clone(),
+                None,
+                None,
+                None,
+                None,
+                Some(Some("Waiting on an external change.".into())),
+            )
+            .await
+            .unwrap();
+    } else {
+        runtime
+            .register_wait_for(
+                "default",
+                Some(work_item.id.clone()),
+                WaitForWakeKind::External,
+                Some("github:holon-run/holon#3461".into()),
+                "Waiting on an external change.".into(),
+                Some(3_600_000),
+            )
+            .await
+            .unwrap();
+    }
     let externally_blocked = runtime
         .latest_work_item(&work_item.id)
         .await
@@ -7092,6 +7335,9 @@ async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentr
         externally_blocked.blocked_by.as_deref(),
         Some("Waiting on an external change.")
     );
+    if explicit_blocker {
+        assert_eq!(externally_blocked.blocked_by_wait_id, None);
+    }
 
     // Second conversation turn while the WorkItem stays externally blocked:
     // the task already reached terminal before the late WaitFor (#3463).
@@ -7135,10 +7381,14 @@ async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentr
         })),
         recovery: None,
     };
-    runtime
-        .commit_terminal_task_result(&terminal_task, "task_completed", &result)
-        .await
-        .unwrap();
+    if completed_before_wait {
+        runtime
+            .commit_terminal_task_result(&terminal_task, "task_completed", &result)
+            .await
+            .unwrap();
+    } else {
+        append_running_rejoin_task(&runtime, &terminal_task.id, &work_item.id);
+    }
 
     let registration = runtime
         .register_wait_for_outcome(
@@ -7151,16 +7401,43 @@ async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentr
         )
         .await
         .unwrap();
-    let WaitForRegistrationOutcome::TaskResultQueued {
-        task_id,
-        result_message_id,
-        wait_condition_id,
-    } = registration
-    else {
-        panic!("late task-result wait should queue the exact result wake");
+    let wait_condition_id = match registration {
+        WaitForRegistrationOutcome::TaskResultQueued {
+            task_id,
+            result_message_id,
+            wait_condition_id,
+        } => {
+            assert!(completed_before_wait);
+            assert_eq!(task_id, terminal_task.id);
+            assert_eq!(result_message_id, result.id);
+            wait_condition_id
+        }
+        WaitForRegistrationOutcome::Registered { registration } => {
+            assert!(!completed_before_wait);
+            runtime
+                .commit_terminal_task_result(&terminal_task, "task_completed", &result)
+                .await
+                .unwrap();
+            registration.condition.id
+        }
+        _ => panic!("task wait must register or queue the exact completed result"),
     };
-    assert_eq!(task_id, terminal_task.id);
-    assert_eq!(result_message_id, result.id);
+
+    let runtime = if restart {
+        drop(runtime);
+        RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            provider.clone(),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap()
+    } else {
+        runtime
+    };
 
     // The late fast path must preserve an unrelated blocker while the
     // canonical execution state waits on the exact task wait.
@@ -7186,8 +7463,7 @@ async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentr
             if wait.wait_id == wait_condition_id
     ));
 
-    // The exact wake must not bypass the independent blocker. It is reduced
-    // into the settlement ledger for an owner-scoped recovery wake.
+    // The explicit wait resumes exactly once without releasing the business blocker.
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()
         .await
@@ -7196,16 +7472,15 @@ async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentr
         panic!("late task result should remain durably queued");
     };
     assert_eq!(scheduled.message.id, result.id);
-    assert!(!scheduled.scheduler_decision.model_reentry);
+    assert!(scheduled.scheduler_decision.model_reentry);
     let scheduled_message = scheduled.message;
-    let scheduled_transition = runtime
-        .process_message_with_plan_deferred(
-            scheduled_message.clone(),
-            scheduled.dispatch_plan,
-            &scheduled.scheduler_decision,
-        )
-        .await
-        .unwrap();
+    let scheduled_transition = Box::pin(runtime.process_message_with_plan_deferred(
+        scheduled_message.clone(),
+        scheduled.dispatch_plan,
+        &scheduled.scheduler_decision,
+    ))
+    .await
+    .unwrap();
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -7232,71 +7507,12 @@ async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentr
         .expect("late task result must keep a durable settlement record");
     assert_eq!(
         settlement.state,
-        crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
     );
     assert_eq!(
         settlement.work_item_id.as_deref(),
         Some(work_item.id.as_str())
     );
-
-    runtime
-        .pick_work_item_with_reason_and_clear_blocker(
-            work_item.id.clone(),
-            Some("external blocker cleared".into()),
-            true,
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        runtime
-            .latest_work_item(&work_item.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .blocked_by,
-        None
-    );
-    assert!(
-        runtime.emit_due_task_result_recovery().await.unwrap(),
-        "clearing the independent blocker should wake the owner-scoped settlement"
-    );
-    let recovery_poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-        .poll()
-        .await
-        .unwrap();
-    let scheduler_executor::RunLoopPoll::Message(recovery) = recovery_poll else {
-        panic!("owner-scoped task-result recovery should be queued");
-    };
-    assert!(recovery.scheduler_decision.model_reentry);
-    assert!(matches!(
-        recovery.message.origin,
-        MessageOrigin::System { ref subsystem } if subsystem == "task_result_recovery"
-    ));
-    let recovery_message = recovery.message;
-    let recovery_transition = runtime
-        .process_message_with_plan_deferred(
-            recovery_message.clone(),
-            recovery.dispatch_plan,
-            &recovery.scheduler_decision,
-        )
-        .await
-        .unwrap();
-    runtime
-        .commit_queue_terminal_settlement(
-            QueueEntryRecord {
-                message_id: recovery_message.id,
-                agent_id: recovery_message.agent_id,
-                priority: recovery_message.priority,
-                status: QueueEntryStatus::Processed,
-                created_at: recovery_message.created_at,
-                updated_at: Utc::now(),
-            },
-            Vec::new(),
-            true,
-            Some(&recovery_transition),
-        )
-        .await
-        .unwrap();
 
     let waits = runtime
         .storage()
@@ -7312,7 +7528,36 @@ async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentr
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(resumed.blocked_by, None);
+    assert_eq!(resumed.blocked_by, externally_blocked.blocked_by);
+    assert_eq!(
+        resumed.blocked_by_wait_id,
+        externally_blocked.blocked_by_wait_id
+    );
+    assert_eq!(resumed.recheck_at, externally_blocked.recheck_at);
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        &execution.work_items[&work_item.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Paused { reason, .. }
+            if Some(reason) == resumed.blocked_by.as_ref()
+    ));
+    assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
+    assert!(
+        !runtime
+            .storage()
+            .work_queue_prompt_projection()
+            .unwrap()
+            .items
+            .iter()
+            .find(|item| item.id == work_item.id)
+            .unwrap()
+            .is_runnable
+    );
     let settlement = runtime
         .inner
         .runtime_db
@@ -7329,6 +7574,75 @@ async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentr
         Some(work_item.id.as_str())
     );
     assert_eq!(*provider.calls.lock().await, 1);
+    assert!(matches!(
+        runtime
+            .register_wait_for_outcome(
+                "default",
+                Some(work_item.id.clone()),
+                WaitForWakeKind::TaskResult,
+                Some(terminal_task.id.clone()),
+                "Already handled task result.".into(),
+                None,
+            )
+            .await
+            .unwrap(),
+        WaitForRegistrationOutcome::TaskResultAlreadyConsumed { .. }
+    ));
+    assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
+    assert_eq!(*provider.calls.lock().await, 1);
+
+    // A different owner task without a matching wait must not inherit the
+    // continuation privilege of the result just consumed.
+    let mut unmatched_result = task_result_message("task-business-blocked-no-wait").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    unmatched_result.task_id = Some("task-business-blocked-no-wait".into());
+    unmatched_result.work_item_id = Some(work_item.id.clone());
+    let unmatched_task = TaskRecord {
+        id: "task-business-blocked-no-wait".into(),
+        parent_message_id: Some(unmatched_result.id.clone()),
+        detail: Some(serde_json::json!({
+            "rejoin_obligation_id": "task-business-blocked-no-wait",
+            "rejoin_generation": 1,
+            "parent_turn_id": "turn-business-blocked-no-wait",
+        })),
+        ..terminal_task.clone()
+    };
+    runtime
+        .commit_terminal_task_result(&unmatched_task, "task_completed", &unmatched_result)
+        .await
+        .unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    if let scheduler_executor::RunLoopPoll::Message(scheduled) = poll {
+        assert!(!scheduled.scheduler_decision.model_reentry);
+        Box::pin(runtime.process_message_with_plan(
+            scheduled.message,
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
+        ))
+        .await
+        .unwrap();
+    }
+    assert_eq!(*provider.calls.lock().await, 1);
+
+    // Reconciling the result may establish another business wait; no manual
+    // blocker clearance is required between these continuations.
+    let next = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::External,
+            Some("github:holon-run/holon#3461".into()),
+            "Waiting on the next external change.".into(),
+            Some(3_600_000),
+        )
+        .await
+        .unwrap();
+    assert_eq!(next.condition.status, WaitConditionStatus::Active);
 }
 
 // A same-text independent blocker must stay authoritative: blocker ownership
@@ -7502,8 +7816,7 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker(
             if wait.wait_id == wait_condition_id
     ));
 
-    // The exact wake must not bypass the same-text independent blocker. It is
-    // reduced into the settlement ledger for an owner-scoped recovery wake.
+    // A same-text business blocker does not revoke the exact wait continuation.
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()
         .await
@@ -7512,7 +7825,7 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker(
         panic!("late task result should remain durably queued");
     };
     assert_eq!(scheduled.message.id, result.id);
-    assert!(!scheduled.scheduler_decision.model_reentry);
+    assert!(scheduled.scheduler_decision.model_reentry);
     let scheduled_message = scheduled.message;
     let scheduled_transition = runtime
         .process_message_with_plan_deferred(
@@ -7548,14 +7861,14 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker(
         .expect("late task result must keep a durable settlement record");
     assert_eq!(
         settlement.state,
-        crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
     );
     assert_eq!(
         settlement.work_item_id.as_deref(),
         Some(work_item.id.as_str())
     );
 
-    // The reducer-only settlement must not release the same-text independent
+    // Model continuation settlement must not release the same-text independent
     // blocker or its recheck deadline.
     let still_blocked = runtime
         .latest_work_item(&work_item.id)
@@ -7572,65 +7885,6 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker(
     );
     assert!(still_blocked.recheck_at.is_some());
 
-    runtime
-        .pick_work_item_with_reason_and_clear_blocker(
-            work_item.id.clone(),
-            Some("same-text external blocker cleared".into()),
-            true,
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        runtime
-            .latest_work_item(&work_item.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .blocked_by,
-        None
-    );
-    assert!(
-        runtime.emit_due_task_result_recovery().await.unwrap(),
-        "clearing the independent blocker should wake the owner-scoped settlement"
-    );
-    let recovery_poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-        .poll()
-        .await
-        .unwrap();
-    let scheduler_executor::RunLoopPoll::Message(recovery) = recovery_poll else {
-        panic!("owner-scoped task-result recovery should be queued");
-    };
-    assert!(recovery.scheduler_decision.model_reentry);
-    assert!(matches!(
-        recovery.message.origin,
-        MessageOrigin::System { ref subsystem } if subsystem == "task_result_recovery"
-    ));
-    let recovery_message = recovery.message;
-    let recovery_transition = runtime
-        .process_message_with_plan_deferred(
-            recovery_message.clone(),
-            recovery.dispatch_plan,
-            &recovery.scheduler_decision,
-        )
-        .await
-        .unwrap();
-    runtime
-        .commit_queue_terminal_settlement(
-            QueueEntryRecord {
-                message_id: recovery_message.id,
-                agent_id: recovery_message.agent_id,
-                priority: recovery_message.priority,
-                status: QueueEntryStatus::Processed,
-                created_at: recovery_message.created_at,
-                updated_at: Utc::now(),
-            },
-            Vec::new(),
-            true,
-            Some(&recovery_transition),
-        )
-        .await
-        .unwrap();
-
     let waits = runtime
         .storage()
         .latest_wait_conditions_for_agent("default")
@@ -7645,7 +7899,13 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker(
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(resumed.blocked_by, None);
+    assert_eq!(resumed.blocked_by, externally_blocked.blocked_by);
+    assert_eq!(
+        resumed.blocked_by_wait_id,
+        externally_blocked.blocked_by_wait_id
+    );
+    assert_eq!(resumed.recheck_at, externally_blocked.recheck_at);
+    assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
     let settlement = runtime
         .inner
         .runtime_db

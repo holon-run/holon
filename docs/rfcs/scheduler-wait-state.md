@@ -781,6 +781,29 @@ like a normal registration. The wake promise of `WaitFor` must be durable even
 when the result already exists; otherwise the queued message can be resolved
 as `liveness_only` and the agent sleeps forever.
 
+An effective explicit wait authorizes its exact model continuation independently
+of the WorkItem's business blocker. Normal and late task-wait registration
+preserve independent blockers, their provenance, and recheck deadlines. The
+claim must match the canonical execution's current wait identity; it must not
+reduce an otherwise valid exact result to liveness-only because a business
+blocker remains. Settlement clears only a blocker owned by the resumed wait.
+Resuming the model does not satisfy an external dependency or make unrelated
+WorkItem work runnable.
+
+This is not a general task-result bypass. A result without a current matching
+wait remains subject to ordinary admission. Stop, owner completion, wait
+replacement/cancellation, consumed-result fences, and provenance validation
+still prevent reentry. Recovered triggered/resolved waits use the same exact
+identity and consumption fences; historical blocker text grants no authority.
+
+After a resumed turn ends without another wait, a remaining business blocker
+settles the WorkItem as `Pause`, not `Continue`/`Runnable`. Interrupted consuming
+claims are recovered to `Waiting` on their exact resolved task wait rather than
+making ordinary WorkItem work runnable. Startup and bootstrap recovery validate
+the original attempt, open owner, source revision, task/rejoin, result provenance,
+and resolved wait inside the recovery transaction; a business blocker alone is
+not a recovery veto.
+
 For agent-scope (WorkItem-unbound) terminal task results, the continuation
 resolver treats an exact matching wait (`kind = task`,
 `trigger_message_id = message_id`, matching wake source) as reentry authority

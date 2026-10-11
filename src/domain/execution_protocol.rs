@@ -1227,12 +1227,18 @@ pub fn recover_interrupted_task_result_claim(
             interrupted_at: command.interrupted_at.clone(),
         },
     )?;
-    transition
+    let recovered_work = transition
         .state
         .work_items
         .get_mut(&command.work_item_id)
-        .expect("interruption preserved WorkItem authority")
-        .source_revision = command.source_revision;
+        .expect("interruption preserved WorkItem authority");
+    recovered_work.source_revision = command.source_revision;
+    recovered_work.state = WorkItemExecutionState::Waiting {
+        generation: recovered_work.generation(),
+        wait: WaitReference {
+            wait_id: command.wait_id.clone(),
+        },
+    };
     assert_invariants(&transition.state)?;
     transition.references.extend([
         format!("task:{}", command.task_id),
@@ -1301,6 +1307,17 @@ pub fn recover_unadvanced_task_result_claim(
             interrupted_at: command.interrupted_at.clone(),
         },
     )?;
+    let recovered_work = transition
+        .state
+        .work_items
+        .get_mut(&command.work_item_id)
+        .expect("interruption preserved WorkItem authority");
+    recovered_work.state = WorkItemExecutionState::Waiting {
+        generation: recovered_work.generation(),
+        wait: WaitReference {
+            wait_id: command.wait_id.clone(),
+        },
+    };
     assert_invariants(&transition.state)?;
     transition.references.extend([
         format!("task:{}", command.task_id),
