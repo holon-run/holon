@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: android-play-internal
+  group: android-play-upload
   cancel-in-progress: false
 
 jobs:

@@ -1,0 +1,130 @@
+name: Android Play Alpha
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/android-play-alpha.yml'
+      - 'scripts/android-play-alpha.py'
+      - 'scripts/test-android-play-alpha.py'
+      - 'scripts/*android-release*.sh'
+      - 'apps/android/signing/release-certificate.sha256'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Unpublished candidate version, newer than Cargo.toml (for example v0.50.1).'
+        required: true
+        type: string
+      status:
+        description: 'draft saves the candidate; completed submits Alpha for review, not Production.'
+        required: true
+        default: draft
+        type: choice
+        options:
+          - draft
+          - completed
+      confirm_no_pending_changes:
+        description: 'I checked Play Console: no unrelated pending changes or review.'
+        required: true
+        default: false
+        type: boolean
+      release_notes:
+        description: 'Accurate en-US release notes for this candidate (at most 500 characters).'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Alpha upload contract (no credentials)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 scripts/test-android-play-alpha.py
+
+  upload:
+    name: Build signed candidate and upload only to Alpha
+    needs: contract
+    # PRs and arbitrary branches must never receive signing or Play credentials.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    concurrency:
+      group: android-play-upload
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm isolated Play submission
+        env:
+          CONFIRMED: ${{ inputs.confirm_no_pending_changes }}
+          PLAY_CREDENTIALS: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          test "$CONFIRMED" = true || { echo 'Check pending changes in Play Console before running.' >&2; exit 1; }
+          test -n "$PLAY_CREDENTIALS" || { echo 'GOOGLE_PLAY_SERVICE_ACCOUNT_JSON is missing.' >&2; exit 1; }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Prepare unpublished Android candidate (no committed version change)
+        id: candidate
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: python3 scripts/android-play-alpha.py prepare "$VERSION_INPUT" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Build and verify signed candidate
+        env:
+          VERSION_NAME: ${{ steps.candidate.outputs.version_name }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_BASE64 }}
+          HOLON_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          HOLON_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+          HOLON_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          export HOLON_ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/holon-release.jks"
+          trap 'rm -f "$HOLON_ANDROID_KEYSTORE_PATH"' EXIT
+          test -n "$KEYSTORE_BASE64" || { echo 'Android signing keystore secret is missing.' >&2; exit 1; }
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$HOLON_ANDROID_KEYSTORE_PATH"
+          unset KEYSTORE_BASE64
+          bash scripts/test-android-release-version.sh
+          bash scripts/test-android-release-packaging.sh
+          bash scripts/package-android-release.sh "$VERSION_NAME"
+
+      - name: Preserve verified candidate and provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-alpha-${{ steps.candidate.outputs.version_name }}
+          path: dist/android/holon-android-*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Install Publisher authentication client
+        run: python3 -m pip install 'google-auth[requests]==2.41.1'
+
+      - name: Upload and verify Alpha edit
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          VERSION_NAME: ${{ steps.candidate.outputs.version_name }}
+          RELEASE_STATUS: ${{ inputs.status }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: python3 scripts/android-play-alpha.py publish "dist/android/holon-android-v$VERSION_NAME.json" "$RELEASE_STATUS" "$RELEASE_NOTES"

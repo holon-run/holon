@@ -123,3 +123,49 @@ Concurrent runs are serialized and are not cancelled mid-upload. If upload or
 commit fails, inspect Play Console before retrying: the bundle/versionCode may
 already have been accepted. Do not bypass a rejection by changing signing keys,
 package names, or disabling verification.
+
+## Google Play Alpha candidates
+
+The **Android Play Alpha** workflow builds an unpublished Android-only candidate
+from `main`; it does not require or create a GitHub Release, update the runtime
+version in Git, or write to Production. Use this when Android fixes have merged
+since the latest stable release.
+
+1. Check Play Console for unrelated pending changes and changes in review.
+   Resolve them first: an API edit can submit other already-pending app changes.
+2. After the workflow is merged, choose **Actions → Android Play Alpha → Run
+   workflow**, selecting `main`. Set an explicit unused stable candidate version
+   newer than `Cargo.toml` and all uploaded Play version codes, such as `v0.50.1`.
+   The version override exists only in the runner's checkout.
+3. Provide accurate English release notes (at most 500 characters), and confirm
+   that no unrelated changes are pending. Choose `draft` (default) to save a
+   candidate while retaining the serving Alpha release, or `completed` to submit
+   the Alpha release for Google's processing/review.
+4. Review the Actions artifact (signed APK/AAB, source commit, certificate and
+   checksums), summary and Play Console. API success does **not** mean that the
+   candidate has passed review or is downloadable by testers.
+
+The workflow reuses the four `ANDROID_SIGNING_*` Secrets and
+`GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`. The service account must have app-scoped
+permission to view the app and release to testing tracks; no production
+permission is required. Pull requests run credential-free contract tests;
+upload/signing can only run on a manual `main` dispatch.
+The local contract test uses Python 3.11 or newer:
+`python3.11 -B scripts/test-android-play-alpha.py`; Actions provisions Python 3.12.
+
+The publisher requires an existing `alpha` track bound to
+`holon-pioneers@googlegroups.com`. It rejects existing Alpha drafts/rollouts,
+reused or lower version codes, and bundle hash/version mismatches. It updates
+only Alpha, verifies other tracks and tester settings are unchanged, validates
+the edit, and commits with `changesInReviewBehavior=ERROR_IF_IN_REVIEW`.
+Unlike the internal upload action, it will not cancel an existing review, retry
+with weaker safeguards, or silently defer a failed submission to Console.
+Committed settings are read back in a fresh edit; that read-only edit is deleted.
+Alpha and Internal uploads share a concurrency group and are not cancelled
+mid-upload. Do not make concurrent manual Console edits.
+
+If an upload, commit or readback fails, inspect Console before retrying: the
+version code may already have been accepted. In particular, a saved draft must
+be completed in Console rather than re-uploaded using the same version code.
+Do not disable verification, replace the signing identity or grant production
+permissions to work around a failure.
