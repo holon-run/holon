@@ -25,7 +25,7 @@ Download official signed packages directly from the [Holon GitHub Releases](http
 Install the APK directly on your device:
 
 ```bash
-adb install holon-android-v0.48.0.apk
+adb install holon-android-v0.50.0.apk
 ```
 
 ### Build from Source
@@ -80,17 +80,19 @@ The app exchanges the one-time bootstrap ticket for a revocable session credenti
 
 ## Managing Network Profiles
 
-The app supports saving multiple network profiles in **Settings** (such as *Home Tailscale*, *Office LAN*, and *USB Localhost*). Once saved, you can switch environments with a single tap without re-entering credentials.
+The app supports saving multiple network profiles in **Settings** (such as *Home Tailscale*, *Office LAN*, and *USB Localhost*). Once saved, you can switch environments with a single tap without re-entering credentials. You can also delete unused network profiles directly from the settings list; deleting a profile immediately removes its configuration and associated Keystore credentials.
 
 ## Mobile Features
 
 - **Conversation-First Reading & Local Cache:** Browse active agent threads with instant loading. Conversation history caches locally on the device, allowing you to review past turns and deliverables even with intermittent connectivity.
 - **Daily Navigation & Task Previews:** Jump across daily activity streams, inspect active background task status cards, and view live child-agent previews directly from the mobile timeline.
 - **Brief-First Summaries:** Prominently highlights completion briefs, active work items, and checklist progress so you can track outcomes without scrolling through full execution traces.
+- **Collapsed Background Activity:** In-progress and queued background messages collapse automatically, keeping the active conversation clean.
 - **Model Selection:** View and override the active model for any agent directly from the mobile interface.
 - **System Share Sheet Integration:** Share text, links, or documents from other Android apps directly into an agent's input composer.
 - **Durable Outbox:** Prompts written while offline queue locally in the outbox and dispatch automatically when connection resumes.
-- **Diagnostic Traces:** Export a redacted ring-buffer diagnostic log from Settings to troubleshoot connectivity or synchronization issues.
+- **Single-File Diagnostic Traces:** Export diagnostics saved to a single consolidated file that organizes events by network environment, simplifying troubleshooting and log sharing.
+- **Report AI Content:** Long-press any assistant response to report inaccurate, harmful, or inappropriate content. Submitting sends a bounded snapshot of the response to `POST /api/content-reports` without exposing private workspace secrets.
 
 ## Language Settings
 

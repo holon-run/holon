@@ -218,8 +218,8 @@ Choose a task that needs follow-up. Define the outcome and when to ask for your 
 - [Maintainers](./maintainers/)
   <!-- mdorigin:index kind=directory -->
 
-- [Holon Android Privacy Policy](./privacy.md)
-  Data handling in the Holon Android client.
+- [Holon Mobile Privacy Policy](./privacy.md)
+  Data handling in the Holon Android and iOS clients.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

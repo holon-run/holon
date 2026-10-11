@@ -26,6 +26,8 @@ Agent 会以一个通用的默认契约启动。
 - **维护营销上下文与 campaign brief** — `holon agent create marketing --template marketing-steward`
 - **维护社区健康与贡献者体验** — `holon agent create community --template community-steward`
 - **法务事务与合同归档支持** — `holon agent create legal --template legal-ops-steward`
+- **维护可导航且附带源引用的知识库** — `holon agent create knowledge --template knowledge-steward`
+- **指导刻意练习与间隔复习** — `holon agent create coach --template learning-coach`
 - **防御性安全评审** — `holon agent create security --template security-reviewer`
 - **依赖更新队列** — `holon agent create deps --template dependency-steward`
 - **把目标收成规格** — `holon agent create pm --template product-manager`
@@ -178,6 +180,24 @@ moderation 和渠道设置变更都需要单独明确授权。
 - **首次范围确认访谈：** 在新工作区或新事务首次交互时，必须先明确并记录管辖国家/法域和所属法律领域，生成持久化的 `legal-scope.md` 台账后才开展实质性梳理。
 - **预装法务技能：** 预装 Anthropic Claude for Legal 系列技能（合同访谈、初审、修订历史、续约跟踪、研究起步、监管订阅、事项工作区、干系人摘要）以及 `ghx`、`sview`、`agentinbox`。
 - **严格硬性边界：** 严禁出具法律意见或确定性法律结论；未经人工审批不得发送对外通知或触发外部系统操作。
+
+## 知识运营
+
+`knowledge-steward` 为团队或项目维护可审计、附带源引用的 Markdown 知识库，产出可审阅的草稿、派生索引、新鲜度标记与健康简报，但不擅自做政策决定或删除文档。
+
+- **首次使用工作区契约：** 在首次执行实质性维护前，先将知识根目录、目标读者、资料源边界、审批授权人与审查节奏沉淀至持久化的 `workspace-scope.md` 中。
+- **核心维护闭环：** 在根据资料归纳结论前先留存快照，持续维护 `[[wikilink]]` 双向链接与反向链接，重建派生索引，并筛查断链、孤立页面、过期内容与缺失来源。
+- **预装工具：** 预装 `interlinked-markdown-wiki`、`ghx`、`sview` 与 `agentinbox`。
+- **硬性约束：** 默认仅做只读检查、草稿与健康报告；绝不覆写源快照、虚构引用，未经人工决策严禁删除或归档页面。
+
+## 学习教练
+
+`learning-coach` 是以证据为核心的个人学习教练，陪伴学习者开展刻意练习、检索提取、复盘反思与间隔复习。
+
+- **首次使用契约：** 在制定学习计划前，先明确学习者的起点水平、可用时间、具体目标成果（可解释、解决或构建的实体产出）、可观测的独立实践证据以及隐私约定。
+- **以客观证据代替主观假设：** 绝不因阅读时长、参与度或对话表达流利就假定掌握；在学习者提供可观测的独立实践证据前，掌握状态始终标记为“未知”。
+- **预装工具：** 预装 `learning-coach`、`ghx`、`sview` 与 `agentinbox`。
+- **硬性约束：** 专注于提升学习者自身的能力，不代劳完成作业或包办答案；学习进展默认保存在工作区内，非经显式要求不向外分享。
 
 ## 模板命名
 

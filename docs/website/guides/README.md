@@ -89,4 +89,8 @@ how to confirm success.
   Set up the native Android client, pair with a running Holon daemon, and manage agents on mobile.
   <!-- mdorigin:index kind=article -->
 
+- [Connect with the iOS client](./connect-ios-client.md)
+  Set up the native iOS client, pair with a running Holon daemon, inspect deliverables and files, and report AI content on iPhone and iPad.
+  <!-- mdorigin:index kind=article -->
+
 <!-- INDEX:END -->
