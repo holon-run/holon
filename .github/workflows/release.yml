@@ -345,19 +345,57 @@ jobs:
           # release-prep commit; never reuse the previous version's notes.
           # See docs/release.md ("Release notes").
           cat > release-notes.md <<EOF
-          This release adds AI content reporting across the server and the Android and iOS clients, splits the default model from the fallback chain with automatic fallback entries, adds route-scoped Fast mode for OpenAI, introduces parent-owned subagent cleanup with idle retirement, and hardens task-result, wait-blocker, and provider-recovery semantics across the runtime.
+          This release hardens explicit-wait and command-stop semantics, persists provider quota incident circuit breakers and finishes quota recovery rechecks, cuts entry-turn context-build overhead, adds a learning-coach agent template, and rounds out AI content reporting on Android and iOS with report receipts, sign-in consent refinements, and the iOS export-compliance encryption declaration; the models.dev snapshot is refreshed as well.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, macOS arm64, and Android. The macOS app DMG is a universal binary supporting both x86_64 and arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer). The signed Android APK requires Android 8.0 (API 26) or newer; the AAB is for store submission, not direct installation.
 
-          ## Changes
+          ## Summary
 
-          - Add AI content reporting end to end: report submission on the server, a reporting flow in the Android client, and an iOS reporting flow with privacy manifests, consent gating, and updated privacy documentation, plus a \`ContentReports\` API in the Swift client SDK ([#3460](https://github.com/holon-run/holon/pull/3460), [#3470](https://github.com/holon-run/holon/pull/3470), [#3482](https://github.com/holon-run/holon/pull/3482)).
-          - Refine model routing: split the default model from the fallback chain with automatic fallback entries, support route-scoped Fast mode for OpenAI, align the Web GUI speed picker with the thinking controls, align openai-codex request headers with the Codex CLI, and drop the builtin web search probe from turn setup ([#3472](https://github.com/holon-run/holon/pull/3472), [#3473](https://github.com/holon-run/holon/pull/3473), [#3481](https://github.com/holon-run/holon/pull/3481), [#3451](https://github.com/holon-run/holon/pull/3451), [#3468](https://github.com/holon-run/holon/pull/3468)).
-          - Harden task-result and scheduling semantics: fold task results into the conversation process across clients, deliver agent replies once with separate task-result presentation, preserve independent blockers and exact model re-entry across late task-result waits, bind blocked recheck ticks to work items, and clarify work item readiness projections ([#3480](https://github.com/holon-run/holon/pull/3480), [#3475](https://github.com/holon-run/holon/pull/3475), [#3477](https://github.com/holon-run/holon/pull/3477), [#3469](https://github.com/holon-run/holon/pull/3469), [#3449](https://github.com/holon-run/holon/pull/3449), [#3450](https://github.com/holon-run/holon/pull/3450), [#3456](https://github.com/holon-run/holon/pull/3456)).
-          - Make provider recovery inherit the source execution's ownership and task context, add parent-owned subagent cleanup with idle retirement, let parent cleanup and reminders pass retention blockers, and clean up leaked \`.deleting_trash\` when home trash removal fails ([#3474](https://github.com/holon-run/holon/pull/3474), [#3452](https://github.com/holon-run/holon/pull/3452), [#3465](https://github.com/holon-run/holon/pull/3465), [#3476](https://github.com/holon-run/holon/pull/3476)).
-          - Refine the clients: iOS deduplicates networks and simplifies connection onboarding, Android gains saved-network deletion with deletion feedback preserved across session changes, the TUI unifies its first-load public roster request, and the Web GUI onboarding template defaults to the built-in \`holon-default\` ([#3444](https://github.com/holon-run/holon/pull/3444), [#3443](https://github.com/holon-run/holon/pull/3443), [#3448](https://github.com/holon-run/holon/pull/3448), [#3442](https://github.com/holon-run/holon/pull/3442), [#3455](https://github.com/holon-run/holon/pull/3455)).
-          - Avoid a phantom default agent identity on the HTTP host surface, tighten the knowledge steward audit contract, and refresh the models.dev snapshot alongside a docs-site upgrade and a mobile language-switcher fix ([#3446](https://github.com/holon-run/holon/pull/3446), [#3461](https://github.com/holon-run/holon/pull/3461), [#3462](https://github.com/holon-run/holon/pull/3462), [8b37ce6c](https://github.com/holon-run/holon/commit/8b37ce6c), [17b8bd70](https://github.com/holon-run/holon/commit/17b8bd70)).
-          - Harden the release pipeline: publish the new \`holon-model-client\` crate with a generalized publish-order guard, publish per-commit Docker tags, gate non-TUI Rust changes with fast Swift wire/SDK checks, skip iOS gates for TUI-only changes, and require the embedded release notes to be rewritten for every release ([8f6b9f1f](https://github.com/holon-run/holon/commit/8f6b9f1f), [0443ec7e](https://github.com/holon-run/holon/commit/0443ec7e), [#3457](https://github.com/holon-run/holon/pull/3457), [e1b0f2cd](https://github.com/holon-run/holon/commit/e1b0f2cd), [65f2bff6](https://github.com/holon-run/holon/commit/65f2bff6)).
+          ### Runtime waits and command lifecycle
+          - Valid explicit waits now resume their exact continuation independently instead of collapsing into generic wake handling ([#3496](https://github.com/holon-run/holon/pull/3496)).
+          - Runtime-owned ingress is preserved across exact wait resumes, so external triggers and their ownership survive model re-entry ([#3492](https://github.com/holon-run/holon/pull/3492)).
+          - Graceful and force command stops are distinguished, converging command-task stop semantics without blocking the async worker ([#3487](https://github.com/holon-run/holon/pull/3487), closes [#3464](https://github.com/holon-run/holon/issues/3464)).
+
+          ### Provider reliability
+          - Provider quota incidents now persist a circuit breaker, ending the long-lived 429 turn loop ([#3489](https://github.com/holon-run/holon/pull/3489), closes [#3447](https://github.com/holon-run/holon/issues/3447)).
+          - Provider quota recovery rechecks now finish after an incident instead of stalling ([#3490](https://github.com/holon-run/holon/pull/3490)).
+
+          ### Performance
+          - Entry-turn context-build overhead is reduced: no provider probe per turn, no full skill rescan, and the serialized agent-summary and agents-list N+1 queries are folded away ([#3486](https://github.com/holon-run/holon/pull/3486), closes [#3466](https://github.com/holon-run/holon/issues/3466)).
+
+          ### Agents and templates
+          - A new learning-coach agent template ships in the template catalog ([#3495](https://github.com/holon-run/holon/pull/3495)).
+          - The models.dev snapshot, artifact, and supplemental catalog are refreshed ([#3491](https://github.com/holon-run/holon/pull/3491)).
+
+          ### Mobile clients and content reporting
+          - Android: content-report panel actions stay reachable ([#3483](https://github.com/holon-run/holon/pull/3483)), and conversation sync recovers after SSE 409 ([#3493](https://github.com/holon-run/holon/pull/3493)).
+          - iOS: report receipts are preserved and App Review acceptance evidence is completed ([#3488](https://github.com/holon-run/holon/pull/3488)), brief status, report menu, and sign-in consent are refined ([#3494](https://github.com/holon-run/holon/pull/3494)), and exempt encryption is declared for export compliance ([bdba9b31](https://github.com/holon-run/holon/commit/bdba9b31a73ebac196f827c8dd32872e19e4ed9f)).
+
+          ## Pull requests
+
+          Merged pull requests in this release:
+
+          - [#3496](https://github.com/holon-run/holon/pull/3496) fix: 独立恢复有效显式 wait 的精确接续
+          - [#3495](https://github.com/holon-run/holon/pull/3495) feat: add learning coach agent template
+          - [#3494](https://github.com/holon-run/holon/pull/3494) fix(ios): 优化 brief 状态、举报菜单与登录同意
+          - [#3493](https://github.com/holon-run/holon/pull/3493) fix(android): recover conversation sync after SSE 409
+          - [#3492](https://github.com/holon-run/holon/pull/3492) fix: preserve runtime-owned ingress across exact wait resumes
+          - [#3491](https://github.com/holon-run/holon/pull/3491) chore: refresh models.dev snapshot, artifact, and supplement
+          - [#3490](https://github.com/holon-run/holon/pull/3490) fix: finish provider quota recovery recheck
+          - [#3489](https://github.com/holon-run/holon/pull/3489) fix: persist provider quota incident circuit breaker
+          - [#3488](https://github.com/holon-run/holon/pull/3488) fix: 保留举报收据并完善 iOS 审核验收证据
+          - [#3487](https://github.com/holon-run/holon/pull/3487) fix: distinguish graceful and force command stops
+          - [#3486](https://github.com/holon-run/holon/pull/3486) perf(runtime): reduce agent summary and skill scan overhead
+          - [#3483](https://github.com/holon-run/holon/pull/3483) fix(android): 保持举报面板操作按钮可达
+          - [bdba9b31](https://github.com/holon-run/holon/commit/bdba9b31a73ebac196f827c8dd32872e19e4ed9f) fix(ios): declare exempt encryption for export compliance (direct commit)
+
+          ## Issues
+
+          Issues closed in this release:
+
+          - [#3466](https://github.com/holon-run/holon/issues/3466) perf(runtime): 入口 turn context_build p50 ~8s —— 每轮 provider 探测、skill 全量重扫与 agent_summary/agents_list 串行 N+1 叠加 (closed by [#3486](https://github.com/holon-run/holon/pull/3486))
+          - [#3464](https://github.com/holon-run/holon/issues/3464) refactor(runtime): converge command-task stop semantics and avoid blocking async worker (closed by [#3487](https://github.com/holon-run/holon/pull/3487))
+          - [#3447](https://github.com/holon-run/holon/issues/3447) bug(provider): long-lived 429 quota exhaustion becomes a 5.2s turn loop — one agent produced 5,541 failing turns in 5h (closed by [#3489](https://github.com/holon-run/holon/pull/3489))
 
 
           ## Install
