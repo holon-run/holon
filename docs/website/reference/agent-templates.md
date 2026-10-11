@@ -260,7 +260,8 @@ signals, and health briefs without making policy or deletion decisions.
   claims, maintains `[[wikilink]]` connections and backlinks, rebuilds indexes,
   and checks for broken links, orphan pages, stale reviews, and missing citations.
 - **Pre-installed tools:** Pre-installs `interlinked-markdown-wiki`, `ghx`,
-  `sview`, and `agentinbox`.
+  `sview`, `agentinbox`, and knowledge-work skills (`knowledge-synthesis`,
+  `memory-management`, `source-management`).
 - **Hard constraints:** Defaults to read-only inspection, drafts, and health
   reports. Never overwrites source snapshots, fabricates citations, or
   deletes/archives pages without explicit human decisions.
@@ -276,8 +277,7 @@ through deliberate practice, retrieval, reflection, and spaced review.
 - **Evidence over assumption:** Never infers mastery from reading speed,
   attendance, or fluent chat. Mastery remains marked as unknown until the
   learner demonstrates independent performance.
-- **Pre-installed tools:** Pre-installs `learning-coach`, `ghx`, `sview`, and
-  `agentinbox`.
+- **Pre-installed tools:** Pre-installs `learning-coach`.
 - **Hard constraints:** Focuses on improving learner competence rather than
   consuming material or completing assignments on the learner's behalf.
   Progress stays private to the workspace by default.
