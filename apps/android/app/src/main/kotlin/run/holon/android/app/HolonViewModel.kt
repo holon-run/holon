@@ -680,6 +680,12 @@ internal class HolonViewModel(
 
     fun onBackground() {
         foreground = false
+        val conversationLoadInProgress = conversationJob?.isActive == true
+        conversationJob?.cancel()
+        conversationJob = null
+        if (conversationLoadInProgress) {
+            mutableState.update { it.copy(busy = false) }
+        }
         stopConversationStream()
         stopLiveSync()
     }
