@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-351c480fa7ff0d6047a63b004e7bd6d7b3e4e35d8ced8ebbaa717d5a138bf368",
+  "revision": "models-dev-d28f3b59e1d11c7eeb9046e17f22cef02a6cde94ac96857929325124ececae6b",
   "upstream": {
     "source": "models.dev",
-    "revision": "351c480fa7ff0d6047a63b004e7bd6d7b3e4e35d8ced8ebbaa717d5a138bf368",
-    "fetched_at": "2026-10-10T00:17:17.407516577+00:00",
-    "content_sha256": "351c480fa7ff0d6047a63b004e7bd6d7b3e4e35d8ced8ebbaa717d5a138bf368",
-    "adapter_version": "0.48.0 (5b0af2a)"
+    "revision": "d28f3b59e1d11c7eeb9046e17f22cef02a6cde94ac96857929325124ececae6b",
+    "fetched_at": "2026-10-10T23:47:13.111413562+00:00",
+    "content_sha256": "d28f3b59e1d11c7eeb9046e17f22cef02a6cde94ac96857929325124ececae6b",
+    "adapter_version": "0.50.0 (3a8b67b)"
   },
   "models": [
     {
@@ -18054,8 +18054,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 235929,
-      "max_output_tokens_upper_limit": 235929,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -20244,8 +20244,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 943718,
-      "max_output_tokens_upper_limit": 943718,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -23279,6 +23279,34 @@
     {
       "model_ref": "venice/openai-gpt-61-sol",
       "display_name": "GPT-6.1 Sol",
+      "description": "GPT model for general reasoning, writing, coding, and tool-assisted tasks",
+      "context_window_tokens": 1050000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 997500,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "venice/openai-gpt-61-sol-ultrafast",
+      "display_name": "GPT-6.1 Sol Ultrafast",
       "description": "GPT model for general reasoning, writing, coding, and tool-assisted tasks",
       "context_window_tokens": 1050000,
       "effective_context_window_percent": 95,
