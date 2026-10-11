@@ -1137,7 +1137,7 @@ impl RuntimeHandle {
         initial_capture: CapturedOutput,
     ) -> Result<()> {
         let mut captured = initial_capture;
-        let terminal = match self
+        let mut terminal = match self
             .run_command_task_inner(
                 &task_record,
                 &resolved,
@@ -1203,6 +1203,14 @@ impl RuntimeHandle {
                 }
             }
         };
+        if terminal.status == TaskStatus::Cancelled {
+            if let Some(latest_task) = self.inner.storage.latest_task_record(&task_record.id)? {
+                terminal.cancel_requested |=
+                    command_task_detail_flag(latest_task.detail.as_ref(), "cancel_requested");
+                terminal.force_stop_requested |=
+                    command_task_detail_flag(latest_task.detail.as_ref(), "force_stop_requested");
+            }
+        }
         let status_label = task_status_label(&terminal.status);
         let mut detail = command_task_detail(
             &resolved,
@@ -1492,6 +1500,28 @@ impl RuntimeHandle {
         parent_message_id: Option<&str>,
         message_evidence: Option<&MessageEnvelope>,
     ) -> Result<()> {
+        let (cancel_requested, force_stop_requested) = if status == TaskStatus::Cancelled {
+            let latest_detail = self
+                .inner
+                .storage
+                .latest_task_record(&task_record.id)?
+                .and_then(|task| task.detail);
+            (
+                command_task_detail_flag(Some(&detail), "cancel_requested")
+                    || command_task_detail_flag(latest_detail.as_ref(), "cancel_requested"),
+                command_task_detail_flag(Some(&detail), "force_stop_requested")
+                    || command_task_detail_flag(latest_detail.as_ref(), "force_stop_requested"),
+            )
+        } else {
+            (false, false)
+        };
+        let mut detail = detail;
+        apply_command_task_cancel_provenance(
+            &mut detail,
+            &status,
+            cancel_requested,
+            force_stop_requested,
+        );
         let fallback = TaskRecord {
             id: task_record.id.clone(),
             agent_id: task_record.agent_id.clone(),
@@ -1941,6 +1971,13 @@ fn apply_command_task_cancel_provenance(
             serde_json::json!("cancel_requested"),
         );
     }
+}
+
+fn command_task_detail_flag(detail: Option<&serde_json::Value>, key: &str) -> bool {
+    detail
+        .and_then(|detail| detail.get(key))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn task_status_label(status: &TaskStatus) -> &'static str {
