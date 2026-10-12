@@ -15411,6 +15411,12 @@
           "desired_enabled": {
             "type": "boolean"
           },
+          "details": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "hostname": {
             "type": [
               "string",
@@ -15429,6 +15435,17 @@
           "serving": {
             "type": "boolean"
           },
+          "state": {
+            "enum": [
+              "unavailable",
+              "stopped",
+              "logged_out",
+              "connected",
+              "serving",
+              "unknown"
+            ],
+            "type": "string"
+          },
           "status_known": {
             "type": "boolean"
           }
@@ -15436,6 +15453,7 @@
         "required": [
           "control_authentication_available",
           "desired_enabled",
+          "state",
           "available",
           "connected",
           "status_known",
