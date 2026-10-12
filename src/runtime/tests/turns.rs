@@ -1762,13 +1762,11 @@ async fn run_wait_for_final_report_test(
         },
     )
     .unwrap();
-    runtime
-        .inner
-        .agent
-        .lock()
-        .await
-        .state
-        .active_workspace_entry = None;
+    {
+        let mut agent = runtime.inner.agent.lock().await;
+        agent.state.active_workspace_entry = None;
+        agent.persist_state(runtime.storage()).unwrap();
+    }
     if scenario == WaitForFinalReportScenario::SettlementErrorRecovery {
         let timer = runtime
             .schedule_timer(60_000, None, Some("final settlement race".into()))

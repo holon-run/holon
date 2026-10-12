@@ -405,6 +405,7 @@ enum HostRuntimePhase {
 struct HostRuntimeRegistry {
     phase: HostRuntimePhase,
     agents: BTreeMap<String, AgentEntry>,
+    // Keep exact installation targets visible until their retirement drain ends.
     unloading_mutations: BTreeMap<u64, RuntimeHandle>,
     next_generation: u64,
     recovering: HashMap<String, RuntimeRecoveryClaim>,
@@ -2165,10 +2166,7 @@ impl RuntimeHost {
                     )
                     .await?;
             }
-            let loaded = self
-                .bridge()
-                .loaded_runtime_for(reservation.agent_id())
-                .await?;
+            let loaded = self.bridge().runtime_for_mutation(reservation).await?;
             if let Some(runtime) = loaded {
                 if runtime.instance_incarnation() != reservation.identity_incarnation() {
                     continue;
@@ -2328,19 +2326,26 @@ impl RuntimeHost {
 
     async fn shutdown_inner(&self) -> Result<()> {
         self.shutdown_config_reload_coordinator().await;
-        let (entries, mut runtimes) = {
+        let (entries, runtimes) = {
             let mut registry = self.inner.runtimes.write().await;
             match registry.phase {
                 HostRuntimePhase::Open => {
                     registry.phase = HostRuntimePhase::Closing;
-                    (
-                        std::mem::take(&mut registry.agents)
-                            .into_values()
-                            .collect::<Vec<_>>(),
-                        std::mem::take(&mut registry.unloading_mutations)
-                            .into_values()
-                            .collect::<Vec<_>>(),
-                    )
+                    let entries = std::mem::take(&mut registry.agents)
+                        .into_values()
+                        .collect::<Vec<_>>();
+                    for entry in &entries {
+                        entry.runtime.close_execution_admission();
+                        registry
+                            .unloading_mutations
+                            .insert(entry.generation, entry.runtime.clone());
+                    }
+                    let runtimes = registry
+                        .unloading_mutations
+                        .values()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    (entries, runtimes)
                 }
                 HostRuntimePhase::Closing => bail!("host shutdown registry is already closing"),
                 HostRuntimePhase::Closed => return Ok(()),
@@ -2364,11 +2369,9 @@ impl RuntimeHost {
             }
         }
         let mut tasks = Vec::with_capacity(entries.len());
-        runtimes.reserve(entries.len());
         for entry in entries {
             let _ = entry.runtime.request_service_shutdown().await;
             tasks.push(entry.task);
-            runtimes.push(entry.runtime);
         }
         if tokio::time::timeout(HOST_SHUTDOWN_GRACE, async {
             for task in &mut tasks {
@@ -2394,7 +2397,11 @@ impl RuntimeHost {
                 }
             }
         }
-        self.inner.runtimes.write().await.phase = HostRuntimePhase::Closed;
+        {
+            let mut registry = self.inner.runtimes.write().await;
+            registry.phase = HostRuntimePhase::Closed;
+            registry.unloading_mutations.clear();
+        }
         self.inner
             .runtime_db_maintenance_lock
             .lock()
@@ -2659,12 +2666,13 @@ impl RuntimeHost {
                 if let Err(error) = entry.runtime.join_owned_mutations().await {
                     tracing::warn!(agent_id, error = %error, "runtime mutation drain failed during unload");
                 }
-                host.inner
-                    .runtimes
-                    .write()
-                    .await
-                    .unloading_mutations
-                    .remove(&entry.generation);
+                {
+                    let mut registry = host.inner.runtimes.write().await;
+                    // Closing owns any external waiters as well as this drain.
+                    if registry.phase == HostRuntimePhase::Open {
+                        registry.unloading_mutations.remove(&entry.generation);
+                    }
+                }
                 host.notify_runtime_recovery(&agent_id).await;
             });
             let _ = cleanup.await;
@@ -7483,6 +7491,27 @@ impl RuntimeHostBridge {
             }
         }
         Ok(())
+    }
+
+    pub(crate) async fn runtime_for_mutation(
+        &self,
+        reservation: &MutationReservation,
+    ) -> Result<Option<RuntimeHandle>> {
+        let host = self.host()?;
+        let registry = host.inner.runtimes.read().await;
+        let active = registry
+            .agents
+            .get(reservation.agent_id())
+            .map(|entry| &entry.runtime)
+            .filter(|runtime| runtime.owns_mutation_reservation(reservation));
+        Ok(active
+            .or_else(|| {
+                registry
+                    .unloading_mutations
+                    .values()
+                    .find(|runtime| runtime.owns_mutation_reservation(reservation))
+            })
+            .cloned())
     }
 
     pub(crate) async fn loaded_runtime_for(&self, agent_id: &str) -> Result<Option<RuntimeHandle>> {
@@ -12898,6 +12927,155 @@ mod tests {
         assert!(replacement.execution_admission_lease().is_ok());
         assert_eq!(replacement.agent_state().await.unwrap().id, "alpha");
         host.shutdown().await.unwrap();
+    }
+
+    async fn retiring_runtime_keeps_exact_known_installation_target(shutdown: bool) {
+        let (_home, host) = test_host();
+        let runtime = host.default_runtime().await.unwrap();
+        let agent_id = host.config().default_agent_id.clone();
+        host.inner.runtimes.read().await.agents[&agent_id]
+            .task
+            .abort();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !host.inner.runtimes.read().await.agents[&agent_id]
+                .task
+                .is_finished()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let (expected, abort_token, message_id) = runtime
+            .prepare_known_host_installation_fixture()
+            .await
+            .unwrap();
+        assert!(!abort_token.is_cancelled());
+        let owner = host
+            .inner
+            .mutation_owners
+            .current_owner(&agent_id, runtime.instance_incarnation())
+            .unwrap();
+        let blocker = owner.reserve().await.unwrap();
+        let started = Arc::new(Notify::new());
+        let recovered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let operation = tokio::spawn({
+            let host = host.clone();
+            let runtime = runtime.clone();
+            let agent_id = agent_id.clone();
+            let started = started.clone();
+            let recovered = recovered.clone();
+            let release = release.clone();
+            let expected = expected.clone();
+            let abort_token = abort_token.clone();
+            async move {
+                let worker_host = host.clone();
+                host.run_owned_external_mutation(async move {
+                    started.notify_one();
+                    let reservations = worker_host.reserve_agent_mutations(&[agent_id]).await?;
+                    let (state, queue_len, abort_handle_absent) =
+                        runtime.host_installation_snapshot().await;
+                    assert_eq!(state, expected);
+                    assert_eq!(
+                        queue_len, 0,
+                        "saved runtime queue must install before Ready"
+                    );
+                    assert!(abort_handle_absent);
+                    assert!(
+                        abort_token.is_cancelled(),
+                        "saved deferred abort must execute"
+                    );
+                    recovered.notify_one();
+                    release.notified().await;
+                    drop(reservations);
+                    Ok(())
+                })
+                .await
+            }
+        });
+        started.notified().await;
+        let retirement = tokio::spawn({
+            let host = host.clone();
+            let agent_id = agent_id.clone();
+            async move {
+                if shutdown {
+                    host.shutdown().await
+                } else {
+                    host.unload_runtime(&agent_id).await;
+                    Ok(())
+                }
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let registry = host.inner.runtimes.read().await;
+                if !registry.agents.contains_key(&agent_id)
+                    && !registry.unloading_mutations.is_empty()
+                    && (!shutdown || registry.phase == HostRuntimePhase::Closing)
+                {
+                    break;
+                }
+                drop(registry);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(host
+            .bridge()
+            .runtime_for_mutation(&blocker)
+            .await
+            .unwrap()
+            .is_some());
+        drop(blocker);
+        tokio::time::timeout(Duration::from_secs(5), recovered.notified())
+            .await
+            .unwrap();
+        assert_eq!(owner.capture().unwrap().unwrap().state.as_ref(), &expected);
+        assert_eq!(
+            host.runtime_db()
+                .queue_entries()
+                .recent(Some(&agent_id), 100)
+                .unwrap()
+                .into_iter()
+                .find(|record| record.message_id == message_id)
+                .unwrap()
+                .status,
+            crate::types::QueueEntryStatus::Aborted
+        );
+        assert!(!retirement.is_finished());
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), operation)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), retirement)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .unloading_mutations
+            .is_empty());
+        if !shutdown {
+            host.shutdown().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn host_shutdown_restores_exact_known_facts_before_opening_the_gate() {
+        retiring_runtime_keeps_exact_known_installation_target(true).await;
+    }
+
+    #[tokio::test]
+    async fn unload_runtime_restores_exact_known_facts_before_opening_the_gate() {
+        retiring_runtime_keeps_exact_known_installation_target(false).await;
     }
 
     #[tokio::test]

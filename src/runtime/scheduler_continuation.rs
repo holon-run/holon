@@ -145,28 +145,27 @@ impl RuntimeHandle {
                 scheduler_executor::StaleRunProjectionBoundary::PendingSystemTick,
             )
             .await?;
-        let (scheduler_snapshot, queue_len, mut pending_wake_hint) = {
-            let guard = self.inner.agent.lock().await;
-            self.inner.mutation_owner.capture()?;
-            let eligible = matches!(
-                guard.state.status,
-                AgentStatus::Booting | AgentStatus::AwakeIdle | AgentStatus::Asleep
-            ) && guard.queue.is_empty();
-            if !eligible {
-                if guard.state.status == AgentStatus::AwakeRunning || !guard.queue.is_empty() {
-                    let agent_id = guard.state.id.clone();
-                    drop(guard);
-                    self.consume_due_work_item_rechecks(&agent_id).await?;
-                }
-                return Ok(false);
+        let (scheduler_snapshot, queue_len, mut pending_wake_hint, eligible, consume_rechecks) =
+            self.read_committed_agent(|guard| {
+                (
+                    scheduler::SchedulerAgentSnapshot::from_state(&guard.state),
+                    guard.queue.len(),
+                    guard.state.pending_wake_hint.clone(),
+                    matches!(
+                        guard.state.status,
+                        AgentStatus::Booting | AgentStatus::AwakeIdle | AgentStatus::Asleep
+                    ) && guard.queue.is_empty(),
+                    guard.state.status == AgentStatus::AwakeRunning || !guard.queue.is_empty(),
+                )
+            })
+            .await?;
+        if !eligible {
+            if consume_rechecks {
+                self.consume_due_work_item_rechecks(scheduler_snapshot.id())
+                    .await?;
             }
-
-            (
-                scheduler::SchedulerAgentSnapshot::from_state(&guard.state),
-                guard.queue.len(),
-                guard.state.pending_wake_hint.clone(),
-            )
-        };
+            return Ok(false);
+        }
 
         let work_queue_projection = self.inner.storage.work_queue_prompt_projection()?;
         let due_rechecks = self
@@ -205,15 +204,15 @@ impl RuntimeHandle {
             )
         };
         if used_async_hook {
-            let (fresh_snapshot, fresh_queue_len, fresh_pending_wake_hint) = {
-                let guard = self.inner.agent.lock().await;
-                self.inner.mutation_owner.capture()?;
-                (
-                    scheduler::SchedulerAgentSnapshot::from_state(&guard.state),
-                    guard.queue.len(),
-                    guard.state.pending_wake_hint.clone(),
-                )
-            };
+            let (fresh_snapshot, fresh_queue_len, fresh_pending_wake_hint) = self
+                .read_committed_agent(|guard| {
+                    (
+                        scheduler::SchedulerAgentSnapshot::from_state(&guard.state),
+                        guard.queue.len(),
+                        guard.state.pending_wake_hint.clone(),
+                    )
+                })
+                .await?;
             pending_wake_hint = fresh_pending_wake_hint;
             let fresh_work_queue_projection = self.inner.storage.work_queue_prompt_projection()?;
             scheduler_projection =
@@ -874,14 +873,14 @@ impl RuntimeHandle {
         &self,
         pending: &PendingWakeHint,
     ) -> Result<bool> {
-        let (snapshot, queue_len) = {
-            let guard = self.inner.agent.lock().await;
-            self.inner.mutation_owner.capture()?;
-            (
-                scheduler::SchedulerAgentSnapshot::from_state(&guard.state),
-                guard.queue.len(),
-            )
-        };
+        let (snapshot, queue_len) = self
+            .read_committed_agent(|guard| {
+                (
+                    scheduler::SchedulerAgentSnapshot::from_state(&guard.state),
+                    guard.queue.len(),
+                )
+            })
+            .await?;
         let projection = scheduler::SchedulerProjection::from_snapshot_with_queue_len_at(
             &self.inner.storage,
             &snapshot,
@@ -1433,6 +1432,88 @@ mod tests {
             _dir: dir,
             _workspace: workspace,
         }
+    }
+
+    struct BlockingContinuationHook {
+        entered: std::sync::atomic::AtomicBool,
+        release: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl scheduler::AsyncSemanticCandidateSelectionHook for BlockingContinuationHook {
+        async fn select_autonomous_continuation(
+            &self,
+            _context: &scheduler::AutonomousContinuationSelectionContext,
+        ) -> Result<
+            scheduler::SemanticCandidateSelectionHookResult,
+            scheduler::SemanticCandidateSelectionHookError,
+        > {
+            self.entered.store(true, Ordering::SeqCst);
+            self.release.notified().await;
+            Ok(scheduler::SemanticCandidateSelectionHookResult::Abstain)
+        }
+    }
+
+    #[tokio::test]
+    async fn continuation_hook_refresh_waits_for_normal_commit_installation() {
+        let test_runtime = test_runtime();
+        let runtime = &test_runtime.runtime;
+        {
+            let mut mutation = runtime.begin_mutation().await.unwrap();
+            mutation.state.status = AgentStatus::AwakeIdle;
+            mutation.state.current_run_id = None;
+            mutation.current_run_abort = None;
+            mutation.persist_state(runtime.storage()).await.unwrap();
+        }
+        add_queued_work_item(&test_runtime, "first", "first candidate");
+        add_queued_work_item(&test_runtime, "second", "second candidate");
+        let hook = Arc::new(BlockingContinuationHook {
+            entered: std::sync::atomic::AtomicBool::new(false),
+            release: tokio::sync::Notify::new(),
+        });
+        *runtime
+            .inner
+            .autonomous_continuation_decision_hook
+            .write()
+            .await = Some(hook.clone());
+        let mut emit = runtime.maybe_emit_pending_system_tick(None);
+        assert!(futures_util::poll!(emit.as_mut()).is_pending());
+        assert!(hook.entered.load(Ordering::SeqCst));
+
+        let previous_turn_index = runtime.agent_state().await.unwrap().turn_index;
+        let cache = runtime.inner.projection_cache.lock().await;
+        let writer_runtime = runtime.clone();
+        let writer = tokio::spawn(async move {
+            let mut mutation = writer_runtime.begin_mutation().await.unwrap();
+            mutation.state.turn_index += 1;
+            mutation.persist_state(writer_runtime.storage()).await
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if matches!(
+                    runtime.inner.mutation_owner.capture(),
+                    Err(mutation_owner::MutationOwnerError::NeedsReconcile(_))
+                ) && runtime.storage().read_agent().unwrap().unwrap().turn_index
+                    == previous_turn_index + 1
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        hook.release.notify_one();
+        assert!(futures_util::poll!(emit.as_mut()).is_pending());
+        drop(cache);
+        writer.await.unwrap().unwrap();
+        assert!(emit.await.unwrap());
+        assert_eq!(
+            runtime.agent_state().await.unwrap().turn_index,
+            previous_turn_index + 1
+        );
+        assert!(runtime.inner.mutation_owner.capture().is_ok());
     }
 
     #[test]

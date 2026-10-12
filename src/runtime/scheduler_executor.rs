@@ -227,31 +227,22 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         &self,
         boundary: StaleRunProjectionBoundary,
     ) -> Result<StaleRunProjectionReconciliation> {
-        match self.runtime.inner.mutation_owner.capture() {
-            Ok(_) => {}
-            Err(super::mutation_owner::MutationOwnerError::NeedsReconcile(_)) => {
-                self.runtime.reconcile_posture_observation().await?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-        {
-            let guard = self.runtime.inner.agent.lock().await;
-            self.runtime.inner.mutation_owner.capture()?;
-            if guard.state.status == AgentStatus::Stopped
-                || (guard.state.status != AgentStatus::AwakeRunning
-                    && guard.state.current_run_id.is_none())
-            {
-                return Ok(StaleRunProjectionReconciliation::NoChange);
-            }
-            if guard
-                .state
-                .current_run_id
-                .as_ref()
-                .zip(guard.current_run_abort.as_ref())
-                .is_some_and(|(run_id, handle)| run_id == &handle.run_id)
-            {
-                return Ok(StaleRunProjectionReconciliation::NoChange);
-            }
+        let needs_reconciliation = self
+            .runtime
+            .read_committed_agent(|guard| {
+                guard.state.status != AgentStatus::Stopped
+                    && (guard.state.status == AgentStatus::AwakeRunning
+                        || guard.state.current_run_id.is_some())
+                    && !guard
+                        .state
+                        .current_run_id
+                        .as_ref()
+                        .zip(guard.current_run_abort.as_ref())
+                        .is_some_and(|(run_id, handle)| run_id == &handle.run_id)
+            })
+            .await?;
+        if !needs_reconciliation {
+            return Ok(StaleRunProjectionReconciliation::NoChange);
         }
 
         let runtime = self.runtime.clone();
@@ -584,11 +575,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let mut replans = 0;
         loop {
             let candidate = {
-                let guard = {
-                    let guard = self.runtime.inner.agent.lock().await;
-                    self.runtime.inner.mutation_owner.capture()?;
-                    guard.clone()
-                };
+                let guard = self.runtime.read_committed_agent(Clone::clone).await?;
                 if self.runtime.inner.shutdown_requested.load(Ordering::SeqCst) {
                     drop(guard);
                     let poll = self.shutdown().await?;
@@ -3755,6 +3742,48 @@ mod tests {
             .unwrap();
         drop(mutation);
         (home, workspace, runtime, token, reason)
+    }
+
+    #[tokio::test]
+    async fn poll_waits_for_normal_commit_installation() {
+        let (_home, _workspace, runtime, _token, _reason) = runtime_with_abort_handle(true).await;
+        let previous_turn_index = runtime.agent_state().await.unwrap().turn_index;
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        mutation.state.turn_index += 1;
+        let agent = runtime.inner.agent.lock().await;
+        let executor = SchedulerDecisionExecutor::new(&runtime);
+        let mut poll = executor.poll();
+        // The reader has observed Ready and is first in the agent-lock queue.
+        assert!(runtime.inner.mutation_owner.capture().is_ok());
+        assert!(futures_util::poll!(poll.as_mut()).is_pending());
+        let writer_runtime = runtime.clone();
+        let writer =
+            tokio::spawn(async move { mutation.persist_state(writer_runtime.storage()).await });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if matches!(
+                    runtime.inner.mutation_owner.capture(),
+                    Err(mutation_owner::MutationOwnerError::NeedsReconcile(_))
+                ) && runtime.storage().read_agent().unwrap().unwrap().turn_index
+                    == previous_turn_index + 1
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        // SQL is acknowledged, but the writer cannot install ahead of this reader.
+        drop(agent);
+        assert!(futures_util::poll!(poll.as_mut()).is_pending());
+        writer.await.unwrap().unwrap();
+        let RunLoopPoll::Stopped(state, _) = poll.await.unwrap() else {
+            panic!("committed stopped state should remain readable after installation");
+        };
+        assert_eq!(state.turn_index, previous_turn_index + 1);
+        assert!(runtime.inner.mutation_owner.capture().is_ok());
     }
 
     #[tokio::test]

@@ -692,6 +692,12 @@ impl RuntimeHandle {
                 data_dir.join(".holon/state/runtime.lock"),
             )?,
         };
+        let storage_setup = prepare_runtime_storage_setup(
+            agent_id.clone(),
+            data_dir,
+            initial_workspace,
+            Some(runtime_db.clone()),
+        )?;
         let identity_incarnation = runtime_db
             .agent_identities()
             .latest(&agent_id)?
@@ -721,8 +727,7 @@ impl RuntimeHandle {
         }
         let mut provider = provider;
         // Private construction owns its namespace before normalization writes.
-        // A failed storage operation leaves its outcome fenced for recovery.
-        bootstrap_reservation.begin(crate::ids::audit_event_id())?;
+        // The helper records the exact posture ACK before derived preparation.
         let PreparedRuntimeStorage {
             storage,
             runtime_db,
@@ -731,8 +736,7 @@ impl RuntimeHandle {
             active_tasks,
             active_timers,
             projection_cache,
-        } = prepare_runtime_storage(agent_id, data_dir, initial_workspace, Some(runtime_db))?;
-        bootstrap_reservation.committed(Arc::new(state.clone()))?;
+        } = prepare_runtime_storage_owned(storage_setup, Some(&mut bootstrap_reservation))?;
         bootstrap_reservation.publish(Arc::new(state.clone()))?;
         drop(bootstrap_reservation);
         if let Some(event_bus) = event_bus {
@@ -1556,12 +1560,29 @@ struct PreparedRuntimeStorage {
     projection_cache: AgentRuntimeProjectionCache,
 }
 
+struct RuntimeStorageSetup {
+    storage: AppStorage,
+    runtime_db: RuntimeDb,
+    agent_id: String,
+    initial_workspace_entry: Option<crate::types::WorkspaceEntry>,
+}
+
 fn prepare_runtime_storage(
     agent_id: impl Into<String>,
     data_dir: PathBuf,
     initial_workspace: impl Into<InitialWorkspaceBinding>,
     runtime_db: Option<RuntimeDb>,
 ) -> Result<PreparedRuntimeStorage> {
+    let setup = prepare_runtime_storage_setup(agent_id, data_dir, initial_workspace, runtime_db)?;
+    prepare_runtime_storage_owned(setup, None)
+}
+
+fn prepare_runtime_storage_setup(
+    agent_id: impl Into<String>,
+    data_dir: PathBuf,
+    initial_workspace: impl Into<InitialWorkspaceBinding>,
+    runtime_db: Option<RuntimeDb>,
+) -> Result<RuntimeStorageSetup> {
     let agent_id = agent_id.into();
     let runtime_dir = data_dir.join(".holon");
     let runtime_db = match runtime_db {
@@ -1572,20 +1593,6 @@ fn prepare_runtime_storage(
         )?,
     };
     let storage = AppStorage::new_for_agent(data_dir, agent_id.clone(), runtime_db.clone())?;
-    #[cfg(test)]
-    if runtime_db.agent_identities().latest(&agent_id)?.is_none() {
-        runtime_db
-            .agent_identities()
-            .upsert(&crate::types::AgentIdentityRecord::new(
-                agent_id.clone(),
-                crate::types::AgentKind::Default,
-                crate::types::AgentVisibility::Public,
-                crate::types::AgentOwnership::SelfOwned,
-                crate::types::AgentProfilePreset::PublicNamed,
-                None,
-                None,
-            ))?;
-    }
     let initial_workspace = initial_workspace.into();
     let initial_workspace_entry = match &initial_workspace {
         InitialWorkspaceBinding::Entry(entry) => Some(entry.clone()),
@@ -1606,6 +1613,44 @@ fn prepare_runtime_storage(
             &agent_id,
         )),
     };
+
+    Ok(RuntimeStorageSetup {
+        storage,
+        runtime_db,
+        agent_id,
+        initial_workspace_entry,
+    })
+}
+
+fn prepare_runtime_storage_owned(
+    setup: RuntimeStorageSetup,
+    mut reservation: Option<&mut super::mutation_owner::MutationReservation>,
+) -> Result<PreparedRuntimeStorage> {
+    let RuntimeStorageSetup {
+        storage,
+        runtime_db,
+        agent_id,
+        initial_workspace_entry,
+    } = setup;
+    // Imports and recovery normalization retain their existing transactions.
+    // An error before the posture ACK cannot prove their combined outcome.
+    if let Some(reservation) = reservation.as_deref_mut() {
+        reservation.begin(crate::ids::audit_event_id())?;
+    }
+    #[cfg(test)]
+    if runtime_db.agent_identities().latest(&agent_id)?.is_none() {
+        runtime_db
+            .agent_identities()
+            .upsert(&crate::types::AgentIdentityRecord::new(
+                agent_id.clone(),
+                crate::types::AgentKind::Default,
+                crate::types::AgentVisibility::Public,
+                crate::types::AgentOwnership::SelfOwned,
+                crate::types::AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            ))?;
+    }
 
     let workspace_entries_complete = storage.legacy_importer().workspace_entries_complete()?;
     if let Some(workspace) = initial_workspace_entry.as_ref() {
@@ -1813,6 +1858,11 @@ fn prepare_runtime_storage(
             fault: None,
         },
     )?;
+    // This receipt proves the canonical posture only. Derived import/cache
+    // failure remains retryable without treating the whole bootstrap as atomic.
+    if let Some(reservation) = reservation.as_deref_mut() {
+        reservation.committed(Arc::new(state.clone()))?;
+    }
     storage
         .legacy_importer()
         .import_derived_domains(&state.id)?;
@@ -2180,6 +2230,158 @@ mod view_image_candidate_health_tests {
 mod mutation_bootstrap_tests {
     use super::*;
     use crate::{host::RuntimeHost, provider::StubProvider};
+
+    fn build_for_retry(
+        host: &RuntimeHost,
+        data_dir: PathBuf,
+        workspace: PathBuf,
+        agent_id: &str,
+    ) -> Result<RuntimeHandle> {
+        RuntimeHandle::new_internal(
+            agent_id,
+            data_dir,
+            workspace,
+            String::new(),
+            Arc::new(StubProvider::new("unused")),
+            agent_id.into(),
+            ContextConfig::default(),
+            ContextConfig::default(),
+            None,
+            RuntimeModelCatalog::default(),
+            Vec::new(),
+            crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
+            crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS,
+            crate::web::WebConfig::default(),
+            None,
+            Some(host.runtime_db().clone()),
+            Some(host.bridge()),
+            None,
+            Arc::new(SystemClock),
+        )
+    }
+
+    fn retry_host(home: &std::path::Path) -> RuntimeHost {
+        std::fs::write(
+            home.join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+        let config = AppConfig::load_with_home(Some(home.to_path_buf())).unwrap();
+        RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused"))).unwrap()
+    }
+
+    #[tokio::test]
+    async fn storage_setup_failure_leaves_same_host_owner_retryable() {
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let host = retry_host(home.path());
+        let data_dir = home.path().join("setup-retry");
+        std::fs::write(&data_dir, "blocks the agent directory").unwrap();
+        let owner = host.bridge().mutation_owner_for("setup-retry", 1).unwrap();
+        let error = build_for_retry(
+            &host,
+            data_dir.clone(),
+            workspace.path().to_path_buf(),
+            "setup-retry",
+        )
+        .err()
+        .expect("a file cannot be used as the agent directory");
+        assert!(error.to_string().contains("failed to create"));
+        assert!(owner.capture().unwrap().is_none());
+        assert!(host
+            .runtime_db()
+            .agent_states()
+            .latest("setup-retry")
+            .unwrap()
+            .is_none());
+        std::fs::remove_file(&data_dir).unwrap();
+        let runtime = build_for_retry(
+            &host,
+            data_dir,
+            workspace.path().to_path_buf(),
+            "setup-retry",
+        )
+        .unwrap();
+        assert!(runtime.inner.mutation_owner.capture().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn cache_decode_failure_retains_exact_posture_ack_for_same_host_retry() {
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let host = retry_host(home.path());
+        let data_dir = home.path().join("cache-retry");
+        let build = || {
+            build_for_retry(
+                &host,
+                data_dir.clone(),
+                workspace.path().to_path_buf(),
+                "cache-retry",
+            )
+        };
+        let runtime = build().unwrap();
+        let mut before = runtime.agent_state().await.unwrap();
+        before.status = crate::types::AgentStatus::AwakeRunning;
+        before.current_run_id = Some("unsettled-before-bootstrap".into());
+        before.total_input_tokens = 413;
+        runtime.storage().write_agent_for_fixture(&before).unwrap();
+        drop(runtime);
+        let (descriptor, _, _) = host
+            .runtime_db()
+            .external_triggers()
+            .ensure_default_for_agent(
+                "cache-retry",
+                crate::types::CallbackDeliveryMode::WakeHint,
+                chrono::Utc::now(),
+                crate::ids::external_trigger_id(),
+                "decode-retry-token".into(),
+            )
+            .unwrap();
+        let connection = host.runtime_db().connection().unwrap();
+        connection
+            .execute(
+                "UPDATE external_triggers SET payload_json = 'invalid-json' WHERE external_trigger_id = ?1",
+                [&descriptor.external_trigger_id],
+            )
+            .unwrap();
+        assert!(build().is_err(), "cache must decode the corrupted trigger");
+        let committed = host
+            .runtime_db()
+            .agent_states()
+            .latest("cache-retry")
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            committed, before,
+            "canonical posture ACK precedes cache decode"
+        );
+        assert_eq!(committed.total_input_tokens, 413);
+        let owner = host.bridge().mutation_owner_for("cache-retry", 1).unwrap();
+        {
+            let reservation = owner.reserve().await.unwrap();
+            let recovery = reservation.recovery().unwrap().unwrap();
+            assert_eq!(recovery.committed_state.as_deref(), Some(&committed));
+            assert!(recovery.known.is_some());
+        }
+        connection
+            .execute(
+                "UPDATE external_triggers SET payload_json = ?1 WHERE external_trigger_id = ?2",
+                rusqlite::params![
+                    serde_json::to_string(&descriptor).unwrap(),
+                    descriptor.external_trigger_id
+                ],
+            )
+            .unwrap();
+        let runtime = build().unwrap();
+        assert_eq!(runtime.agent_state().await.unwrap(), committed);
+        assert_eq!(
+            host.runtime_db()
+                .agent_states()
+                .latest("cache-retry")
+                .unwrap(),
+            Some(committed)
+        );
+    }
 
     #[tokio::test]
     async fn invalid_pure_configuration_does_not_fence_the_owner_and_can_be_retried() {

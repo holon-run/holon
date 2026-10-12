@@ -1100,19 +1100,19 @@ impl RuntimeHandle {
                 now,
             )?
         };
-        let (already_in_memory, queue_len, expected_state, mut committed_state) = {
-            let guard = self.inner.agent.lock().await;
-            self.inner.mutation_owner.capture()?;
-            (
-                guard
-                    .queue
-                    .peek_next_matching(|message| message.id == result_message_id)
-                    .is_some(),
-                guard.queue.len(),
-                guard.last_persisted_state.clone(),
-                guard.state.clone(),
-            )
-        };
+        let (already_in_memory, queue_len, expected_state, mut committed_state) = self
+            .read_committed_agent(|guard| {
+                (
+                    guard
+                        .queue
+                        .peek_next_matching(|message| message.id == result_message_id)
+                        .is_some(),
+                    guard.queue.len(),
+                    guard.last_persisted_state.clone(),
+                    guard.state.clone(),
+                )
+            })
+            .await?;
         committed_state.pending = queue_len.saturating_add(usize::from(!already_in_memory));
         committed_state.last_wake_reason = Some("TaskResult".into());
         committed_state.total_message_count = self.inner.storage.count_messages()?;

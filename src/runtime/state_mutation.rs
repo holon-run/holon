@@ -670,7 +670,7 @@ impl RuntimeHandle {
                 Some(self.clone())
             } else {
                 match self.inner.host_bridge.as_ref() {
-                    Some(bridge) => bridge.loaded_runtime_for(reservation.agent_id()).await?,
+                    Some(bridge) => bridge.runtime_for_mutation(reservation).await?,
                     None => None,
                 }
             };
@@ -726,7 +726,7 @@ impl RuntimeHandle {
                 Some(self.clone())
             } else {
                 match self.inner.host_bridge.as_ref() {
-                    Some(bridge) => bridge.loaded_runtime_for(reservation.agent_id()).await?,
+                    Some(bridge) => bridge.runtime_for_mutation(reservation).await?,
                     None => None,
                 }
             };
@@ -744,6 +744,109 @@ impl RuntimeHandle {
             runtime.reissue_mutation_notifications(effects).await;
         }
         Ok(true)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn prepare_known_host_installation_fixture(
+        &self,
+    ) -> Result<(AgentState, CancellationToken, String)> {
+        let agent_id = self.agent_state().await?.id;
+        let message = self
+            .enqueue(MessageEnvelope::new(
+                agent_id.clone(),
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Next,
+                MessageBody::Text {
+                    text: "known Host installation fixture".into(),
+                },
+            ))
+            .await?;
+        let token = CancellationToken::new();
+        {
+            let mut mutation = self.begin_mutation().await?;
+            mutation.state.status = AgentStatus::AwakeRunning;
+            mutation.state.current_run_id = Some("host-installation-fixture".into());
+            mutation.current_run_abort = Some(CurrentRunAbortHandle {
+                run_id: "host-installation-fixture".into(),
+                token: token.clone(),
+                reason: Arc::new(StdMutex::new("fixture-active".into())),
+            });
+            mutation.persist_state(&self.inner.storage).await?;
+        }
+        let mut mutation = self.begin_mutation().await?;
+        mutation.defer_abort_current_run("fixture-committed-abort");
+        mutation.current_run_abort = None;
+        mutation.queue.clear();
+        mutation.state.pending = 0;
+        mutation.state.status = AgentStatus::AwakeIdle;
+        mutation.state.current_run_id = None;
+        let expected_state = mutation.state.clone();
+        let expected_queue = self
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)?
+            .context("fixture queue entry is missing")?;
+        let mut aborted_queue = expected_queue.clone();
+        aborted_queue.status = QueueEntryStatus::Aborted;
+        aborted_queue.updated_at = self.now();
+        let event = AuditEvent::legacy("host_installation_fixture", serde_json::json!({}));
+        let command = crate::runtime_db::transitions::QueueTransitionCommand {
+            agent_id,
+            operation: crate::runtime_db::transitions::QueueOperation::Discard,
+            mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                expected: expected_queue,
+                record: aborted_queue,
+            },
+            scheduler_claim_work_item: None,
+            agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                expected: Some(Box::new(mutation.last_persisted_state.clone())),
+                record: Box::new(expected_state.clone()),
+            }),
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: vec![event.clone()],
+            notify_scheduler: false,
+            fault: Some(TransitionFaultPoint::BeforeCacheUpdate),
+            brief_evidence: Vec::new(),
+        };
+        let result = mutation
+            .commit_transition(event.id, || {
+                self.inner.runtime_db.transitions().commit_queue(&command)
+            })
+            .await;
+        anyhow::ensure!(result.is_err(), "fixture must leave publication pending");
+        let recovery = mutation.reservations[mutation.primary_index]
+            .recovery()?
+            .context("fixture recovery facts are missing")?;
+        anyhow::ensure!(
+            recovery.committed_state.as_deref() == Some(&expected_state)
+                && recovery.committed_runtime.is_some(),
+            "fixture must retain exact known runtime facts"
+        );
+        Ok((expected_state, token, message.id))
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn host_installation_snapshot(&self) -> (AgentState, usize, bool) {
+        let agent = self.inner.agent.lock().await;
+        (
+            agent.state.clone(),
+            agent.queue.len(),
+            agent.current_run_abort.is_none(),
+        )
+    }
+
+    pub(crate) fn owns_mutation_reservation(&self, reservation: &MutationReservation) -> bool {
+        reservation
+            .validate_owner(&self.inner.mutation_owner)
+            .is_ok()
     }
 
     pub(crate) async fn install_saved_mutation(

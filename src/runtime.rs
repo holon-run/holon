@@ -2893,20 +2893,13 @@ impl RuntimeAgent {
     #[cfg(test)]
     fn persist_state(&mut self, storage: &AppStorage) -> Result<()> {
         let started = std::time::Instant::now();
-        // Fence legacy force writes during pilot recovery. This does not
-        // reserve other legacy writers. The pilot holds this same agent lock
-        // before closing its gate; never acquire a reservation under this lock.
+        // Fixture setup bypasses OCC but must not erase pending recovery.
         if let Err(error) = self.mutation_owner.capture() {
             self.state = self.last_persisted_state.clone();
             crate::diagnostics::record_storage_persist_state(started.elapsed());
             return Err(error.into());
         }
-        // persist_state bypasses OCC (uses upsert, not expected-snapshot
-        // validation). This is intentional for control-plane operations
-        // (Start/Stop/shutdown) that need to force-write agent state.
-        // After a successful write, last_persisted_state is set to
-        // self.state so subsequent commit_queue OCC checks use the
-        // correct baseline. On failure, self.state is reverted.
+        // Keep the fixture's durable baseline aligned with its resident state.
         if let Err(error) = storage.write_agent_for_fixture(&self.state) {
             self.state = self.last_persisted_state.clone();
             crate::diagnostics::record_storage_persist_state(started.elapsed());
@@ -2994,6 +2987,26 @@ impl CurrentRunAbortSnapshot {
 }
 
 impl RuntimeHandle {
+    async fn read_committed_agent<T>(
+        &self,
+        read: impl FnOnce(&RuntimeAgent) -> T + Send,
+    ) -> Result<T> {
+        loop {
+            let lock_wait = crate::diagnostics::attribution::AGENT_LOCK.start();
+            let guard = self.inner.agent.lock().await;
+            drop(lock_wait);
+            match self.inner.mutation_owner.capture() {
+                Ok(_) => return Ok(read(&guard)),
+                Err(mutation_owner::MutationOwnerError::NeedsReconcile(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+            drop(guard);
+            // Wait for normal publication without holding the state lock.
+            // Unknown outcomes remain fenced rather than borrowing a DB row.
+            self.reconcile_posture_observation().await?;
+        }
+    }
+
     pub(super) fn now(&self) -> chrono::DateTime<chrono::Utc> {
         self.inner.clock.now()
     }

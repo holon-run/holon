@@ -639,23 +639,11 @@ impl RuntimeHandle {
     }
 
     pub async fn agent_state(&self) -> Result<AgentState> {
-        loop {
-            let lock_wait = attribution::AGENT_LOCK.start();
-            let guard = self.inner.agent.lock().await;
-            drop(lock_wait);
-            match self.inner.mutation_owner.capture() {
-                Ok(_) => {
-                    let _clone = attribution::AGENT_CLONE.start();
-                    return Ok(guard.state.clone());
-                }
-                Err(mutation_owner::MutationOwnerError::NeedsReconcile(_)) => {}
-                Err(error) => return Err(error.into()),
-            }
-            drop(guard);
-            // A normal in-flight commit is awaited outside the state lock.
-            // Unknown outcomes still fail rather than borrowing a current row.
-            self.reconcile_posture_observation().await?;
-        }
+        self.read_committed_agent(|guard| {
+            let _clone = attribution::AGENT_CLONE.start();
+            guard.state.clone()
+        })
+        .await
     }
 
     pub(crate) async fn workspace_entry_by_id(
@@ -1646,6 +1634,24 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    async fn persist_workspace_activation(
+        &self,
+        entry: &ActiveWorkspaceEntry,
+        worktree_session: Option<WorktreeSession>,
+    ) -> Result<()> {
+        let mut guard = self.begin_mutation().await?;
+        guard.state.active_workspace_entry = Some(entry.clone());
+        guard.state.worktree_session = worktree_session;
+        if let Err(error) = guard.persist_state(&self.inner.storage).await {
+            // Finish only the acknowledged candidate; unknown SQL keeps both
+            // the publication fence and its filesystem/occupancy resources.
+            if !matches!(guard.reconcile_known_commit().await, Ok(true)) {
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     pub async fn enter_workspace(
         &self,
         workspace: &WorkspaceEntry,
@@ -1776,16 +1782,15 @@ impl RuntimeHandle {
             );
         }
 
-        let write_result: Result<()> = async {
-            let mut guard = self.begin_mutation().await?;
-            guard.state.active_workspace_entry = Some(entry.clone());
-            guard.state.worktree_session = worktree_session;
-            guard.persist_state(&self.inner.storage).await?;
-            self.inner.storage.mark_memory_index_dirty()?;
-            Ok(())
-        }
-        .await;
+        let write_result = self
+            .persist_workspace_activation(&entry, worktree_session)
+            .await;
         if let Err(error) = write_result {
+            if crate::runtime_db::persistence_certainty(&error)
+                != Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
+            {
+                return Err(error);
+            }
             if let Some(occupancy_id) = new_occupancy_id.as_deref() {
                 if previous_occupancy_id.as_deref() != Some(occupancy_id) {
                     let _ = self.release_workspace_occupancy(occupancy_id).await;
@@ -1796,6 +1801,7 @@ impl RuntimeHandle {
             }
             return Err(error);
         }
+        self.inner.storage.mark_memory_index_dirty()?;
         if let Some(previous_occupancy_id) = previous_occupancy_id.as_deref() {
             if new_occupancy_id.as_deref() != Some(previous_occupancy_id) {
                 let _ = self
@@ -1960,16 +1966,13 @@ impl RuntimeHandle {
             );
         }
 
-        let write_result: Result<()> = async {
-            let mut guard = self.begin_mutation().await?;
-            guard.state.active_workspace_entry = Some(entry.clone());
-            guard.state.worktree_session = None;
-            guard.persist_state(&self.inner.storage).await?;
-            self.inner.storage.mark_memory_index_dirty()?;
-            Ok(())
-        }
-        .await;
+        let write_result = self.persist_workspace_activation(&entry, None).await;
         if let Err(error) = write_result {
+            if crate::runtime_db::persistence_certainty(&error)
+                != Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
+            {
+                return Err(error);
+            }
             if let Some(occupancy_id) = new_occupancy_id.as_deref() {
                 if previous_occupancy_id.as_deref() != Some(occupancy_id) {
                     let _ = self.release_workspace_occupancy(occupancy_id).await;
@@ -1977,6 +1980,7 @@ impl RuntimeHandle {
             }
             return Err(error);
         }
+        self.inner.storage.mark_memory_index_dirty()?;
         if let Some(previous_occupancy_id) = previous_occupancy_id.as_deref() {
             if new_occupancy_id.as_deref() != Some(previous_occupancy_id) {
                 let _ = self
@@ -2368,6 +2372,181 @@ fn turn_end_wait_blocker_state(
 mod tests {
     use super::*;
     use chrono::Utc;
+
+    fn workspace_test_git(repo: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[tokio::test]
+    async fn workspace_activation_known_publication_failure_preserves_root_and_occupancy() {
+        let (_home, host, runtime) =
+            crate::runtime::tests::support::host_backed_test_runtime().await;
+        runtime.wait_for_bootstrap().await.unwrap();
+        runtime.control(ControlAction::Stop).await.unwrap();
+        let roots = tempfile::tempdir().unwrap();
+        let repo = roots.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        workspace_test_git(&repo, &["init", "-b", "main"]);
+        workspace_test_git(&repo, &["config", "user.name", "Holon Test"]);
+        workspace_test_git(&repo, &["config", "user.email", "holon-test@example.com"]);
+        workspace_test_git(&repo, &["commit", "--allow-empty", "-m", "initial"]);
+        let workspace = host.ensure_workspace_entry(repo.clone()).unwrap();
+        runtime.attach_workspace(&workspace).await.unwrap();
+        runtime
+            .enter_workspace(
+                &workspace,
+                WorkspaceProjectionKind::CanonicalRoot,
+                WorkspaceAccessMode::ExclusiveWrite,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let previous_occupancy = runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .active_workspace_entry
+            .unwrap()
+            .occupancy_id
+            .unwrap();
+        let mutations_before = runtime
+            .storage()
+            .read_recent_events(100)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.kind == "agent_state_mutated")
+            .count();
+        runtime.inject_next_transition_fault(TransitionFaultPoint::BeforeCacheUpdate);
+        runtime
+            .enter_workspace(
+                &workspace,
+                WorkspaceProjectionKind::GitWorktreeRoot,
+                WorkspaceAccessMode::ExclusiveWrite,
+                None,
+                Some("known-publication".into()),
+            )
+            .await
+            .unwrap();
+
+        let state = runtime.agent_state().await.unwrap();
+        assert_eq!(runtime.storage().read_agent().unwrap().unwrap(), state);
+        let entry = state.active_workspace_entry.as_ref().unwrap();
+        let worktree = state.worktree_session.as_ref().unwrap();
+        assert!(worktree.worktree_path.join(".git").is_file());
+        assert_eq!(entry.execution_root, worktree.worktree_path);
+        assert_eq!(
+            workspace_test_git(&repo, &["rev-parse", "known-publication"]),
+            workspace_test_git(&worktree.worktree_path, &["rev-parse", "HEAD"])
+        );
+        let occupancy_id = entry.occupancy_id.as_deref().unwrap();
+        let occupancies = host.workspace_occupancies().unwrap();
+        assert!(occupancies
+            .iter()
+            .find(|record| record.occupancy_id == occupancy_id)
+            .unwrap()
+            .released_at
+            .is_none());
+        assert!(occupancies
+            .iter()
+            .find(|record| record.occupancy_id == previous_occupancy)
+            .unwrap()
+            .released_at
+            .is_some());
+        assert!(runtime.inner.mutation_owner.capture().is_ok());
+        assert_eq!(
+            runtime
+                .storage()
+                .read_recent_events(100)
+                .unwrap()
+                .into_iter()
+                .filter(|event| event.kind == "agent_state_mutated")
+                .count(),
+            mutations_before + 1
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn existing_worktree_activation_known_publication_failure_preserves_occupancy() {
+        let (_home, host, runtime) =
+            crate::runtime::tests::support::host_backed_test_runtime().await;
+        runtime.wait_for_bootstrap().await.unwrap();
+        runtime.control(ControlAction::Stop).await.unwrap();
+        let roots = tempfile::tempdir().unwrap();
+        let repo = roots.path().join("repo");
+        let worktree = roots.path().join("linked");
+        std::fs::create_dir(&repo).unwrap();
+        workspace_test_git(&repo, &["init", "-b", "main"]);
+        workspace_test_git(&repo, &["config", "user.name", "Holon Test"]);
+        workspace_test_git(&repo, &["config", "user.email", "holon-test@example.com"]);
+        workspace_test_git(&repo, &["commit", "--allow-empty", "-m", "initial"]);
+        workspace_test_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "linked",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        let workspace = host.ensure_workspace_entry(repo).unwrap();
+        runtime.attach_workspace(&workspace).await.unwrap();
+        let mutations_before = runtime
+            .storage()
+            .read_recent_events(100)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.kind == "agent_state_mutated")
+            .count();
+        runtime.inject_next_transition_fault(TransitionFaultPoint::BeforeCacheUpdate);
+        runtime
+            .enter_existing_git_worktree_with_id(
+                &workspace,
+                worktree.clone(),
+                WorkspaceAccessMode::ExclusiveWrite,
+                None,
+                "existing-known-publication".into(),
+            )
+            .await
+            .unwrap();
+
+        let state = runtime.agent_state().await.unwrap();
+        assert_eq!(runtime.storage().read_agent().unwrap().unwrap(), state);
+        let entry = state.active_workspace_entry.as_ref().unwrap();
+        assert_eq!(entry.execution_root, worktree);
+        assert!(worktree.join(".git").is_file());
+        let occupancies = host.workspace_occupancies().unwrap();
+        assert!(occupancies
+            .iter()
+            .find(|record| Some(&record.occupancy_id) == entry.occupancy_id.as_ref())
+            .unwrap()
+            .released_at
+            .is_none());
+        assert!(runtime.inner.mutation_owner.capture().is_ok());
+        assert_eq!(
+            runtime
+                .storage()
+                .read_recent_events(100)
+                .unwrap()
+                .into_iter()
+                .filter(|event| event.kind == "agent_state_mutated")
+                .count(),
+            mutations_before + 1
+        );
+        host.shutdown().await.unwrap();
+    }
 
     async fn runtime_with_owned_run() -> (
         tempfile::TempDir,
