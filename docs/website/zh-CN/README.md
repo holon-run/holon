@@ -191,6 +191,7 @@ holon daemon start
 <div class="home-final__actions">
 <a class="home-button" href="/zh-CN/getting-started/first-agent">创建第一个 Agent</a>
 <a href="/zh-CN/blog/">阅读实践文章 →</a>
+<a href="https://groups.google.com/g/holon-pioneers" target="_blank" rel="noreferrer">加入 Holon Pioneers 社区 →</a>
 </div>
 </section>
 </div>

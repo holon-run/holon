@@ -191,6 +191,7 @@ Choose a task that needs follow-up. Define the outcome and when to ask for your 
 <div class="home-final__actions">
 <a class="home-button" href="/getting-started/first-agent">Create your first agent</a>
 <a href="/blog/">Read the practical guides →</a>
+<a href="https://groups.google.com/g/holon-pioneers" target="_blank" rel="noreferrer">Join Holon Pioneers →</a>
 </div>
 </section>
 </div>

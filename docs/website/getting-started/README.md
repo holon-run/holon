@@ -71,6 +71,12 @@ If you plan to modify or contribute to Holon itself:
 - Holon installed on `PATH` (Homebrew or direct binary; see the walkthrough below)
 - A model provider API key (Anthropic, OpenAI, or compatible)
 
+## Community & feedback
+
+- Join the [Holon Pioneers Google Group](https://groups.google.com/g/holon-pioneers) to exchange experience, discuss recipes, and test early releases.
+- Follow [@holonrun on X](https://x.com/holonrun) for product announcements and runtime highlights.
+- Report issues and request features on [GitHub Issues](https://github.com/holon-run/holon/issues).
+
 ## Looking for contributor specifications?
 
 If you are contributing to the Holon runtime engine or need internal lifecycle state machine contracts, consult the [Runtime specs](/spec/) and repository development guidelines.

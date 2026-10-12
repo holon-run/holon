@@ -66,6 +66,12 @@ Holon 提供三种与运行时交互的方式：
 - Holon 已安装并在 `PATH` 上（Homebrew 或直接下载二进制；分步说明见下方教程）
 - 一个模型提供商 API key（Anthropic、OpenAI 或兼容服务）
 
+## 社区交流与反馈
+
+- 加入 [Holon Pioneers Google Group](https://groups.google.com/g/holon-pioneers) 交流使用心得、探讨工作流配方并参与新版本测试；
+- 关注 X 官方账号 [@holonrun](https://x.com/holonrun) 获取产品发版与特性动态；
+- 在 [GitHub Issues](https://github.com/holon-run/holon/issues) 反馈缺陷与提出功能建议。
+
 ## 寻找内核贡献者规格？
 
 如果你正在参与 Holon 运行时内核开发或需要查看内部状态机契约，请参阅面向维护者的 [运行时规格](/zh-CN/spec/) 与仓库开发指南。

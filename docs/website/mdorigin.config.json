@@ -33,6 +33,32 @@
           "label": "参考",
           "href": "/zh-CN/reference/"
         }
+      ],
+      "footerNav": [
+        {
+          "label": "隐私政策",
+          "href": "/zh-CN/privacy"
+        },
+        {
+          "label": "社区交流",
+          "href": "https://groups.google.com/g/holon-pioneers"
+        },
+        {
+          "label": "官方 X (@holonrun)",
+          "href": "https://x.com/holonrun"
+        },
+        {
+          "label": "GitHub",
+          "href": "https://github.com/holon-run/holon"
+        },
+        {
+          "label": "问题反馈",
+          "href": "https://github.com/holon-run/holon/issues"
+        },
+        {
+          "label": "版本发布",
+          "href": "https://github.com/holon-run/holon/releases"
+        }
       ]
     }
   ],
@@ -73,6 +99,14 @@
     {
       "label": "Privacy",
       "href": "/privacy"
+    },
+    {
+      "label": "Community",
+      "href": "https://groups.google.com/g/holon-pioneers"
+    },
+    {
+      "label": "X (@holonrun)",
+      "href": "https://x.com/holonrun"
     },
     {
       "label": "GitHub",
