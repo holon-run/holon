@@ -2,8 +2,15 @@
 mod budget;
 mod planner;
 mod render;
+mod snapshot;
 pub(crate) use planner::ContextPlanEvidence;
 pub(crate) use planner::{ContextPlanDecision, ContextPlanOutcome, ContextPlanReason};
+pub(crate) use snapshot::prepare_work_item_scoped_history;
+pub use snapshot::{
+    capture_context_from_storage, ContextAcquisitionReport, ContextReadStage, ContextSnapshot,
+    ContextSourceDescriptor, ContextSourceKind,
+};
+use snapshot::{HistoryObservations, HistorySnapshot, PendingTaskResult};
 // Re-import budget helpers for use within this module.
 use budget::{estimate_text_tokens, truncate_section_content};
 use planner::{
@@ -110,14 +117,12 @@ pub struct BuiltContext {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RecentTurnsReprojection {
-    turn_records: Vec<TurnRecord>,
-    messages: Vec<MessageEnvelope>,
-    briefs: Vec<BriefRecord>,
-    tools: Vec<ToolExecutionRecord>,
-    transcript: Vec<TranscriptEntry>,
+    history: std::sync::Arc<HistorySnapshot>,
     current_message: MessageEnvelope,
     current_work_item: Option<WorkItemRecord>,
     initial_budget: usize,
+    scoped_window: Option<usize>,
+    snapshot_id: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +137,10 @@ pub(crate) enum WorkItemScopedReprojection {
 }
 
 impl RecentTurnsReprojection {
+    pub(crate) fn snapshot_id(&self) -> u64 {
+        self.snapshot_id
+    }
+
     pub(crate) fn initial_budget(&self) -> usize {
         self.initial_budget
     }
@@ -143,7 +152,7 @@ impl RecentTurnsReprojection {
     }
 
     pub(crate) fn turn_count(&self) -> usize {
-        self.turn_records.len()
+        self.history.turn_records.len()
     }
 }
 
@@ -162,17 +171,17 @@ fn history_turns_without_current_input(
 }
 
 pub(crate) fn reproject_recent_turns(
-    storage: &AppStorage,
     reprojection: &RecentTurnsReprojection,
     budget: usize,
 ) -> Option<PromptSection> {
-    render_recent_turns_with_budget(
-        storage,
-        &reprojection.turn_records,
-        &reprojection.messages,
-        &reprojection.briefs,
-        &reprojection.tools,
-        &reprojection.transcript,
+    let history = &reprojection.history;
+    render_recent_turns_with_budget_from_snapshot(
+        &history.observations,
+        &history.turn_records,
+        &history.messages,
+        &history.briefs,
+        &history.tools,
+        &history.transcript,
         &reprojection.current_message,
         reprojection.current_work_item.as_ref(),
         budget,
@@ -181,7 +190,6 @@ pub(crate) fn reproject_recent_turns(
 }
 
 pub(crate) fn reproject_work_item_scoped_with_limit(
-    storage: &AppStorage,
     reprojection: &RecentTurnsReprojection,
     budget: usize,
     window_limit: usize,
@@ -189,50 +197,21 @@ pub(crate) fn reproject_work_item_scoped_with_limit(
     let Some(work_item) = reprojection.current_work_item.as_ref() else {
         return Ok(WorkItemScopedReprojection::NoCurrentWorkItem);
     };
-    let owner = crate::types::TurnOwner::WorkItem {
-        work_item_id: work_item.id.clone(),
-    };
-    let mut turn_records = history_turns_without_current_input(
-        storage.read_recent_turns_for_owner(&owner, window_limit.saturating_add(1))?,
-        &reprojection.current_message.id,
-        window_limit,
+    anyhow::ensure!(
+        reprojection.scoped_window == Some(window_limit),
+        "work-item history policy change requires explicit snapshot preparation"
     );
-    if let Some(source) = crate::runtime::provider_recovery::resolve_for_context(
-        storage,
-        &reprojection.current_message,
-    )? {
-        if !turn_records
-            .iter()
-            .any(|record| record.turn_id == source.source_turn.turn_id)
-        {
-            turn_records.push(source.source_turn);
-        }
-    }
-    if turn_records.is_empty() {
+    let history = &reprojection.history;
+    if history.turn_records.is_empty() {
         return Ok(WorkItemScopedReprojection::NoOwnedTurnRecords);
     }
-    let mut messages = Vec::new();
-    let mut briefs = Vec::new();
-    let mut tools = Vec::new();
-    hydrate_recent_turn_references(
-        storage,
-        &turn_records,
-        &mut messages,
-        &mut briefs,
-        &mut tools,
-    )?;
-    let turn_ids = turn_records
-        .iter()
-        .map(|record| record.turn_id.clone())
-        .collect::<Vec<_>>();
-    let transcript = storage.read_transcript_for_turns(&turn_ids)?;
-    let Some(content) = render_turn_records_with_budget(
-        storage,
-        &turn_records,
-        &messages,
-        &briefs,
-        &tools,
-        &transcript,
+    let Some(content) = render_turn_records_with_budget_from_snapshot(
+        &history.observations,
+        &history.turn_records,
+        &history.messages,
+        &history.briefs,
+        &history.tools,
+        &history.transcript,
         &reprojection.current_message,
         Some(work_item),
         budget,
@@ -240,10 +219,10 @@ pub(crate) fn reproject_work_item_scoped_with_limit(
         return Ok(WorkItemScopedReprojection::NoOwnedTurnRecords);
     };
     let evidence = build_recent_turn_projection_evidence(
-        &turn_records,
-        &messages,
-        &briefs,
-        &tools,
+        &history.turn_records,
+        &history.messages,
+        &history.briefs,
+        &history.tools,
         ProjectionOwner::WorkItem {
             work_item_id: work_item.id.clone(),
         },
@@ -251,7 +230,7 @@ pub(crate) fn reproject_work_item_scoped_with_limit(
     Ok(WorkItemScopedReprojection::Rendered {
         section: turn_section("recent_turns", content),
         evidence,
-        turns_loaded: turn_records.len(),
+        turns_loaded: history.turn_records.len(),
     })
 }
 
@@ -330,76 +309,65 @@ pub fn build_context_with_default_external_ingress(
     agent_home: &Path,
     default_external_ingress_override: Option<&ExternalTriggerRecord>,
 ) -> Result<BuiltContext> {
-    let mut messages = Vec::new();
-    let recovery_source =
-        crate::runtime::provider_recovery::resolve_for_context(storage, current_message)?;
-    let continuation_anchor_messages = if recovery_source.is_some() {
-        Vec::new()
-    } else {
-        storage.read_all_messages()?
-    };
-    let mut briefs = storage.read_recent_briefs(config.recent_briefs)?;
-    let mut tools = storage.read_recent_tool_executions(config.recent_messages)?;
-    let mut turn_records = history_turns_without_current_input(
-        storage.read_recent_turns(config.recent_messages.saturating_add(1))?,
-        &current_message.id,
-        config.recent_messages,
-    );
-    if let Some(source) = recovery_source.as_ref() {
-        if !turn_records
-            .iter()
-            .any(|record| record.turn_id == source.source_turn.turn_id)
-        {
-            turn_records.push(source.source_turn.clone());
-        }
-    }
-    hydrate_recent_turn_references(
+    let snapshot = capture_context_from_storage(
         storage,
-        &turn_records,
-        &mut messages,
-        &mut briefs,
-        &mut tools,
+        agent,
+        execution,
+        skills,
+        current_message,
+        continuation,
+        config,
+        agent_home,
+        default_external_ingress_override,
     )?;
-    let mut transcript = storage.read_recent_transcript(config.recent_messages)?;
-    if let Some(source) = recovery_source.as_ref() {
-        for entry in storage.read_transcript_for_turns(&[source.source_turn.turn_id.clone()])? {
-            if !transcript.iter().any(|existing| existing == &entry) {
-                transcript.push(entry);
-            }
-        }
-    }
-    let active_wait_conditions = storage
-        .active_wait_conditions_for_agent(&agent.id)?
-        .into_iter()
-        .filter(|condition| condition.work_item_id.is_some())
-        .collect::<Vec<_>>();
-    let episodes = storage.read_recent_context_episodes(config.recent_episode_candidates)?;
-    let work_queue_projection = storage.work_queue_prompt_projection()?;
-    let execution_work_item_id = agent
-        .current_execution_binding
-        .as_ref()
-        .and_then(|binding| binding.work_item_id.as_deref());
-    let execution_work_item = execution_work_item_id
-        .map(|work_item_id| storage.latest_work_item(work_item_id))
-        .transpose()?
-        .flatten();
-    let current_work_item =
-        if agent.current_execution_binding.is_some() || recovery_source.is_some() {
-            execution_work_item.as_ref()
-        } else {
-            work_queue_projection.current.as_ref()
-        };
+    build_context_from_snapshot(&snapshot, config.prompt_budget_estimated_tokens)
+}
 
+pub fn build_context_from_snapshot(
+    snapshot: &ContextSnapshot,
+    budget: usize,
+) -> Result<BuiltContext> {
+    anyhow::ensure!(
+        budget <= snapshot.data.config.prompt_budget_estimated_tokens,
+        "context budget expansion requires a newly prepared snapshot"
+    );
+    let mut config = snapshot.data.config.clone();
+    config.prompt_budget_estimated_tokens = budget;
+    let config = &config;
+    let _timer = crate::diagnostics::attribution::CONTEXT_RENDER.start();
+    let data = &snapshot.data;
+    let agent = &data.agent;
+    let execution = &data.execution;
+    let skills = &data.skills;
+    let current_message = &data.current_message;
+    let continuation = data.continuation.as_ref();
+    let recovery_source = data.recovery_source.as_ref();
+    let continuation_anchor_messages = &data.continuation_anchor_messages;
+    let HistorySnapshot {
+        turn_records,
+        messages,
+        briefs,
+        tools,
+        transcript,
+        observations,
+    } = data.history.as_ref();
+    let active_wait_conditions = &data.active_wait_conditions;
+    let episodes = &data.episodes;
+    let work_queue_projection = &data.work_queue_projection;
+    let current_work_item = data.current_work_item.as_ref();
+    let default_ingress = data.default_ingress.as_ref();
+    let active_task_count = data.active_task_count;
+    let active_tasks = &data.active_tasks;
+    let plan_observations = &data.plan_observations;
+    let notes_content = &data.notes_content;
+    let completion_reports = &data.completion_reports;
+    let pending_task_results = &data.pending_task_results;
     let mut candidates = Vec::new();
     candidates.push(context_candidate(
         section("agent", format!("Agent id: {}", agent.id)),
         None,
         false,
     ));
-    let default_ingress = match default_external_ingress_override {
-        Some(record) => Some(record.clone()),
-        None => default_external_ingress(storage, &agent.id)?,
-    };
     if let Some(default_ingress) = default_ingress {
         candidates.push(context_candidate(
             section(
@@ -423,10 +391,7 @@ pub fn build_context_with_default_external_ingress(
         None,
         false,
     ));
-    let active_task_count = storage.active_task_count_for_agent(&agent.id)?;
     if active_task_count > 0 {
-        let active_tasks =
-            storage.latest_active_task_records_for_agent(&agent.id, ACTIVE_TASKS_CONTEXT_LIMIT)?;
         candidates.push(context_candidate(
             section(
                 "active_tasks",
@@ -441,7 +406,7 @@ pub fn build_context_with_default_external_ingress(
         candidates.push(context_candidate(
             turn_section(
                 "current_work_item",
-                render_current_work_item(work_item, storage.data_dir(), &active_wait_conditions),
+                render_current_work_item(work_item, plan_observations, active_wait_conditions),
             ),
             Some(turn_section(
                 "current_work_item",
@@ -492,9 +457,8 @@ pub fn build_context_with_default_external_ingress(
     if let Some(content) = render_work_item_candidates(
         &work_queue_projection,
         current_work_item.map(|item| item.id.as_str()),
-        storage,
-        &agent.id,
-        storage.data_dir(),
+        completion_reports,
+        plan_observations,
     )? {
         candidates.push(context_candidate(
             turn_section("queued_blocked_work_items", content),
@@ -620,11 +584,9 @@ pub fn build_context_with_default_external_ingress(
         ));
     }
 
-    if let Some(notes_content) =
-        crate::notes_catalog::render_agent_home_notes_catalog_section(agent_home)
-    {
+    if let Some(notes_content) = notes_content {
         candidates.push(context_candidate(
-            section("agent_home_notes_catalog", notes_content),
+            section("agent_home_notes_catalog", notes_content.clone()),
             None,
             false,
         ));
@@ -683,17 +645,15 @@ pub fn build_context_with_default_external_ingress(
     let recent_turns_compact_budget = recent_turns_budget.min(128);
     let mut recent_turns_reprojection =
         (!turn_records.is_empty()).then(|| RecentTurnsReprojection {
-            turn_records: turn_records.clone(),
-            messages: messages.clone(),
-            briefs: briefs.clone(),
-            tools: tools.clone(),
-            transcript: transcript.clone(),
+            history: snapshot.data.history.clone(),
             current_message: current_message.clone(),
             current_work_item: current_work_item.cloned(),
             initial_budget: recent_turns_budget,
+            scoped_window: None,
+            snapshot_id: snapshot.id(),
         });
-    if let Some(content) = render_recent_turns_with_budget(
-        storage,
+    if let Some(content) = render_recent_turns_with_budget_from_snapshot(
+        observations,
         &turn_records,
         &messages,
         &briefs,
@@ -703,8 +663,8 @@ pub fn build_context_with_default_external_ingress(
         current_work_item,
         recent_turns_budget,
     ) {
-        let compact = render_recent_turns_with_budget(
-            storage,
+        let compact = render_recent_turns_with_budget_from_snapshot(
+            observations,
             &turn_records,
             &messages,
             &briefs,
@@ -737,7 +697,9 @@ pub fn build_context_with_default_external_ingress(
     let wake_hint_fallback = (!continuation_present)
         .then(|| render_wake_hint_context(current_message))
         .flatten();
-    if let Some(content) = render_pending_task_results(storage, agent, current_message)? {
+    if let Some(content) =
+        render_pending_task_results_from_snapshot(pending_task_results, current_message)
+    {
         let section = turn_section("pending_task_results", content);
         candidates.push(context_candidate(section.clone(), Some(section), true));
     }
@@ -1262,48 +1224,20 @@ fn render_active_tasks(tasks: &[TaskRecord], total_count: usize) -> String {
     lines.join("\n")
 }
 
-fn render_pending_task_results(
-    storage: &AppStorage,
-    agent: &AgentState,
-    current_message: &MessageEnvelope,
-) -> Result<Option<String>> {
-    let Some(activation_id) = agent
-        .current_execution_binding
-        .as_ref()
-        .and_then(|binding| binding.activation_id.as_deref())
-    else {
-        return Ok(None);
-    };
-    let Some(runtime_db) = storage.runtime_db()? else {
-        return Ok(None);
-    };
-    let records = runtime_db
-        .task_result_settlements()
-        .admitted_for_activation(&agent.id, activation_id)?;
-    let mut pending = Vec::new();
-    for record in &records {
-        if record.message_id == current_message.id {
-            continue;
-        }
-        let message = storage.read_message_by_id(&record.message_id)?;
-        if message
-            .as_ref()
-            .and_then(crate::wake_contract::agent_message_reply_reference)
-            == Some(current_message.id.as_str())
-        {
-            continue;
-        }
-        pending.push((record, message));
-    }
+fn render_pending_task_results_from_snapshot(
+    pending: &[PendingTaskResult],
+    _current_message: &MessageEnvelope,
+) -> Option<String> {
     if pending.is_empty() {
-        return Ok(None);
+        return None;
     }
-
     let mut lines = vec![format!(
         "Previously received terminal task results admitted to this execution (bounded to {PENDING_TASK_RESULTS_CONTEXT_LIMIT}; each result identity appears once):"
     )];
     let mut seen_reply_messages = std::collections::BTreeSet::new();
-    for (record, message) in pending.iter().take(PENDING_TASK_RESULTS_CONTEXT_LIMIT) {
+    for entry in pending.iter().take(PENDING_TASK_RESULTS_CONTEXT_LIMIT) {
+        let record = &entry.record;
+        let message = &entry.message;
         lines.push(format!(
             "- result_identity: {}",
             sanitize_inline(&record.result_identity)
@@ -1324,7 +1258,7 @@ fn render_pending_task_results(
         if let Some(message) = message {
             if let Some(reply_id) = crate::wake_contract::agent_message_reply_reference(message) {
                 if seen_reply_messages.insert(reply_id.to_owned()) {
-                    if let Some(reply) = storage.read_message_by_id(reply_id)? {
+                    if let Some(reply) = entry.reply.as_ref() {
                         lines.push(format!(
                             "  received_agent_message: {}",
                             message_header(&reply)
@@ -1362,7 +1296,7 @@ fn render_pending_task_results(
             pending.len() - PENDING_TASK_RESULTS_CONTEXT_LIMIT
         ));
     }
-    Ok(Some(lines.join("\n")))
+    Some(lines.join("\n"))
 }
 
 fn render_active_task_command(lines: &mut Vec<String>, command: &CommandTaskStatusSnapshot) {
@@ -1400,7 +1334,7 @@ fn render_active_task_command(lines: &mut Vec<String>, command: &CommandTaskStat
 
 fn render_current_work_item(
     work_item: &WorkItemRecord,
-    agent_home: &std::path::Path,
+    plan_observations: &BTreeMap<String, crate::types::WorkItemPlanArtifact>,
     active_wait_conditions: &[WaitConditionRecord],
 ) -> String {
     let scheduling = crate::work_item_scheduling::derive_work_item_scheduling(
@@ -1426,7 +1360,9 @@ fn render_current_work_item(
         ),
     ];
     lines.extend(render_work_item_plan_artifact_lines(
-        work_item, agent_home, "- ",
+        work_item,
+        plan_observations,
+        "- ",
     ));
     if !work_item.todo_list.is_empty() {
         lines.push("- Todo list:".to_string());
@@ -1616,75 +1552,73 @@ fn is_projectable_assistant_round(entry: &TranscriptEntry) -> bool {
 fn render_work_item_candidates(
     projection: &crate::storage::WorkQueueReadModel,
     displayed_work_item_id: Option<&str>,
-    storage: &AppStorage,
-    agent_id: &str,
-    agent_home: &std::path::Path,
+    completion_reports: &BTreeMap<String, CompletionReportProjection>,
+    plan_observations: &BTreeMap<String, crate::types::WorkItemPlanArtifact>,
 ) -> Result<Option<String>> {
-    let completion_reports = latest_completion_report_by_work_item(storage, agent_id)?;
     let mut lines = vec!["Work item candidates by scheduler ranking:".to_string()];
     append_candidate_group(
         &mut lines,
         "Triggered work items:",
         &projection.triggered_blocked,
         displayed_work_item_id,
-        &completion_reports,
-        agent_home,
+        completion_reports,
+        plan_observations,
     )?;
     append_candidate_group(
         &mut lines,
         "Focused runnable work items:",
         projection.current_runnable.as_slice(),
         displayed_work_item_id,
-        &completion_reports,
-        agent_home,
+        completion_reports,
+        plan_observations,
     )?;
     append_candidate_group(
         &mut lines,
         "Queued runnable work items:",
         &projection.queued_runnable,
         displayed_work_item_id,
-        &completion_reports,
-        agent_home,
+        completion_reports,
+        plan_observations,
     )?;
     append_candidate_group(
         &mut lines,
         "Parked/Yielded work items:",
         &projection.yielded,
         displayed_work_item_id,
-        &completion_reports,
-        agent_home,
+        completion_reports,
+        plan_observations,
     )?;
     append_candidate_group(
         &mut lines,
         "Waiting for operator:",
         &projection.waiting_for_operator,
         displayed_work_item_id,
-        &completion_reports,
-        agent_home,
+        completion_reports,
+        plan_observations,
     )?;
     append_candidate_group(
         &mut lines,
         "Blocked work items:",
         &projection.blocked,
         displayed_work_item_id,
-        &completion_reports,
-        agent_home,
+        completion_reports,
+        plan_observations,
     )?;
     append_candidate_group(
         &mut lines,
         "Completing work items:",
         &projection.completing,
         displayed_work_item_id,
-        &completion_reports,
-        agent_home,
+        completion_reports,
+        plan_observations,
     )?;
     append_candidate_group(
         &mut lines,
         "Recently completed work items:",
         &projection.completed_recent,
         displayed_work_item_id,
-        &completion_reports,
-        agent_home,
+        completion_reports,
+        plan_observations,
     )?;
     if lines.len() == 1 {
         return Ok(None);
@@ -1698,7 +1632,7 @@ fn append_candidate_group(
     items: &[crate::storage::WorkItemSchedulingProjection],
     displayed_work_item_id: Option<&str>,
     completion_reports: &BTreeMap<String, CompletionReportProjection>,
-    agent_home: &std::path::Path,
+    plan_observations: &BTreeMap<String, crate::types::WorkItemPlanArtifact>,
 ) -> Result<()> {
     if items.is_empty() {
         return Ok(());
@@ -1756,7 +1690,7 @@ fn append_candidate_group(
                 truncate_text(&report.text.replace('\n', " "), 160)
             ));
         }
-        if let Some(plan_ref) = render_work_item_plan_ref(record, agent_home) {
+        if let Some(plan_ref) = render_work_item_plan_ref(record, plan_observations) {
             lines.push(format!("  - {plan_ref}"));
         }
     }
@@ -1830,11 +1764,10 @@ fn latest_completion_report_by_work_item(
 
 fn render_work_item_plan_artifact_lines(
     work_item: &WorkItemRecord,
-    agent_home: &std::path::Path,
+    plan_observations: &BTreeMap<String, crate::types::WorkItemPlanArtifact>,
     prefix: &str,
 ) -> Vec<String> {
-    let plan_artifact =
-        crate::work_item_plan::ensure_plan_artifact(agent_home, work_item, None).ok();
+    let plan_artifact = plan_observations.get(&work_item.id);
     let Some(plan_artifact) = plan_artifact else {
         return Vec::new();
     };
@@ -1860,14 +1793,14 @@ fn render_work_item_plan_artifact_lines(
 
 fn render_work_item_plan_ref(
     work_item: &WorkItemRecord,
-    agent_home: &std::path::Path,
+    plan_observations: &BTreeMap<String, crate::types::WorkItemPlanArtifact>,
 ) -> Option<String> {
     if let Some(artifact) = work_item.plan_artifact.as_ref() {
         return Some(format!("Plan ref: {}", artifact.path.display()));
     }
 
-    crate::work_item_plan::ensure_plan_artifact(agent_home, work_item, None)
-        .ok()
+    plan_observations
+        .get(&work_item.id)
         .map(|artifact| format!("Plan ref: {}", artifact.path.display()))
 }
 
@@ -2062,8 +1995,8 @@ enum RecentTurnProjectionMode {
     Older,
 }
 
-fn render_recent_turn_brief_line(
-    storage: &AppStorage,
+fn render_recent_turn_brief_line_from_snapshot(
+    observations: &HistoryObservations,
     brief: &BriefRecord,
     mode: RecentTurnProjectionMode,
     budget: usize,
@@ -2073,7 +2006,7 @@ fn render_recent_turn_brief_line(
     }
 
     let brief_ref = format!("brief:{}", sanitize_inline(&brief.id));
-    let brief_text = resolved_brief_text(storage, brief);
+    let brief_text = observations.brief_text(brief);
     match mode {
         RecentTurnProjectionMode::Continuity => {
             render_continuity_brief_line(brief, &brief_text, &brief_ref, budget)
@@ -2538,8 +2471,8 @@ fn truncate_continuation_body(text: &str) -> String {
     }
 }
 
-fn render_recent_turns_with_budget(
-    storage: &AppStorage,
+fn render_recent_turns_with_budget_from_snapshot(
+    observations: &HistoryObservations,
     turn_records: &[TurnRecord],
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
@@ -2549,8 +2482,8 @@ fn render_recent_turns_with_budget(
     current_work_item: Option<&WorkItemRecord>,
     budget: usize,
 ) -> Option<String> {
-    render_turn_records_with_budget(
-        storage,
+    render_turn_records_with_budget_from_snapshot(
+        observations,
         turn_records,
         messages,
         briefs,
@@ -2562,8 +2495,8 @@ fn render_recent_turns_with_budget(
     )
 }
 
-fn render_turn_records_with_budget(
-    storage: &AppStorage,
+fn render_turn_records_with_budget_from_snapshot(
+    observations: &HistoryObservations,
     turn_records: &[TurnRecord],
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
@@ -2616,8 +2549,16 @@ fn render_turn_records_with_budget(
                 continuity_turn_id.as_deref(),
                 &nearby_turn_ids,
             );
-            render_turn_record_projection_with_transcript(
-                storage, record, messages, briefs, tools, transcript, None, mode, budget,
+            render_turn_record_projection_with_transcript_from_snapshot(
+                observations,
+                record,
+                messages,
+                briefs,
+                tools,
+                transcript,
+                None,
+                mode,
+                budget,
             )
         })
         .collect::<Vec<_>>();
@@ -2627,8 +2568,8 @@ fn render_turn_records_with_budget(
             .iter()
             .find(|record| turn_record_matches_message(record, operator))
         {
-            if let Some(rendered) = render_current_continuation_turn_record_projection(
-                storage,
+            if let Some(rendered) = render_current_continuation_turn_record_projection_from_snapshot(
+                observations,
                 record,
                 current_message,
                 operator,
@@ -2665,8 +2606,8 @@ fn recent_turn_projection_mode(
     }
 }
 
-fn render_turn_record_projection_with_transcript(
-    storage: &AppStorage,
+fn render_turn_record_projection_with_transcript_from_snapshot(
+    observations: &HistoryObservations,
     record: &TurnRecord,
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
@@ -2696,23 +2637,7 @@ fn render_turn_record_projection_with_transcript(
                     })
                 })
         });
-    let trigger_summary_is_valid = record
-        .trigger
-        .as_ref()
-        .and_then(|trigger| trigger.message_id.as_ref())
-        .is_none_or(|message_id| match storage.read_message_by_id(message_id) {
-            Ok(Some(message)) => turn_record_owns_object(record, message.turn_id.as_deref()),
-            Ok(None) => true,
-            Err(error) => {
-                tracing::warn!(
-                    turn_id = %record.turn_id,
-                    message_id = %message_id,
-                    %error,
-                    "recent_turns could not validate persisted trigger summary"
-                );
-                false
-            }
-        });
+    let trigger_summary_is_valid = observations.trigger_summary_valid(record);
     let mut lines = vec![format!(
         "- Turn {}:",
         if record.turn_index != 0 {
@@ -2791,7 +2716,9 @@ fn render_turn_record_projection_with_transcript(
             brief.id == *id && turn_record_owns_object(record, brief.turn_id.as_deref())
         })
     }) {
-        if let Some(rendered) = render_recent_turn_brief_line(storage, brief, mode, brief_budget) {
+        if let Some(rendered) =
+            render_recent_turn_brief_line_from_snapshot(observations, brief, mode, brief_budget)
+        {
             brief_budget = brief_budget.saturating_sub(estimate_text_tokens(&rendered));
             related_briefs.push(rendered);
         }
@@ -2976,8 +2903,8 @@ fn render_turn_execution_sequence(
     (rendered, has_execution_sequence)
 }
 
-fn render_current_continuation_turn_record_projection(
-    storage: &AppStorage,
+fn render_current_continuation_turn_record_projection_from_snapshot(
+    observations: &HistoryObservations,
     record: &TurnRecord,
     current_message: &MessageEnvelope,
     operator: &MessageEnvelope,
@@ -2988,8 +2915,8 @@ fn render_current_continuation_turn_record_projection(
     current_work_item: Option<&WorkItemRecord>,
     budget: usize,
 ) -> Option<String> {
-    let mut rendered = render_turn_record_projection_with_transcript(
-        storage,
+    let mut rendered = render_turn_record_projection_with_transcript_from_snapshot(
+        observations,
         record,
         messages,
         briefs,
@@ -3790,6 +3717,69 @@ fn normalize_text(text: &str) -> String {
 }
 
 #[cfg(test)]
+fn render_turn_records_with_budget(
+    storage: &AppStorage,
+    turn_records: &[TurnRecord],
+    messages: &[MessageEnvelope],
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    transcript: &[TranscriptEntry],
+    current_message: &MessageEnvelope,
+    current_work_item: Option<&WorkItemRecord>,
+    budget: usize,
+) -> Option<String> {
+    let observations = HistoryObservations::capture(storage, turn_records, briefs);
+    render_turn_records_with_budget_from_snapshot(
+        &observations,
+        turn_records,
+        messages,
+        briefs,
+        tools,
+        transcript,
+        current_message,
+        current_work_item,
+        budget,
+    )
+}
+
+#[cfg(test)]
+fn render_turn_record_projection_with_transcript(
+    storage: &AppStorage,
+    record: &TurnRecord,
+    messages: &[MessageEnvelope],
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    transcript: &[TranscriptEntry],
+    continuation: Option<&MessageEnvelope>,
+    mode: RecentTurnProjectionMode,
+    budget: usize,
+) -> Option<String> {
+    let observations = HistoryObservations::capture(storage, std::slice::from_ref(record), briefs);
+    render_turn_record_projection_with_transcript_from_snapshot(
+        &observations,
+        record,
+        messages,
+        briefs,
+        tools,
+        transcript,
+        continuation,
+        mode,
+        budget,
+    )
+}
+
+#[cfg(test)]
+fn render_pending_task_results(
+    storage: &AppStorage,
+    agent: &AgentState,
+    message: &MessageEnvelope,
+) -> Result<Option<String>> {
+    Ok(render_pending_task_results_from_snapshot(
+        &snapshot::load_pending_task_results(storage, agent, message)?,
+        message,
+    ))
+}
+#[cfg(test)]
 mod tests {
     use serde_json::json;
     use std::path::PathBuf;
@@ -3863,6 +3853,218 @@ mod tests {
             storage.data_dir(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn immutable_snapshot_renders_after_storage_and_resources_are_removed() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let mut agent = AgentState::new("default");
+        let work = WorkItemRecord::new("default", "frozen objective", WorkItemState::Open);
+        storage.append_work_item(&work).unwrap();
+        agent.current_work_item_id = Some(work.id.clone());
+        storage.write_agent(&agent).unwrap();
+        let artifact = crate::work_item_plan::ensure_plan_artifact(
+            storage.data_dir(),
+            &work,
+            Some("frozen plan sentinel_7742"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("notes")).unwrap();
+        std::fs::write(dir.path().join("notes/observed.md"),
+            "---\ntitle: frozen note sentinel_7742\nsummary: prepared resource\n---\nprivate body\n").unwrap();
+        let mut source = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("snapshot-test".into()),
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "frozen historical input".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::CliPrompt,
+            AdmissionContext::LocalProcess,
+        );
+        source.turn_id = Some("turn_frozen_snapshot".into());
+        source.work_item_id = Some(work.id.clone());
+        source
+            .source_refs
+            .insert("causation".into(), "message:original_source".into());
+        source
+            .source_refs
+            .insert("opaque_receipt".into(), "receipt with spaces".into());
+        storage.append_message(&source).unwrap();
+        let entry = TranscriptEntry::new(
+            "default",
+            TranscriptEntryKind::AssistantRound,
+            Some(1),
+            None,
+            json!({"blocks": [{"type":"text", "text":"frozen resolved brief sentinel_7742"}]}),
+        );
+        storage.append_transcript_entry(&entry).unwrap();
+        let mut brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "preview only",
+            Some(source.id.clone()),
+            None,
+        );
+        brief.turn_id = source.turn_id.clone();
+        brief.content_source = BriefContentSource::TranscriptEntry {
+            entry_id: entry.id.clone(),
+            relation: BriefContentSourceRelation::DerivedFrom,
+        };
+        storage.append_brief(&brief).unwrap();
+        let mut turn = TurnRecord::new("default", "turn_frozen_snapshot", 1);
+        turn.input_message_ids = vec![source.id.clone()];
+        turn.produced_brief_ids = vec![brief.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&source));
+        storage.append_turn(&turn).unwrap();
+        let current = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            source.origin.clone(),
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "frozen current request".into(),
+            },
+        );
+        let execution = execution_snapshot_for(&agent);
+        let skills = SkillsRuntimeView::default();
+        let config = ContextConfig {
+            prompt_budget_estimated_tokens: 8192,
+            ..ContextConfig::default()
+        };
+        let capture = |storage: &AppStorage| {
+            capture_context_from_storage(
+                storage,
+                &agent,
+                &execution,
+                &skills,
+                &current,
+                None,
+                &config,
+                dir.path(),
+                None,
+            )
+            .unwrap()
+        };
+        let snapshot = capture(&storage);
+        let shared = snapshot.clone();
+        assert!(std::sync::Arc::ptr_eq(&snapshot.data, &shared.data));
+        let full = build_context_from_snapshot(&snapshot, 8192).unwrap();
+        let smaller = build_context_from_snapshot(&snapshot, 4096).unwrap();
+        let sections = serde_json::to_value(&full.sections).unwrap();
+        let smaller_sections = serde_json::to_value(&smaller.sections).unwrap();
+        let text = full
+            .sections
+            .iter()
+            .map(|section| section.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for expected in [
+            "frozen plan sentinel_7742",
+            "frozen note sentinel_7742",
+            "frozen resolved brief sentinel_7742",
+            "frozen current request",
+        ] {
+            assert!(text.contains(expected), "missing {expected}");
+        }
+        let descriptor = snapshot
+            .descriptors()
+            .iter()
+            .find(|item| item.reference == format!("message:{}", source.id))
+            .unwrap();
+        assert_eq!(
+            descriptor.authority_class,
+            Some(AuthorityClass::OperatorInstruction)
+        );
+        assert_eq!(descriptor.origin, Some(source.origin.clone()));
+        assert_eq!(
+            descriptor.admission_context,
+            Some(AdmissionContext::LocalProcess)
+        );
+        assert_eq!(descriptor.provenance_refs, source.source_refs);
+        assert_eq!(descriptor.source_refs, vec!["message:original_source"]);
+        let brief_descriptor = snapshot
+            .descriptors()
+            .iter()
+            .find(|item| item.reference == format!("brief:{}", brief.id))
+            .unwrap();
+        assert_eq!(
+            brief_descriptor.content_source,
+            Some(brief.content_source.clone())
+        );
+        let work_descriptor = snapshot
+            .descriptors()
+            .iter()
+            .find(|item| item.reference == format!("work_item:{}", work.id))
+            .unwrap();
+        assert_eq!(work_descriptor.revision, Some(work.revision));
+        assert_eq!(
+            work_descriptor.body_locator,
+            Some(artifact.path.display().to_string())
+        );
+        assert!(snapshot
+            .descriptors()
+            .iter()
+            .all(|item| crate::memory::refs::RuntimeRef::parse(&item.reference).is_ok()));
+        let acquired = serde_json::to_value(snapshot.acquisition()).unwrap();
+        // Reopening the same persisted facts preserves the rendered input.
+        drop(storage);
+        let reopened = AppStorage::new_for_test(dir.path()).unwrap();
+        assert_eq!(
+            sections,
+            serde_json::to_value(
+                build_context_from_snapshot(&capture(&reopened), 8192)
+                    .unwrap()
+                    .sections
+            )
+            .unwrap()
+        );
+        let late = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            source.origin.clone(),
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "late input must not enter captured context".into(),
+            },
+        );
+        append_turn_for_message(&reopened, &late, "turn_after_snapshot", 2);
+        std::fs::write(&artifact.path, "late plan must not enter captured context").unwrap();
+        drop(reopened);
+        std::fs::remove_dir_all(dir.path()).unwrap();
+        assert_eq!(
+            sections,
+            serde_json::to_value(build_context_from_snapshot(&shared, 8192).unwrap().sections)
+                .unwrap()
+        );
+        assert_eq!(
+            smaller_sections,
+            serde_json::to_value(build_context_from_snapshot(&shared, 4096).unwrap().sections)
+                .unwrap()
+        );
+        assert_eq!(snapshot.id(), shared.id());
+        assert_eq!(
+            acquired,
+            serde_json::to_value(shared.acquisition()).unwrap()
+        );
+        assert_eq!(
+            full.recent_turns_reprojection
+                .as_ref()
+                .unwrap()
+                .snapshot_id(),
+            snapshot.id()
+        );
+        assert!(build_context_from_snapshot(&snapshot, 8193).is_err());
     }
 
     #[test]
@@ -4025,21 +4227,20 @@ mod tests {
             },
         );
         let reprojection = RecentTurnsReprojection {
-            turn_records: storage.read_recent_turns(12).unwrap(),
-            messages: Vec::new(),
-            briefs: Vec::new(),
-            tools: Vec::new(),
-            transcript: Vec::new(),
+            history: std::sync::Arc::new(HistorySnapshot::default()),
             current_message,
             current_work_item: Some(work_item),
             initial_budget: 64_000,
+            scoped_window: None,
+            snapshot_id: 1,
         };
+        let reprojection = prepare_work_item_scoped_history(&storage, &reprojection, 64).unwrap();
 
         let WorkItemScopedReprojection::Rendered {
             section,
             evidence,
             turns_loaded,
-        } = reproject_work_item_scoped_with_limit(&storage, &reprojection, 64_000, 64).unwrap()
+        } = reproject_work_item_scoped_with_limit(&reprojection, 64_000, 64).unwrap()
         else {
             panic!("owner-scoped projection should render");
         };

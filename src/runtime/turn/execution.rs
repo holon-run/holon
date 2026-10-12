@@ -245,8 +245,7 @@ impl RuntimeHandle {
         if next_budget >= current_budget {
             return Ok(None);
         }
-        let Some(reprojected_prompt) =
-            prompt.reproject_recent_turns(&self.inner.storage, next_budget, available_tools)
+        let Some(reprojected_prompt) = prompt.reproject_recent_turns(next_budget, available_tools)
         else {
             return Ok(None);
         };
@@ -1985,8 +1984,11 @@ impl TurnExecution<'_> {
         let mut history_window_turns_loaded = effective_prompt.recent_turn_count();
         if configured_selector == crate::projection_eval::HistorySelector::WorkItemScoped {
             if projection_fallback_reason.is_none() {
-                match effective_prompt.reproject_for_history_selector(
+                let prepared_prompt = effective_prompt.prepare_work_item_scoped_history(
                     &runtime.inner.storage,
+                    scoped_window.limit,
+                )?;
+                match prepared_prompt.reproject_for_history_selector(
                     projection_budget,
                     &available_tools,
                     configured_selector,
@@ -2406,7 +2408,6 @@ impl TurnExecution<'_> {
                                 }
                                 let Some(reprojected_prompt) = effective_prompt
                                     .reproject_recent_turns(
-                                        &runtime.inner.storage,
                                         next_budget,
                                         &request_tools,
                                     )

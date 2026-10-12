@@ -2998,6 +2998,135 @@ async fn turn_local_compaction_fails_fast_when_baseline_exceeds_budget() {
 }
 
 #[tokio::test]
+async fn prepared_scoped_prompt_and_budget_retry_survive_storage_removal() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        ContextConfig {
+            recent_messages: 1,
+            prompt_budget_estimated_tokens: 128_000,
+            turn_projection_budget_ratio: 1.0,
+            turn_projection_min_budget: 0,
+            turn_projection_max_budget: 64_000,
+            ..context_config()
+        },
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "keep owner history through retries".into(),
+            Some(crate::types::WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    let append_history = |turn_id: &str, index: u64, owner: &str, text: String| {
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text { text },
+        );
+        message.turn_id = Some(turn_id.into());
+        message.work_item_id = Some(owner.into());
+        runtime.storage().append_message(&message).unwrap();
+        let mut turn = TurnRecord::new("default", turn_id, index);
+        turn.owner = Some(crate::types::TurnOwner::WorkItem {
+            work_item_id: owner.into(),
+        });
+        turn.current_work_item_id = Some(owner.into());
+        turn.input_message_ids = vec![message.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
+        runtime.storage().append_turn(&turn).unwrap();
+    };
+    append_history(
+        "turn-owner-snapshot",
+        1,
+        &work_item.id,
+        format!("OWNER_SNAPSHOT_INPUT {}", "owner-evidence ".repeat(1000)),
+    );
+    append_history(
+        "turn-unrelated-snapshot",
+        2,
+        "work-unrelated",
+        "UNRELATED_RECENT_INPUT".into(),
+    );
+    let original = runtime
+        .preview_prompt(
+            "continue the owner task".into(),
+            AuthorityClass::OperatorInstruction,
+        )
+        .await
+        .unwrap();
+    let prepared = original
+        .prepare_work_item_scoped_history(runtime.storage(), 8)
+        .unwrap();
+    append_history(
+        "turn-late-snapshot",
+        3,
+        &work_item.id,
+        "LATE_STORAGE_INPUT".into(),
+    );
+    drop(runtime);
+    drop(dir);
+    drop(workspace);
+
+    let outcome = prepared
+        .reproject_for_history_selector(
+            64_000,
+            &[],
+            crate::projection_eval::HistorySelector::WorkItemScoped,
+            8,
+        )
+        .unwrap();
+    let prompt = match outcome {
+        crate::prompt::HistoryReprojectionOutcome::Adopted {
+            prompt,
+            turns_loaded,
+        }
+        | crate::prompt::HistoryReprojectionOutcome::IdenticalRenderNoop {
+            prompt,
+            turns_loaded,
+        } => {
+            assert_eq!(turns_loaded, 1);
+            prompt
+        }
+        other => panic!("prepared owner history should render: {other:?}"),
+    };
+    let history = |prompt: &crate::prompt::EffectivePrompt| {
+        prompt
+            .context_sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .unwrap()
+            .content
+            .clone()
+    };
+    assert!(history(&prompt).contains("OWNER_SNAPSHOT_INPUT"));
+    assert!(!history(&prompt).contains("UNRELATED_RECENT_INPUT"));
+    assert!(!history(&prompt).contains("LATE_STORAGE_INPUT"));
+    let reduced = prompt
+        .reproject_recent_turns(1_000, &[])
+        .expect("fixture must contain reducible owner history");
+    assert!(history(&reduced).contains("turn-owner-snapshot"));
+    assert!(!history(&reduced).contains("UNRELATED_RECENT_INPUT"));
+    assert!(!history(&reduced).contains("LATE_STORAGE_INPUT"));
+}
+
+#[tokio::test]
 async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -3062,7 +3191,7 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
         .await
         .unwrap();
     let reduced_prompt = prompt
-        .reproject_recent_turns(runtime.storage(), 0, &available_tools)
+        .reproject_recent_turns(0, &available_tools)
         .expect("fixture must contain removable recent turns");
     let baseline_tokens = |prompt: &crate::prompt::EffectivePrompt| {
         let frame = super::super::provider_turn::build_provider_prompt_frame(prompt);

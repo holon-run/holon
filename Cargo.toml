@@ -134,3 +134,7 @@ harness = false
 [[bench]]
 name = "conversation_read"
 harness = false
+
+[[bench]]
+name = "context_snapshot"
+harness = false

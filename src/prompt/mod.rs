@@ -18,9 +18,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     context::{
-        build_context_with_default_external_ingress, reproject_recent_turns,
-        reproject_work_item_scoped_with_limit, BuiltContext, ContextConfig, ContextPlanEvidence,
-        RecentTurnsReprojection, WorkItemScopedReprojection,
+        build_context_with_default_external_ingress, prepare_work_item_scoped_history,
+        reproject_recent_turns, reproject_work_item_scoped_with_limit, BuiltContext, ContextConfig,
+        ContextPlanEvidence, RecentTurnsReprojection, WorkItemScopedReprojection,
     },
     projection_eval::{
         compare_prompt_history_selectors, manifest_from_effective_prompt,
@@ -111,6 +111,14 @@ pub(crate) enum HistoryReprojectionOutcome {
 }
 
 impl EffectivePrompt {
+    /// Identity of the prepared history input; scoped preparation creates a new token.
+    /// Budget-only rendering preserves it. This is not an owner publication revision.
+    pub fn context_snapshot_id(&self) -> Option<u64> {
+        self.recent_turns_reprojection
+            .as_ref()
+            .map(RecentTurnsReprojection::snapshot_id)
+    }
+
     pub fn projection_manifest(&self) -> ProjectionManifest {
         manifest_from_effective_prompt(self)
     }
@@ -128,9 +136,28 @@ impl EffectivePrompt {
         compare_prompt_history_selectors(self)
     }
 
-    pub(crate) fn reproject_for_history_selector(
+    /// Prepare owner-scoped evidence once; rendering and retries only use this copy.
+    pub(crate) fn prepare_work_item_scoped_history(
         &self,
         storage: &AppStorage,
+        window: usize,
+    ) -> Result<Self> {
+        let mut prompt = self.clone();
+        if !matches!(self.projection_owner, ProjectionOwner::WorkItem { .. }) {
+            return Ok(prompt);
+        }
+        if let Some(reprojection) = self.recent_turns_reprojection.as_ref() {
+            prompt.recent_turns_reprojection = Some(prepare_work_item_scoped_history(
+                storage,
+                reprojection,
+                window,
+            )?);
+        }
+        Ok(prompt)
+    }
+
+    pub(crate) fn reproject_for_history_selector(
+        &self,
         budget: usize,
         available_tools: &[ToolSpec],
         selector: HistorySelector,
@@ -146,15 +173,13 @@ impl EffectivePrompt {
         };
         let (replacement, replacement_evidence, turns_loaded) = match selector {
             HistorySelector::RecentTurns => {
-                let Some(replacement) = reproject_recent_turns(storage, reprojection, budget)
-                else {
+                let Some(replacement) = reproject_recent_turns(reprojection, budget) else {
                     return Ok(HistoryReprojectionOutcome::NoOwnedTurnRecords);
                 };
                 (replacement, None, reprojection.turn_count())
             }
             HistorySelector::WorkItemScoped => {
                 match reproject_work_item_scoped_with_limit(
-                    storage,
                     reprojection,
                     budget,
                     work_item_scoped_window,
@@ -250,7 +275,6 @@ impl EffectivePrompt {
 
     pub(crate) fn reproject_recent_turns(
         &self,
-        storage: &AppStorage,
         budget: usize,
         available_tools: &[ToolSpec],
     ) -> Option<Self> {
@@ -258,7 +282,7 @@ impl EffectivePrompt {
         if budget >= reprojection.initial_budget() {
             return None;
         }
-        let replacement = reproject_recent_turns(storage, reprojection, budget);
+        let replacement = reproject_recent_turns(reprojection, budget);
         let replacement_for_evidence = replacement.clone();
         let mut context_sections = self
             .context_sections
