@@ -3758,7 +3758,7 @@ impl MessageRepository<'_> {
                          json_extract(payload_json, '$.authority_class') IN ('operator_instruction', 'trusted_operator')
                          OR (
                            json_extract(payload_json, '$.authority_class') IS NULL
-                           AND json_extract(payload_json, '$.trust') = 'trusted_operator'
+                           AND json_extract(payload_json, '$.trust') IN ('operator_instruction', 'trusted_operator')
                          )
                        )
                        AND json_extract(payload_json, '$.origin.kind') = 'operator'
@@ -3778,7 +3778,7 @@ impl MessageRepository<'_> {
                          json_extract(payload_json, '$.authority_class') IN ('operator_instruction', 'trusted_operator')
                          OR (
                            json_extract(payload_json, '$.authority_class') IS NULL
-                           AND json_extract(payload_json, '$.trust') = 'trusted_operator'
+                           AND json_extract(payload_json, '$.trust') IN ('operator_instruction', 'trusted_operator')
                          )
                        )
                        AND json_extract(payload_json, '$.origin.kind') = 'operator'

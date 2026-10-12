@@ -696,6 +696,49 @@ mod tests {
         // predicate: legacy-authority carries the highest valid message_seq.
         assert_eq!(any_agent.id, "legacy-authority");
 
+        // The legacy `trust` field also accepts the canonical value, so both
+        // query variants must select a row that has no `authority_class`.
+        let mut legacy_trust_canonical = serde_json::to_value(anchor_candidate_message(
+            "legacy-trust-canonical",
+            "agent-legacy-trust-canonical",
+            Some(80),
+            80,
+            operator_origin(),
+            crate::types::AuthorityClass::OperatorInstruction,
+        ))?;
+        let legacy_trust_canonical_object = legacy_trust_canonical
+            .as_object_mut()
+            .expect("message envelope must serialize as an object");
+        legacy_trust_canonical_object.remove("authority_class");
+        legacy_trust_canonical_object.insert(
+            "trust".into(),
+            serde_json::Value::String("operator_instruction".into()),
+        );
+        connection.execute(
+            "INSERT INTO messages (
+                evidence_id, agent_id, message_id, message_seq, created_at, kind, payload_json
+             ) VALUES (?1, ?2, ?1, ?3, ?4, ?5, ?6)",
+            params![
+                "legacy-trust-canonical",
+                "agent-legacy-trust-canonical",
+                80_i64,
+                Utc::now().to_rfc3339(),
+                "operator_prompt",
+                serde_json::to_string(&legacy_trust_canonical)?,
+            ],
+        )?;
+        let legacy = db
+            .messages()
+            .latest_trusted_operator(Some("agent-legacy-trust-canonical"))?
+            .expect("canonical legacy trust anchor expected");
+        assert_eq!(legacy.id, "legacy-trust-canonical");
+
+        let any_agent_canonical = db
+            .messages()
+            .latest_trusted_operator(None)?
+            .expect("latest trusted operator expected across agents");
+        assert_eq!(any_agent_canonical.id, "legacy-trust-canonical");
+
         assert!(db
             .messages()
             .latest_trusted_operator(Some("agent-missing"))?
@@ -709,7 +752,7 @@ mod tests {
                  json_extract(payload_json, '$.authority_class') IN ('operator_instruction', 'trusted_operator') \
                  OR ( \
                    json_extract(payload_json, '$.authority_class') IS NULL \
-                   AND json_extract(payload_json, '$.trust') = 'trusted_operator' \
+                   AND json_extract(payload_json, '$.trust') IN ('operator_instruction', 'trusted_operator') \
                  ) \
                ) \
                AND json_extract(payload_json, '$.origin.kind') = 'operator' \
