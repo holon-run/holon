@@ -262,6 +262,14 @@ remain host-owned. Ownership transfer between a loaded runtime and an unloaded
 agent coordinator uses the existing lifecycle/admission fences. Two owners
 must never concurrently accept authoritative writes for one agent incarnation.
 
+A host-owned per-agent slot outlives any execution runtime. Ownership transfer
+uses the same mutation reservation as submissions; it cannot overtake a pending
+commit. Durable identity incarnation, process-local owner epoch, and publication
+generation are distinct: identity recreation changes the receipt namespace,
+owner replacement fences old handles, and publication advances only within the
+current owner epoch. A successor inherits unresolved recovery responsibility;
+claiming ownership does not itself open the publication gate.
+
 Unloaded metadata mutations can load the necessary state, use the same commit
 protocol, and release it without starting a provider or scheduler execution.
 Read-only access to unloaded agents continues to use durable reads and must not
@@ -325,6 +333,14 @@ Publication does not perform a second authoritative write. Resolve conflicts
 before commit or submit a new explicit command after installing the committed
 result. A replay of an older committed command returns its receipt without
 reinstalling historical records over a newer published root.
+
+A per-agent reservation spans preparation, persistence, and publication or
+explicit recovery handoff. Runtime-state locks and the publication gate are
+short critical sections used to copy or install facts; they are released before
+SQL, provider, tool, or network waits. Reservation acquisition belongs at the
+command entry point, before taking state locks. Acquiring a reservation inside
+a legacy persistence helper that already holds a state lock reverses this order.
+Root, readiness, and owner epoch are validated under one publication gate.
 
 Transaction callbacks may be retried and must have no provider, filesystem,
 notification, or external side effects. Persistence stores changed records,
@@ -398,6 +414,16 @@ old owner exits rather than reloading and overwriting its successor. Releasing
 or replacing an owner still requires commit reconciliation, execution
 quiescence, and producer/admission fencing; publication failure grants no
 shortcut to unload.
+
+Persistence errors retain transaction phase and certainty independently of
+retryability. A failed commit or uncertain cleanup must not rerun a transaction
+callback merely because the underlying error is normally retryable. Only a
+proven uncommitted attempt may use that retry policy.
+
+The owner retains commit and publication responsibility after a request is
+cancelled. Dropping a waiting request or reservation cannot reopen a gate after
+SQL may have committed. Shutdown and unload drain owned mutation tasks outside
+the reservation so admitted producers can complete their terminal settlements.
 
 Event, scheduler, or index-worker notification failures after successful root
 publication use durable rediscovery and bounded retries. They do not invalidate

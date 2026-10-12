@@ -484,9 +484,18 @@ impl RuntimeHandle {
                 .all(|task| task.is_finished()),
             "agent_cleanup_blocked: owned_task_exit_pending"
         );
+        anyhow::ensure!(
+            self.inner
+                .mutation_tasks
+                .lock()
+                .expect("mutation tasks poisoned")
+                .all_finished(),
+            "agent_cleanup_blocked: mutation_exit_pending"
+        );
         let closing = self.inner.execution_admission.try_close()?;
         let admitted = admit()?;
         closing.commit();
+        self.close_mutation_admission();
         self.inner
             .shutdown_requested
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -497,6 +506,7 @@ impl RuntimeHandle {
     }
 
     pub(crate) async fn request_service_shutdown(&self) -> Result<()> {
+        self.close_mutation_admission();
         self.inner
             .shutdown_requested
             .store(true, std::sync::atomic::Ordering::SeqCst);

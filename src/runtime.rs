@@ -14,6 +14,7 @@ mod failure;
 mod first_run_intro;
 mod lifecycle;
 mod message_dispatch;
+pub(crate) mod mutation_owner;
 mod operator;
 mod operator_dispatch;
 pub(crate) mod provider_recovery;
@@ -23,6 +24,7 @@ mod scheduler;
 mod scheduler_acceptance;
 mod scheduler_continuation;
 pub(crate) mod scheduler_executor;
+mod state_mutation;
 mod subagent;
 mod task_result_recovery;
 mod task_state_reducer;
@@ -120,7 +122,7 @@ use crate::{
         transitions::{
             PostCommitWarning, TransitionApplyResult, TransitionCommit, TransitionFaultPoint,
         },
-        RuntimeDb, RuntimeStateTransitionConflict,
+        RuntimeDb,
     },
     runtime_error::describe_runtime_error,
     runtime_event::RuntimeEventKind,
@@ -419,6 +421,7 @@ pub struct RuntimeHandle {
 
 struct RuntimeInner {
     identity_incarnation: u64,
+    mutation_owner: mutation_owner::MutationOwner,
     agent: Mutex<RuntimeAgent>,
     projection_cache: Mutex<AgentRuntimeProjectionCache>,
     object_query_cache: Arc<crate::object_query_cache::ObjectQueryCache>,
@@ -443,6 +446,7 @@ struct RuntimeInner {
     host_bridge: Option<RuntimeHostBridge>,
     task_handles: Mutex<HashMap<String, ManagedTaskHandle>>,
     owned_task_handles: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
+    mutation_tasks: StdMutex<state_mutation::OwnedMutationTasks>,
     recovered_tasks: Mutex<Option<Vec<TaskRecord>>>,
     recovered_timers: Mutex<Option<Vec<TimerRecord>>>,
     bootstrap_result: StdMutex<Option<std::result::Result<(), String>>>,
@@ -5529,14 +5533,9 @@ impl RuntimeHandle {
                 }
                 Err(error) => {
                     let wait_conflict = prepared_wait.is_some()
-                        && error
-                            .downcast_ref::<RuntimeStateTransitionConflict>()
+                        && crate::runtime_db::retryable_state_transition_conflict(&error)
                             .is_some_and(|conflict| {
-                                conflict.retryable()
-                                    && matches!(
-                                        conflict.domain(),
-                                        "task_wait" | "task_result_admission"
-                                    )
+                                matches!(conflict.domain(), "task_wait" | "task_result_admission")
                             });
                     if wait_conflict && attempt + 1 < ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
                         let previous = prepared_wait.as_deref().expect("prepared wait conflict");
@@ -6470,6 +6469,24 @@ impl RuntimeHandle {
                 "failed to persist agent runtime loop failure audit event"
             );
         }
+        // Failure cleanup is still a legacy whole-row writer. It must never
+        // overwrite a committed posture with the pre-publication memory copy.
+        let reservation = match self.inner.mutation_owner.reserve().await {
+            Ok(reservation) => reservation,
+            Err(owner_error) => {
+                tracing::warn!(agent_id = %agent_id, error = %owner_error,
+                    "skipped runtime failure state write for a replaced owner");
+                return;
+            }
+        };
+        match reservation.recovery() {
+            Ok(None) => {}
+            recovery => {
+                tracing::warn!(agent_id = %agent_id, recovery = ?recovery,
+                    "skipped runtime failure state write pending posture reconciliation");
+                return;
+            }
+        }
         let mut guard = self.inner.agent.lock().await;
         guard.state.current_run_id = None;
         guard.current_run_abort = None;
@@ -7203,14 +7220,9 @@ fn normalized_turn_id(turn_id: Option<&str>) -> Option<String> {
 }
 
 pub(crate) fn retryable_enqueue_conflict(error: &anyhow::Error, agent_id: &str) -> bool {
-    error.chain().any(|source| {
-        source
-            .downcast_ref::<RuntimeStateTransitionConflict>()
-            .is_some_and(|conflict| {
-                conflict.retryable()
-                    && ((conflict.domain() == "agent_state" && conflict.record_id() == agent_id)
-                        || conflict.domain() == "wait_condition_trigger")
-            })
+    crate::runtime_db::retryable_state_transition_conflict(error).is_some_and(|conflict| {
+        (conflict.domain() == "agent_state" && conflict.record_id() == agent_id)
+            || conflict.domain() == "wait_condition_trigger"
     })
 }
 

@@ -776,11 +776,7 @@ impl RuntimeHandle {
 }
 
 fn task_transition_error_is_retryable_conflict(error: &anyhow::Error) -> bool {
-    error.chain().any(|source| {
-        source
-            .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
-            .is_some_and(crate::runtime_db::RuntimeStateTransitionConflict::retryable)
-    })
+    crate::runtime_db::retryable_state_transition_conflict(error).is_some()
 }
 
 fn stable_terminal_task_event_id(event_kind: &str, task: &TaskRecord) -> String {

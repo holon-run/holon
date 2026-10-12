@@ -40,6 +40,7 @@ use crate::{
     prompt::{build_effective_prompt_with_apply_patch_surface, EffectivePrompt},
     provider::{build_provider_from_config, AgentProvider, BootstrapProvider},
     runtime::{
+        mutation_owner::{MutationOwner, MutationOwnerRegistry},
         InitialWorkspaceBinding, LightweightAgentStateProjection, RuntimeHandle,
         SchedulerRepairInspection,
     },
@@ -308,6 +309,8 @@ pub(crate) struct HostInner {
     bootstrap_provider_active: AtomicBool,
     bootstrap_ready_notify: Notify,
     runtimes: RwLock<HostRuntimeRegistry>,
+    shutdown_operation: Mutex<Option<HostShutdownOperation>>,
+    mutation_owners: MutationOwnerRegistry,
     runtime_recovery_tx: mpsc::UnboundedSender<RuntimeRecoveryNotice>,
     runtime_recovery_rx: Mutex<Option<mpsc::UnboundedReceiver<RuntimeRecoveryNotice>>>,
     runtime_recovery_token: CancellationToken,
@@ -398,8 +401,32 @@ enum HostRuntimePhase {
 struct HostRuntimeRegistry {
     phase: HostRuntimePhase,
     agents: BTreeMap<String, AgentEntry>,
+    unloading_mutations: BTreeMap<u64, RuntimeHandle>,
     next_generation: u64,
     recovering: HashMap<String, RuntimeRecoveryClaim>,
+}
+
+type HostShutdownResult = std::result::Result<(), HostShutdownFailure>;
+
+struct HostShutdownOperation {
+    completion: watch::Receiver<Option<HostShutdownResult>>,
+    // The Host owns shutdown; callers only wait for its shared completion.
+    _worker: JoinHandle<()>,
+}
+
+#[derive(Debug, Clone)]
+struct HostShutdownFailure(Arc<anyhow::Error>);
+
+impl std::fmt::Display for HostShutdownFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.0)
+    }
+}
+
+impl std::error::Error for HostShutdownFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref().as_ref())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -787,9 +814,12 @@ impl RuntimeHost {
                 runtimes: RwLock::new(HostRuntimeRegistry {
                     phase: HostRuntimePhase::Open,
                     agents: BTreeMap::new(),
+                    unloading_mutations: BTreeMap::new(),
                     next_generation: 1,
                     recovering: HashMap::new(),
                 }),
+                shutdown_operation: Mutex::new(None),
+                mutation_owners: MutationOwnerRegistry::default(),
                 runtime_recovery_tx,
                 runtime_recovery_rx: Mutex::new(Some(runtime_recovery_rx)),
                 runtime_recovery_token: CancellationToken::new(),
@@ -1972,17 +2002,63 @@ impl RuntimeHost {
     }
 
     pub async fn shutdown(&self) -> Result<()> {
+        let mut completion = {
+            let mut operation = self
+                .inner
+                .shutdown_operation
+                .lock()
+                .expect("host shutdown operation poisoned");
+            match operation.as_ref() {
+                Some(operation) => operation.completion.clone(),
+                None => {
+                    let (completion_tx, completion) =
+                        watch::channel::<Option<HostShutdownResult>>(None);
+                    let host = self.clone();
+                    let worker = tokio::spawn(async move {
+                        let result = host
+                            .shutdown_inner()
+                            .await
+                            .map_err(|error| HostShutdownFailure(Arc::new(error)));
+                        completion_tx.send_replace(Some(result));
+                    });
+                    *operation = Some(HostShutdownOperation {
+                        completion: completion.clone(),
+                        _worker: worker,
+                    });
+                    completion
+                }
+            }
+        };
+        loop {
+            let result = completion.borrow_and_update().clone();
+            if let Some(result) = result {
+                return result.map_err(anyhow::Error::new);
+            }
+            completion
+                .changed()
+                .await
+                .context("host shutdown worker stopped before reporting completion")?;
+        }
+    }
+
+    async fn shutdown_inner(&self) -> Result<()> {
         self.shutdown_config_reload_coordinator().await;
-        let entries = {
+        let (entries, mut runtimes) = {
             let mut registry = self.inner.runtimes.write().await;
             match registry.phase {
                 HostRuntimePhase::Open => {
                     registry.phase = HostRuntimePhase::Closing;
-                    std::mem::take(&mut registry.agents)
-                        .into_values()
-                        .collect::<Vec<_>>()
+                    (
+                        std::mem::take(&mut registry.agents)
+                            .into_values()
+                            .collect::<Vec<_>>(),
+                        std::mem::take(&mut registry.unloading_mutations)
+                            .into_values()
+                            .collect::<Vec<_>>(),
+                    )
                 }
-                HostRuntimePhase::Closing | HostRuntimePhase::Closed => return Ok(()),
+                HostRuntimePhase::Closing => bail!("host shutdown registry is already closing"),
+                HostRuntimePhase::Closed => return Ok(()),
             }
         };
         self.shutdown_runtime_recovery_coordinator().await;
@@ -1990,9 +2066,11 @@ impl RuntimeHost {
         self.shutdown_daemon_memory_indexer().await;
         self.shutdown_daemon_deletion_coordinator().await;
         let mut tasks = Vec::with_capacity(entries.len());
+        runtimes.reserve(entries.len());
         for entry in entries {
             let _ = entry.runtime.request_service_shutdown().await;
             tasks.push(entry.task);
+            runtimes.push(entry.runtime);
         }
         if tokio::time::timeout(HOST_SHUTDOWN_GRACE, async {
             for task in &mut tasks {
@@ -2009,7 +2087,19 @@ impl RuntimeHost {
                 let _ = task.await;
             }
         }
+        let mut mutation_error = None;
+        for runtime in runtimes {
+            if let Err(error) = runtime.join_owned_mutations().await {
+                tracing::warn!(error = %error, "runtime mutation drain failed during host shutdown");
+                if mutation_error.is_none() {
+                    mutation_error = Some(error);
+                }
+            }
+        }
         self.inner.runtimes.write().await.phase = HostRuntimePhase::Closed;
+        if let Some(error) = mutation_error {
+            return Err(error.context("draining runtime mutations during host shutdown"));
+        }
         Ok(())
     }
 
@@ -2239,16 +2329,44 @@ impl RuntimeHost {
     pub(crate) async fn unload_runtime(&self, agent_id: &str) {
         let entry = {
             let mut registry = self.inner.runtimes.write().await;
-            let entry = registry.agents.remove(agent_id);
+            let entry = if registry.phase == HostRuntimePhase::Open {
+                registry.agents.remove(agent_id)
+            } else {
+                // Shutdown already owns every registered generation's drain.
+                None
+            };
             if let Some(entry) = &entry {
                 entry.runtime.close_execution_admission();
+                // Shutdown takes this responsibility under the same registry lock.
+                // A cancelled unload cannot hide admitted mutations from the Host.
+                registry
+                    .unloading_mutations
+                    .insert(entry.generation, entry.runtime.clone());
             }
             entry
         };
-        self.notify_runtime_recovery(agent_id).await;
         if let Some(entry) = entry {
-            entry.task.abort();
-            let _ = entry.task.await;
+            let host = self.clone();
+            let agent_id = agent_id.to_string();
+            // Spawn before the next await so cancelling this caller cannot
+            // strand a generation or its cleanup responsibility in the map.
+            let cleanup = tokio::spawn(async move {
+                entry.task.abort();
+                let _ = entry.task.await;
+                if let Err(error) = entry.runtime.join_owned_mutations().await {
+                    tracing::warn!(agent_id, error = %error, "runtime mutation drain failed during unload");
+                }
+                host.inner
+                    .runtimes
+                    .write()
+                    .await
+                    .unloading_mutations
+                    .remove(&entry.generation);
+                host.notify_runtime_recovery(&agent_id).await;
+            });
+            let _ = cleanup.await;
+        } else {
+            self.notify_runtime_recovery(agent_id).await;
         }
     }
 
@@ -6959,6 +7077,17 @@ impl RuntimeHostBridge {
             .upgrade()
             .ok_or_else(|| anyhow!("runtime host is no longer available"))?;
         Ok(RuntimeHost { inner })
+    }
+
+    pub(crate) fn claim_mutation_owner(
+        &self,
+        agent_id: &str,
+        identity_incarnation: u64,
+    ) -> Result<MutationOwner> {
+        self.host()?
+            .inner
+            .mutation_owners
+            .claim(agent_id, identity_incarnation)
     }
 
     pub(crate) async fn wait_for_bootstrap_ready(&self) -> Result<()> {
@@ -12309,6 +12438,294 @@ mod tests {
                 .identity
                 .agent_id,
             "beta"
+        );
+    }
+
+    #[tokio::test]
+    async fn unload_runtime_drains_owned_mutations_before_reactivation() {
+        let (_home, host) = test_host();
+        host.create_named_agent("alpha", None).await.unwrap();
+        let runtime = host.get_public_agent("alpha").await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+        let worker_finished = Arc::clone(&finished);
+        runtime
+            .spawn_owned_mutation(async move {
+                let _ = started_tx.send(());
+                let _ = release_rx.await;
+                worker_finished.store(true, Ordering::Release);
+            })
+            .unwrap();
+        started_rx.await.unwrap();
+
+        let mut unload = tokio::spawn({
+            let host = host.clone();
+            async move { host.unload_runtime("alpha").await }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut unload)
+                .await
+                .is_err(),
+            "unload must wait for the admitted mutation"
+        );
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), unload)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(finished.load(Ordering::Acquire));
+        assert!(runtime.spawn_owned_mutation(async {}).is_err());
+        let replacement = host.get_public_agent("alpha").await.unwrap();
+        assert!(replacement.execution_admission_lease().is_ok());
+        assert_eq!(replacement.agent_state().await.unwrap().id, "alpha");
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn host_shutdown_drains_owned_mutations_before_closing() {
+        let (_home, host) = test_host();
+        let runtime = host.default_runtime().await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+        let worker_finished = Arc::clone(&finished);
+        runtime
+            .spawn_owned_mutation(async move {
+                let _ = started_tx.send(());
+                let _ = release_rx.await;
+                worker_finished.store(true, Ordering::Release);
+            })
+            .unwrap();
+        started_rx.await.unwrap();
+
+        let mut shutdown = tokio::spawn({
+            let host = host.clone();
+            async move { host.shutdown().await }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut shutdown)
+                .await
+                .is_err(),
+            "shutdown must wait for the admitted mutation"
+        );
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        assert!(finished.load(Ordering::Acquire));
+        assert!(runtime.spawn_owned_mutation(async {}).is_err());
+        assert_eq!(
+            host.inner.runtimes.read().await.phase,
+            HostRuntimePhase::Closed
+        );
+    }
+
+    #[tokio::test]
+    async fn host_shutdown_cancelled_caller_keeps_shared_mutation_drain() {
+        let (_home, host) = test_host();
+        let runtime = host.default_runtime().await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+        let worker_finished = Arc::clone(&finished);
+        runtime
+            .spawn_owned_mutation(async move {
+                let _ = started_tx.send(());
+                let _ = release_rx.await;
+                worker_finished.store(true, Ordering::Release);
+            })
+            .unwrap();
+        started_rx.await.unwrap();
+
+        let first = tokio::spawn({
+            let host = host.clone();
+            async move { host.shutdown().await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.inner.runtimes.read().await.phase != HostRuntimePhase::Closing {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+
+        let mut second = Box::pin(host.shutdown());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut second)
+                .await
+                .is_err(),
+            "a later caller must await the same unfinished mutation drain"
+        );
+        assert!(!finished.load(Ordering::Acquire));
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), second)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(finished.load(Ordering::Acquire));
+        assert_eq!(
+            host.inner.runtimes.read().await.phase,
+            HostRuntimePhase::Closed
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unload_runtime_cancelled_caller_keeps_mutations_visible_to_shutdown() {
+        let (_home, host) = test_host();
+        host.create_named_agent("alpha", None).await.unwrap();
+        let runtime = host.get_public_agent("alpha").await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+        let worker_finished = Arc::clone(&finished);
+        runtime
+            .spawn_owned_mutation(async move {
+                let _ = started_tx.send(());
+                let _ = release_rx.await;
+                worker_finished.store(true, Ordering::Release);
+            })
+            .unwrap();
+        started_rx.await.unwrap();
+
+        let unload = tokio::spawn({
+            let host = host.clone();
+            async move { host.unload_runtime("alpha").await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host
+                .inner
+                .runtimes
+                .read()
+                .await
+                .unloading_mutations
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        unload.abort();
+        assert!(unload.await.unwrap_err().is_cancelled());
+        assert!(runtime.spawn_owned_mutation(async {}).is_err());
+        assert!(!host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .agents
+            .contains_key("alpha"));
+
+        let mut shutdown = Box::pin(host.shutdown());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut shutdown)
+                .await
+                .is_err(),
+            "shutdown must inherit the cancelled unload's admitted mutations"
+        );
+        assert!(!finished.load(Ordering::Acquire));
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(finished.load(Ordering::Acquire));
+        let registry = host.inner.runtimes.read().await;
+        assert_eq!(registry.phase, HostRuntimePhase::Closed);
+        assert!(registry.unloading_mutations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unload_runtime_cancelled_caller_releases_completed_generation() {
+        let (_home, host) = test_host();
+        host.create_named_agent("alpha", None).await.unwrap();
+        let runtime = host.get_public_agent("alpha").await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        runtime
+            .spawn_owned_mutation(async move {
+                let _ = started_tx.send(());
+                let _ = release_rx.await;
+            })
+            .unwrap();
+        started_rx.await.unwrap();
+
+        let unload = tokio::spawn({
+            let host = host.clone();
+            async move { host.unload_runtime("alpha").await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host
+                .inner
+                .runtimes
+                .read()
+                .await
+                .unloading_mutations
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        unload.abort();
+        assert!(unload.await.unwrap_err().is_cancelled());
+        release_tx.send(()).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let released = host
+                    .inner
+                    .runtimes
+                    .read()
+                    .await
+                    .unloading_mutations
+                    .is_empty();
+                if released && runtime.strong_handle_count() == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled unload must release the old runtime without Host shutdown");
+        assert_eq!(
+            host.inner.runtimes.read().await.phase,
+            HostRuntimePhase::Open
+        );
+        let replacement = host.get_public_agent("alpha").await.unwrap();
+        assert!(replacement.execution_admission_lease().is_ok());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn host_shutdown_concurrent_callers_share_failure() {
+        let (_home, host) = test_host();
+        let runtime = host.default_runtime().await.unwrap();
+        runtime
+            .spawn_owned_mutation(async { panic!("controlled mutation failure") })
+            .unwrap();
+
+        let (first, second) = tokio::join!(host.shutdown(), host.shutdown());
+        let first = first.unwrap_err();
+        let second = second.unwrap_err();
+        assert_eq!(first.to_string(), second.to_string());
+        assert!(first
+            .chain()
+            .any(|error| error.is::<tokio::task::JoinError>()));
+        let repeated = host.shutdown().await.unwrap_err();
+        assert_eq!(first.to_string(), repeated.to_string());
+        assert_eq!(
+            host.inner.runtimes.read().await.phase,
+            HostRuntimePhase::Closed
         );
     }
 

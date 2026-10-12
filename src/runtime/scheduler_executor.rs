@@ -227,6 +227,52 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         &self,
         boundary: StaleRunProjectionBoundary,
     ) -> Result<StaleRunProjectionReconciliation> {
+        match self.runtime.inner.mutation_owner.capture() {
+            Ok(_) => {}
+            Err(super::mutation_owner::MutationOwnerError::NeedsReconcile(_)) => {
+                self.runtime.reconcile_posture_observation().await?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        {
+            let guard = self.runtime.inner.agent.lock().await;
+            if guard.state.status == AgentStatus::Stopped
+                || (guard.state.status != AgentStatus::AwakeRunning
+                    && guard.state.current_run_id.is_none())
+            {
+                return Ok(StaleRunProjectionReconciliation::NoChange);
+            }
+            if guard
+                .state
+                .current_run_id
+                .as_ref()
+                .zip(guard.current_run_abort.as_ref())
+                .is_some_and(|(run_id, handle)| run_id == &handle.run_id)
+            {
+                return Ok(StaleRunProjectionReconciliation::NoChange);
+            }
+        }
+
+        let runtime = self.runtime.clone();
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        self.runtime.spawn_owned_mutation(async move {
+            let result = SchedulerDecisionExecutor::new(&runtime)
+                .reconcile_stale_run_projection_inner(boundary)
+                .await;
+            let _ = result_tx.send(result);
+        })?;
+        result_rx
+            .await
+            .map_err(|_| anyhow!("stale run projection reconciliation worker stopped"))?
+    }
+
+    async fn reconcile_stale_run_projection_inner(
+        &self,
+        boundary: StaleRunProjectionBoundary,
+    ) -> Result<StaleRunProjectionReconciliation> {
+        let mut reservation = self.runtime.inner.mutation_owner.reserve().await?;
+        // Legacy writers still synchronize through the agent lock. Keep it
+        // across SQL until step 2B routes those writers through the owner.
         let mut guard = self.runtime.inner.agent.lock().await;
         if guard.state.status == AgentStatus::Stopped
             || (guard.state.status != AgentStatus::AwakeRunning
@@ -310,16 +356,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             audit_events: vec![event],
             fault: self.runtime.take_transition_fault(),
         };
-        let mut commit = self
+        let commit = self
             .runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .commit_agent_posture(&command)?;
-        guard.state = recovered_state.clone();
-        guard.last_persisted_state = recovered_state;
-        commit.effects.agent_state = None;
+            .submit_posture(&mut reservation, &mut guard, command)?;
         drop(guard);
+        drop(reservation);
         self.runtime.apply_transition_commit(commit).await;
         Ok(StaleRunProjectionReconciliation::Recovered)
     }
@@ -2576,13 +2617,8 @@ fn timer_wake_claim_for_message(
 }
 
 fn scheduler_work_item_claim_conflict(error: &anyhow::Error) -> bool {
-    error.chain().any(|source| {
-        source
-            .downcast_ref::<RuntimeStateTransitionConflict>()
-            .is_some_and(|conflict| {
-                conflict.retryable() && conflict.domain() == "scheduler_claim_work_item"
-            })
-    })
+    crate::runtime_db::retryable_state_transition_conflict(error)
+        .is_some_and(|conflict| conflict.domain() == "scheduler_claim_work_item")
 }
 
 fn align_execution_claim_with_wait_transition(

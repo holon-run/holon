@@ -22,6 +22,9 @@ use anyhow::bail;
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{ffi::ErrorCode, Connection, Transaction, TransactionBehavior};
 
+use crate::runtime_db::persistence::{
+    mark_persistence_failure, persistence_certainty, PersistenceCertainty, PersistenceFailurePhase,
+};
 use crate::runtime_db::write_queue::RuntimeDbWriteContext;
 #[cfg(target_os = "linux")]
 use crate::runtime_db::RuntimeDbProtectionError;
@@ -561,11 +564,23 @@ pub(crate) fn run_transaction_on_connection<T>(
         "runtime db write starting"
     );
     let (transaction, begin_retry_count, begin_wait) =
-        begin_immediate_transaction_with_retry(connection, path)?;
+        begin_immediate_transaction_with_retry(connection, path).map_err(|error| {
+            mark_persistence_failure(
+                error,
+                PersistenceCertainty::DefinitelyNotCommitted,
+                PersistenceFailurePhase::Begin,
+                None,
+            )
+        })?;
     match f(&transaction) {
         Ok(value) => {
             transaction.commit().map_err(|error| {
-                map_runtime_db_sqlite_error("committing transaction", path, error)
+                mark_persistence_failure(
+                    map_runtime_db_sqlite_error("committing transaction", path, error),
+                    PersistenceCertainty::Indeterminate,
+                    PersistenceFailurePhase::Commit,
+                    None,
+                )
             })?;
             let elapsed = started_at.elapsed();
             tracing::trace!(
@@ -583,10 +598,29 @@ pub(crate) fn run_transaction_on_connection<T>(
             Ok(value)
         }
         Err(error) => {
-            let _ = transaction.rollback();
+            let (error, rolled_back) = match transaction.rollback() {
+                Ok(()) => (
+                    mark_persistence_failure(
+                        error,
+                        PersistenceCertainty::DefinitelyNotCommitted,
+                        PersistenceFailurePhase::Callback,
+                        None,
+                    ),
+                    true,
+                ),
+                Err(rollback_error) => (
+                    mark_persistence_failure(
+                        error,
+                        PersistenceCertainty::Indeterminate,
+                        PersistenceFailurePhase::Rollback,
+                        Some(rollback_error.to_string()),
+                    ),
+                    false,
+                ),
+            };
             let elapsed = started_at.elapsed();
             let retryable = is_retryable_db_error(&error);
-            if is_retryable_state_transition_conflict(&error) {
+            if rolled_back && is_retryable_state_transition_conflict(&error) {
                 tracing::debug!(
                     error = %error,
                     retryable,
@@ -605,6 +639,7 @@ pub(crate) fn run_transaction_on_connection<T>(
                 tracing::warn!(
                     error = %error,
                     retryable,
+                    rolled_back,
                     path = %path.display(),
                     operation = context.operation,
                     table = context.table,
@@ -614,7 +649,7 @@ pub(crate) fn run_transaction_on_connection<T>(
                     begin_wait_ms = begin_wait.as_millis(),
                     begin_retry_count,
                     elapsed_ms = elapsed.as_millis(),
-                    "runtime db write rolled back"
+                    "runtime db write callback failed"
                 );
             }
             Err(error)
@@ -712,6 +747,9 @@ fn is_retryable_state_transition_conflict(error: &anyhow::Error) -> bool {
 }
 
 pub(crate) fn is_retryable_transaction_error(error: &anyhow::Error) -> bool {
+    if persistence_certainty(error) == Some(PersistenceCertainty::Indeterminate) {
+        return false;
+    }
     error.chain().any(|source| {
         source.downcast_ref::<RuntimeDbRetryableError>().is_some()
             || source
@@ -722,6 +760,9 @@ pub(crate) fn is_retryable_transaction_error(error: &anyhow::Error) -> bool {
 
 /// Check if an error is retryable for runtime error classification and logging.
 pub fn is_retryable_db_error(error: &anyhow::Error) -> bool {
+    if persistence_certainty(error) == Some(PersistenceCertainty::Indeterminate) {
+        return false;
+    }
     is_retryable_state_transition_conflict(error) || is_retryable_transaction_error(error)
 }
 

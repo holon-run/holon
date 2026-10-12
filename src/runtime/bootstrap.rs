@@ -615,6 +615,26 @@ impl RuntimeHandle {
         event_bus: Option<EventBus>,
         clock: Arc<dyn Clock>,
     ) -> Result<Self> {
+        let agent_id = agent_id.into();
+        let runtime_db = match runtime_db {
+            Some(runtime_db) => runtime_db,
+            None => RuntimeDb::open_and_migrate(
+                data_dir.join(".holon/state/runtime.sqlite"),
+                data_dir.join(".holon/state/runtime.lock"),
+            )?,
+        };
+        let identity_incarnation = runtime_db
+            .agent_identities()
+            .latest(&agent_id)?
+            .map_or(1, |identity| identity.incarnation);
+        let mutation_owner = match host_bridge.as_ref() {
+            Some(bridge) => bridge.claim_mutation_owner(&agent_id, identity_incarnation)?,
+            None => {
+                super::mutation_owner::MutationOwner::standalone(&agent_id, identity_incarnation)
+            }
+        };
+        // Legacy bootstrap writes must not run over an unresolved ambiguous commit.
+        mutation_owner.validate_bootstrap()?;
         let autonomous_continuation_decision_hook = provider_reconfig
             .as_ref()
             .map(|reconfig| {
@@ -691,7 +711,7 @@ impl RuntimeHandle {
             active_tasks,
             active_timers,
             projection_cache,
-        } = prepare_runtime_storage(agent_id, data_dir, initial_workspace, runtime_db)?;
+        } = prepare_runtime_storage(agent_id, data_dir, initial_workspace, Some(runtime_db))?;
         if let Some(event_bus) = event_bus {
             storage.enable_event_bus(event_bus)?;
         }
@@ -724,13 +744,10 @@ impl RuntimeHandle {
         };
         let base_provider = provider.clone();
 
-        let identity_incarnation = runtime_db
-            .agent_identities()
-            .latest(&state.id)?
-            .map_or(1, |identity| identity.incarnation);
         let runtime = Self {
             inner: Arc::new(RuntimeInner {
                 identity_incarnation,
+                mutation_owner,
                 agent: Mutex::new(RuntimeAgent {
                     last_persisted_state: state.clone(),
                     state,
@@ -759,6 +776,7 @@ impl RuntimeHandle {
                 host_bridge,
                 task_handles: Mutex::new(HashMap::new()),
                 owned_task_handles: StdMutex::new(Vec::new()),
+                mutation_tasks: StdMutex::new(super::state_mutation::OwnedMutationTasks::default()),
                 recovered_tasks: Mutex::new(Some(active_tasks)),
                 recovered_timers: Mutex::new(Some(active_timers)),
                 bootstrap_result: StdMutex::new(None),

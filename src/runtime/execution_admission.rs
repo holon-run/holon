@@ -99,6 +99,7 @@ impl super::RuntimeHandle {
         }
     }
     pub(crate) async fn join_idle_owned_tasks(&self) -> Result<()> {
+        self.join_owned_mutations().await?;
         let tasks = std::mem::take(&mut *self.inner.owned_task_handles.lock().unwrap());
         for task in tasks {
             task.await?;
@@ -110,6 +111,7 @@ impl super::RuntimeHandle {
         self.inner.identity_incarnation
     }
     pub(crate) fn close_execution_admission(&self) {
+        self.close_mutation_admission();
         self.inner.execution_admission.force_close();
         self.inner.shutdown_requested.store(true, Ordering::Release);
     }

@@ -22,6 +22,7 @@ pub mod destructive_operations;
 pub mod evidence;
 mod legacy_scheduler_wire;
 pub mod migrations;
+pub mod persistence;
 pub(crate) mod reclamation;
 pub(crate) mod reclamation_reminders;
 pub mod repositories;
@@ -64,6 +65,10 @@ pub use crate::runtime_db::index_outbox::{
 };
 pub use crate::runtime_db::observer_sync::{
     AgentEventRecoveryWindow, AgentRosterLatestBriefRow, AgentRosterRow, AgentRosterSnapshotRows,
+};
+pub(crate) use crate::runtime_db::persistence::retryable_state_transition_conflict;
+pub use crate::runtime_db::persistence::{
+    persistence_certainty, PersistenceCertainty, PersistenceFailure, PersistenceFailurePhase,
 };
 pub use crate::runtime_db::retention::{
     RuntimeDbCompactReport, RuntimeDbRetentionPolicy, RuntimeDbRetentionReport,
@@ -914,6 +919,11 @@ impl RuntimeDb {
         Ok(report)
     }
 
+    /// Run a transaction, retrying body lock errors only after a confirmed rollback.
+    ///
+    /// The callback must not control the transaction or perform external effects:
+    /// it may run more than once. Failure certainty is available through
+    /// [`persistence_certainty`]; an indeterminate result must be reconciled before replay.
     pub fn transaction<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
         self.writer.append_wait(f)
     }
@@ -930,6 +940,7 @@ impl RuntimeDb {
         self.writer.append_wait_once(f)
     }
 
+    /// Enqueue a background transaction. Success means queue acceptance, not commit.
     pub fn append(
         &self,
         f: impl for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static,

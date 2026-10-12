@@ -354,11 +354,10 @@ impl RuntimeHandle {
                         }
                         Err(error)
                             if attempt + 1 < 3
-                                && error
-                                    .downcast_ref::<
-                                        crate::runtime_db::RuntimeStateTransitionConflict,
-                                    >()
-                                    .is_some_and(|conflict| conflict.retryable()) =>
+                                && crate::runtime_db::retryable_state_transition_conflict(
+                                    &error,
+                                )
+                                .is_some() =>
                         {
                             continue;
                         }
