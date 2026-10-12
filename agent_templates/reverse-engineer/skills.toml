@@ -1,0 +1,5 @@
+[[skills]]
+kind = "github"
+repo = "morluto/rea"
+path = ".agents/skills/reverse-engineer-anything"
+ref = "428eee00fdd0406cdf2b734c9ea14a2bb02da279"
