@@ -312,7 +312,9 @@ final class ConnectionCoordinatorTests: XCTestCase {
     }
 
     func testUnauthorizedAndForbiddenWithdrawIdentityAndPurgeConfirmedReadingPartition() async throws {
-        for code in [401, 403] {
+        let unknownError = try HolonAPIError(data: Data(
+            #"{"ok":false,"code":"future_error","error":"Unauthorized"}"#.utf8))
+        for (code, apiError) in [(401, nil), (403, nil), (401, unknownError), (403, unknownError)] {
             let f = try fixture()
             let p = try profile(f)
             try saved(f, profile: p)
@@ -332,7 +334,8 @@ final class ConnectionCoordinatorTests: XCTestCase {
                 XCTAssertNil(c?.readingContext)
                 XCTAssertNil(c?.identity)
             }
-            c.handleClientFailure(.init(statusCode: code, identity: identity), expectedIdentity: identity)
+            c.handleClientFailure(.init(statusCode: code, apiError: apiError, identity: identity),
+                                  expectedIdentity: identity)
             XCTAssertEqual(c.status, code == 401 ? .sessionExpired : .permissionDenied)
             XCTAssertNil(c.identity)
             XCTAssertNil(c.readingContext)
@@ -340,6 +343,52 @@ final class ConnectionCoordinatorTests: XCTestCase {
             XCTAssertNil(try f.store.session(for: p))
             XCTAssertEqual(purged, [partition])
             XCTAssertTrue(withdrewIdentity)
+        }
+    }
+
+    func testLogoutDeletesUnreadableReadingContextAndCredentials() async throws {
+        try await verifyUnreadableReadingContextRemoval(removingProfile: false)
+    }
+
+    func testRemoveProfileDeletesUnreadableReadingContextAndCredentials() async throws {
+        try await verifyUnreadableReadingContextRemoval(removingProfile: true)
+    }
+
+    private func verifyUnreadableReadingContextRemoval(removingProfile: Bool) async throws {
+        for mismatchedProfile in [false, true] {
+            let f = try fixture()
+            let p = try profile(f)
+            let other = try profile(f, name: "B")
+            try saved(f, profile: p)
+            try saved(f, profile: other)
+            let otherContext = try XCTUnwrap(f.store.confirmedReadingContext(for: other))
+            let invalid = mismatchedProfile ? try JSONEncoder().encode(otherContext) : Data("corrupt".utf8)
+            let account = "confirmed-reading.\(p.id.uuidString)"
+            try f.vault.write(invalid, account: account)
+            try f.store.select(p.id)
+            let c = coordinator(f, transport: CoordinatorTransport())
+            await c.restore()
+            XCTAssertEqual(c.status, .storageError)
+            XCTAssertNil(c.readingContext)
+            XCTAssertNil(c.identity)
+
+            if removingProfile {
+                await c.removeProfile(p)
+                XCTAssertEqual(c.status, .disconnected)
+                XCTAssertNil(c.selectedProfile)
+                XCTAssertFalse(c.profiles.contains(p))
+                XCTAssertFalse(try f.reopen().profiles.contains(p))
+            } else {
+                await c.logout()
+                XCTAssertEqual(c.status, .needsLogin)
+                XCTAssertNil(try f.reopen().session(for: p))
+                XCTAssertNil(try f.reopen().confirmedReadingContext(for: p))
+            }
+            XCTAssertNil(try f.vault.read(account: account))
+            XCTAssertNil(c.readingContext)
+            XCTAssertNil(c.identity)
+            XCTAssertEqual(try f.reopen().confirmedReadingContext(for: other), otherContext)
+            XCTAssertNotNil(try f.reopen().session(for: other))
         }
     }
 

@@ -539,8 +539,7 @@ final class ConnectionCoordinator {
     private func handle(_ error: Error, stamp: UUID, authenticating: Bool) {
         guard current(stamp) else { return }
         if let failure = error as? HolonHTTPFailure {
-            if failure.statusCode == 403 || HolonAPIError.requiresSessionRenewal(
-                statusCode: failure.statusCode, code: failure.apiError?.code) {
+            if failure.statusCode == 401 || failure.statusCode == 403 {
                 do {
                     if let selectedProfile {
                         try revokeReadingContext(for: selectedProfile)
@@ -573,7 +572,8 @@ final class ConnectionCoordinator {
         defer {
             if let previous { onReadingInvalidation?(previous.partition) }
         }
-        if previous == nil { previous = try store.confirmedReadingContext(for: profile) }
+        // Recovering the notification scope must not prevent deletion of corrupt storage.
+        if previous == nil { previous = try? store.confirmedReadingContext(for: profile) }
         try store.removeSession(for: profile)
     }
 
