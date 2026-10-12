@@ -564,7 +564,10 @@ async fn daemon_status_surfaces_db_only_public_agent_runtime_failure_when_stoppe
     };
     let mut agent = AgentState::new("public-agent");
     agent.last_runtime_failure = Some(failure.clone());
-    runtime_db.agent_states().upsert(&agent).unwrap();
+    runtime_db
+        .agent_states()
+        .upsert_for_fixture(&agent)
+        .unwrap();
 
     let status = daemon_status(&config).await.unwrap();
     assert_eq!(status.state, DaemonLifecycleState::Stopped);

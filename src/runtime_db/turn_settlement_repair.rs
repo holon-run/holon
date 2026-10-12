@@ -1174,7 +1174,7 @@ mod tests {
             work_item_id: None,
             claimed_work_revision: None,
         });
-        db.agent_states().upsert(&agent_state)?;
+        db.agent_states().upsert_for_fixture(&agent_state)?;
         Ok((agent_id, turn_id, attempt_id))
     }
 
@@ -1483,7 +1483,7 @@ mod tests {
             work_item_id: None,
             claimed_work_revision: None,
         });
-        db.agent_states().upsert(&agent_state)?;
+        db.agent_states().upsert_for_fixture(&agent_state)?;
 
         let error = db
             .apply_turn_settlement_repair_plan(&plan_path, None, 20, |_| {})

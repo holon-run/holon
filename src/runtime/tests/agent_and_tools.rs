@@ -60,7 +60,7 @@ async fn attached_workspace_inheritance_preserves_execution_boundary() {
         guard.state.model_override = Some(
             crate::config::ModelRouteRef::parse_compatible("anthropic/claude-haiku-4-5").unwrap(),
         );
-        parent.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&parent.inner.storage).unwrap();
     }
     let parent_state = parent.agent_state().await.unwrap();
 
@@ -189,7 +189,7 @@ async fn loaded_agents_md_uses_active_workspace_entry_anchor_without_legacy_anch
             occupancy_id: None,
             projection_metadata: None,
         });
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let loaded = runtime.loaded_agents_md().await.unwrap();
@@ -306,7 +306,7 @@ async fn preview_prompt_uses_codex_apply_patch_surface_even_when_prompt_tools_ar
             crate::config::ModelRouteRef::parse_compatible("openai-codex/gpt-5.3-codex-spark")
                 .unwrap(),
         );
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let preview = runtime
@@ -348,7 +348,7 @@ async fn filtered_tool_specs_keep_exec_command_visible_when_process_execution_di
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.execution_profile.process_execution_exposed = false;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
     let identity = runtime.agent_identity_view().await.unwrap();
     let tools = runtime.filtered_tool_specs(&identity).unwrap();
@@ -410,7 +410,7 @@ async fn filtered_tool_specs_do_not_expose_worktree_discard() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.execution_profile.supports_managed_worktrees = false;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
     let identity = runtime.agent_identity_view().await.unwrap();
     let tools = runtime.filtered_tool_specs(&identity).unwrap();
@@ -718,7 +718,7 @@ async fn schedule_command_task_rejects_when_process_execution_disabled() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.execution_profile.process_execution_exposed = false;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let err = runtime
@@ -759,7 +759,7 @@ async fn schedule_inherited_child_agent_task_rejects_when_background_tasks_disab
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.execution_profile.allow_background_tasks = false;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let err = runtime
@@ -791,7 +791,7 @@ async fn schedule_command_task_rejects_when_background_tasks_disabled() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.execution_profile.allow_background_tasks = false;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let err = runtime
@@ -1420,7 +1420,7 @@ async fn enter_git_worktree_root_rejects_when_managed_worktrees_disabled() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.execution_profile.supports_managed_worktrees = false;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
     let workspace_entry = WorkspaceEntry::new("ws-1", workspace.path().to_path_buf(), None);
     runtime.attach_workspace(&workspace_entry).await.unwrap();
@@ -1455,7 +1455,7 @@ async fn schedule_worktree_child_agent_task_rejects_when_background_tasks_disabl
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.execution_profile.allow_background_tasks = false;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let err = runtime
@@ -1892,7 +1892,7 @@ async fn get_agent_with_agent_id_returns_requested_agent() {
         .unwrap();
     let observer_storage = host.agent_storage("observer-bot").unwrap();
     observer_storage
-        .write_agent(&crate::types::AgentState::new("observer-bot"))
+        .write_agent_for_fixture(&crate::types::AgentState::new("observer-bot"))
         .unwrap();
     assert!(host.try_get_loaded_runtime("observer-bot").await.is_none());
 
@@ -1943,7 +1943,7 @@ async fn get_agent_with_agent_id_can_access_child() {
     let child_storage = host.agent_storage("child_agentget_test").unwrap();
     let mut child_state = crate::types::AgentState::new("child_agentget_test");
     child_state.status = crate::types::AgentStatus::AwakeRunning;
-    child_storage.write_agent(&child_state).unwrap();
+    child_storage.write_agent_for_fixture(&child_state).unwrap();
 
     let result = crate::tool::tools::execute_builtin_tool(
         &runtime,

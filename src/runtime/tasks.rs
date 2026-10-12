@@ -2953,21 +2953,35 @@ impl RuntimeHandle {
             .map(|entry| entry.workspace_id)
             .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string());
         let execution_protocol = self.plan_work_item_execution_create(&record)?;
-        let commit = self.commit_work_item_transition_with_execution(
-            &crate::runtime_db::transitions::WorkItemTransitionCommand {
-                agent_id,
-                mutation: crate::runtime_db::transitions::WorkItemMutation::Insert {
-                    record: record.clone(),
-                },
-                agent_state: None,
-                brief_evidence: Vec::new(),
-                audit_events: vec![self.work_item_written_event("created", &record, Value::Null)],
-                index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
-                notify_scheduler: true,
-                fault: self.take_transition_fault(),
-            },
-            &execution_protocol,
-        )?;
+        let commit = {
+            let mut mutation = self.begin_mutation().await?;
+            mutation
+                .commit_transition(crate::ids::audit_event_id(), || {
+                    self.commit_work_item_transition_with_execution(
+                        &crate::runtime_db::transitions::WorkItemTransitionCommand {
+                            agent_id,
+                            mutation: crate::runtime_db::transitions::WorkItemMutation::Insert {
+                                record: record.clone(),
+                            },
+                            agent_state: None,
+                            brief_evidence: Vec::new(),
+                            audit_events: vec![self.work_item_written_event(
+                                "created",
+                                &record,
+                                Value::Null,
+                            )],
+                            index_changes: self
+                                .inner
+                                .storage
+                                .index_changes_for_work_item(&record)?,
+                            notify_scheduler: true,
+                            fault: self.take_transition_fault(),
+                        },
+                        &execution_protocol,
+                    )
+                })
+                .await
+        }?;
         self.apply_transition_commit(commit).await;
         Ok(record)
     }
@@ -3687,26 +3701,33 @@ impl RuntimeHandle {
                 execution_protocol.commands.push(command);
             }
         }
-        let commit = self.commit_work_item_focus_transition_with_execution(
-            &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
-                agent_id: agent_id.clone(),
-                work_items,
-                wait_conditions,
-                active_continuation_expectations: Some(active_continuations),
-                continuation_expectations,
-                continuations: continuation_records,
-                agent_state: crate::runtime_db::transitions::AgentStateMutation {
-                    expected: Some(Box::new(state)),
-                    record: Box::new(next_state),
-                },
-                brief_evidence: Vec::new(),
-                audit_events,
-                index_changes,
-                notify_scheduler: true,
-                fault: self.take_transition_fault(),
-            },
-            &execution_protocol,
-        )?;
+        let commit = {
+            let mut mutation = self.begin_mutation().await?;
+            mutation
+                .commit_transition(crate::ids::audit_event_id(), || {
+                    self.commit_work_item_focus_transition_with_execution(
+                        &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
+                            agent_id: agent_id.clone(),
+                            work_items,
+                            wait_conditions,
+                            active_continuation_expectations: Some(active_continuations),
+                            continuation_expectations,
+                            continuations: continuation_records,
+                            agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                                expected: Some(Box::new(state)),
+                                record: Box::new(next_state),
+                            },
+                            brief_evidence: Vec::new(),
+                            audit_events,
+                            index_changes,
+                            notify_scheduler: true,
+                            fault: self.take_transition_fault(),
+                        },
+                        &execution_protocol,
+                    )
+                })
+                .await
+        }?;
         if blocker_cleared {
             self.inner
                 .runtime_db
@@ -3870,22 +3891,33 @@ impl RuntimeHandle {
             }
             let execution_protocol =
                 self.plan_work_item_execution_update(&record, readiness_mutation)?;
-            let commit = self.commit_work_item_transition_with_execution(
-                &crate::runtime_db::transitions::WorkItemTransitionCommand {
-                    agent_id,
-                    mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
-                        record: record.clone(),
-                        expected_revision: existing.revision,
-                    },
-                    agent_state,
-                    brief_evidence: Vec::new(),
-                    audit_events,
-                    index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
-                    notify_scheduler: true,
-                    fault: self.take_transition_fault(),
-                },
-                &execution_protocol,
-            )?;
+            let commit = {
+                let mut mutation = self.begin_mutation().await?;
+                mutation
+                    .commit_transition(crate::ids::audit_event_id(), || {
+                        self.commit_work_item_transition_with_execution(
+                            &crate::runtime_db::transitions::WorkItemTransitionCommand {
+                                agent_id,
+                                mutation:
+                                    crate::runtime_db::transitions::WorkItemMutation::Update {
+                                        record: record.clone(),
+                                        expected_revision: existing.revision,
+                                    },
+                                agent_state,
+                                brief_evidence: Vec::new(),
+                                audit_events,
+                                index_changes: self
+                                    .inner
+                                    .storage
+                                    .index_changes_for_work_item(&record)?,
+                                notify_scheduler: true,
+                                fault: self.take_transition_fault(),
+                            },
+                            &execution_protocol,
+                        )
+                    })
+                    .await
+            }?;
             if clear_blocker {
                 self.inner
                     .runtime_db
@@ -3945,21 +3977,31 @@ impl RuntimeHandle {
                 "recheck_consumed_at": record.recheck_consumed_at,
             }),
         ));
-        let commit = self.commit_work_item_transition(
-            &crate::runtime_db::transitions::WorkItemTransitionCommand {
-                agent_id,
-                mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
-                    record: record.clone(),
-                    expected_revision: existing.revision,
-                },
-                agent_state: None,
-                brief_evidence: Vec::new(),
-                audit_events,
-                index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
-                notify_scheduler: true,
-                fault: self.take_transition_fault(),
-            },
-        )?;
+        let commit = {
+            let mut mutation = self.begin_mutation().await?;
+            mutation
+                .commit_transition(crate::ids::audit_event_id(), || {
+                    self.commit_work_item_transition(
+                        &crate::runtime_db::transitions::WorkItemTransitionCommand {
+                            agent_id,
+                            mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                                record: record.clone(),
+                                expected_revision: existing.revision,
+                            },
+                            agent_state: None,
+                            brief_evidence: Vec::new(),
+                            audit_events,
+                            index_changes: self
+                                .inner
+                                .storage
+                                .index_changes_for_work_item(&record)?,
+                            notify_scheduler: true,
+                            fault: self.take_transition_fault(),
+                        },
+                    )
+                })
+                .await
+        }?;
         self.apply_transition_commit(commit).await;
         Ok(Some(record))
     }
@@ -4095,28 +4137,40 @@ impl RuntimeHandle {
                 "completion_intent": record.completion_intent,
             }),
         ));
-        let commit = self.commit_work_item_focus_transition(
-            &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
-                agent_id,
-                work_items: vec![crate::runtime_db::transitions::WorkItemMutation::Update {
-                    record: record.clone(),
-                    expected_revision: existing.revision,
-                }],
-                wait_conditions,
-                active_continuation_expectations: None,
-                continuation_expectations: Vec::new(),
-                continuations: Vec::new(),
-                agent_state: crate::runtime_db::transitions::AgentStateMutation {
-                    expected: Some(Box::new(state)),
-                    record: Box::new(next_state),
-                },
-                brief_evidence: Vec::new(),
-                audit_events,
-                index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
-                notify_scheduler: true,
-                fault: self.take_transition_fault(),
-            },
-        )?;
+        let commit = {
+            let mut mutation = self.begin_mutation().await?;
+            mutation
+                .commit_transition(crate::ids::audit_event_id(), || {
+                    self.commit_work_item_focus_transition(
+                        &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
+                            agent_id,
+                            work_items: vec![
+                                crate::runtime_db::transitions::WorkItemMutation::Update {
+                                    record: record.clone(),
+                                    expected_revision: existing.revision,
+                                },
+                            ],
+                            wait_conditions,
+                            active_continuation_expectations: None,
+                            continuation_expectations: Vec::new(),
+                            continuations: Vec::new(),
+                            agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                                expected: Some(Box::new(state)),
+                                record: Box::new(next_state),
+                            },
+                            brief_evidence: Vec::new(),
+                            audit_events,
+                            index_changes: self
+                                .inner
+                                .storage
+                                .index_changes_for_work_item(&record)?,
+                            notify_scheduler: true,
+                            fault: self.take_transition_fault(),
+                        },
+                    )
+                })
+                .await
+        }?;
         self.apply_transition_commit(commit).await;
         Ok(CompletedWorkItem {
             work_item: record,
@@ -4241,7 +4295,41 @@ impl RuntimeHandle {
         ))
     }
 
-    pub(crate) async fn prepare_work_item_completion_with_report(
+    #[inline(never)]
+    pub(crate) fn prepare_work_item_completion_with_report<'a>(
+        &'a self,
+        work_item_id: String,
+        authority: WorkItemCompletionAuthority,
+        report_text: String,
+        citations: Vec<crate::types::Citation>,
+        source_turn_index: Option<u64>,
+        source_round: Option<usize>,
+        source_turn_id: Option<String>,
+        source_message_id: Option<String>,
+        source_assistant_round_id: Option<String>,
+        source_tool_call_id: Option<String>,
+        report_source: &'static str,
+        warnings: Vec<serde_json::Value>,
+    ) -> std::pin::Pin<
+        Box<impl std::future::Future<Output = Result<WorkItemCompletionDispatch>> + Send + 'a>,
+    > {
+        Box::pin(self.prepare_work_item_completion_with_report_inner(
+            work_item_id,
+            authority,
+            report_text,
+            citations,
+            source_turn_index,
+            source_round,
+            source_turn_id,
+            source_message_id,
+            source_assistant_round_id,
+            source_tool_call_id,
+            report_source,
+            warnings,
+        ))
+    }
+
+    async fn prepare_work_item_completion_with_report_inner(
         &self,
         work_item_id: String,
         authority: WorkItemCompletionAuthority,
@@ -4676,29 +4764,38 @@ impl RuntimeHandle {
                 } else {
                     crate::runtime_db::transitions::ExecutionProtocolTransition::default()
                 };
-            let commit = self.commit_work_item_focus_transition_with_execution(
-                &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
-                    agent_id: record.agent_id.clone(),
-                    work_items: vec![crate::runtime_db::transitions::WorkItemMutation::Update {
-                        record: record.clone(),
-                        expected_revision: record.revision - 1,
-                    }],
-                    wait_conditions: prepared.wait_conditions,
-                    active_continuation_expectations: None,
-                    continuation_expectations: prepared.continuation_expectations,
-                    continuations: prepared.continuations,
-                    agent_state: crate::runtime_db::transitions::AgentStateMutation {
-                        expected: Some(Box::new(prepared.expected_agent_state)),
-                        record: Box::new(prepared.committed_agent_state),
-                    },
-                    brief_evidence: vec![prepared.brief],
-                    audit_events: prepared.audit_events,
-                    index_changes: prepared.index_changes,
-                    notify_scheduler: true,
-                    fault: self.take_transition_fault(),
-                },
-                &execution_protocol,
-            );
+            let commit = {
+                let mut mutation = self.begin_mutation().await?;
+                mutation
+                    .commit_transition(crate::ids::audit_event_id(), || {
+                        self.commit_work_item_focus_transition_with_execution(
+                            &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
+                                agent_id: record.agent_id.clone(),
+                                work_items: vec![
+                                    crate::runtime_db::transitions::WorkItemMutation::Update {
+                                        record: record.clone(),
+                                        expected_revision: record.revision - 1,
+                                    },
+                                ],
+                                wait_conditions: prepared.wait_conditions,
+                                active_continuation_expectations: None,
+                                continuation_expectations: prepared.continuation_expectations,
+                                continuations: prepared.continuations,
+                                agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                                    expected: Some(Box::new(prepared.expected_agent_state)),
+                                    record: Box::new(prepared.committed_agent_state),
+                                },
+                                brief_evidence: vec![prepared.brief],
+                                audit_events: prepared.audit_events,
+                                index_changes: prepared.index_changes,
+                                notify_scheduler: true,
+                                fault: self.take_transition_fault(),
+                            },
+                            &execution_protocol,
+                        )
+                    })
+                    .await
+            };
             match commit {
                 Ok(commit) => {
                     self.apply_transition_commit(commit).await;
@@ -4757,13 +4854,30 @@ impl RuntimeHandle {
             fault: self.take_transition_fault(),
         };
         let commit = if let Some(tool_execution) = tool_execution.as_ref() {
-            self.commit_work_item_focus_transition_with_execution_and_completion_tool(
-                &command,
-                &execution_protocol,
-                tool_execution,
-            )?
+            {
+                let mut mutation = self.begin_mutation().await?;
+                mutation
+                    .commit_transition(crate::ids::audit_event_id(), || {
+                        self.commit_work_item_focus_transition_with_execution_and_completion_tool(
+                            &command,
+                            &execution_protocol,
+                            tool_execution,
+                        )
+                    })
+                    .await
+            }?
         } else {
-            self.commit_work_item_focus_transition_with_execution(&command, &execution_protocol)?
+            {
+                let mut mutation = self.begin_mutation().await?;
+                mutation
+                    .commit_transition(crate::ids::audit_event_id(), || {
+                        self.commit_work_item_focus_transition_with_execution(
+                            &command,
+                            &execution_protocol,
+                        )
+                    })
+                    .await
+            }?
         };
         self.apply_transition_commit(commit).await;
         Ok(CompletedWorkItem {
@@ -4772,7 +4886,31 @@ impl RuntimeHandle {
         })
     }
 
-    async fn plan_work_item_completion_with_brief_mode(
+    #[inline(never)]
+    fn plan_work_item_completion_with_brief_mode<'a>(
+        &'a self,
+        work_item_id: &'a str,
+        authority: Option<&'a WorkItemCompletionAuthority>,
+        brief: &'a BriefRecord,
+        binding_event: AuditEvent,
+        require_open: bool,
+        require_completion_commit_attempt: bool,
+    ) -> std::pin::Pin<
+        Box<
+            impl std::future::Future<Output = Result<Option<PreparedWorkItemCompletion>>> + Send + 'a,
+        >,
+    > {
+        Box::pin(self.plan_work_item_completion_with_brief_mode_inner(
+            work_item_id,
+            authority,
+            brief,
+            binding_event,
+            require_open,
+            require_completion_commit_attempt,
+        ))
+    }
+
+    async fn plan_work_item_completion_with_brief_mode_inner(
         &self,
         work_item_id: &str,
         authority: Option<&WorkItemCompletionAuthority>,

@@ -199,6 +199,26 @@ impl LifecycleHarness {
         assert_eq!(&self.snapshot(), before);
     }
 
+    pub(crate) fn assert_post_commit_result<T: std::fmt::Debug>(
+        &self,
+        result: Result<T>,
+        fault: crate::runtime_db::transitions::TransitionFaultPoint,
+        expected_effect: &str,
+    ) -> Option<T> {
+        if fault == crate::runtime_db::transitions::TransitionFaultPoint::BeforeCacheUpdate {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("publication requires reconciliation"));
+            assert!(self.runtime.inner.mutation_owner.capture().is_err());
+            None
+        } else {
+            let value = result.unwrap();
+            self.assert_post_commit_warning(expected_effect);
+            Some(value)
+        }
+    }
+
     pub(crate) fn assert_post_commit_warning(&self, expected_effect: &str) {
         let warnings = self
             .runtime

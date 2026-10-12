@@ -2854,7 +2854,7 @@ async fn model_override_defers_reasoning_effort_validation_for_unresolved_route(
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.current_run_id = Some("run-1".into());
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
     let model_override = crate::config::ModelRouteRef::parse("unconfigured@default/model").unwrap();
 
@@ -11602,13 +11602,29 @@ async fn standalone_terminal_transition_survives_post_commit_effect_faults() {
         let transition = terminal_transition(&message, None);
         runtime.inject_next_transition_fault(fault);
 
-        runtime
-            .persist_terminal_transition(&transition)
-            .await
-            .unwrap();
-        let warnings = runtime.take_transition_warnings();
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].effect, expected_effect);
+        let result = runtime.persist_terminal_transition(&transition).await;
+        if fault == TransitionFaultPoint::BeforeCacheUpdate {
+            assert!(result.is_err());
+            assert!(runtime.inner.mutation_owner.capture().is_err());
+            let durable = runtime.storage().read_agent().unwrap().unwrap();
+            assert_eq!(
+                durable.last_turn_terminal,
+                Some(transition.terminal.clone())
+            );
+            let turns = runtime.storage().read_recent_turns(16).unwrap();
+            let events = runtime.storage().read_recent_events(64).unwrap();
+            let mutation = runtime.begin_mutation().await.unwrap();
+            assert_eq!(mutation.state, durable);
+            drop(mutation);
+            assert_eq!(runtime.storage().read_recent_turns(16).unwrap(), turns);
+            assert_eq!(runtime.storage().read_recent_events(64).unwrap(), events);
+            assert!(runtime.take_transition_warnings().is_empty());
+        } else {
+            result.unwrap();
+            let warnings = runtime.take_transition_warnings();
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(warnings[0].effect, expected_effect);
+        }
         assert_eq!(
             runtime
                 .inner
@@ -11758,7 +11774,7 @@ async fn terminal_settlement_survives_post_commit_effect_faults() {
 
         let transition = terminal_transition(&message, Some(&work_item.id));
         runtime.inject_next_transition_fault(fault);
-        assert!(runtime
+        let result = runtime
             .commit_queue_terminal_settlement(
                 QueueEntryRecord {
                     message_id: message.id.clone(),
@@ -11772,11 +11788,44 @@ async fn terminal_settlement_survives_post_commit_effect_faults() {
                 true,
                 Some(&transition),
             )
-            .await
-            .unwrap());
-        let warnings = runtime.take_transition_warnings();
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].effect, expected_effect);
+            .await;
+        if fault == TransitionFaultPoint::BeforeCacheUpdate {
+            assert!(result.is_err());
+            assert!(runtime.inner.mutation_owner.capture().is_err());
+            let durable = runtime.storage().read_agent().unwrap().unwrap();
+            assert_eq!(
+                durable.last_turn_terminal,
+                Some(transition.terminal.clone())
+            );
+            let turns = runtime.storage().read_recent_turns(16).unwrap();
+            let events = runtime.storage().read_recent_events(64).unwrap();
+            let execution = runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .load_execution_protocol_state_if_initialized("default")
+                .unwrap();
+            let mutation = runtime.begin_mutation().await.unwrap();
+            assert_eq!(mutation.state, durable);
+            drop(mutation);
+            assert_eq!(runtime.storage().read_recent_turns(16).unwrap(), turns);
+            assert_eq!(runtime.storage().read_recent_events(64).unwrap(), events);
+            assert_eq!(
+                runtime
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .load_execution_protocol_state_if_initialized("default")
+                    .unwrap(),
+                execution
+            );
+            assert!(runtime.take_transition_warnings().is_empty());
+        } else {
+            assert!(result.unwrap());
+            let warnings = runtime.take_transition_warnings();
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(warnings[0].effect, expected_effect);
+        }
 
         let execution = runtime
             .inner
@@ -11877,7 +11926,7 @@ async fn runtime_failure_terminal_fault_retries_confirmed_rollback_and_commits_f
         .load_execution_protocol_state_if_initialized("default")
         .unwrap()
         .unwrap();
-    runtime.inject_next_transition_fault(
+    runtime.inject_next_terminal_transition_fault(
         crate::runtime_db::transitions::TransitionFaultPoint::AfterAuditWrites,
     );
     release.notify_one();
@@ -12234,7 +12283,7 @@ async fn successful_turn_terminal_fault_is_fenced_and_aborted_without_losing_ear
     tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
         .await
         .expect("provider should start");
-    runtime.inject_next_transition_fault(
+    runtime.inject_next_terminal_transition_fault(
         crate::runtime_db::transitions::TransitionFaultPoint::AfterAuditWrites,
     );
     release.notify_one();
@@ -12348,7 +12397,7 @@ async fn interrupted_terminal_fault_retries_confirmed_rollback_and_closes_claim(
         .unwrap()
         .current_run_id
         .expect("active run id");
-    runtime.inject_next_transition_fault(
+    runtime.inject_next_terminal_transition_fault(
         crate::runtime_db::transitions::TransitionFaultPoint::AfterAuditWrites,
     );
     runtime
@@ -13537,7 +13586,7 @@ async fn run_loop_idle_sleep_rechecks_queue_before_transition() {
             },
         ));
         guard.state.pending = guard.queue.len();
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let transition = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -13578,7 +13627,7 @@ async fn run_loop_idle_sleep_refreshes_sleeping_until_when_already_asleep() {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::Asleep;
         guard.state.sleeping_until = Some(previous_deadline);
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let transition = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -13624,7 +13673,7 @@ async fn already_asleep_lifecycle_sleep_refresh_skips_posture_and_state_changed_
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::Asleep;
         guard.state.sleeping_until = Some(previous_deadline);
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     runtime.transition_to_sleep(Some(5_000)).await.unwrap();
@@ -13664,7 +13713,7 @@ async fn awake_lifecycle_sleep_records_posture_and_state_changed_audits() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::AwakeIdle;
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     runtime.transition_to_sleep(Some(60_000)).await.unwrap();
@@ -13706,7 +13755,7 @@ async fn run_loop_idle_sleep_preserves_existing_timed_sleep_when_no_recheck() {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::Asleep;
         guard.state.sleeping_until = Some(existing_deadline);
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let transition = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -13748,7 +13797,7 @@ async fn explicit_sleep_transition_records_scheduler_owned_posture_decision() {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-1".into());
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     runtime.transition_to_sleep(None).await.unwrap();
@@ -14145,7 +14194,7 @@ async fn indefinite_sleep_with_waiting_operator_or_task_work_item_can_sleep() {
             guard.state.status = AgentStatus::AwakeRunning;
             guard.state.current_run_id = Some("run-1".into());
             guard.state.current_work_item_id = Some(work.id.clone());
-            runtime.storage().write_agent(&guard.state).unwrap();
+            guard.persist_state(&runtime.inner.storage).unwrap();
         }
 
         runtime.transition_to_sleep(None).await.unwrap();
@@ -14193,7 +14242,7 @@ async fn wait_for_task_result_marks_work_item_waiting_and_allows_sleep() {
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-1".into());
         guard.state.current_work_item_id = Some(work.id.clone());
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     append_running_rejoin_task(&runtime, "task-1", &work.id);
@@ -14930,7 +14979,7 @@ async fn control_stop_clears_autonomous_sleep_and_wake_posture() {
             causation_id: None,
             created_at: Utc::now(),
         });
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     runtime
@@ -15078,7 +15127,7 @@ async fn sleep_wake_task_ignores_stale_sleeping_until() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.sleeping_until = Some(clock.now() + chrono::Duration::seconds(60));
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
     advance_lifecycle_time(&clock, std::time::Duration::from_millis(25)).await;
 
@@ -15116,7 +15165,10 @@ async fn enqueue_retries_stale_agent_state_from_safe_persisted_baseline() {
 
     let mut concurrent_state = runtime.storage().read_agent().unwrap().unwrap();
     concurrent_state.total_input_tokens = 41;
-    runtime.storage().write_agent(&concurrent_state).unwrap();
+    runtime
+        .storage()
+        .write_agent_for_fixture(&concurrent_state)
+        .unwrap();
 
     let message = MessageEnvelope::new(
         "default",
@@ -15189,7 +15241,10 @@ async fn enqueue_stale_agent_state_fails_closed_when_local_state_is_dirty() {
 
     let mut concurrent_state = runtime.storage().read_agent().unwrap().unwrap();
     concurrent_state.total_input_tokens = 17;
-    runtime.storage().write_agent(&concurrent_state).unwrap();
+    runtime
+        .storage()
+        .write_agent_for_fixture(&concurrent_state)
+        .unwrap();
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.last_wake_reason = Some("unpersisted-local-change".into());
@@ -15269,7 +15324,10 @@ async fn enqueue_stale_agent_state_fails_closed_when_pending_diverges_from_queue
 
     let mut concurrent_state = runtime.storage().read_agent().unwrap().unwrap();
     concurrent_state.pending = 1;
-    runtime.storage().write_agent(&concurrent_state).unwrap();
+    runtime
+        .storage()
+        .write_agent_for_fixture(&concurrent_state)
+        .unwrap();
 
     let message = MessageEnvelope::new(
         "default",
@@ -19256,7 +19314,7 @@ async fn task_result_persists_reduced_state_when_agent_status_is_not_mutable() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::Stopped;
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let mut message = MessageEnvelope::new(
@@ -19354,7 +19412,7 @@ async fn final_status_rewrite_preserves_stopped_and_asleep_states() {
         {
             let mut guard = runtime.inner.agent.lock().await;
             guard.state.status = status.clone();
-            runtime.storage().write_agent(&guard.state).unwrap();
+            guard.persist_state(&runtime.inner.storage).unwrap();
         }
 
         let message = MessageEnvelope::new(
@@ -19936,7 +19994,7 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
         causation_id: None,
         created_at: Utc::now(),
     });
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let runtime = RuntimeHandle::new(
         agent_id,
@@ -20002,7 +20060,7 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
             causation_id: None,
             created_at: Utc::now(),
         });
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
         drop(guard);
     });
 
@@ -20329,6 +20387,12 @@ async fn scheduler_repair_only_drops_wake_only_queue_entries_with_occ() {
         created_at: queued_at,
         updated_at: queued_at,
     };
+    {
+        let mut agent = runtime.inner.agent.lock().await;
+        agent.queue.push(wake_message.clone());
+        agent.state.pending = 1;
+        agent.persist_state(&runtime.inner.storage).unwrap();
+    }
     runtime
         .inner
         .runtime_db
@@ -20349,6 +20413,31 @@ async fn scheduler_repair_only_drops_wake_only_queue_entries_with_occ() {
         })
         .unwrap();
 
+    runtime.inject_next_transition_fault(TransitionFaultPoint::BeforeCommit);
+    assert!(runtime
+        .apply_scheduler_repair(crate::runtime::SchedulerRepairRequest {
+            dry_run: false,
+            reason: "injected rollback".into(),
+            operation: crate::runtime::SchedulerRepairOperation::DropWakeOnlyQueueEntry {
+                message_id: entry.message_id.clone(),
+                expected_status: entry.status.clone(),
+                expected_updated_at: entry.updated_at,
+            },
+        })
+        .await
+        .is_err());
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 1);
+    assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .agent_states()
+            .latest("default")
+            .unwrap()
+            .unwrap()
+            .pending,
+        1
+    );
     let result = runtime
         .apply_scheduler_repair(crate::runtime::SchedulerRepairRequest {
             dry_run: false,
@@ -20362,6 +20451,18 @@ async fn scheduler_repair_only_drops_wake_only_queue_entries_with_occ() {
         .await
         .unwrap();
     assert_eq!(result.operation, "drop_wake_only_queue_entry");
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+    assert!(runtime.inner.agent.lock().await.queue.is_empty());
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .agent_states()
+            .latest("default")
+            .unwrap()
+            .unwrap()
+            .pending,
+        0
+    );
     assert!(result
         .backup_path
         .as_ref()
@@ -20437,7 +20538,7 @@ async fn stop_agent_revokes_active_external_triggers() {
 }
 
 #[tokio::test]
-async fn post_commit_cache_fault_preserves_durable_transition_and_returns_warning() {
+async fn post_commit_install_failure_fences_but_notification_failures_warn() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -20469,32 +20570,42 @@ async fn post_commit_cache_fault_preserves_durable_transition_and_returns_warnin
     {
         let mut record = WorkItemRecord::new("default", "post-commit fault", WorkItemState::Open);
         record.id = format!("work-post-commit-fault-{index}");
-        let commit = runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .commit_work_item(&crate::runtime_db::transitions::WorkItemTransitionCommand {
-                agent_id: "default".into(),
-                mutation: crate::runtime_db::transitions::WorkItemMutation::Insert {
-                    record: record.clone(),
-                },
-                agent_state: None,
-                brief_evidence: Vec::new(),
-                audit_events: vec![AuditEvent::legacy(
-                    "post_commit_fault_test",
-                    serde_json::json!({}),
-                )],
-                index_changes: Vec::new(),
-                notify_scheduler: true,
-                fault: Some(fault),
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let result = mutation
+            .commit_transition(crate::ids::audit_event_id(), || {
+                runtime.inner.runtime_db.transitions().commit_work_item(
+                    &crate::runtime_db::transitions::WorkItemTransitionCommand {
+                        agent_id: "default".into(),
+                        mutation: crate::runtime_db::transitions::WorkItemMutation::Insert {
+                            record: record.clone(),
+                        },
+                        agent_state: None,
+                        brief_evidence: Vec::new(),
+                        audit_events: vec![AuditEvent::legacy(
+                            "post_commit_fault_test",
+                            serde_json::json!({}),
+                        )],
+                        index_changes: Vec::new(),
+                        notify_scheduler: true,
+                        fault: Some(fault),
+                    },
+                )
             })
-            .unwrap();
-
-        let applied = runtime.apply_transition_commit(commit).await;
-
-        assert!(applied.applied);
-        assert_eq!(applied.warnings.len(), 1);
-        assert_eq!(applied.warnings[0].effect, expected_effect);
+            .await;
+        drop(mutation);
+        if fault == TransitionFaultPoint::BeforeCacheUpdate {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("publication requires reconciliation"));
+            assert!(runtime.inner.mutation_owner.capture().is_err());
+            runtime.reconcile_posture_observation().await.unwrap();
+        } else {
+            let applied = runtime.apply_transition_commit(result.unwrap()).await;
+            assert!(applied.applied);
+            assert_eq!(applied.warnings.len(), 1);
+            assert_eq!(applied.warnings[0].effect, expected_effect);
+        }
         assert_eq!(
             runtime
                 .inner
@@ -20512,13 +20623,13 @@ async fn post_commit_cache_fault_preserves_durable_transition_and_returns_warnin
                 .await
                 .work_items
                 .contains_key(&record.id),
-            fault != crate::runtime_db::transitions::TransitionFaultPoint::BeforeCacheUpdate
+            true
         );
     }
 }
 
 #[tokio::test]
-async fn post_commit_agent_state_projection_rebases_onto_newer_memory() {
+async fn late_notification_does_not_rebase_or_persist_agent_state() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -20574,6 +20685,13 @@ async fn post_commit_agent_state_projection_rebases_onto_newer_memory() {
         guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
+    let durable_before = runtime
+        .inner
+        .runtime_db
+        .agent_states()
+        .latest("default")
+        .unwrap();
+    let events_before = runtime.storage().read_recent_events(usize::MAX).unwrap();
     let result = runtime.apply_transition_commit(commit).await;
 
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
@@ -20586,7 +20704,20 @@ async fn post_commit_agent_state_projection_rebases_onto_newer_memory() {
             .as_deref(),
         Some("newer-memory-state")
     );
-    assert_eq!(runtime.agent_state().await.unwrap().pending, 1);
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .agent_states()
+            .latest("default")
+            .unwrap(),
+        durable_before
+    );
+    assert_eq!(
+        runtime.storage().read_recent_events(usize::MAX).unwrap(),
+        events_before
+    );
     assert_eq!(
         runtime
             .agent_state()
@@ -20594,7 +20725,7 @@ async fn post_commit_agent_state_projection_rebases_onto_newer_memory() {
             .unwrap()
             .current_work_item_id
             .as_deref(),
-        Some(work_item.id.as_str())
+        None
     );
     assert_eq!(
         runtime

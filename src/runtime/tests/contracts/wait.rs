@@ -245,7 +245,7 @@ async fn wait_post_commit_fault_recovers_active_wait_after_restart() {
             .unwrap();
         harness.arm_fault(fault);
 
-        let registered = harness
+        let result = harness
             .runtime()
             .register_wait_for(
                 "default",
@@ -255,17 +255,25 @@ async fn wait_post_commit_fault_recovers_active_wait_after_restart() {
                 "waiting for lifecycle recovery".into(),
                 None,
             )
-            .await
-            .unwrap();
-
-        harness.assert_post_commit_warning(expected_effect);
+            .await;
+        let condition = harness
+            .assert_post_commit_result(result, fault, expected_effect)
+            .map(|registered| registered.condition)
+            .unwrap_or_else(|| {
+                harness
+                    .snapshot()
+                    .wait_conditions
+                    .into_iter()
+                    .find(|wait| wait.work_item_id.as_deref() == Some(work_item.id.as_str()))
+                    .unwrap()
+            });
         assert_eq!(
             harness
                 .runtime()
                 .storage()
                 .active_wait_conditions_for_work_item("default", &work_item.id)
                 .unwrap(),
-            vec![registered.condition.clone()]
+            vec![condition.clone()]
         );
         let committed = harness.snapshot();
 
@@ -278,7 +286,7 @@ async fn wait_post_commit_fault_recovers_active_wait_after_restart() {
                 .storage()
                 .active_wait_conditions_for_work_item("default", &work_item.id)
                 .unwrap(),
-            vec![registered.condition]
+            vec![condition]
         );
         assert_eq!(
             harness

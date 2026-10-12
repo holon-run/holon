@@ -419,3 +419,289 @@ async fn bootstrap_and_reconcile_cannot_clear_an_unknown_operation() {
     ));
     assert_needs_reconcile(&successor, &key);
 }
+
+#[tokio::test]
+async fn current_owner_reuses_live_lease_without_replacing_epoch() {
+    let registry = MutationOwnerRegistry::default();
+    let owner = registry.claim("default", 7).unwrap();
+    install_test_observation(&owner, "initial", state(1)).await;
+    let sibling = registry.current_owner("default", 7).unwrap();
+    assert_eq!(owner.epoch, sibling.epoch);
+    assert!(Arc::ptr_eq(&owner._lifetime, &sibling._lifetime));
+    drop(sibling);
+    assert!(owner.capture().unwrap().is_some());
+}
+
+#[tokio::test]
+async fn claim_reserved_keeps_handoff_exclusive_through_private_bootstrap() {
+    let registry = MutationOwnerRegistry::default();
+    let (owner, reservation) = registry.claim_reserved("default", 7).unwrap();
+    assert!(registry
+        .claim("default", 7)
+        .unwrap_err()
+        .downcast_ref::<MutationOwnerError>()
+        .is_some_and(|error| matches!(error, MutationOwnerError::Busy)));
+    let sibling = registry.current_owner("default", 7).unwrap();
+    assert!(matches!(
+        sibling.try_reserve(),
+        Err(MutationOwnerError::Busy)
+    ));
+    assert_eq!(sibling.epoch, owner.epoch);
+    drop(reservation);
+    assert!(sibling.try_reserve().is_ok());
+}
+
+#[tokio::test]
+async fn batch_publication_validates_every_member_before_opening_any_gate() {
+    let registry = MutationOwnerRegistry::default();
+    let first = registry.current_owner("agent-a", 1).unwrap();
+    let second = registry.current_owner("agent-b", 1).unwrap();
+    let mut reservations = MutationOwner::reserve_all(vec![second.clone(), first.clone()])
+        .await
+        .unwrap();
+    let states = vec![
+        Arc::new(AgentState::new("agent-a")),
+        Arc::new(AgentState::new("agent-b")),
+    ];
+    for (reservation, state) in reservations.iter_mut().zip(&states) {
+        reservation.begin("compound".into()).unwrap();
+        reservation.committed(state.clone()).unwrap();
+    }
+    let mut wrong = states.clone();
+    wrong[1] = Arc::new(AgentState::new("different-agent"));
+    assert!(matches!(
+        MutationReservation::publish_all(&mut reservations, wrong),
+        Err(MutationOwnerError::TicketMismatch)
+    ));
+    assert!(matches!(
+        first.capture(),
+        Err(MutationOwnerError::NeedsReconcile(_))
+    ));
+    assert!(matches!(
+        second.capture(),
+        Err(MutationOwnerError::NeedsReconcile(_))
+    ));
+    let published = MutationReservation::publish_all(&mut reservations, states).unwrap();
+    assert_eq!(published.len(), 2);
+    assert!(first.capture().unwrap().is_some());
+    assert!(second.capture().unwrap().is_some());
+}
+
+fn scoped_state(agent_id: &str, pending: usize) -> Arc<AgentState> {
+    let mut state = AgentState::new(agent_id);
+    state.pending = pending;
+    Arc::new(state)
+}
+
+fn state_facts(state: Arc<AgentState>) -> KnownCommit {
+    KnownCommit::State {
+        state,
+        runtime: None,
+    }
+}
+
+fn absent_metadata() -> KnownCommit {
+    KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+        identity: None,
+        state: None,
+    }))
+}
+
+#[tokio::test]
+async fn known_metadata_absence_releases_old_body_without_becoming_an_unknown_outcome() {
+    let registry = MutationOwnerRegistry::default();
+    let owner = registry.current_owner("default", 7).unwrap();
+    let old = install_test_observation(&owner, "old", state(1)).await;
+    let old_body = Arc::downgrade(&old.state);
+    drop(old);
+    let mut permits = MutationOwner::reserve_all(vec![owner.clone()])
+        .await
+        .unwrap();
+    MutationReservation::begin_all(&mut permits, "metadata-ack".into()).unwrap();
+    MutationReservation::committed_all(&mut permits, vec![absent_metadata()]).unwrap();
+    let record = permits[0].recovery().unwrap().unwrap();
+    assert!(record.committed_state.is_none());
+    assert!(matches!(record.known, Some(KnownCommit::Metadata(_))));
+    drop(permits);
+    assert!(owner.capture().is_err());
+    let mut permits = MutationOwner::reserve_all(vec![owner.clone()])
+        .await
+        .unwrap();
+    let known = MutationReservation::validate_group_known(&permits).unwrap();
+    let observations = MutationReservation::reconcile_all(&mut permits, known).unwrap();
+    assert!(observations[0].is_none());
+    assert!(owner.capture().unwrap().is_none());
+    assert!(old_body.upgrade().is_none());
+}
+
+#[tokio::test]
+async fn compound_recovery_expands_members_and_never_opens_only_one_gate() {
+    let registry = MutationOwnerRegistry::default();
+    let parent = registry.current_owner("agent-a", 1).unwrap();
+    let child = registry.current_owner("agent-b", 1).unwrap();
+    let mut permits = MutationOwner::reserve_all(vec![child.clone(), parent.clone()])
+        .await
+        .unwrap();
+    let keys = MutationReservation::begin_all(&mut permits, "parent-child".into()).unwrap();
+    MutationReservation::committed_all(
+        &mut permits,
+        vec![state_facts(scoped_state("agent-a", 4)), absent_metadata()],
+    )
+    .unwrap();
+    assert!(matches!(
+        permits[0].publish(scoped_state("agent-a", 4)),
+        Err(MutationOwnerError::NeedsReconcile(_))
+    ));
+    assert_needs_reconcile(&parent, &keys[0]);
+    assert_needs_reconcile(&child, &keys[1]);
+    drop(permits);
+    let mut recovery = MutationOwner::reserve_all(vec![child.clone()])
+        .await
+        .unwrap();
+    assert_eq!(
+        recovery
+            .iter()
+            .map(MutationReservation::agent_id)
+            .collect::<Vec<_>>(),
+        vec!["agent-a", "agent-b"]
+    );
+    let known = MutationReservation::validate_group_known(&recovery).unwrap();
+    let mut wrong = known.clone();
+    wrong[1] = Some(state_facts(scoped_state("agent-b", 9)));
+    assert!(matches!(
+        MutationReservation::reconcile_all(&mut recovery, wrong),
+        Err(MutationOwnerError::TicketMismatch)
+    ));
+    assert_needs_reconcile(&parent, &keys[0]);
+    assert_needs_reconcile(&child, &keys[1]);
+    let published = MutationReservation::reconcile_all(&mut recovery, known).unwrap();
+    assert_eq!(published[0].as_ref().unwrap().state.pending, 4);
+    assert!(published[1].is_none());
+    assert!(parent.capture().unwrap().is_some());
+    assert!(child.capture().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn compound_unknown_cannot_be_acknowledged_by_current_rows_or_partial_rollback() {
+    let registry = MutationOwnerRegistry::default();
+    let a = registry.current_owner("agent-a", 1).unwrap();
+    let b = registry.current_owner("agent-b", 1).unwrap();
+    let mut permits = MutationOwner::reserve_all(vec![a.clone(), b.clone()])
+        .await
+        .unwrap();
+    let keys = MutationReservation::begin_all(&mut permits, "unknown".into()).unwrap();
+    assert!(matches!(
+        permits[0].definitely_not_committed(),
+        Err(MutationOwnerError::NeedsReconcile(_))
+    ));
+    drop(permits);
+    let mut recovery = MutationOwner::reserve_all(vec![a.clone()]).await.unwrap();
+    assert!(matches!(
+        MutationReservation::validate_group_known(&recovery),
+        Err(MutationOwnerError::NeedsReconcile(_))
+    ));
+    let current = vec![
+        Some(state_facts(scoped_state("agent-a", 1))),
+        Some(absent_metadata()),
+    ];
+    assert!(matches!(
+        MutationReservation::reconcile_all(&mut recovery, current),
+        Err(MutationOwnerError::NeedsReconcile(_))
+    ));
+    assert_needs_reconcile(&a, &keys[0]);
+    assert_needs_reconcile(&b, &keys[1]);
+}
+
+#[tokio::test]
+async fn compound_known_validation_failure_records_no_partial_success() {
+    let registry = MutationOwnerRegistry::default();
+    let a = registry.current_owner("agent-a", 1).unwrap();
+    let b = registry.current_owner("agent-b", 1).unwrap();
+    let mut permits = MutationOwner::reserve_all(vec![a.clone(), b.clone()])
+        .await
+        .unwrap();
+    MutationReservation::begin_all(&mut permits, "rejected-before-sql".into()).unwrap();
+    let wrong = vec![
+        state_facts(scoped_state("agent-a", 1)),
+        state_facts(scoped_state("wrong", 2)),
+    ];
+    assert!(matches!(
+        MutationReservation::committed_all(&mut permits, wrong),
+        Err(MutationOwnerError::TicketMismatch)
+    ));
+    assert!(permits
+        .iter()
+        .all(|permit| permit.recovery().unwrap().unwrap().known.is_none()));
+    MutationReservation::definitely_not_committed_all(&mut permits).unwrap();
+    assert!(a.capture().unwrap().is_none());
+    assert!(b.capture().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn queued_single_scope_restarts_sorted_acquisition_when_a_group_appears() {
+    let registry = MutationOwnerRegistry::default();
+    let a = registry.current_owner("agent-a", 1).unwrap();
+    let b = registry.current_owner("agent-b", 1).unwrap();
+    let mut first = MutationOwner::reserve_all(vec![a.clone(), b.clone()])
+        .await
+        .unwrap();
+    let waiter = MutationOwner::reserve_all(vec![b.clone()]);
+    tokio::pin!(waiter);
+    assert!(futures_util::poll!(&mut waiter).is_pending());
+    MutationReservation::begin_all(&mut first, "created-after-waiter-queued".into()).unwrap();
+    MutationReservation::committed_all(
+        &mut first,
+        vec![state_facts(scoped_state("agent-a", 3)), absent_metadata()],
+    )
+    .unwrap();
+    drop(first);
+    let mut acquired = waiter.await.unwrap();
+    assert_eq!(
+        acquired
+            .iter()
+            .map(MutationReservation::agent_id)
+            .collect::<Vec<_>>(),
+        vec!["agent-a", "agent-b"]
+    );
+    let known = MutationReservation::validate_group_known(&acquired).unwrap();
+    MutationReservation::reconcile_all(&mut acquired, known).unwrap();
+    assert!(a.capture().is_ok());
+    assert!(b.capture().is_ok());
+}
+
+#[tokio::test]
+async fn a_successor_recovers_the_whole_group_without_retaining_resolved_bodies() {
+    let registry = MutationOwnerRegistry::default();
+    let a = registry.current_owner("agent-a", 1).unwrap();
+    let b = registry.current_owner("agent-b", 1).unwrap();
+    let committed = scoped_state("agent-a", 6);
+    let body = Arc::downgrade(&committed);
+    let mut first = MutationOwner::reserve_all(vec![a.clone(), b.clone()])
+        .await
+        .unwrap();
+    MutationReservation::begin_all(&mut first, "group-before-successor".into()).unwrap();
+    MutationReservation::committed_all(&mut first, vec![state_facts(committed), absent_metadata()])
+        .unwrap();
+    drop(first);
+    let successor = registry.claim("agent-a", 1).unwrap();
+    assert!(matches!(
+        successor.validate_bootstrap(),
+        Err(MutationOwnerError::NeedsReconcile(_))
+    ));
+    let mut permits = MutationOwner::reserve_all(vec![successor.clone()])
+        .await
+        .unwrap();
+    let known = MutationReservation::validate_group_known(&permits).unwrap();
+    let observations = MutationReservation::reconcile_all(&mut permits, known).unwrap();
+    assert_eq!(
+        observations[0].as_ref().unwrap().token.owner_epoch,
+        successor.epoch
+    );
+    drop(observations);
+    drop(permits);
+    drop(a);
+    drop(b);
+    assert!(body.upgrade().is_some());
+    drop(successor);
+    assert!(body.upgrade().is_none());
+}

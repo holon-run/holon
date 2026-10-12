@@ -76,13 +76,11 @@ async fn task_post_commit_fault_recovers_active_projection_after_restart() {
         };
         harness.arm_fault(fault);
 
-        harness
+        let result = harness
             .runtime()
             .persist_task_transition(&task, "task_post_commit_contract")
-            .await
-            .unwrap();
-
-        harness.assert_post_commit_warning(expected_effect);
+            .await;
+        harness.assert_post_commit_result(result, fault, expected_effect);
         assert_eq!(
             harness.runtime().task_record(&task.id).await.unwrap(),
             Some(task.clone())

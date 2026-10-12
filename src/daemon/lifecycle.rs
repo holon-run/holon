@@ -503,6 +503,19 @@ fn resolve_start_timeout(explicit_secs: Option<u64>) -> Result<Duration> {
 }
 
 pub fn prepare_runtime_before_server(config: &AppConfig) -> Result<()> {
+    let lease = RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path())
+        .context("pre-server preparation requires the daemon to be stopped")?;
+    prepare_runtime_before_server_with_maintenance_lease(config, &lease)
+}
+
+pub fn prepare_runtime_before_server_with_maintenance_lease(
+    config: &AppConfig,
+    lease: &RuntimeDbLock,
+) -> Result<()> {
+    anyhow::ensure!(
+        lease.path() == config.runtime_db_maintenance_lock_path(),
+        "runtime maintenance lease path mismatch"
+    );
     info!(
         home_dir = %config.home_dir.display(),
         "starting pre-server runtime preparation"
@@ -518,9 +531,9 @@ pub fn prepare_runtime_before_server(config: &AppConfig) -> Result<()> {
         );
         return Ok(());
     }
-    RuntimeHost::prepare_runtime_storage(config).with_context(|| {
-        "pre-server runtime preparation failed; fix the reported storage domain error and retry"
-    })?;
+    RuntimeHost::prepare_runtime_storage_with_maintenance_lease(config, lease).with_context(
+        || "pre-server runtime preparation failed; fix the reported storage domain error and retry",
+    )?;
     info!(
         home_dir = %config.home_dir.display(),
         "finished pre-server runtime preparation"

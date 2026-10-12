@@ -326,6 +326,7 @@ impl RuntimeHandle {
     ) -> Result<WaitForRegistrationOutcome> {
         let _admission = self.execution_admission_lease()?;
         for attempt in 0..3 {
+            let mut mutation = self.begin_mutation().await?;
             match self
                 .prepare_wait_for_outcome(
                     agent_id,
@@ -339,15 +340,26 @@ impl RuntimeHandle {
             {
                 PrepareWaitForOutcome::Immediate(outcome) => return Ok(outcome),
                 PrepareWaitForOutcome::Prepared(prepared) => {
-                    match self
-                        .inner
-                        .runtime_db
-                        .transitions()
-                        .commit_wait_with_execution_protocol_and_task_expectation(
-                            &prepared.command,
-                            &prepared.execution_protocol,
-                            prepared.expected_task.as_ref(),
-                        ) {
+                    let operation_id = prepared
+                        .command
+                        .audit_events
+                        .first()
+                        .map(|event| event.id.clone())
+                        .unwrap_or_else(crate::ids::audit_event_id);
+                    let commit_result = mutation
+                        .commit_transition(operation_id, || {
+                            self.inner
+                                .runtime_db
+                                .transitions()
+                                .commit_wait_with_execution_protocol_and_task_expectation(
+                                    &prepared.command,
+                                    &prepared.execution_protocol,
+                                    prepared.expected_task.as_ref(),
+                                )
+                        })
+                        .await;
+                    drop(mutation);
+                    match commit_result {
                         Ok(commit) => {
                             self.apply_transition_commit(commit).await;
                             return Ok(prepared.outcome());
@@ -1088,17 +1100,20 @@ impl RuntimeHandle {
                 now,
             )?
         };
-        let guard = self.inner.agent.lock().await;
-        let already_in_memory = guard
-            .queue
-            .peek_next_matching(|message| message.id == result_message_id)
-            .is_some();
-        let expected_state = guard.last_persisted_state.clone();
-        let mut committed_state = guard.state.clone();
-        committed_state.pending = guard
-            .queue
-            .len()
-            .saturating_add(usize::from(!already_in_memory));
+        let (already_in_memory, queue_len, expected_state, mut committed_state) = {
+            let guard = self.inner.agent.lock().await;
+            self.inner.mutation_owner.capture()?;
+            (
+                guard
+                    .queue
+                    .peek_next_matching(|message| message.id == result_message_id)
+                    .is_some(),
+                guard.queue.len(),
+                guard.last_persisted_state.clone(),
+                guard.state.clone(),
+            )
+        };
+        committed_state.pending = queue_len.saturating_add(usize::from(!already_in_memory));
         committed_state.last_wake_reason = Some("TaskResult".into());
         committed_state.total_message_count = self.inner.storage.count_messages()?;
         scheduler::apply_message_wake_projection(&mut committed_state);
@@ -1447,24 +1462,24 @@ impl RuntimeHandle {
 
         let mut trigger_now = false;
         let disposition = {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             match guard.state.status {
                 AgentStatus::Stopped => WakeDisposition::Ignored,
                 AgentStatus::AwakeRunning | AgentStatus::AwaitingTask => {
                     guard.state.pending_wake_hint = Some(pending.clone());
-                    guard.persist_state(&self.inner.storage)?;
+                    guard.persist_state(&self.inner.storage).await?;
                     WakeDisposition::Coalesced
                 }
                 AgentStatus::Booting | AgentStatus::AwakeIdle | AgentStatus::Asleep => {
                     if guard.queue.is_empty() {
                         if guard.state.pending_wake_hint.take().is_some() {
-                            guard.persist_state(&self.inner.storage)?;
+                            guard.persist_state(&self.inner.storage).await?;
                         }
                         trigger_now = true;
                         WakeDisposition::Triggered
                     } else {
                         guard.state.pending_wake_hint = Some(pending.clone());
-                        guard.persist_state(&self.inner.storage)?;
+                        guard.persist_state(&self.inner.storage).await?;
                         WakeDisposition::Coalesced
                     }
                 }
@@ -1499,10 +1514,10 @@ impl RuntimeHandle {
                 .emit_system_tick_from_wake_hint_with_decision(&pending)
                 .await
             {
-                let mut guard = self.inner.agent.lock().await;
+                let mut guard = self.begin_mutation().await?;
                 if guard.state.pending_wake_hint.is_none() {
                     guard.state.pending_wake_hint = Some(pending);
-                    guard.persist_state(&self.inner.storage)?;
+                    guard.persist_state(&self.inner.storage).await?;
                 }
                 return Err(err);
             }
@@ -1519,10 +1534,10 @@ impl RuntimeHandle {
         if let Some(pending) = pending_wake {
             self.emit_system_tick_from_wake_hint_with_decision(&pending)
                 .await?;
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             if guard.state.pending_wake_hint.as_ref() == Some(&pending) {
                 guard.state.pending_wake_hint = None;
-                guard.persist_state(&self.inner.storage)?;
+                guard.persist_state(&self.inner.storage).await?;
             }
         }
         Ok(())
@@ -1534,11 +1549,35 @@ impl RuntimeHandle {
         interval_ms: Option<u64>,
         summary: Option<String>,
     ) -> Result<TimerRecord> {
-        let _admission = self.execution_admission_lease()?;
+        let admission = self.execution_admission_lease()?;
+        let runtime = self.clone();
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let _admission = admission;
+            let result = runtime
+                .schedule_timer_owned(duration_ms, interval_ms, summary)
+                .await;
+            if let Err(error) = &result {
+                tracing::warn!(error = %error, "owned timer scheduling failed");
+            }
+            let _ = result_tx.send(result);
+        })?;
+        result_rx
+            .await
+            .map_err(|_| anyhow!("timer scheduling worker stopped"))?
+    }
+
+    async fn schedule_timer_owned(
+        &self,
+        duration_ms: u64,
+        interval_ms: Option<u64>,
+        summary: Option<String>,
+    ) -> Result<TimerRecord> {
+        let mut mutation = self.begin_mutation().await?;
         let created_at = self.now();
         let timer = TimerRecord {
             id: crate::ids::timer_id(),
-            agent_id: self.agent_id().await?,
+            agent_id: mutation.state.id.clone(),
             created_at,
             duration_ms,
             interval_ms,
@@ -1549,12 +1588,40 @@ impl RuntimeHandle {
             last_fired_at: None,
             fire_count: 0,
         };
-        self.record_timer_projection(&timer).await?;
-        self.inner
+        let fault = self.take_transition_fault();
+        let committed = mutation
+            .commit_transition(timer.id.clone(), || {
+                self.inner.storage.append_timer(&timer)?;
+                Ok(TransitionCommit {
+                    applied: true,
+                    effects: crate::runtime_db::transitions::PostCommitEffects {
+                        timers: vec![timer.clone()],
+                        fault,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+            })
+            .await;
+        match committed {
+            Ok(commit) => {
+                drop(mutation);
+                self.apply_transition_commit(commit).await;
+            }
+            Err(error) => {
+                if !mutation.reconcile_known_commit().await? {
+                    return Err(error);
+                }
+                drop(mutation);
+            }
+        }
+        let audit = self
+            .inner
             .storage
-            .append_event(&AuditEvent::legacy("timer_created", to_json_value(&timer)))?;
+            .append_event(&AuditEvent::legacy("timer_created", to_json_value(&timer)));
+        // Once creation committed, audit failure must not strand its live timer.
         self.spawn_timer_loop(timer.clone());
-
+        audit?;
         Ok(timer)
     }
 
@@ -1598,7 +1665,7 @@ impl RuntimeHandle {
             timer.status = TimerStatus::Cancelled;
             timer.next_fire_at = None;
 
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             let pending_message_in_memory = pending_wake.as_ref().is_some_and(|wake| {
                 guard
                     .queue
@@ -1618,23 +1685,36 @@ impl RuntimeHandle {
                     .as_ref()
                     .map(|_| (expected_state, committed_state.clone())),
             };
-            match self.inner.runtime_db.timers().cancel(&command) {
-                Ok(result) if result.cancelled => {
-                    if let Some(message_id) = result.dropped_message_id.as_deref() {
-                        guard
-                            .queue
-                            .pop_next_matching(|message| message.id == message_id);
+            let mut timer_result = None;
+            let result = guard
+                .commit_transition(crate::ids::audit_event_id(), || {
+                    let result = self.inner.runtime_db.timers().cancel(&command)?;
+                    let mut commit = TransitionCommit {
+                        applied: result.cancelled,
+                        ..TransitionCommit::default()
+                    };
+                    if result.cancelled {
+                        commit.effects.agent_state =
+                            command.agent_state.as_ref().map(|(expected, record)| {
+                                crate::runtime_db::transitions::AgentStateMutation {
+                                    expected: Some(Box::new(expected.clone())),
+                                    record: Box::new(record.clone()),
+                                }
+                            });
+                        commit
+                            .effects
+                            .removed_queue_message_ids
+                            .extend(result.dropped_message_id.clone());
+                        commit.effects.timers.push(timer.clone());
                     }
-                    if pending_wake.is_some() {
-                        guard.state = committed_state.clone();
-                        guard.last_persisted_state = committed_state;
-                    }
+                    timer_result = Some(result);
+                    Ok(commit)
+                })
+                .await;
+            match result {
+                Ok(_) if timer_result.as_ref().is_some_and(|result| result.cancelled) => {
+                    let result = timer_result.expect("successful timer cancellation has a result");
                     drop(guard);
-                    self.inner
-                        .projection_cache
-                        .lock()
-                        .await
-                        .upsert_timer(timer.clone());
                     self.inner.storage.append_event(&AuditEvent::legacy(
                         "timer_cancelled",
                         serde_json::json!({
@@ -1781,7 +1861,7 @@ impl RuntimeHandle {
         message.normalize_admission_fields();
 
         for attempt in 0..super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             let expected_state = guard.last_persisted_state.clone();
             let mut committed_state = guard.state.clone();
             committed_state.pending = guard.queue.len().saturating_add(1);
@@ -1789,36 +1869,54 @@ impl RuntimeHandle {
             committed_state.total_message_count =
                 self.inner.storage.count_messages()?.saturating_add(1);
             scheduler::apply_message_wake_projection(&mut committed_state);
-            let result = self.inner.runtime_db.timers().fire_with_wait(
-                &crate::runtime_db::TimerFire {
-                    expected: expected.clone(),
-                    record: record.clone(),
-                    message: message.clone(),
-                    queue_entry: QueueEntryRecord {
-                        message_id: message.id.clone(),
-                        agent_id: message.agent_id.clone(),
-                        priority: message.priority.clone(),
-                        status: QueueEntryStatus::Queued,
-                        created_at: message.created_at,
-                        updated_at: fired_at,
-                    },
-                    agent_state: (expected_state, committed_state.clone()),
+            let command = crate::runtime_db::TimerFire {
+                expected: expected.clone(),
+                record: record.clone(),
+                message: message.clone(),
+                queue_entry: QueueEntryRecord {
+                    message_id: message.id.clone(),
+                    agent_id: message.agent_id.clone(),
+                    priority: message.priority.clone(),
+                    status: QueueEntryStatus::Queued,
+                    created_at: message.created_at,
+                    updated_at: fired_at,
                 },
-                self.take_transition_fault(),
-            );
-            match result {
-                Ok(result) if result.advanced => {
-                    if let Some(message) = result.message {
-                        guard.queue.push(message);
-                        guard.state = committed_state.clone();
-                        guard.last_persisted_state = committed_state;
+                agent_state: (expected_state, committed_state.clone()),
+            };
+            let fault = self.take_transition_fault();
+            let mut timer_result = None;
+            let result = guard
+                .commit_transition(message.id.clone(), || {
+                    let result = self
+                        .inner
+                        .runtime_db
+                        .timers()
+                        .fire_with_wait(&command, fault)?;
+                    let mut commit = TransitionCommit {
+                        applied: result.advanced,
+                        ..TransitionCommit::default()
+                    };
+                    if result.advanced {
+                        commit.effects.timers.push(record.clone());
+                        commit.effects.fault = fault;
+                        commit.effects.notify_scheduler = result.wake_created;
+                        if let Some(message) = result.message.as_ref() {
+                            commit.effects.queued_messages.push(message.clone());
+                            commit.effects.agent_state =
+                                Some(crate::runtime_db::transitions::AgentStateMutation {
+                                    expected: Some(Box::new(command.agent_state.0.clone())),
+                                    record: Box::new(command.agent_state.1.clone()),
+                                });
+                        }
                     }
+                    timer_result = Some(result);
+                    Ok(commit)
+                })
+                .await;
+            match result {
+                Ok(_) if timer_result.as_ref().is_some_and(|result| result.advanced) => {
+                    let result = timer_result.expect("successful timer firing has a result");
                     drop(guard);
-                    self.inner
-                        .projection_cache
-                        .lock()
-                        .await
-                        .upsert_timer(record.clone());
                     *timer = record.clone();
                     self.inner.storage.append_event(&AuditEvent::legacy(
                         "timer_fired",
@@ -2381,4 +2479,201 @@ fn normalize_recovered_timer(mut timer: TimerRecord, now: DateTime<Utc>) -> Time
     let fallback_ms = timer.interval_ms.unwrap_or(timer.duration_ms);
     timer.next_fire_at = advance_time(anchor, fallback_ms).ok().or(Some(now));
     timer
+}
+
+#[cfg(test)]
+mod mutation_tests {
+    use super::*;
+    use crate::runtime::tests::support::context_config;
+    use tempfile::{tempdir, TempDir};
+
+    async fn timer_runtime() -> (TempDir, TempDir, RuntimeHandle, TimerRecord) {
+        let home = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            home.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let now = runtime.now();
+        let timer = TimerRecord {
+            id: crate::ids::timer_id(),
+            agent_id: "default".into(),
+            created_at: now,
+            duration_ms: 1_000,
+            interval_ms: Some(1_000),
+            repeat: true,
+            status: TimerStatus::Active,
+            summary: None,
+            next_fire_at: Some(now),
+            last_fired_at: None,
+            fire_count: 0,
+        };
+        runtime.record_timer_projection(&timer).await.unwrap();
+        (home, workspace, runtime, timer)
+    }
+
+    async fn cancelled_timer_schedule_finishes_owned_installation(
+        fault: Option<TransitionFaultPoint>,
+    ) {
+        let home = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            home.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        if let Some(fault) = fault {
+            runtime.inject_next_transition_fault(fault);
+        }
+        let cache = runtime.inner.projection_cache.lock().await;
+        let caller = tokio::spawn({
+            let runtime = runtime.clone();
+            async move {
+                runtime
+                    .schedule_timer(0, None, Some("owned timer".into()))
+                    .await
+            }
+        });
+        let timer = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(timer) = runtime.storage().latest_timer_records().unwrap().pop() {
+                    assert!(runtime.inner.mutation_owner.capture().is_err());
+                    break timer;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("creation SQL must finish while installation is blocked");
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        drop(cache);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            runtime.join_idle_owned_tasks(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let latest = runtime
+            .storage()
+            .latest_timer_record(&timer.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.status, TimerStatus::Completed);
+        assert_eq!(latest.fire_count, 1);
+        assert_eq!(runtime.storage().latest_timer_records().unwrap().len(), 1);
+        assert_eq!(runtime.agent_state().await.unwrap().pending, 1);
+        assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
+        assert_eq!(
+            runtime
+                .storage()
+                .read_recent_events(64)
+                .unwrap()
+                .iter()
+                .filter(|event| event.kind == "timer_created")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_timer_schedule_installs_and_starts_committed_timer() {
+        cancelled_timer_schedule_finishes_owned_installation(None).await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_timer_schedule_recovers_known_fault_without_recreating_timer() {
+        cancelled_timer_schedule_finishes_owned_installation(Some(
+            TransitionFaultPoint::BeforeCacheUpdate,
+        ))
+        .await;
+    }
+
+    #[tokio::test]
+    async fn timer_fire_precommit_failure_keeps_state_and_queue_private() {
+        let (_home, _workspace, runtime, mut timer) = timer_runtime().await;
+        let previous = runtime.agent_state().await.unwrap();
+        runtime.inject_next_transition_fault(TransitionFaultPoint::AfterCanonicalWrites);
+        assert!(runtime.fire_timer_record(&mut timer).await.is_err());
+        assert_eq!(runtime.agent_state().await.unwrap(), previous);
+        assert_eq!(runtime.storage().read_agent().unwrap().unwrap(), previous);
+        assert!(runtime.inner.agent.lock().await.queue.is_empty());
+        assert_eq!(
+            runtime
+                .storage()
+                .latest_timer_record(&timer.id)
+                .unwrap()
+                .unwrap()
+                .fire_count,
+            0
+        );
+        assert!(runtime
+            .inner
+            .runtime_db
+            .timers()
+            .pending_wake(&timer.id)
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn timer_known_publication_recovery_preserves_compound_queue_and_cancel() {
+        let (_home, _workspace, runtime, mut timer) = timer_runtime().await;
+        runtime.inject_next_transition_fault(TransitionFaultPoint::BeforeCacheUpdate);
+        assert!(runtime.fire_timer_record(&mut timer).await.is_err());
+        assert!(runtime.inner.mutation_owner.capture().is_err());
+        assert!(runtime.inner.agent.lock().await.queue.is_empty());
+        assert_eq!(
+            runtime
+                .storage()
+                .latest_timer_record(&timer.id)
+                .unwrap()
+                .unwrap()
+                .fire_count,
+            1
+        );
+        let mutation = runtime.begin_mutation().await.unwrap();
+        assert_eq!(mutation.state.pending, 1);
+        assert_eq!(mutation.queue.len(), 1);
+        let message_id = mutation.queue.peek().unwrap().id.clone();
+        drop(mutation);
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .timers()
+                .pending_wake(&timer.id)
+                .unwrap()
+                .unwrap()
+                .message_id,
+            message_id
+        );
+        let cancelled = runtime.cancel_timer(&timer.id).await.unwrap();
+        assert_eq!(cancelled.status, TimerStatus::Cancelled);
+        assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+        assert!(runtime.inner.agent.lock().await.queue.is_empty());
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest(&message_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Dropped
+        );
+    }
 }

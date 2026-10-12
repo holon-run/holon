@@ -2509,7 +2509,9 @@ pub async fn command_task_result_enqueue_retries_stale_agent_state() -> Result<(
         .read_agent()?
         .expect("agent state should exist");
     concurrent_state.total_input_tokens = 73;
-    runtime.storage().write_agent(&concurrent_state)?;
+    runtime
+        .storage()
+        .write_agent_for_fixture(&concurrent_state)?;
     std::fs::write(&release_path, b"release")?;
 
     eventually_for(Duration::from_secs(10), || {

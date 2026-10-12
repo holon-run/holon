@@ -491,8 +491,10 @@ impl AppStorage {
             .ok_or_else(|| anyhow::anyhow!("agent-scoped storage operation requires an agent id"))
     }
 
-    pub fn write_agent(&self, agent: &AgentState) -> Result<()> {
-        self.store.write_agent(agent)
+    /// Fixture setup only. Live agents must use their mutation coordinator.
+    #[doc(hidden)]
+    pub fn write_agent_for_fixture(&self, agent: &AgentState) -> Result<()> {
+        self.store.write_agent_for_fixture(agent)
     }
 
     pub fn read_agent(&self) -> Result<Option<AgentState>> {
@@ -1775,7 +1777,9 @@ mod tests {
     fn audit_events_use_runtime_db_after_cutover_without_live_jsonl_append() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-test").unwrap();
-        storage.write_agent(&AgentState::new("agent-test")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("agent-test"))
+            .unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -1810,7 +1814,9 @@ mod tests {
     fn audit_events_use_runtime_db_after_cutover_before_sink_is_enabled() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-test").unwrap();
-        storage.write_agent(&AgentState::new("agent-test")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("agent-test"))
+            .unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -1991,7 +1997,9 @@ mod tests {
     fn runtime_db_state_writes_skip_live_jsonl_after_cutover() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -2204,7 +2212,9 @@ mod tests {
     fn append_turn_uses_runtime_db_after_cutover_without_turns_jsonl() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -2493,7 +2503,9 @@ mod tests {
     fn runtime_db_evidence_writes_skip_live_jsonl_after_cutover() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -2563,7 +2575,9 @@ mod tests {
     fn runtime_index_outbox_write_does_not_touch_memory_index_db() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -2860,7 +2874,7 @@ mod tests {
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Asleep;
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let restored = storage.read_agent().unwrap().unwrap();
         assert_eq!(restored.status, AgentStatus::Asleep);
@@ -2871,14 +2885,16 @@ mod tests {
     fn write_agent_with_runtime_db_writes_db_only() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         // With DB canonical, agent.json should NOT be created
         assert!(!dir.path().join(".holon/state/agent.json").exists());
 
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Stopped;
         agent.turn_index = 7;
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let restored = storage.read_agent().unwrap().unwrap();
         assert_eq!(restored.status, AgentStatus::Stopped);
@@ -2974,9 +2990,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-a").unwrap();
 
-        storage.write_agent(&AgentState::new("agent-a")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("agent-a"))
+            .unwrap();
         let mismatch = storage
-            .write_agent(&AgentState::new("agent-b"))
+            .write_agent_for_fixture(&AgentState::new("agent-b"))
             .unwrap_err();
 
         assert_eq!(
@@ -2996,7 +3014,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_global_for_test(dir.path()).unwrap();
 
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
 
         assert_eq!(storage.current_agent_id().unwrap(), None);
     }
@@ -3108,7 +3128,9 @@ mod tests {
     fn mark_memory_index_dirty_does_not_rewrite_existing_marker() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let dirty_path = storage.shared_indexes_dir().join("memory.default.dirty");
 
         storage.mark_memory_index_dirty().unwrap();
@@ -4095,7 +4117,7 @@ mod tests {
         agent.status = AgentStatus::Asleep;
         agent.current_work_item_id = Some(current.id.clone());
         storage.append_work_item(&current).unwrap();
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let read_models = storage.read_models();
         let direct_queue = read_models.work_queue().unwrap();
@@ -4153,7 +4175,7 @@ mod tests {
         let now = Utc::now();
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Asleep;
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         assert_eq!(
             storage.agent_posture_projection(&agent).unwrap().posture,
@@ -4164,7 +4186,7 @@ mod tests {
         blocked.blocked_by = Some("unstructured blocker".into());
         storage.append_work_item(&blocked).unwrap();
         agent.current_work_item_id = Some(blocked.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             storage.agent_posture_projection(&agent).unwrap().posture,
             AgentSchedulingPosture::Blocked
@@ -4200,7 +4222,7 @@ mod tests {
             })
             .unwrap();
         agent.current_work_item_id = Some(external.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             storage.agent_posture_projection(&agent).unwrap().posture,
             AgentSchedulingPosture::WaitingForExternal
@@ -4211,7 +4233,7 @@ mod tests {
         needs_input.updated_at = now + chrono::Duration::seconds(2);
         storage.append_work_item(&needs_input).unwrap();
         agent.current_work_item_id = Some(needs_input.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             storage.agent_posture_projection(&agent).unwrap().posture,
             AgentSchedulingPosture::WaitingForOperator,
@@ -4247,7 +4269,7 @@ mod tests {
             })
             .unwrap();
         agent.current_work_item_id = Some(task_wait.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         let task_projection = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(
             task_projection.posture,
@@ -4258,7 +4280,7 @@ mod tests {
         let runnable = WorkItemRecord::new("default", "runnable", WorkItemState::Open);
         storage.append_work_item(&runnable).unwrap();
         agent.current_work_item_id = Some(runnable.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             storage.agent_posture_projection(&agent).unwrap().posture,
             AgentSchedulingPosture::HasRunnableWork
@@ -4368,7 +4390,7 @@ mod tests {
         let runnable = WorkItemRecord::new("default", "current runnable", WorkItemState::Open);
         agent.current_work_item_id = Some(runnable.id.clone());
         storage.append_work_item(&runnable).unwrap();
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::HasRunnableWork
@@ -4383,7 +4405,7 @@ mod tests {
         needs_input.plan_status = WorkItemPlanStatus::NeedsInput;
         storage.append_work_item(&needs_input).unwrap();
         agent.current_work_item_id = Some(needs_input.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::WaitingForOperator
@@ -4398,7 +4420,7 @@ mod tests {
         storage.append_work_item(&external).unwrap();
         append_wait_condition(&storage, &external.id, WaitConditionKind::External);
         agent.current_work_item_id = Some(external.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::WaitingForExternal
@@ -4412,7 +4434,7 @@ mod tests {
         blocked.blocked_by = Some("unstructured blocker".into());
         storage.append_work_item(&blocked).unwrap();
         agent.current_work_item_id = Some(blocked.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::Blocked
@@ -4426,7 +4448,7 @@ mod tests {
         storage.append_work_item(&timer_wait).unwrap();
         append_wait_condition(&storage, &timer_wait.id, WaitConditionKind::Timer);
         agent.current_work_item_id = Some(timer_wait.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::Blocked
@@ -4440,7 +4462,7 @@ mod tests {
         storage.append_work_item(&system_wait).unwrap();
         append_wait_condition(&storage, &system_wait.id, WaitConditionKind::System);
         agent.current_work_item_id = Some(system_wait.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::Blocked
@@ -4838,7 +4860,7 @@ mod tests {
         storage.append_work_item(&completed).unwrap();
         let mut agent = AgentState::new("default");
         agent.current_work_item_id = Some(current.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let projection = storage.work_queue_prompt_projection().unwrap();
         assert_eq!(
@@ -4883,7 +4905,9 @@ mod tests {
         for item in queued {
             storage.append_work_item(&item).unwrap();
         }
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
 
         let projection = storage.work_queue_prompt_projection().unwrap();
         let rendered = projection
@@ -4901,7 +4925,9 @@ mod tests {
     fn db_backed_work_queue_prompt_projection_filters_by_current_agent() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -4917,7 +4943,7 @@ mod tests {
         storage.append_work_item(&other_agent).unwrap();
         let mut agent = AgentState::new("default");
         agent.current_work_item_id = Some(current.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         storage.append_work_item(&current).unwrap();
 
         let projection = storage.work_queue_prompt_projection().unwrap();
@@ -5014,7 +5040,7 @@ mod tests {
             .unwrap();
         let mut agent = AgentState::new("default");
         agent.current_work_item_id = Some(current.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let projection = storage.work_queue_prompt_projection().unwrap();
 
@@ -5160,7 +5186,7 @@ mod tests {
         let agent = AgentState::new("default");
 
         // Write agent successfully first
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         // Count tmp files (should be 0 after successful write)
         let state_dir = dir.path().join(".holon/state");
@@ -5182,7 +5208,7 @@ mod tests {
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-a").unwrap();
 
         let agent = AgentState::new("agent-b");
-        let result = storage.write_agent(&agent);
+        let result = storage.write_agent_for_fixture(&agent);
 
         assert!(
             result.is_err(),
@@ -5260,7 +5286,7 @@ mod tests {
                 now,
             ))
             .unwrap();
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let posture = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(posture.posture, AgentSchedulingPosture::WaitingForOperator);
@@ -5288,7 +5314,7 @@ mod tests {
                 now,
             ))
             .unwrap();
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let posture = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(posture.posture, AgentSchedulingPosture::Idle);
@@ -5316,7 +5342,7 @@ mod tests {
                 now,
             ))
             .unwrap();
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let posture = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(posture.posture, AgentSchedulingPosture::Idle);
@@ -5344,7 +5370,7 @@ mod tests {
                 now,
             ))
             .unwrap();
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let posture = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(posture.posture, AgentSchedulingPosture::Idle);
@@ -5373,7 +5399,7 @@ mod tests {
                 now,
             ))
             .unwrap();
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let posture = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(posture.posture, AgentSchedulingPosture::WaitingForTask);
@@ -5385,7 +5411,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let agent = AgentState::new("default");
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let posture = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(posture.posture, AgentSchedulingPosture::Idle);
@@ -5417,7 +5443,7 @@ mod tests {
                 now,
             ))
             .unwrap();
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let posture = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(posture.posture, AgentSchedulingPosture::HasRunnableWork);

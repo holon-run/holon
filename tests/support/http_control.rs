@@ -947,7 +947,9 @@ pub async fn unloaded_agent_state_route_uses_storage_without_starting_runtime() 
         .join(".holon/state/agent.json");
     let mut state = AgentState::new(&agent_id);
     state.status = AgentStatus::Asleep;
-    host.runtime_db().agent_states().upsert(&state)?;
+    host.runtime_db()
+        .agent_states()
+        .upsert_for_fixture(&state)?;
 
     assert!(!agent_state_path.exists());
 
@@ -979,7 +981,9 @@ pub async fn unloaded_agent_detail_route_uses_storage_without_starting_runtime()
         .join(".holon/state/agent.json");
     let mut state = AgentState::new(&agent_id);
     state.status = AgentStatus::Asleep;
-    host.runtime_db().agent_states().upsert(&state)?;
+    host.runtime_db()
+        .agent_states()
+        .upsert_for_fixture(&state)?;
 
     assert!(!agent_state_path.exists());
 

@@ -118,9 +118,9 @@ impl RuntimeHandle {
             .storage
             .append_brief_with_created_event(&bound_brief, &created_event)?;
         self.inner.notify.notify_one();
-        let mut guard = self.inner.agent.lock().await;
+        let mut guard = self.begin_mutation().await?;
         guard.state.last_brief_at = Some(bound_brief.created_at);
-        guard.persist_state(&self.inner.storage)?;
+        guard.persist_state(&self.inner.storage).await?;
         Ok(())
     }
 

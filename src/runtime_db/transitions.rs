@@ -123,7 +123,11 @@ pub(crate) enum QueueOperation {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PostCommitEffects {
     pub agent_state: Option<AgentStateMutation>,
+    pub agent_identities: Vec<crate::types::AgentIdentityRecord>,
     pub queued_messages: Vec<MessageEnvelope>,
+    pub removed_queue_message_ids: Vec<String>,
+    pub timers: Vec<crate::types::TimerRecord>,
+    pub external_triggers: Vec<crate::types::ExternalTriggerRecord>,
     pub work_items: Vec<WorkItemRecord>,
     pub tasks: Vec<TaskRecord>,
     pub audit_events: Vec<AuditEvent>,
@@ -141,6 +145,7 @@ pub(crate) struct AgentStateMutation {
 #[derive(Debug, Clone)]
 pub(crate) struct AgentPostureTransitionCommand {
     pub agent_id: String,
+    pub expected_incarnation: Option<u64>,
     pub agent_state: AgentStateMutation,
     pub audit_events: Vec<AuditEvent>,
     pub fault: Option<TransitionFaultPoint>,
@@ -1153,6 +1158,26 @@ impl RuntimeTransitionRepository<'_> {
             "agent posture transition identity mismatch"
         );
         self.db.transaction(|tx| {
+            if let Some(expected) = command.expected_incarnation {
+                let identity = tx
+                    .query_row(
+                        "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                        [&command.agent_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .map(|payload| {
+                        serde_json::from_str::<crate::types::AgentIdentityRecord>(&payload)
+                    })
+                    .transpose()?;
+                anyhow::ensure!(
+                    identity
+                        .as_ref()
+                        .is_none_or(|identity| identity.incarnation == expected
+                            && identity.status != crate::types::AgentRegistryStatus::Deleted),
+                    "agent mutation identity incarnation is no longer current"
+                );
+            }
             validate_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
 
@@ -1288,11 +1313,9 @@ impl RuntimeTransitionRepository<'_> {
                     now.to_rfc3339(),
                 ],
             )?;
-            let agent_state_applied = if quarantined {
-                apply_agent_state_mutation_tx(tx, Some(&command.agent_state))?
-            } else {
-                false
-            };
+            if quarantined {
+                apply_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
+            }
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
             let event_kind = if quarantined {
                 "scheduler_queue_head_quarantined"
@@ -1319,7 +1342,11 @@ impl RuntimeTransitionRepository<'_> {
                 &[],
                 command.fault,
                 PostCommitEffects {
-                    agent_state: agent_state_applied.then(|| command.agent_state.clone()),
+                    agent_state: quarantined.then(|| command.agent_state.clone()),
+                    removed_queue_message_ids: quarantined
+                        .then(|| command.expected.message_id.clone())
+                        .into_iter()
+                        .collect(),
                     notify_scheduler: quarantined,
                     ..PostCommitEffects::default()
                 },
@@ -1400,7 +1427,7 @@ impl RuntimeTransitionRepository<'_> {
                 &[],
                 command.fault,
                 PostCommitEffects {
-                    agent_state: agent_state_applied.then(|| command.agent_state.clone()),
+                    agent_state: Some(command.agent_state.clone()),
                     ..PostCommitEffects::default()
                 },
             )
@@ -1545,7 +1572,7 @@ impl RuntimeTransitionRepository<'_> {
                 &command.index_changes,
                 command.fault,
                 PostCommitEffects {
-                    agent_state: agent_state_applied.then(|| command.agent_state.clone()),
+                    agent_state: Some(command.agent_state.clone()),
                     work_items,
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
@@ -1629,9 +1656,7 @@ impl RuntimeTransitionRepository<'_> {
                 &command.index_changes,
                 command.fault,
                 PostCommitEffects {
-                    agent_state: agent_state_applied
-                        .then(|| command.agent_state.clone())
-                        .flatten(),
+                    agent_state: command.agent_state.clone(),
                     work_items: applied.then_some(record.clone()).into_iter().collect(),
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
@@ -1747,9 +1772,7 @@ impl RuntimeTransitionRepository<'_> {
                 &command.index_changes,
                 command.fault,
                 PostCommitEffects {
-                    agent_state: agent_state_applied
-                        .then(|| command.agent_state.clone())
-                        .flatten(),
+                    agent_state: command.agent_state.clone(),
                     work_items,
                     queued_messages: command
                         .task_result_admission
@@ -2449,19 +2472,21 @@ impl RuntimeTransitionRepository<'_> {
                 &index_changes,
                 command.fault,
                 PostCommitEffects {
-                    agent_state: agent_state_applied
-                        .then(|| command.agent_state.clone())
-                        .flatten(),
+                    agent_state: command.agent_state.clone(),
                     work_items: wait_registration_work_items
                         .into_iter()
                         .chain(wait_work_items)
                         .chain(completion_work_items)
                         .collect(),
-                    queued_messages: wait_registration
-                        .and_then(|wait| wait.task_result_admission.as_ref())
-                        .map(|admission| admission.message.clone())
-                        .into_iter()
+                    queued_messages: command.message_evidence.iter()
+                        .filter(|message| message.id == queue_record.message_id && queue_record.status == QueueEntryStatus::Queued)
+                        .cloned()
+                        .chain(wait_registration
+                            .and_then(|wait| wait.task_result_admission.as_ref())
+                            .map(|admission| admission.message.clone()))
                         .collect(),
+                    removed_queue_message_ids: (!matches!(queue_record.status, QueueEntryStatus::Queued | QueueEntryStatus::Interrupted))
+                        .then(|| queue_record.message_id.clone()).into_iter().collect(),
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
                 },
@@ -2547,8 +2572,10 @@ impl RuntimeTransitionRepository<'_> {
                 };
             let task_applied = upsert_task_tx(tx, &command.task)?;
             let mut applied = task_applied;
+            let mut agent_identities = Vec::new();
             if let Some(request) = command.agent_deletion.as_ref() {
-                let (_, _, created) = ensure_agent_deletion_tx(tx, request)?;
+                let (identity, _, created) = ensure_agent_deletion_tx(tx, request)?;
+                agent_identities.push(identity);
                 applied |= created;
             }
             if let Some(settlement) = command.task_result_settlement.as_ref() {
@@ -2607,10 +2634,14 @@ impl RuntimeTransitionRepository<'_> {
                 &index_changes,
                 command.fault,
                 PostCommitEffects {
-                    agent_state: agent_state_applied
-                        .then(|| command.agent_state.clone())
-                        .flatten(),
+                    agent_state: command.agent_state.clone(),
+                    agent_identities,
                     work_items,
+                    queued_messages: command.queue_entry.as_ref()
+                        .filter(|entry| entry.status == QueueEntryStatus::Queued)
+                        .into_iter()
+                        .flat_map(|entry| command.message_evidence.iter().filter(move |message| message.id == entry.message_id).cloned())
+                        .collect(),
                     tasks: task_applied
                         .then_some(command.task.clone())
                         .into_iter()
@@ -4883,7 +4914,7 @@ mod tests {
             db.work_items().insert_new(&second)?;
             let mut initial_state = AgentState::new("agent-a");
             initial_state.current_work_item_id = Some(first.id.clone());
-            db.agent_states().upsert(&initial_state)?;
+            db.agent_states().upsert_for_fixture(&initial_state)?;
             let mut next_state = initial_state.clone();
             next_state.current_work_item_id = Some(second.id.clone());
             let continuation = WorkItemContinuationFrame::new_on_completed(
@@ -4953,7 +4984,7 @@ mod tests {
         );
         db.work_item_continuations().upsert(&frame)?;
         let initial_state = AgentState::new("agent-a");
-        db.agent_states().upsert(&initial_state)?;
+        db.agent_states().upsert_for_fixture(&initial_state)?;
         let mut next_state = initial_state.clone();
         next_state.current_work_item_id = Some(caller.id.clone());
         next_state.current_turn_work_item_id = Some(caller.id.clone());
@@ -5102,7 +5133,7 @@ mod tests {
     fn focus_transition_rejects_stale_active_continuation_topology() -> Result<()> {
         let (_dir, db) = runtime_db()?;
         let initial_state = AgentState::new("agent-a");
-        db.agent_states().upsert(&initial_state)?;
+        db.agent_states().upsert_for_fixture(&initial_state)?;
         let frame = WorkItemContinuationFrame::new_on_completed(
             "agent-a",
             "work-parent",
@@ -5167,7 +5198,7 @@ mod tests {
         db.work_items().insert_new(&active)?;
         let mut initial_state = AgentState::new("agent-a");
         initial_state.current_work_item_id = Some(active.id.clone());
-        db.agent_states().upsert(&initial_state)?;
+        db.agent_states().upsert_for_fixture(&initial_state)?;
         let frame = WorkItemContinuationFrame::new_on_completed(
             "agent-a",
             parent.id.clone(),
@@ -5214,7 +5245,7 @@ mod tests {
         db.work_items().insert_new(&first)?;
         db.work_items().insert_new(&second)?;
         let initial_state = AgentState::new("agent-a");
-        db.agent_states().upsert(&initial_state)?;
+        db.agent_states().upsert_for_fixture(&initial_state)?;
         let command = |target: &WorkItemRecord| {
             let mut next_state = initial_state.clone();
             next_state.current_work_item_id = Some(target.id.clone());
@@ -5323,7 +5354,7 @@ mod tests {
             db.queue_entries().upsert(&queued)?;
             let mut initial_state = AgentState::new("agent-a");
             initial_state.pending = 1;
-            db.agent_states().upsert(&initial_state)?;
+            db.agent_states().upsert_for_fixture(&initial_state)?;
             let mut settled_state = initial_state.clone();
             settled_state.pending = 0;
             let transcript = TranscriptEntry::new(
@@ -5590,7 +5621,7 @@ mod tests {
         let mut initial_state = AgentState::new("agent-a");
         initial_state.current_work_item_id = Some(open.id.clone());
         initial_state.current_turn_work_item_id = Some(open.id.clone());
-        db.agent_states().upsert(&initial_state)?;
+        db.agent_states().upsert_for_fixture(&initial_state)?;
 
         let queued = QueueEntryRecord {
             message_id: "message-completion-replay".into(),
@@ -5789,7 +5820,8 @@ mod tests {
         ] {
             let (_dir, db) = runtime_db()?;
             let now = Utc::now();
-            db.agent_states().upsert(&AgentState::new("agent-a"))?;
+            db.agent_states()
+                .upsert_for_fixture(&AgentState::new("agent-a"))?;
             db.agent_identities().upsert(&AgentIdentityRecord::new(
                 "agent-a",
                 AgentKind::Named,
@@ -5901,7 +5933,8 @@ mod tests {
     #[test]
     fn execution_admission_command_is_idempotent_across_queue_commits() -> Result<()> {
         let (_dir, db) = runtime_db()?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         db.agent_identities().upsert(&AgentIdentityRecord::new(
             "agent-a",
             AgentKind::Named,
@@ -5965,7 +5998,8 @@ mod tests {
     #[test]
     fn startup_recovery_settles_open_execution_attempts() -> Result<()> {
         let (_dir, db) = runtime_db()?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         db.agent_identities().upsert(&AgentIdentityRecord::new(
             "agent-a",
             AgentKind::Named,
@@ -6077,7 +6111,8 @@ mod tests {
     #[test]
     fn startup_recovery_interrupts_and_quarantines_retained_claim_without_message() -> Result<()> {
         let (_dir, db) = runtime_db()?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         db.agent_identities().upsert(&AgentIdentityRecord::new(
             "agent-a",
             AgentKind::Named,
@@ -6205,7 +6240,8 @@ mod tests {
     #[test]
     fn startup_recovery_settles_open_attempts_for_deleting_identities() -> Result<()> {
         let (_dir, db) = runtime_db()?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         let mut identity = AgentIdentityRecord::new(
             "agent-a",
             AgentKind::Named,
@@ -6274,7 +6310,8 @@ mod tests {
         // otherwise the pair strands together and the open attempt blocks
         // every later admission for the agent's next incarnation.
         let (_dir, db) = runtime_db()?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         let mut identity = AgentIdentityRecord::new(
             "agent-a",
             AgentKind::Named,

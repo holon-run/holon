@@ -41,30 +41,43 @@ impl RuntimeHandle {
     ) -> Result<ExternalTriggerCapability> {
         let _admission = self.execution_admission_lease()?;
         let delivery_mode = CallbackDeliveryMode::WakeHint;
-        let agent_id = self.agent_id().await?;
+        let mut mutation = self.begin_mutation().await?;
+        let agent_id = mutation.state.id.clone();
         let now = Utc::now();
         let external_trigger_id = crate::ids::external_trigger_id();
         let token = generate_callback_token();
-        let (descriptor, revoked, created) = self
-            .inner
-            .runtime_db
-            .external_triggers()
-            .ensure_default_for_agent(
-                &agent_id,
-                delivery_mode.clone(),
-                now,
-                external_trigger_id,
-                token,
-            )?;
-
+        let mut result = None;
+        let commit = mutation
+            .commit_transition(crate::ids::audit_event_id(), || {
+                let (descriptor, revoked, created) = self
+                    .inner
+                    .runtime_db
+                    .external_triggers()
+                    .ensure_default_for_agent(
+                        &agent_id,
+                        delivery_mode.clone(),
+                        now,
+                        external_trigger_id,
+                        token,
+                    )?;
+                let mut commit = TransitionCommit {
+                    applied: created,
+                    ..Default::default()
+                };
+                if created {
+                    commit.effects.external_triggers.extend(revoked);
+                    commit.effects.external_triggers.push(descriptor.clone());
+                }
+                result = Some((descriptor, created));
+                Ok(commit)
+            })
+            .await?;
+        drop(mutation);
+        self.apply_transition_commit(commit).await;
+        let (descriptor, created) = result.expect("external ingress commit has a result");
         if !created {
             return capability_from_record(&self.inner.callback_base_url, &descriptor);
         }
-        if let Some(revoked) = revoked {
-            self.cache_external_trigger_projection(&revoked).await;
-        }
-
-        self.cache_external_trigger_projection(&descriptor).await;
         self.inner.storage.append_event(&AuditEvent::legacy(
             "external_trigger_created",
             serde_json::json!({
@@ -94,7 +107,11 @@ impl RuntimeHandle {
             return Err(anyhow!("external trigger is not active"));
         }
 
-        let agent_id = self.agent_id().await?;
+        let agent_id = self.agent_state().await?.id;
+        anyhow::ensure!(
+            descriptor.target_agent_id == agent_id,
+            "external trigger does not belong to this agent"
+        );
         let now = Utc::now();
         let correlation_id = payload.correlation_id.clone();
         let causation_id = payload.causation_id.clone();
@@ -122,15 +139,39 @@ impl RuntimeHandle {
             }
         };
 
-        let mut updated_descriptor = descriptor;
-        updated_descriptor.last_delivered_at = Some(now);
-        updated_descriptor.delivery_count += 1;
-        self.inner
+        // Wake submission owns its own reservation. Reacquire only for accounting
+        // and preserve a revocation that completed while wake admission awaited.
+        let mut mutation = self.begin_mutation().await?;
+        let mut updated_descriptor = self
+            .inner
             .runtime_db
             .external_triggers()
-            .upsert(&updated_descriptor)?;
-        self.cache_external_trigger_projection(&updated_descriptor)
-            .await;
+            .latest(descriptor_id)?
+            .ok_or_else(|| anyhow!("external trigger {} not found", descriptor_id))?;
+        anyhow::ensure!(
+            updated_descriptor.target_agent_id == mutation.state.id,
+            "external trigger does not belong to this agent"
+        );
+        updated_descriptor.last_delivered_at = Some(now);
+        updated_descriptor.delivery_count += 1;
+        let commit = mutation
+            .commit_transition(crate::ids::audit_event_id(), || {
+                self.inner
+                    .runtime_db
+                    .external_triggers()
+                    .upsert(&updated_descriptor)?;
+                Ok(TransitionCommit {
+                    applied: true,
+                    effects: crate::runtime_db::transitions::PostCommitEffects {
+                        external_triggers: vec![updated_descriptor.clone()],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+            })
+            .await?;
+        drop(mutation);
+        self.apply_transition_commit(commit).await;
 
         let updated_descriptor_id = updated_descriptor.external_trigger_id.clone();
         let descriptor_delivery_mode = updated_descriptor.delivery_mode.clone();
@@ -168,12 +209,17 @@ impl RuntimeHandle {
         &self,
         external_trigger_id: &str,
     ) -> Result<ExternalTriggerRecord> {
+        let mut mutation = self.begin_mutation().await?;
         let descriptor = self
             .inner
             .runtime_db
             .external_triggers()
             .latest(external_trigger_id)?
             .ok_or_else(|| anyhow!("external trigger {} not found", external_trigger_id))?;
+        anyhow::ensure!(
+            descriptor.target_agent_id == mutation.state.id,
+            "external trigger does not belong to this agent"
+        );
         if descriptor.status == ExternalTriggerStatus::Revoked {
             return Ok(descriptor);
         }
@@ -181,8 +227,21 @@ impl RuntimeHandle {
         let mut revoked = descriptor;
         revoked.status = ExternalTriggerStatus::Revoked;
         revoked.revoked_at = Some(Utc::now());
-        self.inner.runtime_db.external_triggers().upsert(&revoked)?;
-        self.cache_external_trigger_projection(&revoked).await;
+        let commit = mutation
+            .commit_transition(crate::ids::audit_event_id(), || {
+                self.inner.runtime_db.external_triggers().upsert(&revoked)?;
+                Ok(TransitionCommit {
+                    applied: true,
+                    effects: crate::runtime_db::transitions::PostCommitEffects {
+                        external_triggers: vec![revoked.clone()],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+            })
+            .await?;
+        drop(mutation);
+        self.apply_transition_commit(commit).await;
         self.inner.storage.append_event(&AuditEvent::legacy(
             "external_trigger_revoked",
             serde_json::json!({
@@ -198,25 +257,41 @@ impl RuntimeHandle {
     /// provision a fresh one with a new token. Returns the new capability.
     pub async fn reset_external_trigger(&self) -> Result<ExternalTriggerCapability> {
         let delivery_mode = CallbackDeliveryMode::WakeHint;
-        let agent_id = self.agent_id().await?;
+        let mut mutation = self.begin_mutation().await?;
+        let agent_id = mutation.state.id.clone();
         let now = Utc::now();
 
         let external_trigger_id = crate::ids::external_trigger_id();
         let token = generate_callback_token();
-        let (descriptor, revoked) = self
-            .inner
-            .runtime_db
-            .external_triggers()
-            .reset_default_for_agent(
-                &agent_id,
-                delivery_mode.clone(),
-                now,
-                external_trigger_id,
-                token,
-            )?;
+        let mut result = None;
+        let commit = mutation
+            .commit_transition(crate::ids::audit_event_id(), || {
+                let (descriptor, revoked) = self
+                    .inner
+                    .runtime_db
+                    .external_triggers()
+                    .reset_default_for_agent(
+                        &agent_id,
+                        delivery_mode.clone(),
+                        now,
+                        external_trigger_id,
+                        token,
+                    )?;
+                let mut commit = TransitionCommit {
+                    applied: true,
+                    ..Default::default()
+                };
+                commit.effects.external_triggers.extend(revoked.clone());
+                commit.effects.external_triggers.push(descriptor.clone());
+                result = Some((descriptor, revoked));
+                Ok(commit)
+            })
+            .await?;
+        drop(mutation);
+        self.apply_transition_commit(commit).await;
+        let (descriptor, revoked) = result.expect("external ingress reset has a result");
 
         if let Some(revoked) = revoked {
-            self.cache_external_trigger_projection(&revoked).await;
             self.inner.storage.append_event(&AuditEvent::legacy(
                 "external_trigger_revoked",
                 serde_json::json!({
@@ -228,7 +303,6 @@ impl RuntimeHandle {
             ))?;
         }
 
-        self.cache_external_trigger_projection(&descriptor).await;
         self.inner.storage.append_event(&AuditEvent::legacy(
             "external_trigger_created",
             serde_json::json!({
@@ -281,5 +355,74 @@ fn truncate_activation_text(text: &str) -> String {
         text.to_string()
     } else {
         format!("{}...", text.chars().take(160).collect::<String>())
+    }
+}
+
+#[cfg(test)]
+mod mutation_tests {
+    use super::*;
+    use crate::runtime::tests::support::context_config;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn foreign_external_trigger_rejected_without_wake_or_descriptor_mutation() {
+        let home = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            home.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let (descriptor, _, _) = runtime
+            .inner
+            .runtime_db
+            .external_triggers()
+            .ensure_default_for_agent(
+                "foreign",
+                CallbackDeliveryMode::WakeHint,
+                runtime.now(),
+                crate::ids::external_trigger_id(),
+                generate_callback_token(),
+            )
+            .unwrap();
+        let previous_state = runtime.agent_state().await.unwrap();
+        assert!(runtime
+            .revoke_external_trigger(&descriptor.external_trigger_id)
+            .await
+            .is_err());
+        assert!(runtime
+            .deliver_callback(
+                &descriptor.external_trigger_id,
+                CallbackDeliveryPayload {
+                    body: None,
+                    content_type: None,
+                    correlation_id: None,
+                    causation_id: None,
+                },
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .external_triggers()
+                .latest(&descriptor.external_trigger_id)
+                .unwrap()
+                .unwrap(),
+            descriptor
+        );
+        assert_eq!(runtime.agent_state().await.unwrap(), previous_state);
+        assert!(runtime.inner.agent.lock().await.queue.is_empty());
+        assert!(runtime
+            .storage()
+            .read_recent_messages(10)
+            .unwrap()
+            .is_empty());
     }
 }

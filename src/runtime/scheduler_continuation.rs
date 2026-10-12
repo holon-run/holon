@@ -83,9 +83,9 @@ impl RuntimeHandle {
         &self,
         continuation_resolution: &ContinuationResolution,
     ) -> Result<()> {
-        let mut guard = self.inner.agent.lock().await;
+        let mut guard = self.begin_mutation().await?;
         guard.state.last_continuation = Some(continuation_resolution.clone());
-        guard.persist_state(&self.inner.storage)?;
+        guard.persist_state(&self.inner.storage).await?;
         Ok(())
     }
 
@@ -128,7 +128,15 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub(super) async fn maybe_emit_pending_system_tick(
+    #[inline(never)]
+    pub(super) fn maybe_emit_pending_system_tick<'a>(
+        &'a self,
+        triggering_continuation: Option<&'a ContinuationResolution>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<bool>> + Send + 'a>> {
+        Box::pin(self.maybe_emit_pending_system_tick_inner(triggering_continuation))
+    }
+
+    async fn maybe_emit_pending_system_tick_inner(
         &self,
         triggering_continuation: Option<&ContinuationResolution>,
     ) -> Result<bool> {
@@ -139,6 +147,7 @@ impl RuntimeHandle {
             .await?;
         let (scheduler_snapshot, queue_len, mut pending_wake_hint) = {
             let guard = self.inner.agent.lock().await;
+            self.inner.mutation_owner.capture()?;
             let eligible = matches!(
                 guard.state.status,
                 AgentStatus::Booting | AgentStatus::AwakeIdle | AgentStatus::Asleep
@@ -198,6 +207,7 @@ impl RuntimeHandle {
         if used_async_hook {
             let (fresh_snapshot, fresh_queue_len, fresh_pending_wake_hint) = {
                 let guard = self.inner.agent.lock().await;
+                self.inner.mutation_owner.capture()?;
                 (
                     scheduler::SchedulerAgentSnapshot::from_state(&guard.state),
                     guard.queue.len(),
@@ -376,10 +386,10 @@ impl RuntimeHandle {
                         &self.inner.default_agent_id,
                         &decision,
                     )?;
-                    let mut guard = self.inner.agent.lock().await;
+                    let mut guard = self.begin_mutation().await?;
                     if guard.state.pending_wake_hint.as_ref() == Some(&pending) {
                         guard.state.pending_wake_hint = None;
-                        guard.persist_state(&self.inner.storage)?;
+                        guard.persist_state(&self.inner.storage).await?;
                     }
                     drop(guard);
                     self.consume_work_item_rechecks(&due_rechecks).await?;
@@ -398,10 +408,10 @@ impl RuntimeHandle {
                     crate::runtime::test_util::wait_at_checkpoint().await;
                 }
 
-                let mut guard = self.inner.agent.lock().await;
+                let mut guard = self.begin_mutation().await?;
                 if guard.state.pending_wake_hint.as_ref() == Some(&pending) {
                     guard.state.pending_wake_hint = None;
-                    guard.persist_state(&self.inner.storage)?;
+                    guard.persist_state(&self.inner.storage).await?;
                 }
                 drop(guard);
                 self.consume_work_item_rechecks(&due_rechecks).await?;
@@ -866,6 +876,7 @@ impl RuntimeHandle {
     ) -> Result<bool> {
         let (snapshot, queue_len) = {
             let guard = self.inner.agent.lock().await;
+            self.inner.mutation_owner.capture()?;
             (
                 scheduler::SchedulerAgentSnapshot::from_state(&guard.state),
                 guard.queue.len(),
@@ -1156,7 +1167,7 @@ impl RuntimeHandle {
                         agent_id
                     ));
                 }
-                let mut guard = self.inner.agent.lock().await;
+                let mut guard = self.begin_mutation().await?;
                 let expected_persisted_state = guard.last_persisted_state.clone();
                 let mut committed_state = guard.state.clone();
                 let previous_status = committed_state.status.clone();
@@ -1190,28 +1201,30 @@ impl RuntimeHandle {
                     created_at: message.created_at,
                     updated_at: Utc::now(),
                 };
-                let commit_result = self.inner.runtime_db.transitions().commit_queue(
-                    &crate::runtime_db::transitions::QueueTransitionCommand {
-                        agent_id: message.agent_id.clone(),
-                        operation: crate::runtime_db::transitions::QueueOperation::Admit,
-                        mutation: crate::runtime_db::transitions::QueueMutation::Upsert(
-                            queue_record,
-                        ),
-                        scheduler_claim_work_item: None,
-                        agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
-                            expected: Some(Box::new(expected_persisted_state)),
-                            record: Box::new(committed_state.clone()),
-                        }),
-                        message_evidence: vec![message.clone()],
-                        transcript_entries: Vec::new(),
-                        turn_record: None,
-                        audit_events,
-                        notify_scheduler: true,
-                        fault: self.take_transition_fault(),
-                        brief_evidence: Vec::new(),
-                    },
-                );
-                let mut commit = match commit_result {
+                let command = crate::runtime_db::transitions::QueueTransitionCommand {
+                    agent_id: message.agent_id.clone(),
+                    operation: crate::runtime_db::transitions::QueueOperation::Admit,
+                    mutation: crate::runtime_db::transitions::QueueMutation::Upsert(queue_record),
+                    scheduler_claim_work_item: None,
+                    agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                        expected: Some(Box::new(expected_persisted_state)),
+                        record: Box::new(committed_state.clone()),
+                    }),
+                    message_evidence: vec![message.clone()],
+                    transcript_entries: Vec::new(),
+                    turn_record: None,
+                    audit_events,
+                    notify_scheduler: true,
+                    fault: self.take_transition_fault(),
+                    brief_evidence: Vec::new(),
+                };
+                let operation_id = command.audit_events[0].id.clone();
+                let commit_result = guard
+                    .commit_transition(operation_id, || {
+                        self.inner.runtime_db.transitions().commit_queue(&command)
+                    })
+                    .await;
+                let commit = match commit_result {
                     Ok(commit) => commit,
                     Err(error) => {
                         let can_retry = attempt + 1 < super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
@@ -1232,10 +1245,6 @@ impl RuntimeHandle {
                         "work queue tick admission made no durable progress"
                     ));
                 }
-                guard.queue.push(message.clone());
-                guard.state = committed_state.clone();
-                guard.last_persisted_state = committed_state;
-                commit.effects.agent_state = None;
                 break commit;
             }
         };

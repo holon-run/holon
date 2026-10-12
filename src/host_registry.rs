@@ -146,6 +146,20 @@ impl RuntimeRegistry {
         Ok(())
     }
 
+    pub(crate) fn forget_agent_identity(&self, agent_id: &str, incarnation: u64) {
+        let mut identities = self
+            .inner
+            .agent_identities
+            .write()
+            .expect("agent identities cache poisoned");
+        if identities
+            .get(agent_id)
+            .is_some_and(|identity| identity.incarnation <= incarnation)
+        {
+            identities.remove(agent_id);
+        }
+    }
+
     pub(crate) fn workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {
         self.inner.host_storage.latest_workspace_entries()
     }

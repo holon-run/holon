@@ -142,10 +142,7 @@ impl RuntimeHandle {
         message: MessageEnvelope,
         prior_closure: ClosureDecision,
     ) -> Result<()> {
-        let scheduler_state = {
-            let guard = self.inner.agent.lock().await;
-            guard.state.clone()
-        };
+        let scheduler_state = self.agent_state().await?;
         let plan = self.build_message_dispatch_plan(&message, prior_closure, &scheduler_state)?;
         let scheduler_projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
             &self.inner.storage,
@@ -315,9 +312,9 @@ impl RuntimeHandle {
                             anyhow!("model turn requires canonical execution admission provenance")
                         })?;
                     if let Some(work_item_id) = message.work_item_id.as_deref() {
-                        let mut guard = self.inner.agent.lock().await;
+                        let mut guard = self.begin_mutation().await?;
                         guard.state.current_turn_work_item_id = Some(work_item_id.to_string());
-                        guard.persist_state(&self.inner.storage)?;
+                        guard.persist_state(&self.inner.storage).await?;
                     }
                     terminal_transition = Some(
                         self.process_interactive_message_deferred_with_cleanup(
@@ -385,7 +382,7 @@ impl RuntimeHandle {
         }
 
         {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             let status_mutable = !matches!(
                 guard.state.status,
                 AgentStatus::Asleep | AgentStatus::Stopped
@@ -394,7 +391,7 @@ impl RuntimeHandle {
                 scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
             }
             if status_mutable || matches!(message.kind, MessageKind::TaskResult) {
-                guard.persist_state(&self.inner.storage)?;
+                guard.persist_state(&self.inner.storage).await?;
             }
         }
 
@@ -410,10 +407,11 @@ impl RuntimeHandle {
         self.record_wait_reconciliation_signals(&message).await?;
         let final_closure = self.current_closure_decision().await?;
         {
-            let mut guard = self.inner.agent.lock().await;
-            let work_refs_changed = self
-                .refresh_current_work_item_refs(&mut guard.state, &message)
+            let mut guard = self.begin_mutation().await?;
+            let refs_commit = self
+                .refresh_current_work_item_refs(&mut guard, &message)
                 .await?;
+            let work_refs_changed = refs_commit.is_some();
             let memory_refresh =
                 refresh_working_memory(&self.inner.storage, &mut guard.state, &final_closure)?;
             let episode_changed = refresh_episode_memory(
@@ -426,7 +424,11 @@ impl RuntimeHandle {
                 &memory_refresh.current_snapshot,
             )?;
             if work_refs_changed || memory_refresh.working_memory_updated || episode_changed {
-                guard.persist_state(&self.inner.storage)?;
+                guard.persist_state(&self.inner.storage).await?;
+            }
+            drop(guard);
+            if let Some(commit) = refs_commit {
+                self.apply_transition_commit(commit).await;
             }
         }
         self.inner.storage.append_event(&AuditEvent::legacy(
@@ -452,21 +454,22 @@ impl RuntimeHandle {
 
     async fn refresh_current_work_item_refs(
         &self,
-        agent: &mut AgentState,
+        mutation: &mut super::state_mutation::RuntimeMutation,
         message: &MessageEnvelope,
-    ) -> Result<bool> {
+    ) -> Result<Option<TransitionCommit>> {
+        let agent = &mutation.state;
         let Some(work_item_id) = agent
             .current_turn_work_item_id
             .as_deref()
             .or(agent.current_work_item_id.as_deref())
         else {
-            return Ok(false);
+            return Ok(None);
         };
         let Some(mut record) = self.inner.storage.latest_work_item(work_item_id)? else {
-            return Ok(false);
+            return Ok(None);
         };
         if record.state != WorkItemState::Open {
-            return Ok(false);
+            return Ok(None);
         }
 
         let tools = self.inner.storage.read_recent_tool_executions(64)?;
@@ -478,43 +481,44 @@ impl RuntimeHandle {
             &record.id,
         ));
         if additions.is_empty() {
-            return Ok(false);
+            return Ok(None);
         }
 
         let merged = crate::work_item_refs::merge_work_refs(&record.work_refs, additions);
         if merged == record.work_refs {
-            return Ok(false);
+            return Ok(None);
         }
         let previous_count = record.work_refs.len();
         record.work_refs = merged;
         record.revision = record.revision.saturating_add(1);
         record.updated_at = Utc::now();
-        let commit = self.commit_work_item_transition(
-            &crate::runtime_db::transitions::WorkItemTransitionCommand {
-                agent_id: agent.id.clone(),
-                mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
-                    record: record.clone(),
-                    expected_revision: record.revision - 1,
-                },
-                agent_state: None,
-                brief_evidence: Vec::new(),
-                audit_events: vec![AuditEvent::legacy(
-                    "work_item_refs_updated",
-                    serde_json::json!({
-                        "agent_id": agent.id,
-                        "work_item_id": record.id,
-                        "revision": record.revision,
-                        "previous_ref_count": previous_count,
-                        "ref_count": record.work_refs.len(),
-                    }),
-                )],
-                index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
-                notify_scheduler: false,
-                fault: self.take_transition_fault(),
+        let command = crate::runtime_db::transitions::WorkItemTransitionCommand {
+            agent_id: agent.id.clone(),
+            mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                record: record.clone(),
+                expected_revision: record.revision - 1,
             },
-        )?;
-        self.apply_transition_commit(commit).await;
-        Ok(true)
+            agent_state: None,
+            brief_evidence: Vec::new(),
+            audit_events: vec![AuditEvent::legacy(
+                "work_item_refs_updated",
+                serde_json::json!({
+                    "agent_id": agent.id,
+                    "work_item_id": record.id,
+                    "revision": record.revision,
+                    "previous_ref_count": previous_count,
+                    "ref_count": record.work_refs.len(),
+                }),
+            )],
+            index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
+            notify_scheduler: false,
+            fault: self.take_transition_fault(),
+        };
+        let operation_id = command.audit_events[0].id.clone();
+        let commit = mutation
+            .commit_transition(operation_id, || self.commit_work_item_transition(&command))
+            .await?;
+        Ok(Some(commit))
     }
 
     pub(super) fn record_incoming_transcript_entry(&self, message: &MessageEnvelope) -> Result<()> {

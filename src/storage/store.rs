@@ -323,7 +323,9 @@ impl RuntimeStore {
             .collect()
     }
 
-    pub fn write_agent(&self, agent: &AgentState) -> Result<()> {
+    /// Fixture setup only. Live agents must use their mutation coordinator.
+    #[doc(hidden)]
+    pub fn write_agent_for_fixture(&self, agent: &AgentState) -> Result<()> {
         self.ensure_writable()?;
         if let Some(storage_agent_id) = self.agent_id.as_deref() {
             anyhow::ensure!(
@@ -333,6 +335,6 @@ impl RuntimeStore {
                 agent.id
             );
         }
-        self.runtime_db.agent_states().upsert(agent)
+        self.runtime_db.agent_states().upsert_for_fixture(agent)
     }
 }

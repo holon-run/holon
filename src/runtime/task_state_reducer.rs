@@ -177,11 +177,10 @@ impl RuntimeHandle {
         };
 
         let agent_id = self.agent_id().await?;
-        let mut agent_guard = if transition.admit_result_message {
-            Some(self.inner.agent.lock().await)
-        } else {
-            None
-        };
+        let mut agent_guard = Some(
+            self.begin_mutation_with_agent_deletion(transition.agent_deletion.as_ref())
+                .await?,
+        );
         let (mut state, expected_state) = if let Some(guard) = agent_guard.as_ref() {
             (guard.state.clone(), guard.last_persisted_state.clone())
         } else {
@@ -345,36 +344,32 @@ impl RuntimeHandle {
             })
             .transpose()?
             .flatten();
-        let commit =
-            self.commit_task_transition(&crate::runtime_db::transitions::TaskTransitionCommand {
-                agent_id,
-                task: persisted_task,
-                agent_deletion: transition.agent_deletion.clone(),
-                task_result_settlement,
-                queue_entry,
-                work_items,
-                expected_wait_conditions,
-                wait_conditions,
-                agent_state,
-                message_evidence,
-                audit_events,
-                index_changes,
-                notify_scheduler: queue_needs_push,
-                commit_on_idempotent: emit_event
-                    && !task_will_change
-                    && is_terminal_task_status(&task.status),
-                fault: self.take_transition_fault(),
-            })?;
-        let mut commit = commit;
-        if let (Some(guard), Some(message)) = (
-            agent_guard.as_mut(),
-            transition.message_evidence.filter(|_| queue_needs_push),
-        ) {
-            guard.queue.push(message.clone());
-            guard.state = state.clone();
-            guard.last_persisted_state = state;
-            commit.effects.agent_state = None;
-        }
+        let command = &crate::runtime_db::transitions::TaskTransitionCommand {
+            agent_id,
+            task: persisted_task,
+            agent_deletion: transition.agent_deletion.clone(),
+            task_result_settlement,
+            queue_entry,
+            work_items,
+            expected_wait_conditions,
+            wait_conditions,
+            agent_state,
+            message_evidence,
+            audit_events,
+            index_changes,
+            notify_scheduler: queue_needs_push,
+            commit_on_idempotent: emit_event
+                && !task_will_change
+                && is_terminal_task_status(&task.status),
+            fault: self.take_transition_fault(),
+        };
+        let commit = agent_guard
+            .as_mut()
+            .expect("prepared mutation")
+            .commit_transition(crate::ids::audit_event_id(), || {
+                self.commit_task_transition(command)
+            })
+            .await?;
         drop(agent_guard);
         self.apply_transition_commit(commit).await;
         Ok(())
@@ -465,7 +460,7 @@ impl RuntimeHandle {
             causation_id: None,
             created_at: Utc::now(),
         });
-        self.inner.storage.write_agent(&state)
+        self.inner.storage.write_agent_for_fixture(&state)
     }
 
     #[cfg(test)]
@@ -685,9 +680,9 @@ impl RuntimeHandle {
                 .clone()
                 .or_else(|| task.effective_work_item_id().map(ToString::to_string))
             {
-                let mut guard = self.inner.agent.lock().await;
+                let mut guard = self.begin_mutation().await?;
                 guard.state.current_turn_work_item_id = Some(work_item_id);
-                guard.persist_state(&self.inner.storage)?;
+                guard.persist_state(&self.inner.storage).await?;
             }
             let trace_context = message.trace_context.clone();
             let attributes = crate::observability::TraceAttributes {
@@ -1060,7 +1055,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn task_transition_without_agent_state_change_ignores_concurrent_agent_write() {
+    async fn task_transition_without_agent_state_change_preserves_preceding_owned_agent_write() {
         let runtime = runtime();
         {
             let mut guard = runtime.inner.agent.lock().await;
@@ -1068,6 +1063,10 @@ mod tests {
             guard.persist_state(&runtime.inner.storage).unwrap();
         }
         runtime.inject_task_transition_conflicts(1);
+        runtime
+            .inject_task_transition_conflict_if_armed()
+            .await
+            .unwrap();
 
         runtime
             .apply_task_transition(TaskTransition::new(

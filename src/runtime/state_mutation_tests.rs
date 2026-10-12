@@ -179,6 +179,14 @@ async fn cancelled_request_during_sql_wait_keeps_owned_commit_and_publication() 
 #[tokio::test]
 async fn concurrent_stale_recovery_requests_commit_only_once() {
     let (runtime, _data, _workspace) = stale_runtime().await;
+    let baseline_generation = runtime
+        .inner
+        .mutation_owner
+        .capture()
+        .unwrap()
+        .unwrap()
+        .token
+        .generation;
     let executor = SchedulerDecisionExecutor::new(&runtime);
     let (first, second) = tokio::join!(
         executor.reconcile_stale_run_projection(StaleRunProjectionBoundary::RunLoopPoll),
@@ -195,7 +203,7 @@ async fn concurrent_stale_recovery_requests_commit_only_once() {
             .unwrap()
             .token
             .generation,
-        1
+        baseline_generation + 1
     );
     assert_eq!(
         runtime
@@ -225,22 +233,28 @@ async fn runtime_failure_cleanup_cannot_overwrite_a_committed_unpublished_postur
         .unwrap()
         .unwrap();
     runtime.record_runtime_loop_failure(&error).await;
+    let cleaned = runtime
+        .inner
+        .runtime_db
+        .agent_states()
+        .latest("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(cleaned.status, committed.status);
+    assert_eq!(cleaned.current_run_id, committed.current_run_id);
+    assert!(cleaned.last_runtime_failure.is_some());
+    assert_eq!(runtime.inner.agent.lock().await.state, cleaned);
     assert_eq!(
         runtime
             .inner
-            .runtime_db
-            .agent_states()
-            .latest("default")
+            .mutation_owner
+            .capture()
             .unwrap()
-            .unwrap(),
-        committed
+            .unwrap()
+            .state
+            .as_ref(),
+        &cleaned
     );
-    assert!(matches!(
-        runtime.inner.mutation_owner.capture(),
-        Err(MutationOwnerError::NeedsReconcile(_))
-    ));
-    runtime.reconcile_posture_observation().await.unwrap();
-    assert_eq!(runtime.inner.agent.lock().await.state, committed);
 }
 
 #[tokio::test]
@@ -330,23 +344,28 @@ async fn legacy_shutdown_cannot_overwrite_a_committed_unpublished_posture() {
         .unwrap()
         .unwrap();
     assert_eq!(committed.status, AgentStatus::AwakeIdle);
-    assert!(runtime.request_service_shutdown().await.is_err());
+    runtime.request_service_shutdown().await.unwrap();
+    let cleaned = runtime
+        .inner
+        .runtime_db
+        .agent_states()
+        .latest("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(cleaned.status, committed.status);
+    assert_eq!(cleaned.current_run_id, committed.current_run_id);
+    assert_eq!(runtime.inner.agent.lock().await.state, cleaned);
     assert_eq!(
         runtime
             .inner
-            .runtime_db
-            .agent_states()
-            .latest("default")
+            .mutation_owner
+            .capture()
             .unwrap()
-            .unwrap(),
-        committed
+            .unwrap()
+            .state
+            .as_ref(),
+        &cleaned
     );
-    assert!(matches!(
-        runtime.inner.mutation_owner.capture(),
-        Err(MutationOwnerError::NeedsReconcile(_))
-    ));
-    runtime.reconcile_posture_observation().await.unwrap();
-    assert_eq!(runtime.inner.agent.lock().await.state, committed);
 }
 
 #[tokio::test]
@@ -415,4 +434,216 @@ async fn bootstrap_restores_known_posture_before_legacy_force_writes() {
         .unwrap();
     assert_eq!(persisted.status, AgentStatus::AwakeIdle);
     assert_eq!(runtime.inner.agent.lock().await.state, persisted);
+}
+
+#[tokio::test]
+async fn transient_abort_intent_is_private_until_explicit_install() {
+    let (runtime, _data, _workspace) = stale_runtime().await;
+    let token = CancellationToken::new();
+    let reason = Arc::new(StdMutex::new("running".to_owned()));
+    {
+        let mut agent = runtime.inner.agent.lock().await;
+        agent.current_run_abort = Some(CurrentRunAbortHandle {
+            run_id: "stale-run".into(),
+            token: token.clone(),
+            reason: reason.clone(),
+        });
+    }
+    {
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        mutation.defer_abort_current_run("operator_aborted");
+        assert!(!token.is_cancelled());
+        assert_eq!(*reason.lock().unwrap(), "running");
+    }
+    assert!(!token.is_cancelled());
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    mutation.defer_abort_current_run("operator_aborted");
+    mutation
+        .persist_state(&runtime.inner.storage)
+        .await
+        .unwrap();
+    assert!(token.is_cancelled());
+    assert_eq!(*reason.lock().unwrap(), "operator_aborted");
+}
+
+#[tokio::test]
+async fn whole_row_no_change_does_not_borrow_an_external_ack_or_install_candidate() {
+    let (runtime, _data, _workspace) = stale_runtime().await;
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    let before = mutation.state.clone();
+    let mut externally_persisted = before.clone();
+    externally_persisted.total_input_tokens += 17;
+    runtime
+        .storage()
+        .write_agent_for_fixture(&externally_persisted)
+        .unwrap();
+    mutation.state = externally_persisted.clone();
+    mutation.queue.clear();
+    let error = mutation
+        .persist_state(&runtime.inner.storage)
+        .await
+        .unwrap_err();
+    assert!(error
+        .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
+        .is_some());
+    assert_eq!(runtime.inner.agent.lock().await.state, before);
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .agent_states()
+            .latest("default")
+            .unwrap()
+            .unwrap(),
+        externally_persisted
+    );
+    assert!(runtime.inner.mutation_owner.capture().is_ok());
+    drop(mutation);
+    assert!(runtime
+        .refresh_enqueue_agent_state_baseline("default")
+        .await
+        .unwrap());
+    assert_eq!(runtime.inner.agent.lock().await.state, externally_persisted);
+}
+
+#[tokio::test]
+async fn candidate_identity_change_is_rejected_before_sql_and_keeps_gate_open() {
+    let (runtime, _data, _workspace) = stale_runtime().await;
+    let before = runtime.inner.agent.lock().await.state.clone();
+    let events = runtime.storage().read_recent_events(100).unwrap();
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    mutation.state.id = "other-agent".into();
+    let error = mutation.persist_state(runtime.storage()).await.unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("cannot write agent state for `other-agent`"));
+    assert!(runtime.inner.mutation_owner.capture().is_ok());
+    assert_eq!(runtime.inner.agent.lock().await.state, before);
+    assert!(runtime
+        .runtime_db()
+        .agent_states()
+        .latest("other-agent")
+        .unwrap()
+        .is_none());
+    assert_eq!(runtime.storage().read_recent_events(100).unwrap(), events);
+}
+
+#[tokio::test]
+async fn cold_metadata_group_recovers_without_inventing_a_child_state_or_repeating_sql() {
+    let (runtime, _data, _workspace) = stale_runtime().await;
+    let child = runtime
+        .inner
+        .standalone_related_mutation_owners
+        .current_owner("cold-child", 1)
+        .unwrap();
+    let mut mutation = runtime
+        .begin_mutation_with_owners(vec![runtime.inner.mutation_owner.clone(), child.clone()])
+        .await
+        .unwrap();
+    mutation.state.total_output_tokens += 23;
+    let expected = mutation.state.clone();
+    runtime.inject_next_transition_fault(TransitionFaultPoint::BeforeCacheUpdate);
+    mutation.persist_state(runtime.storage()).await.unwrap_err();
+    assert!(matches!(
+        runtime.inner.mutation_owner.capture(),
+        Err(MutationOwnerError::NeedsReconcile(_))
+    ));
+    assert!(matches!(
+        child.capture(),
+        Err(MutationOwnerError::NeedsReconcile(_))
+    ));
+    let child_recovery = mutation
+        .reservations
+        .iter()
+        .find(|scope| scope.agent_id() == "cold-child")
+        .unwrap()
+        .recovery()
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(child_recovery.known, Some(KnownCommit::Metadata(ref facts)) if facts.state.is_none())
+    );
+    drop(mutation);
+    let events = runtime.storage().read_recent_events(100).unwrap();
+    let recovered = runtime.begin_mutation().await.unwrap();
+    assert_eq!(recovered.state, expected);
+    drop(recovered);
+    assert!(runtime.inner.mutation_owner.capture().is_ok());
+    assert!(child.capture().unwrap().is_none());
+    assert!(runtime
+        .runtime_db()
+        .agent_states()
+        .latest("cold-child")
+        .unwrap()
+        .is_none());
+    assert_eq!(runtime.storage().read_recent_events(100).unwrap(), events);
+}
+
+#[tokio::test]
+async fn unknown_group_keeps_parent_and_absent_child_fenced() {
+    let (runtime, _data, _workspace) = stale_runtime().await;
+    let child = runtime
+        .inner
+        .standalone_related_mutation_owners
+        .current_owner("cold-child", 1)
+        .unwrap();
+    let mut mutation = runtime
+        .begin_mutation_with_owners(vec![runtime.inner.mutation_owner.clone(), child.clone()])
+        .await
+        .unwrap();
+    let before = mutation.state.clone();
+    let error = mutation
+        .commit_transition("unknown-group".into(), || {
+            Err(anyhow!("lost acknowledgement"))
+        })
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("lost acknowledgement"));
+    assert!(!mutation.reconcile_known_commit().await.unwrap());
+    drop(mutation);
+    assert!(runtime
+        .reconcile_posture_observation()
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("outcome is unknown"));
+    assert!(matches!(
+        runtime.inner.mutation_owner.capture(),
+        Err(MutationOwnerError::NeedsReconcile(_))
+    ));
+    assert!(matches!(
+        child.capture(),
+        Err(MutationOwnerError::NeedsReconcile(_))
+    ));
+    assert_eq!(runtime.inner.agent.lock().await.state, before);
+}
+
+#[tokio::test]
+async fn definitely_rolled_back_group_opens_all_scopes_without_installing_candidate() {
+    let (runtime, _data, _workspace) = stale_runtime().await;
+    let child = runtime
+        .inner
+        .standalone_related_mutation_owners
+        .current_owner("cold-child", 1)
+        .unwrap();
+    let mut mutation = runtime
+        .begin_mutation_with_owners(vec![runtime.inner.mutation_owner.clone(), child.clone()])
+        .await
+        .unwrap();
+    let before = mutation.state.clone();
+    mutation.state.total_output_tokens += 29;
+    runtime.inject_next_transition_fault(TransitionFaultPoint::BeforeCommit);
+    mutation.persist_state(runtime.storage()).await.unwrap_err();
+    assert!(runtime.inner.mutation_owner.capture().is_ok());
+    assert!(child.capture().unwrap().is_none());
+    assert_eq!(runtime.inner.agent.lock().await.state, before);
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .agent_states()
+            .latest("default")
+            .unwrap()
+            .unwrap(),
+        before
+    );
 }

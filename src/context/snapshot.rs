@@ -766,7 +766,7 @@ mod tests {
         storage.append_work_item(&work).unwrap();
         let mut agent = AgentState::new("default");
         agent.current_work_item_id = Some(work.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         let execution = super::super::tests::execution_snapshot_for(&agent);
         let message = MessageEnvelope::new(
             "default",

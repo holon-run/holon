@@ -47,7 +47,7 @@ async fn runtime_emits_pending_wake_hint_as_system_tick_on_restart() {
         causation_id: None,
         created_at: Utc::now(),
     });
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -94,7 +94,7 @@ async fn recovered_duplicate_wake_hint_clears_pending_without_new_tick() {
     let mut agent = AgentState::new("default");
     agent.status = AgentStatus::AwakeIdle;
     agent.pending_wake_hint = Some(pending);
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let mut duplicate = MessageEnvelope::new(
         "default",
@@ -222,7 +222,7 @@ async fn runtime_emits_work_queue_system_tick_for_active_item_on_restart() {
     seed_runnable_work_execution(&storage, &active);
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active.id.clone());
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -268,7 +268,7 @@ async fn idle_tick_prefers_current_work_item_over_queued_work_item() {
     seed_runnable_work_execution(&storage, &queued);
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active.id.clone());
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -327,7 +327,7 @@ async fn idle_tick_uses_runtime_autonomous_continuation_hook() {
     seed_runnable_work_execution(&storage, &queued);
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active.id.clone());
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let mut runtime = RuntimeHandle::new(
         "default",
@@ -378,7 +378,7 @@ async fn idle_tick_suppresses_continue_active_after_model_reentry_task_result() 
     storage.append_work_item(&active).unwrap();
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active.id.clone());
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -446,7 +446,7 @@ async fn idle_tick_prefers_pending_wake_hint_over_work_queue_tick() {
         causation_id: None,
         created_at: Utc::now(),
     });
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -747,7 +747,7 @@ async fn wake_hint_when_awaiting_task_is_coalesced() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::AwaitingTask;
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();
@@ -777,7 +777,7 @@ async fn wake_hint_when_stopped_is_ignored() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::Stopped;
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();
@@ -833,7 +833,7 @@ async fn wake_hint_when_awake_idle_with_nonempty_queue_is_coalesced() {
             },
         ));
         guard.state.pending = guard.queue.len();
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();
@@ -878,7 +878,7 @@ async fn wake_hint_when_asleep_with_nonempty_queue_is_coalesced() {
             },
         ));
         guard.state.pending = guard.queue.len();
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();

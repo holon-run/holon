@@ -616,25 +616,8 @@ impl RuntimeHandle {
         clock: Arc<dyn Clock>,
     ) -> Result<Self> {
         let agent_id = agent_id.into();
-        let runtime_db = match runtime_db {
-            Some(runtime_db) => runtime_db,
-            None => RuntimeDb::open_and_migrate(
-                data_dir.join(".holon/state/runtime.sqlite"),
-                data_dir.join(".holon/state/runtime.lock"),
-            )?,
-        };
-        let identity_incarnation = runtime_db
-            .agent_identities()
-            .latest(&agent_id)?
-            .map_or(1, |identity| identity.incarnation);
-        let mutation_owner = match host_bridge.as_ref() {
-            Some(bridge) => bridge.claim_mutation_owner(&agent_id, identity_incarnation)?,
-            None => {
-                super::mutation_owner::MutationOwner::standalone(&agent_id, identity_incarnation)
-            }
-        };
-        // Legacy bootstrap writes must not run over an unresolved ambiguous commit.
-        mutation_owner.validate_bootstrap()?;
+        // Validate configuration before claiming an owner or closing a SQL gate.
+        // Pure preparation failures must leave a retryable namespace untouched.
         let autonomous_continuation_decision_hook = provider_reconfig
             .as_ref()
             .map(|reconfig| {
@@ -702,7 +685,44 @@ impl RuntimeHandle {
                 .and_then(|tools| tools.min_confidence)
                 .unwrap_or(0.0),
         });
+        let runtime_db = match runtime_db {
+            Some(runtime_db) => runtime_db,
+            None => RuntimeDb::open_and_migrate(
+                data_dir.join(".holon/state/runtime.sqlite"),
+                data_dir.join(".holon/state/runtime.lock"),
+            )?,
+        };
+        let identity_incarnation = runtime_db
+            .agent_identities()
+            .latest(&agent_id)?
+            .map_or(1, |identity| identity.incarnation);
+        let (mutation_owner, mut bootstrap_reservation) = match host_bridge.as_ref() {
+            Some(bridge) => {
+                bridge.claim_reserved_mutation_owner(&agent_id, identity_incarnation)?
+            }
+            None => {
+                let owner = super::mutation_owner::MutationOwner::standalone(
+                    &agent_id,
+                    identity_incarnation,
+                );
+                let reservation = owner.try_reserve()?;
+                (owner, reservation)
+            }
+        };
+        mutation_owner.validate_bootstrap()?;
+        if bootstrap_reservation.recovery()?.is_some() {
+            let known = super::mutation_owner::MutationReservation::validate_group_known(
+                std::slice::from_ref(&bootstrap_reservation),
+            )?;
+            super::mutation_owner::MutationReservation::reconcile_all(
+                std::slice::from_mut(&mut bootstrap_reservation),
+                known,
+            )?;
+        }
         let mut provider = provider;
+        // Private construction owns its namespace before normalization writes.
+        // A failed storage operation leaves its outcome fenced for recovery.
+        bootstrap_reservation.begin(crate::ids::audit_event_id())?;
         let PreparedRuntimeStorage {
             storage,
             runtime_db,
@@ -712,6 +732,9 @@ impl RuntimeHandle {
             active_timers,
             projection_cache,
         } = prepare_runtime_storage(agent_id, data_dir, initial_workspace, Some(runtime_db))?;
+        bootstrap_reservation.committed(Arc::new(state.clone()))?;
+        bootstrap_reservation.publish(Arc::new(state.clone()))?;
+        drop(bootstrap_reservation);
         if let Some(event_bus) = event_bus {
             storage.enable_event_bus(event_bus)?;
         }
@@ -748,7 +771,10 @@ impl RuntimeHandle {
             inner: Arc::new(RuntimeInner {
                 identity_incarnation,
                 mutation_owner: mutation_owner.clone(),
+                standalone_related_mutation_owners:
+                    super::mutation_owner::MutationOwnerRegistry::default(),
                 agent: Mutex::new(RuntimeAgent {
+                    #[cfg(test)]
                     mutation_owner,
                     last_persisted_state: state.clone(),
                     state,
@@ -792,6 +818,8 @@ impl RuntimeHandle {
                 shutdown_requested: AtomicBool::new(false),
                 execution_admission: super::execution_admission::ExecutionAdmission::default(),
                 transition_faults: StdMutex::new(std::collections::VecDeque::new()),
+                #[cfg(test)]
+                terminal_transition_faults: StdMutex::new(std::collections::VecDeque::new()),
                 #[cfg(test)]
                 completion_binding_replacement: StdMutex::new(None),
                 #[cfg(test)]
@@ -1623,6 +1651,7 @@ fn prepare_runtime_storage(
         queue.push(message.clone());
     }
     let recovered_agent = snapshot.agent;
+    let expected_agent_state = recovered_agent.clone();
     let recovered_from_storage = recovered_agent.is_some();
     let mut state = recovered_agent.unwrap_or_else(|| AgentState::new(agent_id.clone()));
 
@@ -1769,7 +1798,21 @@ fn prepare_runtime_storage(
             );
         }
     }
-    storage.write_agent(&state)?;
+    runtime_db.transitions().commit_agent_posture(
+        &crate::runtime_db::transitions::AgentPostureTransitionCommand {
+            agent_id: state.id.clone(),
+            expected_incarnation: runtime_db
+                .agent_identities()
+                .latest(&state.id)?
+                .map(|identity| identity.incarnation),
+            agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                expected: expected_agent_state.map(Box::new),
+                record: Box::new(state.clone()),
+            },
+            audit_events: Vec::new(),
+            fault: None,
+        },
+    )?;
     storage
         .legacy_importer()
         .import_derived_domains(&state.id)?;
@@ -2130,5 +2173,63 @@ mod view_image_candidate_health_tests {
                 .as_deref(),
             Some("anthropic@default/vision-b")
         );
+    }
+}
+
+#[cfg(test)]
+mod mutation_bootstrap_tests {
+    use super::*;
+    use crate::{host::RuntimeHost, provider::StubProvider};
+
+    #[tokio::test]
+    async fn invalid_pure_configuration_does_not_fence_the_owner_and_can_be_retried() {
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+        let mut invalid = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let host =
+            RuntimeHost::new_with_provider(invalid.clone(), Arc::new(StubProvider::new("unused")))
+                .unwrap();
+        let bridge = host.bridge();
+        let owner = bridge.mutation_owner_for("config-retry", 1).unwrap();
+        invalid.stored_config.decision.enabled = Some(true);
+        invalid.stored_config.decision.model = None;
+        let build = |reconfig| {
+            RuntimeHandle::new_internal(
+                "config-retry",
+                home.path().join("agents/config-retry"),
+                workspace.path().to_path_buf(),
+                String::new(),
+                Arc::new(StubProvider::new("unused")),
+                "config-retry".into(),
+                ContextConfig::default(),
+                ContextConfig::default(),
+                None,
+                RuntimeModelCatalog::default(),
+                Vec::new(),
+                crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
+                crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS,
+                crate::web::WebConfig::default(),
+                reconfig,
+                Some(host.runtime_db().clone()),
+                Some(bridge.clone()),
+                None,
+                Arc::new(SystemClock),
+            )
+        };
+        let error = build(Some(ProviderReconfigurator { config: invalid }))
+            .err()
+            .expect("invalid decision config must fail");
+        assert!(error
+            .to_string()
+            .contains("decision.enabled requires decision.model"));
+        // The preexisting owner epoch remains valid; neither claim nor begin ran.
+        assert!(owner.capture().unwrap().is_none());
+        let runtime = build(None).unwrap();
+        assert!(runtime.inner.mutation_owner.capture().unwrap().is_some());
     }
 }

@@ -372,7 +372,7 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
         record.revision = item.revision;
         append_work_item_at_revision(&storage, &record);
     }
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     for task in tasks {
         storage
             .append_task(&TaskRecord {
@@ -624,7 +624,7 @@ fn compaction_events_and_briefs_do_not_change_scheduler_projection() {
     work_item.id = "work-active".into();
     work_item.revision = 3;
     append_work_item_at_revision(&storage, &work_item);
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     storage
         .append_task(&TaskRecord {
             id: "task-active".into(),
@@ -696,11 +696,11 @@ fn scheduler_projection_breaks_down_waiting_intent_scopes() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     append_active_external_wait_condition(&storage, "work-wait", "default", Some("work-1"));
     append_active_external_wait_condition(&storage, "agent-wait", "default", None);
     agent.pending_wake_hint = None;
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     assert_eq!(projection.active_waiting_intents, 2);
@@ -713,7 +713,7 @@ fn scheduler_projection_filters_tasks_waiting_intents_and_timers_by_agent() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     let now = Utc::now();
 
     for (id, agent_id) in [("wait-current", "default"), ("wait-other", "other")] {
@@ -768,7 +768,7 @@ fn idle_boundary_decision_prefers_controlled_status_over_wait_facts() {
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     agent.status = AgentStatus::Stopped;
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     append_active_external_wait_condition(&storage, "wait-current", "default", None);
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
@@ -783,7 +783,7 @@ fn idle_boundary_decision_inspects_wait_facts_while_asleep() {
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     agent.status = AgentStatus::Asleep;
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     append_active_external_wait_condition(&storage, "wait-current", "default", None);
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
@@ -801,7 +801,7 @@ fn idle_boundary_decision_waits_for_non_current_work_item_wait() {
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     agent.status = AgentStatus::Asleep;
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     let mut waiting = WorkItemRecord::new("default", "waiting work", WorkItemState::Open);
     waiting.id = "work-waiting".into();
     waiting.blocked_by = Some("task result".into());
@@ -850,7 +850,7 @@ fn idle_boundary_decision_does_not_treat_asleep_with_queued_input_as_idle() {
     let mut agent = AgentState::new("default");
     agent.status = AgentStatus::Asleep;
     agent.pending = 1;
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     let decision = scheduler::idle_boundary_decision(&projection, "fixture");
@@ -870,7 +870,7 @@ fn idle_boundary_decision_reactivates_runnable_work_while_asleep() {
     work_item.plan_status = WorkItemPlanStatus::Ready;
     storage.append_work_item(&work_item).unwrap();
     seed_runnable_work_execution(&storage, &work_item);
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     let decision = scheduler::idle_boundary_decision(&projection, "fixture");
@@ -888,7 +888,7 @@ fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts()
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     let mut work_item = WorkItemRecord::new("default", "continue work", WorkItemState::Open);
     work_item.id = "work-1".into();
     work_item.revision = 7;
@@ -909,7 +909,7 @@ fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts()
         created_at: Utc::now(),
     };
     agent.pending_wake_hint = Some(pending.clone());
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     let wake_decision = scheduler::decide_next_action(
@@ -951,7 +951,7 @@ fn queued_runnable_work_is_not_suppressed_by_unrelated_agent_waiting_intent() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let mut work_item = WorkItemRecord::new("default", "queued work", WorkItemState::Open);
     work_item.id = "work-queued".into();
@@ -999,7 +999,7 @@ fn work_reactivation_prefers_runnable_current_over_queued_candidates() {
     current.plan_status = WorkItemPlanStatus::Ready;
     storage.append_work_item(&current).unwrap();
     seed_runnable_work_execution(&storage, &current);
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let mut queued = WorkItemRecord::new("default", "queued work", WorkItemState::Open);
     queued.id = "work-queued".into();
@@ -1022,7 +1022,7 @@ fn work_reactivation_uses_stable_fifo_order_for_queued_candidates() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let now = Utc::now();
     let mut newer = WorkItemRecord::new("default", "newer work", WorkItemState::Open);
@@ -1076,7 +1076,7 @@ fn autonomous_selection_projection() -> scheduler::SchedulerProjection {
     queued.plan_status = WorkItemPlanStatus::Ready;
     storage.append_work_item(&queued).unwrap();
     seed_runnable_work_execution(&storage, &queued);
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap()
 }
@@ -1344,7 +1344,7 @@ fn background_work_item_task_does_not_block_runnable_work() {
     storage.append_work_item(&work_item).unwrap();
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some("work-background".into());
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     storage
         .append_task(&TaskRecord {
             id: "background-task".into(),
@@ -1379,7 +1379,7 @@ fn scheduling_advisories_detect_idle_posture_with_runnable_work() {
     agent.current_work_item_id = Some(work_item.id.clone());
     storage.append_work_item(&work_item).unwrap();
     seed_runnable_work_execution(&storage, &work_item);
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     let work_queue = storage.work_queue_prompt_projection().unwrap();
@@ -1407,7 +1407,7 @@ fn scheduling_advisories_detect_weak_external_wait_and_unrecoverable_blocker() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     let now = Utc::now();
 
     let mut external = WorkItemRecord::new("default", "external wait", WorkItemState::Open);
@@ -1467,7 +1467,7 @@ fn scheduling_advisories_use_authoritative_queue_len() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let diagnostics = scheduler::scheduling_advisories_with_queue_len(&storage, &agent, 1).unwrap();
 
@@ -1484,7 +1484,7 @@ fn scheduling_advisories_do_not_warn_for_common_legal_waits() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     let now = Utc::now();
 
     let mut external =
@@ -1536,7 +1536,7 @@ fn scheduling_advisory_append_dedupes_interleaved_recent_events() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     let now = Utc::now();
 
     storage
@@ -1586,7 +1586,7 @@ fn decide_next_action_records_duplicate_tick_evidence() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     let mut work_item = WorkItemRecord::new("default", "queued work", WorkItemState::Open);
     work_item.id = "work-queued".into();
     work_item.revision = 3;
@@ -1694,7 +1694,7 @@ fn generic_external_wake_is_lifecycle_nudge_even_when_a_wait_matches() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     append_active_external_wait_condition(&storage, "wait-agent", "default", None);
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     let mut message = MessageEnvelope::new(
@@ -1953,7 +1953,7 @@ fn unbound_timer_tick_is_lifecycle_nudge_without_a_wait() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     let message = MessageEnvelope::new(
         "default",
@@ -2016,7 +2016,7 @@ fn correlated_wait_resume_requires_the_exact_expected_owner() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     append_active_external_wait_condition(&storage, "wait-work", "default", Some("work-a"));
     append_active_external_wait_condition(&storage, "wait-lifecycle", "default", None);
     let mut projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
@@ -2114,7 +2114,7 @@ fn unbound_operator_input_exactly_resumes_agent_wait_or_becomes_nudge() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     let continuation = ContinuationResolution {
         trigger_kind: ContinuationTriggerKind::OperatorInput,
         class: ContinuationClass::ResumeExpectedWait,
@@ -2161,7 +2161,7 @@ fn unbound_operator_input_exactly_resumes_agent_wait_or_becomes_nudge() {
 
     let empty_dir = tempdir().unwrap();
     let empty_storage = AppStorage::new_for_test(empty_dir.path()).unwrap();
-    empty_storage.write_agent(&agent).unwrap();
+    empty_storage.write_agent_for_fixture(&agent).unwrap();
     let projection = scheduler::SchedulerProjection::from_state(&empty_storage, &agent).unwrap();
     let candidate = scheduler::canonical_activation_candidate(&message, Some(&continuation), None)
         .unwrap()
@@ -2181,7 +2181,7 @@ fn explicitly_bound_operator_input_resumes_work_item_wait() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     append_open_work_item(&storage, "wi-operator", "default");
     append_operator_wait_condition(&storage, "wait-operator", "default", Some("wi-operator"));
 
@@ -2328,7 +2328,7 @@ fn resolved_cross_owner_task_wait_still_routes_result_replay_to_waiter() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     append_open_work_item(&storage, "wi-owner", "default");
     append_open_work_item(&storage, "wi-waiter", "default");
     let mut message = MessageEnvelope::new(
@@ -2392,7 +2392,7 @@ fn normal_operator_input_resumes_work_item_wait_but_interject_does_not() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     append_open_work_item(&storage, "wi-operator", "default");
     append_operator_wait_condition(&storage, "wait-operator", "default", Some("wi-operator"));
 
@@ -2453,7 +2453,7 @@ fn message_claim_authority_scope_is_derived_without_shadow_evidence() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     let message = MessageEnvelope::new(
         "default",
@@ -2480,7 +2480,7 @@ fn wait_resume_claim_authority_scope_is_derived_without_shadow_evidence() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     let work_item = append_open_work_item(&storage, "wi-1", "default");
     append_task_wait_condition(&storage, "wait-1", "default", Some("wi-1"), "task-1");
     seed_waiting_work_execution(&storage, &work_item, "wait-1");
@@ -2554,7 +2554,7 @@ fn legacy_child_agent_task_kinds_do_not_gate_scheduler_wait_for_task() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     let now = Utc::now();
 
     for (id, kind, recovery) in [
@@ -2873,7 +2873,7 @@ fn waiting_operator_with_expired_unconsumed_recheck_lets_agent_wake() {
         // not consumed
         None,
     );
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
 
@@ -2904,7 +2904,7 @@ fn waiting_operator_with_expired_but_consumed_recheck_still_waits() {
         // consumed after recheck_at → no re-pending
         Some(recheck_at + chrono::Duration::seconds(5)),
     );
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     assert_eq!(
@@ -2934,7 +2934,7 @@ fn waiting_operator_with_future_recheck_still_waits() {
         Some(Utc::now() + chrono::Duration::hours(1)),
         None,
     );
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     assert_eq!(
@@ -2961,7 +2961,7 @@ fn waiting_external_with_interrupted_replay_does_not_return_liveness_only_wait()
         "default",
         Some("work-external-replay"),
     );
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
     storage
         .append_queue_entry(&QueueEntryRecord {
             message_id: "msg-interrupted-replay".into(),
@@ -2994,7 +2994,7 @@ fn waiting_external_without_interrupted_replay_remains_liveness_only() {
         "default",
         Some("work-external-idle"),
     );
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     let decision =

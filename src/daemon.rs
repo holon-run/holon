@@ -8,7 +8,8 @@ mod tests;
 pub use lifecycle::{
     daemon_prepare_update, daemon_restart, daemon_restart_with_timeout, daemon_start,
     daemon_start_with_timeout, daemon_status, daemon_stop, ensure_serve_preflight,
-    graceful_runtime_shutdown, prepare_runtime_before_server, DAEMON_SERVE_ARGS_ENV,
+    graceful_runtime_shutdown, prepare_runtime_before_server,
+    prepare_runtime_before_server_with_maintenance_lease, DAEMON_SERVE_ARGS_ENV,
     PRE_SERVER_PREPARED_ENV,
 };
 pub(crate) use service::runtime_activity_message;

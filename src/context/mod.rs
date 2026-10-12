@@ -3867,7 +3867,7 @@ mod tests {
         let work = WorkItemRecord::new("default", "frozen objective", WorkItemState::Open);
         storage.append_work_item(&work).unwrap();
         agent.current_work_item_id = Some(work.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         let artifact = crate::work_item_plan::ensure_plan_artifact(
             storage.data_dir(),
             &work,
@@ -4324,7 +4324,9 @@ mod tests {
     fn recent_turns_prefers_db_turn_records_when_available() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -4404,7 +4406,9 @@ mod tests {
     fn recent_turns_marks_replay_provenance_without_treating_source_as_continuation() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let mut source = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -4815,7 +4819,9 @@ mod tests {
     fn recent_turns_keeps_db_turn_when_trigger_message_is_outside_window() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -4890,7 +4896,9 @@ mod tests {
     fn recent_turns_hydrates_turn_record_references_outside_recent_windows() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -7067,7 +7075,7 @@ mod tests {
 
         let mut agent = AgentState::new("default");
         agent.current_work_item_id = Some(active.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         let built = build_context(
             &storage,
             &agent,
@@ -7185,7 +7193,7 @@ mod tests {
             work_item_id: Some(execution_owner.id.clone()),
             claimed_work_revision: Some(execution_owner.revision),
         });
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -7262,7 +7270,7 @@ mod tests {
             work_item_id: None,
             claimed_work_revision: None,
         });
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -7285,7 +7293,7 @@ mod tests {
             },
         ] {
             agent.current_execution_binding.as_mut().unwrap().owner = Some(owner);
-            storage.write_agent(&agent).unwrap();
+            storage.write_agent_for_fixture(&agent).unwrap();
             for blocked_by in [None, Some("focused background waits for CI")] {
                 focused.blocked_by = blocked_by.map(str::to_owned);
                 focused.revision += 1;
@@ -7326,7 +7334,7 @@ mod tests {
 
         // Legacy contexts without an execution binding still use global focus.
         agent.current_execution_binding = None;
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         let built = build_context(
             &storage,
             &agent,
@@ -7370,7 +7378,7 @@ mod tests {
             },
         );
         let agent = AgentState::new("default");
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let built = build_context(
             &storage,
@@ -8816,7 +8824,9 @@ mod tests {
     fn resume_override_anchor_ignores_legacy_operator_without_message_seq() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -8944,7 +8954,7 @@ mod tests {
         storage.append_work_item(&active).unwrap();
         let mut agent = AgentState::new("default");
         agent.current_work_item_id = Some(active.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let mut system_tick = MessageEnvelope::new(
             "default",
@@ -9038,7 +9048,7 @@ mod tests {
         storage.append_work_item(&active).unwrap();
         let mut agent = AgentState::new("default");
         agent.current_work_item_id = Some(active.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let mut system_tick = MessageEnvelope::new(
             "default",
@@ -9781,7 +9791,7 @@ mod tests {
             working_set_files: vec!["src/runtime.rs".into()],
             ..WorkingMemorySnapshot::default()
         };
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         storage
             .append_context_episode(&ContextEpisodeRecord {
@@ -10467,7 +10477,7 @@ mod tests {
         storage.append_work_item(&work_item).unwrap();
         let mut session = AgentState::new("default");
         session.current_work_item_id = Some(work_item.id.clone());
-        storage.write_agent(&session).unwrap();
+        storage.write_agent_for_fixture(&session).unwrap();
         let built = build_context(
             &storage,
             &session,

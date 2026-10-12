@@ -193,7 +193,7 @@ impl RuntimeHandle {
         };
 
         {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             guard.state.active_workspace_entry = Some(ActiveWorkspaceEntry {
                 workspace_id: workspace_id.clone(),
                 workspace_anchor: workspace_anchor.clone(),
@@ -213,7 +213,7 @@ impl RuntimeHandle {
                 )),
             });
             guard.state.worktree_session = Some(worktree_session.clone());
-            guard.persist_state(&self.inner.storage)?;
+            guard.persist_state(&self.inner.storage).await?;
         }
         let active = self
             .agent_state()
@@ -335,7 +335,7 @@ impl RuntimeHandle {
 
     pub async fn exit_worktree(&self, original_cwd: PathBuf, removed: bool) -> Result<()> {
         let (worktree_session, occupancy_id, prev_execution_root_id) = {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             let session = guard.state.worktree_session.take();
             if session.is_none() {
                 return Err(anyhow!("no active managed worktree to exit"));
@@ -369,7 +369,7 @@ impl RuntimeHandle {
                     projection_metadata: None,
                 });
             }
-            guard.persist_state(&self.inner.storage)?;
+            guard.persist_state(&self.inner.storage).await?;
             (session, occupancy_id, prev_execution_root_id)
         };
         // Soft-delete the worktree execution root entry from the registry

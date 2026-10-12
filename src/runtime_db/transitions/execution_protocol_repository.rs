@@ -1353,7 +1353,8 @@ mod tests {
     }
 
     fn setup_agent(db: &RuntimeDb, agent_id: &str) -> Result<()> {
-        db.agent_states().upsert(&AgentState::new(agent_id))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new(agent_id))?;
         let mut identity = AgentIdentityRecord::new(
             agent_id,
             AgentKind::Named,
@@ -1533,7 +1534,8 @@ mod tests {
 
         // Simulate a concurrent persist_state() that increments control_revision
         // (e.g. wake_hint coalescing setting pending_wake_hint).
-        db.agent_states().upsert(&AgentState::new(agent_id))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new(agent_id))?;
 
         // The current control_revision should now differ from the admitted one.
         let current = db.transitions().load_execution_authority_fences(agent_id)?;
@@ -1575,7 +1577,7 @@ mod tests {
         // Stop the agent.
         let mut stopped = AgentState::new(agent_id);
         stopped.status = crate::types::AgentStatus::Stopped;
-        db.agent_states().upsert(&stopped)?;
+        db.agent_states().upsert_for_fixture(&stopped)?;
 
         let connection = db.connection()?;
         let tx = Transaction::new_unchecked(&connection, rusqlite::TransactionBehavior::Deferred)?;

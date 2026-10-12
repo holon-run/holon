@@ -25,8 +25,9 @@ use holon::{
     config::{AgentTemplateRemoteSourceConfigFile, AgentTemplatesConfigFile},
     daemon::{
         daemon_logs, daemon_prepare_update, daemon_restart_with_timeout, daemon_start_with_timeout,
-        daemon_status, daemon_stop, ensure_serve_preflight, prepare_runtime_before_server,
-        RuntimeServiceHandle, DAEMON_SERVE_ARGS_ENV, PRE_SERVER_PREPARED_ENV,
+        daemon_status, daemon_stop, ensure_serve_preflight,
+        prepare_runtime_before_server_with_maintenance_lease, RuntimeServiceHandle,
+        DAEMON_SERVE_ARGS_ENV, PRE_SERVER_PREPARED_ENV,
     },
     diagnostics_store::DiagnosticsWriter,
     fd_limit::{apply_nofile_limit_policy, DEFAULT_NOFILE_TARGET},
@@ -911,8 +912,10 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         println!("{}", report.startup_summary());
     }
     ensure_serve_preflight(&config).await?;
+    let maintenance_lease = RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path())
+        .context("serve requires exclusive runtime database maintenance ownership")?;
     if std::env::var_os(PRE_SERVER_PREPARED_ENV).is_none() {
-        prepare_runtime_before_server(&config)?;
+        prepare_runtime_before_server_with_maintenance_lease(&config, &maintenance_lease)?;
     }
     if std::env::var_os(DAEMON_SERVE_ARGS_ENV).is_none() {
         std::env::set_var(
@@ -922,6 +925,8 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     }
 
     let host = RuntimeHost::new(config.clone())?;
+    host.adopt_runtime_db_maintenance_lease(maintenance_lease)
+        .await?;
     let diagnostics_writer = DiagnosticsWriter::start(
         config.diagnostics_db_path(),
         config.diagnostics_writer_config()?,
@@ -2531,7 +2536,7 @@ mod tests {
         storage.insert_work_item(&work_item).unwrap();
         let mut agent = holon::types::AgentState::new("default");
         agent.current_work_item_id = Some(work_item.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         work_item.revision = 2;
         storage.update_work_item_expected(&work_item, 1).unwrap();
 
@@ -2569,7 +2574,10 @@ mod tests {
         runtime_db.work_items().insert_new(&work_item).unwrap();
         let mut agent = holon::types::AgentState::new("default");
         agent.current_work_item_id = Some(work_item.id);
-        runtime_db.agent_states().upsert(&agent).unwrap();
+        runtime_db
+            .agent_states()
+            .upsert_for_fixture(&agent)
+            .unwrap();
 
         let output = tempfile::tempdir().unwrap();
         export_scheduler_fixture(&config, None, output.path()).unwrap();
@@ -5963,6 +5971,10 @@ async fn config_migrate_model_routes_command(write: bool) -> Result<()> {
     }
 
     let config = AppConfig::load_for_config_inspection()?;
+    let _maintenance_lock = write
+        .then(|| RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path()))
+        .transpose()
+        .context("model route migration write requires holon serve to be stopped")?;
     let runtime_db = holon::runtime_db::RuntimeDb::open_and_migrate(
         config.runtime_db_path(),
         config.runtime_db_lock_path(),

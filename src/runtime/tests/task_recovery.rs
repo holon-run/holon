@@ -343,7 +343,7 @@ async fn recovered_agent_with_none_workspace_initializes_active_entry() {
     let mut agent = AgentState::new("default");
     agent.active_workspace_entry = None;
     agent.attached_workspaces = vec![];
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     // Recover the runtime - should initialize active_workspace_entry
     let runtime = RuntimeHandle::new(
@@ -401,7 +401,7 @@ async fn recovered_agent_with_missing_worktree_clears_workspace_fields() {
         occupancy_id: None,
         projection_metadata: None,
     });
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     // Recover the runtime - should clear missing worktree
     let runtime = RuntimeHandle::new(

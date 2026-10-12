@@ -49,13 +49,13 @@ async fn work_item_post_commit_fault_recovers_projection_after_restart() {
         let mut harness = LifecycleHarness::new();
         harness.arm_fault(fault);
 
-        let created = harness
+        let result = harness
             .runtime()
             .create_work_item("post-commit work item".into(), None, None, Vec::new())
-            .await
-            .unwrap();
-
-        harness.assert_post_commit_warning(expected_effect);
+            .await;
+        let created = harness
+            .assert_post_commit_result(result, fault, expected_effect)
+            .unwrap_or_else(|| harness.snapshot().work_items[0].clone());
         assert_eq!(
             harness
                 .runtime()

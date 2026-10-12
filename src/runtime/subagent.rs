@@ -294,7 +294,7 @@ impl RuntimeHandle {
             .await?;
 
         {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             guard.state.total_input_tokens += response.input_tokens;
             guard.state.total_output_tokens += response.output_tokens;
             guard.state.total_model_rounds += 1;
@@ -302,7 +302,7 @@ impl RuntimeHandle {
                 response.input_tokens,
                 response.output_tokens,
             ));
-            guard.persist_state(&self.inner.storage)?;
+            guard.persist_state(&self.inner.storage).await?;
         }
 
         self.persist_transcript_evidence(&TranscriptEntry {

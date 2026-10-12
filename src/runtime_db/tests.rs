@@ -520,7 +520,8 @@ mod tests {
         message_id: &str,
         activation_id: &str,
     ) -> Result<()> {
-        db.agent_states().upsert(&AgentState::new(agent_id))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new(agent_id))?;
         db.agent_identities().upsert(&agent_identity(agent_id, 0))?;
 
         let mut work = WorkItemRecord::new(agent_id, "migration claim", WorkItemState::Open);
@@ -3366,7 +3367,8 @@ INSERT INTO scheduler_rollout_command_results (
         let mut work = WorkItemRecord::new("agent-a", "legacy focus", WorkItemState::Open);
         work.id = "work-legacy-focus".into();
         db.work_items().insert_new(&work)?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         {
             let connection = open_connection(&db_path)?;
             connection.execute_batch(
@@ -3414,7 +3416,7 @@ INSERT INTO scheduler_rollout_command_results (
         db.work_items().insert_new(&legacy)?;
         let mut state = AgentState::new("agent-a");
         state.current_work_item_id = Some(canonical.id.clone());
-        db.agent_states().upsert(&state)?;
+        db.agent_states().upsert_for_fixture(&state)?;
         {
             let connection = open_connection(&db_path)?;
             connection.execute_batch(
@@ -3451,11 +3453,11 @@ INSERT INTO scheduler_rollout_command_results (
         db.work_items().insert_new(&foreign)?;
         let mut state = AgentState::new("agent-a");
         state.current_work_item_id = Some(foreign.id.clone());
-        assert!(db.agent_states().upsert(&state).is_err());
+        assert!(db.agent_states().upsert_for_fixture(&state).is_err());
         state.current_work_item_id = Some("work-missing".into());
-        assert!(db.agent_states().upsert(&state).is_err());
+        assert!(db.agent_states().upsert_for_fixture(&state).is_err());
         state.current_work_item_id = Some(own.id.clone());
-        db.agent_states().upsert(&state)?;
+        db.agent_states().upsert_for_fixture(&state)?;
 
         let mut completed = own.clone();
         completed.revision = 2;
@@ -4344,7 +4346,7 @@ CREATE TABLE working_memory_deltas (
         let mut terminal_state = current_state.clone();
         terminal_state.pending = 0;
         db.queue_entries().upsert(&queued)?;
-        db.agent_states().upsert(&current_state)?;
+        db.agent_states().upsert_for_fixture(&current_state)?;
 
         let command = |fault| QueueHeadNoProgressCommand {
             agent_id: "agent-a".into(),
@@ -5672,7 +5674,7 @@ CREATE TABLE working_memory_deltas (
         stale.status = AgentStatus::Stopped;
         stale.turn_index = 2;
         stale.current_work_item_id = Some("work-stale".into());
-        db.agent_states().upsert(&stale)?;
+        db.agent_states().upsert_for_fixture(&stale)?;
 
         let persisted = db.agent_states().latest("agent-a")?.expect("agent state");
         assert_eq!(persisted.status, AgentStatus::AwakeIdle);
@@ -6360,7 +6362,8 @@ CREATE TABLE working_memory_deltas (
 
         // Leave a stale per-agent state row behind: the new incarnation
         // must never observe it.
-        db.agent_states().upsert(&AgentState::new("reborn"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("reborn"))?;
 
         let identity = db
             .agent_identities()
@@ -8609,7 +8612,7 @@ CREATE TABLE working_memory_deltas (
         )?;
 
         db.agent_states()
-            .upsert(&crate::types::AgentState::new("member-public"))?;
+            .upsert_for_fixture(&crate::types::AgentState::new("member-public"))?;
 
         let snapshot = db.agent_roster_snapshot_rows()?;
         assert_eq!(snapshot.runtime_id, db.runtime_id()?);
@@ -8713,7 +8716,7 @@ CREATE TABLE working_memory_deltas (
             assert!(db.observer_sync_foundations()?.roster_snapshot_verified);
             db.agent_identities().upsert(&agent_identity("member", 0))?;
             db.agent_states()
-                .upsert(&crate::types::AgentState::new("member"))?;
+                .upsert_for_fixture(&crate::types::AgentState::new("member"))?;
             db.connection()?.execute(
                 "UPDATE agent_states SET payload_json = '{not json' WHERE agent_id = 'member'",
                 [],
@@ -8822,7 +8825,7 @@ CREATE TABLE working_memory_deltas (
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         db.agent_identities().upsert(&agent_identity("member", 0))?;
         db.agent_states()
-            .upsert(&crate::types::AgentState::new("member"))?;
+            .upsert_for_fixture(&crate::types::AgentState::new("member"))?;
         for index in 1..=3 {
             let event = crate::types::AuditEvent::legacy(
                 format!("projection_event_{index}"),
@@ -9024,7 +9027,7 @@ CREATE TABLE working_memory_deltas (
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         db.agent_identities().upsert(&agent_identity("member", 0))?;
         db.agent_states()
-            .upsert(&crate::types::AgentState::new("member"))?;
+            .upsert_for_fixture(&crate::types::AgentState::new("member"))?;
         db.audit_events().append(
             Some("member"),
             &crate::types::AuditEvent::legacy("healthy", serde_json::json!({})),
@@ -9063,7 +9066,7 @@ CREATE TABLE working_memory_deltas (
             db.agent_identities()
                 .upsert(&agent_identity("agent-state-shape", 0))?;
             db.agent_states()
-                .upsert(&AgentState::new("agent-state-shape"))?;
+                .upsert_for_fixture(&AgentState::new("agent-state-shape"))?;
         }
 
         let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;

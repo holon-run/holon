@@ -692,7 +692,7 @@ mod tests {
         ))?;
         let mut state = AgentState::new("target-agent");
         state.status = status;
-        db.agent_states().upsert(&state)
+        db.agent_states().upsert_for_fixture(&state)
     }
 
     fn caller() -> AgentMessageCallerContext {
@@ -1129,7 +1129,7 @@ mod tests {
             .latest("target-agent")?
             .context("missing target state")?;
         state.status = AgentStatus::AwakeIdle;
-        db.agent_states().upsert(&state)?;
+        db.agent_states().upsert_for_fixture(&state)?;
         let retry = prepare("retry-key", "retry me")?;
         let accepted = db
             .transitions()

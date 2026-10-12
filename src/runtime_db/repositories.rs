@@ -303,7 +303,15 @@ impl AgentStateRepository<'_> {
             })
     }
 
-    pub fn upsert(&self, record: &AgentState) -> Result<()> {
+    /// Legacy startup recovery boundary only. This writer has not yet joined
+    /// the owner protocol; normal runtime commands must use typed transitions.
+    pub(crate) fn upsert(&self, record: &AgentState) -> Result<()> {
+        self.db.transaction(|tx| upsert_agent_state_tx(tx, record))
+    }
+
+    /// Fixture setup only: bypasses live runtime mutation ownership.
+    #[doc(hidden)]
+    pub fn upsert_for_fixture(&self, record: &AgentState) -> Result<()> {
         self.db.transaction(|tx| upsert_agent_state_tx(tx, record))
     }
 
@@ -2837,67 +2845,74 @@ impl QueueEntryRepository<'_> {
     }
 }
 
+fn cancel_active_timers_for_agent_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    cancelled_at: chrono::DateTime<Utc>,
+) -> Result<usize> {
+    let mut statement = tx.prepare(
+        "SELECT payload_json
+             FROM timers
+             WHERE agent_id = ?1 AND status = 'active'",
+    )?;
+    let records = statement
+        .query_map([agent_id], |row| row.get::<_, String>(0))?
+        .map(|row| decode_timer_payload(&row?))
+        .collect::<Result<Vec<_>>>()?;
+    drop(statement);
+
+    let mut count = 0;
+    for mut record in records {
+        record.status = TimerStatus::Cancelled;
+        upsert_timer_tx(tx, &record)?;
+
+        let message_ids = {
+            let mut wake_statement = tx.prepare(
+                "SELECT message_id
+                     FROM timer_wakes
+                     WHERE timer_id = ?1 AND status = 'pending'",
+            )?;
+            let message_ids = wake_statement
+                .query_map([&record.id], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            message_ids
+        };
+        tx.execute(
+            "UPDATE timer_wakes
+                 SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
+                 WHERE timer_id = ?1 AND status = 'pending'",
+            params![record.id, timestamp(cancelled_at)],
+        )?;
+        for message_id in message_ids {
+            let payload = tx
+                .query_row(
+                    "SELECT payload_json
+                         FROM queue_entries
+                         WHERE message_id = ?1 AND status IN ('queued', 'interrupted')",
+                    [&message_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            if let Some(payload) = payload {
+                let mut entry = decode_queue_entry_payload(&payload)?;
+                entry.status = QueueEntryStatus::Dropped;
+                entry.updated_at = cancelled_at;
+                upsert_queue_entry_tx(tx, &entry)?;
+            }
+        }
+        count += 1;
+    }
+    Ok(count)
+}
+
 impl TimerRepository<'_> {
     pub fn cancel_active_for_agent(
         &self,
         agent_id: &str,
         cancelled_at: chrono::DateTime<Utc>,
     ) -> Result<usize> {
-        self.db.transaction(|tx| {
-            let mut statement = tx.prepare(
-                "SELECT payload_json
-                 FROM timers
-                 WHERE agent_id = ?1 AND status = 'active'",
-            )?;
-            let records = statement
-                .query_map([agent_id], |row| row.get::<_, String>(0))?
-                .map(|row| decode_timer_payload(&row?))
-                .collect::<Result<Vec<_>>>()?;
-            drop(statement);
-
-            let mut count = 0;
-            for mut record in records {
-                record.status = TimerStatus::Cancelled;
-                upsert_timer_tx(tx, &record)?;
-
-                let message_ids = {
-                    let mut wake_statement = tx.prepare(
-                        "SELECT message_id
-                         FROM timer_wakes
-                         WHERE timer_id = ?1 AND status = 'pending'",
-                    )?;
-                    let message_ids = wake_statement
-                        .query_map([&record.id], |row| row.get::<_, String>(0))?
-                        .collect::<std::result::Result<Vec<_>, _>>()?;
-                    message_ids
-                };
-                tx.execute(
-                    "UPDATE timer_wakes
-                     SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
-                     WHERE timer_id = ?1 AND status = 'pending'",
-                    params![record.id, timestamp(cancelled_at)],
-                )?;
-                for message_id in message_ids {
-                    let payload = tx
-                        .query_row(
-                            "SELECT payload_json
-                             FROM queue_entries
-                             WHERE message_id = ?1 AND status IN ('queued', 'interrupted')",
-                            [&message_id],
-                            |row| row.get::<_, String>(0),
-                        )
-                        .optional()?;
-                    if let Some(payload) = payload {
-                        let mut entry = decode_queue_entry_payload(&payload)?;
-                        entry.status = QueueEntryStatus::Dropped;
-                        entry.updated_at = cancelled_at;
-                        upsert_queue_entry_tx(tx, &entry)?;
-                    }
-                }
-                count += 1;
-            }
-            Ok(count)
-        })
+        self.db
+            .transaction(|tx| cancel_active_timers_for_agent_tx(tx, agent_id, cancelled_at))
     }
 
     pub fn pending_wake(&self, timer_id: &str) -> Result<Option<TimerWakeRecord>> {

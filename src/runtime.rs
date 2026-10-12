@@ -422,6 +422,7 @@ pub struct RuntimeHandle {
 struct RuntimeInner {
     identity_incarnation: u64,
     mutation_owner: mutation_owner::MutationOwner,
+    standalone_related_mutation_owners: mutation_owner::MutationOwnerRegistry,
     agent: Mutex<RuntimeAgent>,
     projection_cache: Mutex<AgentRuntimeProjectionCache>,
     object_query_cache: Arc<crate::object_query_cache::ObjectQueryCache>,
@@ -458,6 +459,8 @@ struct RuntimeInner {
     shutdown_requested: AtomicBool,
     execution_admission: execution_admission::ExecutionAdmission,
     transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
+    #[cfg(test)]
+    terminal_transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
     #[cfg(test)]
     completion_binding_replacement: StdMutex<Option<WorkItemExecutionBinding>>,
     #[cfg(test)]
@@ -1176,6 +1179,11 @@ enum TerminalSettlementReadback {
 enum TerminalSettlementDisposition {
     Intended,
     AbortedFallback,
+}
+
+#[derive(Debug, Clone)]
+struct TerminalAgentStateUpdate {
+    last_runtime_failure: Option<RuntimeFailureSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2871,8 +2879,9 @@ struct BuiltinWebSearchSelection {
     diagnostics: BuiltinWebSearchSelectionDiagnostics,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RuntimeAgent {
+    #[cfg(test)]
     mutation_owner: mutation_owner::MutationOwner,
     state: AgentState,
     last_persisted_state: AgentState,
@@ -2881,6 +2890,7 @@ struct RuntimeAgent {
 }
 
 impl RuntimeAgent {
+    #[cfg(test)]
     fn persist_state(&mut self, storage: &AppStorage) -> Result<()> {
         let started = std::time::Instant::now();
         // Fence legacy force writes during pilot recovery. This does not
@@ -2897,7 +2907,7 @@ impl RuntimeAgent {
         // After a successful write, last_persisted_state is set to
         // self.state so subsequent commit_queue OCC checks use the
         // correct baseline. On failure, self.state is reverted.
-        if let Err(error) = storage.write_agent(&self.state) {
+        if let Err(error) = storage.write_agent_for_fixture(&self.state) {
             self.state = self.last_persisted_state.clone();
             crate::diagnostics::record_storage_persist_state(started.elapsed());
             return Err(error);
@@ -2905,27 +2915,6 @@ impl RuntimeAgent {
         self.last_persisted_state = self.state.clone();
         crate::diagnostics::record_storage_persist_state(started.elapsed());
         Ok(())
-    }
-
-    fn restore_bootstrap_replay_message(
-        &mut self,
-        storage: &AppStorage,
-        message: &MessageEnvelope,
-    ) -> Result<()> {
-        if self
-            .queue
-            .peek_next_matching(|queued| queued.id == message.id)
-            .is_none()
-        {
-            self.queue.push(message.clone());
-        }
-        let queued_messages = self.queue.len();
-        self.state.pending = queued_messages;
-        scheduler_executor::apply_bootstrap_recovered_projection(
-            &mut self.state,
-            scheduler_executor::BootstrapRecoveryFacts { queued_messages },
-        );
-        self.persist_state(storage)
     }
 }
 
@@ -3101,6 +3090,20 @@ impl RuntimeHandle {
             .pop_front()
     }
 
+    fn take_terminal_transition_fault(&self) -> Option<TransitionFaultPoint> {
+        #[cfg(test)]
+        if let Some(fault) = self
+            .inner
+            .terminal_transition_faults
+            .lock()
+            .expect("terminal transition fault plan lock poisoned")
+            .pop_front()
+        {
+            return Some(fault);
+        }
+        self.take_transition_fault()
+    }
+
     pub(super) fn commit_work_item_transition(
         &self,
         command: &crate::runtime_db::transitions::WorkItemTransitionCommand,
@@ -3184,6 +3187,20 @@ impl RuntimeHandle {
     pub(crate) fn inject_next_transition_fault(&self, fault: TransitionFaultPoint) {
         self.inject_next_transition_fault_unchecked(fault)
             .expect("a transition fault is already armed for this runtime fixture");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_next_terminal_transition_fault(&self, fault: TransitionFaultPoint) {
+        let mut faults = self
+            .inner
+            .terminal_transition_faults
+            .lock()
+            .expect("terminal transition fault plan lock poisoned");
+        assert!(
+            faults.is_empty(),
+            "a terminal transition fault is already armed"
+        );
+        faults.push_back(fault);
     }
 
     #[cfg(test)]
@@ -3339,77 +3356,6 @@ impl RuntimeHandle {
         }
         let effects = commit.effects;
         let mut warnings = Vec::new();
-        if effects.fault == Some(TransitionFaultPoint::BeforeCacheUpdate) {
-            warnings.push(PostCommitWarning {
-                effect: "projection_cache_update",
-                message: "injected runtime transition post-commit fault".into(),
-            });
-        } else {
-            let mut cache = self.inner.projection_cache.lock().await;
-            for record in &effects.work_items {
-                cache.upsert_work_item(record.clone());
-            }
-            for record in &effects.tasks {
-                cache.upsert_task(record.clone());
-            }
-        }
-        if let Some(mutation) = effects.agent_state.as_ref() {
-            let mut guard = self.inner.agent.lock().await;
-            if mutation
-                .expected
-                .as_ref()
-                .is_none_or(|expected| guard.state == **expected)
-            {
-                guard.state = mutation.record.as_ref().clone();
-                guard.last_persisted_state = mutation.record.as_ref().clone();
-            } else if let Some(expected) = mutation.expected.as_deref() {
-                match rebase_committed_agent_state(expected, &mutation.record, &guard.state) {
-                    Ok((merged, conflicts)) => {
-                        guard.state = merged;
-                        if let Err(error) = guard.persist_state(&self.inner.storage) {
-                            warnings.push(PostCommitWarning {
-                                effect: "agent_state_projection_update",
-                                message: format!(
-                                    "failed to persist rebased post-commit agent state: {error}"
-                                ),
-                            });
-                        } else if !conflicts.is_empty() {
-                            warnings.push(PostCommitWarning {
-                                effect: "agent_state_projection_update",
-                                message: format!(
-                                    "retained newer in-memory agent state fields after transition commit: {}",
-                                    conflicts.join(",")
-                                ),
-                            });
-                        }
-                    }
-                    Err(error) => warnings.push(PostCommitWarning {
-                        effect: "agent_state_projection_update",
-                        message: format!(
-                            "failed to rebase post-commit agent state; retained newer in-memory state: {error}"
-                        ),
-                    }),
-                }
-            } else {
-                warnings.push(PostCommitWarning {
-                    effect: "agent_state_projection_update",
-                    message: "agent state changed after transition commit; retained newer in-memory state"
-                        .into(),
-                });
-            }
-        }
-        if !effects.queued_messages.is_empty() {
-            let mut guard = self.inner.agent.lock().await;
-            for message in &effects.queued_messages {
-                if guard
-                    .queue
-                    .peek_next_matching(|queued| queued.id == message.id)
-                    .is_none()
-                {
-                    guard.queue.push(message.clone());
-                }
-            }
-        }
         if effects.fault == Some(TransitionFaultPoint::BeforeEventPublication) {
             warnings.push(PostCommitWarning {
                 effect: "event_publication",
@@ -3448,22 +3394,25 @@ impl RuntimeHandle {
         result
     }
 
+    #[cfg(test)]
     pub(crate) async fn record_timer_projection(&self, record: &TimerRecord) -> Result<()> {
-        self.inner.storage.append_timer(record)?;
-        self.inner
-            .projection_cache
-            .lock()
-            .await
-            .upsert_timer(record.clone());
+        let mut mutation = self.begin_mutation().await?;
+        let commit = mutation
+            .commit_transition(crate::ids::audit_event_id(), || {
+                self.inner.storage.append_timer(record)?;
+                Ok(TransitionCommit {
+                    applied: true,
+                    effects: crate::runtime_db::transitions::PostCommitEffects {
+                        timers: vec![record.clone()],
+                        ..Default::default()
+                    },
+                    delivery_receipt: None,
+                })
+            })
+            .await?;
+        drop(mutation);
+        self.apply_transition_commit(commit).await;
         Ok(())
-    }
-
-    pub(crate) async fn cache_external_trigger_projection(&self, record: &ExternalTriggerRecord) {
-        self.inner
-            .projection_cache
-            .lock()
-            .await
-            .upsert_external_trigger(record.clone());
     }
 
     pub(crate) fn work_item_written_event(
@@ -3521,9 +3470,9 @@ impl RuntimeHandle {
     where
         F: FnOnce(&mut AgentState) -> Result<()>,
     {
-        let mut guard = self.inner.agent.lock().await;
+        let mut guard = self.begin_mutation().await?;
         mutate(&mut guard.state)?;
-        guard.persist_state(&self.inner.storage)?;
+        guard.persist_state(&self.inner.storage).await?;
         Ok(guard.state.clone())
     }
 
@@ -3569,7 +3518,7 @@ impl RuntimeHandle {
         &self,
         request: CurrentRunAbortRequest,
     ) -> Result<CurrentRunAbortOutcome> {
-        let mut guard = self.inner.agent.lock().await;
+        let mut guard = self.begin_mutation().await?;
         let agent_id = guard.state.id.clone();
         let Some(handle) = guard.current_run_abort.as_ref().cloned() else {
             return Err(CurrentRunAbortError::NoCurrentRun { agent_id }.into());
@@ -3584,10 +3533,6 @@ impl RuntimeHandle {
             }
         }
 
-        if let Ok(mut reason) = handle.reason.lock() {
-            *reason = "operator_aborted".into();
-        }
-        handle.token.cancel();
         match request.mode {
             CurrentRunAbortMode::StopAfterAbort => {
                 scheduler::apply_stop_projection(&mut guard.state);
@@ -3598,7 +3543,8 @@ impl RuntimeHandle {
                 scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
             }
         }
-        guard.persist_state(&self.inner.storage)?;
+        guard.defer_abort_current_run("operator_aborted");
+        guard.persist_state(&self.inner.storage).await?;
         drop(guard);
 
         self.inner.storage.append_event(&AuditEvent::legacy(
@@ -3849,7 +3795,13 @@ impl RuntimeHandle {
             self.reconfigure_provider_for_state(&next_state).await?;
         }
         self.update_agent_state(|state| {
-            *state = next_state;
+            state.attached_workspaces = next_state.attached_workspaces;
+            state.active_workspace_entry = next_state.active_workspace_entry;
+            state.worktree_session = next_state.worktree_session;
+            state.execution_profile = next_state.execution_profile;
+            state.model_override = next_state.model_override;
+            state.model_override_reasoning_effort = next_state.model_override_reasoning_effort;
+            state.model_override_service_tier = next_state.model_override_service_tier;
             Ok(())
         })
         .await?;
@@ -3890,7 +3842,13 @@ impl RuntimeHandle {
             self.reconfigure_provider_for_state(&next_state).await?;
         }
         self.update_agent_state(|state| {
-            *state = next_state;
+            state.attached_workspaces = next_state.attached_workspaces;
+            state.active_workspace_entry = next_state.active_workspace_entry;
+            state.worktree_session = next_state.worktree_session;
+            state.execution_profile = next_state.execution_profile;
+            state.model_override = next_state.model_override;
+            state.model_override_reasoning_effort = next_state.model_override_reasoning_effort;
+            state.model_override_service_tier = next_state.model_override_service_tier;
             Ok(())
         })
         .await?;
@@ -3932,7 +3890,13 @@ impl RuntimeHandle {
             self.reconfigure_provider_for_state(&next_state).await?;
         }
         self.update_agent_state(|state| {
-            *state = next_state;
+            state.attached_workspaces = next_state.attached_workspaces;
+            state.active_workspace_entry = next_state.active_workspace_entry;
+            state.worktree_session = next_state.worktree_session;
+            state.execution_profile = next_state.execution_profile;
+            state.model_override = next_state.model_override;
+            state.model_override_reasoning_effort = next_state.model_override_reasoning_effort;
+            state.model_override_service_tier = next_state.model_override_service_tier;
             Ok(())
         })
         .await?;
@@ -4257,7 +4221,7 @@ impl RuntimeHandle {
             }
         }
         let state = {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             guard.state.turn_index += 1;
             let turn_id = if replay_source.is_some() || terminal_source_turn.is_some() {
                 crate::ids::turn_id()
@@ -4341,7 +4305,7 @@ impl RuntimeHandle {
             guard.state.active_skills.retain(|skill| {
                 matches!(skill.activation_state, SkillActivationState::SessionActive)
             });
-            guard.persist_state(&self.inner.storage)?;
+            guard.persist_state(&self.inner.storage).await?;
             guard.state.clone()
         };
         self.persist_started_turn(&state, message)?;
@@ -4460,13 +4424,13 @@ impl RuntimeHandle {
     }
 
     pub(crate) async fn promote_turn_active_skills(&self) -> Result<()> {
-        let mut guard = self.inner.agent.lock().await;
+        let mut guard = self.begin_mutation().await?;
         for skill in &mut guard.state.active_skills {
             if matches!(skill.activation_state, SkillActivationState::TurnActive) {
                 skill.activation_state = SkillActivationState::SessionActive;
             }
         }
-        guard.persist_state(&self.inner.storage)?;
+        guard.persist_state(&self.inner.storage).await?;
         Ok(())
     }
 
@@ -4528,7 +4492,7 @@ impl RuntimeHandle {
         else {
             return Ok(());
         };
-        let mut guard = self.inner.agent.lock().await;
+        let mut guard = self.begin_mutation().await?;
         let turn_index = guard.state.turn_index;
         let agent_id = guard.state.id.clone();
         let run_id = guard.state.current_run_id.clone();
@@ -4559,7 +4523,7 @@ impl RuntimeHandle {
                 });
             false
         };
-        guard.persist_state(&self.inner.storage)?;
+        guard.persist_state(&self.inner.storage).await?;
         self.inner.storage.append_event(&AuditEvent::legacy(
             "skill_activated",
             serde_json::json!({
@@ -4747,7 +4711,7 @@ impl RuntimeHandle {
             }),
         )];
         let commit = {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             anyhow::ensure!(
                 !self.inner.shutdown_requested.load(Ordering::SeqCst),
                 "runtime_execution_admission_closed"
@@ -4874,30 +4838,21 @@ impl RuntimeHandle {
                 fault: self.take_transition_fault(),
                 brief_evidence: Vec::new(),
             };
-            let mut commit = if let Some(delivery) = delivery {
-                self.inner
-                    .runtime_db
-                    .transitions()
-                    .commit_delivery_admission(&command, delivery)?
-            } else {
-                self.inner
-                    .runtime_db
-                    .transitions()
-                    .commit_queue_with_wait_trigger(&command)?
-            };
-            let queue_admitted = commit.delivery_receipt.as_ref().is_none_or(|receipt| {
-                receipt.outcome == AgentMessageDeliveryOutcome::Accepted
-                    && !receipt.idempotent_replay
-            });
-            if queue_admitted && queue_needs_push && queue_status == QueueEntryStatus::Queued {
-                guard.queue.push(message.clone());
-            }
-            if queue_admitted {
-                guard.state = committed_state.clone();
-                guard.last_persisted_state = committed_state;
-                commit.effects.agent_state = None;
-            }
-            commit
+            guard
+                .commit_transition(crate::ids::audit_event_id(), || {
+                    if let Some(delivery) = delivery {
+                        self.inner
+                            .runtime_db
+                            .transitions()
+                            .commit_delivery_admission(&command, delivery)
+                    } else {
+                        self.inner
+                            .runtime_db
+                            .transitions()
+                            .commit_queue_with_wait_trigger(&command)
+                    }
+                })
+                .await?
         };
         Ok(commit)
     }
@@ -4906,7 +4861,7 @@ impl RuntimeHandle {
         &self,
         agent_id: &str,
     ) -> Result<bool> {
-        let mut guard = self.inner.agent.lock().await;
+        let mut guard = self.begin_mutation().await?;
         let Some(latest_persisted_state) = self.inner.runtime_db.agent_states().latest(agent_id)?
         else {
             return Ok(false);
@@ -4919,6 +4874,7 @@ impl RuntimeHandle {
         }
         guard.state = latest_persisted_state.clone();
         guard.last_persisted_state = latest_persisted_state;
+        guard.install_durable_readback().await?;
         Ok(true)
     }
 
@@ -5040,13 +4996,13 @@ impl RuntimeHandle {
             .await
     }
 
-    async fn commit_queue_terminal_settlement(
-        &self,
+    fn commit_queue_terminal_settlement<'a>(
+        &'a self,
         record: QueueEntryRecord,
         audit_events: Vec<AuditEvent>,
         notify_scheduler: bool,
-        terminal_transition: Option<&turn::TurnTerminalTransition>,
-    ) -> Result<bool> {
+        terminal_transition: Option<&'a turn::TurnTerminalTransition>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<bool>> + Send + 'a>> {
         self.commit_queue_terminal_settlement_with_evidence(
             record,
             audit_events,
@@ -5056,7 +5012,6 @@ impl RuntimeHandle {
             Vec::new(),
             Vec::new(),
         )
-        .await
     }
 
     fn validate_terminal_brief_settlement(
@@ -5177,7 +5132,16 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    async fn commit_terminal_transition(
+    #[inline(never)]
+    fn commit_terminal_transition<'a>(
+        &'a self,
+        terminal_transition: &'a turn::TurnTerminalTransition,
+        audit_events: Vec<AuditEvent>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<bool>> + Send + 'a>> {
+        Box::pin(self.commit_terminal_transition_inner(terminal_transition, audit_events))
+    }
+
+    async fn commit_terminal_transition_inner(
         &self,
         terminal_transition: &turn::TurnTerminalTransition,
         audit_events: Vec<AuditEvent>,
@@ -5187,8 +5151,9 @@ impl RuntimeHandle {
         let terminal_transition = &normalized_transition;
         self.validate_terminal_brief_settlement(terminal_transition)?;
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
+            let mut mutation = self.begin_mutation().await?;
             let agent_state = {
-                let guard = self.inner.agent.lock().await;
+                let guard = &mutation;
                 let mut state = guard.state.clone();
                 state.current_turn_id = Some(terminal_transition.terminal.turn_id.clone());
                 state.last_turn_terminal = Some(terminal_transition.terminal.clone());
@@ -5211,14 +5176,18 @@ impl RuntimeHandle {
                 turn_record: terminal_transition.turn_record.clone(),
                 terminal_tool_executions: terminal_transition.terminal_tool_executions.clone(),
                 audit_events: transition_audit_events,
-                fault: self.take_transition_fault(),
+                fault: self.take_terminal_transition_fault(),
             };
-            match self
-                .inner
-                .runtime_db
-                .transitions()
-                .commit_turn_terminal(&command)
-            {
+            let result = mutation
+                .commit_transition(crate::ids::audit_event_id(), || {
+                    self.inner
+                        .runtime_db
+                        .transitions()
+                        .commit_turn_terminal(&command)
+                })
+                .await;
+            drop(mutation);
+            match result {
                 Ok(commit) => {
                     return Ok(self.apply_transition_commit(commit).await.applied);
                 }
@@ -5243,13 +5212,35 @@ impl RuntimeHandle {
         unreachable!("terminal transition OCC retry loop always returns or errors")
     }
 
-    async fn commit_queue_terminal_settlement_with_evidence(
+    #[inline(never)]
+    fn commit_queue_terminal_settlement_with_evidence<'a>(
+        &'a self,
+        record: QueueEntryRecord,
+        audit_events: Vec<AuditEvent>,
+        notify_scheduler: bool,
+        terminal_transition: Option<&'a turn::TurnTerminalTransition>,
+        agent_update: Option<TerminalAgentStateUpdate>,
+        transcript_entries: Vec<TranscriptEntry>,
+        brief_evidence: Vec<BriefRecord>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<bool>> + Send + 'a>> {
+        Box::pin(self.commit_queue_terminal_settlement_with_evidence_inner(
+            record,
+            audit_events,
+            notify_scheduler,
+            terminal_transition,
+            agent_update,
+            transcript_entries,
+            brief_evidence,
+        ))
+    }
+
+    async fn commit_queue_terminal_settlement_with_evidence_inner(
         &self,
         record: QueueEntryRecord,
         audit_events: Vec<AuditEvent>,
         notify_scheduler: bool,
         terminal_transition: Option<&turn::TurnTerminalTransition>,
-        committed_agent_state: Option<AgentState>,
+        agent_update: Option<TerminalAgentStateUpdate>,
         transcript_entries: Vec<TranscriptEntry>,
         brief_evidence: Vec<BriefRecord>,
     ) -> Result<bool> {
@@ -5389,8 +5380,9 @@ impl RuntimeHandle {
         };
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
             // Rebuild guard-dependent fields from the current baseline.
+            let mut mutation = self.begin_mutation().await?;
             let agent_state = {
-                let guard = self.inner.agent.lock().await;
+                let guard = &mutation;
                 let mut state = if let Some(prepared) = prepared_completion {
                     rebase_prepared_completion_agent_state(prepared, &guard.last_persisted_state)?
                 } else if let Some(prepared) = prepared_wait.as_deref() {
@@ -5407,9 +5399,16 @@ impl RuntimeHandle {
                         guard.state.clone()
                     }
                 } else {
-                    committed_agent_state
-                        .clone()
-                        .unwrap_or_else(|| guard.state.clone())
+                    let mut state = guard.state.clone();
+                    if let Some(update) = agent_update.as_ref() {
+                        if state.status != AgentStatus::Stopped {
+                            scheduler::apply_idle_projection(&mut state, &self.inner.storage)?;
+                        }
+                        if let Some(failure) = update.last_runtime_failure.as_ref() {
+                            state.last_runtime_failure = Some(failure.clone());
+                        }
+                    }
+                    state
                 };
                 if let Some(admission) = prepared_wait
                     .as_ref()
@@ -5467,15 +5466,13 @@ impl RuntimeHandle {
                     )?;
                 }
             }
-            command.fault = self.take_transition_fault();
-            let commit = if let Some(prepared) = prepared_completion {
-                let tool_execution = prepared.tool_execution.clone().ok_or_else(|| {
-                    anyhow!("completion commit is missing tool execution evidence")
-                })?;
-                self.inner.runtime_db.transitions().commit_queue_terminal(
-                    &command,
-                    &execution_protocol,
-                    Some(&crate::runtime_db::transitions::CompletionTransition {
+            command.fault = self.take_terminal_transition_fault();
+            let completion = prepared_completion
+                .map(|prepared| {
+                    let tool_execution = prepared.tool_execution.clone().ok_or_else(|| {
+                        anyhow!("completion commit is missing tool execution evidence")
+                    })?;
+                    Ok::<_, anyhow::Error>(crate::runtime_db::transitions::CompletionTransition {
                         requires_execution_continuation: true,
                         work_items: vec![
                             crate::runtime_db::transitions::WorkItemMutation::Update {
@@ -5488,54 +5485,66 @@ impl RuntimeHandle {
                         continuations: prepared.continuations.clone(),
                         tool_execution,
                         index_changes: prepared.index_changes.clone(),
-                    }),
-                    &[],
-                    task_result_settlement.as_ref(),
-                )
-            } else if let Some(prepared) = prepared_wait.as_deref() {
-                let terminal_tool_executions = prepared
-                    .tool_execution
-                    .as_ref()
-                    .into_iter()
-                    .chain(
-                        terminal_transition
+                    })
+                })
+                .transpose()?;
+            let commit = mutation
+                .commit_transition(crate::ids::audit_event_id(), || {
+                    if let Some(completion) = completion.as_ref() {
+                        self.inner.runtime_db.transitions().commit_queue_terminal(
+                            &command,
+                            &execution_protocol,
+                            Some(completion),
+                            &[],
+                            task_result_settlement.as_ref(),
+                        )
+                    } else if let Some(prepared) = prepared_wait.as_deref() {
+                        let terminal_tool_executions = prepared
+                            .tool_execution
+                            .as_ref()
                             .into_iter()
-                            .flat_map(|transition| &transition.terminal_tool_executions),
-                    )
-                    .cloned()
-                    .collect::<Vec<_>>();
-                self.inner
-                    .runtime_db
-                    .transitions()
-                    .commit_queue_terminal_with_wait(
-                        &command,
-                        &execution_protocol,
-                        &prepared.command,
-                        prepared.expected_task.as_ref(),
-                        &terminal_tool_executions,
-                        task_result_settlement.as_ref(),
-                    )
-            } else if terminal_transition
-                .is_some_and(|transition| !transition.terminal_tool_executions.is_empty())
-            {
-                self.inner.runtime_db.transitions().commit_queue_terminal(
-                    &command,
-                    &execution_protocol,
-                    None,
-                    &terminal_transition
-                        .expect("terminal tool executions require a terminal transition")
-                        .terminal_tool_executions,
-                    task_result_settlement.as_ref(),
-                )
-            } else {
-                self.inner.runtime_db.transitions().commit_queue_terminal(
-                    &command,
-                    &execution_protocol,
-                    None,
-                    &[],
-                    task_result_settlement.as_ref(),
-                )
-            };
+                            .chain(
+                                terminal_transition
+                                    .into_iter()
+                                    .flat_map(|transition| &transition.terminal_tool_executions),
+                            )
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        self.inner
+                            .runtime_db
+                            .transitions()
+                            .commit_queue_terminal_with_wait(
+                                &command,
+                                &execution_protocol,
+                                &prepared.command,
+                                prepared.expected_task.as_ref(),
+                                &terminal_tool_executions,
+                                task_result_settlement.as_ref(),
+                            )
+                    } else if terminal_transition
+                        .is_some_and(|transition| !transition.terminal_tool_executions.is_empty())
+                    {
+                        self.inner.runtime_db.transitions().commit_queue_terminal(
+                            &command,
+                            &execution_protocol,
+                            None,
+                            &terminal_transition
+                                .expect("terminal tool executions require a terminal transition")
+                                .terminal_tool_executions,
+                            task_result_settlement.as_ref(),
+                        )
+                    } else {
+                        self.inner.runtime_db.transitions().commit_queue_terminal(
+                            &command,
+                            &execution_protocol,
+                            None,
+                            &[],
+                            task_result_settlement.as_ref(),
+                        )
+                    }
+                })
+                .await;
+            drop(mutation);
             match commit {
                 Ok(commit) => {
                     return Ok(self.apply_transition_commit(commit).await.applied);
@@ -5680,12 +5689,36 @@ impl RuntimeHandle {
         Ok(TerminalSettlementReadback::Ambiguous)
     }
 
-    async fn commit_queue_terminal_settlement_resilient(
+    #[inline(never)]
+    fn commit_queue_terminal_settlement_resilient<'a>(
+        &'a self,
+        record: QueueEntryRecord,
+        audit_events: Vec<AuditEvent>,
+        terminal_transition: &'a turn::TurnTerminalTransition,
+        agent_update: Option<TerminalAgentStateUpdate>,
+        transcript_entries: Vec<TranscriptEntry>,
+        brief_evidence: Vec<BriefRecord>,
+        duration_ms: u64,
+    ) -> std::pin::Pin<
+        Box<impl std::future::Future<Output = Result<TerminalSettlementDisposition>> + Send + 'a>,
+    > {
+        Box::pin(self.commit_queue_terminal_settlement_resilient_inner(
+            record,
+            audit_events,
+            terminal_transition,
+            agent_update,
+            transcript_entries,
+            brief_evidence,
+            duration_ms,
+        ))
+    }
+
+    async fn commit_queue_terminal_settlement_resilient_inner(
         &self,
         record: QueueEntryRecord,
         audit_events: Vec<AuditEvent>,
         terminal_transition: &turn::TurnTerminalTransition,
-        committed_agent_state: Option<AgentState>,
+        agent_update: Option<TerminalAgentStateUpdate>,
         transcript_entries: Vec<TranscriptEntry>,
         brief_evidence: Vec<BriefRecord>,
         duration_ms: u64,
@@ -5710,7 +5743,7 @@ impl RuntimeHandle {
                         audit_events.clone(),
                         true,
                         Some(terminal_transition),
-                        committed_agent_state.clone(),
+                        agent_update.clone(),
                         transcript_entries.clone(),
                         brief_evidence.clone(),
                     )
@@ -5759,7 +5792,7 @@ impl RuntimeHandle {
                 audit_events,
                 true,
                 Some(terminal_transition),
-                committed_agent_state,
+                agent_update,
                 transcript_entries,
                 brief_evidence,
             )
@@ -5800,13 +5833,8 @@ impl RuntimeHandle {
             prepared_wait_for: None,
             terminal_tool_executions: Vec::new(),
         };
-        let fallback_state = {
-            let guard = self.inner.agent.lock().await;
-            let mut state = guard.state.clone();
-            if !matches!(state.status, AgentStatus::Stopped) {
-                scheduler::apply_idle_projection(&mut state, &self.inner.storage)?;
-            }
-            state.last_runtime_failure = Some(RuntimeFailureSummary {
+        let fallback_state = TerminalAgentStateUpdate {
+            last_runtime_failure: Some(RuntimeFailureSummary {
                 occurred_at: Utc::now(),
                 summary: failure_summary.clone(),
                 phase: RuntimeFailurePhase::RuntimeTurn,
@@ -5814,8 +5842,7 @@ impl RuntimeHandle {
                     "the intended terminal settlement was replaced by a fenced abort".into(),
                 ),
                 failure_artifact: None,
-            });
-            state
+            }),
         };
         self.commit_queue_terminal_settlement_with_evidence(
             QueueEntryRecord {
@@ -5926,7 +5953,7 @@ impl RuntimeHandle {
             let mut dropped = expected.clone();
             dropped.status = QueueEntryStatus::Dropped;
             dropped.updated_at = self.now();
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             if guard
                 .queue
                 .peek_next_matching(|message| message.id == recovery_message.id)
@@ -5936,60 +5963,57 @@ impl RuntimeHandle {
             }
             let mut next_state = guard.state.clone();
             next_state.pending = guard.queue.len().saturating_sub(1);
-            let mut commit = self.inner.runtime_db.transitions().commit_queue(
-                &crate::runtime_db::transitions::QueueTransitionCommand {
-                    agent_id: recovery_message.agent_id.clone(),
-                    operation: crate::runtime_db::transitions::QueueOperation::Settle,
-                    mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                        expected,
-                        record: dropped,
-                    },
-                    scheduler_claim_work_item: None,
-                    agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
-                        expected: Some(Box::new(guard.last_persisted_state.clone())),
-                        record: Box::new(next_state.clone()),
-                    }),
-                    message_evidence: Vec::new(),
-                    transcript_entries: Vec::new(),
-                    turn_record: None,
-                    audit_events: vec![
-                        AuditEvent::legacy(
-                            "recovery_superseded",
-                            serde_json::json!({
-                                "agent_id": recovery_message.agent_id,
-                                "recovery_message_id": recovery_message.id,
-                                "fallback_model_ref": recovery.fallback_model_ref,
-                                "source_turn_id": recovery.source_turn_id,
-                                "source_message_id": recovery.source_message_id,
-                                "superseding_message_id": superseding_message.id,
-                                "superseding_turn_id": turn_record.turn_id,
-                                "work_item_id": turn_record.current_work_item_id,
-                            }),
-                        ),
-                        AuditEvent::legacy(
-                            "queue_entry_settled",
-                            serde_json::json!({
-                                "message_id": recovery_message.id,
-                                "message_kind": recovery_message.kind,
-                                "status": QueueEntryStatus::Dropped,
-                                "reason": "provider_recovery_superseded",
-                            }),
-                        ),
-                    ],
-                    notify_scheduler: true,
-                    fault: self.take_transition_fault(),
-                    brief_evidence: Vec::new(),
+            let command = &crate::runtime_db::transitions::QueueTransitionCommand {
+                agent_id: recovery_message.agent_id.clone(),
+                operation: crate::runtime_db::transitions::QueueOperation::Settle,
+                mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                    expected,
+                    record: dropped,
                 },
-            )?;
+                scheduler_claim_work_item: None,
+                agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                    expected: Some(Box::new(guard.last_persisted_state.clone())),
+                    record: Box::new(next_state.clone()),
+                }),
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: vec![
+                    AuditEvent::legacy(
+                        "recovery_superseded",
+                        serde_json::json!({
+                            "agent_id": recovery_message.agent_id,
+                            "recovery_message_id": recovery_message.id,
+                            "fallback_model_ref": recovery.fallback_model_ref,
+                            "source_turn_id": recovery.source_turn_id,
+                            "source_message_id": recovery.source_message_id,
+                            "superseding_message_id": superseding_message.id,
+                            "superseding_turn_id": turn_record.turn_id,
+                            "work_item_id": turn_record.current_work_item_id,
+                        }),
+                    ),
+                    AuditEvent::legacy(
+                        "queue_entry_settled",
+                        serde_json::json!({
+                            "message_id": recovery_message.id,
+                            "message_kind": recovery_message.kind,
+                            "status": QueueEntryStatus::Dropped,
+                            "reason": "provider_recovery_superseded",
+                        }),
+                    ),
+                ],
+                notify_scheduler: true,
+                fault: self.take_transition_fault(),
+                brief_evidence: Vec::new(),
+            };
+            let commit = guard
+                .commit_transition(crate::ids::audit_event_id(), || {
+                    self.inner.runtime_db.transitions().commit_queue(command)
+                })
+                .await?;
             if !commit.applied {
                 continue;
             }
-            let _ = guard
-                .queue
-                .pop_next_matching(|message| message.id == recovery_message.id);
-            guard.state = next_state.clone();
-            guard.last_persisted_state = next_state;
-            commit.effects.agent_state = None;
             drop(guard);
             self.apply_transition_commit(commit).await;
             superseded += 1;
@@ -6013,7 +6037,14 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub async fn run(self) -> Result<()> {
+    #[inline(never)]
+    pub fn run(self) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send>> {
+        // Keep construction separate from polling: callers and Tokio tasks
+        // retain a pointer rather than the full runtime-loop state machine.
+        Box::pin(self.run_inner())
+    }
+
+    async fn run_inner(self) -> Result<()> {
         if let Some(bridge) = self.inner.host_bridge.as_ref() {
             bridge.wait_for_bootstrap_ready().await?;
         }
@@ -6325,16 +6356,10 @@ impl RuntimeHandle {
                         prepared_wait_for: None,
                         terminal_tool_executions: Vec::new(),
                     };
-                    let committed_state = {
-                        let guard = self.inner.agent.lock().await;
-                        let mut state = guard.state.clone();
-                        if !matches!(state.status, AgentStatus::Stopped) {
-                            scheduler::apply_idle_projection(&mut state, &self.inner.storage)?;
-                        }
-                        if let Some(artifacts) = failure_artifacts.as_ref() {
-                            state.last_runtime_failure = Some(artifacts.failure_summary.clone());
-                        }
-                        state
+                    let committed_state = TerminalAgentStateUpdate {
+                        last_runtime_failure: failure_artifacts
+                            .as_ref()
+                            .map(|artifacts| artifacts.failure_summary.clone()),
                     };
                     let settlement = self
                         .commit_queue_terminal_settlement_resilient(
@@ -6371,8 +6396,14 @@ impl RuntimeHandle {
                         return Err(error);
                     }
                     let failed_state = {
-                        let mut guard = self.inner.agent.lock().await;
-                        guard.current_run_abort = None;
+                        let mut guard = self.begin_mutation().await?;
+                        if guard.current_run_abort.as_ref().is_some_and(|handle| {
+                            Some(&handle.run_id) == guard.state.current_run_id.as_ref()
+                        }) || guard.state.current_run_id.is_none()
+                        {
+                            guard.current_run_abort = None;
+                        }
+                        guard.install_transient().await?;
                         guard.state.clone()
                     };
                     self.append_state_changed_events(&failed_state)?;
@@ -6384,8 +6415,14 @@ impl RuntimeHandle {
             };
             {
                 let processed_state = {
-                    let mut guard = self.inner.agent.lock().await;
-                    guard.current_run_abort = None;
+                    let mut guard = self.begin_mutation().await?;
+                    if guard.current_run_abort.as_ref().is_some_and(|handle| {
+                        Some(&handle.run_id) == guard.state.current_run_id.as_ref()
+                    }) || guard.state.current_run_id.is_none()
+                    {
+                        guard.current_run_abort = None;
+                    }
+                    guard.install_transient().await?;
                     guard.state.clone()
                 };
                 self.append_state_changed_events(&processed_state)?;
@@ -6418,8 +6455,14 @@ impl RuntimeHandle {
                     Ok(TerminalSettlementDisposition::Intended) => {}
                     Ok(TerminalSettlementDisposition::AbortedFallback) => {
                         let failed_state = {
-                            let mut guard = self.inner.agent.lock().await;
-                            guard.current_run_abort = None;
+                            let mut guard = self.begin_mutation().await?;
+                            if guard.current_run_abort.as_ref().is_some_and(|handle| {
+                                Some(&handle.run_id) == guard.state.current_run_id.as_ref()
+                            }) || guard.state.current_run_id.is_none()
+                            {
+                                guard.current_run_abort = None;
+                            }
+                            guard.install_transient().await?;
                             guard.state.clone()
                         };
                         self.append_state_changed_events(&failed_state)?;
@@ -6482,23 +6525,14 @@ impl RuntimeHandle {
         }
         // Failure cleanup is still a legacy whole-row writer. It must never
         // overwrite a committed posture with the pre-publication memory copy.
-        let reservation = match self.inner.mutation_owner.reserve().await {
-            Ok(reservation) => reservation,
+        let mut guard = match self.begin_mutation().await {
+            Ok(guard) => guard,
             Err(owner_error) => {
                 tracing::warn!(agent_id = %agent_id, error = %owner_error,
-                    "skipped runtime failure state write for a replaced owner");
+                    "skipped runtime failure state write while mutation owner is unavailable");
                 return;
             }
         };
-        match reservation.recovery() {
-            Ok(None) => {}
-            recovery => {
-                tracing::warn!(agent_id = %agent_id, recovery = ?recovery,
-                    "skipped runtime failure state write pending posture reconciliation");
-                return;
-            }
-        }
-        let mut guard = self.inner.agent.lock().await;
         guard.state.current_run_id = None;
         guard.current_run_abort = None;
         guard.state.last_runtime_failure = Some(RuntimeFailureSummary {
@@ -6508,7 +6542,7 @@ impl RuntimeHandle {
             detail_hint: Some("the next host access will rebuild the runtime loop".into()),
             failure_artifact: None,
         });
-        if let Err(persist_error) = guard.persist_state(&self.inner.storage) {
+        if let Err(persist_error) = guard.persist_state(&self.inner.storage).await {
             tracing::error!(
                 agent_id = %agent_id,
                 error = %persist_error,
@@ -6540,7 +6574,7 @@ impl RuntimeHandle {
         let mut recovered = 0;
 
         for mut entry in claimed {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             let expected_entry = entry.clone();
             let Some(message) = self.inner.storage.read_message_by_id(&entry.message_id)? else {
                 continue;
@@ -6705,45 +6739,48 @@ impl RuntimeHandle {
                 let message_id = entry.message_id.clone();
                 let execution_protocol =
                     crate::runtime_db::transitions::ExecutionProtocolTransition::default();
-                let commit = self
-                    .inner
-                    .runtime_db
-                    .transitions()
-                    .commit_queue_with_execution_protocol(
-                        &crate::runtime_db::transitions::QueueTransitionCommand {
-                            agent_id: agent_id.clone(),
-                            operation: crate::runtime_db::transitions::QueueOperation::Settle,
-                            mutation:
-                                crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                                    expected: expected_entry,
-                                    record: entry,
-                                },
-                            scheduler_claim_work_item: None,
-                            agent_state: None,
-                            message_evidence: Vec::new(),
-                            transcript_entries: Vec::new(),
-                            turn_record: terminal_turn.cloned(),
-                            audit_events: vec![AuditEvent::legacy(
-                                "unsettled_claim_reconciled",
-                                serde_json::json!({
-                                    "agent_id": agent_id,
-                                    "message_id": message_id,
-                                    "activation_id": activation_id,
-                                    "work_item_id": work_item_id,
-                                    "decision": "quarantine_settled",
-                                    "reason": reason,
-                                    "recovery_generation": u32::from(
-                                        attempt.recovery_of_attempt_id.is_some()
-                                    ),
-                                    "provenance": "bootstrap_reconciliation",
-                                }),
-                            )],
-                            notify_scheduler: true,
-                            fault: self.take_transition_fault(),
-                            brief_evidence: Vec::new(),
-                        },
-                        &execution_protocol,
-                    )?;
+                let commit = guard
+                    .commit_transition(crate::ids::audit_event_id(), || {
+                        self.inner
+                            .runtime_db
+                            .transitions()
+                            .commit_queue_with_execution_protocol(
+                            &crate::runtime_db::transitions::QueueTransitionCommand {
+                                agent_id: agent_id.clone(),
+                                operation: crate::runtime_db::transitions::QueueOperation::Settle,
+                                mutation:
+                                    crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                                        expected: expected_entry,
+                                        record: entry,
+                                    },
+                                scheduler_claim_work_item: None,
+                                agent_state: None,
+                                message_evidence: Vec::new(),
+                                transcript_entries: Vec::new(),
+                                turn_record: terminal_turn.cloned(),
+                                audit_events: vec![AuditEvent::legacy(
+                                    "unsettled_claim_reconciled",
+                                    serde_json::json!({
+                                        "agent_id": agent_id,
+                                        "message_id": message_id,
+                                        "activation_id": activation_id,
+                                        "work_item_id": work_item_id,
+                                        "decision": "quarantine_settled",
+                                        "reason": reason,
+                                        "recovery_generation": u32::from(
+                                            attempt.recovery_of_attempt_id.is_some()
+                                        ),
+                                        "provenance": "bootstrap_reconciliation",
+                                    }),
+                                )],
+                                notify_scheduler: true,
+                                fault: self.take_transition_fault(),
+                                brief_evidence: Vec::new(),
+                            },
+                            &execution_protocol,
+                        )
+                    })
+                    .await?;
                 if commit.applied {
                     recovered += 1;
                     crate::diagnostics::record_unsettled_claim_recovery();
@@ -6776,45 +6813,48 @@ impl RuntimeHandle {
                             ),
                         ],
                     };
-                let commit = self
-                    .inner
-                    .runtime_db
-                    .transitions()
-                    .commit_queue_with_execution_protocol(
-                        &crate::runtime_db::transitions::QueueTransitionCommand {
-                            agent_id: agent_id.clone(),
-                            operation: crate::runtime_db::transitions::QueueOperation::Settle,
-                            mutation:
-                                crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                                    expected: expected_entry,
-                                    record: entry,
-                                },
-                            scheduler_claim_work_item: None,
-                            agent_state: None,
-                            message_evidence: Vec::new(),
-                            transcript_entries: Vec::new(),
-                            turn_record: terminal_turn.cloned(),
-                            audit_events: vec![AuditEvent::legacy(
-                                "unsettled_claim_reconciled",
-                                serde_json::json!({
-                                    "agent_id": agent_id,
-                                    "message_id": message_id,
-                                    "activation_id": activation_id,
-                                    "work_item_id": work_item_id,
-                                    "decision": "interrupt_and_quarantine",
-                                    "reason": reason,
-                                    "recovery_generation": u32::from(
-                                        attempt.recovery_of_attempt_id.is_some()
-                                    ),
-                                    "provenance": "bootstrap_reconciliation",
-                                }),
-                            )],
-                            notify_scheduler: true,
-                            fault: self.take_transition_fault(),
-                            brief_evidence: Vec::new(),
-                        },
-                        &execution_protocol,
-                    )?;
+                let commit = guard
+                    .commit_transition(crate::ids::audit_event_id(), || {
+                        self.inner
+                            .runtime_db
+                            .transitions()
+                            .commit_queue_with_execution_protocol(
+                            &crate::runtime_db::transitions::QueueTransitionCommand {
+                                agent_id: agent_id.clone(),
+                                operation: crate::runtime_db::transitions::QueueOperation::Settle,
+                                mutation:
+                                    crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                                        expected: expected_entry,
+                                        record: entry,
+                                    },
+                                scheduler_claim_work_item: None,
+                                agent_state: None,
+                                message_evidence: Vec::new(),
+                                transcript_entries: Vec::new(),
+                                turn_record: terminal_turn.cloned(),
+                                audit_events: vec![AuditEvent::legacy(
+                                    "unsettled_claim_reconciled",
+                                    serde_json::json!({
+                                        "agent_id": agent_id,
+                                        "message_id": message_id,
+                                        "activation_id": activation_id,
+                                        "work_item_id": work_item_id,
+                                        "decision": "interrupt_and_quarantine",
+                                        "reason": reason,
+                                        "recovery_generation": u32::from(
+                                            attempt.recovery_of_attempt_id.is_some()
+                                        ),
+                                        "provenance": "bootstrap_reconciliation",
+                                    }),
+                                )],
+                                notify_scheduler: true,
+                                fault: self.take_transition_fault(),
+                                brief_evidence: Vec::new(),
+                            },
+                            &execution_protocol,
+                        )
+                    })
+                    .await?;
                 if commit.applied {
                     recovered += 1;
                     crate::diagnostics::record_unsettled_claim_recovery();
@@ -6833,7 +6873,9 @@ impl RuntimeHandle {
                 let message_id = entry.message_id.clone();
                 let execution_protocol =
                     task_result_recovery.expect("TaskResult recovery was checked");
-                let commit = self
+                let commit = guard
+                    .commit_transition(crate::ids::audit_event_id(), || {
+                        self
                     .inner
                     .runtime_db
                     .transitions()
@@ -6868,11 +6910,15 @@ impl RuntimeHandle {
                             brief_evidence: Vec::new(),
                         },
                         &execution_protocol,
-                    )?;
+                    )
+                    })
+                    .await?;
                 if commit.applied {
                     recovered += 1;
                     crate::diagnostics::record_unsettled_claim_recovery();
-                    guard.restore_bootstrap_replay_message(&self.inner.storage, &message)?;
+                    guard
+                        .restore_bootstrap_replay_message(&self.inner.storage, &message)
+                        .await?;
                 }
                 drop(guard);
                 self.apply_transition_commit(commit).await;
@@ -6889,7 +6935,7 @@ impl RuntimeHandle {
                 entry.updated_at = self.now();
                 let message_id = entry.message_id.clone();
                 let queue_status = entry.status.clone();
-                let commit = self.inner.runtime_db.transitions().commit_queue(
+                let commit = guard.commit_transition(crate::ids::audit_event_id(), || self.inner.runtime_db.transitions().commit_queue(
                     &crate::runtime_db::transitions::QueueTransitionCommand {
                         agent_id: agent_id.clone(),
                         operation: crate::runtime_db::transitions::QueueOperation::Settle,
@@ -6920,7 +6966,7 @@ impl RuntimeHandle {
                         fault: self.take_transition_fault(),
                         brief_evidence: Vec::new(),
                     },
-                )?;
+                )).await?;
                 if commit.applied {
                     recovered += 1;
                 }
@@ -6936,7 +6982,7 @@ impl RuntimeHandle {
                 entry.status = QueueEntryStatus::Interrupted;
                 entry.updated_at = self.now();
                 let message_id = entry.message_id.clone();
-                let commit = self.inner.runtime_db.transitions().commit_queue(
+                let commit = guard.commit_transition(crate::ids::audit_event_id(), || self.inner.runtime_db.transitions().commit_queue(
                     &crate::runtime_db::transitions::QueueTransitionCommand {
                         agent_id: agent_id.clone(),
                         operation: crate::runtime_db::transitions::QueueOperation::Settle,
@@ -6967,10 +7013,12 @@ impl RuntimeHandle {
                         fault: self.take_transition_fault(),
                         brief_evidence: Vec::new(),
                     },
-                )?;
+                )).await?;
                 if commit.applied {
                     recovered += 1;
-                    guard.restore_bootstrap_replay_message(&self.inner.storage, &message)?;
+                    guard
+                        .restore_bootstrap_replay_message(&self.inner.storage, &message)
+                        .await?;
                 }
                 drop(guard);
                 self.apply_transition_commit(commit).await;
@@ -6996,46 +7044,52 @@ impl RuntimeHandle {
                 &entry,
                 terminal_turn,
             )?;
-            let commit = self
-                .inner
-                .runtime_db
-                .transitions()
-                .commit_queue_with_execution_protocol(
-                    &crate::runtime_db::transitions::QueueTransitionCommand {
-                        agent_id: agent_id.clone(),
-                        operation: crate::runtime_db::transitions::QueueOperation::Settle,
-                        mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                            expected: expected_entry,
-                            record: entry,
-                        },
-                        scheduler_claim_work_item: None,
-                        agent_state: None,
-                        message_evidence: Vec::new(),
-                        transcript_entries: Vec::new(),
-                        turn_record: terminal_turn.cloned(),
-                        audit_events: vec![AuditEvent::legacy(
-                            "scheduler_bootstrap_claim_recovered",
-                            serde_json::json!({
-                                "agent_id": agent_id,
-                                "message_id": message_id,
-                                "activation_id": activation_id,
-                                "work_item_id": work_item_id,
-                                "queue_status": queue_status,
-                                "recovery_outcome": recovery_outcome,
-                                "terminal_turn_id": terminal_turn_id,
-                                "provenance": "bootstrap_reconciliation",
-                            }),
-                        )],
-                        notify_scheduler: true,
-                        fault: self.take_transition_fault(),
-                        brief_evidence: Vec::new(),
-                    },
-                    &execution_protocol,
-                )?;
+            let commit = guard
+                .commit_transition(crate::ids::audit_event_id(), || {
+                    self.inner
+                        .runtime_db
+                        .transitions()
+                        .commit_queue_with_execution_protocol(
+                            &crate::runtime_db::transitions::QueueTransitionCommand {
+                                agent_id: agent_id.clone(),
+                                operation: crate::runtime_db::transitions::QueueOperation::Settle,
+                                mutation:
+                                    crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                                        expected: expected_entry,
+                                        record: entry,
+                                    },
+                                scheduler_claim_work_item: None,
+                                agent_state: None,
+                                message_evidence: Vec::new(),
+                                transcript_entries: Vec::new(),
+                                turn_record: terminal_turn.cloned(),
+                                audit_events: vec![AuditEvent::legacy(
+                                    "scheduler_bootstrap_claim_recovered",
+                                    serde_json::json!({
+                                        "agent_id": agent_id,
+                                        "message_id": message_id,
+                                        "activation_id": activation_id,
+                                        "work_item_id": work_item_id,
+                                        "queue_status": queue_status,
+                                        "recovery_outcome": recovery_outcome,
+                                        "terminal_turn_id": terminal_turn_id,
+                                        "provenance": "bootstrap_reconciliation",
+                                    }),
+                                )],
+                                notify_scheduler: true,
+                                fault: self.take_transition_fault(),
+                                brief_evidence: Vec::new(),
+                            },
+                            &execution_protocol,
+                        )
+                })
+                .await?;
             if commit.applied {
                 recovered += 1;
                 if !terminal_is_completed {
-                    guard.restore_bootstrap_replay_message(&self.inner.storage, &message)?;
+                    guard
+                        .restore_bootstrap_replay_message(&self.inner.storage, &message)
+                        .await?;
                 }
             }
             drop(guard);
@@ -7239,3 +7293,7 @@ pub(crate) fn retryable_enqueue_conflict(error: &anyhow::Error, agent_id: &str) 
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "runtime/state_mutation_2b_tests.rs"]
+mod state_mutation_2b_tests;

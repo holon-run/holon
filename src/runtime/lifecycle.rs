@@ -54,7 +54,7 @@ impl RuntimeHandle {
         &self,
     ) -> Result<Option<crate::types::WorkItemRecord>> {
         let (turn_index, work_item_id) = {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             let turn_index = guard.state.turn_index;
             let turn_completed = guard
                 .state
@@ -65,7 +65,7 @@ impl RuntimeHandle {
                 return Ok(None);
             }
             let work_item_id = guard.state.current_turn_work_item_id.take();
-            guard.persist_state(&self.inner.storage)?;
+            guard.persist_state(&self.inner.storage).await?;
             (turn_index, work_item_id)
         };
 
@@ -133,21 +133,25 @@ impl RuntimeHandle {
                 Value::Null,
             ));
             let agent_id = self.agent_id().await?;
-            let commit = self.commit_work_item_transition(
-                &crate::runtime_db::transitions::WorkItemTransitionCommand {
-                    agent_id,
-                    mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
-                        record: record.clone(),
-                        expected_revision: latest.revision,
-                    },
-                    agent_state: None,
-                    brief_evidence: Vec::new(),
-                    audit_events,
-                    index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
-                    notify_scheduler: true,
-                    fault: self.take_transition_fault(),
+            let mut mutation = self.begin_mutation().await?;
+            let command = crate::runtime_db::transitions::WorkItemTransitionCommand {
+                agent_id,
+                mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                    record: record.clone(),
+                    expected_revision: latest.revision,
                 },
-            )?;
+                agent_state: None,
+                brief_evidence: Vec::new(),
+                audit_events,
+                index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
+                notify_scheduler: true,
+                fault: self.take_transition_fault(),
+            };
+            let operation_id = command.audit_events[0].id.clone();
+            let commit = mutation
+                .commit_transition(operation_id, || self.commit_work_item_transition(&command))
+                .await?;
+            drop(mutation);
             self.apply_transition_commit(commit).await;
             record
         } else {
@@ -198,28 +202,32 @@ impl RuntimeHandle {
                 updated_at: Utc::now(),
                 ..existing
             };
-            let commit = self.commit_work_item_transition(
-                &crate::runtime_db::transitions::WorkItemTransitionCommand {
-                    agent_id: record.agent_id.clone(),
-                    mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
-                        record: record.clone(),
-                        expected_revision: record.revision - 1,
-                    },
-                    agent_state: None,
-                    brief_evidence: Vec::new(),
-                    audit_events: vec![AuditEvent::legacy(
-                        "work_item_completion_report_missing",
-                        serde_json::json!({
-                            "agent_id": record.agent_id.clone(),
-                            "work_item_id": record.id.clone(),
-                            "turn_id": turn_id,
-                        }),
-                    )],
-                    index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
-                    notify_scheduler: false,
-                    fault: self.take_transition_fault(),
+            let mut mutation = self.begin_mutation().await?;
+            let command = crate::runtime_db::transitions::WorkItemTransitionCommand {
+                agent_id: record.agent_id.clone(),
+                mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                    record: record.clone(),
+                    expected_revision: record.revision - 1,
                 },
-            )?;
+                agent_state: None,
+                brief_evidence: Vec::new(),
+                audit_events: vec![AuditEvent::legacy(
+                    "work_item_completion_report_missing",
+                    serde_json::json!({
+                        "agent_id": record.agent_id.clone(),
+                        "work_item_id": record.id.clone(),
+                        "turn_id": turn_id,
+                    }),
+                )],
+                index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
+                notify_scheduler: false,
+                fault: self.take_transition_fault(),
+            };
+            let operation_id = command.audit_events[0].id.clone();
+            let commit = mutation
+                .commit_transition(operation_id, || self.commit_work_item_transition(&command))
+                .await?;
+            drop(mutation);
             self.apply_transition_commit(commit).await;
         }
         Ok(())
@@ -334,9 +342,26 @@ impl RuntimeHandle {
         action: ControlAction,
         _admission: super::execution_admission::ExecutionLease,
     ) -> Result<()> {
-        let outcome = super::scheduler_executor::SchedulerDecisionExecutor::new(self)
-            .apply_control(action)
-            .await?;
+        let outcome = match super::scheduler_executor::SchedulerDecisionExecutor::new(self)
+            .apply_control(action.clone())
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                if action.canonical() == ControlAction::Stop
+                    && self
+                        .validate_mutation_identity()
+                        .is_err_and(|identity_error| {
+                            identity_error
+                                .downcast_ref::<state_mutation::RuntimeMutationIdentityRetired>()
+                                .is_some()
+                        })
+                {
+                    self.retire_instance_locally("agent_identity_retired").await;
+                }
+                return Err(error);
+            }
+        };
         if let Some(occupancy_id) = outcome.occupancy_to_release.as_deref() {
             let bridge = self.inner.host_bridge.as_ref().ok_or_else(|| {
                 anyhow!(
@@ -346,7 +371,7 @@ impl RuntimeHandle {
             })?;
             let _ = bridge.release_workspace_occupancy(occupancy_id).await?;
             {
-                let mut guard = self.inner.agent.lock().await;
+                let mut guard = self.begin_mutation().await?;
                 let should_clear = guard
                     .state
                     .active_workspace_entry
@@ -355,7 +380,7 @@ impl RuntimeHandle {
                     == Some(occupancy_id);
                 if should_clear {
                     guard.state.active_workspace_entry = None;
-                    guard.persist_state(&self.inner.storage)?;
+                    guard.persist_state(&self.inner.storage).await?;
                 }
             }
         }
@@ -368,27 +393,83 @@ impl RuntimeHandle {
             self.interrupt_active_tasks_for_lifecycle_stop(active_tasks)
                 .await?;
 
-            let cancelled_waits = self
-                .inner
-                .runtime_db
-                .wait_conditions()
-                .cancel_unresolved_for_agent(&agent_id, Utc::now())?;
-            let cancelled_timers = self
-                .inner
-                .runtime_db
-                .timers()
-                .cancel_active_for_agent(&agent_id, Utc::now())?;
-            let aborted_queue_entries = self
-                .inner
-                .runtime_db
-                .queue_entries()
-                .abort_pending_for_agent(&agent_id)?;
-            {
-                let mut guard = self.inner.agent.lock().await;
-                guard.queue.clear();
-                guard.state.pending = 0;
-                guard.persist_state(&self.inner.storage)?;
-            }
+            let (cancelled_waits, cancelled_timers, aborted_queue_entries) = {
+                let mut mutation = self.begin_mutation().await?;
+                if mutation.state.status != AgentStatus::Stopped {
+                    // A later Start wins over this older Stop cleanup window.
+                    (0, 0, 0)
+                } else {
+                    mutation.queue.clear();
+                    mutation.state.pending = 0;
+                    let event = AuditEvent::legacy(
+                        "agent_stop_cleanup_committed",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                        }),
+                    );
+                    let command = crate::runtime_db::transitions::AgentPostureTransitionCommand {
+                        agent_id: agent_id.clone(),
+                        expected_incarnation: Some(self.inner.identity_incarnation),
+                        agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                            expected: Some(Box::new(mutation.last_persisted_state.clone())),
+                            record: Box::new(mutation.state.clone()),
+                        },
+                        audit_events: vec![event.clone()],
+                        fault: self.take_transition_fault(),
+                    };
+                    let mut counts = None;
+                    let commit = mutation
+                        .commit_transition(event.id, || {
+                            let cancelled_waits = self
+                                .inner
+                                .runtime_db
+                                .wait_conditions()
+                                .cancel_unresolved_for_agent(&agent_id, Utc::now())?;
+                            // The cleanup retains its existing transaction boundaries. Once
+                            // the first transaction succeeds, a later rollback proves nothing
+                            // about the complete cleanup operation.
+                            let tail = (|| {
+                                let cancelled_timers = self
+                                    .inner
+                                    .runtime_db
+                                    .timers()
+                                    .cancel_active_for_agent(&agent_id, Utc::now())?;
+                                let aborted_queue_entries = self
+                                    .inner
+                                    .runtime_db
+                                    .queue_entries()
+                                    .abort_pending_for_agent(&agent_id)?;
+                                let mut commit = self
+                                    .inner
+                                    .runtime_db
+                                    .transitions()
+                                    .commit_agent_posture(&command)?;
+                                commit.applied = true;
+                                commit.effects.agent_state = Some(command.agent_state.clone());
+                                commit.effects.timers =
+                                    self.inner.storage.latest_timer_records()?;
+                                counts = Some((
+                                    cancelled_waits,
+                                    cancelled_timers,
+                                    aborted_queue_entries,
+                                ));
+                                Ok(commit)
+                            })();
+                            tail.map_err(|error| {
+                                crate::runtime_db::persistence::mark_persistence_failure(
+                                    error,
+                                    crate::runtime_db::PersistenceCertainty::Indeterminate,
+                                    crate::runtime_db::PersistenceFailurePhase::Commit,
+                                    None,
+                                )
+                            })
+                        })
+                        .await?;
+                    drop(mutation);
+                    self.apply_transition_commit(commit).await;
+                    counts.expect("successful stop cleanup has transaction results")
+                }
+            };
             self.inner.storage.append_event(&AuditEvent::legacy(
                 "agent_stop_state_discarded",
                 serde_json::json!({
@@ -447,9 +528,17 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    /// Hold the same lock used by scheduler/ingress while committing the fence.
     /// An unsuccessful admission leaves the runtime available.
     pub(crate) async fn admit_idle_cleanup<T>(
+        &self,
+        admit: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let _mutation = self.begin_mutation().await?;
+        self.admit_idle_cleanup_reserved(admit).await
+    }
+
+    /// The Host coordinator must retain this agent's owner reservation.
+    pub(crate) async fn admit_idle_cleanup_reserved<T>(
         &self,
         admit: impl FnOnce() -> Result<T>,
     ) -> Result<T> {
@@ -493,23 +582,36 @@ impl RuntimeHandle {
             "agent_cleanup_blocked: mutation_exit_pending"
         );
         let closing = self.inner.execution_admission.try_close()?;
+        drop(tasks);
+        drop(guard);
         let admitted = admit()?;
         closing.commit();
         self.close_mutation_admission();
         self.inner
             .shutdown_requested
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        drop(tasks);
-        drop(guard);
         self.inner.notify.notify_one();
         Ok(admitted)
     }
 
+    // Physical instance retirement never acknowledges or changes durable facts.
+    async fn retire_instance_locally(&self, reason: &str) {
+        // Complete the only await before taking responsibility for local exit.
+        let handle = self.inner.agent.lock().await.current_run_abort.clone();
+        self.close_execution_admission();
+        self.inner.notify.notify_one();
+        if let Some(handle) = handle {
+            if !handle.token.is_cancelled() {
+                if let Ok(mut abort_reason) = handle.reason.lock() {
+                    *abort_reason = reason.to_string();
+                }
+                handle.token.cancel();
+            }
+        }
+    }
+
     pub(crate) async fn request_service_shutdown(&self) -> Result<()> {
-        self.close_mutation_admission();
-        self.inner
-            .shutdown_requested
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.retire_instance_locally("daemon_shutdown").await;
         let outcome = super::scheduler_executor::SchedulerDecisionExecutor::new(self)
             .request_shutdown(super::scheduler_executor::ShutdownReason::DaemonShutdown)
             .await?;
@@ -537,11 +639,23 @@ impl RuntimeHandle {
     }
 
     pub async fn agent_state(&self) -> Result<AgentState> {
-        let lock_wait = attribution::AGENT_LOCK.start();
-        let guard = self.inner.agent.lock().await;
-        drop(lock_wait);
-        let _clone = attribution::AGENT_CLONE.start();
-        Ok(guard.state.clone())
+        loop {
+            let lock_wait = attribution::AGENT_LOCK.start();
+            let guard = self.inner.agent.lock().await;
+            drop(lock_wait);
+            match self.inner.mutation_owner.capture() {
+                Ok(_) => {
+                    let _clone = attribution::AGENT_CLONE.start();
+                    return Ok(guard.state.clone());
+                }
+                Err(mutation_owner::MutationOwnerError::NeedsReconcile(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+            drop(guard);
+            // A normal in-flight commit is awaited outside the state lock.
+            // Unknown outcomes still fail rather than borrowing a current row.
+            self.reconcile_posture_observation().await?;
+        }
     }
 
     pub(crate) async fn workspace_entry_by_id(
@@ -1077,11 +1191,11 @@ impl RuntimeHandle {
 
         let model_state = self.model_state_for(&next_state);
         {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             guard.state.model_override = Some(model_override);
             guard.state.model_override_reasoning_effort = reasoning_effort;
             guard.state.model_override_service_tier = service_tier;
-            guard.persist_state(&self.inner.storage)?;
+            guard.persist_state(&self.inner.storage).await?;
         }
         self.append_audit_event(
             if turn_in_progress {
@@ -1110,11 +1224,11 @@ impl RuntimeHandle {
 
         let model_state = self.model_state_for(&next_state);
         {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             guard.state.model_override = None;
             guard.state.model_override_reasoning_effort = None;
             guard.state.model_override_service_tier = None;
-            guard.persist_state(&self.inner.storage)?;
+            guard.persist_state(&self.inner.storage).await?;
         }
         self.append_audit_event(
             if turn_in_progress {
@@ -1173,7 +1287,7 @@ impl RuntimeHandle {
         // Workspace cleanup is a mutation concern. Keep GET projections read-only while
         // opportunistically repairing stale attachments before applying a new binding.
         self.prune_stale_attached_workspaces().await?;
-        let mut guard = self.inner.agent.lock().await;
+        let mut guard = self.begin_mutation().await?;
         if !guard
             .state
             .attached_workspaces
@@ -1186,7 +1300,7 @@ impl RuntimeHandle {
                 .push(workspace.workspace_id.clone());
         }
         self.inner.storage.append_workspace_entry(workspace)?;
-        guard.persist_state(&self.inner.storage)?;
+        guard.persist_state(&self.inner.storage).await?;
         let state = guard.state.clone();
         drop(guard);
         self.inner.storage.append_event(&AuditEvent::legacy(
@@ -1235,7 +1349,7 @@ impl RuntimeHandle {
         }
 
         let detached_agent_id = {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             let before_len = guard.state.attached_workspaces.len();
             guard
                 .state
@@ -1247,7 +1361,7 @@ impl RuntimeHandle {
                     guard.state.id
                 ));
             }
-            guard.persist_state(&self.inner.storage)?;
+            guard.persist_state(&self.inner.storage).await?;
             guard.state.id.clone()
         };
 
@@ -1329,12 +1443,21 @@ impl RuntimeHandle {
 
         // Remove stale IDs and persist.
         {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
+            let active_workspace_id = guard
+                .state
+                .active_workspace_entry
+                .as_ref()
+                .map(|entry| entry.workspace_id.clone());
+            stale_ids.retain(|id| {
+                active_workspace_id.as_ref() != Some(id)
+                    && guard.state.attached_workspaces.contains(id)
+            });
             guard
                 .state
                 .attached_workspaces
                 .retain(|id| !stale_ids.contains(id));
-            guard.persist_state(&self.inner.storage)?;
+            guard.persist_state(&self.inner.storage).await?;
         }
 
         for ws_id in &stale_ids {
@@ -1474,7 +1597,7 @@ impl RuntimeHandle {
             projection_metadata: None,
         };
         {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             workspace::canonicalize_agent_home_bindings(
                 &mut guard.state,
                 self.inner.storage.data_dir(),
@@ -1500,7 +1623,7 @@ impl RuntimeHandle {
             }
             guard.state.active_workspace_entry = Some(entry);
             guard.state.worktree_session = None;
-            guard.persist_state(&self.inner.storage)?;
+            guard.persist_state(&self.inner.storage).await?;
             self.inner.storage.mark_memory_index_dirty()?;
         }
         if let Some(occupancy_id) = previous_occupancy_id.as_deref() {
@@ -1654,10 +1777,10 @@ impl RuntimeHandle {
         }
 
         let write_result: Result<()> = async {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             guard.state.active_workspace_entry = Some(entry.clone());
             guard.state.worktree_session = worktree_session;
-            guard.persist_state(&self.inner.storage)?;
+            guard.persist_state(&self.inner.storage).await?;
             self.inner.storage.mark_memory_index_dirty()?;
             Ok(())
         }
@@ -1838,10 +1961,10 @@ impl RuntimeHandle {
         }
 
         let write_result: Result<()> = async {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             guard.state.active_workspace_entry = Some(entry.clone());
             guard.state.worktree_session = None;
-            guard.persist_state(&self.inner.storage)?;
+            guard.persist_state(&self.inner.storage).await?;
             self.inner.storage.mark_memory_index_dirty()?;
             Ok(())
         }
@@ -2246,6 +2369,280 @@ mod tests {
     use super::*;
     use chrono::Utc;
 
+    async fn runtime_with_owned_run() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        RuntimeHandle,
+        CancellationToken,
+        Arc<StdMutex<String>>,
+    ) {
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            home.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            crate::runtime::tests::support::context_config(),
+        )
+        .unwrap();
+        runtime
+            .enqueue(
+                MessageEnvelope::new(
+                    "default",
+                    MessageKind::OperatorPrompt,
+                    MessageOrigin::Operator {
+                        actor_id: Some("control".into()),
+                        actor_display_name: None,
+                    },
+                    AuthorityClass::OperatorInstruction,
+                    Priority::Normal,
+                    MessageBody::Text {
+                        text: "queued".into(),
+                    },
+                )
+                .with_admission(
+                    MessageDeliverySurface::HttpControlPrompt,
+                    AdmissionContext::ControlAuthenticated,
+                ),
+            )
+            .await
+            .unwrap();
+        // Consume enqueue's notification so the retirement assertion is exact.
+        runtime.inner.notify.notified().await;
+        let token = CancellationToken::new();
+        let reason = Arc::new(StdMutex::new("operator_aborted".to_string()));
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        mutation.state.status = AgentStatus::AwakeRunning;
+        mutation.state.current_run_id = Some("owned-run".into());
+        mutation.current_run_abort = Some(CurrentRunAbortHandle {
+            run_id: "owned-run".into(),
+            token: token.clone(),
+            reason: reason.clone(),
+        });
+        mutation.persist_state(runtime.storage()).await.unwrap();
+        drop(mutation);
+        (home, workspace, runtime, token, reason)
+    }
+
+    #[tokio::test]
+    async fn stop_retired_identity_only_closes_local_instance_without_publishing() {
+        for reincarnated in [false, true] {
+            let (_home, _workspace, runtime, token, reason) = runtime_with_owned_run().await;
+            let before = runtime.inner.agent.lock().await.state.clone();
+            let observation = runtime.inner.mutation_owner.capture().unwrap().unwrap();
+            let mut identity = crate::types::AgentIdentityRecord::new(
+                "default",
+                crate::types::AgentKind::Default,
+                crate::types::AgentVisibility::Public,
+                crate::types::AgentOwnership::SelfOwned,
+                crate::types::AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            );
+            if reincarnated {
+                identity.incarnation = runtime.instance_incarnation() + 1;
+            } else {
+                identity.status = crate::types::AgentRegistryStatus::Deleted;
+            }
+            runtime
+                .runtime_db()
+                .agent_identities()
+                .upsert(&identity)
+                .unwrap();
+            let queue = runtime
+                .runtime_db()
+                .queue_entries()
+                .recent(Some("default"), 100)
+                .unwrap();
+            let events = runtime.storage().read_recent_events(100).unwrap();
+            let error = runtime.control(ControlAction::Stop).await.unwrap_err();
+            assert!(error
+                .downcast_ref::<state_mutation::RuntimeMutationIdentityRetired>()
+                .is_some());
+            assert!(token.is_cancelled());
+            assert_eq!(*reason.lock().unwrap(), "agent_identity_retired");
+            assert!(!runtime.accepts_execution_admission());
+            assert!(runtime.spawn_owned_mutation(async {}).is_err());
+            assert_eq!(runtime.inner.agent.lock().await.state, before);
+            assert_eq!(runtime.storage().read_agent().unwrap().unwrap(), before);
+            assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
+            assert_eq!(
+                runtime
+                    .runtime_db()
+                    .queue_entries()
+                    .recent(Some("default"), 100)
+                    .unwrap(),
+                queue
+            );
+            assert_eq!(runtime.storage().read_recent_events(100).unwrap(), events);
+            assert_eq!(
+                runtime
+                    .inner
+                    .mutation_owner
+                    .capture()
+                    .unwrap()
+                    .unwrap()
+                    .token,
+                observation.token
+            );
+            tokio::time::timeout(Duration::from_secs(1), runtime.inner.notify.notified())
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn service_shutdown_unknown_outcome_still_cancels_local_run_without_opening_gate() {
+        for already_cancelled in [false, true] {
+            let (_home, _workspace, runtime, token, reason) = runtime_with_owned_run().await;
+            if already_cancelled {
+                *reason.lock().unwrap() = "agent_stopped".into();
+                token.cancel();
+            }
+            let before = runtime.inner.agent.lock().await.state.clone();
+            let mut mutation = runtime.begin_mutation().await.unwrap();
+            mutation
+                .commit_transition("unknown-before-shutdown".into(), || {
+                    Err(anyhow!("lost SQL acknowledgement"))
+                })
+                .await
+                .unwrap_err();
+            drop(mutation);
+            let key = match runtime.inner.mutation_owner.capture().unwrap_err() {
+                mutation_owner::MutationOwnerError::NeedsReconcile(key) => key,
+                error => panic!("unexpected owner error: {error}"),
+            };
+            let events = runtime.storage().read_recent_events(100).unwrap();
+            runtime.request_service_shutdown().await.unwrap_err();
+            assert!(token.is_cancelled());
+            assert_eq!(
+                *reason.lock().unwrap(),
+                if already_cancelled {
+                    "agent_stopped"
+                } else {
+                    "daemon_shutdown"
+                }
+            );
+            assert!(!runtime.accepts_execution_admission());
+            assert!(runtime.spawn_owned_mutation(async {}).is_err());
+            assert_eq!(runtime.inner.agent.lock().await.state, before);
+            assert_eq!(runtime.storage().read_agent().unwrap().unwrap(), before);
+            assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
+            assert_eq!(runtime.storage().read_recent_events(100).unwrap(), events);
+            assert!(
+                matches!(runtime.inner.mutation_owner.capture(), Err(mutation_owner::MutationOwnerError::NeedsReconcile(current)) if current == key)
+            );
+            let reservation = runtime.inner.mutation_owner.reserve().await.unwrap();
+            assert!(reservation.recovery().unwrap().unwrap().known.is_none());
+            drop(reservation);
+            tokio::time::timeout(Duration::from_secs(1), runtime.inner.notify.notified())
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_retired_identity_with_unknown_commit_preserves_original_fence() {
+        for reincarnated in [false, true] {
+            let (_home, _workspace, runtime, token, reason) = runtime_with_owned_run().await;
+            let before = runtime.inner.agent.lock().await.state.clone();
+            let mut mutation = runtime.begin_mutation().await.unwrap();
+            mutation
+                .commit_transition("unknown-before-retirement".into(), || {
+                    Err(anyhow!("lost SQL acknowledgement"))
+                })
+                .await
+                .unwrap_err();
+            drop(mutation);
+            let key = match runtime.inner.mutation_owner.capture().unwrap_err() {
+                mutation_owner::MutationOwnerError::NeedsReconcile(key) => key,
+                error => panic!("unexpected owner error: {error}"),
+            };
+            let mut identity = crate::types::AgentIdentityRecord::new(
+                "default",
+                crate::types::AgentKind::Default,
+                crate::types::AgentVisibility::Public,
+                crate::types::AgentOwnership::SelfOwned,
+                crate::types::AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            );
+            if reincarnated {
+                identity.incarnation = runtime.instance_incarnation() + 1;
+            } else {
+                identity.status = crate::types::AgentRegistryStatus::Deleted;
+            }
+            runtime
+                .runtime_db()
+                .agent_identities()
+                .upsert(&identity)
+                .unwrap();
+            let events = runtime.storage().read_recent_events(100).unwrap();
+            let queue = runtime
+                .runtime_db()
+                .queue_entries()
+                .recent(Some("default"), 100)
+                .unwrap();
+            let error = runtime.control(ControlAction::Stop).await.unwrap_err();
+            assert!(error.to_string().contains("outcome is unknown"));
+            assert!(error
+                .downcast_ref::<state_mutation::RuntimeMutationIdentityRetired>()
+                .is_none());
+            assert!(token.is_cancelled());
+            assert_eq!(*reason.lock().unwrap(), "agent_identity_retired");
+            assert!(!runtime.accepts_execution_admission());
+            assert!(runtime.spawn_owned_mutation(async {}).is_err());
+            assert_eq!(runtime.inner.agent.lock().await.state, before);
+            assert_eq!(runtime.storage().read_agent().unwrap().unwrap(), before);
+            assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
+            assert_eq!(runtime.storage().read_recent_events(100).unwrap(), events);
+            assert_eq!(
+                runtime
+                    .runtime_db()
+                    .queue_entries()
+                    .recent(Some("default"), 100)
+                    .unwrap(),
+                queue
+            );
+            assert!(
+                matches!(runtime.inner.mutation_owner.capture(), Err(mutation_owner::MutationOwnerError::NeedsReconcile(current)) if current == key)
+            );
+            let reservation = runtime.inner.mutation_owner.reserve().await.unwrap();
+            assert!(reservation.recovery().unwrap().unwrap().known.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_shutdown_waiting_for_agent_lock_leaves_instance_open() {
+        let (_home, _workspace, runtime, token, reason) = runtime_with_owned_run().await;
+        let guard = runtime.inner.agent.lock().await;
+        let before = guard.state.clone();
+        let events = runtime.storage().read_recent_events(100).unwrap();
+        let notified = runtime.inner.notify.notified();
+        tokio::pin!(notified);
+        assert!(futures_util::poll!(&mut notified).is_pending());
+        {
+            let shutdown = runtime.request_service_shutdown();
+            tokio::pin!(shutdown);
+            assert!(futures_util::poll!(&mut shutdown).is_pending());
+            assert!(runtime.accepts_execution_admission());
+            assert!(!token.is_cancelled());
+            assert!(futures_util::poll!(&mut notified).is_pending());
+        }
+        assert!(runtime.accepts_execution_admission());
+        assert!(runtime.spawn_owned_mutation(async {}).is_ok());
+        assert!(!token.is_cancelled());
+        assert_eq!(*reason.lock().unwrap(), "operator_aborted");
+        assert_eq!(guard.state, before);
+        assert_eq!(runtime.storage().read_agent().unwrap().unwrap(), before);
+        assert_eq!(runtime.storage().read_recent_events(100).unwrap(), events);
+        assert!(runtime.inner.mutation_owner.capture().is_ok());
+        assert!(futures_util::poll!(&mut notified).is_pending());
+    }
+
     fn task(id: &str, status: TaskStatus) -> TaskRecord {
         TaskRecord {
             id: id.into(),
@@ -2370,7 +2767,9 @@ mod tests {
 
         let mut agent = AgentState::new("child");
         agent.status = AgentStatus::AwakeIdle;
-        storage.write_agent(&agent).expect("write agent");
+        storage
+            .write_agent_for_fixture(&agent)
+            .expect("write agent");
         storage
             .append_task(&task_with_wait_policy(
                 "background",

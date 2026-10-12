@@ -156,7 +156,7 @@ impl Fixture {
             work_item_id: Some(WORK_ITEM.into()),
             claimed_work_revision: Some(item.revision),
         });
-        storage.write_agent(&agent)?;
+        storage.write_agent_for_fixture(&agent)?;
         ensure!(storage.read_all_messages()?.len() == HISTORICAL_TURNS + 1);
         ensure!(storage.read_recent_turns(100)?.len() == HISTORICAL_TURNS);
         ensure!(storage.read_recent_briefs(100)?.len() == HISTORICAL_TURNS);

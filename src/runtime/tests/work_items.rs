@@ -6362,7 +6362,7 @@ async fn turn_end_work_item_commit_ignores_unfinished_turn_binding() {
         guard.state.turn_index = 7;
         guard.state.current_turn_work_item_id = Some(work.id.clone());
         guard.state.last_turn_terminal = None;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let committed = runtime
@@ -6419,7 +6419,7 @@ async fn turn_end_work_item_commit_keeps_failed_turn_open_without_blocker() {
             completed_at: Utc::now(),
             duration_ms: 42,
         });
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let committed = runtime
@@ -6468,7 +6468,7 @@ async fn turn_end_work_item_commit_preserves_existing_blocker_on_failed_turn() {
             completed_at: Utc::now(),
             duration_ms: 42,
         });
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let committed = runtime
@@ -7635,7 +7635,7 @@ async fn current_closure_reports_continuable_for_current_work_item() {
     seed_runnable_work_execution(&storage, &active);
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active_id.clone());
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -7675,7 +7675,7 @@ async fn current_needs_input_work_item_waits_for_operator_without_work_signal() 
     storage.append_work_item(&active).unwrap();
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active_id.clone());
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -7751,7 +7751,7 @@ async fn current_external_wait_does_not_suppress_queued_runnable_work_item() {
         .unwrap();
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(current_id);
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -7965,16 +7965,22 @@ async fn commit_prepared_wait_for(runtime: &RuntimeHandle, result: &crate::tool:
         .prepared_wait_for
         .as_ref()
         .expect("WaitFor should prepare canonical settlement");
-    let commit = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .commit_wait_with_execution_protocol_and_task_expectation(
-            &prepared.command,
-            &prepared.execution_protocol,
-            prepared.expected_task.as_ref(),
-        )
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    let commit = mutation
+        .commit_transition(crate::ids::audit_event_id(), || {
+            runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .commit_wait_with_execution_protocol_and_task_expectation(
+                    &prepared.command,
+                    &prepared.execution_protocol,
+                    prepared.expected_task.as_ref(),
+                )
+        })
+        .await
         .unwrap();
+    drop(mutation);
     runtime.apply_transition_commit(commit).await;
 }
 

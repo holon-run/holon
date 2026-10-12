@@ -178,10 +178,10 @@ impl RuntimeHandle {
         let context_config = self.current_context_config().await;
 
         let built = {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             let agent_changed = sync_agent_message_count(&self.inner.storage, &mut guard.state)?;
             if agent_changed {
-                guard.persist_state(&self.inner.storage)?;
+                guard.persist_state(&self.inner.storage).await?;
             }
             let state = guard.state.clone();
             drop(guard);

@@ -314,15 +314,16 @@ impl RuntimeHandle {
         }))
     }
 
-    pub(super) async fn persist_turn_terminal_record(
-        &self,
+    pub(super) fn persist_turn_terminal_record<'a>(
+        &'a self,
         kind: TurnTerminalKind,
         last_assistant_message: Option<String>,
         no_brief_reason: Option<TurnNoBriefReason>,
         duration_ms: u64,
-        checkpoint_state: Option<&TurnLocalCheckpointState>,
+        checkpoint_state: Option<&'a TurnLocalCheckpointState>,
         persist: bool,
-    ) -> Result<TurnTerminalRecord> {
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<TurnTerminalRecord>> + Send + 'a>>
+    {
         self.persist_turn_terminal_record_with_tool_executions(
             kind,
             last_assistant_message,
@@ -332,10 +333,33 @@ impl RuntimeHandle {
             persist,
             Vec::new(),
         )
-        .await
     }
 
-    pub(super) async fn persist_turn_terminal_record_with_tool_executions(
+    #[inline(never)]
+    pub(super) fn persist_turn_terminal_record_with_tool_executions<'a>(
+        &'a self,
+        kind: TurnTerminalKind,
+        last_assistant_message: Option<String>,
+        no_brief_reason: Option<TurnNoBriefReason>,
+        duration_ms: u64,
+        checkpoint_state: Option<&'a TurnLocalCheckpointState>,
+        persist: bool,
+        terminal_tool_executions: Vec<ToolExecutionRecord>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<TurnTerminalRecord>> + Send + 'a>>
+    {
+        // Terminal/error branches retain a pointer, not the full commit future.
+        Box::pin(self.persist_turn_terminal_record_inner(
+            kind,
+            last_assistant_message,
+            no_brief_reason,
+            duration_ms,
+            checkpoint_state,
+            persist,
+            terminal_tool_executions,
+        ))
+    }
+
+    async fn persist_turn_terminal_record_inner(
         &self,
         kind: TurnTerminalKind,
         last_assistant_message: Option<String>,
@@ -940,7 +964,7 @@ impl RuntimeHandle {
                             agent_id
                         ));
                     }
-                    let mut guard = self.inner.agent.lock().await;
+                    let mut guard = self.begin_mutation().await?;
                     let Some(message) = guard
                         .queue
                         .peek_next_matching(scheduler::is_operator_interjection_message)
@@ -1023,28 +1047,31 @@ impl RuntimeHandle {
                             ),
                         }),
                     );
-                    let commit_result = self.inner.runtime_db.transitions().commit_queue(
-                        &crate::runtime_db::transitions::QueueTransitionCommand {
-                            agent_id: message.agent_id.clone(),
-                            operation: crate::runtime_db::transitions::QueueOperation::Interject,
-                            mutation: crate::runtime_db::transitions::QueueMutation::Consume(
-                                queue_record,
-                            ),
-                            scheduler_claim_work_item: None,
-                            agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
-                                expected: Some(Box::new(expected_state)),
-                                record: Box::new(committed_state.clone()),
-                            }),
-                            message_evidence: Vec::new(),
-                            transcript_entries: vec![transcript],
-                            turn_record: Some(turn_record),
-                            audit_events: vec![audit_event],
-                            notify_scheduler: false,
-                            fault: self.take_transition_fault(),
-                            brief_evidence: Vec::new(),
-                        },
-                    );
-                    let mut commit = match commit_result {
+                    let operation_id = audit_event.id.clone();
+                    let db = self.inner.runtime_db.clone();
+                    let command = crate::runtime_db::transitions::QueueTransitionCommand {
+                        agent_id: message.agent_id.clone(),
+                        operation: crate::runtime_db::transitions::QueueOperation::Interject,
+                        mutation: crate::runtime_db::transitions::QueueMutation::Consume(
+                            queue_record,
+                        ),
+                        scheduler_claim_work_item: None,
+                        agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                            expected: Some(Box::new(expected_state)),
+                            record: Box::new(committed_state.clone()),
+                        }),
+                        message_evidence: Vec::new(),
+                        transcript_entries: vec![transcript],
+                        turn_record: Some(turn_record),
+                        audit_events: vec![audit_event],
+                        notify_scheduler: false,
+                        fault: self.take_transition_fault(),
+                        brief_evidence: Vec::new(),
+                    };
+                    let commit_result = guard
+                        .commit_transition(operation_id, || db.transitions().commit_queue(&command))
+                        .await;
+                    let commit = match commit_result {
                         Ok(commit) => commit,
                         Err(error) => {
                             let can_retry = attempt + 1
@@ -1066,13 +1093,6 @@ impl RuntimeHandle {
                             "interjection settlement made no durable progress"
                         ));
                     }
-                    guard
-                        .queue
-                        .pop_next_matching(|candidate| candidate.id == message.id)
-                        .expect("peeked interjection remains queued while agent lock is held");
-                    guard.state = committed_state.clone();
-                    guard.last_persisted_state = committed_state;
-                    commit.effects.agent_state = None;
                     break (text, commit);
                 }
             };
@@ -1222,19 +1242,17 @@ impl RuntimeHandle {
         loop_control: LoopControlOptions,
     ) -> Result<AgentLoopOutcome> {
         self.reconfigure_provider_for_turn(None).await?;
-        let result = Box::pin(
-            TurnExecution {
-                runtime: self,
-                agent_id,
-                authority_class,
-                effective_prompt,
-                model_selection: TurnModelSelection::default(),
-                loop_control,
-                persist_terminal: false,
-                trace_context: None,
-            }
-            .run(),
-        )
+        let result = TurnExecution {
+            runtime: self,
+            agent_id,
+            authority_class,
+            effective_prompt,
+            model_selection: TurnModelSelection::default(),
+            loop_control,
+            persist_terminal: false,
+            trace_context: None,
+        }
+        .run()
         .await;
         let mut outcome = match result {
             Ok(outcome) => outcome,
@@ -1317,29 +1335,27 @@ impl RuntimeHandle {
         Ok(outcome)
     }
 
-    pub(crate) async fn run_agent_loop_deferred(
-        &self,
-        agent_id: &str,
+    pub(crate) fn run_agent_loop_deferred<'a>(
+        &'a self,
+        agent_id: &'a str,
         authority_class: AuthorityClass,
         effective_prompt: EffectivePrompt,
         model_selection: TurnModelSelection,
         loop_control: LoopControlOptions,
         trace_context: Option<crate::observability::TraceContext>,
-    ) -> Result<AgentLoopOutcome> {
-        Box::pin(
-            TurnExecution {
-                runtime: self,
-                agent_id,
-                authority_class,
-                effective_prompt,
-                model_selection,
-                loop_control,
-                persist_terminal: false,
-                trace_context,
-            }
-            .run(),
-        )
-        .await
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<AgentLoopOutcome>> + Send + 'a>>
+    {
+        TurnExecution {
+            runtime: self,
+            agent_id,
+            authority_class,
+            effective_prompt,
+            model_selection,
+            loop_control,
+            persist_terminal: false,
+            trace_context,
+        }
+        .run()
     }
 }
 
@@ -1901,8 +1917,17 @@ pub(super) struct TurnExecution<'a> {
     pub(super) trace_context: Option<crate::observability::TraceContext>,
 }
 
-impl TurnExecution<'_> {
-    pub(super) async fn run(self) -> Result<AgentLoopOutcome> {
+impl<'a> TurnExecution<'a> {
+    #[inline(never)]
+    pub(super) fn run(
+        self,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<AgentLoopOutcome>> + Send + 'a>>
+    {
+        // Construct before entering the nested provider/tool polling stack.
+        Box::pin(self.run_inner())
+    }
+
+    async fn run_inner(self) -> Result<AgentLoopOutcome> {
         let TurnExecution {
             runtime,
             agent_id,
@@ -2728,7 +2753,7 @@ impl TurnExecution<'_> {
             let model_attempt_state = provider_attempt_model_state(attempt_timeline.as_ref());
 
             let (turn_index, run_id, round_work_item_id, turn_id) = {
-                let mut guard = runtime.inner.agent.lock().await;
+                let mut guard = runtime.begin_mutation().await?;
                 guard.state.total_input_tokens += response.input_tokens;
                 guard.state.total_output_tokens += response.output_tokens;
                 guard.state.total_model_rounds += 1;
@@ -2738,7 +2763,7 @@ impl TurnExecution<'_> {
                 ));
                 guard.state.last_requested_model = model_attempt_state.requested_model.clone();
                 guard.state.last_active_model = model_attempt_state.active_model.clone();
-                guard.persist_state(&runtime.inner.storage)?;
+                guard.persist_state(&runtime.inner.storage).await?;
                 (
                     guard.state.turn_index,
                     guard.state.current_run_id.clone(),

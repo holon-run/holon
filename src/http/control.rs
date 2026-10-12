@@ -530,13 +530,11 @@ pub async fn runtime_config_migrate_model_routes(
     ApiJson(request): ApiJson<ModelConfigMigrationRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let config = state.host.config();
-    let report = crate::model_config_migration::migrate_model_config_routes(
-        &config.config_file_path,
-        state.host.runtime_db(),
-        request.write,
-    )
-    .map_err(error_response)?;
+    let report = state
+        .host
+        .migrate_model_config_routes(request.write)
+        .await
+        .map_err(error_response)?;
     if request.write && report.ok && report.config.changed {
         state
             .host
