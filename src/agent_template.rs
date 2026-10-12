@@ -19,9 +19,8 @@ use crate::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
-use reqwest::{header::USER_AGENT, StatusCode};
+use reqwest::header::USER_AGENT;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -293,23 +292,6 @@ const BUILTIN_SKILLS: &[BuiltinSkill] = &[
         files: &[],
     },
 ];
-
-#[derive(Debug, Deserialize)]
-struct GitHubContentsFileResponse {
-    #[serde(rename = "type")]
-    kind: String,
-    content: Option<String>,
-    encoding: Option<String>,
-}
-
-/// Entry in a GitHub Contents API directory listing response.
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct GitHubContentsDirEntry {
-    name: String,
-    #[serde(rename = "type")]
-    kind: String,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1526,54 +1508,6 @@ pub(crate) async fn resolve_remote_agent_template_detail(
     })
 }
 
-#[allow(dead_code)]
-async fn install_remote_template_catalog_entry(
-    github: &GitHubTemplateClient,
-    templates_root: &Path,
-    registry: &AgentTemplateRegistry,
-    source_id: &str,
-    source_url: &str,
-    resolved_ref: &str,
-    synced_at: DateTime<Utc>,
-    entry: &AgentTemplateCatalogEntry,
-) -> Result<AgentTemplateRegistryInstalled> {
-    let template_url = entry
-        .source_url
-        .as_deref()
-        .ok_or_else(|| anyhow!("remote template {} has no source URL", entry.catalog_id))?;
-    let resolved = resolve_github_template_with_client(github, template_url).await?;
-    let install_id = choose_remote_template_install_id(templates_root, registry, source_id, entry)?;
-    let destination = templates_root.join(&install_id);
-    let content_hash = resolved_template_content_hash(&resolved);
-    let state = ManagedTemplateState {
-        template_id: entry.template_id.clone(),
-        content_hash: content_hash.clone(),
-        owner: ManagedTemplateOwner::RemoteSource {
-            source_id: source_id.to_string(),
-            url: source_url.to_string(),
-            resolved_ref: resolved_ref.to_string(),
-            source_url: template_url.to_string(),
-            synced_at,
-        },
-    };
-    if let Err(error) = write_managed_template_dir(&destination, &resolved, &state) {
-        bail!(
-            "failed to install remote template {}: {error:#}",
-            entry.template_id
-        );
-    }
-    Ok(AgentTemplateRegistryInstalled {
-        template_id: entry.template_id.clone(),
-        source_id: source_id.to_string(),
-        source_url: source_url.to_string(),
-        source_resolved_ref: resolved_ref.to_string(),
-        template_path: remote_template_source_path(template_url),
-        local_path: install_id,
-        content_hash,
-        synced_at,
-    })
-}
-
 fn choose_remote_template_install_id(
     templates_root: &Path,
     registry: &AgentTemplateRegistry,
@@ -2533,84 +2467,6 @@ async fn resolve_github_template(template: &str) -> Result<ResolvedTemplate> {
     resolve_github_template_archive_first(template).await
 }
 
-#[allow(dead_code)]
-async fn resolve_github_template_with_client(
-    github: &GitHubTemplateClient,
-    template: &str,
-) -> Result<ResolvedTemplate> {
-    let url = reqwest::Url::parse(template)?;
-    if url.query().is_some() || url.fragment().is_some() {
-        bail!("GitHub template URL must not include a query string or fragment");
-    }
-
-    let segments = url
-        .path_segments()
-        .ok_or_else(|| anyhow!("GitHub template URL is missing path segments"))?
-        .collect::<Vec<_>>();
-    if segments.len() < 5 || segments[2] != "tree" {
-        bail!("GitHub template URL must have the form https://github.com/<owner>/<repo>/tree/<ref>/<path-to-template-dir>");
-    }
-
-    let owner = segments[0].to_string();
-    let repo = segments[1].to_string();
-    let ref_and_path = &segments[3..];
-
-    for split in 1..ref_and_path.len() {
-        let git_ref = ref_and_path[..split].join("/");
-        let template_path = ref_and_path[split..].join("/");
-        let agents_md_path = format!("{template_path}/{TEMPLATE_AGENTS_FILENAME}");
-        let maybe_agents_md =
-            fetch_github_file(github, &owner, &repo, &git_ref, &agents_md_path).await?;
-        let Some(agents_md) = maybe_agents_md else {
-            continue;
-        };
-        if agents_md.trim().is_empty() {
-            bail!("GitHub template {template} resolved to an empty AGENTS.md");
-        }
-        let skills_path = format!("{template_path}/{TEMPLATE_SKILLS_FILENAME}");
-        let skills_toml = fetch_github_file(github, &owner, &repo, &git_ref, &skills_path).await?;
-        let skill_refs = match skills_toml {
-            Some(content) => {
-                let manifest: TemplateSkillsManifest =
-                    toml::from_str(&content).with_context(|| {
-                        format!("failed to parse {template}::{TEMPLATE_SKILLS_FILENAME}")
-                    })?;
-                manifest
-                    .skills
-                    .into_iter()
-                    .map(parse_template_skill_file_ref)
-                    .collect::<Result<Vec<_>>>()
-                    .with_context(|| {
-                        format!("failed to parse {template}::{TEMPLATE_SKILLS_FILENAME}")
-                    })?
-            }
-            None => Vec::new(),
-        };
-        let manifest_path = format!("{template_path}/{TEMPLATE_MANIFEST_FILENAME}");
-        let manifest_content =
-            fetch_github_file(github, &owner, &repo, &git_ref, &manifest_path).await?;
-        let schema_version = manifest_content
-            .as_deref()
-            .and_then(parse_template_manifest)
-            .map(|m| m.schema);
-        return Ok(ResolvedTemplate {
-            provenance: TemplateProvenanceSource::GitHubUrl {
-                url: template.to_string(),
-                owner,
-                repo,
-                git_ref,
-                template_path,
-            },
-            agents_md,
-            template_toml: manifest_content,
-            skill_refs,
-            schema_version,
-        });
-    }
-
-    bail!("GitHub template URL did not resolve to a readable template directory: {template}")
-}
-
 struct GitHubTemplateClient {
     client: AsyncClient,
 }
@@ -2704,55 +2560,6 @@ fn archive_base_for_install(api_base: &str) -> String {
     }
 }
 
-async fn fetch_github_file(
-    github: &GitHubTemplateClient,
-    owner: &str,
-    repo: &str,
-    git_ref: &str,
-    path: &str,
-) -> Result<Option<String>> {
-    let base = github_template_api_base();
-    let mut url = reqwest::Url::parse(&format!("{base}/repos/{owner}/{repo}/contents/{path}"))
-        .with_context(|| {
-            format!("failed to build GitHub contents URL for {owner}/{repo}:{path}")
-        })?;
-    url.query_pairs_mut().append_pair("ref", git_ref);
-
-    let response = github.get(url).send().await.with_context(|| {
-        format!("failed to fetch GitHub template file {owner}/{repo}:{path}@{git_ref}")
-    })?;
-
-    if response.status() == StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
-    if !response.status().is_success() {
-        return Err(github_template_failure(
-            github.client.response_error(response).await,
-            format!("GitHub template fetch failed for {owner}/{repo}:{path}@{git_ref}"),
-        ));
-    }
-
-    let payload: GitHubContentsFileResponse = response.json().await.with_context(|| {
-        format!("failed to decode GitHub contents response for {owner}/{repo}:{path}@{git_ref}")
-    })?;
-    if payload.kind != "file" {
-        bail!("GitHub template target {owner}/{repo}:{path}@{git_ref} is not a file");
-    }
-    let content = payload
-        .content
-        .ok_or_else(|| anyhow!("GitHub contents response omitted file content"))?;
-    let encoding = payload.encoding.unwrap_or_default();
-    if encoding != "base64" {
-        bail!("unsupported GitHub contents encoding: {encoding}");
-    }
-    let decoded = BASE64_STANDARD
-        .decode(content.replace('\n', ""))
-        .context("failed to decode GitHub contents payload")?;
-    String::from_utf8(decoded)
-        .context("GitHub template file is not valid UTF-8")
-        .map(Some)
-}
-
 /// Parsed components from a GitHub repository URL.
 #[derive(Debug)]
 struct ParsedGithubRepoUrl {
@@ -2796,43 +2603,6 @@ fn parse_github_repo_url(url: &str) -> Result<ParsedGithubRepoUrl> {
             "GitHub repo URL must be https://github.com/<owner>/<repo> or https://github.com/<owner>/<repo>/tree/<ref>: {url}"
         ),
     }
-}
-
-/// List directory entries at a GitHub path via the Contents API.
-///
-/// Returns `Ok(None)` for a 404 (directory not found).
-async fn fetch_github_dir(
-    github: &GitHubTemplateClient,
-    owner: &str,
-    repo: &str,
-    git_ref: &str,
-    path: &str,
-) -> Result<Option<Vec<GitHubContentsDirEntry>>> {
-    let base = github_template_api_base();
-    let mut url = reqwest::Url::parse(&format!("{base}/repos/{owner}/{repo}/contents/{path}"))
-        .with_context(|| format!("failed to build GitHub dir URL for {owner}/{repo}:{path}"))?;
-    url.query_pairs_mut().append_pair("ref", git_ref);
-
-    let response = github.get(url).send().await.with_context(|| {
-        format!("failed to list GitHub directory {owner}/{repo}:{path}@{git_ref}")
-    })?;
-
-    if response.status() == StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
-    if !response.status().is_success() {
-        return Err(github_template_failure(
-            github.client.response_error(response).await,
-            format!("GitHub directory listing failed for {owner}/{repo}:{path}@{git_ref}"),
-        ));
-    }
-    let entries = response
-        .json::<Vec<GitHubContentsDirEntry>>()
-        .await
-        .with_context(|| {
-            format!("failed to decode GitHub directory listing for {owner}/{repo}:{path}@{git_ref}")
-        })?;
-    Ok(Some(entries))
 }
 
 const DEFAULT_REMOTE_TEMPLATE_DIR: &str = "agent_templates";
@@ -3086,89 +2856,6 @@ fn install_remote_template_catalog_entry_from_archive(
         content_hash,
         synced_at,
     })
-}
-
-#[allow(dead_code)]
-async fn discover_github_repo_templates_with_client(
-    github: &GitHubTemplateClient,
-    owner: &str,
-    repo: &str,
-    git_ref: &str,
-) -> Result<Vec<AgentTemplateCatalogEntry>> {
-    // List subdirectories under the template collection.
-    let entries =
-        match fetch_github_dir(github, owner, repo, git_ref, DEFAULT_REMOTE_TEMPLATE_DIR).await? {
-            Some(entries) => entries,
-            None => return Ok(Vec::new()),
-        };
-
-    let mut catalog_entries = Vec::new();
-    for entry in entries {
-        if entry.kind != "dir" {
-            continue;
-        }
-        let template_id = entry.name;
-        let manifest_path =
-            format!("{DEFAULT_REMOTE_TEMPLATE_DIR}/{template_id}/{TEMPLATE_MANIFEST_FILENAME}");
-        let manifest = match fetch_github_file(github, owner, repo, git_ref, &manifest_path).await {
-            Ok(Some(content)) => parse_template_manifest(&content),
-            Ok(None) => None,
-            Err(error) => {
-                tracing::warn!(
-                    template = %template_id,
-                    %error,
-                    "skipping remote template: failed to fetch template.toml"
-                );
-                continue;
-            }
-        };
-        let manifest = match manifest {
-            Some(m) => m,
-            None => {
-                tracing::warn!(template = %template_id, "skipping remote template: invalid or missing template.toml");
-                continue;
-            }
-        };
-        catalog_entries.push(AgentTemplateCatalogEntry {
-            catalog_id: format!("remote:{owner}/{repo}/{template_id}"),
-            template: format!("remote:{owner}/{repo}#{template_id}"),
-            template_id: template_id.clone(),
-            source: AgentTemplateSourceKind::Remote,
-            path: None,
-            name: manifest.name,
-            schema_version: Some(manifest.schema),
-            description: manifest.summary,
-            included_skills: Vec::new(),
-            source_id: None,
-            resolved_ref: Some(git_ref.to_string()),
-            resolved_revision: None,
-            source_url: Some(format!(
-                "https://github.com/{owner}/{repo}/tree/{git_ref}/{DEFAULT_REMOTE_TEMPLATE_DIR}/{template_id}"
-            )),
-        });
-    }
-    Ok(catalog_entries)
-}
-
-/// Discover AgentTemplates from a GitHub repository URL.
-///
-/// Parses the URL with [`parse_github_repo_url`], fetches the requested ref
-/// (or `HEAD` when no `/tree/<ref>` is specified) as a GitHub archive, and
-/// discovers templates from the extracted repository snapshot. This is the
-/// primary entry point for browsing a remote template library from a repo URL.
-pub async fn discover_remote_templates(url: &str) -> Result<Vec<AgentTemplateCatalogEntry>> {
-    let parsed = parse_github_repo_url(url)?;
-    let github = GitHubTemplateClient::new().await?;
-    let git_ref = parsed.git_ref.unwrap_or_else(|| "HEAD".to_string());
-    let archive = GitHubArchive::fetch(
-        &github.client,
-        &parsed.owner,
-        &parsed.repo,
-        &git_ref,
-        &github_template_archive_base(),
-    )
-    .await?;
-    discover_github_repo_templates_from_archive(&archive, &parsed.owner, &parsed.repo, &git_ref)
 }
 
 async fn materialize_template(agent_home: &Path, template: &ResolvedTemplate) -> Result<()> {
@@ -3514,14 +3201,6 @@ fn install_template_from_github_with_client(
 
     tracing::info!(template_id = %template_id, "installed user global template from GitHub");
     Ok(template_id)
-}
-
-#[allow(dead_code)]
-struct TmpDirGuard<'a>(&'a Path);
-impl Drop for TmpDirGuard<'_> {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(self.0);
-    }
 }
 
 struct ParsedGithubTemplateUrl {
@@ -4688,13 +4367,9 @@ uses = "owner/repo/skills/demo@main"
     }
 
     #[tokio::test]
-    async fn github_template_api_paths_preserve_typed_rate_limits() {
+    async fn github_template_repo_api_preserves_typed_rate_limits() {
         let _lock = crate::test_env::lock_env();
-        let server = MockGithubServer::start(vec![
-            ("/repos/owner/repo/contents/file", 429, "{}".into()),
-            ("/repos/owner/repo/contents/dir", 429, "{}".into()),
-            ("/repos/owner/repo", 429, "{}".into()),
-        ]);
+        let server = MockGithubServer::start(vec![("/repos/owner/repo", 429, "{}".into())]);
         let _base = EnvGuard::set(
             GITHUB_TEMPLATE_API_BASE_ENV,
             format!("http://{}", server.addr),
@@ -4702,22 +4377,14 @@ uses = "owner/repo/skills/demo@main"
         let github = GitHubTemplateClient::with_token(Some("test-token".into()))
             .await
             .unwrap();
-        let errors = [
-            fetch_github_file(&github, "owner", "repo", "main", "file")
-                .await
-                .unwrap_err(),
-            fetch_github_dir(&github, "owner", "repo", "main", "dir")
-                .await
-                .unwrap_err(),
-            fetch_default_branch_with_client(&github, "owner", "repo")
-                .await
-                .unwrap_err(),
-        ];
+        let errors = [fetch_default_branch_with_client(&github, "owner", "repo")
+            .await
+            .unwrap_err()];
         for error in errors {
             assert!(error.downcast_ref::<crate::github::RateLimit>().is_some());
             assert!(!format!("{error:#}").contains("test-token"));
         }
-        assert_eq!(server.requests().len(), 3);
+        assert_eq!(server.requests().len(), 1);
     }
 
     /// Build a mock GitHub API server that serves configured responses.

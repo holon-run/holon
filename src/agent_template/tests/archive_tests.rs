@@ -168,32 +168,6 @@ async fn discover_github_repo_templates_skips_invalid_and_missing_archive_templa
 }
 
 #[tokio::test]
-async fn discover_remote_templates_uses_head_archive_without_repo_metadata() {
-    let _lock = crate::test_env::lock_env();
-    let server = archive_server(
-        "HEAD",
-        &[
-            ("agent_templates/worker/template.toml", WORKER_MANIFEST),
-            ("agent_templates/worker/AGENTS.md", "worker"),
-        ],
-    );
-    let _base = archive_base(&server);
-
-    let entries = discover_remote_templates("https://github.com/owner/repo")
-        .await
-        .unwrap();
-
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].resolved_ref.as_deref(), Some("HEAD"));
-    assert_eq!(
-        entries[0].source_url.as_deref(),
-        Some("https://github.com/owner/repo/tree/HEAD/agent_templates/worker")
-    );
-    assert_eq!(server.requests().len(), 1);
-    assert_eq!(server.requests()[0].path, "/owner/repo/tar.gz/HEAD");
-}
-
-#[tokio::test]
 async fn resolve_remote_agent_template_detail_reads_archive_tree() {
     let _lock = crate::test_env::lock_env();
     let server = archive_server(
