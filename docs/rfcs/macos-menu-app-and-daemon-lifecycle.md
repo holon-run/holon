@@ -39,6 +39,11 @@ or introducing a separate language setting.
 
 The menu app is an accessory application without a default Dock icon. AppKit
 owns startup and the `NSStatusItem`; SwiftUI only renders the popover content.
+The popover measures the content's natural height but caps its viewport to the
+visible area below the status button on that button's screen, leaving room for
+the popover border and arrow. Overflow scrolls vertically instead of clipping
+the menu. Opening the popover rechecks the screen, and content changes (such as
+pairing QR expansion) resize the viewport within the same cap.
 There is no placeholder settings scene or default window. Reopening the app
 does not create a window, and closing the last window does not quit the menu
 app. Any future settings or diagnostics window must be added explicitly with

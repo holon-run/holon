@@ -19,7 +19,9 @@ final class HolonMenuViewModel: ObservableObject {
     @Published private(set) var isPolling = false
     @Published private(set) var activeOperation: String?
     @Published private(set) var tailscaleStatus: HolonTailscaleStatus?
-    @Published private(set) var tailscaleError: String?
+    @Published private(set) var tailscaleProbeError: String?
+    @Published private(set) var tailscaleOperationError: String?
+    var tailscaleError: String? { tailscaleOperationError ?? tailscaleProbeError }
     @Published private(set) var lanURL: URL?
     @Published private(set) var lanError: String?
     @Published private(set) var pairingURL: URL?
@@ -87,9 +89,13 @@ final class HolonMenuViewModel: ObservableObject {
         }
         do {
             tailscaleStatus = try await client.tailscaleStatus()
+            tailscaleProbeError = nil
         } catch {
             tailscaleStatus = nil
-            tailscaleError = error.localizedDescription
+            tailscaleProbeError = error.localizedDescription
+        }
+        if tailscaleStatus?.canEnableServe != true {
+            showTailscaleServeConfirmation = false
         }
         do {
             lanURL = try await client.lanURL()
@@ -122,7 +128,7 @@ final class HolonMenuViewModel: ObservableObject {
     }
 
     func requestTailscaleServe() {
-        showTailscaleServeConfirmation = true
+        showTailscaleServeConfirmation = tailscaleStatus?.canEnableServe == true
     }
 
     func requestLANAccess() {
@@ -159,29 +165,30 @@ final class HolonMenuViewModel: ObservableObject {
     }
 
     func enableTailscaleServe() async {
-        hidePairingCode()
         showTailscaleServeConfirmation = false
-        tailscaleError = nil
+        guard tailscaleStatus?.canEnableServe == true, activeOperation == nil else { return }
+        hidePairingCode()
+        tailscaleOperationError = nil
         activeOperation = L10n.text("Updating Tailscale…")
         defer { activeOperation = nil }
         do {
             tailscaleStatus = try await client.enableTailscaleServe()
             lastError = nil
         } catch {
-            tailscaleError = error.localizedDescription
+            tailscaleOperationError = error.localizedDescription
         }
     }
 
     func disableTailscaleServe() async {
         hidePairingCode()
-        tailscaleError = nil
+        tailscaleOperationError = nil
         activeOperation = L10n.text("Updating Tailscale…")
         defer { activeOperation = nil }
         do {
             tailscaleStatus = try await client.disableTailscaleServe()
             lastError = nil
         } catch {
-            tailscaleError = error.localizedDescription
+            tailscaleOperationError = error.localizedDescription
         }
     }
 

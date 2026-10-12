@@ -59,7 +59,10 @@ actor FakeHolonClient: HolonDesiredStateClient {
             state: .connected,
             hostname: "holon.example.ts.net",
             serveURL: nil,
-            message: "Tailscale is connected; Serve is not enabled."
+            message: "Tailscale is connected; Serve is not enabled.",
+            statusKnown: true,
+            available: true,
+            connected: true
         )
     ) {
         self.currentStatus = currentStatus
@@ -154,6 +157,14 @@ actor FakeHolonClient: HolonDesiredStateClient {
         tailscaleStatusError = error
     }
 
+    func setTailscaleStatus(_ status: HolonTailscaleStatus) {
+        tailscaleStatusValue = status
+    }
+
+    func setEnableTailscaleServeError(_ error: Error?) {
+        enableTailscaleServeError = error
+    }
+
     func enableTailscaleServe() async throws -> HolonTailscaleStatus {
         commands.append(.enableTailscaleServe)
         if let enableTailscaleServeError {
@@ -167,7 +178,9 @@ actor FakeHolonClient: HolonDesiredStateClient {
             desiredEnabled: true,
             serving: true,
             statusKnown: true,
-            controlAuthenticationAvailable: true
+            controlAuthenticationAvailable: true,
+            available: true,
+            connected: true
         )
         return tailscaleStatusValue
     }
@@ -178,7 +191,11 @@ actor FakeHolonClient: HolonDesiredStateClient {
             state: .connected,
             hostname: tailscaleStatusValue.hostname,
             serveURL: nil,
-            message: "Tailscale is connected; Serve is not enabled."
+            message: "Tailscale is connected; Serve is not enabled.",
+            statusKnown: true,
+            controlAuthenticationAvailable: true,
+            available: true,
+            connected: true
         )
         return tailscaleStatusValue
     }

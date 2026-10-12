@@ -54,14 +54,42 @@ Tailscale's HTTPS listener marker on TCP 443 accompanies a normal HTTPS Serve
 rule and is not itself a conflict; a separate TCP forwarding listener is.
 
 `GET /api/control/network/tailscale/serve` returns `desired_enabled`,
-`available`, `connected`, `status_known`, `serving`, `conflict`, `hostname`,
-`serve_url`, `control_authentication_available`, and `message`.
+`state`, `available`, `connected`, `status_known`, `serving`, `conflict`,
+`hostname`, `serve_url`, `control_authentication_available`, and `message`,
+with optional `details` for the actual probe error.
+`state` is `unavailable`, `stopped`, `logged_out`, `connected`, `serving`, or
+`unknown`. Only a missing CLI executable reports `unavailable` and
+`available: false`. This describes CLI discoverability, not whether the GUI app
+is installed; the actionable missing-CLI message must not say "not installed".
+On macOS, the locator also checks
+`/Applications/Tailscale.app/Contents/MacOS/Tailscale`, alongside
+`TAILSCALE_BINARY_PATH`, common CLI locations, and `PATH`.
+An installed CLI with a stopped/starting backend or an
+explicit daemon-not-running diagnostic reports `stopped`; login or device
+approval requirements report `logged_out`. Other probe errors, malformed
+responses, unknown backend states, or unreadable Serve status report `unknown`,
+not a missing installation. `message` is a short actionable summary; `details`
+is diagnostic text and must not be presented as the primary status.
+Normal stopped and logged-out states do not carry error details.
+Successful `status --json` output supplies the backend state, including stopped
+and logged-out states; neither state implies a nonzero exit status. As a defensive
+compatibility measure, valid stopped/logged-out JSON with a nonzero exit status
+is accepted only for backend inspection with an exact recognized offline
+`BackendState`; invalid JSON and unrecognized states do not qualify.
+Failed Serve inspection or a failed connected-state probe remains unknown.
+The upstream CLI's JSON branch returns
+before the disconnected-state exit in its text output path
+(`tailscale/tailscale`, `cmd/tailscale/cli/status.go`, v1.90.1).
+Existing booleans retain their meaning. In particular, `status_known` describes
+the actual Serve configuration, not merely a known backend state. A high-level
+`state` value does not replace the conflict, authentication, or pairing checks.
 `control_authentication_available` reports effective TCP authentication without
 exposing a credential; disabled control authentication is not available.
 `POST` to its `/enable` or `/disable` suffix
 explicitly changes the rule and, on success, saves the desired value. Status
 inspection never changes Serve. When the current root rule cannot be inspected,
-`status_known` is false and both mutations are refused.
+`status_known` is false and both mutations are refused. Enable additionally
+requires a connected backend.
 
 Only an explicit enable may install the root Serve rule. It must reject an
 existing root handler for another service without replacing it. Disable may

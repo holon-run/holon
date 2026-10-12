@@ -59,12 +59,13 @@ struct HolonDaemonLogs: Codable, Equatable, Sendable {
     }
 }
 
-enum HolonTailscaleState: Equatable, Sendable {
+enum HolonTailscaleState: String, Equatable, Sendable {
     case unavailable
     case stopped
-    case loggedOut
+    case loggedOut = "logged_out"
     case connected
     case serving
+    case unknown
 }
 
 struct HolonTailscaleStatus: Equatable, Sendable {
@@ -77,6 +78,13 @@ struct HolonTailscaleStatus: Equatable, Sendable {
     var conflict = false
     var statusKnown = false
     var controlAuthenticationAvailable: Bool? = nil
+    var details: String? = nil
+    var available = false
+    var connected = false
+
+    var canEnableServe: Bool {
+        state == .connected && available && connected && statusKnown && !conflict
+    }
 
     var pairingOrigin: URL? {
         guard state == .serving, statusKnown, serving, !conflict,
@@ -97,7 +105,7 @@ struct HolonTailscaleStatus: Equatable, Sendable {
     var title: String {
         switch state {
         case .unavailable:
-            return L10n.text("Not installed")
+            return L10n.text("CLI not found (optional)")
         case .stopped:
             return L10n.text("Not running")
         case .loggedOut:
@@ -106,6 +114,8 @@ struct HolonTailscaleStatus: Equatable, Sendable {
             return L10n.text("Connected")
         case .serving:
             return L10n.text("Serve enabled")
+        case .unknown:
+            return L10n.text("Status unknown")
         }
     }
 
@@ -114,11 +124,17 @@ struct HolonTailscaleStatus: Equatable, Sendable {
         serveOutput: String = "",
         holonURL: URL? = nil
     ) -> Self {
-        let status = statusOutput.lowercased()
-        let hostname = statusOutput
-            .firstMatch(of: #""DNSName"\s*:\s*"([^"]+)"#)
-            .flatMap { $0.split(separator: "\"").last.map(String.init) }
+        guard let status = try? JSONDecoder().decode(
+            HolonTailscaleProbeResponse.self, from: Data(statusOutput.utf8)
+        ) else {
+            return Self(
+                state: .unknown, hostname: nil, serveURL: nil,
+                message: L10n.text("Status unknown"), available: true
+            )
+        }
+        let hostname = status.selfStatus?.dnsName
             .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ".")) }
+            .flatMap { $0.isEmpty ? nil : $0 }
         let configuration = try? JSONDecoder().decode(
             HolonTailscaleServeConfiguration.self, from: Data(serveOutput.utf8)
         )
@@ -129,35 +145,51 @@ struct HolonTailscaleStatus: Equatable, Sendable {
             nil
         }
 
-        if let serveURL {
+        if status.backendState == "Running", let serveURL {
             return Self(
                 state: .serving,
                 hostname: hostname,
                 serveURL: serveURL,
-                message: L10n.text("Tailscale Serve is exposing Holon.")
+                message: L10n.text("Tailscale Serve is exposing Holon."),
+                serving: true,
+                statusKnown: true,
+                available: true,
+                connected: true
             )
         }
-        if status.contains("needslogin") || status.contains("logged out") {
+        if status.backendState == "NeedsLogin" || status.backendState == "NeedsMachineAuth" {
             return Self(
                 state: .loggedOut,
                 hostname: hostname,
                 serveURL: nil,
-                message: L10n.text("Sign in to Tailscale before enabling Serve.")
+                message: L10n.text("Sign in to Tailscale before enabling Serve."),
+                available: true
             )
         }
-        if status.contains("stopped") {
+        if let backendState = status.backendState, ["Stopped", "NoState", "Starting"].contains(backendState) {
             return Self(
                 state: .stopped,
                 hostname: hostname,
                 serveURL: nil,
-                message: L10n.text("Start Tailscale before enabling Serve.")
+                message: L10n.text("Start Tailscale before enabling Serve."),
+                available: true
+            )
+        }
+        guard status.backendState == "Running" else {
+            return Self(
+                state: .unknown, hostname: hostname, serveURL: nil,
+                message: L10n.text("Status unknown"), available: true
             )
         }
         return Self(
             state: .connected,
             hostname: hostname,
             serveURL: nil,
-            message: L10n.text("Tailscale is connected; Serve is not enabled.")
+            message: L10n.text("Tailscale is connected; Serve is not enabled."),
+            conflict: hostname.map { configuration?.hasRootHandler(for: $0) == true } ?? false,
+            statusKnown: configuration != nil,
+            available: true,
+            connected: true
         )
     }
 }
@@ -186,12 +218,18 @@ struct HolonTailscaleServeConfiguration: Decodable {
     }
 }
 
-private extension String {
-    func firstMatch(of pattern: String) -> String? {
-        guard let range = range(of: pattern, options: .regularExpression) else {
-            return nil
-        }
-        return String(self[range])
+private struct HolonTailscaleProbeResponse: Decodable {
+    let backendState: String?
+    let selfStatus: SelfStatus?
+
+    struct SelfStatus: Decodable {
+        let dnsName: String?
+        enum CodingKeys: String, CodingKey { case dnsName = "DNSName" }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case backendState = "BackendState"
+        case selfStatus = "Self"
     }
 }
 

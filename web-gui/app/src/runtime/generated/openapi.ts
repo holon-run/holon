@@ -7157,10 +7157,13 @@ export interface components {
             connected: boolean;
             control_authentication_available: boolean;
             desired_enabled: boolean;
+            details?: string | null;
             hostname?: string | null;
             message: string;
             serve_url?: string | null;
             serving: boolean;
+            /** @enum {string} */
+            state: "unavailable" | "stopped" | "logged_out" | "connected" | "serving" | "unknown";
             status_known: boolean;
         };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
