@@ -276,6 +276,13 @@ Read-only access to unloaded agents continues to use durable reads and must not
 activate the runtime. Loaded-to-unloaded handoff must reconcile in-flight
 commits before releasing mutation ownership.
 
+Global startup repair runs before runtime activation. It reserves all affected
+agent incarnations, including orphaned durable records, and revalidates that
+scope under the activation handoff before committing. It cannot run while a
+loaded, temporary, or retiring instance is active. A known commit retains its
+original recovery result across publication repair; rerunning SQL must not
+replace an already consumed recovery result.
+
 Cross-agent delivery submits a command to the target owner and preserves its
 existing authorization, delivery identity, and receipt protocol. The sender
 does not mutate the target snapshot or hold its own mutation lock while waiting
@@ -424,6 +431,14 @@ The owner retains commit and publication responsibility after a request is
 cancelled. Dropping a waiting request or reservation cannot reopen a gate after
 SQL may have committed. Shutdown and unload drain owned mutation tasks outside
 the reservation so admitted producers can complete their terminal settlements.
+
+The host retains physical exit responsibility for temporary instances from
+creation, atomically ordered with host shutdown admission. Caller cancellation
+or cleanup arriving after Closing cannot detach an unowned instance. Shutdown
+stops and drains registered instances before coordinating their existing
+identity retirement; an indeterminate commit preserves the recovery fence and
+home. This fallback does not authorize home removal. Normal successful cleanup
+retains its existing cleanup policy.
 
 Event, scheduler, or index-worker notification failures after successful root
 publication use durable rediscovery and bounded retries. They do not invalidate

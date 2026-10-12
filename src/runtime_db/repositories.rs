@@ -303,10 +303,133 @@ impl AgentStateRepository<'_> {
             })
     }
 
-    /// Legacy startup recovery boundary only. This writer has not yet joined
-    /// the owner protocol; normal runtime commands must use typed transitions.
-    pub(crate) fn upsert(&self, record: &AgentState) -> Result<()> {
-        self.db.transaction(|tx| upsert_agent_state_tx(tx, record))
+    /// Includes orphan rows whose agent identity has not been materialized.
+    pub(crate) fn startup_mutation_agent_ids(&self) -> Result<Vec<String>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT agent_id FROM agent_identities
+             UNION SELECT agent_id FROM agent_states
+             UNION SELECT agent_id FROM queue_entries
+             UNION SELECT agent_id FROM turn_records
+             UNION SELECT agent_id FROM execution_protocol_attempts
+             UNION SELECT agent_id FROM wait_conditions
+             UNION SELECT agent_id FROM tasks
+             UNION SELECT agent_id FROM timers
+             UNION SELECT target_agent_id FROM external_triggers
+             ORDER BY 1",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// The Host reserves all startup scopes and excludes loaded/draining
+    /// runtimes. Stale waits and Stopped timer/queue/state cleanup share one ACK.
+    pub(crate) fn reconcile_stale_waits_at_startup(
+        &self,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+    ) -> Result<(usize, BTreeMap<String, AgentState>)> {
+        use crate::runtime_db::transitions::TransitionFaultPoint;
+
+        self.db.transaction(|tx| {
+            let mut states = {
+                let mut statement = tx.prepare("SELECT payload_json FROM agent_states")?;
+                let records = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .map(|row| decode_agent_state_payload(&row?))
+                    .collect::<Result<Vec<_>>>()?;
+                records.into_iter().map(|state| (state.id.clone(), state)).collect::<BTreeMap<_, _>>()
+            };
+            let waits = {
+                let mut statement = tx.prepare(
+                    "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+                        subject_ref, waiting_for, created_at, updated_at, expires_at,
+                        resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
+                        wake_sources_json, continuation_json
+                     FROM wait_conditions WHERE status IN ('active', 'triggered')",
+                )?;
+                let records = statement.query_map([], |row| {
+                    decode_wait_condition_row(row).map_err(wait_condition_decode_error)
+                })?.collect::<std::result::Result<Vec<_>, _>>()?;
+                records
+            };
+            let tasks = {
+                let mut statement = tx.prepare("SELECT payload_json FROM tasks")?;
+                let records = statement.query_map([], |row| row.get::<_, String>(0))?
+                    .map(|row| decode_task_payload(&row?)).collect::<Result<Vec<_>>>()?;
+                records
+            };
+            let external_triggers = {
+                let mut statement = tx.prepare("SELECT payload_json FROM external_triggers")?;
+                let records = statement.query_map([], |row| row.get::<_, String>(0))?
+                    .map(|row| decode_external_trigger_payload(&row?)).collect::<Result<Vec<_>>>()?;
+                records
+            };
+            let timers = {
+                let mut statement = tx.prepare("SELECT payload_json FROM timers")?;
+                let records = statement.query_map([], |row| row.get::<_, String>(0))?
+                    .map(|row| decode_timer_payload(&row?)).collect::<Result<Vec<_>>>()?;
+                records
+            };
+            inject_fault(fault, TransitionFaultPoint::AfterValidation)?;
+            let now = Utc::now();
+            let mut cancelled = 0;
+            for mut wait in waits {
+                let stopped = states.get(&wait.agent_id)
+                    .is_some_and(|state| state.status == AgentStatus::Stopped);
+                let task_stale = wait.wake_sources.iter().any(|source| {
+                    let WakeSource::TaskResult { task_id } = source else { return false; };
+                    tasks.iter().find(|task| task.id == *task_id && task.agent_id == wait.agent_id)
+                        .is_none_or(|task| matches!(task.status,
+                            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted))
+                });
+                let external_stale = wait.wake_sources.iter().any(|source| {
+                    let WakeSource::ExternalIngress { external_trigger_id } = source else { return false; };
+                    external_trigger_id.as_ref().is_none_or(|trigger_id| {
+                        !external_triggers.iter().any(|trigger| {
+                            trigger.external_trigger_id == *trigger_id
+                                && trigger.target_agent_id == wait.agent_id
+                                && trigger.status == ExternalTriggerStatus::Active
+                        })
+                    })
+                });
+                let timer_stale = wait.kind == WaitConditionKind::Timer
+                    && wait.subject_ref.as_ref().is_none_or(|timer_id| {
+                        !timers.iter().any(|timer| timer.id == *timer_id
+                            && timer.agent_id == wait.agent_id && timer.status == TimerStatus::Active)
+                    });
+                if stopped || task_stale || external_stale || timer_stale {
+                    wait.status = WaitConditionStatus::Cancelled;
+                    wait.updated_at = now;
+                    wait.cancelled_at = Some(now);
+                    upsert_wait_condition_tx(tx, &wait)?;
+                    cancelled += 1;
+                }
+            }
+            for state in states.values_mut().filter(|state| state.status == AgentStatus::Stopped) {
+                cancel_active_timers_for_agent_tx(tx, &state.id, now)?;
+                let pending = {
+                    let mut statement = tx.prepare(
+                        "SELECT payload_json FROM queue_entries WHERE agent_id = ?1 AND status IN ('queued', 'interrupted')",
+                    )?;
+                    let records = statement.query_map([&state.id], |row| row.get::<_, String>(0))?
+                        .map(|row| decode_queue_entry_payload(&row?)).collect::<Result<Vec<_>>>()?;
+                    records
+                };
+                for mut entry in pending {
+                    entry.status = QueueEntryStatus::Aborted;
+                    entry.updated_at = now;
+                    upsert_queue_entry_tx(tx, &entry)?;
+                }
+                if state.pending != 0 {
+                    state.pending = 0;
+                    upsert_agent_state_tx(tx, state)?;
+                }
+            }
+            inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+            inject_fault(fault, TransitionFaultPoint::BeforeCommit)?;
+            Ok((cancelled, states))
+        })
     }
 
     /// Fixture setup only: bypasses live runtime mutation ownership.
@@ -1524,6 +1647,50 @@ impl AgentDeletionRepository<'_> {
                 ));
             }
             Ok(())
+        })
+    }
+
+    /// Job progress has its own authority. Requeue only the exact Running
+    /// checkpoint; a metadata ACK may already have completed or advanced it.
+    pub(crate) fn requeue_metadata_pending(
+        &self,
+        expected: &AgentDeletionJob,
+        error: &str,
+        now: DateTime<Utc>,
+        next_attempt_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        anyhow::ensure!(
+            expected.status == AgentDeletionStatus::Running,
+            "metadata recovery requires a Running deletion checkpoint"
+        );
+        let expected_payload = serde_json::to_string(expected)?;
+        let mut retry = expected.clone();
+        retry.status = AgentDeletionStatus::RetryableFailed;
+        retry.last_error = Some(error.to_string());
+        retry.updated_at =
+            std::cmp::max(now, expected.updated_at + chrono::Duration::nanoseconds(1));
+        retry.next_attempt_at = Some(next_attempt_at);
+        let retry_payload = serde_json::to_string(&retry)?;
+        self.db.transaction(|tx| {
+            let changed = tx.execute(
+                "UPDATE agent_deletion_jobs
+                 SET status = 'retryable_failed', updated_at = ?1,
+                     next_attempt_at = ?2, payload_json = ?3
+                 WHERE deletion_id = ?4 AND agent_id = ?5
+                   AND status = 'running' AND phase = ?6
+                   AND updated_at = ?7 AND payload_json = ?8",
+                params![
+                    timestamp(retry.updated_at),
+                    timestamp(next_attempt_at),
+                    retry_payload,
+                    expected.deletion_id,
+                    expected.agent_id,
+                    enum_string(&expected.phase)?,
+                    timestamp(expected.updated_at),
+                    expected_payload
+                ],
+            )?;
+            Ok(changed == 1)
         })
     }
 

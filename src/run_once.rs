@@ -18,10 +18,10 @@ use crate::{
     storage::PollActivityMarker,
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
-        AdmissionContext, AgentStatus, AuditEvent, AuthorityClass, ClosureOutcome, ControlAction,
-        FailureArtifact, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
-        MessageOrigin, Priority, TaskOutputSnapshot, TaskRecord, TaskStatus, TokenUsage,
-        ToolExecutionRecord, ToolExecutionStatus, TurnBudget, WaitingReason,
+        AdmissionContext, AgentStatus, AuditEvent, AuthorityClass, ClosureOutcome, FailureArtifact,
+        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+        TaskOutputSnapshot, TaskRecord, TaskStatus, TokenUsage, ToolExecutionRecord,
+        ToolExecutionStatus, TurnBudget, WaitingReason,
     },
 };
 
@@ -485,13 +485,8 @@ async fn run_once_with_host_inner(
 
     match session.cleanup {
         RunSessionCleanup::Temporary { runtime_task } => {
-            let _ = session.runtime.control(ControlAction::Stop).await;
-            let _ = runtime_task.await;
-            let _ = host.archive_temporary_runtime_identity(&session.agent_id);
-            let data_dir = host.agent_data_dir(&session.agent_id);
-            if data_dir.exists() {
-                let _ = std::fs::remove_dir_all(&data_dir);
-            }
+            host.cleanup_temporary_runtime(session.agent_id, session.runtime, runtime_task)
+                .await?;
         }
         RunSessionCleanup::Persistent => {
             host.unload_runtime(&session.agent_id).await;

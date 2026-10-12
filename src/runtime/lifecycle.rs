@@ -595,7 +595,7 @@ impl RuntimeHandle {
     }
 
     // Physical instance retirement never acknowledges or changes durable facts.
-    async fn retire_instance_locally(&self, reason: &str) {
+    pub(crate) async fn retire_instance_locally(&self, reason: &str) {
         // Complete the only await before taking responsibility for local exit.
         let handle = self.inner.agent.lock().await.current_run_abort.clone();
         self.close_execution_admission();

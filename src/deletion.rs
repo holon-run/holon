@@ -12,6 +12,7 @@
 //! - by persisted retry deadlines and a periodic safety sweep.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -40,7 +41,104 @@ pub(crate) struct LegacyDeletionRepairScanOutcome {
     pub(crate) cursor: Option<String>,
 }
 
+// A metadata ACK can outlive the phase caller. Do not overwrite its durable
+// job checkpoint while publication or the transaction outcome is unresolved.
+#[derive(Debug)]
+struct DeletionMetadataPending;
+
+impl std::fmt::Display for DeletionMetadataPending {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("deletion metadata requires reconciliation")
+    }
+}
+
+impl std::error::Error for DeletionMetadataPending {}
+
 impl RuntimeHost {
+    async fn commit_deletion_identity_metadata<T: Send + 'static>(
+        &self,
+        agent_id: String,
+        expected_incarnation: Option<u64>,
+        mut scopes: Vec<String>,
+        persist: impl FnOnce(&RuntimeHost) -> Result<(T, AgentIdentityRecord)> + Send + 'static,
+    ) -> Result<T> {
+        scopes.push(agent_id.clone());
+        scopes.sort();
+        scopes.dedup();
+        let host = self.clone();
+        self.run_owned_external_mutation(async move {
+            let bootstrap_lock = host.agent_bootstrap_lock(&agent_id);
+            let _bootstrap = bootstrap_lock.lock().await;
+            let mut reservations =
+                host.reserve_agent_mutations(&scopes)
+                    .await
+                    .map_err(|error| {
+                        if error
+                            .downcast_ref::<crate::runtime::mutation_owner::MutationOwnerError>()
+                            .is_some_and(|error| {
+                                matches!(error,
+                        crate::runtime::mutation_owner::MutationOwnerError::NeedsReconcile(_)
+                        | crate::runtime::mutation_owner::MutationOwnerError::Replaced)
+                            })
+                            || crate::runtime_db::persistence_certainty(&error)
+                                == Some(crate::runtime_db::PersistenceCertainty::Indeterminate)
+                        {
+                            error.context(DeletionMetadataPending)
+                        } else {
+                            error
+                        }
+                    })?;
+            let mut facts = host.external_identity_facts(&reservations)?;
+            let target = reservations
+                .iter()
+                .position(|reservation| reservation.agent_id() == agent_id)
+                .context("deletion target owner is missing")?;
+            if let Some(expected_incarnation) = expected_incarnation {
+                anyhow::ensure!(
+                    facts[target]
+                        .identity
+                        .as_ref()
+                        .is_some_and(|identity| { identity.incarnation == expected_incarnation }),
+                    "deletion target identity incarnation changed"
+                );
+            }
+            let mut committed_value = None;
+            let result = host
+                .commit_external_metadata(&mut reservations, crate::ids::audit_event_id(), || {
+                    let (value, identity) = persist(&host)?;
+                    facts[target].identity = Some(Arc::new(identity));
+                    committed_value = Some(value);
+                    Ok(((), facts))
+                })
+                .await;
+            match result {
+                Ok(()) => Ok(committed_value.expect("metadata ACK must retain its result")),
+                Err(error) if committed_value.is_some() => {
+                    // Install the exact ACK in this scope; never repeat the phase SQL.
+                    if host
+                        .reconcile_external_mutations(&mut reservations)
+                        .await
+                        .is_ok()
+                    {
+                        Ok(committed_value.expect("known metadata ACK must retain its result"))
+                    } else {
+                        Err(error.context(DeletionMetadataPending))
+                    }
+                }
+                Err(error)
+                    if crate::runtime_db::persistence_certainty(&error)
+                        != Some(
+                            crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted,
+                        ) =>
+                {
+                    Err(error.context(DeletionMetadataPending))
+                }
+                Err(error) => Err(error),
+            }
+        })
+        .await
+    }
+
     /// Spawn the background deletion coordinator task.
     ///
     /// The coordinator periodically sweeps for actionable deletion jobs and
@@ -301,22 +399,29 @@ impl RuntimeHost {
                     }) {
                         continue;
                     }
-                    let (updated_identity, _, created) = self
-                        .runtime_db()
-                        .agent_deletions()
-                        .begin(
-                            &identity.agent_id,
-                            identity.revision,
-                            "legacy_residue_scanner",
-                            false,
+                    let target = identity.clone();
+                    let (_, _, created) = self
+                        .commit_deletion_identity_metadata(
+                            target.agent_id.clone(),
+                            Some(target.incarnation),
+                            Vec::new(),
+                            move |host| {
+                                let result = host.runtime_db().agent_deletions().begin(
+                                    &target.agent_id,
+                                    target.revision,
+                                    "legacy_residue_scanner",
+                                    false,
+                                )?;
+                                Ok((result.clone(), result.0))
+                            },
                         )
+                        .await
                         .with_context(|| {
                             format!(
                                 "admitting cleanup repair for deleted agent {}",
                                 identity.agent_id
                             )
                         })?;
-                    self.cache_agent_identity(&updated_identity)?;
                     outcome.created += usize::from(created);
                 }
                 AgentRegistryStatus::Deleting => {
@@ -489,20 +594,27 @@ impl RuntimeHost {
                     if !legacy_task_deletes_child_on_terminal(&task) {
                         continue;
                     }
-                    match self
-                        .runtime_db()
-                        .agent_deletions()
-                        .begin_terminal_ephemeral_child(
-                            &identity.agent_id,
-                            &supervision.supervisor_agent_id,
-                            task_id,
-                            "legacy_residue_scanner",
-                        )
-                    {
-                        Ok((updated_identity, _, created)) => {
-                            self.cache_agent_identity(&updated_identity)?;
+                    let target = identity.clone();
+                    let parent_agent_id = supervision.supervisor_agent_id.clone();
+                    let command_task_id = task_id.to_string();
+                    match self.commit_deletion_identity_metadata(
+                        target.agent_id.clone(),
+                        Some(target.incarnation),
+                        vec![parent_agent_id.clone()],
+                        move |host| {
+                            let result = host.runtime_db().agent_deletions()
+                                .begin_terminal_ephemeral_child(
+                                    &target.agent_id,
+                                    &parent_agent_id,
+                                    &command_task_id,
+                                    "legacy_residue_scanner",
+                                )?;
+                            Ok((result.clone(), result.0))
+                        },
+                    ).await {
+                        Ok((_, _, created)) => {
                             if created {
-                                self.unload_runtime(&identity.agent_id).await;
+                                self.drain_retired_runtime(&identity.agent_id, identity.incarnation).await?;
                                 outcome.created += 1;
                             }
                         }
@@ -735,6 +847,24 @@ impl RuntimeHost {
                     }
                 }
                 Err(err) => {
+                    if err.downcast_ref::<DeletionMetadataPending>().is_some() {
+                        // Requeue only this exact Running checkpoint. Finalize
+                        // may already have ACKed Completed; never overwrite it or
+                        // treat a job read as an identity mutation receipt.
+                        let now = Utc::now();
+                        let deadline =
+                            now + chrono::Duration::from_std(deletion_retry_delay(&job))?;
+                        if let Err(checkpoint_error) = self
+                            .runtime_db()
+                            .agent_deletions()
+                            .requeue_metadata_pending(&job, &format!("{err:#}"), now, deadline)
+                        {
+                            return Err(err.context(format!(
+                                "could not requeue pending deletion metadata checkpoint: {checkpoint_error:#}"
+                            )));
+                        }
+                        return Err(err);
+                    }
                     let error_msg = format!("{err:#}");
                     warn!(
                         agent_id = %agent_id,
@@ -817,9 +947,10 @@ impl RuntimeHost {
                 identity.status
             ));
         }
-        // Ensure runtime is unloaded.
-        self.unload_runtime(agent_id).await;
-        Ok(())
+        // Later cleanup has identity-fenced, unloaded job authority. A failed
+        // drain must not advance into those phases while a commit is unresolved.
+        self.drain_retired_runtime(agent_id, identity.incarnation)
+            .await
     }
 
     /// Quiesce: terminalize active tasks, cancel wait conditions and timers.
@@ -1322,8 +1453,19 @@ impl RuntimeHost {
 
     /// Finalize: set identity to Deleted and emit audit event.
     async fn deletion_phase_finalize(&self, job: &AgentDeletionJob) -> Result<AgentDeletionJob> {
-        let (identity, completed_job) = self.runtime_db().agent_deletions().finalize(job)?;
-        self.cache_agent_identity(&identity)?;
+        let command = job.clone();
+        let completed_job = self
+            .commit_deletion_identity_metadata(
+                job.agent_id.clone(),
+                None,
+                Vec::new(),
+                move |host| {
+                    let (identity, completed_job) =
+                        host.runtime_db().agent_deletions().finalize(&command)?;
+                    Ok((completed_job, identity))
+                },
+            )
+            .await?;
         info!(agent_id = %job.agent_id, "agent identity finalized as Deleted");
         Ok(completed_job)
     }
@@ -1345,16 +1487,26 @@ impl RuntimeHost {
             .collect();
 
         for child in children {
-            let child_id = &child.agent_id;
-            let bootstrap_lock = self.agent_bootstrap_lock(child_id);
-            let _bootstrap_guard = bootstrap_lock.lock().await;
-            let (updated_identity, child_job, _) = self.runtime_db().agent_deletions().begin(
-                child_id,
-                child.revision,
-                &parent_job.requested_by,
-                false, // Don't recurse further
-            )?;
-            self.cache_agent_identity(&updated_identity)?;
+            let child_id = child.agent_id.clone();
+            let requested_by = parent_job.requested_by.clone();
+            let (_, child_job, _) = self
+                .commit_deletion_identity_metadata(
+                    child_id.clone(),
+                    Some(child.incarnation),
+                    vec![parent_agent_id.to_string()],
+                    move |host| {
+                        let result = host.runtime_db().agent_deletions().begin(
+                            &child.agent_id,
+                            child.revision,
+                            &requested_by,
+                            false, // Don't recurse further
+                        )?;
+                        Ok((result.clone(), result.0))
+                    },
+                )
+                .await?;
+            // The short worker released both owners and bootstrap before the
+            // child job enters unload, recursive phases or filesystem cleanup.
             Box::pin(self.execute_deletion_job(child_job))
                 .await
                 .with_context(|| format!("cascading deletion to private child {child_id}"))?;
@@ -1554,6 +1706,547 @@ fn delete_agent_memory_index_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn metadata_test_host() -> (tempfile::TempDir, RuntimeHost) {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+        let config =
+            crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let host = RuntimeHost::new_with_provider(
+            config,
+            Arc::new(crate::provider::StubProvider::new("unused")),
+        )
+        .unwrap();
+        (home, host)
+    }
+
+    fn metadata_identity(host: &RuntimeHost, agent_id: &str) -> AgentIdentityRecord {
+        let identity = AgentIdentityRecord::new(
+            agent_id,
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&identity)
+            .unwrap();
+        let mut state = AgentState::new(agent_id);
+        state.status = AgentStatus::Stopped;
+        state.total_input_tokens = 37;
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&state)
+            .unwrap();
+        identity
+    }
+
+    #[tokio::test]
+    async fn deletion_finalize_known_publication_fault_restores_exact_ack() {
+        let (_home, host) = metadata_test_host();
+        let identity = metadata_identity(&host, "finalize-known");
+        let (_, mut job, _) = host
+            .runtime_db()
+            .agent_deletions()
+            .begin(&identity.agent_id, identity.revision, "fixture", false)
+            .unwrap();
+        job.phase = AgentDeletionPhase::Finalize;
+        job.status = AgentDeletionStatus::Running;
+        host.runtime_db().agent_deletions().update(&job).unwrap();
+        let before = host
+            .runtime_db()
+            .agent_states()
+            .latest(&identity.agent_id)
+            .unwrap()
+            .unwrap();
+        host.fail_next_external_mutation_publication();
+        let completed = host.deletion_phase_finalize(&job).await.unwrap();
+        assert_eq!(completed.status, AgentDeletionStatus::Completed);
+        assert_eq!(
+            host.runtime_db()
+                .agent_deletions()
+                .latest_for_agent(&identity.agent_id)
+                .unwrap()
+                .unwrap(),
+            completed
+        );
+        let durable = host
+            .runtime_db()
+            .agent_identities()
+            .latest(&identity.agent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(durable.status, AgentRegistryStatus::Deleted);
+        assert_eq!(durable.revision, identity.revision + 2);
+        assert_eq!(
+            host.agent_identity_record(&identity.agent_id)
+                .unwrap()
+                .unwrap(),
+            durable
+        );
+        let owner = host
+            .bridge()
+            .mutation_owner_for(&identity.agent_id, identity.incarnation)
+            .unwrap();
+        assert_eq!(owner.capture().unwrap().unwrap().state.as_ref(), &before);
+        assert!(
+            owner.try_reserve().is_ok(),
+            "finalize must release its short reservation"
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deletion_metadata_known_fault_does_not_replay_original_sql() {
+        let (_home, host) = metadata_test_host();
+        let identity = metadata_identity(&host, "known-once");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let persisted_calls = calls.clone();
+        host.fail_next_external_mutation_publication();
+        let (_, job, created) = host
+            .commit_deletion_identity_metadata(
+                identity.agent_id.clone(),
+                Some(identity.incarnation),
+                Vec::new(),
+                move |host| {
+                    persisted_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let result = host.runtime_db().agent_deletions().begin(
+                        &identity.agent_id,
+                        identity.revision,
+                        "fixture",
+                        false,
+                    )?;
+                    Ok((result.clone(), result.0))
+                },
+            )
+            .await
+            .unwrap();
+        assert!(created);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            host.runtime_db()
+                .agent_deletions()
+                .latest_for_agent("known-once")
+                .unwrap()
+                .unwrap(),
+            job
+        );
+        let owner = host.bridge().mutation_owner_for("known-once", 1).unwrap();
+        assert!(owner.capture().is_ok());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deletion_metadata_unknown_fences_whole_group_without_replay() {
+        let (_home, host) = metadata_test_host();
+        metadata_identity(&host, "a-parent");
+        let child = metadata_identity(&host, "z-child");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let persisted_calls = calls.clone();
+        let result: Result<()> = host
+            .commit_deletion_identity_metadata(
+                child.agent_id.clone(),
+                Some(child.incarnation),
+                vec!["a-parent".into()],
+                move |host| {
+                    persisted_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    host.runtime_db().agent_deletions().begin(
+                        &child.agent_id,
+                        child.revision,
+                        "fixture",
+                        false,
+                    )?;
+                    Err(crate::runtime_db::persistence::mark_persistence_failure(
+                        anyhow!("fixture lost SQL acknowledgment"),
+                        crate::runtime_db::PersistenceCertainty::Indeterminate,
+                        crate::runtime_db::persistence::PersistenceFailurePhase::Commit,
+                        None,
+                    ))
+                },
+            )
+            .await;
+        let error = result.unwrap_err();
+        assert!(error.downcast_ref::<DeletionMetadataPending>().is_some());
+        assert_eq!(
+            crate::runtime_db::persistence_certainty(&error),
+            Some(crate::runtime_db::PersistenceCertainty::Indeterminate)
+        );
+        let mut operation_id = None;
+        for agent_id in ["a-parent", "z-child"] {
+            let owner = host.bridge().mutation_owner_for(agent_id, 1).unwrap();
+            let key = match owner.capture().unwrap_err() {
+                crate::runtime::mutation_owner::MutationOwnerError::NeedsReconcile(key) => key,
+                other => panic!("unknown metadata must stay fenced: {other:?}"),
+            };
+            if let Some(expected) = &operation_id {
+                assert_eq!(&key.operation_id, expected);
+            } else {
+                operation_id = Some(key.operation_id);
+            }
+            let reservation = owner.reserve().await.unwrap();
+            assert!(reservation.recovery().unwrap().unwrap().known.is_none());
+        }
+        let replayed_calls = calls.clone();
+        let result = host
+            .commit_deletion_identity_metadata(
+                "z-child".into(),
+                Some(1),
+                vec!["a-parent".into()],
+                move |host| {
+                    replayed_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok((
+                        (),
+                        host.runtime_db()
+                            .agent_identities()
+                            .latest("z-child")?
+                            .unwrap(),
+                    ))
+                },
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            host.runtime_db()
+                .agent_deletions()
+                .latest_for_agent("z-child")
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentDeletionStatus::Pending
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deletion_metadata_pending_requeues_exact_running_checkpoint_without_ack() {
+        let (_home, host) = metadata_test_host();
+        let identity = metadata_identity(&host, "pending-running-checkpoint");
+        let (_, mut job, _) = host
+            .runtime_db()
+            .agent_deletions()
+            .begin(&identity.agent_id, identity.revision, "fixture", false)
+            .unwrap();
+        job.phase = AgentDeletionPhase::Finalize;
+        host.runtime_db().agent_deletions().update(&job).unwrap();
+        let bootstrap = host.agent_bootstrap_lock(&identity.agent_id);
+        let blocked = bootstrap.lock().await;
+        let mut execution = Box::pin(host.execute_deletion_job(job));
+        assert!(futures_util::poll!(execution.as_mut()).is_pending());
+        let running = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&identity.agent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(running.status, AgentDeletionStatus::Running);
+        let owner = host
+            .bridge()
+            .mutation_owner_for(&identity.agent_id, identity.incarnation)
+            .unwrap();
+        let mut reservation = owner.reserve().await.unwrap();
+        let key = reservation
+            .begin("fixture-unacknowledged-finalize".into())
+            .unwrap();
+        drop(reservation);
+        drop(blocked);
+        let error = execution.await.unwrap_err();
+        assert!(error.downcast_ref::<DeletionMetadataPending>().is_some());
+        let retry = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&identity.agent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry.status, AgentDeletionStatus::RetryableFailed);
+        assert_eq!(retry.deletion_id, running.deletion_id);
+        assert_eq!(retry.phase, running.phase);
+        assert_eq!(retry.attempts, running.attempts);
+        assert!(retry.next_attempt_at.is_some());
+        assert!(matches!(owner.capture(),
+            Err(crate::runtime::mutation_owner::MutationOwnerError::NeedsReconcile(current)) if current == key));
+        assert!(owner
+            .reserve()
+            .await
+            .unwrap()
+            .recovery()
+            .unwrap()
+            .unwrap()
+            .known
+            .is_none());
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(&identity.agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleting
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deletion_requeued_known_metadata_checkpoint_can_resume_finalization() {
+        let (_home, host) = metadata_test_host();
+        let identity = metadata_identity(&host, "known-requeued-checkpoint");
+        let (_, mut job, _) = host
+            .runtime_db()
+            .agent_deletions()
+            .begin(&identity.agent_id, identity.revision, "fixture", false)
+            .unwrap();
+        job.phase = AgentDeletionPhase::Finalize;
+        job.status = AgentDeletionStatus::Running;
+        host.runtime_db().agent_deletions().update(&job).unwrap();
+        let mut reservations = host
+            .reserve_agent_mutations(&[identity.agent_id.clone()])
+            .await
+            .unwrap();
+        let facts = host.external_identity_facts(&reservations).unwrap();
+        // A real acknowledged metadata transaction is retained before install.
+        host.acknowledge_external_metadata(
+            &mut reservations,
+            "fixture-known-checkpoint".into(),
+            || {
+                host.runtime_db().transaction(|_| Ok(()))?;
+                Ok(((), facts))
+            },
+        )
+        .unwrap();
+        let now = Utc::now();
+        assert!(host
+            .runtime_db()
+            .agent_deletions()
+            .requeue_metadata_pending(&job, "known metadata pending", now, now)
+            .unwrap());
+        drop(reservations);
+        let retry = host
+            .runtime_db()
+            .agent_deletions()
+            .due_jobs(Utc::now(), 10)
+            .unwrap()
+            .into_iter()
+            .find(|retry| retry.deletion_id == job.deletion_id)
+            .expect("requeued checkpoint is discoverable");
+        host.execute_deletion_job(retry).await.unwrap();
+        let completed = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&identity.agent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.status, AgentDeletionStatus::Completed);
+        assert_eq!(completed.attempts, job.attempts + 1);
+        let durable = host
+            .runtime_db()
+            .agent_identities()
+            .latest(&identity.agent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(durable.status, AgentRegistryStatus::Deleted);
+        assert_eq!(durable.revision, identity.revision + 2);
+        assert!(host
+            .bridge()
+            .mutation_owner_for(&identity.agent_id, identity.incarnation)
+            .unwrap()
+            .capture()
+            .is_ok());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deletion_metadata_pending_does_not_requeue_an_advanced_checkpoint() {
+        let (_home, host) = metadata_test_host();
+        let identity = metadata_identity(&host, "advanced-checkpoint");
+        let (_, mut expected, _) = host
+            .runtime_db()
+            .agent_deletions()
+            .begin(&identity.agent_id, identity.revision, "fixture", false)
+            .unwrap();
+        expected.status = AgentDeletionStatus::Running;
+        host.runtime_db()
+            .agent_deletions()
+            .update(&expected)
+            .unwrap();
+        let mut advanced = expected.clone();
+        advanced.phase = AgentDeletionPhase::Quiesce;
+        advanced.updated_at += chrono::Duration::nanoseconds(1);
+        host.runtime_db()
+            .agent_deletions()
+            .update(&advanced)
+            .unwrap();
+        let now = Utc::now();
+        assert!(!host
+            .runtime_db()
+            .agent_deletions()
+            .requeue_metadata_pending(&expected, "stale phase failure", now, now)
+            .unwrap());
+        assert_eq!(
+            host.runtime_db()
+                .agent_deletions()
+                .latest_for_agent(&identity.agent_id)
+                .unwrap()
+                .unwrap(),
+            advanced
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deletion_finalize_existing_unknown_preserves_completed_checkpoint() {
+        let (_home, host) = metadata_test_host();
+        let identity = metadata_identity(&host, "finalize-existing-unknown");
+        let (_, mut job, _) = host
+            .runtime_db()
+            .agent_deletions()
+            .begin(&identity.agent_id, identity.revision, "fixture", false)
+            .unwrap();
+        job.phase = AgentDeletionPhase::Finalize;
+        host.runtime_db().agent_deletions().update(&job).unwrap();
+        let bootstrap = host.agent_bootstrap_lock(&identity.agent_id);
+        let blocked = bootstrap.lock().await;
+        let mut execution = Box::pin(host.execute_deletion_job(job));
+        // Claim the due job, then stop its short metadata worker before reserve.
+        assert!(futures_util::poll!(execution.as_mut()).is_pending());
+        let running = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&identity.agent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(running.status, AgentDeletionStatus::Running);
+        let owner = host
+            .bridge()
+            .mutation_owner_for(&identity.agent_id, 1)
+            .unwrap();
+        let mut reservation = owner.reserve().await.unwrap();
+        let key = reservation
+            .begin("fixture-unknown-finalize".into())
+            .unwrap();
+        // The prior finalize did commit, but its ACK is unavailable to the owner.
+        let (_, completed) = host
+            .runtime_db()
+            .agent_deletions()
+            .finalize(&running)
+            .unwrap();
+        drop(reservation);
+        drop(blocked);
+        let error = execution.await.unwrap_err();
+        assert!(error.downcast_ref::<DeletionMetadataPending>().is_some());
+        assert!(matches!(owner.capture(),
+            Err(crate::runtime::mutation_owner::MutationOwnerError::NeedsReconcile(current))
+                if current == key));
+        assert_eq!(
+            host.runtime_db()
+                .agent_deletions()
+                .latest_for_agent(&identity.agent_id)
+                .unwrap()
+                .unwrap(),
+            completed
+        );
+        assert_eq!(completed.status, AgentDeletionStatus::Completed);
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deletion_metadata_cancelled_caller_keeps_owned_short_commit() {
+        let (_home, host) = metadata_test_host();
+        let identity = metadata_identity(&host, "cancelled-metadata");
+        let bootstrap = host.agent_bootstrap_lock(&identity.agent_id);
+        let blocked = bootstrap.lock().await;
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let persisted_calls = calls.clone();
+        let mut request = Box::pin(host.commit_deletion_identity_metadata(
+            identity.agent_id.clone(),
+            Some(identity.incarnation),
+            Vec::new(),
+            move |host| {
+                persisted_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let result = host.runtime_db().agent_deletions().begin(
+                    &identity.agent_id,
+                    identity.revision,
+                    "fixture",
+                    false,
+                )?;
+                Ok((result.clone(), result.0))
+            },
+        ));
+        assert!(futures_util::poll!(request.as_mut()).is_pending());
+        drop(request);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        drop(blocked);
+        tokio::time::timeout(Duration::from_secs(5), host.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest("cancelled-metadata")
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleting
+        );
+        assert!(host
+            .bridge()
+            .mutation_owner_for("cancelled-metadata", 1)
+            .unwrap()
+            .capture()
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn deletion_metadata_opposite_scope_orders_release_all_owners() {
+        let (_home, host) = metadata_test_host();
+        let parent = metadata_identity(&host, "a-parent");
+        let child = metadata_identity(&host, "z-child");
+        let parent_host = host.clone();
+        let child_host = host.clone();
+        let parent_id = parent.agent_id.clone();
+        let child_id = child.agent_id.clone();
+        let operations = async {
+            tokio::try_join!(
+                parent_host.commit_deletion_identity_metadata(
+                    parent_id.clone(),
+                    Some(1),
+                    vec![child_id.clone(), parent_id.clone()],
+                    move |host| {
+                        host.runtime_db().transaction(|_| Ok(()))?;
+                        Ok(((), parent))
+                    },
+                ),
+                child_host.commit_deletion_identity_metadata(
+                    child_id.clone(),
+                    Some(1),
+                    vec![parent_id.clone(), child_id.clone()],
+                    move |host| {
+                        host.runtime_db().transaction(|_| Ok(()))?;
+                        Ok(((), child))
+                    },
+                ),
+            )
+        };
+        tokio::time::timeout(Duration::from_secs(5), operations)
+            .await
+            .unwrap()
+            .unwrap();
+        for agent_id in ["a-parent", "z-child"] {
+            let owner = host.bridge().mutation_owner_for(agent_id, 1).unwrap();
+            assert!(owner.capture().is_ok());
+            assert!(owner.try_reserve().is_ok());
+            assert!(host.agent_bootstrap_lock(agent_id).try_lock().is_ok());
+        }
+        host.shutdown().await.unwrap();
+    }
 
     fn retry_job(attempts: u32) -> AgentDeletionJob {
         let now = chrono::DateTime::parse_from_rfc3339("2026-09-19T07:00:00Z")

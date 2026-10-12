@@ -849,6 +849,10 @@ impl RuntimeHandle {
         )
     }
 
+    pub(crate) fn instance_agent_id(&self) -> &str {
+        self.inner.mutation_owner.agent_id()
+    }
+
     pub(crate) fn owns_mutation_reservation(&self, reservation: &MutationReservation) -> bool {
         reservation
             .validate_owner(&self.inner.mutation_owner)

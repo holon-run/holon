@@ -80,8 +80,7 @@ use crate::{
         MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
         OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary, TaskKind,
         TaskRecord, TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind,
-        WaitConditionStatus, WaitConditionSummary, WakeSource, WorkspaceEntry,
-        WorkspaceOccupancyRecord,
+        WaitConditionSummary, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -315,6 +314,8 @@ pub(crate) struct HostInner {
     shutdown_operation: Mutex<Option<HostShutdownOperation>>,
     mutation_owners: MutationOwnerRegistry,
     external_mutation_tasks: Mutex<Vec<JoinHandle<()>>>,
+    #[cfg(test)]
+    external_publication_fault: AtomicBool,
     runtime_recovery_tx: mpsc::UnboundedSender<RuntimeRecoveryNotice>,
     runtime_recovery_rx: Mutex<Option<mpsc::UnboundedReceiver<RuntimeRecoveryNotice>>>,
     runtime_recovery_token: CancellationToken,
@@ -371,6 +372,12 @@ struct AgentEntry {
     idle_observation: Option<IdleRuntimeObservation>,
 }
 
+struct TemporaryRuntimeEntry {
+    runtime: RuntimeHandle,
+    abort: tokio::task::AbortHandle,
+    phase: watch::Receiver<AgentRuntimePhase>,
+}
+
 struct IdleRuntimeObservation {
     evidence: String,
     since: std::time::Instant,
@@ -407,6 +414,8 @@ struct HostRuntimeRegistry {
     agents: BTreeMap<String, AgentEntry>,
     // Keep exact installation targets visible until their retirement drain ends.
     unloading_mutations: BTreeMap<u64, RuntimeHandle>,
+    unloading_exits: BTreeMap<u64, (tokio::task::AbortHandle, watch::Receiver<AgentRuntimePhase>)>,
+    temporary_runtimes: BTreeMap<String, TemporaryRuntimeEntry>,
     next_generation: u64,
     recovering: HashMap<String, RuntimeRecoveryClaim>,
 }
@@ -535,6 +544,11 @@ pub(crate) struct AgentMessageAdmission {
 enum NamedAgentExistingBehavior {
     Reuse,
     Reject,
+}
+
+enum NamedAgentPreparation {
+    Ready(AgentIdentityRecord, bool),
+    Reincarnate(AgentIdentityRecord),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -834,12 +848,16 @@ impl RuntimeHost {
                     phase: HostRuntimePhase::Open,
                     agents: BTreeMap::new(),
                     unloading_mutations: BTreeMap::new(),
+                    unloading_exits: BTreeMap::new(),
+                    temporary_runtimes: BTreeMap::new(),
                     next_generation: 1,
                     recovering: HashMap::new(),
                 }),
                 shutdown_operation: Mutex::new(None),
                 mutation_owners: MutationOwnerRegistry::default(),
                 external_mutation_tasks: Mutex::new(Vec::new()),
+                #[cfg(test)]
+                external_publication_fault: AtomicBool::new(false),
                 runtime_recovery_tx,
                 runtime_recovery_rx: Mutex::new(Some(runtime_recovery_rx)),
                 runtime_recovery_token: CancellationToken::new(),
@@ -2056,7 +2074,7 @@ impl RuntimeHost {
 
     /// Host owns accepted cold writes through publication, even if the API
     /// caller disconnects. Admission shares the registry's shutdown fence.
-    async fn run_owned_external_mutation<T: Send + 'static>(
+    pub(crate) async fn run_owned_external_mutation<T: Send + 'static>(
         &self,
         mutation: impl Future<Output = Result<T>> + Send + 'static,
     ) -> Result<T> {
@@ -2083,7 +2101,7 @@ impl RuntimeHost {
             .context("host mutation worker stopped before reporting completion")?
     }
 
-    async fn reserve_agent_mutations(
+    pub(crate) async fn reserve_agent_mutations(
         &self,
         agent_ids: &[String],
     ) -> Result<Vec<MutationReservation>> {
@@ -2147,7 +2165,127 @@ impl RuntimeHost {
         }
     }
 
-    async fn reconcile_external_mutations(
+    pub(crate) async fn reserve_mutation_scopes(
+        &self,
+        requested: &[(String, u64)],
+    ) -> Result<Vec<MutationReservation>> {
+        let mut scopes = requested.to_vec();
+        scopes.sort();
+        scopes.dedup();
+        loop {
+            let owners = scopes
+                .iter()
+                .map(|(agent_id, incarnation)| {
+                    self.inner
+                        .mutation_owners
+                        .current_owner(agent_id, *incarnation)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let mut reservations = match MutationOwner::reserve_all(owners).await {
+                Ok(reservations) => reservations,
+                Err(MutationOwnerError::Replaced) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            self.reconcile_external_mutations(&mut reservations).await?;
+            reservations.retain(|reservation| {
+                scopes.iter().any(|(agent_id, incarnation)| {
+                    reservation.agent_id() == agent_id
+                        && reservation.identity_incarnation() == *incarnation
+                })
+            });
+            return Ok(reservations);
+        }
+    }
+
+    /// Read before SQL, while every affected owner is reserved. A successor
+    /// scope never borrows the predecessor's AgentState row.
+    pub(crate) fn external_identity_facts(
+        &self,
+        reservations: &[MutationReservation],
+    ) -> Result<Vec<IdentityMutationFacts>> {
+        reservations
+            .iter()
+            .map(|reservation| {
+                let identity = self
+                    .runtime_db()
+                    .agent_identities()
+                    .latest(reservation.agent_id())?;
+                let state = if identity
+                    .as_ref()
+                    .map_or(reservation.identity_incarnation() == 1, |identity| {
+                        identity.incarnation == reservation.identity_incarnation()
+                    }) {
+                    self.runtime_db()
+                        .agent_states()
+                        .latest(reservation.agent_id())?
+                        .map(Arc::new)
+                } else {
+                    None
+                };
+                Ok(IdentityMutationFacts {
+                    identity: identity.map(Arc::new),
+                    state,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn acknowledge_external_metadata<T>(
+        &self,
+        reservations: &mut [MutationReservation],
+        operation_id: String,
+        persist: impl FnOnce() -> Result<(T, Vec<IdentityMutationFacts>)>,
+    ) -> Result<T> {
+        MutationReservation::begin_all(reservations, operation_id)?;
+        let (result, facts) = match persist() {
+            Ok(committed) => committed,
+            Err(error) => {
+                if crate::runtime_db::persistence_certainty(&error)
+                    == Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
+                {
+                    MutationReservation::definitely_not_committed_all(reservations)?;
+                }
+                return Err(error);
+            }
+        };
+        // Recording the exact ACK must precede every asynchronous install.
+        MutationReservation::committed_all(
+            reservations,
+            facts
+                .into_iter()
+                .map(|facts| KnownCommit::Metadata(Arc::new(facts)))
+                .collect(),
+        )?;
+        Ok(result)
+    }
+
+    pub(crate) async fn commit_external_metadata<T>(
+        &self,
+        reservations: &mut [MutationReservation],
+        operation_id: String,
+        persist: impl FnOnce() -> Result<(T, Vec<IdentityMutationFacts>)>,
+    ) -> Result<T> {
+        let result = self.acknowledge_external_metadata(reservations, operation_id, persist)?;
+        #[cfg(test)]
+        if self
+            .inner
+            .external_publication_fault
+            .swap(false, Ordering::SeqCst)
+        {
+            bail!("external mutation committed but publication requires reconciliation");
+        }
+        self.reconcile_external_mutations(reservations).await?;
+        Ok(result)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_external_mutation_publication(&self) {
+        self.inner
+            .external_publication_fault
+            .store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) async fn reconcile_external_mutations(
         &self,
         reservations: &mut [MutationReservation],
     ) -> Result<()> {
@@ -2326,7 +2464,7 @@ impl RuntimeHost {
 
     async fn shutdown_inner(&self) -> Result<()> {
         self.shutdown_config_reload_coordinator().await;
-        let (entries, runtimes) = {
+        let (entries, runtimes, temporary) = {
             let mut registry = self.inner.runtimes.write().await;
             match registry.phase {
                 HostRuntimePhase::Open => {
@@ -2339,13 +2477,30 @@ impl RuntimeHost {
                         registry
                             .unloading_mutations
                             .insert(entry.generation, entry.runtime.clone());
+                        registry.unloading_exits.insert(
+                            entry.generation,
+                            (entry.task.abort_handle(), entry.phase.clone()),
+                        );
                     }
                     let runtimes = registry
                         .unloading_mutations
                         .values()
                         .cloned()
                         .collect::<Vec<_>>();
-                    (entries, runtimes)
+                    let temporary = registry
+                        .temporary_runtimes
+                        .iter()
+                        .map(|(id, entry)| {
+                            entry.runtime.close_execution_admission();
+                            (
+                                id.clone(),
+                                entry.runtime.clone(),
+                                entry.abort.clone(),
+                                entry.phase.clone(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    (entries, runtimes, temporary)
                 }
                 HostRuntimePhase::Closing => bail!("host shutdown registry is already closing"),
                 HostRuntimePhase::Closed => return Ok(()),
@@ -2355,6 +2510,30 @@ impl RuntimeHost {
         self.shutdown_daemon_runtime_db_retention().await;
         self.shutdown_daemon_memory_indexer().await;
         self.shutdown_daemon_deletion_coordinator().await;
+        let mut external_error = None;
+        let mut retired_temporary = Vec::new();
+        for (agent_id, runtime, abort, mut phase) in temporary {
+            runtime.retire_instance_locally("daemon_shutdown").await;
+            abort.abort();
+            while *phase.borrow_and_update() != AgentRuntimePhase::Terminated {
+                if phase.changed().await.is_err() {
+                    break;
+                }
+            }
+            if let Err(error) = runtime.join_owned_mutations().await {
+                external_error.get_or_insert(error);
+                continue;
+            }
+            if let Err(error) = self
+                .archive_temporary_runtime_identity_owned(&agent_id)
+                .await
+            {
+                external_error.get_or_insert(error);
+            } else {
+                retired_temporary.push(agent_id);
+            }
+            // Homes remain available if the run's cleanup never completed.
+        }
         let external_tasks = std::mem::take(
             &mut *self
                 .inner
@@ -2362,7 +2541,6 @@ impl RuntimeHost {
                 .lock()
                 .expect("external mutation tasks poisoned"),
         );
-        let mut external_error = None;
         for task in external_tasks {
             if let Err(error) = task.await {
                 external_error.get_or_insert_with(|| anyhow::Error::new(error));
@@ -2401,6 +2579,10 @@ impl RuntimeHost {
             let mut registry = self.inner.runtimes.write().await;
             registry.phase = HostRuntimePhase::Closed;
             registry.unloading_mutations.clear();
+            registry.unloading_exits.clear();
+            for agent_id in retired_temporary {
+                registry.temporary_runtimes.remove(&agent_id);
+            }
         }
         self.inner
             .runtime_db_maintenance_lock
@@ -2637,48 +2819,115 @@ impl RuntimeHost {
     }
 
     pub(crate) async fn unload_runtime(&self, agent_id: &str) {
-        let entry = {
+        if let Err(error) = self.drain_runtime_incarnation(agent_id, None).await {
+            tracing::warn!(agent_id, error = %error, "runtime drain incomplete");
+        }
+    }
+
+    pub(crate) async fn drain_retired_runtime(
+        &self,
+        agent_id: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        self.drain_runtime_incarnation(agent_id, Some(incarnation))
+            .await
+    }
+
+    async fn drain_runtime_incarnation(
+        &self,
+        agent_id: &str,
+        incarnation: Option<u64>,
+    ) -> Result<()> {
+        let (entry, draining) = {
             let mut registry = self.inner.runtimes.write().await;
-            let entry = if registry.phase == HostRuntimePhase::Open {
+            let matches = |runtime: &RuntimeHandle| {
+                incarnation.is_none_or(|incarnation| runtime.instance_incarnation() == incarnation)
+            };
+            let entry = if registry.phase == HostRuntimePhase::Open
+                && registry
+                    .agents
+                    .get(agent_id)
+                    .is_some_and(|entry| matches(&entry.runtime))
+            {
                 registry.agents.remove(agent_id)
             } else {
-                // Shutdown already owns every registered generation's drain.
                 None
             };
             if let Some(entry) = &entry {
                 entry.runtime.close_execution_admission();
-                // Shutdown takes this responsibility under the same registry lock.
-                // A cancelled unload cannot hide admitted mutations from the Host.
                 registry
                     .unloading_mutations
                     .insert(entry.generation, entry.runtime.clone());
+                registry.unloading_exits.insert(
+                    entry.generation,
+                    (entry.task.abort_handle(), entry.phase.clone()),
+                );
             }
-            entry
+            let draining = if entry.is_none() {
+                registry
+                    .unloading_mutations
+                    .iter()
+                    .filter_map(|(generation, runtime)| {
+                        if runtime.instance_agent_id() != agent_id || !matches(runtime) {
+                            return None;
+                        }
+                        registry
+                            .unloading_exits
+                            .get(generation)
+                            .map(|(abort, phase)| {
+                                (*generation, runtime.clone(), abort.clone(), phase.clone())
+                            })
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            (entry, draining)
         };
         if let Some(entry) = entry {
             let host = self.clone();
             let agent_id = agent_id.to_string();
-            // Spawn before the next await so cancelling this caller cannot
-            // strand a generation or its cleanup responsibility in the map.
+            // Accepted retirement keeps responsibility after its caller leaves.
             let cleanup = tokio::spawn(async move {
+                entry
+                    .runtime
+                    .retire_instance_locally("runtime_unloaded")
+                    .await;
                 entry.task.abort();
                 let _ = entry.task.await;
-                if let Err(error) = entry.runtime.join_owned_mutations().await {
-                    tracing::warn!(agent_id, error = %error, "runtime mutation drain failed during unload");
-                }
-                {
+                let result = entry.runtime.join_owned_mutations().await;
+                if result.is_ok() {
                     let mut registry = host.inner.runtimes.write().await;
-                    // Closing owns any external waiters as well as this drain.
                     if registry.phase == HostRuntimePhase::Open {
                         registry.unloading_mutations.remove(&entry.generation);
+                        registry.unloading_exits.remove(&entry.generation);
                     }
                 }
                 host.notify_runtime_recovery(&agent_id).await;
+                result
             });
-            let _ = cleanup.await;
+            cleanup.await.context("runtime drain worker stopped")??;
         } else {
+            for (generation, runtime, abort, mut phase) in draining {
+                // Closing waits for external mutations before its own joins.
+                // Drive this exact instance here; never wait for Host shutdown.
+                runtime.retire_instance_locally("runtime_unloaded").await;
+                abort.abort();
+                while *phase.borrow_and_update() != AgentRuntimePhase::Terminated {
+                    if phase.changed().await.is_err() {
+                        break;
+                    }
+                }
+                runtime.join_owned_mutations().await?;
+                let mut registry = self.inner.runtimes.write().await;
+                if registry.phase == HostRuntimePhase::Open {
+                    registry.unloading_mutations.remove(&generation);
+                    registry.unloading_exits.remove(&generation);
+                }
+            }
             self.notify_runtime_recovery(agent_id).await;
         }
+        Ok(())
     }
 
     pub async fn default_runtime(&self) -> Result<RuntimeHandle> {
@@ -2696,10 +2945,50 @@ impl RuntimeHost {
     }
 
     pub async fn recover_orphaned_queue_claims_at_startup(&self) -> Result<Vec<String>> {
-        let recovery_report = self
-            .runtime_db()
-            .recover_interrupted_runtime_state_at_startup()?;
-        let stale_waits = self.reconcile_stale_waits_at_startup()?;
+        let host = self.clone();
+        self.run_owned_external_mutation(async move {
+            host.recover_orphaned_queue_claims_at_startup_inner().await
+        })
+        .await
+    }
+
+    async fn recover_orphaned_queue_claims_at_startup_inner(&self) -> Result<Vec<String>> {
+        let recovery_report = {
+            let (mut reservations, handoff) = self.reserve_startup_mutations().await?;
+            // The original global transaction changes queue/turn/execution,
+            // not identity or AgentState. These exact facts remain valid while
+            // the owners and preactivation handoff exclude other writers.
+            let facts = self.external_identity_facts(&reservations)?;
+            let mut handoff = Some(handoff);
+            let mut acknowledged = None;
+            let committed = self
+                .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                    let result = self
+                        .runtime_db()
+                        .recover_interrupted_runtime_state_at_startup();
+                    // Installation may await registry/cache locks; activation must
+                    // never hold the handoff while waiting for these same owners.
+                    drop(handoff.take());
+                    let report = result?;
+                    acknowledged = Some(report);
+                    Ok(((), facts))
+                })
+                .await;
+            if let Err(error) = committed {
+                if acknowledged.is_none() {
+                    return Err(error);
+                }
+                // The original report carries execution-only activation targets
+                // that an idempotent repeat of recovery SQL no longer returns.
+                self.reconcile_external_mutations(&mut reservations)
+                    .await
+                    .with_context(|| {
+                        format!("startup recovery ACK is pending publication: {error:#}")
+                    })?;
+            }
+            acknowledged.expect("startup recovery ACK must retain its report")
+        };
+        let stale_waits = self.reconcile_stale_waits_at_startup().await?;
         for operation in self
             .runtime_db()
             .destructive_operations()
@@ -2794,93 +3083,92 @@ impl RuntimeHost {
         Ok(recovered_queue_agent_ids)
     }
 
-    fn reconcile_stale_waits_at_startup(&self) -> Result<usize> {
-        let runtime_db = self.runtime_db();
-        let waits = runtime_db.wait_conditions().unresolved_all()?;
-        let tasks = runtime_db.tasks().latest_all()?;
-        let external_triggers = runtime_db.external_triggers().latest_all()?;
-        let timers = runtime_db.timers().latest_all()?;
-        let mut stopped_agents = runtime_db
+    fn startup_mutation_scopes(&self) -> Result<Vec<(String, u64)>> {
+        self.runtime_db()
             .agent_states()
-            .latest_all()?
+            .startup_mutation_agent_ids()?
             .into_iter()
-            .filter(|state| state.status == AgentStatus::Stopped)
-            .map(|state| state.id)
-            .collect::<HashSet<_>>();
-        let mut cancelled = 0;
+            .map(|agent_id| {
+                let incarnation = self
+                    .runtime_db()
+                    .agent_identities()
+                    .latest(&agent_id)?
+                    .map_or(1, |identity| identity.incarnation);
+                Ok((agent_id, incarnation))
+            })
+            .collect()
+    }
 
-        for wait in waits {
-            let state = runtime_db
-                .agent_states()
-                .latest(&wait.agent_id)?
-                .unwrap_or_else(|| AgentState::new(&wait.agent_id));
-            let task_stale = wait.wake_sources.iter().any(|source| {
-                let WakeSource::TaskResult { task_id } = source else {
-                    return false;
-                };
-                tasks
-                    .iter()
-                    .find(|task| task.id == *task_id && task.agent_id == wait.agent_id)
-                    .is_none_or(|task| {
-                        matches!(
-                            task.status,
-                            TaskStatus::Completed
-                                | TaskStatus::Failed
-                                | TaskStatus::Cancelled
-                                | TaskStatus::Interrupted
-                        )
-                    })
-            });
-            let external_stale = wait.wake_sources.iter().any(|source| {
-                let WakeSource::ExternalIngress {
-                    external_trigger_id,
-                } = source
-                else {
-                    return false;
-                };
-                external_trigger_id.as_ref().is_none_or(|trigger_id| {
-                    !external_triggers.iter().any(|trigger| {
-                        trigger.external_trigger_id == *trigger_id
-                            && trigger.target_agent_id == wait.agent_id
-                            && trigger.status == ExternalTriggerStatus::Active
-                    })
-                })
-            });
-            let timer_stale = wait.kind == crate::types::WaitConditionKind::Timer
-                && wait.subject_ref.as_ref().is_none_or(|timer_id| {
-                    !timers.iter().any(|timer| {
-                        timer.id == *timer_id
-                            && timer.agent_id == wait.agent_id
-                            && timer.status == crate::types::TimerStatus::Active
-                    })
-                });
-
-            if state.status == AgentStatus::Stopped {
-                stopped_agents.insert(wait.agent_id.clone());
+    async fn reserve_startup_mutations(
+        &self,
+    ) -> Result<(Vec<MutationReservation>, tokio::sync::MutexGuard<'_, ()>)> {
+        loop {
+            {
+                let registry = self.inner.runtimes.read().await;
+                anyhow::ensure!(
+                    registry.agents.is_empty()
+                        && registry.unloading_mutations.is_empty()
+                        && registry.temporary_runtimes.is_empty(),
+                    "startup recovery requires no loaded, temporary, or draining runtimes before activation"
+                );
             }
-            if state.status == AgentStatus::Stopped || task_stale || external_stale || timer_stale {
-                let mut cancelled_wait = wait;
-                cancelled_wait.status = WaitConditionStatus::Cancelled;
-                cancelled_wait.updated_at = Utc::now();
-                cancelled_wait.cancelled_at = Some(cancelled_wait.updated_at);
-                runtime_db.wait_conditions().upsert(&cancelled_wait)?;
-                cancelled += 1;
+            let scopes = self.startup_mutation_scopes()?;
+            // Never wait for an owner while holding the activation handoff.
+            let reservations = self.reserve_mutation_scopes(&scopes).await?;
+            let handoff = self.inner.bootstrap_handoff_lock.lock().await;
+            let registry = self.inner.runtimes.read().await;
+            anyhow::ensure!(
+                registry.agents.is_empty()
+                        && registry.unloading_mutations.is_empty()
+                        && registry.temporary_runtimes.is_empty(),
+                "startup recovery requires no loaded, temporary, or draining runtimes before activation"
+            );
+            drop(registry);
+            if self.startup_mutation_scopes()? != scopes {
+                drop(handoff);
+                drop(reservations);
+                continue;
             }
+            return Ok((reservations, handoff));
         }
+    }
 
-        for agent_id in stopped_agents {
-            runtime_db
-                .timers()
-                .cancel_active_for_agent(&agent_id, Utc::now())?;
-            runtime_db
-                .queue_entries()
-                .abort_pending_for_agent(&agent_id)?;
-            if let Some(mut state) = runtime_db.agent_states().latest(&agent_id)? {
-                state.pending = 0;
-                runtime_db.agent_states().upsert(&state)?;
+    async fn reconcile_stale_waits_at_startup(&self) -> Result<usize> {
+        let (mut reservations, handoff) = self.reserve_startup_mutations().await?;
+        let mut facts = self.external_identity_facts(&reservations)?;
+        let agent_ids = reservations
+            .iter()
+            .map(|reservation| reservation.agent_id().to_string())
+            .collect::<Vec<_>>();
+        let mut handoff = Some(handoff);
+        let mut acknowledged = None;
+        let committed = self
+            .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                let result = self
+                    .runtime_db()
+                    .agent_states()
+                    .reconcile_stale_waits_at_startup(None);
+                // The transaction returns its exact states; no fallible ACK readback.
+                drop(handoff.take());
+                let (cancelled, states) = result?;
+                for (agent_id, facts) in agent_ids.iter().zip(&mut facts) {
+                    facts.state = states.get(agent_id).cloned().map(Arc::new);
+                }
+                acknowledged = Some(cancelled);
+                Ok(((), facts))
+            })
+            .await;
+        if let Err(error) = committed {
+            if acknowledged.is_none() {
+                return Err(error);
             }
+            self.reconcile_external_mutations(&mut reservations)
+                .await
+                .with_context(|| {
+                    format!("startup wait cleanup ACK is pending publication: {error:#}")
+                })?;
         }
-        Ok(cancelled)
+        Ok(acknowledged.expect("startup wait cleanup ACK must retain its count"))
     }
 
     fn active_agent_identity(
@@ -3338,6 +3626,22 @@ impl RuntimeHost {
         agent_id: &str,
         expected_incarnation: u64,
     ) -> Result<AgentDeletionJob> {
+        let host = self.clone();
+        let caller = caller.clone();
+        let agent_id = agent_id.to_string();
+        self.run_owned_external_mutation(async move {
+            host.begin_parent_agent_deletion_owned(&caller, &agent_id, expected_incarnation)
+                .await
+        })
+        .await
+    }
+
+    async fn begin_parent_agent_deletion_owned(
+        &self,
+        caller: &RuntimeHandle,
+        agent_id: &str,
+        expected_incarnation: u64,
+    ) -> Result<AgentDeletionJob> {
         self.validate_agent_id(agent_id)?;
         let parent_agent_id = caller.agent_state().await?.id;
         anyhow::ensure!(
@@ -3348,6 +3652,12 @@ impl RuntimeHost {
             .map_err(anyhow::Error::new)?;
         let bootstrap_lock = self.agent_bootstrap_lock(agent_id);
         let _bootstrap_guard = bootstrap_lock.lock().await;
+        let mut reservations = self
+            .reserve_mutation_scopes(&[
+                (parent_agent_id.clone(), caller.instance_incarnation()),
+                (agent_id.to_string(), expected_incarnation),
+            ])
+            .await?;
         self.runtime_db().transaction(|tx| {
             crate::runtime_db::repositories::validate_parent_cleanup_tx(
                 tx,
@@ -3360,14 +3670,27 @@ impl RuntimeHost {
         crate::deletion::ensure_parent_cleanup_home_safe(&self.agent_data_dir(agent_id))?;
         self.check_parent_cleanup_workspaces(agent_id, false)
             .await?;
+        let mut facts = self.external_identity_facts(&reservations)?;
         let admit = || {
             crate::deletion::ensure_parent_cleanup_home_safe(&self.agent_data_dir(agent_id))?;
-            self.runtime_db().agent_deletions().begin_parent_cleanup(
-                agent_id,
-                &parent_agent_id,
-                expected_incarnation,
-                caller.instance_incarnation(),
-            )
+            self.acknowledge_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                let admitted = self.runtime_db().agent_deletions().begin_parent_cleanup(
+                    agent_id,
+                    &parent_agent_id,
+                    expected_incarnation,
+                    caller.instance_incarnation(),
+                )?;
+                for fact in &mut facts {
+                    if fact
+                        .identity
+                        .as_ref()
+                        .is_some_and(|identity| identity.agent_id == agent_id)
+                    {
+                        fact.identity = Some(Arc::new(admitted.0.clone()));
+                    }
+                }
+                Ok((admitted, facts))
+            })
         };
         let identity_active = self
             .runtime_db()
@@ -3380,11 +3703,12 @@ impl RuntimeHost {
             None
         };
         let admitted = if let Some(runtime) = loaded {
-            runtime.admit_idle_cleanup(admit).await?
+            runtime.admit_idle_cleanup_reserved(admit).await?
         } else {
             admit()?
         };
-        self.cache_agent_identity(&admitted.0)?;
+        self.reconcile_external_mutations(&mut reservations).await?;
+        drop(reservations);
         self.notify_deletion_coordinator();
         Ok(admitted.1)
     }
@@ -3395,10 +3719,36 @@ impl RuntimeHost {
         cascade_private_children: bool,
         requested_by: &str,
     ) -> std::result::Result<(AgentIdentityRecord, AgentDeletionJob, bool), PublicAgentError> {
+        let host = self.clone();
+        let agent_id = agent_id.to_string();
+        let requested_by = requested_by.to_string();
+        self.run_owned_external_mutation(async move {
+            Ok(host
+                .begin_public_agent_deletion_owned(
+                    &agent_id,
+                    cascade_private_children,
+                    &requested_by,
+                )
+                .await)
+        })
+        .await
+        .map_err(PublicAgentError::Runtime)?
+    }
+
+    async fn begin_public_agent_deletion_owned(
+        &self,
+        agent_id: &str,
+        cascade_private_children: bool,
+        requested_by: &str,
+    ) -> std::result::Result<(AgentIdentityRecord, AgentDeletionJob, bool), PublicAgentError> {
         self.validate_agent_id(agent_id)
             .map_err(PublicAgentError::Runtime)?;
         let bootstrap_lock = self.agent_bootstrap_lock(agent_id);
         let _bootstrap_guard = bootstrap_lock.lock().await;
+        let mut reservations = self
+            .reserve_agent_mutations(&[agent_id.to_string()])
+            .await
+            .map_err(PublicAgentError::Runtime)?;
         let identity = self
             .agent_identity_record(agent_id)
             .map_err(PublicAgentError::Runtime)?
@@ -3422,21 +3772,41 @@ impl RuntimeHost {
                 reason: "only public self-owned agents and private parent-supervised child agents have an operator delete surface".into(),
             });
         }
-        let (updated_identity, job, created) = self
-            .runtime_db()
-            .agent_deletions()
-            .begin(
-                agent_id,
-                identity.revision,
-                requested_by,
-                cascade_private_children,
-            )
+        let mut facts = self
+            .external_identity_facts(&reservations)
             .map_err(PublicAgentError::Runtime)?;
-        self.inner
-            .registry
-            .cache_agent_identity(&updated_identity)
+        let mut acknowledged = None;
+        let committed = self
+            .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                let admitted = self.runtime_db().agent_deletions().begin(
+                    agent_id,
+                    identity.revision,
+                    requested_by,
+                    cascade_private_children,
+                )?;
+                for fact in &mut facts {
+                    fact.identity = Some(Arc::new(admitted.0.clone()));
+                }
+                acknowledged = Some(admitted.clone());
+                Ok((admitted, facts))
+            })
+            .await;
+        let (updated_identity, job, created) = match committed {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                let Some(admitted) = acknowledged else {
+                    return Err(PublicAgentError::Runtime(error));
+                };
+                self.reconcile_external_mutations(&mut reservations)
+                    .await
+                    .map_err(PublicAgentError::Runtime)?;
+                admitted
+            }
+        };
+        drop(reservations);
+        self.drain_retired_runtime(agent_id, identity.incarnation)
+            .await
             .map_err(PublicAgentError::Runtime)?;
-        self.unload_runtime(agent_id).await;
         // Coalesce new work into the single daemon deletion coordinator.
         if created {
             self.notify_deletion_coordinator();
@@ -3919,25 +4289,46 @@ impl RuntimeHost {
         requested_name: Option<&str>,
         desired: AgentBootstrapDesiredState,
     ) -> Result<AgentCreateResult> {
-        let (identity, created) = {
-            let _bootstrap_handoff_guard = self.inner.bootstrap_handoff_lock.lock().await;
-            let had_default_agent = self.configured_default_agent_id()?.is_some();
-            let (identity, created) = self
-                .ensure_named_agent(
-                    agent_id,
-                    lineage_parent_agent_id,
+        let host = self.clone();
+        let agent_id_owned = agent_id.to_string();
+        let lineage_parent_agent_id = lineage_parent_agent_id.map(ToString::to_string);
+        let requested_name = requested_name.map(ToString::to_string);
+        let (identity, created) = self
+            .run_owned_external_mutation(async move {
+                let bootstrap_lock = host.agent_bootstrap_lock(&agent_id_owned);
+                let _bootstrap_guard = bootstrap_lock.lock().await;
+                let handoff = host.inner.bootstrap_handoff_lock.lock().await;
+                let had_default_agent = host.configured_default_agent_id()?.is_some();
+                let prepared = host.prepare_named_agent(
+                    &agent_id_owned,
+                    lineage_parent_agent_id.as_deref(),
                     NamedAgentExistingBehavior::Reject,
-                    requested_name,
-                    desired,
-                )
-                .await?;
-            if created && !had_default_agent {
-                let mut config = (*self.config()).clone();
-                config.default_agent_id = identity.agent_id.clone();
-                self.inner.registry.replace_config(config);
-            }
-            (identity, created)
-        };
+                    requested_name.as_deref(),
+                    desired.clone(),
+                )?;
+                match prepared {
+                    NamedAgentPreparation::Ready(identity, created) => {
+                        if created && !had_default_agent {
+                            let mut config = (*host.config()).clone();
+                            config.default_agent_id = identity.agent_id.clone();
+                            host.inner.registry.replace_config(config);
+                        }
+                        Ok((identity, created))
+                    }
+                    NamedAgentPreparation::Reincarnate(tombstone) => {
+                        // No global handoff lock can span an owner wait.
+                        drop(handoff);
+                        host.reincarnate_deleted_agent(
+                            tombstone,
+                            lineage_parent_agent_id.as_deref(),
+                            requested_name.as_deref(),
+                            desired,
+                        )
+                        .await
+                    }
+                }
+            })
+            .await?;
         let bootstrap = self.reconcile_agent_bootstrap(agent_id).await?;
         let bootstrap_summary = bootstrap.summary();
         Ok(AgentCreateResult {
@@ -4077,6 +4468,34 @@ impl RuntimeHost {
         requested_name: Option<&str>,
         desired: AgentBootstrapDesiredState,
     ) -> Result<(AgentIdentityRecord, bool)> {
+        match self.prepare_named_agent(
+            agent_id,
+            lineage_parent_agent_id,
+            existing_behavior,
+            requested_name,
+            desired.clone(),
+        )? {
+            NamedAgentPreparation::Ready(identity, created) => Ok((identity, created)),
+            NamedAgentPreparation::Reincarnate(tombstone) => {
+                self.reincarnate_deleted_agent(
+                    tombstone,
+                    lineage_parent_agent_id,
+                    requested_name,
+                    desired,
+                )
+                .await
+            }
+        }
+    }
+
+    fn prepare_named_agent(
+        &self,
+        agent_id: &str,
+        lineage_parent_agent_id: Option<&str>,
+        existing_behavior: NamedAgentExistingBehavior,
+        requested_name: Option<&str>,
+        desired: AgentBootstrapDesiredState,
+    ) -> Result<NamedAgentPreparation> {
         self.validate_agent_id(agent_id)?;
         if agent_id == self.config().default_agent_id
             && self.agent_identity_record(agent_id)?.is_some()
@@ -4091,7 +4510,7 @@ impl RuntimeHost {
             }
             return self
                 .ensure_default_agent_identity()
-                .map(|record| (record, false));
+                .map(|record| NamedAgentPreparation::Ready(record, false));
         }
         if Self::is_temporary_agent_id(agent_id) {
             return Err(anyhow!(
@@ -4107,14 +4526,7 @@ impl RuntimeHost {
                     // A fully deleted id is creatable again: route through
                     // the reincarnation transaction when the deletion job
                     // completed, or fail closed with a typed error.
-                    return self
-                        .reincarnate_deleted_agent(
-                            existing,
-                            lineage_parent_agent_id,
-                            requested_name,
-                            desired,
-                        )
-                        .await;
+                    return Ok(NamedAgentPreparation::Reincarnate(existing));
                 }
                 if existing.status == AgentRegistryStatus::Deleting {
                     let job = self
@@ -4149,7 +4561,7 @@ impl RuntimeHost {
                     agent_id
                 ));
             }
-            return Ok((existing, false));
+            return Ok(NamedAgentPreparation::Ready(existing, false));
         }
         let normalized_name = requested_name
             .map(|name| {
@@ -4195,7 +4607,7 @@ impl RuntimeHost {
                 named_agent_create_failed_error(agent_id, AgentCreateStage::Reserved, error)
             })?;
         self.inner.registry.cache_agent_identity(&record)?;
-        Ok((record, true))
+        Ok(NamedAgentPreparation::Ready(record, true))
     }
 
     /// Creates a new incarnation of a fully deleted agent id. The latest
@@ -4212,6 +4624,22 @@ impl RuntimeHost {
         desired: AgentBootstrapDesiredState,
     ) -> Result<(AgentIdentityRecord, bool)> {
         let agent_id = tombstone.agent_id.clone();
+        let mut reservations = self
+            .reserve_mutation_scopes(&[
+                (agent_id.clone(), tombstone.incarnation),
+                (agent_id.clone(), tombstone.incarnation.saturating_add(1)),
+            ])
+            .await?;
+        let current = self
+            .runtime_db()
+            .agent_identities()
+            .latest(&agent_id)?
+            .context("agent tombstone disappeared while reserving reincarnation")?;
+        anyhow::ensure!(
+            current.incarnation == tombstone.incarnation
+                && current.status == AgentRegistryStatus::Deleted,
+            "agent_reincarnation_rejected: tombstone changed while reserving owners"
+        );
         let job = self
             .runtime_db()
             .agent_deletions()
@@ -4235,58 +4663,90 @@ impl RuntimeHost {
         ensure_agent_home_layout(&self.agent_data_dir(&agent_id)).map_err(|error| {
             named_agent_create_failed_error(&agent_id, AgentCreateStage::Profiled, error)
         })?;
-        let identity = self
-            .runtime_db()
-            .agent_identities()
-            .reincarnate_with_bootstrap_and_relations(&agent_id, "agent_create", |tombstone| {
-                let mut record = AgentIdentityRecord::new(
-                    &agent_id,
-                    AgentKind::Named,
-                    AgentVisibility::Public,
-                    AgentOwnership::SelfOwned,
-                    AgentProfilePreset::PublicNamed,
-                    None,
-                    None,
-                )
-                .with_lineage_parent_agent_id(lineage_parent_agent_id.map(ToString::to_string));
-                let now = std::cmp::max(
-                    chrono::Utc::now(),
-                    tombstone.updated_at + chrono::Duration::nanoseconds(1),
-                );
-                record.name = normalized_name.clone();
-                record.incarnation = tombstone.incarnation.saturating_add(1);
-                record.revision = tombstone.revision.saturating_add(1);
-                record.created_at = now;
-                record.updated_at = now;
-                let bootstrap = AgentBootstrapRecord::new(&agent_id, desired.clone());
-                let relations = independent_creation_records(
-                    &record,
-                    lineage_parent_agent_id,
-                    AgentCanonicalDurability::Persistent,
-                );
-                (record, bootstrap, relations)
+        let scope_count = reservations.len();
+        let mut acknowledged = None;
+        let committed = self
+            .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                let identity = self
+                    .runtime_db()
+                    .agent_identities()
+                    .reincarnate_with_bootstrap_and_relations(
+                        &agent_id,
+                        "agent_create",
+                        |tombstone| {
+                            let mut record = AgentIdentityRecord::new(
+                                &agent_id,
+                                AgentKind::Named,
+                                AgentVisibility::Public,
+                                AgentOwnership::SelfOwned,
+                                AgentProfilePreset::PublicNamed,
+                                None,
+                                None,
+                            )
+                            .with_lineage_parent_agent_id(
+                                lineage_parent_agent_id.map(ToString::to_string),
+                            );
+                            let now = std::cmp::max(
+                                chrono::Utc::now(),
+                                tombstone.updated_at + chrono::Duration::nanoseconds(1),
+                            );
+                            record.name = normalized_name.clone();
+                            record.incarnation = tombstone.incarnation.saturating_add(1);
+                            record.revision = tombstone.revision.saturating_add(1);
+                            record.created_at = now;
+                            record.updated_at = now;
+                            let bootstrap = AgentBootstrapRecord::new(&agent_id, desired.clone());
+                            let relations = independent_creation_records(
+                                &record,
+                                lineage_parent_agent_id,
+                                AgentCanonicalDurability::Persistent,
+                            );
+                            (record, bootstrap, relations)
+                        },
+                    )?;
+                let facts = (0..scope_count)
+                    .map(|_| IdentityMutationFacts {
+                        identity: Some(Arc::new(identity.clone())),
+                        state: None,
+                    })
+                    .collect();
+                acknowledged = Some(identity.clone());
+                Ok((identity, facts))
             })
-            .map_err(|error| {
-                let message = error.to_string();
-                if message.contains("agent_reincarnation_rejected") {
-                    // The tombstone or deletion job changed concurrently;
-                    // re-read the job so the typed error carries fresh state.
-                    let job = self
-                        .runtime_db()
-                        .agent_deletions()
-                        .latest_for_agent(&agent_id)
-                        .ok()
-                        .flatten();
-                    return named_agent_deletion_incomplete_error(&agent_id, job.as_ref());
+            .await;
+        let identity = match committed {
+            Ok(identity) => Ok(identity),
+            Err(error) => match acknowledged {
+                Some(identity) => self
+                    .reconcile_external_mutations(&mut reservations)
+                    .await
+                    .map(|()| identity),
+                None => Err(error),
+            },
+        }
+        .map_err(|error| {
+            let message = error.to_string();
+            if message.contains("agent_reincarnation_rejected") {
+                // The tombstone or deletion job changed concurrently;
+                // re-read the job so the typed error carries fresh state.
+                let job = self
+                    .runtime_db()
+                    .agent_deletions()
+                    .latest_for_agent(&agent_id)
+                    .ok()
+                    .flatten();
+                return named_agent_deletion_incomplete_error(&agent_id, job.as_ref());
+            }
+            if let Some(name) = normalized_name.as_deref() {
+                if message.contains("UNIQUE constraint failed: agent_identities.name_key") {
+                    return named_agent_name_already_exists_error(&agent_id, name);
                 }
-                if let Some(name) = normalized_name.as_deref() {
-                    if message.contains("UNIQUE constraint failed: agent_identities.name_key") {
-                        return named_agent_name_already_exists_error(&agent_id, name);
-                    }
-                }
-                named_agent_create_failed_error(&agent_id, AgentCreateStage::Reserved, error)
-            })?;
-        self.inner.registry.cache_agent_identity(&identity)?;
+            }
+            named_agent_create_failed_error(&agent_id, AgentCreateStage::Reserved, error)
+        })?;
+        drop(reservations);
+        self.drain_retired_runtime(&agent_id, tombstone.incarnation)
+            .await?;
         Ok((identity, true))
     }
 
@@ -4791,7 +5251,12 @@ impl RuntimeHost {
         &self,
         category: &str,
     ) -> Result<(String, RuntimeHandle, JoinHandle<()>)> {
-        let _bootstrap_handoff_guard = self.inner.bootstrap_handoff_lock.lock().await;
+        let bootstrap_handoff_guard = self.inner.bootstrap_handoff_lock.lock().await;
+        let mut registry = self.inner.runtimes.write().await;
+        anyhow::ensure!(
+            registry.phase == HostRuntimePhase::Open,
+            "host is shutting down and cannot spawn temporary runtimes"
+        );
         let agent_id = match category {
             "run" => ids::runtime_id(TEMP_RUN_AGENT_PREFIX.trim_end_matches('_')),
             other => ids::runtime_id(&format!("{TEMP_AGENT_PREFIX}{other}")),
@@ -4813,31 +5278,111 @@ impl RuntimeHost {
             .agent_identities()
             .create_with_relations(&identity, &relations)?;
         self.cache_agent_identity(&identity)?;
-        let (runtime, runtime_task, _phase) = match self.spawn_runtime(&agent_id, None) {
+        let (runtime, runtime_task, phase) = match self.spawn_runtime(&agent_id, None) {
             Ok(spawned) => spawned,
             Err(error) => {
-                let _ = self.archive_temporary_runtime_identity(&agent_id);
+                drop(registry);
+                drop(bootstrap_handoff_guard);
+                if let Err(cleanup_error) = self.archive_temporary_runtime_identity(&agent_id).await
+                {
+                    tracing::warn!(agent_id, error = %cleanup_error, "temporary bootstrap identity retirement failed");
+                }
                 return Err(error);
             }
         };
+        registry.temporary_runtimes.insert(
+            agent_id.clone(),
+            TemporaryRuntimeEntry {
+                runtime: runtime.clone(),
+                abort: runtime_task.abort_handle(),
+                phase,
+            },
+        );
         Ok((agent_id, runtime, runtime_task))
     }
 
-    pub(crate) fn archive_temporary_runtime_identity(&self, agent_id: &str) -> Result<()> {
+    pub(crate) async fn archive_temporary_runtime_identity(&self, agent_id: &str) -> Result<()> {
+        let host = self.clone();
+        let agent_id = agent_id.to_string();
+        self.run_owned_external_mutation(async move {
+            host.archive_temporary_runtime_identity_owned(&agent_id)
+                .await
+        })
+        .await
+    }
+
+    async fn archive_temporary_runtime_identity_owned(&self, agent_id: &str) -> Result<()> {
         if !Self::is_temporary_agent_id(agent_id) {
             bail!("agent {agent_id} is not a temporary runtime");
         }
-        let Some(identity) = self.agent_identity_record(agent_id)? else {
-            bail!("temporary runtime {agent_id} is missing its host identity");
-        };
+        let bootstrap_lock = self.agent_bootstrap_lock(agent_id);
+        let _bootstrap_guard = bootstrap_lock.lock().await;
+        let mut reservations = self
+            .reserve_agent_mutations(&[agent_id.to_string()])
+            .await?;
+        let identity = self
+            .runtime_db()
+            .agent_identities()
+            .latest(agent_id)?
+            .with_context(|| {
+                format!("temporary runtime {agent_id} is missing its host identity")
+            })?;
         if identity.status != AgentRegistryStatus::Deleted {
-            let identity = self
-                .runtime_db()
-                .agent_identities()
-                .tombstone_with_closed_supervision(agent_id)?;
-            self.cache_agent_identity(&identity)?;
+            let mut facts = self.external_identity_facts(&reservations)?;
+            let mut acknowledged = false;
+            let committed = self
+                .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                    let identity = self
+                        .runtime_db()
+                        .agent_identities()
+                        .tombstone_with_closed_supervision(agent_id)?;
+                    for fact in &mut facts {
+                        fact.identity = Some(Arc::new(identity.clone()));
+                    }
+                    acknowledged = true;
+                    Ok(((), facts))
+                })
+                .await;
+            if let Err(error) = committed {
+                if !acknowledged {
+                    return Err(error);
+                }
+                self.reconcile_external_mutations(&mut reservations).await?;
+            }
         }
         Ok(())
+    }
+
+    pub(crate) async fn cleanup_temporary_runtime(
+        &self,
+        agent_id: String,
+        runtime: RuntimeHandle,
+        runtime_task: JoinHandle<()>,
+    ) -> Result<()> {
+        let host = self.clone();
+        self.run_owned_external_mutation(async move {
+            let _ = runtime.control(crate::types::ControlAction::Stop).await;
+            // The Host also retains this instance until successful cleanup, so
+            // Closing can take over if this cleanup is not admitted in time.
+            let _ = runtime.request_service_shutdown().await;
+            runtime_task.abort();
+            let _ = runtime_task.await;
+            runtime.join_owned_mutations().await?;
+            host.archive_temporary_runtime_identity_owned(&agent_id)
+                .await?;
+            let data_dir = host.agent_data_dir(&agent_id);
+            if data_dir.exists() {
+                fs::remove_dir_all(&data_dir)?;
+            }
+            host.inner
+                .runtimes
+                .write()
+                .await
+                .temporary_runtimes
+                .remove(&agent_id);
+            Ok(())
+        })
+        .await
     }
 
     pub fn workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {
@@ -5816,24 +6361,51 @@ impl RuntimeHost {
     }
 
     async fn archive_private_agent(&self, agent_id: &str) -> Result<()> {
-        if let Some(identity) = self.agent_identity_record(agent_id)? {
-            if identity.status != AgentRegistryStatus::Deleted {
-                let identity = self
-                    .runtime_db()
-                    .agent_identities()
-                    .tombstone_with_closed_supervision(agent_id)?;
-                self.cache_agent_identity(&identity)?;
+        let host = self.clone();
+        let agent_id = agent_id.to_string();
+        self.run_owned_external_mutation(async move {
+            host.archive_private_agent_owned(&agent_id).await
+        })
+        .await
+    }
+
+    async fn archive_private_agent_owned(&self, agent_id: &str) -> Result<()> {
+        let bootstrap_lock = self.agent_bootstrap_lock(agent_id);
+        let bootstrap_guard = bootstrap_lock.lock().await;
+        let mut reservations = self
+            .reserve_agent_mutations(&[agent_id.to_string()])
+            .await?;
+        let identity = self.runtime_db().agent_identities().latest(agent_id)?;
+        let incarnation = identity.as_ref().map_or(1, |identity| identity.incarnation);
+        if identity
+            .as_ref()
+            .is_some_and(|identity| identity.status != AgentRegistryStatus::Deleted)
+        {
+            let mut facts = self.external_identity_facts(&reservations)?;
+            let mut acknowledged = false;
+            let committed = self
+                .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                    let identity = self
+                        .runtime_db()
+                        .agent_identities()
+                        .tombstone_with_closed_supervision(agent_id)?;
+                    for fact in &mut facts {
+                        fact.identity = Some(Arc::new(identity.clone()));
+                    }
+                    acknowledged = true;
+                    Ok(((), facts))
+                })
+                .await;
+            if let Err(error) = committed {
+                if !acknowledged {
+                    return Err(error);
+                }
+                self.reconcile_external_mutations(&mut reservations).await?;
             }
         }
-
-        let entry = self.inner.runtimes.write().await.agents.remove(agent_id);
-        if let Some(entry) = entry {
-            let _ = entry
-                .runtime
-                .control(crate::types::ControlAction::Stop)
-                .await;
-            let _ = entry.task.await;
-        }
+        drop(reservations);
+        drop(bootstrap_guard);
+        self.drain_retired_runtime(agent_id, incarnation).await?;
         // Cancel any active wait conditions before removing the data directory.
         // This produces audit events and avoids orphaned active waits.
         let now = chrono::Utc::now();
@@ -7484,8 +8056,23 @@ impl RuntimeHostBridge {
         if close_admission {
             // Closing admission is synchronous. Never unload/join a runtime
             // while holding the reservation its accepted mutations may need.
-            if let Some(runtime) = self.loaded_runtime_for(agent_id).await? {
-                if runtime.instance_incarnation() == incarnation {
+            let registry = host.inner.runtimes.read().await;
+            for runtime in registry
+                .agents
+                .get(agent_id)
+                .map(|entry| &entry.runtime)
+                .into_iter()
+                .chain(registry.unloading_mutations.values())
+                .chain(
+                    registry
+                        .temporary_runtimes
+                        .values()
+                        .map(|entry| &entry.runtime),
+                )
+            {
+                if runtime.instance_agent_id() == agent_id
+                    && runtime.instance_incarnation() == incarnation
+                {
                     runtime.close_execution_admission();
                 }
             }
@@ -7511,20 +8098,14 @@ impl RuntimeHostBridge {
                     .values()
                     .find(|runtime| runtime.owns_mutation_reservation(reservation))
             })
+            .or_else(|| {
+                registry
+                    .temporary_runtimes
+                    .get(reservation.agent_id())
+                    .map(|entry| &entry.runtime)
+                    .filter(|runtime| runtime.owns_mutation_reservation(reservation))
+            })
             .cloned())
-    }
-
-    pub(crate) async fn loaded_runtime_for(&self, agent_id: &str) -> Result<Option<RuntimeHandle>> {
-        let host = self.host()?;
-        let runtime = host
-            .inner
-            .runtimes
-            .read()
-            .await
-            .agents
-            .get(agent_id)
-            .map(|entry| entry.runtime.clone());
-        Ok(runtime)
     }
 
     pub(crate) async fn wait_for_bootstrap_ready(&self) -> Result<()> {
@@ -8199,8 +8780,499 @@ mod tests {
         (work_item.id, attempt_id)
     }
 
+    fn seed_stopped_startup_cleanup(host: &RuntimeHost) -> (AgentState, String, String, String) {
+        let agent_id = host.config().default_agent_id.clone();
+        let mut state = AgentState::new(&agent_id);
+        state.status = AgentStatus::Stopped;
+        state.pending = 1;
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&state)
+            .unwrap();
+        let message = MessageEnvelope::new(
+            &agent_id,
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "stopped startup queue".into(),
+            },
+        );
+        host.runtime_db().messages().upsert(&message).unwrap();
+        host.runtime_db()
+            .queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Queued,
+                created_at: message.created_at,
+                updated_at: message.created_at,
+            })
+            .unwrap();
+        let timer_id = "stopped-startup-timer".to_string();
+        host.runtime_db()
+            .timers()
+            .upsert(&startup_timer_fixture(
+                &timer_id,
+                &agent_id,
+                TimerStatus::Active,
+                None,
+                Some(Utc::now() + chrono::Duration::hours(1)),
+            ))
+            .unwrap();
+        let wait_id = "stopped-startup-wait".to_string();
+        let now = Utc::now();
+        host.runtime_db()
+            .wait_conditions()
+            .upsert(&WaitConditionRecord {
+                id: wait_id.clone(),
+                agent_id,
+                work_item_id: None,
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::Timer,
+                source: Some("timer".into()),
+                subject_ref: Some(timer_id.clone()),
+                waiting_for: "timer".into(),
+                wake_sources: vec![WakeSource::Timer { wake_at: now }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+                turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
+            })
+            .unwrap();
+        let created_at = crate::runtime_db::migrations::timestamp(now);
+        host.runtime_db().transaction(|tx| {
+            tx.execute(
+                "INSERT INTO timer_wakes (timer_id, message_id, fire_count, status, created_at, updated_at)
+                 VALUES (?1, ?2, 1, 'pending', ?3, ?3)",
+                rusqlite::params![timer_id, "stopped-startup-wake", created_at],
+            )?;
+            Ok(())
+        }).unwrap();
+        (state, message.id, timer_id, wait_id)
+    }
+
+    fn assert_stopped_startup_cleanup(
+        host: &RuntimeHost,
+        original: &AgentState,
+        message_id: &str,
+        timer_id: &str,
+        wait_id: &str,
+        applied: bool,
+    ) {
+        let mut expected = original.clone();
+        if applied {
+            expected.pending = 0;
+        }
+        assert_eq!(
+            host.runtime_db()
+                .agent_states()
+                .latest(&original.id)
+                .unwrap(),
+            Some(expected)
+        );
+        assert_eq!(
+            host.runtime_db()
+                .queue_entries()
+                .latest(message_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            if applied {
+                QueueEntryStatus::Aborted
+            } else {
+                QueueEntryStatus::Queued
+            }
+        );
+        assert_eq!(
+            host.runtime_db()
+                .timers()
+                .latest(timer_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            if applied {
+                TimerStatus::Cancelled
+            } else {
+                TimerStatus::Active
+            }
+        );
+        assert_eq!(
+            host.runtime_db()
+                .wait_conditions()
+                .latest_for_agent(&original.id)
+                .unwrap()
+                .into_iter()
+                .find(|wait| wait.id == wait_id)
+                .unwrap()
+                .status,
+            if applied {
+                WaitConditionStatus::Cancelled
+            } else {
+                WaitConditionStatus::Active
+            }
+        );
+        let connection = host.runtime_db().connection().unwrap();
+        let wake_status: String = connection
+            .query_row(
+                "SELECT status FROM timer_wakes WHERE message_id = 'stopped-startup-wake'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(wake_status, if applied { "cancelled" } else { "pending" });
+    }
+
+    #[tokio::test]
+    async fn startup_stopped_cleanup_rolls_back_wait_timer_wake_queue_and_state() {
+        use crate::runtime_db::transitions::TransitionFaultPoint;
+        for fault in [
+            TransitionFaultPoint::AfterCanonicalWrites,
+            TransitionFaultPoint::BeforeCommit,
+        ] {
+            let (_home, host) = test_host();
+            let (state, message_id, timer_id, wait_id) = seed_stopped_startup_cleanup(&host);
+            let (mut reservations, handoff) = host.reserve_startup_mutations().await.unwrap();
+            let facts = host.external_identity_facts(&reservations).unwrap();
+            let mut handoff = Some(handoff);
+            let error = host
+                .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                    let result = host
+                        .runtime_db()
+                        .agent_states()
+                        .reconcile_stale_waits_at_startup(Some(fault));
+                    drop(handoff.take());
+                    result.map(|(count, _)| (count, facts))
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(
+                crate::runtime_db::persistence_certainty(&error),
+                Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
+            );
+            assert_stopped_startup_cleanup(&host, &state, &message_id, &timer_id, &wait_id, false);
+            drop(reservations);
+            assert_eq!(host.reconcile_stale_waits_at_startup().await.unwrap(), 1);
+            assert_stopped_startup_cleanup(&host, &state, &message_id, &timer_id, &wait_id, true);
+            assert!(host.inner.runtimes.read().await.agents.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_stopped_cleanup_retains_exact_known_state_before_publication() {
+        let (_home, host) = test_host();
+        let (state, message_id, timer_id, wait_id) = seed_stopped_startup_cleanup(&host);
+        let (mut reservations, handoff) = host.reserve_startup_mutations().await.unwrap();
+        let mut facts = host.external_identity_facts(&reservations).unwrap();
+        let agent_ids = reservations
+            .iter()
+            .map(|reservation| reservation.agent_id().to_string())
+            .collect::<Vec<_>>();
+        let mut handoff = Some(handoff);
+        host.fail_next_external_mutation_publication();
+        let error = host
+            .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                let result = host
+                    .runtime_db()
+                    .agent_states()
+                    .reconcile_stale_waits_at_startup(None);
+                drop(handoff.take());
+                let (count, states) = result?;
+                for (agent_id, facts) in agent_ids.iter().zip(&mut facts) {
+                    facts.state = states.get(agent_id).cloned().map(Arc::new);
+                }
+                Ok((count, facts))
+            })
+            .await
+            .unwrap_err();
+        drop(reservations);
+        assert!(error.to_string().contains("committed but publication"));
+        assert_stopped_startup_cleanup(&host, &state, &message_id, &timer_id, &wait_id, true);
+        let owner = host
+            .inner
+            .mutation_owners
+            .current_owner(&state.id, 1)
+            .unwrap();
+        assert!(matches!(
+            owner.capture(),
+            Err(MutationOwnerError::NeedsReconcile(_))
+        ));
+        let mut reservations = host
+            .reserve_agent_mutations(&[state.id.clone()])
+            .await
+            .unwrap();
+        let observation = owner.capture().unwrap().unwrap();
+        let mut expected = state;
+        expected.pending = 0;
+        assert_eq!(observation.state.as_ref(), &expected);
+        assert!(reservations
+            .iter_mut()
+            .all(|reservation| reservation.recovery().unwrap().is_none()));
+        assert!(host.inner.runtimes.read().await.agents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn startup_rechecks_new_orphan_scope_without_handoff_across_owner_wait() {
+        let (_home, host) = test_host();
+        let default_id = host.config().default_agent_id.clone();
+        let owner = host
+            .inner
+            .mutation_owners
+            .current_owner(&default_id, 1)
+            .unwrap();
+        let blocker = owner.reserve().await.unwrap();
+        let mut prepare = Box::pin(host.reserve_startup_mutations());
+        // With no registry/handoff contention the first Pending is the owner wait.
+        std::future::poll_fn(|cx| {
+            assert!(prepare.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let handoff = host
+            .inner
+            .bootstrap_handoff_lock
+            .try_lock()
+            .expect("startup must not hold handoff while waiting for an owner");
+        let now = Utc::now();
+        host.runtime_db()
+            .queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: "startup-orphan-scope-message".into(),
+                agent_id: "startup-orphan-scope".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Dequeued,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+        drop(handoff);
+        drop(blocker);
+        let (mut reservations, handoff) = prepare.await.unwrap();
+        assert!(reservations
+            .iter()
+            .any(|reservation| reservation.agent_id() == "startup-orphan-scope"));
+        let orphan_owner = host
+            .inner
+            .mutation_owners
+            .current_owner("startup-orphan-scope", 1)
+            .unwrap();
+        let facts = host.external_identity_facts(&reservations).unwrap();
+        let mut handoff = Some(handoff);
+        host.fail_next_external_mutation_publication();
+        let error = host
+            .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                let result = host
+                    .runtime_db()
+                    .recover_interrupted_runtime_state_at_startup();
+                drop(handoff.take());
+                result.map(|report| (report, facts))
+            })
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("committed but publication"));
+        assert_eq!(
+            host.runtime_db()
+                .queue_entries()
+                .latest("startup-orphan-scope-message")
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Interrupted
+        );
+        assert!(matches!(
+            orphan_owner.capture(),
+            Err(MutationOwnerError::NeedsReconcile(_))
+        ));
+        drop(reservations);
+        let _reservations = host.reserve_agent_mutations(&[default_id]).await.unwrap();
+        assert!(owner.capture().unwrap().is_none());
+        assert!(
+            orphan_owner.capture().unwrap().is_none(),
+            "known metadata absence must not create AgentState"
+        );
+        assert!(host
+            .runtime_db()
+            .agent_states()
+            .latest("startup-orphan-scope")
+            .unwrap()
+            .is_none());
+        assert!(host.inner.runtimes.read().await.agents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_caller_cancellation_keeps_host_worker_until_shutdown_drain() {
+        let (_home, host) = test_host();
+        let (state, message_id, timer_id, wait_id) = seed_stopped_startup_cleanup(&host);
+        let owner = host
+            .inner
+            .mutation_owners
+            .current_owner(&state.id, 1)
+            .unwrap();
+        let blocker = owner.reserve().await.unwrap();
+        let caller = tokio::spawn({
+            let host = host.clone();
+            async move { host.recover_orphaned_queue_claims_at_startup().await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host
+                .inner
+                .external_mutation_tasks
+                .lock()
+                .unwrap()
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        caller.abort();
+        let _ = caller.await;
+        let shutdown = tokio::spawn({
+            let host = host.clone();
+            async move { host.shutdown().await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.inner.runtimes.read().await.phase == HostRuntimePhase::Open {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !shutdown.is_finished(),
+            "accepted startup worker must still own the reservation wait"
+        );
+        drop(blocker);
+        tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_stopped_startup_cleanup(&host, &state, &message_id, &timer_id, &wait_id, true);
+        assert!(owner.capture().is_ok());
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_rejects_loaded_and_draining_runtimes_before_sql() {
+        let (_home, host) = test_host();
+        let runtime = host.default_runtime().await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        runtime
+            .control(crate::types::ControlAction::Stop)
+            .await
+            .unwrap();
+        let agent_id = host.config().default_agent_id.clone();
+        let owner = host
+            .inner
+            .mutation_owners
+            .current_owner(&agent_id, runtime.instance_incarnation())
+            .unwrap();
+        let error = host
+            .recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("no loaded, temporary, or draining runtimes before activation"));
+        assert!(owner.capture().is_ok(), "rejection must precede begin_all");
+        let blocker = owner.reserve().await.unwrap();
+        let unload = tokio::spawn({
+            let host = host.clone();
+            let agent_id = agent_id.clone();
+            async move {
+                host.unload_runtime(&agent_id).await;
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let registry = host.inner.runtimes.read().await;
+                if registry.agents.is_empty() && !registry.unloading_mutations.is_empty() {
+                    break;
+                }
+                drop(registry);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            host.recover_orphaned_queue_claims_at_startup(),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("no loaded, temporary, or draining runtimes before activation"));
+        drop(blocker);
+        tokio::time::timeout(Duration::from_secs(5), unload)
+            .await
+            .unwrap()
+            .unwrap();
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_rejects_temporary_runtime_without_loaded_runtime() {
+        let (_home, host) = test_host();
+        let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        runtime
+            .control(crate::types::ControlAction::Stop)
+            .await
+            .unwrap();
+        {
+            let registry = host.inner.runtimes.read().await;
+            assert!(registry.agents.is_empty());
+            assert!(registry.unloading_mutations.is_empty());
+            assert!(registry.temporary_runtimes.contains_key(&agent_id));
+        }
+        let owner = host
+            .bridge()
+            .mutation_owner_for(&agent_id, runtime.instance_incarnation())
+            .unwrap();
+        let blocker = owner.reserve().await.unwrap();
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            host.recover_orphaned_queue_claims_at_startup(),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("no loaded, temporary, or draining runtimes before activation"));
+        assert!(owner.capture().is_ok(), "rejection must precede begin_all");
+        drop(blocker);
+        host.cleanup_temporary_runtime(agent_id, runtime, runtime_task)
+            .await
+            .unwrap();
+        host.shutdown().await.unwrap();
+    }
+
     #[tokio::test]
     async fn startup_recovery_discovers_consumed_result_owner_without_queue_task_or_timer_wake() {
+        Box::pin(startup_consumed_result_owner_recovery(false)).await;
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_preserves_execution_only_owner_after_known_publication_fault() {
+        Box::pin(startup_consumed_result_owner_recovery(true)).await;
+    }
+
+    async fn startup_consumed_result_owner_recovery(publication_fault: bool) {
         let (_home, host) = canonical_test_host();
         let config = host.config().as_ref().clone();
         let agent_id = "startup-consumed-result-owner";
@@ -8232,6 +9304,9 @@ mod tests {
             }),
         )
         .unwrap();
+        if publication_fault {
+            restarted.fail_next_external_mutation_publication();
+        }
         restarted
             .recover_orphaned_queue_claims_at_startup()
             .await
@@ -12929,6 +14004,70 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn temporary_runtime_restores_exact_known_facts_before_opening_the_gate() {
+        let (_home, host) = test_host();
+        let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        runtime_task.abort();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !runtime_task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let (expected, abort_token, message_id) = runtime
+            .prepare_known_host_installation_fixture()
+            .await
+            .unwrap();
+        assert!(!abort_token.is_cancelled());
+        let owner = host
+            .bridge()
+            .mutation_owner_for(&agent_id, runtime.instance_incarnation())
+            .unwrap();
+        assert!(matches!(
+            owner.capture(),
+            Err(MutationOwnerError::NeedsReconcile(_))
+        ));
+        {
+            let registry = host.inner.runtimes.read().await;
+            assert!(registry.agents.is_empty());
+            assert!(registry.unloading_mutations.is_empty());
+            assert!(registry.temporary_runtimes.contains_key(&agent_id));
+        }
+        let reservations = host
+            .reserve_agent_mutations(&[agent_id.clone()])
+            .await
+            .unwrap();
+        let (state, queue_len, abort_handle_absent) = runtime.host_installation_snapshot().await;
+        assert_eq!(state, expected);
+        assert_eq!(
+            queue_len, 0,
+            "saved temporary queue must install before Ready"
+        );
+        assert!(abort_handle_absent);
+        assert!(
+            abort_token.is_cancelled(),
+            "saved deferred abort must execute"
+        );
+        assert_eq!(owner.capture().unwrap().unwrap().state.as_ref(), &expected);
+        assert_eq!(
+            host.runtime_db()
+                .queue_entries()
+                .latest(&message_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Aborted
+        );
+        drop(reservations);
+        host.cleanup_temporary_runtime(agent_id, runtime, runtime_task)
+            .await
+            .unwrap();
+        host.shutdown().await.unwrap();
+    }
+
     async fn retiring_runtime_keeps_exact_known_installation_target(shutdown: bool) {
         let (_home, host) = test_host();
         let runtime = host.default_runtime().await.unwrap();
@@ -13076,6 +14215,131 @@ mod tests {
     #[tokio::test]
     async fn unload_runtime_restores_exact_known_facts_before_opening_the_gate() {
         retiring_runtime_keeps_exact_known_installation_target(false).await;
+    }
+
+    #[tokio::test]
+    async fn accepted_retirement_drains_its_instance_while_host_is_closing() {
+        let (_home, host) = test_host();
+        host.create_named_agent("closing-retirement", None)
+            .await
+            .unwrap();
+        let runtime = host.get_public_agent("closing-retirement").await.unwrap();
+        let incarnation = runtime.instance_incarnation();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let drained = Arc::new(Notify::new());
+        let finish = Arc::new(Notify::new());
+        let operation = tokio::spawn({
+            let host = host.clone();
+            let worker = host.clone();
+            let started = started.clone();
+            let release = release.clone();
+            let drained = drained.clone();
+            let finish = finish.clone();
+            async move {
+                host.run_owned_external_mutation(async move {
+                    started.notify_one();
+                    release.notified().await;
+                    worker
+                        .drain_retired_runtime("closing-retirement", incarnation)
+                        .await?;
+                    drained.notify_one();
+                    finish.notified().await;
+                    Ok(())
+                })
+                .await
+            }
+        });
+        started.notified().await;
+        operation.abort();
+        let _ = operation.await;
+        let shutdown = tokio::spawn({
+            let host = host.clone();
+            async move { host.shutdown().await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.inner.runtimes.read().await.phase == HostRuntimePhase::Open {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), drained.notified())
+            .await
+            .unwrap();
+        assert!(runtime.execution_admission_lease().is_err());
+        assert!(runtime.spawn_owned_mutation(async {}).is_err());
+        assert!(
+            !shutdown.is_finished(),
+            "Host still owns the accepted cleanup worker"
+        );
+        finish.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn successful_retirement_retry_releases_previously_failed_generation() {
+        let (_home, host) = test_host();
+        host.create_named_agent("retry-retirement", None)
+            .await
+            .unwrap();
+        let runtime = host.get_public_agent("retry-retirement").await.unwrap();
+        let failed = Arc::new(Notify::new());
+        runtime
+            .spawn_owned_mutation({
+                let failed = failed.clone();
+                async move {
+                    failed.notify_one();
+                    panic!("fixture mutation worker failure");
+                }
+            })
+            .unwrap();
+        failed.notified().await;
+        assert!(host
+            .drain_retired_runtime("retry-retirement", runtime.instance_incarnation())
+            .await
+            .is_err());
+        assert!(!host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .unloading_mutations
+            .is_empty());
+        host.drain_retired_runtime("retry-retirement", runtime.instance_incarnation())
+            .await
+            .unwrap();
+        let registry = host.inner.runtimes.read().await;
+        assert!(registry.unloading_mutations.is_empty());
+        assert!(registry.unloading_exits.is_empty());
+        drop(registry);
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn retirement_of_old_incarnation_does_not_drain_current_instance() {
+        let (_home, host) = test_host();
+        host.create_named_agent("current-retirement", None)
+            .await
+            .unwrap();
+        let runtime = host.get_public_agent("current-retirement").await.unwrap();
+        host.drain_retired_runtime("current-retirement", runtime.instance_incarnation() + 1)
+            .await
+            .unwrap();
+        assert!(runtime.execution_admission_lease().is_ok());
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .agents
+            .contains_key("current-retirement"));
+        host.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -16584,6 +17848,531 @@ mod tests {
             .expect("archived child repair job");
         assert_eq!(archived_job.mode, AgentDeletionMode::CleanupRepair);
         assert_eq!(archived_job.status, AgentDeletionStatus::Completed);
+    }
+
+    async fn identity_owner_deleted_fixture(host: &RuntimeHost, agent_id: &str) -> RuntimeHandle {
+        host.create_public_named_agent(agent_id, None, None, None)
+            .await
+            .unwrap();
+        let old = host.get_public_agent(agent_id).await.unwrap();
+        let (_, job, _) = host
+            .begin_public_agent_deletion(agent_id, false, "owner-fixture")
+            .await
+            .unwrap();
+        host.execute_deletion_job(job).await.unwrap();
+        old
+    }
+
+    async fn identity_owner_private_fixture(host: &RuntimeHost, agent_id: &str) -> RuntimeHandle {
+        let identity = AgentIdentityRecord::new(
+            agent_id,
+            AgentKind::Named,
+            AgentVisibility::Private,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PrivateChild,
+            None,
+            None,
+        );
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&identity)
+            .unwrap();
+        host.cache_agent_identity(&identity).unwrap();
+        let runtime = host.get_or_create_agent(agent_id).await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        runtime
+    }
+
+    #[tokio::test]
+    async fn reincarnation_waits_for_old_owner_outside_global_handoff() {
+        let (_home, host) = test_host();
+        let agent_id = "owner-reincarnation-race";
+        let old = identity_owner_deleted_fixture(&host, agent_id).await;
+        let owner = host.bridge().mutation_owner_for(agent_id, 1).unwrap();
+        let reservation = owner.reserve().await.unwrap();
+        let bootstrap_lock = host.agent_bootstrap_lock(agent_id);
+        let initial_handoff = host.inner.bootstrap_handoff_lock.lock().await;
+        let create = {
+            let host = host.clone();
+            tokio::spawn(async move {
+                host.create_public_named_agent(agent_id, None, None, None)
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while bootstrap_lock.try_lock().is_ok() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // The worker queued on this handoff after taking its bootstrap lock.
+        // Our following lock request must pass only after it releases the handoff.
+        drop(initial_handoff);
+        let handoff = tokio::time::timeout(
+            Duration::from_secs(5),
+            host.inner.bootstrap_handoff_lock.lock(),
+        )
+        .await
+        .unwrap();
+        assert!(!create.is_finished());
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(agent_id)
+                .unwrap()
+                .unwrap()
+                .incarnation,
+            1
+        );
+        drop(handoff);
+        drop(reservation);
+        let recreated = tokio::time::timeout(Duration::from_secs(10), create)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(recreated.identity.incarnation, 2);
+        let current = host.get_public_agent(agent_id).await.unwrap();
+        let state = current.agent_state().await.unwrap();
+        assert!(old
+            .update_agent_state(|state| {
+                state.total_input_tokens = 999_999;
+                Ok(())
+            })
+            .await
+            .is_err());
+        assert_eq!(
+            host.runtime_db().agent_states().latest(agent_id).unwrap(),
+            Some(state)
+        );
+        assert!(
+            owner.capture().unwrap().is_none(),
+            "old namespace must not publish a successor State"
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reincarnation_rejects_unknown_old_scope_without_creating_home() {
+        let (_home, host) = test_host();
+        let agent_id = "owner-reincarnation-unknown";
+        let _old = identity_owner_deleted_fixture(&host, agent_id).await;
+        let before = host.runtime_db().agent_states().latest(agent_id).unwrap();
+        let owner = host.bridge().mutation_owner_for(agent_id, 1).unwrap();
+        let key = {
+            let mut reservation = owner.reserve().await.unwrap();
+            reservation.begin(ids::audit_event_id()).unwrap()
+        };
+        assert!(!host.agent_data_dir(agent_id).exists());
+        assert!(host
+            .create_public_named_agent(agent_id, None, None, None)
+            .await
+            .is_err());
+        let identity = host
+            .runtime_db()
+            .agent_identities()
+            .latest(agent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(identity.incarnation, 1);
+        assert_eq!(identity.status, AgentRegistryStatus::Deleted);
+        assert_eq!(
+            host.runtime_db().agent_states().latest(agent_id).unwrap(),
+            before
+        );
+        assert!(!host.agent_data_dir(agent_id).exists());
+        assert!(
+            matches!(owner.capture(), Err(MutationOwnerError::NeedsReconcile(pending)) if pending == key)
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn archive_known_publication_fault_still_drains_instance_and_home() {
+        let (_home, host) = test_host();
+        let agent_id = "owner-private-known";
+        let runtime = identity_owner_private_fixture(&host, agent_id).await;
+        let before = host
+            .runtime_db()
+            .agent_identities()
+            .latest(agent_id)
+            .unwrap()
+            .unwrap();
+        host.fail_next_external_mutation_publication();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            host.archive_private_agent(agent_id),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let identity = host
+            .runtime_db()
+            .agent_identities()
+            .latest(agent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(identity.status, AgentRegistryStatus::Deleted);
+        assert_eq!(
+            identity.revision,
+            before.revision + 1,
+            "known recovery must not repeat tombstone SQL"
+        );
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        assert!(!runtime.accepts_execution_admission());
+        assert!(!host.agent_data_dir(agent_id).exists());
+        assert!(host
+            .bridge()
+            .mutation_owner_for(agent_id, 1)
+            .unwrap()
+            .capture()
+            .is_ok());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_private_archive_finishes_drain_while_host_is_closing() {
+        let (_home, host) = test_host();
+        let agent_id = "owner-private-cancel";
+        let runtime = identity_owner_private_fixture(&host, agent_id).await;
+        let release = Arc::new(Notify::new());
+        runtime
+            .spawn_owned_mutation({
+                let release = release.clone();
+                async move { release.notified().await }
+            })
+            .unwrap();
+        let owner = host.bridge().mutation_owner_for(agent_id, 1).unwrap();
+        let reservation = owner.reserve().await.unwrap();
+        let bootstrap_lock = host.agent_bootstrap_lock(agent_id);
+        let archive = {
+            let host = host.clone();
+            tokio::spawn(async move { host.archive_private_agent(agent_id).await })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while bootstrap_lock.try_lock().is_ok() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        archive.abort();
+        assert!(archive.await.unwrap_err().is_cancelled());
+        let shutdown = {
+            let host = host.clone();
+            tokio::spawn(async move { host.shutdown().await })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if host.inner.runtimes.read().await.phase == HostRuntimePhase::Closing {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(reservation);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if host
+                    .runtime_db()
+                    .agent_identities()
+                    .latest(agent_id)
+                    .unwrap()
+                    .unwrap()
+                    .status
+                    == AgentRegistryStatus::Deleted
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!shutdown.is_finished());
+        assert!(
+            host.agent_data_dir(agent_id).exists(),
+            "home must outlive accepted mutations"
+        );
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(10), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(!host.agent_data_dir(agent_id).exists());
+        assert!(!runtime.accepts_execution_admission());
+    }
+
+    #[tokio::test]
+    async fn public_deletion_known_publication_fault_still_drains_instance() {
+        let (_home, host) = test_host();
+        let agent_id = "owner-public-known";
+        host.create_public_named_agent(agent_id, None, None, None)
+            .await
+            .unwrap();
+        let runtime = host.get_public_agent(agent_id).await.unwrap();
+        host.fail_next_external_mutation_publication();
+        let (identity, job, created) = host
+            .begin_public_agent_deletion(agent_id, false, "owner-known-fixture")
+            .await
+            .unwrap();
+        assert!(created);
+        assert_eq!(identity.status, AgentRegistryStatus::Deleting);
+        assert_eq!(
+            host.runtime_db()
+                .agent_deletions()
+                .latest_for_agent(agent_id)
+                .unwrap(),
+            Some(job)
+        );
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        assert!(!runtime.accepts_execution_admission());
+        assert!(host
+            .bridge()
+            .mutation_owner_for(agent_id, 1)
+            .unwrap()
+            .capture()
+            .is_ok());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_temporary_cleanup_retains_instance_responsibility() {
+        let (_home, host) = test_host();
+        let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        let release = Arc::new(Notify::new());
+        runtime
+            .spawn_owned_mutation({
+                let release = release.clone();
+                async move { release.notified().await }
+            })
+            .unwrap();
+        let cleanup = {
+            let host = host.clone();
+            let agent_id = agent_id.clone();
+            let runtime = runtime.clone();
+            tokio::spawn(async move {
+                host.cleanup_temporary_runtime(agent_id, runtime, runtime_task)
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host
+                .inner
+                .external_mutation_tasks
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|task| task.is_finished())
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        cleanup.abort();
+        assert!(cleanup.await.unwrap_err().is_cancelled());
+        let shutdown = {
+            let host = host.clone();
+            tokio::spawn(async move { host.shutdown().await })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if host.inner.runtimes.read().await.phase == HostRuntimePhase::Closing {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!shutdown.is_finished());
+        assert!(host.agent_data_dir(&agent_id).exists());
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(10), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(&agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
+        assert!(!host.agent_data_dir(&agent_id).exists());
+        assert!(!runtime.accepts_execution_admission());
+    }
+
+    #[tokio::test]
+    async fn temporary_cleanup_after_closing_keeps_host_exit_responsibility() {
+        let (_home, host) = test_host();
+        let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        let scheduler = runtime_task.abort_handle();
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .temporary_runtimes
+            .contains_key(&agent_id));
+        let release = Arc::new(Notify::new());
+        runtime
+            .spawn_owned_mutation({
+                let release = release.clone();
+                async move { release.notified().await }
+            })
+            .unwrap();
+        let shutdown = {
+            let host = host.clone();
+            tokio::spawn(async move { host.shutdown().await })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.inner.runtimes.read().await.phase == HostRuntimePhase::Open {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(host
+            .cleanup_temporary_runtime(agent_id.clone(), runtime.clone(), runtime_task)
+            .await
+            .is_err());
+        assert!(!shutdown.is_finished());
+        assert!(host.agent_data_dir(&agent_id).exists());
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(10), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(scheduler.is_finished());
+        assert!(!runtime.accepts_execution_admission());
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(&agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
+        assert!(host.agent_data_dir(&agent_id).exists());
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .temporary_runtimes
+            .is_empty());
+        let identity_count = host
+            .runtime_db()
+            .agent_identities()
+            .latest_all()
+            .unwrap()
+            .len();
+        assert!(host.spawn_temporary_runtime("run").await.is_err());
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest_all()
+                .unwrap()
+                .len(),
+            identity_count
+        );
+    }
+
+    #[tokio::test]
+    async fn temporary_cleanup_success_releases_host_entry_before_shutdown() {
+        let (_home, host) = test_host();
+        let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .temporary_runtimes
+            .contains_key(&agent_id));
+        host.cleanup_temporary_runtime(agent_id.clone(), runtime, runtime_task)
+            .await
+            .unwrap();
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .temporary_runtimes
+            .is_empty());
+        assert!(!host.agent_data_dir(&agent_id).exists());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn temporary_cleanup_unknown_outcome_preserves_identity_and_home() {
+        let (_home, host) = test_host();
+        let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        let owner = host.bridge().mutation_owner_for(&agent_id, 1).unwrap();
+        let key = {
+            let mut reservation = owner.reserve().await.unwrap();
+            reservation.begin(ids::audit_event_id()).unwrap()
+        };
+        assert!(host
+            .cleanup_temporary_runtime(agent_id.clone(), runtime.clone(), runtime_task)
+            .await
+            .is_err());
+        assert!(host.agent_data_dir(&agent_id).exists());
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(&agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Active
+        );
+        assert!(!runtime.accepts_execution_admission());
+        assert!(
+            matches!(owner.capture(), Err(MutationOwnerError::NeedsReconcile(pending)) if pending == key)
+        );
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .temporary_runtimes
+            .contains_key(&agent_id));
+        assert!(host.shutdown().await.is_err());
+        assert!(host.agent_data_dir(&agent_id).exists());
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(&agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Active
+        );
+        assert!(
+            matches!(owner.capture(), Err(MutationOwnerError::NeedsReconcile(pending)) if pending == key)
+        );
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .temporary_runtimes
+            .contains_key(&agent_id));
     }
 
     #[tokio::test]
