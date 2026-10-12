@@ -1,5 +1,6 @@
 package run.holon.android.app
 
+import android.view.inputmethod.InputMethodManager
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
@@ -24,6 +25,7 @@ class ClientRecoveryIntegrationTest {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     val path = request.path.orEmpty().substringBefore('?')
                     val body = when {
+                        request.method == "GET" && path.endsWith("/auth/method") -> """{"mode":"local"}"""
                         path.endsWith("/auth/session/exchange/native") -> """{"ok":true,"credential":"fixture-session","user_id":"test-user","expires_at":null}"""
                         path.endsWith("/auth/session/me") -> """{"ok":true,"user_id":"test-user","display_name":"Tester","auth_method":"local"}"""
                         path.endsWith("/handshake") -> """{"ok":true,"protocol":{"name":"holon-control","version":1},"auth":{"mode":"bearer","required":true},"runtime":{"default_agent":"holon-tester","workspace_dir":"/test","home_dir":"/test","listen":"127.0.0.1:0","advertise_url":null},"capabilities":["agents.conversation-read.v1","auth.native-session.v1","control.prompt-idempotency.v1","control.prompt-attachments.v1","brief.attachments.v1"]}"""
@@ -50,9 +52,27 @@ class ClientRecoveryIntegrationTest {
                 var scenario = ActivityScenario.launch(MainActivity::class.java)
                 try {
                     assertTrue(device.wait(Until.hasObject(By.text("Connect to Holon")), 10_000))
-                    device.findObjects(By.clazz("android.widget.EditText"))[0].text = server.url("/api/").toString()
+                    val addressFields = device.findObjects(By.clazz("android.widget.EditText"))
+                    assertEquals(1, addressFields.size)
+                    assertEquals("", addressFields.single().text)
+                    assertFalse(device.hasObject(By.text("Access token")))
+                    assertFalse(device.hasObject(By.text(ui("使用组织浏览器登录"))))
+                    assertTrue(device.wait(Until.hasObject(By.text("Scan connection QR code")), 10_000))
+                    addressFields.single().text = server.url("/api/").toString()
                     assertTrue(device.wait(Until.hasObject(By.clazz("android.widget.CheckBox")), 10_000))
                     device.findObject(By.clazz("android.widget.CheckBox")).click()
+                    scenario.onActivity { activity ->
+                        activity.getSystemService(InputMethodManager::class.java)
+                            .hideSoftInputFromWindow(activity.window.decorView.windowToken, 0)
+                    }
+                    repeat(3) {
+                        if (!device.wait(Until.hasObject(By.text("Next")), 1_000)) {
+                            device.swipe(device.displayWidth / 2, device.displayHeight * 4 / 5,
+                                device.displayWidth / 2, device.displayHeight * 2 / 5, 20)
+                        }
+                    }
+                    assertTrue(device.wait(Until.hasObject(By.text("Next")), 10_000))
+                    device.findObject(By.text("Next")).click()
                     val tokenField = By.clazz("android.widget.EditText").text("")
                     repeat(3) {
                         if (!device.wait(Until.hasObject(tokenField), 1_000)) {
@@ -62,7 +82,10 @@ class ClientRecoveryIntegrationTest {
                     }
                     assertTrue(device.wait(Until.hasObject(tokenField), 10_000))
                     device.findObject(tokenField).text = "fixture-token"
-                    if (device.hasObject(By.pkg("com.android.inputmethod.latin"))) device.pressBack()
+                    scenario.onActivity { activity ->
+                        activity.getSystemService(InputMethodManager::class.java)
+                            .hideSoftInputFromWindow(activity.window.decorView.windowToken, 0)
+                    }
                     // API 26's smaller display puts the action below the scrollable form.
                     repeat(3) {
                         if (!device.wait(Until.hasObject(By.text("Sign in")), 1_000)) {

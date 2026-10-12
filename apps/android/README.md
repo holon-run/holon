@@ -93,9 +93,17 @@ migration, independent network scopes, system sharing and Activity/draft
 restoration against a local fixture. Do not run it against a user's production
 app data.
 
-The debug app defaults to `http://10.0.2.2:7878/api` on an Android emulator and
-`http://127.0.0.1:7878/api` on a physical device. For a USB-connected device,
-run `adb reverse tcp:7878 tcp:7878` before connecting. Only the debug build
+New connections start with an empty server address in both debug and release
+builds. Enter your own host address or scan its connection QR code. **Next**
+reads the server's public `/api/auth/method`: local-token hosts show token entry,
+while OIDC hosts open the native organization sign-in flow in a browser. Failed
+or unsupported discovery stays on the address step with an error, never a guessed
+authentication fallback. Changing the address clears the authentication step
+and any entered token; saved networks and confirmed one-time pairing remain available.
+
+For local development, enter `http://10.0.2.2:7878` on an Android emulator or
+`http://127.0.0.1:7878` on a USB-connected device after running
+`adb reverse tcp:7878 tcp:7878`. Only the debug build
 allows loopback HTTP without confirmation. Both debug and release builds allow
 an explicitly confirmed HTTP address for self-hosted LAN and encrypted-tunnel
 deployments. The login screen warns that HTTP itself does not encrypt traffic.

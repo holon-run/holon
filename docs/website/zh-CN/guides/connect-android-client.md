@@ -60,10 +60,10 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 ### 方式二：手动配置
 
-1. 打开 Holon 应用。
-2. 输入 **API Base URL**（如 `http://10.0.2.2:7878/api` 或 `https://<你的域名>/api`）。
-3. 输入控制令牌（Bearer Token）或 Bootstrap Token。
-4. 点击 **连接**。
+1. 打开 Holon 应用。服务器地址初始为空，不提供默认托管服务器。
+2. 输入 **Holon 地址**（如 `http://10.0.2.2:7878` 或 `https://<你的域名>`），HTTP 地址需确认可信网络。
+3. 点击 **下一步**，应用会查询服务器的认证方式。
+4. 对于本地令牌服务器，输入控制令牌（Bearer Token）或 Bootstrap Token，再点击 **登录**。
 
 客户端请求 `/api/auth/session/exchange/native` 兑换可撤销的会话凭据，存入 Android Keystore 并从内存中抹除原始 Token。
 
@@ -71,9 +71,9 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 若守护进程开启了 OIDC 认证：
 
-1. 打开 Holon 应用并输入 **API Base URL**。
-2. 点击 **通过 SSO 登录**。
-3. 应用调起系统浏览器完成身份提供商登录。
+1. 打开 Holon 应用并输入 **Holon 地址**。
+2. 点击 **下一步**，应用会检测到服务器使用 OIDC 认证。
+3. 应用调起系统浏览器完成身份提供商登录；若未完成登录就返回，可点击 **使用组织浏览器登录** 重试。
 4. 登录成功后，浏览器自动通过 `run.holon.android://oidc/callback` 重定向唤醒应用。
 
 应用将一次性 bootstrap 票据兑换为可撤销的会话凭据，存入当前网络配置对应的 Android Keystore 中并完成连接。
