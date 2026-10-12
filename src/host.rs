@@ -302,6 +302,7 @@ pub(crate) struct HostInner {
     pub(crate) daemon_deletion_token: CancellationToken,
     pub(crate) daemon_deletion_notify: Arc<Notify>,
     pub(crate) daemon_deletion_handle: Mutex<Option<JoinHandle<()>>>,
+    pub(crate) agent_home_cleanup_lock: AsyncMutex<()>,
     runtime_db_maintenance_lock: Mutex<Option<crate::runtime_db::RuntimeDbLock>>,
     skills_registry: Arc<RwLock<SkillsRegistry>>,
     static_provider: Mutex<Option<Arc<dyn AgentProvider>>>,
@@ -779,6 +780,7 @@ impl RuntimeHost {
                 daemon_deletion_token: CancellationToken::new(),
                 daemon_deletion_notify: Arc::new(Notify::new()),
                 daemon_deletion_handle: Mutex::new(None),
+                agent_home_cleanup_lock: AsyncMutex::new(()),
                 runtime_db_maintenance_lock: Mutex::new(None),
                 skills_registry: Arc::new(RwLock::new(SkillsRegistry::new())),
                 static_provider: Mutex::new(static_provider),
@@ -2942,11 +2944,30 @@ impl RuntimeHost {
                 caller.instance_incarnation(),
             )
         })?;
-        crate::deletion::ensure_parent_cleanup_home_safe(&self.agent_data_dir(agent_id))?;
-        self.check_parent_cleanup_workspaces(agent_id, false)
-            .await?;
+        let identity_active = self
+            .runtime_db()
+            .agent_identities()
+            .latest(agent_id)?
+            .is_some_and(|i| i.status == AgentRegistryStatus::Active);
+        let policy = crate::deletion::AgentDeletionPolicy::PreserveProtectedResources;
+        if identity_active {
+            crate::deletion::ensure_agent_home_deletion_safe(
+                &self.agent_data_dir(agent_id),
+                &self.config().data_dir.join("agents"),
+                policy,
+            )?;
+            self.check_agent_deletion_workspaces(agent_id, false)
+                .await?;
+        }
+        let _home_guard = self.inner.agent_home_cleanup_lock.lock().await;
         let admit = || {
-            crate::deletion::ensure_parent_cleanup_home_safe(&self.agent_data_dir(agent_id))?;
+            if identity_active {
+                crate::deletion::ensure_agent_home_deletion_safe(
+                    &self.agent_data_dir(agent_id),
+                    &self.config().data_dir.join("agents"),
+                    policy,
+                )?;
+            }
             self.runtime_db().agent_deletions().begin_parent_cleanup(
                 agent_id,
                 &parent_agent_id,
@@ -2954,11 +2975,6 @@ impl RuntimeHost {
                 caller.instance_incarnation(),
             )
         };
-        let identity_active = self
-            .runtime_db()
-            .agent_identities()
-            .latest(agent_id)?
-            .is_some_and(|i| i.status == AgentRegistryStatus::Active);
         let loaded = if identity_active {
             self.try_get_loaded_runtime(agent_id).await
         } else {
@@ -3007,21 +3023,27 @@ impl RuntimeHost {
                 reason: "only public self-owned agents and private parent-supervised child agents have an operator delete surface".into(),
             });
         }
-        let (updated_identity, job, created) = self
-            .runtime_db()
-            .agent_deletions()
-            .begin(
-                agent_id,
-                identity.revision,
-                requested_by,
-                cascade_private_children,
-            )
-            .map_err(PublicAgentError::Runtime)?;
+        let (updated_identity, job, created) = {
+            let _home_guard = self.inner.agent_home_cleanup_lock.lock().await;
+            self.runtime_db()
+                .agent_deletions()
+                .begin(
+                    agent_id,
+                    identity.revision,
+                    requested_by,
+                    cascade_private_children,
+                )
+                .map_err(PublicAgentError::Runtime)?
+        };
         self.inner
             .registry
             .cache_agent_identity(&updated_identity)
             .map_err(PublicAgentError::Runtime)?;
-        self.unload_runtime(agent_id).await;
+        if crate::deletion::AgentDeletionPolicy::from(job.mode)
+            == crate::deletion::AgentDeletionPolicy::DeleteAgentData
+        {
+            self.unload_runtime(agent_id).await;
+        }
         // Coalesce new work into the single daemon deletion coordinator.
         if created {
             self.notify_deletion_coordinator();
@@ -13156,6 +13178,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn orphan_trash_sweep_rechecks_ownership_after_enumeration() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let parent_id = host.config().default_agent_id.clone();
+        for legacy in [false, true] {
+            let fence = host.inner.agent_home_cleanup_lock.lock().await;
+            let child =
+                retained_cleanup_fixture(&host, &format!("sweep-late-owner-{legacy}.child"));
+            let home = host.agent_data_dir(&child.agent_id);
+            let trash = if legacy {
+                home.with_extension("deleting_trash")
+            } else {
+                home.with_file_name(format!("{}.deleting_trash", child.agent_id))
+            };
+            fs::create_dir_all(&home).unwrap();
+            fs::create_dir_all(&trash).unwrap();
+            let candidate = fs::read_dir(home.parent().unwrap())
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| path == &trash)
+                .unwrap();
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let sweep_host = host.clone();
+            let sweep = tokio::spawn(async move {
+                started_tx.send(()).unwrap();
+                sweep_host.remove_orphan_agent_home_trash(&candidate).await
+            });
+            started_rx.await.unwrap();
+            assert!(!sweep.is_finished());
+            // Commit admission and a failed Home attempt while the stale
+            // enumerated candidate is waiting for the shared ownership fence.
+            let (_, mut job, _) = host
+                .runtime_db()
+                .agent_deletions()
+                .begin_parent_cleanup(
+                    &child.agent_id,
+                    &parent_id,
+                    child.incarnation,
+                    parent.instance_incarnation(),
+                )
+                .unwrap();
+            job.phase = AgentDeletionPhase::Home;
+            host.runtime_db().agent_deletions().update(&job).unwrap();
+            fs::remove_dir(&trash).unwrap();
+            fs::rename(&home, &trash).unwrap();
+            fs::create_dir_all(trash.join("work")).unwrap();
+            fs::write(trash.join("work/report.md"), "protected result").unwrap();
+            drop(fence);
+            assert!(!sweep.await.unwrap().unwrap());
+            assert!(host
+                .execute_deletion_job(job)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("unregistered_home_artifact"));
+            assert_eq!(host.sweep_orphan_agent_home_trash().await.unwrap(), 0);
+            assert_eq!(
+                fs::read_to_string(trash.join("work/report.md")).unwrap(),
+                "protected result"
+            );
+        }
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn deletion_phase_home_refuses_live_home_colliding_with_trash_name() {
         let (_home, host) = test_host();
         let agents_root = host.config().data_dir.join("agents");
@@ -13198,11 +13285,27 @@ mod tests {
             .begin_public_agent_deletion("customer", false, "operator")
             .await
             .unwrap();
-        let result = host.execute_deletion_job(job).await;
+        let result = host.execute_deletion_job(job.clone()).await;
 
         // The job must fail rather than remove the colliding live home.
         assert!(result.is_err());
         assert!(colliding_home.join("nested/file.txt").exists());
+        // A missing home does not relinquish the registered identity's claim.
+        std::fs::remove_dir_all(&colliding_home).unwrap();
+        let retry = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&job.agent_id)
+            .unwrap()
+            .unwrap();
+        let wait_for = (retry.next_attempt_at.unwrap() - Utc::now())
+            .to_std()
+            .unwrap_or_default()
+            + Duration::from_millis(100);
+        tokio::time::sleep(wait_for).await;
+        let error = host.execute_deletion_job(retry).await.unwrap_err();
+        assert!(error.to_string().contains("live home"));
+        assert!(agents_root.join("customer").exists());
     }
 
     #[tokio::test]
@@ -13415,7 +13518,14 @@ mod tests {
             }
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|error| {
+            let blocker = host
+                .runtime_db()
+                .transaction(|tx| crate::runtime_db::reclamation::idle_blocker_tx(tx, agent_id))
+                .unwrap();
+            let state = host.runtime_db().agent_states().latest(agent_id).unwrap();
+            panic!("idle candidate timeout for {agent_id}: {error}; blocker={blocker:?}; state={state:?}");
+        })
     }
 
     #[tokio::test]
@@ -13790,71 +13900,100 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn parent_cleanup_preserves_dirty_shared_and_occupied_worktrees() {
+    async fn both_deletion_policies_preserve_unsafe_worktrees() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
-        for case in ["dirty", "shared", "occupied"] {
-            let child = retained_cleanup_fixture(&host, &format!("cleanup-worktree-{case}"));
-            let dir = tempdir().unwrap();
-            assert!(std::process::Command::new("git")
-                .args(["init", "--quiet"])
-                .current_dir(dir.path())
-                .status()
-                .unwrap()
-                .success());
-            std::fs::write(dir.path().join("valuable.txt"), "keep").unwrap();
-            let root: crate::types::ExecutionRootEntry=serde_json::from_value(serde_json::json!({
-                "execution_root_id":format!("root-{case}"),"workspace_id":format!("workspace-{case}"),
+        for case in ["dirty", "shared", "occupied", "foreign", "git-refusal"] {
+            for parent_cleanup in [true, false] {
+                let child = retained_cleanup_fixture(
+                    &host,
+                    &format!("cleanup-worktree-{case}-{parent_cleanup}"),
+                );
+                let dir = tempdir().unwrap();
+                assert!(std::process::Command::new("git")
+                    .args(["init", "--quiet"])
+                    .current_dir(dir.path())
+                    .status()
+                    .unwrap()
+                    .success());
+                let artifact = dir.path().join(if case == "git-refusal" {
+                    ".git/valuable.txt"
+                } else {
+                    "valuable.txt"
+                });
+                std::fs::write(&artifact, "keep").unwrap();
+                let root: crate::types::ExecutionRootEntry=serde_json::from_value(serde_json::json!({
+                "execution_root_id":format!("root-{}",child.agent_id),"workspace_id":format!("workspace-{}",child.agent_id),
                 "filesystem_path":dir.path(),"root_kind":"git_worktree_root","created_at":Utc::now(),
-                "worktree":{"provenance":"runtime_created","registered_by_agent_id":child.agent_id,"authorized_agent_ids":if case=="shared"{vec![child.agent_id.clone(),"peer".into()]}else{vec![child.agent_id.clone()]}}
+                "worktree":{"provenance":"runtime_created","registered_by_agent_id":if case=="foreign"{"peer"}else{&child.agent_id},"authorized_agent_ids":if case=="shared"{vec![child.agent_id.clone(),"peer".into()]}else{vec![child.agent_id.clone()]}}
             })).unwrap();
-            host.runtime_db()
-                .execution_root_entries()
-                .upsert(&root)
-                .unwrap();
-            if case == "occupied" {
                 host.runtime_db()
-                    .workspace_occupancies()
-                    .upsert(&crate::types::WorkspaceOccupancyRecord {
-                        occupancy_id: "other-agent-occupancy".into(),
-                        execution_root_id: root.execution_root_id.clone(),
-                        workspace_id: root.workspace_id.clone(),
-                        holder_agent_id: "peer".into(),
-                        access_mode: crate::system::WorkspaceAccessMode::SharedRead,
-                        acquired_at: Utc::now(),
-                        released_at: None,
-                    })
+                    .execution_root_entries()
+                    .upsert(&root)
                     .unwrap();
+                if case == "occupied" {
+                    host.runtime_db()
+                        .workspace_occupancies()
+                        .upsert(&crate::types::WorkspaceOccupancyRecord {
+                            occupancy_id: format!("occupancy-{}", child.agent_id),
+                            execution_root_id: root.execution_root_id.clone(),
+                            workspace_id: root.workspace_id.clone(),
+                            holder_agent_id: "peer".into(),
+                            access_mode: crate::system::WorkspaceAccessMode::SharedRead,
+                            acquired_at: Utc::now(),
+                            released_at: None,
+                        })
+                        .unwrap();
+                }
+                let result = if parent_cleanup {
+                    host.begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+                        .await
+                } else {
+                    Ok(host
+                        .begin_public_agent_deletion(&child.agent_id, false, "operator")
+                        .await
+                        .unwrap()
+                        .1)
+                };
+                let error = if !parent_cleanup || case == "git-refusal" {
+                    let job = result.unwrap();
+                    host.execute_deletion_job(job).await.unwrap_err()
+                } else {
+                    result.unwrap_err()
+                };
+                let expected = match case {
+                    "dirty" => "dirty_or_unknown_worktree",
+                    "shared" => "shared_worktree",
+                    "foreign" => "foreign_or_unowned_worktree",
+                    "git-refusal" => "git refused safe worktree removal",
+                    _ => "active occupancy",
+                };
+                assert!(error.to_string().contains(expected), "{case}: {error:#}");
+                assert_eq!(
+                    host.runtime_db()
+                        .agent_identities()
+                        .latest(&child.agent_id)
+                        .unwrap()
+                        .unwrap()
+                        .status,
+                    if parent_cleanup && case != "git-refusal" {
+                        AgentRegistryStatus::Active
+                    } else {
+                        AgentRegistryStatus::Deleting
+                    }
+                );
+                assert_eq!(std::fs::read_to_string(&artifact).unwrap(), "keep");
+                let job = host
+                    .runtime_db()
+                    .agent_deletions()
+                    .latest_for_agent(&child.agent_id)
+                    .unwrap();
+                if parent_cleanup && case != "git-refusal" {
+                    assert!(job.is_none());
+                } else {
+                    assert_eq!(job.unwrap().status, AgentDeletionStatus::RetryableFailed);
+                }
             }
-            let error = host
-                .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
-                .await
-                .unwrap_err();
-            let expected = match case {
-                "dirty" => "dirty_or_unknown_worktree",
-                "shared" => "shared_worktree",
-                _ => "active occupancy",
-            };
-            assert!(error.to_string().contains(expected), "{case}: {error:#}");
-            assert_eq!(
-                host.runtime_db()
-                    .agent_identities()
-                    .latest(&child.agent_id)
-                    .unwrap()
-                    .unwrap()
-                    .status,
-                AgentRegistryStatus::Active
-            );
-            assert_eq!(
-                std::fs::read_to_string(dir.path().join("valuable.txt")).unwrap(),
-                "keep"
-            );
-            assert!(host
-                .runtime_db()
-                .agent_deletions()
-                .latest_for_agent(&child.agent_id)
-                .unwrap()
-                .is_none());
         }
         host.shutdown().await.unwrap();
     }
@@ -14407,15 +14546,35 @@ mod tests {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
 
-        // Retained command-task output no longer blocks cleanup.
+        // Real runtime output and WorkItem state no longer block cleanup.
         let child = retained_cleanup_fixture(&host, "parent-cleanup-output");
+        let home = host.agent_data_dir(&child.agent_id);
+        for path in [
+            "tool-artifacts/result.log",
+            "task-output/task.log",
+            "work-items/work-id/plan.md",
+        ] {
+            let artifact = home.join(path);
+            fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+            fs::write(artifact, "runtime output").unwrap();
+        }
         let mut task = test_child_supervision_task(&child.agent_id, "cleanup-output-task");
         task.status = TaskStatus::Completed;
-        task.detail = Some(json!({"output_path": "/tmp/holon-retained-output.txt"}));
+        task.detail = Some(json!({"output_path": home.join("task-output/task.log")}));
         host.runtime_db().tasks().upsert(&task).unwrap();
-        host.begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+        let job = host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
             .await
             .unwrap();
+        host.execute_deletion_job(job).await.unwrap();
+        assert!(!home.exists());
+        assert_eq!(
+            host.agent_identity_record(&child.agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
 
         // An open WorkItem is the parent's call, not a cleanup blocker.
         let child = retained_cleanup_fixture(&host, "parent-cleanup-work-item");
@@ -14556,6 +14715,577 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deletion_trash_uses_full_ids_and_recovers_only_unambiguous_legacy_paths() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let mut jobs = Vec::new();
+        for id in ["unique.a", "unique.b"] {
+            let child = retained_cleanup_fixture(&host, id);
+            let home = host.agent_data_dir(id);
+            fs::create_dir_all(home.join("tool-artifacts")).unwrap();
+            fs::write(home.join("tool-artifacts/output.log"), id).unwrap();
+            let mut job = host
+                .begin_parent_agent_deletion(&parent, id, child.incarnation)
+                .await
+                .unwrap();
+            job.phase = AgentDeletionPhase::Home;
+            host.runtime_db().agent_deletions().update(&job).unwrap();
+            let trash = home.with_file_name(format!("{id}.deleting_trash"));
+            fs::rename(home, &trash).unwrap();
+            jobs.push((job, trash));
+        }
+        let (job, first) = jobs.remove(0);
+        host.execute_deletion_job(job).await.unwrap();
+        assert!(!first.exists());
+        assert_eq!(
+            fs::read_to_string(jobs[0].1.join("tool-artifacts/output.log")).unwrap(),
+            "unique.b"
+        );
+        let (job, second) = jobs.remove(0);
+        host.execute_deletion_job(job).await.unwrap();
+        assert!(!second.exists());
+
+        for ambiguous in [false, true] {
+            let id = if ambiguous {
+                "legacy-ambiguous.a"
+            } else {
+                "legacy-unique.a"
+            };
+            let child = retained_cleanup_fixture(&host, id);
+            let home = host.agent_data_dir(id);
+            fs::create_dir_all(home.join("tool-artifacts")).unwrap();
+            fs::write(home.join("tool-artifacts/output.log"), "retained").unwrap();
+            let mut job = host
+                .begin_parent_agent_deletion(&parent, id, child.incarnation)
+                .await
+                .unwrap();
+            job.phase = AgentDeletionPhase::Home;
+            host.runtime_db().agent_deletions().update(&job).unwrap();
+            let legacy = home.with_extension("deleting_trash");
+            fs::rename(home, &legacy).unwrap();
+            if ambiguous {
+                retained_cleanup_fixture(&host, "legacy-ambiguous.b");
+                let error = host.execute_deletion_job(job).await.unwrap_err();
+                assert!(error
+                    .to_string()
+                    .contains("ambiguous legacy agent home trash"));
+                host.sweep_orphan_agent_home_trash().await.unwrap();
+                assert_eq!(
+                    fs::read_to_string(legacy.join("tool-artifacts/output.log")).unwrap(),
+                    "retained"
+                );
+            } else {
+                host.execute_deletion_job(job).await.unwrap();
+                assert!(!legacy.exists());
+                assert_eq!(
+                    host.agent_identity_record(id).unwrap().unwrap().status,
+                    AgentRegistryStatus::Deleted
+                );
+            }
+        }
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn both_deletion_policies_preserve_other_identity_trash_aliases() {
+        for operator in [false, true] {
+            for target_uses_full_alias in [false, true] {
+                for target_home_present in [false, true] {
+                    let (_home, host) = test_host();
+                    let parent = host.default_runtime().await.unwrap();
+                    let (target_id, other_id) = if target_uses_full_alias {
+                        ("trash-alias.a", "trash-alias.a.b")
+                    } else {
+                        ("trash-alias.a.b", "trash-alias.a")
+                    };
+                    let target = retained_cleanup_fixture(&host, target_id);
+                    let other = retained_cleanup_fixture(&host, other_id);
+                    let target_home = host.agent_data_dir(target_id);
+                    let other_home = host.agent_data_dir(other_id);
+                    if target_home_present {
+                        fs::create_dir_all(target_home.join("tool-artifacts")).unwrap();
+                        fs::write(target_home.join("tool-artifacts/output.log"), "target").unwrap();
+                    }
+                    fs::create_dir_all(other_home.join("tool-artifacts")).unwrap();
+                    let mut other_job = host
+                        .begin_parent_agent_deletion(&parent, other_id, other.incarnation)
+                        .await
+                        .unwrap();
+                    other_job.phase = AgentDeletionPhase::Home;
+                    host.runtime_db()
+                        .agent_deletions()
+                        .update(&other_job)
+                        .unwrap();
+                    // A safe job must preserve a deliverable added after admission,
+                    // including when a crash has already renamed its home.
+                    fs::create_dir_all(other_home.join("work")).unwrap();
+                    fs::write(other_home.join("work/deliverable.md"), "protected").unwrap();
+                    let alias = if target_uses_full_alias {
+                        other_home.with_extension("deleting_trash")
+                    } else {
+                        other_home.with_file_name(format!("{other_id}.deleting_trash"))
+                    };
+                    fs::rename(&other_home, &alias).unwrap();
+                    let mut job = if operator {
+                        host.begin_public_agent_deletion(target_id, false, "operator")
+                            .await
+                            .unwrap()
+                            .1
+                    } else {
+                        host.begin_parent_agent_deletion(&parent, target_id, target.incarnation)
+                            .await
+                            .unwrap()
+                    };
+                    job.phase = AgentDeletionPhase::Home;
+                    host.runtime_db().agent_deletions().update(&job).unwrap();
+                    let error = host.execute_deletion_job(job).await.unwrap_err();
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("ambiguous legacy agent home trash"),
+                        "{error:#}"
+                    );
+                    host.sweep_orphan_agent_home_trash().await.unwrap();
+                    assert_eq!(
+                        fs::read_to_string(alias.join("work/deliverable.md")).unwrap(),
+                        "protected"
+                    );
+                    assert_eq!(target_home.exists(), target_home_present);
+                    for agent_id in [target_id, other_id] {
+                        assert_eq!(
+                            host.agent_identity_record(agent_id)
+                                .unwrap()
+                                .unwrap()
+                                .status,
+                            AgentRegistryStatus::Deleting
+                        );
+                    }
+                    host.shutdown().await.unwrap();
+                }
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn operator_deletion_replay_preserves_loaded_safe_cleanup_runtime() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let child = retained_cleanup_fixture(&host, "cleanup-loaded-replay");
+        let runtime = host.get_or_create_agent(&child.agent_id).await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        observe_idle_candidate(&host, &child.agent_id).await;
+        let identity = host
+            .agent_identity_record(&child.agent_id)
+            .unwrap()
+            .unwrap();
+        let exited = Arc::new(AtomicBool::new(false));
+        let (original_sender, original_receiver) =
+            tokio::sync::oneshot::channel::<JoinHandle<()>>();
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let (release_sender, release_receiver) = tokio::sync::oneshot::channel();
+        let replacement_task = {
+            let exited = exited.clone();
+            tokio::spawn(async move {
+                let original = original_receiver.await.unwrap();
+                let _exit_observed = AbortObserved(exited);
+                started_sender.send(()).unwrap();
+                original.await.unwrap();
+                // Keep replay independent of scheduler polling or cooperative exit timing.
+                release_receiver.await.unwrap();
+            })
+        };
+        let generation = {
+            let mut registry = host.inner.runtimes.write().await;
+            let entry = registry.agents.get_mut(&child.agent_id).unwrap();
+            let original = std::mem::replace(&mut entry.task, replacement_task);
+            original_sender.send(original).unwrap();
+            entry.generation
+        };
+        tokio::time::timeout(Duration::from_secs(5), started_receiver)
+            .await
+            .unwrap()
+            .unwrap();
+        let job = host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, identity.incarnation)
+            .await
+            .unwrap();
+        let replay = tokio::time::timeout(
+            Duration::from_secs(5),
+            host.begin_public_agent_deletion(&child.agent_id, false, "operator"),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .1;
+        assert_eq!(replay.deletion_id, job.deletion_id);
+        assert_eq!(replay.mode, AgentDeletionMode::ParentCleanup);
+        {
+            let registry = host.inner.runtimes.read().await;
+            let entry = registry
+                .agents
+                .get(&child.agent_id)
+                .expect("safe replay must leave cooperative exit to the deletion Fence phase");
+            assert_eq!(entry.generation, generation);
+            assert!(!entry.task.is_finished());
+        }
+        assert!(!exited.load(Ordering::SeqCst));
+        release_sender.send(()).unwrap();
+        host.execute_deletion_job(replay).await.unwrap();
+        assert!(!host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .agents
+            .contains_key(&child.agent_id));
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cross_entry_deletion_replay_preserves_admitted_policy() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        for parent_cleanup in [true, false] {
+            let child =
+                retained_cleanup_fixture(&host, &format!("cleanup-replay-{parent_cleanup}"));
+            let first = if parent_cleanup {
+                host.begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+                    .await
+                    .unwrap()
+            } else {
+                host.begin_public_agent_deletion(&child.agent_id, false, "operator")
+                    .await
+                    .unwrap()
+                    .1
+            };
+            let artifact = host.agent_data_dir(&child.agent_id).join("work/report.md");
+            fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+            fs::write(&artifact, "late protected result").unwrap();
+            let replay = if parent_cleanup {
+                host.begin_public_agent_deletion(&child.agent_id, false, "operator")
+                    .await
+                    .unwrap()
+                    .1
+            } else {
+                host.begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+                    .await
+                    .unwrap()
+            };
+            assert_eq!(replay.deletion_id, first.deletion_id);
+            assert_eq!(replay.mode, first.mode);
+            assert_eq!(replay.phase, first.phase);
+            let parent_replay = host
+                .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+                .await
+                .unwrap();
+            assert_eq!(parent_replay.deletion_id, first.deletion_id);
+            assert_eq!(parent_replay.mode, first.mode);
+            assert!(host
+                .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation + 1)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("stale_incarnation"));
+            if parent_cleanup {
+                assert!(host
+                    .execute_deletion_job(replay)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unregistered_home_artifact"));
+                assert_eq!(
+                    fs::read_to_string(&artifact).unwrap(),
+                    "late protected result"
+                );
+                let failed = host
+                    .runtime_db()
+                    .agent_deletions()
+                    .latest_for_agent(&child.agent_id)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(failed.phase, AgentDeletionPhase::Home);
+                let replay = host
+                    .begin_public_agent_deletion(&child.agent_id, false, "operator")
+                    .await
+                    .unwrap()
+                    .1;
+                assert_eq!(replay, failed, "operator retry cannot upgrade a safe job");
+                assert!(host
+                    .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation + 1)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("stale_incarnation"));
+                let mut retry = replay;
+                retry.next_attempt_at = None;
+                host.runtime_db().agent_deletions().update(&retry).unwrap();
+                assert!(host
+                    .execute_deletion_job(retry)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unregistered_home_artifact"));
+                assert_eq!(
+                    fs::read_to_string(&artifact).unwrap(),
+                    "late protected result"
+                );
+                fs::remove_file(&artifact).unwrap();
+                let mut retry = host
+                    .runtime_db()
+                    .agent_deletions()
+                    .latest_for_agent(&child.agent_id)
+                    .unwrap()
+                    .unwrap();
+                retry.next_attempt_at = None;
+                host.runtime_db().agent_deletions().update(&retry).unwrap();
+                host.execute_deletion_job(retry).await.unwrap();
+            } else {
+                host.execute_deletion_job(replay).await.unwrap();
+            }
+            assert!(!artifact.exists());
+        }
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn tool_and_operator_deletion_remove_real_runtime_outputs() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        for parent_cleanup in [true, false] {
+            let child =
+                retained_cleanup_fixture(&host, &format!("cleanup-parity-{parent_cleanup}"));
+            let home = host.agent_data_dir(&child.agent_id);
+            for path in [
+                "tool-artifacts/tool.log",
+                "task-output/task.log",
+                "work-items/work/plan.md",
+            ] {
+                let path = home.join(path);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, "runtime-owned output").unwrap();
+            }
+            let job = if parent_cleanup {
+                crate::tool::tools::delete_agent::execute(
+                    &parent,
+                    &json!({"agent_id":child.agent_id, "incarnation":child.incarnation}),
+                )
+                .await
+                .unwrap();
+                host.runtime_db()
+                    .agent_deletions()
+                    .latest_for_agent(&child.agent_id)
+                    .unwrap()
+                    .unwrap()
+            } else {
+                host.begin_public_agent_deletion(&child.agent_id, false, "operator")
+                    .await
+                    .unwrap()
+                    .1
+            };
+            host.execute_deletion_job(job).await.unwrap();
+            assert!(!home.exists());
+            assert_eq!(
+                host.agent_identity_record(&child.agent_id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                AgentRegistryStatus::Deleted
+            );
+            assert_eq!(
+                host.runtime_db()
+                    .agent_deletions()
+                    .latest_for_agent(&child.agent_id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                AgentDeletionStatus::Completed
+            );
+        }
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn both_deletion_policies_remove_clean_owned_git_worktrees() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        for parent_cleanup in [true, false] {
+            let child =
+                retained_cleanup_fixture(&host, &format!("clean-worktree-{parent_cleanup}"));
+            let dir = tempdir().unwrap();
+            let repo = dir.path().join("repo");
+            let worktree = dir.path().join("checkout");
+            let git = |args: &[&str]| {
+                let output = std::process::Command::new("git")
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                output
+            };
+            git(&["init", "--quiet", repo.to_str().unwrap()]);
+            git(&[
+                "-C",
+                repo.to_str().unwrap(),
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "--quiet",
+                "-m",
+                "fixture",
+            ]);
+            git(&[
+                "-C",
+                repo.to_str().unwrap(),
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "cleanup-fixture",
+                worktree.to_str().unwrap(),
+            ]);
+            let root: crate::types::ExecutionRootEntry = serde_json::from_value(json!({
+                "execution_root_id":format!("root-{}",child.agent_id),
+                "workspace_id":format!("workspace-{}",child.agent_id),
+                "filesystem_path":worktree, "root_kind":"git_worktree_root", "created_at":Utc::now(),
+                "worktree":{"provenance":"runtime_created","registered_by_agent_id":child.agent_id,
+                    "authorized_agent_ids":[child.agent_id]}
+            })).unwrap();
+            host.runtime_db()
+                .execution_root_entries()
+                .upsert(&root)
+                .unwrap();
+            let job = if parent_cleanup {
+                host.begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+                    .await
+                    .unwrap()
+            } else {
+                host.begin_public_agent_deletion(&child.agent_id, false, "operator")
+                    .await
+                    .unwrap()
+                    .1
+            };
+            host.execute_deletion_job(job).await.unwrap();
+            assert!(!worktree.exists());
+            assert!(repo.exists());
+            let listing = git(&[
+                "-C",
+                repo.to_str().unwrap(),
+                "worktree",
+                "list",
+                "--porcelain",
+            ]);
+            assert!(!String::from_utf8_lossy(&listing.stdout).contains(worktree.to_str().unwrap()));
+            assert!(host
+                .runtime_db()
+                .execution_root_entries()
+                .get(&root.execution_root_id)
+                .unwrap()
+                .unwrap()
+                .removed_at
+                .is_some());
+            assert_eq!(
+                host.agent_identity_record(&child.agent_id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                AgentRegistryStatus::Deleted
+            );
+        }
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn safe_deletion_retry_preserves_user_files_even_after_home_rename() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        for renamed in [false, true] {
+            let child =
+                retained_cleanup_fixture(&host, &format!("cleanup-late-artifact-{renamed}"));
+            let home = host.agent_data_dir(&child.agent_id);
+            fs::create_dir_all(&home).unwrap();
+            let mut job = host
+                .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+                .await
+                .unwrap();
+            job.phase = AgentDeletionPhase::Home;
+            host.runtime_db().agent_deletions().update(&job).unwrap();
+            let data = if renamed {
+                let trash = home.with_extension("deleting_trash");
+                fs::rename(&home, &trash).unwrap();
+                trash
+            } else {
+                home.clone()
+            };
+            fs::write(data.join("report.md"), "keep").unwrap();
+            let error = host.execute_deletion_job(job).await.unwrap_err();
+            assert!(error.to_string().contains("unregistered_home_artifact"));
+            host.sweep_orphan_agent_home_trash().await.unwrap();
+            assert_eq!(fs::read_to_string(data.join("report.md")).unwrap(), "keep");
+            fs::remove_file(data.join("report.md")).unwrap();
+            fs::create_dir_all(data.join("tool-artifacts")).unwrap();
+            fs::write(data.join("tool-artifacts/output.log"), "disposable").unwrap();
+            let mut job = host
+                .runtime_db()
+                .agent_deletions()
+                .latest_for_agent(&child.agent_id)
+                .unwrap()
+                .unwrap();
+            job.next_attempt_at = None;
+            host.runtime_db().agent_deletions().update(&job).unwrap();
+            host.execute_deletion_job(job).await.unwrap();
+            assert!(!data.exists());
+            assert_eq!(
+                host.agent_identity_record(&child.agent_id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                AgentRegistryStatus::Deleted
+            );
+        }
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn only_explicit_operator_deletion_discards_user_home_deliverables() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let child = retained_cleanup_fixture(&host, "cleanup-user-data-policy");
+        let artifact = host.agent_data_dir(&child.agent_id).join("work/report.md");
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        fs::write(&artifact, "user result").unwrap();
+        assert!(crate::tool::tools::delete_agent::execute(
+            &parent,
+            &json!({"agent_id":child.agent_id, "incarnation":child.incarnation}),
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("unregistered_home_artifact"));
+        assert_eq!(fs::read_to_string(&artifact).unwrap(), "user result");
+        let (_, job, _) = host
+            .begin_public_agent_deletion(&child.agent_id, false, "operator")
+            .await
+            .unwrap();
+        host.execute_deletion_job(job).await.unwrap();
+        assert!(!artifact.exists());
+        assert_eq!(
+            host.agent_identity_record(&child.agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn parent_cleanup_exits_runtime_and_preserves_parent_result() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
@@ -14578,6 +15308,106 @@ mod tests {
             .try_get_loaded_runtime(&created.agent_id)
             .await
             .unwrap();
+        // Use the runtime writers, not just an output_path database reference.
+        let artifact = old
+            .persist_tool_text_artifact("cleanup-result", "tool output")
+            .await
+            .unwrap();
+        assert!(std::path::Path::new(&artifact).is_file());
+        let command = old
+            .schedule_command_task(
+                "produce retained command output".into(),
+                crate::types::CommandTaskSpec {
+                    cmd: "printf 'retained command output'".into(),
+                    workdir: None,
+                    shell: None,
+                    login: false,
+                    tty: false,
+                    yield_time_ms: 100,
+                    max_output_tokens: None,
+                    accepts_input: false,
+                    terminal_reentry: true,
+                },
+                AuthorityClass::RuntimeInstruction,
+            )
+            .await
+            .unwrap();
+        let command = wait_for_terminal_task(&old, &command.id).await;
+        assert_eq!(command.status, TaskStatus::Completed);
+        assert!(host
+            .agent_data_dir(&created.agent_id)
+            .join("task-output")
+            .join(format!("{}.log", command.id))
+            .is_file());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let settlement = host
+                    .runtime_db()
+                    .task_result_settlements()
+                    .latest_for_message(command.parent_message_id.as_deref().unwrap())
+                    .unwrap();
+                let state = host
+                    .runtime_db()
+                    .agent_states()
+                    .latest(&created.agent_id)
+                    .unwrap()
+                    .unwrap();
+                if settlement.is_some_and(|record| {
+                    record.state
+                        == crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+                }) && matches!(state.status, crate::types::AgentStatus::Asleep)
+                    && state.current_run_id.is_none()
+                    && state.pending == 0
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("command result must settle and runtime must sleep before the final producer turn");
+        // Idle preserves an existing timed sleep even after result settlement.
+        // Let that accepted deadline expire before admitting the final turn.
+        loop {
+            let state = host
+                .runtime_db()
+                .agent_states()
+                .latest(&created.agent_id)
+                .unwrap()
+                .unwrap();
+            let remaining = state
+                .sleeping_until
+                .and_then(|until| (until - Utc::now()).to_std().ok());
+            let Some(remaining) = remaining else {
+                break;
+            };
+            assert!(remaining < Duration::from_secs(31));
+            tokio::time::sleep(remaining + Duration::from_millis(10)).await;
+        }
+        let turn_before_final = host
+            .runtime_db()
+            .agent_states()
+            .latest(&created.agent_id)
+            .unwrap()
+            .unwrap()
+            .turn_index;
+        // A lifecycle nudge is not a producer turn. Use normal prompt admission
+        // after settlement to finish producing artifacts and become idle.
+        old.enqueue(MessageEnvelope::new(
+            &created.agent_id,
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "finish producing retained artifacts".into(),
+            },
+        ))
+        .await
+        .unwrap();
         let identity = host
             .agent_identity_record(&created.agent_id)
             .unwrap()
@@ -14589,15 +15419,56 @@ mod tests {
                     .await
                 {
                     Ok(job) => break job,
-                    Err(error) if error.to_string().contains("live_execution") => {
-                        tokio::task::yield_now().await
+                    Err(error)
+                        if error.to_string().contains("live_execution")
+                            || error.to_string().contains("runtime_execution_or_wake")
+                            || error.to_string().contains("queued_or_claimed_input")
+                            || error.to_string().contains("open_execution") =>
+                    {
+                        tokio::time::sleep(Duration::from_millis(10)).await
                     }
                     Err(error) => panic!("unexpected cleanup rejection: {error:#}"),
                 }
             }
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|error| {
+            let state = host
+                .runtime_db()
+                .agent_states()
+                .latest(&identity.agent_id)
+                .unwrap()
+                .unwrap();
+            panic!(
+                "cleanup admission timed out: {error}; status={:?}; sleeping_until={:?}; pending={}; turns={}->{}; next_result_recheck={:?}; recent_events={:?}; result_settlements={:?}",
+                state.status,
+                state.sleeping_until,
+                state.pending,
+                turn_before_final,
+                state.turn_index,
+                host.runtime_db()
+                    .task_result_settlements()
+                    .next_recheck_at(&identity.agent_id),
+                old.storage().read_recent_events(12),
+                host.runtime_db()
+                    .task_result_settlements()
+                    .due_deferred(
+                        &identity.agent_id,
+                        Utc::now() + chrono::Duration::hours(1),
+                        10,
+                    )
+            )
+        });
+        assert!(
+            host.runtime_db()
+                .agent_states()
+                .latest(&created.agent_id)
+                .unwrap()
+                .unwrap()
+                .turn_index
+                > turn_before_final,
+            "the final producer prompt must execute a real model turn"
+        );
         host.execute_deletion_job(job.clone()).await.unwrap();
         assert!(host
             .try_get_loaded_runtime(&identity.agent_id)

@@ -43,15 +43,18 @@ action, structured review response, or monitoring agent.
 - A parent may request deletion during normal work without receiving a reminder
   first. Authorization follows current lifecycle supervision, not lineage,
   visibility, name, or permission to inspect/message the child.
-- Parent cleanup must preserve executing, queued, waiting, and open work, other
-  current uses, descendant responsibilities, and protected resources. Cleanup
+- Parent cleanup must preserve executing, queued, waiting, and settling work,
+  other current uses, descendant responsibilities, and protected resources. Open
+  WorkItems and retention timers are the parent's reuse decision, not blockers. Cleanup
   cannot cancel legitimate work merely to make the child eligible for deletion.
 - Admission must serialize with new work and resource-reference changes. Stale
   observations or references to a previous identity incarnation cannot authorize
   deletion. Retirement must likewise preserve concurrently accepted work and
   prevent overlapping runtime instances.
-- Parent task results remain readable after child deletion. Referenced artifacts
-  must survive through durable ownership or explicitly block deletion. A
+- Parent task results remain readable after child deletion. Protected artifacts
+  must survive through durable ownership or explicitly block deletion. Runtime
+  command/tool output and WorkItem state may be removed by the shared deletion
+  core; historical terminal output references do not pin these files. A
   historical identity reference alone does not require permanent live residency.
 - An accepted deletion request is durable and idempotent. Failure and restart
   preserve its remaining cleanup responsibility. Logical task completion,
