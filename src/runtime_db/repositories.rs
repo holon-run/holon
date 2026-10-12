@@ -313,7 +313,7 @@ impl AgentStateRepository<'_> {
              UNION SELECT agent_id FROM turn_records
              UNION SELECT agent_id FROM execution_protocol_attempts
              UNION SELECT agent_id FROM wait_conditions
-             UNION SELECT agent_id FROM tasks
+             UNION SELECT owner_agent_id FROM tasks
              UNION SELECT agent_id FROM timers
              UNION SELECT target_agent_id FROM external_triggers
              ORDER BY 1",

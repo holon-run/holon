@@ -2512,7 +2512,8 @@ impl RuntimeHost {
         self.shutdown_daemon_deletion_coordinator().await;
         let mut external_error = None;
         let mut retired_temporary = Vec::new();
-        for (agent_id, runtime, abort, mut phase) in temporary {
+        for (agent_id, runtime, abort, phase) in &temporary {
+            let mut phase = phase.clone();
             runtime.retire_instance_locally("daemon_shutdown").await;
             abort.abort();
             while *phase.borrow_and_update() != AgentRuntimePhase::Terminated {
@@ -2525,12 +2526,12 @@ impl RuntimeHost {
                 continue;
             }
             if let Err(error) = self
-                .archive_temporary_runtime_identity_owned(&agent_id)
+                .archive_temporary_runtime_identity_owned(agent_id)
                 .await
             {
                 external_error.get_or_insert(error);
             } else {
-                retired_temporary.push(agent_id);
+                retired_temporary.push(agent_id.clone());
             }
             // Homes remain available if the run's cleanup never completed.
         }
@@ -2544,6 +2545,14 @@ impl RuntimeHost {
         for task in external_tasks {
             if let Err(error) = task.await {
                 external_error.get_or_insert_with(|| anyhow::Error::new(error));
+            }
+        }
+        // Accepted Host writers may finish after the first temporary drain.
+        // Keep exact targets until their final publication gate is reconciled.
+        for (agent_id, runtime, _, _) in &temporary {
+            if let Err(error) = runtime.join_owned_mutations().await {
+                retired_temporary.retain(|retired| retired != agent_id);
+                external_error.get_or_insert(error);
             }
         }
         let mut tasks = Vec::with_capacity(entries.len());
@@ -18315,6 +18324,150 @@ mod tests {
             .is_empty());
         assert!(!host.agent_data_dir(&agent_id).exists());
         host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn temporary_shutdown_preserves_unknown_from_late_accepted_host_writer() {
+        let (_home, host) = test_host();
+        let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        let scheduler = runtime_task.abort_handle();
+        let owner = host
+            .bridge()
+            .mutation_owner_for(&agent_id, runtime.instance_incarnation())
+            .unwrap();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let (key_tx, key_rx) = oneshot::channel();
+        let caller = tokio::spawn({
+            let host = host.clone();
+            let agent_id = agent_id.clone();
+            let started = started.clone();
+            let release = release.clone();
+            async move {
+                let worker_host = host.clone();
+                host.run_owned_external_mutation(async move {
+                    started.notify_one();
+                    release.notified().await;
+                    assert_eq!(
+                        worker_host.runtime_db().agent_identities().latest(&agent_id)?.unwrap().status,
+                        AgentRegistryStatus::Deleted
+                    );
+                    let mut reservations = worker_host
+                        .reserve_agent_mutations(&[agent_id.clone()])
+                        .await?;
+                    let before = worker_host.runtime_db().agent_states().latest(&agent_id)?.unwrap();
+                    let mut candidate = before.clone();
+                    candidate.total_input_tokens += 1;
+                    let before_payload = serde_json::to_string(&before)?;
+                    let candidate_payload = serde_json::to_string(&candidate)?;
+                    let result = worker_host
+                        .commit_external_agent_states(
+                            &mut reservations,
+                            vec![candidate.clone()],
+                            "fixture-late-temporary-writer".into(),
+                            || {
+                                // Match the real model-migration State CAS:
+                                // an accepted Host writer may finish after retirement.
+                                worker_host.runtime_db().transaction(|tx| {
+                                    let changed = tx.execute(
+                                        "UPDATE agent_states SET payload_json = ?1 WHERE agent_id = ?2 AND payload_json = ?3",
+                                        rusqlite::params![candidate_payload, agent_id, before_payload],
+                                    )?;
+                                    anyhow::ensure!(changed == 1, "fixture State CAS must commit");
+                                    Ok(())
+                                })?;
+                                Err::<(), _>(crate::runtime_db::persistence::mark_persistence_failure(
+                                    anyhow!("fixture lost late Host State acknowledgment"),
+                                    crate::runtime_db::PersistenceCertainty::Indeterminate,
+                                    crate::runtime_db::persistence::PersistenceFailurePhase::Commit,
+                                    None,
+                                ))
+                            },
+                        )
+                        .await;
+                    let recovery = reservations[0].recovery()?.context("fixture recovery is missing")?;
+                    let _ = key_tx.send((recovery.key, candidate));
+                    result
+                })
+                .await
+            }
+        });
+        started.notified().await;
+        let shutdown = tokio::spawn({
+            let host = host.clone();
+            async move { host.shutdown().await }
+        });
+        // The first drain and metadata publication completed; shutdown must
+        // still await the accepted Host writer before releasing this instance.
+        let retired_identity = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let identity = host
+                    .runtime_db()
+                    .agent_identities()
+                    .latest(&agent_id)
+                    .unwrap()
+                    .unwrap();
+                let closing = host.inner.runtimes.read().await.phase == HostRuntimePhase::Closing;
+                if closing
+                    && identity.status == AgentRegistryStatus::Deleted
+                    && owner.capture().is_ok()
+                {
+                    break identity;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!shutdown.is_finished());
+        release.notify_one();
+        let (key, committed_state) = tokio::time::timeout(Duration::from_secs(5), key_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let caller_error = tokio::time::timeout(Duration::from_secs(5), caller)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            crate::runtime_db::persistence_certainty(&caller_error),
+            Some(crate::runtime_db::PersistenceCertainty::Indeterminate)
+        );
+        let shutdown_error = tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            format!("{shutdown_error:#}").contains(&key.operation_id),
+            "shutdown must report the original unresolved operation: {shutdown_error:#}"
+        );
+        assert!(scheduler.is_finished());
+        assert!(!runtime.accepts_execution_admission());
+        assert!(host.agent_data_dir(&agent_id).exists());
+        assert_eq!(
+            host.runtime_db().agent_states().latest(&agent_id).unwrap(),
+            Some(committed_state),
+            "the late State SQL really committed despite its missing ACK"
+        );
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(&agent_id)
+                .unwrap(),
+            Some(retired_identity)
+        );
+        assert!(matches!(owner.capture(),
+            Err(MutationOwnerError::NeedsReconcile(pending)) if pending == key));
+        let reservation = owner.reserve().await.unwrap();
+        let recovery = reservation.recovery().unwrap().unwrap();
+        assert_eq!(recovery.key, key);
+        assert!(recovery.known.is_none());
+        let registry = host.inner.runtimes.read().await;
+        assert_eq!(registry.phase, HostRuntimePhase::Closed);
+        assert!(registry.temporary_runtimes.contains_key(&agent_id));
     }
 
     #[tokio::test]

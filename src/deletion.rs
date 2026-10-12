@@ -1766,6 +1766,12 @@ mod tests {
             .latest(&identity.agent_id)
             .unwrap()
             .unwrap();
+        // Keep this cold owner's resident publication alive through the ACK.
+        // With no runtime or lease, dropping the last reservation can evict it.
+        let owner = host
+            .bridge()
+            .mutation_owner_for(&identity.agent_id, identity.incarnation)
+            .unwrap();
         host.fail_next_external_mutation_publication();
         let completed = host.deletion_phase_finalize(&job).await.unwrap();
         assert_eq!(completed.status, AgentDeletionStatus::Completed);
@@ -1791,10 +1797,6 @@ mod tests {
                 .unwrap(),
             durable
         );
-        let owner = host
-            .bridge()
-            .mutation_owner_for(&identity.agent_id, identity.incarnation)
-            .unwrap();
         assert_eq!(owner.capture().unwrap().unwrap().state.as_ref(), &before);
         assert!(
             owner.try_reserve().is_ok(),

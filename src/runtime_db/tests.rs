@@ -124,6 +124,83 @@ mod tests {
         Ok((temp_dir, db_path, lock_path))
     }
 
+    #[test]
+    fn startup_mutation_scopes_use_real_schema_owner_columns_for_orphan_rows() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert!(db.agent_states().startup_mutation_agent_ids()?.is_empty());
+
+        // Inventory uses each table's scope column even without a corresponding
+        // identity or a decodable domain payload.
+        let orphan_rows = [
+            (
+                "orphan-a-identity",
+                "INSERT INTO agent_identities (agent_id, kind, visibility, status, created_at, updated_at, payload_json)
+                 VALUES (?1, 'named', 'public', 'active', '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z', '{}')",
+            ),
+            (
+                "orphan-b-state",
+                "INSERT INTO agent_states (agent_id, status, updated_at, payload_json)
+                 VALUES (?1, 'stopped', '2026-10-12T00:00:00Z', '{}')",
+            ),
+            (
+                "orphan-c-queue",
+                "INSERT INTO queue_entries (message_id, agent_id, priority, status, created_at, updated_at, payload_json)
+                 VALUES ('orphan-queue-message', ?1, 'normal', 'dequeued', '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z', '{}')",
+            ),
+            (
+                "orphan-d-turn",
+                "INSERT INTO turn_records (turn_id, turn_index, agent_id, created_at, payload_json)
+                 VALUES ('orphan-turn', 1, ?1, '2026-10-12T00:00:00Z', '{}')",
+            ),
+            (
+                "orphan-e-execution",
+                "INSERT INTO execution_protocol_attempts (agent_id, attempt_id, lifecycle_state, source_identity_json, source_generation, payload_json)
+                 VALUES (?1, 'orphan-attempt', 'open', '{}', 1, '{}')",
+            ),
+            (
+                "orphan-f-wait",
+                "INSERT INTO wait_conditions (wait_condition_id, agent_id, status, kind, waiting_for, created_at, updated_at, payload_json)
+                 VALUES ('orphan-wait', ?1, 'active', 'task_result', 'orphan task', '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z', '{}')",
+            ),
+            (
+                "orphan-g-task-owner",
+                "INSERT INTO tasks (task_id, owner_agent_id, parent_agent_id, child_agent_id, kind, status, revision, created_at, updated_at, payload_json)
+                 VALUES ('orphan-task', ?1, 'not-the-task-owner-parent', 'not-the-task-owner-child', 'command_task', 'running', 1, '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z', '{}')",
+            ),
+            (
+                "orphan-h-timer",
+                "INSERT INTO timers (timer_id, agent_id, status, created_at, duration_ms, updated_at, payload_json)
+                 VALUES ('orphan-timer', ?1, 'active', '2026-10-12T00:00:00Z', 1000, '2026-10-12T00:00:00Z', '{}')",
+            ),
+            (
+                "orphan-i-external-target",
+                "INSERT INTO external_triggers (external_trigger_id, target_agent_id, token_hash, status, created_at, payload_json)
+                 VALUES ('orphan-trigger', ?1, 'orphan-token-hash', 'active', '2026-10-12T00:00:00Z', '{}')",
+            ),
+        ];
+        db.transaction(|tx| {
+            for (agent_id, sql) in &orphan_rows {
+                tx.execute(sql, [agent_id])?;
+            }
+            // Repeated ownership across families must reserve one scope.
+            tx.execute(
+                "INSERT INTO agent_states (agent_id, status, updated_at, payload_json)
+                 VALUES (?1, 'stopped', '2026-10-12T00:00:00Z', '{}')",
+                [orphan_rows[0].0],
+            )?;
+            Ok(())
+        })?;
+        assert_eq!(
+            db.agent_states().startup_mutation_agent_ids()?,
+            orphan_rows
+                .iter()
+                .map(|(agent_id, _)| agent_id.to_string())
+                .collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
     fn wait_until(mut condition: impl FnMut() -> Result<bool>, label: &str) -> Result<()> {
         let started_at = Instant::now();
         loop {
