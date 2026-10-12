@@ -10,6 +10,7 @@ use crate::{
         AgentTemplatesConfigFile, CredentialKind,
     },
     github::{ApiFailure, AsyncClient, BlockingClient, GitHubAuth},
+    github_archive::{GitHubArchive, DEFAULT_ARCHIVE_BASE},
     runtime_db::RuntimeDb,
     types::{
         AgentTemplateCatalogEntry, AgentTemplateDetail, AgentTemplateSkillDependency,
@@ -18,9 +19,8 @@ use crate::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
-use reqwest::{header::USER_AGENT, StatusCode};
+use reqwest::header::USER_AGENT;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -292,22 +292,6 @@ const BUILTIN_SKILLS: &[BuiltinSkill] = &[
         files: &[],
     },
 ];
-
-#[derive(Debug, Deserialize)]
-struct GitHubContentsFileResponse {
-    #[serde(rename = "type")]
-    kind: String,
-    content: Option<String>,
-    encoding: Option<String>,
-}
-
-/// Entry in a GitHub Contents API directory listing response.
-#[derive(Debug, Deserialize)]
-struct GitHubContentsDirEntry {
-    name: String,
-    #[serde(rename = "type")]
-    kind: String,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -982,11 +966,25 @@ pub fn agent_template_remote_source_needs_sync(
         return Ok(true);
     };
     if row.status != AgentTemplateRemoteSourceSyncStatus::Synced {
+        if row
+            .next_retry_at
+            .is_some_and(|next_retry_at| next_retry_at > Utc::now())
+        {
+            return Ok(false);
+        }
         return Ok(true);
     }
     let Some(last_synced_at) = row.last_synced_at else {
-        return Ok(true);
+        return Ok(row
+            .next_retry_at
+            .is_none_or(|next_retry_at| next_retry_at <= Utc::now()));
     };
+    if row
+        .next_retry_at
+        .is_some_and(|next_retry_at| next_retry_at > Utc::now())
+    {
+        return Ok(false);
+    }
     Ok(Utc::now().signed_duration_since(last_synced_at) >= stale_after)
 }
 
@@ -1000,6 +998,7 @@ struct RemoteSourceDbRow {
     catalog: Vec<AgentTemplateCatalogEntry>,
     diagnostics: Vec<AgentTemplateCatalogDiagnostic>,
     error: Option<String>,
+    next_retry_at: Option<DateTime<Utc>>,
 }
 
 fn load_remote_source_row(
@@ -1008,7 +1007,7 @@ fn load_remote_source_row(
 ) -> Result<Option<RemoteSourceDbRow>> {
     connection
         .query_row(
-            "SELECT kind, status, last_synced_at, resolved_ref, resolved_revision, catalog_json, diagnostics_json, error \
+            "SELECT kind, status, last_synced_at, resolved_ref, resolved_revision, catalog_json, diagnostics_json, error, next_retry_at \
              FROM agent_template_remote_source_syncs WHERE source_id = ?1",
             [source_id],
             |row| {
@@ -1025,6 +1024,7 @@ fn load_remote_source_row(
                     catalog_json,
                     diagnostics_json,
                     row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                 ))
             },
         )
@@ -1039,6 +1039,7 @@ fn load_remote_source_row(
                 catalog_json,
                 diagnostics_json,
                 error,
+                next_retry_at,
             )| {
                 Ok(RemoteSourceDbRow {
                     kind,
@@ -1054,6 +1055,10 @@ fn load_remote_source_row(
                     diagnostics: serde_json::from_str(&diagnostics_json)
                         .context("failed to decode remote template diagnostics_json")?,
                     error,
+                    next_retry_at: next_retry_at
+                        .map(|value| value.parse())
+                        .transpose()
+                        .context("failed to parse remote source next_retry_at")?,
                 })
             },
         )
@@ -1114,17 +1119,25 @@ pub async fn sync_agent_template_remote_source(
 
     let parsed = parse_github_repo_url(&config.url)?;
     let github = GitHubTemplateClient::from_remote_source_config(user_home, config).await?;
-    let resolved_ref = match config.git_ref.clone().or(parsed.git_ref) {
-        Some(value) => value,
-        None => fetch_default_branch_with_client(&github, &parsed.owner, &parsed.repo).await?,
-    };
-    let mut catalog = discover_github_repo_templates_with_client(
-        &github,
+    let resolved_ref = config
+        .git_ref
+        .clone()
+        .or(parsed.git_ref)
+        .unwrap_or_else(|| "HEAD".to_string());
+    let archive = GitHubArchive::fetch(
+        &github.client,
         &parsed.owner,
         &parsed.repo,
         &resolved_ref,
+        &github_template_archive_base(),
     )
     .await?;
+    let mut catalog = discover_github_repo_templates_from_archive(
+        &archive,
+        &parsed.owner,
+        &parsed.repo,
+        &resolved_ref,
+    )?;
     for entry in &mut catalog {
         entry.source_id = Some(source_id.to_string());
         entry.resolved_ref = Some(resolved_ref.clone());
@@ -1153,8 +1166,8 @@ pub async fn sync_agent_template_remote_source(
     let mut failures = Vec::new();
     let mut installed = 0usize;
     for entry in &catalog {
-        let result = install_remote_template_catalog_entry(
-            &github,
+        let result = install_remote_template_catalog_entry_from_archive(
+            &archive,
             &templates_root,
             &registry,
             source_id,
@@ -1162,8 +1175,7 @@ pub async fn sync_agent_template_remote_source(
             &resolved_ref,
             now,
             entry,
-        )
-        .await;
+        );
         match result {
             Ok(record) => {
                 installed += 1;
@@ -1256,16 +1268,57 @@ fn upsert_remote_source_sync(
     let now = Utc::now().to_rfc3339();
     let created_at = now.clone();
     db.transaction(|tx| {
+        let previous_retry_count: i64 = tx
+            .query_row(
+                "SELECT COALESCE(retry_count, 0) FROM agent_template_remote_source_syncs \
+                 WHERE source_id = ?1",
+                [status.source_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let retrying = matches!(
+            status.status,
+            AgentTemplateRemoteSourceSyncStatus::Failed
+                | AgentTemplateRemoteSourceSyncStatus::PartiallyFailed
+        );
+        let retry_count = if retrying {
+            previous_retry_count.saturating_add(1)
+        } else {
+            0
+        };
+        let retry_after = status
+            .error
+            .as_deref()
+            .and_then(|error| error.split_once("retry after "))
+            .and_then(|(_, value)| value.split_whitespace().next())
+            .map(|value| {
+                value.trim_end_matches(|character| matches!(character, ')' | '.' | ',' | ';'))
+            })
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc));
+        let next_retry_at = if retrying {
+            let deadline = retry_after.unwrap_or_else(|| {
+                let delay_seconds = 60_i64
+                    .saturating_mul(1_i64 << (retry_count as u32).min(8))
+                    .min(6 * 60 * 60);
+                Utc::now() + chrono::Duration::seconds(delay_seconds)
+            });
+            Some(deadline.to_rfc3339())
+        } else {
+            None
+        };
         tx.execute(
             "INSERT INTO agent_template_remote_source_syncs \
-             (source_id, kind, url, requested_ref, enabled, status, last_synced_at, resolved_ref, resolved_revision, catalog_json, diagnostics_json, error, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
+             (source_id, kind, url, requested_ref, enabled, status, last_synced_at, resolved_ref, resolved_revision, catalog_json, diagnostics_json, error, next_retry_at, retry_count, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
              ON CONFLICT(source_id) DO UPDATE SET \
                kind = excluded.kind, url = excluded.url, requested_ref = excluded.requested_ref, \
                enabled = excluded.enabled, status = excluded.status, last_synced_at = excluded.last_synced_at, \
                resolved_ref = excluded.resolved_ref, resolved_revision = excluded.resolved_revision, \
                catalog_json = excluded.catalog_json, diagnostics_json = excluded.diagnostics_json, \
-               error = excluded.error, updated_at = excluded.updated_at",
+               error = excluded.error, next_retry_at = excluded.next_retry_at, \
+               retry_count = excluded.retry_count, updated_at = excluded.updated_at",
             params![
                 status.source_id,
                 status.kind,
@@ -1279,6 +1332,8 @@ fn upsert_remote_source_sync(
                 catalog_json,
                 diagnostics_json,
                 status.error,
+                next_retry_at,
+                retry_count,
                 created_at,
                 now,
             ],
@@ -1450,53 +1505,6 @@ pub(crate) async fn resolve_remote_agent_template_detail(
             .or_else(|| entry.schema_version.clone()),
         agents_md: resolved.agents_md,
         skills,
-    })
-}
-
-async fn install_remote_template_catalog_entry(
-    github: &GitHubTemplateClient,
-    templates_root: &Path,
-    registry: &AgentTemplateRegistry,
-    source_id: &str,
-    source_url: &str,
-    resolved_ref: &str,
-    synced_at: DateTime<Utc>,
-    entry: &AgentTemplateCatalogEntry,
-) -> Result<AgentTemplateRegistryInstalled> {
-    let template_url = entry
-        .source_url
-        .as_deref()
-        .ok_or_else(|| anyhow!("remote template {} has no source URL", entry.catalog_id))?;
-    let resolved = resolve_github_template_with_client(github, template_url).await?;
-    let install_id = choose_remote_template_install_id(templates_root, registry, source_id, entry)?;
-    let destination = templates_root.join(&install_id);
-    let content_hash = resolved_template_content_hash(&resolved);
-    let state = ManagedTemplateState {
-        template_id: entry.template_id.clone(),
-        content_hash: content_hash.clone(),
-        owner: ManagedTemplateOwner::RemoteSource {
-            source_id: source_id.to_string(),
-            url: source_url.to_string(),
-            resolved_ref: resolved_ref.to_string(),
-            source_url: template_url.to_string(),
-            synced_at,
-        },
-    };
-    if let Err(error) = write_managed_template_dir(&destination, &resolved, &state) {
-        bail!(
-            "failed to install remote template {}: {error:#}",
-            entry.template_id
-        );
-    }
-    Ok(AgentTemplateRegistryInstalled {
-        template_id: entry.template_id.clone(),
-        source_id: source_id.to_string(),
-        source_url: source_url.to_string(),
-        source_resolved_ref: resolved_ref.to_string(),
-        template_path: remote_template_source_path(template_url),
-        local_path: install_id,
-        content_hash,
-        synced_at,
     })
 }
 
@@ -2456,85 +2464,7 @@ fn is_github_tree_url(template: &str) -> Result<bool> {
 }
 
 async fn resolve_github_template(template: &str) -> Result<ResolvedTemplate> {
-    let github = GitHubTemplateClient::new().await?;
-    resolve_github_template_with_client(&github, template).await
-}
-
-async fn resolve_github_template_with_client(
-    github: &GitHubTemplateClient,
-    template: &str,
-) -> Result<ResolvedTemplate> {
-    let url = reqwest::Url::parse(template)?;
-    if url.query().is_some() || url.fragment().is_some() {
-        bail!("GitHub template URL must not include a query string or fragment");
-    }
-
-    let segments = url
-        .path_segments()
-        .ok_or_else(|| anyhow!("GitHub template URL is missing path segments"))?
-        .collect::<Vec<_>>();
-    if segments.len() < 5 || segments[2] != "tree" {
-        bail!("GitHub template URL must have the form https://github.com/<owner>/<repo>/tree/<ref>/<path-to-template-dir>");
-    }
-
-    let owner = segments[0].to_string();
-    let repo = segments[1].to_string();
-    let ref_and_path = &segments[3..];
-
-    for split in 1..ref_and_path.len() {
-        let git_ref = ref_and_path[..split].join("/");
-        let template_path = ref_and_path[split..].join("/");
-        let agents_md_path = format!("{template_path}/{TEMPLATE_AGENTS_FILENAME}");
-        let maybe_agents_md =
-            fetch_github_file(github, &owner, &repo, &git_ref, &agents_md_path).await?;
-        let Some(agents_md) = maybe_agents_md else {
-            continue;
-        };
-        if agents_md.trim().is_empty() {
-            bail!("GitHub template {template} resolved to an empty AGENTS.md");
-        }
-        let skills_path = format!("{template_path}/{TEMPLATE_SKILLS_FILENAME}");
-        let skills_toml = fetch_github_file(github, &owner, &repo, &git_ref, &skills_path).await?;
-        let skill_refs = match skills_toml {
-            Some(content) => {
-                let manifest: TemplateSkillsManifest =
-                    toml::from_str(&content).with_context(|| {
-                        format!("failed to parse {template}::{TEMPLATE_SKILLS_FILENAME}")
-                    })?;
-                manifest
-                    .skills
-                    .into_iter()
-                    .map(parse_template_skill_file_ref)
-                    .collect::<Result<Vec<_>>>()
-                    .with_context(|| {
-                        format!("failed to parse {template}::{TEMPLATE_SKILLS_FILENAME}")
-                    })?
-            }
-            None => Vec::new(),
-        };
-        let manifest_path = format!("{template_path}/{TEMPLATE_MANIFEST_FILENAME}");
-        let manifest_content =
-            fetch_github_file(github, &owner, &repo, &git_ref, &manifest_path).await?;
-        let schema_version = manifest_content
-            .as_deref()
-            .and_then(parse_template_manifest)
-            .map(|m| m.schema);
-        return Ok(ResolvedTemplate {
-            provenance: TemplateProvenanceSource::GitHubUrl {
-                url: template.to_string(),
-                owner,
-                repo,
-                git_ref,
-                template_path,
-            },
-            agents_md,
-            template_toml: manifest_content,
-            skill_refs,
-            schema_version,
-        });
-    }
-
-    bail!("GitHub template URL did not resolve to a readable template directory: {template}")
+    resolve_github_template_archive_first(template).await
 }
 
 struct GitHubTemplateClient {
@@ -2614,53 +2544,20 @@ fn github_template_api_base() -> String {
     env::var(GITHUB_TEMPLATE_API_BASE_ENV).unwrap_or_else(|_| "https://api.github.com".to_string())
 }
 
-async fn fetch_github_file(
-    github: &GitHubTemplateClient,
-    owner: &str,
-    repo: &str,
-    git_ref: &str,
-    path: &str,
-) -> Result<Option<String>> {
-    let base = github_template_api_base();
-    let mut url = reqwest::Url::parse(&format!("{base}/repos/{owner}/{repo}/contents/{path}"))
-        .with_context(|| {
-            format!("failed to build GitHub contents URL for {owner}/{repo}:{path}")
-        })?;
-    url.query_pairs_mut().append_pair("ref", git_ref);
+fn github_template_archive_base() -> String {
+    if cfg!(test) {
+        env::var(GITHUB_TEMPLATE_API_BASE_ENV).unwrap_or_else(|_| DEFAULT_ARCHIVE_BASE.to_string())
+    } else {
+        DEFAULT_ARCHIVE_BASE.to_string()
+    }
+}
 
-    let response = github.get(url).send().await.with_context(|| {
-        format!("failed to fetch GitHub template file {owner}/{repo}:{path}@{git_ref}")
-    })?;
-
-    if response.status() == StatusCode::NOT_FOUND {
-        return Ok(None);
+fn archive_base_for_install(api_base: &str) -> String {
+    if api_base == "https://api.github.com" {
+        github_template_archive_base()
+    } else {
+        api_base.to_string()
     }
-    if !response.status().is_success() {
-        return Err(github_template_failure(
-            github.client.response_error(response).await,
-            format!("GitHub template fetch failed for {owner}/{repo}:{path}@{git_ref}"),
-        ));
-    }
-
-    let payload: GitHubContentsFileResponse = response.json().await.with_context(|| {
-        format!("failed to decode GitHub contents response for {owner}/{repo}:{path}@{git_ref}")
-    })?;
-    if payload.kind != "file" {
-        bail!("GitHub template target {owner}/{repo}:{path}@{git_ref} is not a file");
-    }
-    let content = payload
-        .content
-        .ok_or_else(|| anyhow!("GitHub contents response omitted file content"))?;
-    let encoding = payload.encoding.unwrap_or_default();
-    if encoding != "base64" {
-        bail!("unsupported GitHub contents encoding: {encoding}");
-    }
-    let decoded = BASE64_STANDARD
-        .decode(content.replace('\n', ""))
-        .context("failed to decode GitHub contents payload")?;
-    String::from_utf8(decoded)
-        .context("GitHub template file is not valid UTF-8")
-        .map(Some)
 }
 
 /// Parsed components from a GitHub repository URL.
@@ -2706,43 +2603,6 @@ fn parse_github_repo_url(url: &str) -> Result<ParsedGithubRepoUrl> {
             "GitHub repo URL must be https://github.com/<owner>/<repo> or https://github.com/<owner>/<repo>/tree/<ref>: {url}"
         ),
     }
-}
-
-/// List directory entries at a GitHub path via the Contents API.
-///
-/// Returns `Ok(None)` for a 404 (directory not found).
-async fn fetch_github_dir(
-    github: &GitHubTemplateClient,
-    owner: &str,
-    repo: &str,
-    git_ref: &str,
-    path: &str,
-) -> Result<Option<Vec<GitHubContentsDirEntry>>> {
-    let base = github_template_api_base();
-    let mut url = reqwest::Url::parse(&format!("{base}/repos/{owner}/{repo}/contents/{path}"))
-        .with_context(|| format!("failed to build GitHub dir URL for {owner}/{repo}:{path}"))?;
-    url.query_pairs_mut().append_pair("ref", git_ref);
-
-    let response = github.get(url).send().await.with_context(|| {
-        format!("failed to list GitHub directory {owner}/{repo}:{path}@{git_ref}")
-    })?;
-
-    if response.status() == StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
-    if !response.status().is_success() {
-        return Err(github_template_failure(
-            github.client.response_error(response).await,
-            format!("GitHub directory listing failed for {owner}/{repo}:{path}@{git_ref}"),
-        ));
-    }
-    let entries = response
-        .json::<Vec<GitHubContentsDirEntry>>()
-        .await
-        .with_context(|| {
-            format!("failed to decode GitHub directory listing for {owner}/{repo}:{path}@{git_ref}")
-        })?;
-    Ok(Some(entries))
 }
 
 const DEFAULT_REMOTE_TEMPLATE_DIR: &str = "agent_templates";
@@ -2798,48 +2658,45 @@ pub(crate) async fn discover_github_repo_templates(
     git_ref: &str,
 ) -> Result<Vec<AgentTemplateCatalogEntry>> {
     let github = GitHubTemplateClient::new().await?;
-    discover_github_repo_templates_with_client(&github, owner, repo, git_ref).await
+    let archive = GitHubArchive::fetch(
+        &github.client,
+        owner,
+        repo,
+        git_ref,
+        &github_template_archive_base(),
+    )
+    .await?;
+    discover_github_repo_templates_from_archive(&archive, owner, repo, git_ref)
 }
 
-async fn discover_github_repo_templates_with_client(
-    github: &GitHubTemplateClient,
+fn discover_github_repo_templates_from_archive(
+    archive: &GitHubArchive,
     owner: &str,
     repo: &str,
     git_ref: &str,
 ) -> Result<Vec<AgentTemplateCatalogEntry>> {
-    // List subdirectories under the template collection.
-    let entries =
-        match fetch_github_dir(github, owner, repo, git_ref, DEFAULT_REMOTE_TEMPLATE_DIR).await? {
-            Some(entries) => entries,
-            None => return Ok(Vec::new()),
-        };
+    let root = archive.root().join(DEFAULT_REMOTE_TEMPLATE_DIR);
+    if !root.is_dir() {
+        return Ok(Vec::new());
+    }
 
     let mut catalog_entries = Vec::new();
+    let mut entries = fs::read_dir(&root)
+        .with_context(|| format!("failed to read {}", root.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
-        if entry.kind != "dir" {
+        if !entry.file_type()?.is_dir() {
             continue;
         }
-        let template_id = entry.name;
-        let manifest_path =
-            format!("{DEFAULT_REMOTE_TEMPLATE_DIR}/{template_id}/{TEMPLATE_MANIFEST_FILENAME}");
-        let manifest = match fetch_github_file(github, owner, repo, git_ref, &manifest_path).await {
-            Ok(Some(content)) => parse_template_manifest(&content),
-            Ok(None) => None,
-            Err(error) => {
-                tracing::warn!(
-                    template = %template_id,
-                    %error,
-                    "skipping remote template: failed to fetch template.toml"
-                );
-                continue;
-            }
-        };
-        let manifest = match manifest {
-            Some(m) => m,
-            None => {
-                tracing::warn!(template = %template_id, "skipping remote template: invalid or missing template.toml");
-                continue;
-            }
+        let template_id = entry.file_name().to_string_lossy().to_string();
+        let template_dir = entry.path();
+        let Some(manifest) = parse_local_template_manifest(&template_dir) else {
+            tracing::warn!(
+                template = %template_id,
+                "skipping remote template: invalid or missing template.toml"
+            );
+            continue;
         };
         catalog_entries.push(AgentTemplateCatalogEntry {
             catalog_id: format!("remote:{owner}/{repo}/{template_id}"),
@@ -2862,20 +2719,143 @@ async fn discover_github_repo_templates_with_client(
     Ok(catalog_entries)
 }
 
-/// Discover AgentTemplates from a GitHub repository URL.
-///
-/// Parses the URL with [`parse_github_repo_url`], resolves the default branch
-/// via the GitHub API when no `/tree/<ref>` is specified, and delegates to
-/// [`discover_github_repo_templates`]. This is the primary entry point for
-/// browsing a remote template library from a repo URL.
-pub async fn discover_remote_templates(url: &str) -> Result<Vec<AgentTemplateCatalogEntry>> {
-    let parsed = parse_github_repo_url(url)?;
+fn resolve_github_template_from_archive(
+    archive: &GitHubArchive,
+    template_url: &str,
+    owner: &str,
+    repo: &str,
+    git_ref: &str,
+    template_path: &str,
+) -> Result<ResolvedTemplate> {
+    let template_dir = archive
+        .directory(template_path)
+        .with_context(|| format!("template directory not found at {template_path}"))?;
+    let agents_md = fs::read_to_string(template_dir.join(TEMPLATE_AGENTS_FILENAME))
+        .with_context(|| format!("failed to read {TEMPLATE_AGENTS_FILENAME}"))?;
+    if agents_md.trim().is_empty() {
+        bail!("GitHub template {template_url} resolved to an empty AGENTS.md");
+    }
+    let skill_refs = parse_skill_refs(template_dir.join(TEMPLATE_SKILLS_FILENAME))?;
+    let template_toml = read_template_manifest_content(&template_dir);
+    let schema_version = template_toml
+        .as_deref()
+        .and_then(parse_template_manifest)
+        .map(|m| m.schema);
+    Ok(ResolvedTemplate {
+        provenance: TemplateProvenanceSource::GitHubUrl {
+            url: template_url.to_string(),
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            git_ref: git_ref.to_string(),
+            template_path: template_path.to_string(),
+        },
+        agents_md,
+        template_toml,
+        skill_refs,
+        schema_version,
+    })
+}
+
+async fn resolve_github_template_archive_first(template: &str) -> Result<ResolvedTemplate> {
+    let url = reqwest::Url::parse(template)?;
+    if url.query().is_some() || url.fragment().is_some() {
+        bail!("GitHub template URL must not include a query string or fragment");
+    }
+    let segments = url
+        .path_segments()
+        .ok_or_else(|| anyhow!("GitHub template URL is missing path segments"))?
+        .collect::<Vec<_>>();
+    if segments.len() < 5 || segments[2] != "tree" {
+        bail!("GitHub template URL must have the form https://github.com/<owner>/<repo>/tree/<ref>/<path-to-template-dir>");
+    }
+    let owner = segments[0];
+    let repo = segments[1];
+    let ref_and_path = &segments[3..];
     let github = GitHubTemplateClient::new().await?;
-    let git_ref = match parsed.git_ref {
-        Some(r) => r,
-        None => fetch_default_branch_with_client(&github, &parsed.owner, &parsed.repo).await?,
+    for split in 1..ref_and_path.len() {
+        let git_ref = ref_and_path[..split].join("/");
+        let template_path = ref_and_path[split..].join("/");
+        let archive = match GitHubArchive::fetch(
+            &github.client,
+            owner,
+            repo,
+            &git_ref,
+            &github_template_archive_base(),
+        )
+        .await
+        {
+            Ok(archive) => archive,
+            Err(error) if github_archive_not_found(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        if let Ok(resolved) = resolve_github_template_from_archive(
+            &archive,
+            template,
+            owner,
+            repo,
+            &git_ref,
+            &template_path,
+        ) {
+            return Ok(resolved);
+        }
+    }
+    bail!("GitHub template URL did not resolve to a readable template directory: {template}")
+}
+
+fn github_archive_not_found(error: &anyhow::Error) -> bool {
+    crate::github_archive::is_not_found(error)
+}
+
+fn install_remote_template_catalog_entry_from_archive(
+    archive: &GitHubArchive,
+    templates_root: &Path,
+    registry: &AgentTemplateRegistry,
+    source_id: &str,
+    source_url: &str,
+    resolved_ref: &str,
+    synced_at: DateTime<Utc>,
+    entry: &AgentTemplateCatalogEntry,
+) -> Result<AgentTemplateRegistryInstalled> {
+    let parsed = parse_github_repo_url(source_url)?;
+    let template_path = format!("{DEFAULT_REMOTE_TEMPLATE_DIR}/{}", entry.template_id);
+    let template_url = entry
+        .source_url
+        .as_deref()
+        .ok_or_else(|| anyhow!("remote template {} has no source URL", entry.catalog_id))?;
+    let resolved = resolve_github_template_from_archive(
+        archive,
+        template_url,
+        &parsed.owner,
+        &parsed.repo,
+        resolved_ref,
+        &template_path,
+    )?;
+    let install_id = choose_remote_template_install_id(templates_root, registry, source_id, entry)?;
+    let destination = templates_root.join(&install_id);
+    let content_hash = resolved_template_content_hash(&resolved);
+    let state = ManagedTemplateState {
+        template_id: entry.template_id.clone(),
+        content_hash: content_hash.clone(),
+        owner: ManagedTemplateOwner::RemoteSource {
+            source_id: source_id.to_string(),
+            url: source_url.to_string(),
+            resolved_ref: resolved_ref.to_string(),
+            source_url: template_url.to_string(),
+            synced_at,
+        },
     };
-    discover_github_repo_templates_with_client(&github, &parsed.owner, &parsed.repo, &git_ref).await
+    write_managed_template_dir(&destination, &resolved, &state)
+        .with_context(|| format!("failed to install remote template {}", entry.template_id))?;
+    Ok(AgentTemplateRegistryInstalled {
+        template_id: entry.template_id.clone(),
+        source_id: source_id.to_string(),
+        source_url: source_url.to_string(),
+        source_resolved_ref: resolved_ref.to_string(),
+        template_path: remote_template_source_path(template_url),
+        local_path: install_id,
+        content_hash,
+        synced_at,
+    })
 }
 
 async fn materialize_template(agent_home: &Path, template: &ResolvedTemplate) -> Result<()> {
@@ -3141,23 +3121,9 @@ fn install_template_from_github_with_client(
     fs::create_dir_all(&templates_root)
         .with_context(|| format!("failed to create {}", templates_root.display()))?;
 
-    let tmp = templates_root.join(format!(
-        ".tmp-holon-template-{}-{}",
-        std::process::id(),
-        uuid::Uuid::new_v4()
-    ));
-    let _guard = TmpDirGuard(&tmp);
-
-    fs::create_dir_all(&tmp).with_context(|| format!("failed to create {}", tmp.display()))?;
-
-    // GitHub refs (branch/tag names) can contain slashes, making the
-    // ref/path boundary in a tree URL ambiguous.  Try candidate splits
-    // from longest ref to shortest; the first tarball download that
-    // succeeds identifies the correct ref.
     let segments: Vec<&str> = source.all_after_tree.split('/').collect();
-    let mut bytes = None;
-    let mut resolved_path = String::new();
-
+    let mut selected_archive = None;
+    let mut search_dir = None;
     for i in (1..=segments.len()).rev() {
         let candidate_ref = segments[..i].join("/");
         let candidate_path = if i < segments.len() {
@@ -3165,64 +3131,35 @@ fn install_template_from_github_with_client(
         } else {
             String::new()
         };
-        let tarball_url = format!(
-            "{api_base}/repos/{}/{}/tarball/{}",
-            source.owner, source.repo, candidate_ref
-        );
-        let response = client
-            .get(&tarball_url)
-            .header("Accept", "application/vnd.github+json")
-            .send()
-            .context("failed to request GitHub tarball")?;
-        if response.status().is_success() {
-            resolved_path = candidate_path;
-            bytes = Some(
-                response
-                    .bytes()
-                    .context("failed to read GitHub tarball body")?,
-            );
+        let archive = match GitHubArchive::fetch_blocking(
+            client,
+            &source.owner,
+            &source.repo,
+            &candidate_ref,
+            &archive_base_for_install(api_base),
+        ) {
+            Ok(archive) => archive,
+            Err(error) if github_archive_not_found(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        if let Ok(path) = archive.directory(&candidate_path) {
+            selected_archive = Some(archive);
+            search_dir = Some(path);
             break;
         }
-        let failure = client.response_error(response);
-        if failure.rate_limit.is_some() {
-            return Err(github_template_failure(
-                failure,
-                format!(
-                    "GitHub tarball download failed for {}/{}@{candidate_ref}",
-                    source.owner, source.repo
-                ),
-            ));
-        }
     }
-    let bytes = bytes.ok_or_else(|| {
+    let _selected_archive = selected_archive.ok_or_else(|| {
         anyhow!(
-            "GitHub tarball download failed: no valid ref found for '{}'",
+            "GitHub archive download failed: no valid ref/path found for '{}'",
             source.all_after_tree
         )
     })?;
-    let tarball_path = tmp.join("archive.tar.gz");
-    fs::write(&tarball_path, &bytes)
-        .with_context(|| format!("failed to write tarball to {}", tarball_path.display()))?;
-
-    let extract_dir = tmp.join("extracted");
-    fs::create_dir_all(&extract_dir)?;
-    extract_tarball(&tarball_path, &extract_dir)?;
-
-    // GitHub tarballs contain a single top-level directory.
-    let mut search_dir = extract_dir.clone();
-    let entries: Vec<_> = fs::read_dir(&search_dir)?.collect::<Result<_, _>>()?;
-    if entries.len() == 1 && entries[0].path().is_dir() {
-        search_dir = entries[0].path();
-    }
-    if !resolved_path.is_empty() {
-        search_dir = search_dir.join(&resolved_path);
-    }
-    if !search_dir.is_dir() {
-        bail!(
-            "template directory not found at '{}' in the downloaded archive",
-            resolved_path
-        );
-    }
+    let search_dir = search_dir.ok_or_else(|| {
+        anyhow!(
+            "GitHub archive download failed: no valid ref/path found for '{}'",
+            source.all_after_tree
+        )
+    })?;
 
     if !search_dir.join(TEMPLATE_MANIFEST_FILENAME).exists()
         && !search_dir.join("AGENTS.md").exists()
@@ -3266,13 +3203,6 @@ fn install_template_from_github_with_client(
     Ok(template_id)
 }
 
-struct TmpDirGuard<'a>(&'a Path);
-impl Drop for TmpDirGuard<'_> {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(self.0);
-    }
-}
-
 struct ParsedGithubTemplateUrl {
     owner: String,
     repo: String,
@@ -3306,6 +3236,7 @@ impl ParsedGithubTemplateUrl {
     }
 }
 
+#[allow(dead_code)]
 fn extract_tarball(tarball_path: &Path, dest: &Path) -> Result<()> {
     let output = std::process::Command::new("tar")
         .arg("-xzf")
@@ -3372,9 +3303,9 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use crate::config::{save_credential_store_at, CredentialProfileFile, CredentialStoreFile};
-
     use super::*;
+
+    mod archive_tests;
 
     struct EnvGuard {
         key: &'static str,
@@ -4291,77 +4222,6 @@ uses = "owner/repo/skills/demo@main"
         assert_eq!(user_home_dir().unwrap(), profile.path());
     }
 
-    #[tokio::test]
-    async fn initialize_agent_home_from_github_url_works() {
-        let _lock = crate::test_env::lock_env();
-        let home = tempdir().unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let seen_paths = Arc::new(Mutex::new(Vec::new()));
-        let seen_paths_clone = seen_paths.clone();
-
-        thread::spawn(move || {
-            for stream in listener.incoming().take(3) {
-                let mut stream = stream.unwrap();
-                let mut buffer = [0_u8; 2048];
-                let count = stream.read(&mut buffer).unwrap();
-                let request = String::from_utf8_lossy(&buffer[..count]);
-                let request_line = request.lines().next().unwrap().to_string();
-                let path = request_line.split_whitespace().nth(1).unwrap().to_string();
-                seen_paths_clone.lock().unwrap().push(path.clone());
-
-                let body =
-                    if path == "/repos/owner/repo/contents/templates/reviewer/AGENTS.md?ref=main" {
-                        serde_json::json!({
-                            "type": "file",
-                            "encoding": "base64",
-                            "content": BASE64_STANDARD.encode("reviewer rules")
-                        })
-                        .to_string()
-                    } else {
-                        "{\"message\":\"not found\"}".to_string()
-                    };
-                let status = if body.contains("not found") {
-                    "404 Not Found"
-                } else {
-                    "200 OK"
-                };
-                write!(
-                    stream,
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                    body.len(),
-                    body
-                )
-                .unwrap();
-            }
-        });
-
-        let _api_guard =
-            EnvGuard::set("HOLON_TEMPLATE_GITHUB_API_BASE", format!("http://{}", addr));
-        let agent_home = home.path().join("agent");
-        let url = "https://github.com/owner/repo/tree/main/templates/reviewer";
-
-        let provenance = initialize_agent_home_from_template(&agent_home, url)
-            .await
-            .unwrap();
-
-        assert!(matches!(
-            provenance.source,
-            TemplateProvenanceSource::GitHubUrl { .. }
-        ));
-        let agents_md = fs::read_to_string(agent_home.join("AGENTS.md")).unwrap();
-        assert!(agents_md.contains("reviewer rules"));
-        assert!(agents_md.contains("## Holon Agent Home"));
-        assert_eq!(
-            seen_paths.lock().unwrap().as_slice(),
-            &[
-                "/repos/owner/repo/contents/templates/reviewer/AGENTS.md?ref=main",
-                "/repos/owner/repo/contents/templates/reviewer/skills.toml?ref=main",
-                "/repos/owner/repo/contents/templates/reviewer/template.toml?ref=main",
-            ]
-        );
-    }
-
     #[test]
     fn agent_template_source_kind_remote_label_roundtrip() {
         assert_eq!(AgentTemplateSourceKind::Remote.label(), "remote");
@@ -4507,13 +4367,9 @@ uses = "owner/repo/skills/demo@main"
     }
 
     #[tokio::test]
-    async fn github_template_api_paths_preserve_typed_rate_limits() {
+    async fn github_template_repo_api_preserves_typed_rate_limits() {
         let _lock = crate::test_env::lock_env();
-        let server = MockGithubServer::start(vec![
-            ("/repos/owner/repo/contents/file", 429, "{}".into()),
-            ("/repos/owner/repo/contents/dir", 429, "{}".into()),
-            ("/repos/owner/repo", 429, "{}".into()),
-        ]);
+        let server = MockGithubServer::start(vec![("/repos/owner/repo", 429, "{}".into())]);
         let _base = EnvGuard::set(
             GITHUB_TEMPLATE_API_BASE_ENV,
             format!("http://{}", server.addr),
@@ -4521,203 +4377,14 @@ uses = "owner/repo/skills/demo@main"
         let github = GitHubTemplateClient::with_token(Some("test-token".into()))
             .await
             .unwrap();
-        let errors = [
-            fetch_github_file(&github, "owner", "repo", "main", "file")
-                .await
-                .unwrap_err(),
-            fetch_github_dir(&github, "owner", "repo", "main", "dir")
-                .await
-                .unwrap_err(),
-            fetch_default_branch_with_client(&github, "owner", "repo")
-                .await
-                .unwrap_err(),
-        ];
+        let errors = [fetch_default_branch_with_client(&github, "owner", "repo")
+            .await
+            .unwrap_err()];
         for error in errors {
             assert!(error.downcast_ref::<crate::github::RateLimit>().is_some());
             assert!(!format!("{error:#}").contains("test-token"));
         }
-        assert_eq!(server.requests().len(), 3);
-    }
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn github_template_anonymous_success_when_gh_fails_or_is_missing() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let _lock = crate::test_env::lock_env();
-        let home = tempdir().unwrap();
-        let bin = home.path().join("bin");
-        fs::create_dir(&bin).unwrap();
-        let gh = bin.join("gh");
-        fs::write(&gh, "#!/bin/sh\nexit 1\n").unwrap();
-        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
-        let _home = EnvGuard::set("HOME", home.path().display().to_string());
-        let _path = EnvGuard::set("PATH", bin.display().to_string());
-        let _holon = EnvGuard::remove("HOLON_GITHUB_TOKEN");
-        let _github = EnvGuard::remove("GITHUB_TOKEN");
-        let _gh = EnvGuard::remove("GH_TOKEN");
-        for missing in [false, true] {
-            if missing {
-                fs::remove_file(&gh).unwrap();
-            }
-            let server = MockGithubServer::start(vec![(
-                "/repos/owner/repo/contents/template/AGENTS.md",
-                200,
-                github_file_response("# Public template"),
-            )]);
-            let _base = EnvGuard::set(
-                GITHUB_TEMPLATE_API_BASE_ENV,
-                format!("http://{}", server.addr),
-            );
-            resolve_github_template("https://github.com/owner/repo/tree/main/template")
-                .await
-                .unwrap();
-            let requests = server.requests();
-            assert!(!requests.is_empty());
-            assert!(requests
-                .iter()
-                .all(|request| request.authorization.is_none()));
-        }
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn github_tarball_anonymous_and_gh_token_success() {
-        use std::os::unix::{fs::symlink, fs::PermissionsExt};
-
-        let _lock = crate::test_env::lock_env();
-        let home = tempdir().unwrap();
-        let archive_root = home.path().join("repo");
-        fs::create_dir(&archive_root).unwrap();
-        fs::write(archive_root.join("AGENTS.md"), "# Public template").unwrap();
-        let archive = home.path().join("archive.tar.gz");
-        assert!(std::process::Command::new("/usr/bin/tar")
-            .arg("-czf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(home.path())
-            .arg("repo")
-            .status()
-            .unwrap()
-            .success());
-        let bytes = fs::read(&archive).unwrap();
-        let bin = home.path().join("bin");
-        fs::create_dir(&bin).unwrap();
-        symlink("/usr/bin/tar", bin.join("tar")).unwrap();
-        symlink("/usr/bin/gzip", bin.join("gzip")).unwrap();
-        let gh = bin.join("gh");
-        let _home = EnvGuard::set("HOME", home.path().display().to_string());
-        let _path = EnvGuard::set("PATH", bin.display().to_string());
-        let _holon = EnvGuard::remove("HOLON_GITHUB_TOKEN");
-        let _github = EnvGuard::remove("GITHUB_TOKEN");
-        let _gh = EnvGuard::remove("GH_TOKEN");
-        for (script, expected) in [
-            (Some("#!/bin/sh\nexit 1\n"), None),
-            (None, None),
-            (
-                Some("#!/bin/sh\n[ \"$1 $2 $3 $4\" = \"auth token -h github.com\" ] && printf artificial-gh-token\n"),
-                Some("Bearer artificial-gh-token"),
-            ),
-        ] {
-            if let Some(script) = script {
-                fs::write(&gh, script).unwrap();
-                fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
-            } else {
-                fs::remove_file(&gh).unwrap();
-            }
-            let server = MockGithubServer::start_bytes(vec![(
-                "/repos/owner/repo/tarball/main",
-                200,
-                bytes.clone(),
-            )]);
-            let base = format!("http://{}", server.addr);
-            let client = BlockingClient::new(
-                reqwest::blocking::Client::new(),
-                GitHubAuth::resolve_blocking(None, &["GITHUB_TOKEN", "GH_TOKEN"]),
-                &base,
-            )
-            .unwrap();
-            let destination = tempdir().unwrap();
-            assert_eq!(
-                install_template_from_github_with_client(
-                    destination.path(),
-                    "https://github.com/owner/repo/tree/main",
-                    &client,
-                    &base,
-                )
-                .unwrap(),
-                "repo"
-            );
-            let requests = server.requests();
-            assert_eq!(requests.len(), 1);
-            assert_eq!(requests[0].authorization.as_deref(), expected);
-        }
-    }
-
-    #[test]
-    fn github_tarball_ordinary_failures_preserve_ref_probe_order() {
-        let server = MockGithubServer::start(vec![]);
-        let base = format!("http://{}", server.addr);
-        let client = BlockingClient::new(
-            reqwest::blocking::Client::new(),
-            GitHubAuth::resolve_blocking(Some("test-token".into()), &[]),
-            &base,
-        )
-        .unwrap();
-        let home = tempdir().unwrap();
-        let error = install_template_from_github_with_client(
-            home.path(),
-            "https://github.com/owner/repo/tree/feature/topic/template",
-            &client,
-            &base,
-        )
-        .unwrap_err();
-        assert!(error.downcast_ref::<crate::github::RateLimit>().is_none());
-        assert!(format!("{error:#}").contains("no valid ref"));
-        let paths: Vec<String> = server
-            .requests()
-            .iter()
-            .map(|request| request.path.clone())
-            .collect();
-        assert_eq!(
-            paths,
-            [
-                "/repos/owner/repo/tarball/feature/topic/template",
-                "/repos/owner/repo/tarball/feature/topic",
-                "/repos/owner/repo/tarball/feature",
-            ]
-        );
-    }
-
-    #[test]
-    fn github_tarball_rate_limit_stops_ref_probing() {
-        let server = MockGithubServer::start(vec![(
-            "/repos/owner/repo/tarball/feature/topic/template",
-            429,
-            "{}".into(),
-        )]);
-        let base = format!("http://{}", server.addr);
-        let client = BlockingClient::new(
-            reqwest::blocking::Client::new(),
-            GitHubAuth::resolve_blocking(Some("test-token".into()), &[]),
-            &base,
-        )
-        .unwrap();
-        let home = tempdir().unwrap();
-        let error = install_template_from_github_with_client(
-            home.path(),
-            "https://github.com/owner/repo/tree/feature/topic/template",
-            &client,
-            &base,
-        )
-        .unwrap_err();
-        assert!(error.downcast_ref::<crate::github::RateLimit>().is_some());
-        assert!(!format!("{error:#}").contains("no valid ref"));
         assert_eq!(server.requests().len(), 1);
-        assert_eq!(
-            server.requests()[0].authorization.as_deref(),
-            Some("Bearer test-token")
-        );
     }
 
     /// Build a mock GitHub API server that serves configured responses.
@@ -4848,254 +4515,6 @@ uses = "owner/repo/skills/demo@main"
         Some(String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    fn github_file_response(content: &str) -> String {
-        serde_json::json!({
-            "type": "file",
-            "encoding": "base64",
-            "content": BASE64_STANDARD.encode(content)
-        })
-        .to_string()
-    }
-
-    fn github_dir_response(entries: &[(&str, &str)]) -> String {
-        let arr: Vec<_> = entries
-            .iter()
-            .map(|(name, kind)| serde_json::json!({ "name": name, "type": kind }))
-            .collect();
-        serde_json::Value::Array(arr).to_string()
-    }
-
-    fn sync_worker_template_routes() -> Vec<(&'static str, u16, String)> {
-        vec![
-            (
-                "/repos/owner/repo/contents/agent_templates",
-                200,
-                github_dir_response(&[("worker", "dir")]),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
-                200,
-                github_file_response(
-                    r#"schema = "holon.agent_template.v1"
-id = "worker"
-name = "Worker"
-summary = "Implementation agent"
-"#,
-                ),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/AGENTS.md",
-                200,
-                github_file_response("# Worker\n\nDoes worker things\n"),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/skills.toml",
-                200,
-                github_file_response(""),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
-                200,
-                github_file_response(
-                    r#"schema = "holon.agent_template.v1"
-id = "worker"
-name = "Worker"
-summary = "Implementation agent"
-"#,
-                ),
-            ),
-        ]
-    }
-
-    #[tokio::test]
-    async fn discover_github_repo_templates_uses_default_agent_templates_dir() {
-        let _lock = crate::test_env::lock_env();
-        let server = MockGithubServer::start(vec![
-            (
-                "/repos/owner/repo/contents/agent_templates",
-                200,
-                github_dir_response(&[
-                    ("worker", "dir"),
-                    ("reviewer", "dir"),
-                    ("README.md", "file"),
-                ]),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
-                200,
-                github_file_response(
-                    r#"schema = "holon.agent_template.v1"
-id = "worker"
-name = "Worker"
-summary = "Implementation agent"
-"#,
-                ),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/reviewer/template.toml",
-                200,
-                github_file_response(
-                    r#"schema = "holon.agent_template.v1"
-id = "reviewer"
-name = "Reviewer"
-"#,
-                ),
-            ),
-        ]);
-        let _api_guard = EnvGuard::set(
-            "HOLON_TEMPLATE_GITHUB_API_BASE",
-            format!("http://{}", server.addr),
-        );
-
-        let entries = discover_github_repo_templates("owner", "repo", "main")
-            .await
-            .unwrap();
-        assert_eq!(entries.len(), 2);
-        let worker = entries.iter().find(|e| e.template_id == "worker").unwrap();
-        assert_eq!(worker.name, "Worker");
-        assert_eq!(worker.source, AgentTemplateSourceKind::Remote);
-        assert_eq!(worker.catalog_id, "remote:owner/repo/worker");
-        assert_eq!(worker.template, "remote:owner/repo#worker");
-        let reviewer = entries
-            .iter()
-            .find(|e| e.template_id == "reviewer")
-            .unwrap();
-        assert_eq!(reviewer.name, "Reviewer");
-    }
-
-    #[tokio::test]
-    async fn discover_github_repo_templates_fallback_default_dir() {
-        let _lock = crate::test_env::lock_env();
-        let server = MockGithubServer::start(vec![
-            // Default agent_templates/ directory listing
-            (
-                "/repos/owner/repo/contents/agent_templates",
-                200,
-                github_dir_response(&[("simple", "dir")]),
-            ),
-            // simple/template.toml
-            (
-                "/repos/owner/repo/contents/agent_templates/simple/template.toml",
-                200,
-                github_file_response(
-                    r#"schema = "holon.agent_template.v1"
-id = "simple"
-name = "Simple"
-"#,
-                ),
-            ),
-        ]);
-        let _api_guard = EnvGuard::set(
-            "HOLON_TEMPLATE_GITHUB_API_BASE",
-            format!("http://{}", server.addr),
-        );
-
-        let entries = discover_github_repo_templates("owner", "repo", "main")
-            .await
-            .unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].template_id, "simple");
-    }
-
-    #[tokio::test]
-    async fn discover_github_repo_templates_skips_invalid_template() {
-        let _lock = crate::test_env::lock_env();
-        let server = MockGithubServer::start(vec![
-            // Directory with two templates
-            (
-                "/repos/owner/repo/contents/agent_templates",
-                200,
-                github_dir_response(&[("good", "dir"), ("bad", "dir")]),
-            ),
-            // good/template.toml - valid
-            (
-                "/repos/owner/repo/contents/agent_templates/good/template.toml",
-                200,
-                github_file_response(
-                    r#"schema = "holon.agent_template.v1"
-id = "good"
-name = "Good"
-"#,
-                ),
-            ),
-            // bad/template.toml - missing (404)
-            (
-                "/repos/owner/repo/contents/agent_templates/bad/template.toml",
-                404,
-                "{\"message\":\"not found\"}".to_string(),
-            ),
-        ]);
-        let _api_guard = EnvGuard::set(
-            "HOLON_TEMPLATE_GITHUB_API_BASE",
-            format!("http://{}", server.addr),
-        );
-
-        let entries = discover_github_repo_templates("owner", "repo", "main")
-            .await
-            .unwrap();
-        // Only "good" should be discovered; "bad" is skipped silently.
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].template_id, "good");
-    }
-
-    #[tokio::test]
-    async fn discover_github_repo_templates_empty_when_no_dir() {
-        let _lock = crate::test_env::lock_env();
-        let server = MockGithubServer::start(vec![
-            // No agent_templates/ directory either
-            (
-                "/repos/owner/repo/contents/agent_templates",
-                404,
-                "{\"message\":\"not found\"}".to_string(),
-            ),
-        ]);
-        let _api_guard = EnvGuard::set(
-            "HOLON_TEMPLATE_GITHUB_API_BASE",
-            format!("http://{}", server.addr),
-        );
-
-        let entries = discover_github_repo_templates("owner", "repo", "main")
-            .await
-            .unwrap();
-        assert!(entries.is_empty());
-    }
-
-    #[test]
-    fn discover_remote_templates_stores_source_url() {
-        let _lock = crate::test_env::lock_env();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let server = MockGithubServer::start(vec![
-            (
-                "/repos/owner/repo/contents/agent_templates",
-                200,
-                github_dir_response(&[("worker", "dir")]),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
-                200,
-                github_file_response(
-                    r#"schema = "holon.agent_template.v1"
-id = "worker"
-name = "Worker"
-"#,
-                ),
-            ),
-        ]);
-        let _api_guard = EnvGuard::set(
-            "HOLON_TEMPLATE_GITHUB_API_BASE",
-            format!("http://{}", server.addr),
-        );
-
-        let entries = rt
-            .block_on(discover_github_repo_templates("owner", "repo", "dev"))
-            .unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            entries[0].source_url.as_deref(),
-            Some("https://github.com/owner/repo/tree/dev/agent_templates/worker")
-        );
-    }
-
     #[tokio::test]
     async fn fetch_default_branch_resolves_repo_info() {
         let _lock = crate::test_env::lock_env();
@@ -5111,354 +4530,6 @@ name = "Worker"
 
         let branch = fetch_default_branch("owner", "repo").await.unwrap();
         assert_eq!(branch, "develop");
-    }
-
-    #[tokio::test]
-    async fn discover_remote_templates_chains_url_to_discovery() {
-        let _lock = crate::test_env::lock_env();
-        let server = MockGithubServer::start(vec![
-            // Default branch lookup
-            (
-                "/repos/owner/repo",
-                200,
-                serde_json::json!({"default_branch": "main"}).to_string(),
-            ),
-            // Directory listing
-            (
-                "/repos/owner/repo/contents/agent_templates",
-                200,
-                github_dir_response(&[("worker", "dir")]),
-            ),
-            // worker/template.toml
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
-                200,
-                github_file_response(
-                    r#"schema = "holon.agent_template.v1"
-id = "worker"
-name = "Worker"
-"#,
-                ),
-            ),
-        ]);
-        let _api_guard = EnvGuard::set(
-            "HOLON_TEMPLATE_GITHUB_API_BASE",
-            format!("http://{}", server.addr),
-        );
-
-        let entries = discover_remote_templates("https://github.com/owner/repo")
-            .await
-            .unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].template_id, "worker");
-        assert_eq!(entries[0].source, AgentTemplateSourceKind::Remote);
-        assert_eq!(
-            entries[0].source_url.as_deref(),
-            Some("https://github.com/owner/repo/tree/main/agent_templates/worker")
-        );
-    }
-
-    #[tokio::test]
-    async fn resolve_remote_agent_template_detail_fetches_template_tree() {
-        let _lock = crate::test_env::lock_env();
-        let server = MockGithubServer::start(vec![
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/AGENTS.md",
-                200,
-                github_file_response("# Worker\n\nDoes worker things\n"),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/skills.toml",
-                200,
-                github_file_response(
-                    "[[skills]]\nkind = \"github\"\nrepo = \"holon-run/holon\"\npath = \"skills/ghx\"\nref = \"main\"\n",
-                ),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
-                200,
-                github_file_response(
-                    r#"schema = "holon.agent_template.v1"
-id = "worker"
-name = "Worker"
-"#,
-                ),
-            ),
-        ]);
-        let _api_guard = EnvGuard::set(
-            "HOLON_TEMPLATE_GITHUB_API_BASE",
-            format!("http://{}", server.addr),
-        );
-        let entry = AgentTemplateCatalogEntry {
-            catalog_id: "remote:community:worker".into(),
-            template: "remote:community:worker".into(),
-            template_id: "worker".into(),
-            source: AgentTemplateSourceKind::Remote,
-            path: None,
-            name: "Worker".into(),
-            schema_version: None,
-            description: "Does worker things".into(),
-            included_skills: vec!["holon-run/holon/skills/ghx@main".into()],
-            source_id: Some("community".into()),
-            resolved_ref: Some("main".into()),
-            resolved_revision: None,
-            source_url: Some(
-                "https://github.com/owner/repo/tree/main/agent_templates/worker".into(),
-            ),
-        };
-
-        let detail = resolve_remote_agent_template_detail(&entry).await.unwrap();
-        assert_eq!(detail.catalog_id, "remote:community:worker");
-        assert_eq!(detail.source, AgentTemplateSourceKind::Remote);
-        assert_eq!(
-            detail.schema_version.as_deref(),
-            Some("holon.agent_template.v1")
-        );
-        assert!(detail.agents_md.contains("Does worker things"));
-        assert_eq!(detail.skills.len(), 1);
-        assert_eq!(detail.skills[0].kind, "github");
-        assert_eq!(
-            detail.skills[0].reference,
-            "holon-run/holon/skills/ghx@main"
-        );
-    }
-
-    #[tokio::test]
-    async fn sync_remote_source_installs_templates_into_user_library() {
-        let _lock = crate::test_env::lock_env();
-        let home = tempdir().unwrap();
-        let db = RuntimeDb::open_and_migrate(
-            home.path().join("runtime.sqlite"),
-            home.path().join("runtime.sqlite.lock"),
-        )
-        .unwrap();
-        let server = MockGithubServer::start(vec![
-            (
-                "/repos/owner/repo/contents/agent_templates",
-                200,
-                github_dir_response(&[("worker", "dir")]),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
-                200,
-                github_file_response(
-                    r#"schema = "holon.agent_template.v1"
-id = "worker"
-name = "Worker"
-summary = "Implementation agent"
-"#,
-                ),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/AGENTS.md",
-                200,
-                github_file_response("# Worker\n\nDoes worker things\n"),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/skills.toml",
-                200,
-                github_file_response(
-                    "[[skills]]\nkind = \"github\"\nrepo = \"holon-run/holon\"\npath = \"skills/ghx\"\nref = \"main\"\n",
-                ),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
-                200,
-                github_file_response(
-                    r#"schema = "holon.agent_template.v1"
-id = "worker"
-name = "Worker"
-summary = "Implementation agent"
-"#,
-                ),
-            ),
-        ]);
-        let _api_guard = EnvGuard::set(
-            "HOLON_TEMPLATE_GITHUB_API_BASE",
-            format!("http://{}", server.addr),
-        );
-        let config = AgentTemplateRemoteSourceConfigFile {
-            url: "https://github.com/owner/repo".into(),
-            git_ref: Some("main".into()),
-            enabled: Some(true),
-            credential_profile: None,
-        };
-
-        let status = sync_agent_template_remote_source(&db, home.path(), "official", &config)
-            .await
-            .unwrap();
-
-        assert_eq!(status.status, AgentTemplateRemoteSourceSyncStatus::Synced);
-        let template_dir = templates_root_for_home(home.path()).join("worker");
-        assert_eq!(
-            fs::read_to_string(template_dir.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
-            "# Worker\n\nDoes worker things\n"
-        );
-        assert_eq!(
-            fs::read_to_string(template_dir.join(TEMPLATE_SKILLS_FILENAME)).unwrap(),
-            "[[skills]]\nkind = \"github\"\nrepo = \"holon-run/holon\"\npath = \"skills/ghx\"\nref = \"main\"\n\n"
-        );
-        let state = read_managed_template_state(&template_dir)
-            .unwrap()
-            .expect("remote sync should write managed metadata");
-        assert_eq!(state.template_id, "worker");
-        assert!(matches!(
-            state.owner,
-            ManagedTemplateOwner::RemoteSource {
-                ref source_id,
-                ref url,
-                ref resolved_ref,
-                ..
-            } if source_id == "official" && url == "https://github.com/owner/repo" && resolved_ref == "main"
-        ));
-        let registry = load_template_registry(&templates_root_for_home(home.path())).unwrap();
-        let source = registry
-            .sources
-            .get("official")
-            .expect("registry should record synced source");
-        assert_eq!(source.url, "https://github.com/owner/repo");
-        assert_eq!(source.requested_ref.as_deref(), Some("main"));
-        assert_eq!(source.resolved_ref, "main");
-        let installed = registry
-            .installed
-            .get("worker")
-            .expect("registry should record installed template");
-        assert_eq!(installed.template_id, "worker");
-        assert_eq!(installed.source_id, "official");
-        assert_eq!(installed.template_path, "agent_templates/worker");
-
-        let catalog = discover_agent_templates_catalog(Some(home.path()), home.path());
-        assert!(catalog
-            .iter()
-            .any(|entry| entry.catalog_id == "user_global:worker"));
-    }
-
-    #[tokio::test]
-    async fn sync_remote_source_uses_env_github_token() {
-        let _lock = crate::test_env::lock_env();
-        let home = tempdir().unwrap();
-        let db = RuntimeDb::open_and_migrate(
-            home.path().join("runtime.sqlite"),
-            home.path().join("runtime.sqlite.lock"),
-        )
-        .unwrap();
-        let server = MockGithubServer::start(sync_worker_template_routes());
-        let _api_guard = EnvGuard::set(
-            GITHUB_TEMPLATE_API_BASE_ENV,
-            format!("http://{}", server.addr),
-        );
-        let _token_guard = EnvGuard::set("HOLON_GITHUB_TOKEN", "env-token".to_string());
-        let config = AgentTemplateRemoteSourceConfigFile {
-            url: "https://github.com/owner/repo".into(),
-            git_ref: Some("main".into()),
-            enabled: Some(true),
-            credential_profile: None,
-        };
-
-        sync_agent_template_remote_source(&db, home.path(), "official", &config)
-            .await
-            .unwrap();
-
-        let requests = server.requests();
-        assert!(!requests.is_empty());
-        assert_eq!(
-            requests[0].path.split('?').next(),
-            Some("/repos/owner/repo/contents/agent_templates")
-        );
-        assert!(requests
-            .iter()
-            .all(|request| request.authorization.as_deref() == Some("Bearer env-token")));
-    }
-
-    #[tokio::test]
-    async fn sync_remote_source_credential_profile_overrides_env_github_token() {
-        let _lock = crate::test_env::lock_env();
-        let home = tempdir().unwrap();
-        let db = RuntimeDb::open_and_migrate(
-            home.path().join("runtime.sqlite"),
-            home.path().join("runtime.sqlite.lock"),
-        )
-        .unwrap();
-        let credential_store_path = credential_store_path(home.path());
-        let mut profiles = BTreeMap::new();
-        profiles.insert(
-            "github-templates".to_string(),
-            CredentialProfileFile {
-                kind: CredentialKind::BearerToken,
-                material: "profile-token".to_string(),
-            },
-        );
-        save_credential_store_at(&credential_store_path, &CredentialStoreFile { profiles })
-            .unwrap();
-        let server = MockGithubServer::start(sync_worker_template_routes());
-        let _api_guard = EnvGuard::set(
-            GITHUB_TEMPLATE_API_BASE_ENV,
-            format!("http://{}", server.addr),
-        );
-        let _token_guard = EnvGuard::set("HOLON_GITHUB_TOKEN", "env-token".to_string());
-        let config = AgentTemplateRemoteSourceConfigFile {
-            url: "https://github.com/owner/repo".into(),
-            git_ref: Some("main".into()),
-            enabled: Some(true),
-            credential_profile: Some("github-templates".to_string()),
-        };
-
-        sync_agent_template_remote_source(&db, home.path(), "official", &config)
-            .await
-            .unwrap();
-
-        assert!(server
-            .requests()
-            .iter()
-            .all(|request| request.authorization.as_deref() == Some("Bearer profile-token")));
-    }
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn sync_remote_source_uses_gh_cli_token_when_no_configured_token_exists() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let _lock = crate::test_env::lock_env();
-        let home = tempdir().unwrap();
-        let db = RuntimeDb::open_and_migrate(
-            home.path().join("runtime.sqlite"),
-            home.path().join("runtime.sqlite.lock"),
-        )
-        .unwrap();
-        let fake_bin = home.path().join("bin");
-        fs::create_dir_all(&fake_bin).unwrap();
-        let gh = fake_bin.join("gh");
-        fs::write(
-            &gh,
-            "#!/bin/sh\n[ \"$1 $2 $3 $4\" = \"auth token -h github.com\" ] && printf gh-token\n",
-        )
-        .unwrap();
-        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
-        let server = MockGithubServer::start(sync_worker_template_routes());
-        let _api_guard = EnvGuard::set(
-            GITHUB_TEMPLATE_API_BASE_ENV,
-            format!("http://{}", server.addr),
-        );
-        let _holon_token_guard = EnvGuard::remove("HOLON_GITHUB_TOKEN");
-        let _github_token_guard = EnvGuard::remove("GITHUB_TOKEN");
-        let _gh_token_guard = EnvGuard::remove("GH_TOKEN");
-        let old_path = env::var("PATH").unwrap_or_default();
-        let _path_guard = EnvGuard::set("PATH", format!("{}:{old_path}", fake_bin.display()));
-        let config = AgentTemplateRemoteSourceConfigFile {
-            url: "https://github.com/owner/repo".into(),
-            git_ref: Some("main".into()),
-            enabled: Some(true),
-            credential_profile: None,
-        };
-
-        sync_agent_template_remote_source(&db, home.path(), "official", &config)
-            .await
-            .unwrap();
-
-        assert!(server
-            .requests()
-            .iter()
-            .all(|request| request.authorization.as_deref() == Some("Bearer gh-token")));
     }
 
     #[tokio::test]
@@ -5508,7 +4579,7 @@ summary = "Implementation agent"
     }
 
     #[tokio::test]
-    async fn sync_remote_source_renames_when_template_id_conflicts_with_user_owned_template() {
+    async fn failed_remote_source_sync_is_deferred_until_retry_deadline() {
         let _lock = crate::test_env::lock_env();
         let home = tempdir().unwrap();
         let db = RuntimeDb::open_and_migrate(
@@ -5516,394 +4587,40 @@ summary = "Implementation agent"
             home.path().join("runtime.sqlite.lock"),
         )
         .unwrap();
-        let existing = templates_root_for_home(home.path()).join("worker");
-        fs::create_dir_all(&existing).unwrap();
-        fs::write(existing.join(TEMPLATE_AGENTS_FILENAME), "user-owned").unwrap();
-        let server = MockGithubServer::start(vec![
-            (
-                "/repos/owner/repo/contents/agent_templates",
-                200,
-                github_dir_response(&[("worker", "dir")]),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
-                200,
-                github_file_response(
-                    r#"schema = "holon.agent_template.v1"
-id = "worker"
-name = "Worker"
-"#,
-                ),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/AGENTS.md",
-                200,
-                github_file_response("remote-owned"),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/skills.toml",
-                404,
-                "{\"message\":\"not found\"}".to_string(),
-            ),
-            (
-                "/repos/owner/repo/contents/agent_templates/worker/template.toml",
-                200,
-                github_file_response(
-                    r#"schema = "holon.agent_template.v1"
-id = "worker"
-name = "Worker"
-"#,
-                ),
-            ),
-        ]);
-        let _api_guard = EnvGuard::set(
-            "HOLON_TEMPLATE_GITHUB_API_BASE",
-            format!("http://{}", server.addr),
-        );
-        let config = AgentTemplateRemoteSourceConfigFile {
+        let status = AgentTemplateRemoteSourceStatus {
+            source_id: "official".into(),
+            kind: "github".into(),
             url: "https://github.com/owner/repo".into(),
-            git_ref: Some("main".into()),
-            enabled: Some(true),
-            credential_profile: None,
+            requested_ref: Some("main".into()),
+            enabled: true,
+            status: AgentTemplateRemoteSourceSyncStatus::Failed,
+            last_synced_at: Some(Utc::now()),
+            resolved_ref: None,
+            resolved_revision: None,
+            error: Some(
+                "GitHub archive request failed (HTTP 429; retry after 2099-01-01T00:00:00+00:00)"
+                    .into(),
+            ),
         };
+        upsert_remote_source_sync(&db, &status, &[], &[]).unwrap();
 
-        let status = sync_agent_template_remote_source(&db, home.path(), "official", &config)
-            .await
+        let retry_at: String = db
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT next_retry_at FROM agent_template_remote_source_syncs \
+                 WHERE source_id = 'official'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
-
-        // Per-template install failures are reported through `status`, not an
-        // `Err` return; assert the sync completed so a failing install surfaces
-        // its real error instead of a downstream missing-file panic.
-        assert_eq!(
-            status.status,
-            AgentTemplateRemoteSourceSyncStatus::Synced,
-            "sync did not complete: {:?}",
-            status.error
-        );
-
-        assert_eq!(
-            fs::read_to_string(existing.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
-            "user-owned"
-        );
-        let renamed = templates_root_for_home(home.path()).join("worker@official");
-        assert_eq!(
-            fs::read_to_string(renamed.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
-            "remote-owned"
-        );
-        let registry = load_template_registry(&templates_root_for_home(home.path())).unwrap();
-        let installed = registry
-            .installed
-            .get("worker@official")
-            .expect("registry should record renamed install_id");
-        assert_eq!(installed.template_id, "worker");
-        assert_eq!(installed.local_path, "worker@official");
-    }
-
-    #[tokio::test]
-    async fn sync_remote_source_reports_dirty_managed_template_failure() {
-        let _lock = crate::test_env::lock_env();
-        let home = tempdir().unwrap();
-        let db = RuntimeDb::open_and_migrate(
-            home.path().join("runtime.sqlite"),
-            home.path().join("runtime.sqlite.lock"),
-        )
-        .unwrap();
-        let routes = || {
-            vec![
-                (
-                    "/repos/owner/repo/contents/agent_templates",
-                    200,
-                    github_dir_response(&[("worker", "dir")]),
-                ),
-                (
-                    "/repos/owner/repo/contents/agent_templates/worker/template.toml",
-                    200,
-                    github_file_response(
-                        r#"schema = "holon.agent_template.v1"
-id = "worker"
-name = "Worker"
-"#,
-                    ),
-                ),
-                (
-                    "/repos/owner/repo/contents/agent_templates/worker/AGENTS.md",
-                    200,
-                    github_file_response("remote-owned"),
-                ),
-                (
-                    "/repos/owner/repo/contents/agent_templates/worker/skills.toml",
-                    404,
-                    "{\"message\":\"not found\"}".to_string(),
-                ),
-                (
-                    "/repos/owner/repo/contents/agent_templates/worker/template.toml",
-                    200,
-                    github_file_response(
-                        r#"schema = "holon.agent_template.v1"
-id = "worker"
-name = "Worker"
-"#,
-                    ),
-                ),
-            ]
-        };
-        let server = MockGithubServer::start(routes());
-        let _api_guard = EnvGuard::set(
-            "HOLON_TEMPLATE_GITHUB_API_BASE",
-            format!("http://{}", server.addr),
-        );
-        let config = AgentTemplateRemoteSourceConfigFile {
-            url: "https://github.com/owner/repo".into(),
-            git_ref: Some("main".into()),
-            enabled: Some(true),
-            credential_profile: None,
-        };
-
-        sync_agent_template_remote_source(&db, home.path(), "official", &config)
-            .await
-            .unwrap();
-        let template_dir = templates_root_for_home(home.path()).join("worker");
-        fs::write(template_dir.join(TEMPLATE_AGENTS_FILENAME), "local edit").unwrap();
-
-        let server = MockGithubServer::start(routes());
-        let _api_guard = EnvGuard::set(
-            "HOLON_TEMPLATE_GITHUB_API_BASE",
-            format!("http://{}", server.addr),
-        );
-        let status = sync_agent_template_remote_source(&db, home.path(), "official", &config)
-            .await
-            .unwrap();
-
-        assert_eq!(status.status, AgentTemplateRemoteSourceSyncStatus::Failed);
-        assert!(status.error.as_deref().unwrap().contains("local changes"));
-        assert_eq!(
-            fs::read_to_string(template_dir.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
-            "local edit"
-        );
-        let snapshot = load_remote_template_catalog_snapshot(
+        assert!(retry_at.starts_with("2099-01-01T00:00:00"));
+        assert!(!agent_template_remote_source_needs_sync(
             &db,
-            &BTreeMap::from([("official".into(), config.clone())]),
+            "official",
+            chrono::Duration::hours(24)
         )
-        .unwrap();
-        assert_eq!(snapshot.diagnostics.len(), 1);
-        assert!(snapshot.diagnostics[0].message.contains("worker"));
-    }
-
-    #[tokio::test]
-    async fn sync_remote_source_continues_after_dirty_managed_template() {
-        let _lock = crate::test_env::lock_env();
-        let home = tempdir().unwrap();
-        let db = RuntimeDb::open_and_migrate(
-            home.path().join("runtime.sqlite"),
-            home.path().join("runtime.sqlite.lock"),
-        )
-        .unwrap();
-        let routes = || {
-            vec![
-                (
-                    "/repos/owner/repo/contents/agent_templates",
-                    200,
-                    github_dir_response(&[("worker", "dir"), ("reviewer", "dir")]),
-                ),
-                (
-                    "/repos/owner/repo/contents/agent_templates/worker/template.toml",
-                    200,
-                    github_file_response(
-                        r#"schema = "holon.agent_template.v1"
-id = "worker"
-name = "Worker"
-"#,
-                    ),
-                ),
-                (
-                    "/repos/owner/repo/contents/agent_templates/reviewer/template.toml",
-                    200,
-                    github_file_response(
-                        r#"schema = "holon.agent_template.v1"
-id = "reviewer"
-name = "Reviewer"
-"#,
-                    ),
-                ),
-                (
-                    "/repos/owner/repo/contents/agent_templates/worker/AGENTS.md",
-                    200,
-                    github_file_response("local worker"),
-                ),
-                (
-                    "/repos/owner/repo/contents/agent_templates/worker/skills.toml",
-                    404,
-                    "{\"message\":\"not found\"}".to_string(),
-                ),
-                (
-                    "/repos/owner/repo/contents/agent_templates/worker/template.toml",
-                    200,
-                    github_file_response(
-                        r#"schema = "holon.agent_template.v1"
-id = "worker"
-name = "Worker"
-"#,
-                    ),
-                ),
-                (
-                    "/repos/owner/repo/contents/agent_templates/reviewer/AGENTS.md",
-                    200,
-                    github_file_response("remote reviewer"),
-                ),
-                (
-                    "/repos/owner/repo/contents/agent_templates/reviewer/skills.toml",
-                    404,
-                    "{\"message\":\"not found\"}".to_string(),
-                ),
-                (
-                    "/repos/owner/repo/contents/agent_templates/reviewer/template.toml",
-                    200,
-                    github_file_response(
-                        r#"schema = "holon.agent_template.v1"
-id = "reviewer"
-name = "Reviewer"
-"#,
-                    ),
-                ),
-            ]
-        };
-        let server = MockGithubServer::start(routes());
-        let _api_guard = EnvGuard::set(
-            "HOLON_TEMPLATE_GITHUB_API_BASE",
-            format!("http://{}", server.addr),
-        );
-        let config = AgentTemplateRemoteSourceConfigFile {
-            url: "https://github.com/owner/repo".into(),
-            git_ref: Some("main".into()),
-            enabled: Some(true),
-            credential_profile: None,
-        };
-
-        sync_agent_template_remote_source(&db, home.path(), "official", &config)
-            .await
-            .unwrap();
-        let worker_dir = templates_root_for_home(home.path()).join("worker");
-        fs::write(worker_dir.join(TEMPLATE_AGENTS_FILENAME), "local edit").unwrap();
-
-        let server = MockGithubServer::start(routes());
-        let _api_guard = EnvGuard::set(
-            "HOLON_TEMPLATE_GITHUB_API_BASE",
-            format!("http://{}", server.addr),
-        );
-        let status = sync_agent_template_remote_source(&db, home.path(), "official", &config)
-            .await
-            .unwrap();
-
-        assert_eq!(
-            status.status,
-            AgentTemplateRemoteSourceSyncStatus::PartiallyFailed
-        );
-        assert!(status.error.as_deref().unwrap().contains("worker"));
-        assert_eq!(
-            fs::read_to_string(worker_dir.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
-            "local edit"
-        );
-        let reviewer_dir = templates_root_for_home(home.path()).join("reviewer");
-        assert_eq!(
-            fs::read_to_string(reviewer_dir.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
-            "remote reviewer"
-        );
-        let registry = load_template_registry(&templates_root_for_home(home.path())).unwrap();
-        assert!(registry.installed.contains_key("reviewer"));
-        let snapshot = load_remote_template_catalog_snapshot(
-            &db,
-            &BTreeMap::from([("official".into(), config)]),
-        )
-        .unwrap();
-        assert_eq!(
-            snapshot.sources[0].status,
-            AgentTemplateRemoteSourceSyncStatus::PartiallyFailed
-        );
-        assert_eq!(snapshot.diagnostics.len(), 1);
-        assert!(snapshot.diagnostics[0].message.contains("worker"));
-    }
-
-    #[tokio::test]
-    async fn sync_remote_source_treats_corrupt_managed_template_as_dirty() {
-        let _lock = crate::test_env::lock_env();
-        let home = tempdir().unwrap();
-        let db = RuntimeDb::open_and_migrate(
-            home.path().join("runtime.sqlite"),
-            home.path().join("runtime.sqlite.lock"),
-        )
-        .unwrap();
-        let routes = || {
-            vec![
-                (
-                    "/repos/owner/repo/contents/agent_templates",
-                    200,
-                    github_dir_response(&[("worker", "dir")]),
-                ),
-                (
-                    "/repos/owner/repo/contents/agent_templates/worker/template.toml",
-                    200,
-                    github_file_response(
-                        r#"schema = "holon.agent_template.v1"
-id = "worker"
-name = "Worker"
-"#,
-                    ),
-                ),
-                (
-                    "/repos/owner/repo/contents/agent_templates/worker/AGENTS.md",
-                    200,
-                    github_file_response("remote-owned"),
-                ),
-                (
-                    "/repos/owner/repo/contents/agent_templates/worker/skills.toml",
-                    404,
-                    "{\"message\":\"not found\"}".to_string(),
-                ),
-                (
-                    "/repos/owner/repo/contents/agent_templates/worker/template.toml",
-                    200,
-                    github_file_response(
-                        r#"schema = "holon.agent_template.v1"
-id = "worker"
-name = "Worker"
-"#,
-                    ),
-                ),
-            ]
-        };
-        let server = MockGithubServer::start(routes());
-        let _api_guard = EnvGuard::set(
-            "HOLON_TEMPLATE_GITHUB_API_BASE",
-            format!("http://{}", server.addr),
-        );
-        let config = AgentTemplateRemoteSourceConfigFile {
-            url: "https://github.com/owner/repo".into(),
-            git_ref: Some("main".into()),
-            enabled: Some(true),
-            credential_profile: None,
-        };
-
-        sync_agent_template_remote_source(&db, home.path(), "official", &config)
-            .await
-            .unwrap();
-        let template_dir = templates_root_for_home(home.path()).join("worker");
-        fs::write(template_dir.join(TEMPLATE_AGENTS_FILENAME), "").unwrap();
-
-        let server = MockGithubServer::start(routes());
-        let _api_guard = EnvGuard::set(
-            "HOLON_TEMPLATE_GITHUB_API_BASE",
-            format!("http://{}", server.addr),
-        );
-        let status = sync_agent_template_remote_source(&db, home.path(), "official", &config)
-            .await
-            .unwrap();
-
-        assert_eq!(status.status, AgentTemplateRemoteSourceSyncStatus::Failed);
-        assert!(status.error.as_deref().unwrap().contains("local changes"));
-        assert_eq!(
-            fs::read_to_string(template_dir.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
-            ""
-        );
+        .unwrap());
     }
 
     #[tokio::test]

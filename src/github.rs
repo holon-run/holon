@@ -30,6 +30,13 @@ impl fmt::Debug for GitHubAuth {
 }
 
 impl GitHubAuth {
+    pub(crate) fn anonymous() -> Self {
+        Self {
+            token: None,
+            source: AuthSource::Anonymous,
+        }
+    }
+
     pub fn resolve_blocking(configured: Option<String>, env_keys: &[&str]) -> Self {
         if let Some(auth) = Self::from_token(configured, AuthSource::Configured) {
             return auth;
@@ -39,22 +46,16 @@ impl GitHubAuth {
                 return auth;
             }
         }
-        Self::from_token(gh_token(Duration::from_secs(5)), AuthSource::Gh).unwrap_or(Self {
-            token: None,
-            source: AuthSource::Anonymous,
-        })
+        Self::from_token(gh_token(Duration::from_secs(5)), AuthSource::Gh)
+            .unwrap_or_else(Self::anonymous)
     }
 
     pub async fn resolve(configured: Option<String>, env_keys: &[&str]) -> Self {
         if let Some(auth) = Self::selected_token(configured, env_keys) {
             return auth;
         }
-        Self::from_token(gh_token_async(Duration::from_secs(5)).await, AuthSource::Gh).unwrap_or(
-            Self {
-                token: None,
-                source: AuthSource::Anonymous,
-            },
-        )
+        Self::from_token(gh_token_async(Duration::from_secs(5)).await, AuthSource::Gh)
+            .unwrap_or_else(Self::anonymous)
     }
 
     fn selected_token(configured: Option<String>, env_keys: &[&str]) -> Option<Self> {
@@ -65,7 +66,7 @@ impl GitHubAuth {
         })
     }
 
-    fn from_token(token: Option<String>, source: AuthSource) -> Option<Self> {
+    pub(crate) fn from_token(token: Option<String>, source: AuthSource) -> Option<Self> {
         let token = token?.trim().to_owned();
         if token.is_empty() {
             return None;
@@ -237,6 +238,22 @@ pub struct ApiFailure {
     pub rate_limit: Option<RateLimit>,
 }
 
+impl fmt::Display for ApiFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.diagnostic.is_empty() {
+            write!(f, "GitHub request failed (HTTP {})", self.status)
+        } else {
+            write!(
+                f,
+                "GitHub request failed (HTTP {}): {}",
+                self.status, self.diagnostic
+            )
+        }
+    }
+}
+
+impl std::error::Error for ApiFailure {}
+
 struct Policy {
     auth: GitHubAuth,
     api_base: Url,
@@ -258,14 +275,21 @@ impl Policy {
 
     fn headers(&self, url: &Url) -> HeaderMap {
         let api = self.is_api(url);
+        let archive = is_archive_url(url);
         let mut headers = HeaderMap::new();
-        if api {
+        if api && !archive {
             headers.insert(
                 ACCEPT,
                 HeaderValue::from_static("application/vnd.github+json"),
             );
         }
-        if api || (url.scheme() == "https" && url.host_str() == Some("raw.githubusercontent.com")) {
+        let trusted_archive = archive
+            && (self.is_api(url)
+                || (url.scheme() == "https" && url.host_str() == Some("codeload.github.com")));
+        if api
+            || trusted_archive
+            || (url.scheme() == "https" && url.host_str() == Some("raw.githubusercontent.com"))
+        {
             if let Some(auth) = self.auth.header() {
                 headers.insert(AUTHORIZATION, auth);
             }
@@ -362,21 +386,10 @@ impl BlockingClient {
         }
     }
     pub fn api_url(&self, url: &str) -> anyhow::Result<String> {
-        let source = Url::parse(url)?;
-        let github = Url::parse("https://api.github.com")?;
-        anyhow::ensure!(
-            source.origin() == github.origin()
-                && source.username().is_empty()
-                && source.password().is_none()
-                && source.fragment().is_none(),
-            "expected a GitHub API URL"
-        );
-        let mut target = self.policy.api_base.clone();
-        // api_base replaces the origin, not the canonical GitHub API path.
-        target.set_path(source.path());
-        target.set_query(source.query());
-        target.set_fragment(None);
-        Ok(target.into())
+        map_api_url(&self.policy.api_base, url)
+    }
+    pub fn auth_present(&self) -> bool {
+        self.policy.auth.token.is_some()
     }
     pub fn response_error(&self, mut response: reqwest::blocking::Response) -> ApiFailure {
         let status = response.status().as_u16();
@@ -409,6 +422,12 @@ impl AsyncClient {
         let headers = self.policy.headers(&url);
         self.client.get(url).headers(headers)
     }
+    pub fn api_url(&self, url: &str) -> anyhow::Result<String> {
+        map_api_url(&self.policy.api_base, url)
+    }
+    pub fn auth_present(&self) -> bool {
+        self.policy.auth.token.is_some()
+    }
     pub async fn response_error(&self, mut response: reqwest::Response) -> ApiFailure {
         let status = response.status().as_u16();
         let headers = response.headers().clone();
@@ -428,6 +447,31 @@ impl AsyncClient {
         }
         self.policy.failure(status, &headers, &url, &body)
     }
+}
+
+fn is_archive_url(url: &Url) -> bool {
+    url.host_str() == Some("codeload.github.com")
+        || url
+            .path_segments()
+            .is_some_and(|mut segments| segments.nth(2) == Some("tar.gz"))
+}
+
+fn map_api_url(api_base: &Url, url: &str) -> anyhow::Result<String> {
+    let source = Url::parse(url)?;
+    let github = Url::parse("https://api.github.com")?;
+    anyhow::ensure!(
+        source.origin() == github.origin()
+            && source.username().is_empty()
+            && source.password().is_none()
+            && source.fragment().is_none(),
+        "expected a GitHub API URL"
+    );
+    let mut target = api_base.clone();
+    // api_base replaces the origin, not the canonical GitHub API path.
+    target.set_path(source.path());
+    target.set_query(source.query());
+    target.set_fragment(None);
+    Ok(target.into())
 }
 
 #[cfg(test)]
@@ -629,7 +673,9 @@ mod tests {
             std::fs::write(&executable, format!("#!/bin/sh\n{body}\n")).unwrap();
             std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
         };
-        write("test \"$*\" = 'auth token -h github.com' || exit 9\ntest \"$GH_PROMPT_DISABLED\" = 1 || exit 8\nread line && exit 7\nprintf 'cli-secret\\n'");
+        write(
+            "test \"$*\" = 'auth token -h github.com' || exit 9\ntest \"$GH_PROMPT_DISABLED\" = 1 || exit 8\nread line && exit 7\nprintf 'cli-secret\\n'",
+        );
         let auth = GitHubAuth::resolve_blocking(None, &[]);
         assert_eq!(auth.source, AuthSource::Gh);
         assert_eq!(auth.token.as_deref(), Some("cli-secret"));

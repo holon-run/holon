@@ -3921,6 +3921,20 @@ CREATE INDEX IF NOT EXISTS idx_messages_agent_trusted_operator
     AND json_extract(payload_json, '$.origin.kind') = 'operator';
 "#,
     },
+    Migration {
+        version: 82,
+        name: "agent_template_remote_source_retry_deadline",
+        sql: r#"
+ALTER TABLE agent_template_remote_source_syncs
+  ADD COLUMN next_retry_at TEXT;
+
+ALTER TABLE agent_template_remote_source_syncs
+  ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS idx_agent_template_remote_source_syncs_retry
+  ON agent_template_remote_source_syncs(next_retry_at, retry_count);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4124,6 +4138,38 @@ fn migrate_messages_trusted_operator_anchor_index(
     Ok(())
 }
 
+fn migrate_agent_template_remote_source_retry_deadline(
+    connection: &mut Connection,
+    migration: &Migration,
+) -> Result<()> {
+    let transaction = connection.transaction()?;
+    if table_exists_tx(&transaction, "agent_template_remote_source_syncs")? {
+        let columns = transaction
+            .prepare("PRAGMA table_info(agent_template_remote_source_syncs)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if !columns.iter().any(|column| column == "next_retry_at") {
+            transaction.execute_batch(
+                "ALTER TABLE agent_template_remote_source_syncs \
+                 ADD COLUMN next_retry_at TEXT",
+            )?;
+        }
+        if !columns.iter().any(|column| column == "retry_count") {
+            transaction.execute_batch(
+                "ALTER TABLE agent_template_remote_source_syncs \
+                 ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
+        transaction.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_agent_template_remote_source_syncs_retry \
+             ON agent_template_remote_source_syncs(next_retry_at, retry_count)",
+        )?;
+    }
+    record_migration(&transaction, migration)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration) -> Result<()> {
     let existing_name: Option<String> = connection
         .query_row(
@@ -4170,6 +4216,9 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
         }
         if migration.name == "messages_trusted_operator_anchor_index" {
             return migrate_messages_trusted_operator_anchor_index(connection, migration);
+        }
+        if migration.name == "agent_template_remote_source_retry_deadline" {
+            return migrate_agent_template_remote_source_retry_deadline(connection, migration);
         }
 
         let transaction = connection.transaction()?;

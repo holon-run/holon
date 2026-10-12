@@ -84,6 +84,12 @@ holon skills add https://github.com/user/repo/tree/main/skills/my-skill --remote
 holon skills add /path/to/skill --copy
 ```
 
+GitHub remote skills are fetched as a single repository archive and discovered
+locally. This avoids depending on the GitHub Contents/Tree API for public
+repositories; the archive is validated before any selected skill directory is
+installed. Existing lock metadata still records the source, ref, path, and
+folder hash used by `holon skills update`.
+
 #### Remove a skill from the library
 
 ```bash
