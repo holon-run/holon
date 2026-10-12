@@ -503,6 +503,9 @@ impl RuntimeHandle {
     }
 
     pub(super) async fn emit_due_agent_wait_recheck(&self) -> Result<bool> {
+        if self.inner.agent.lock().await.state.status == AgentStatus::Stopped {
+            return Ok(false);
+        }
         let agent_id = self.agent_id().await?;
         let now = self.now();
         let Some(condition) = self
@@ -1406,9 +1409,13 @@ mod tests {
     }
 
     fn test_runtime() -> TestRuntime {
+        test_runtime_with_clock(Arc::new(crate::runtime::clock::SystemClock))
+    }
+
+    fn test_runtime_with_clock(clock: Arc<dyn crate::runtime::clock::Clock>) -> TestRuntime {
         let dir = tempdir().unwrap();
         let workspace = tempdir().unwrap();
-        let runtime = RuntimeHandle::new(
+        let runtime = RuntimeHandle::new_with_clock(
             "default",
             dir.path().to_path_buf(),
             workspace.path().to_path_buf(),
@@ -1416,6 +1423,7 @@ mod tests {
             Arc::new(StubProvider::new("done")),
             "default".into(),
             ContextConfig::default(),
+            clock,
         )
         .unwrap();
 
@@ -1502,6 +1510,124 @@ mod tests {
             .continuation_trigger
             .as_ref()
             .is_some_and(|trigger| trigger.exact_wait_recheck));
+    }
+
+    #[test]
+    fn future_agent_wait_recheck_is_deferred_then_consumed_once() {
+        let clock = Arc::new(crate::runtime::clock::TestClock::new(
+            chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+        ));
+        let test_runtime = test_runtime_with_clock(clock.clone());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let registration = rt
+            .block_on(test_runtime.runtime.register_wait_for(
+                "default",
+                None,
+                WaitForWakeKind::OperatorInput,
+                None,
+                "future recheck operator wait".into(),
+                Some(60_000),
+            ))
+            .unwrap();
+        let condition_id = registration.condition.id.clone();
+        let recheck_at = registration.condition.recheck_at().unwrap();
+
+        assert!(recheck_at > test_runtime.runtime.now());
+        assert!(!rt
+            .block_on(test_runtime.runtime.emit_due_agent_wait_recheck())
+            .unwrap());
+        assert_eq!(
+            test_runtime
+                .runtime
+                .storage()
+                .latest_wait_conditions_for_agent("default")
+                .unwrap()
+                .into_iter()
+                .find(|condition| condition.id == condition_id)
+                .unwrap()
+                .status,
+            crate::types::WaitConditionStatus::Active
+        );
+
+        clock.advance(std::time::Duration::from_secs(60));
+        assert!(rt
+            .block_on(test_runtime.runtime.emit_due_agent_wait_recheck())
+            .unwrap());
+        assert!(!rt
+            .block_on(test_runtime.runtime.emit_due_agent_wait_recheck())
+            .unwrap());
+
+        let expected_message_id =
+            crate::ids::wait_recheck_message_id(&condition_id, &recheck_at.to_rfc3339());
+        let messages = test_runtime
+            .runtime
+            .storage()
+            .read_recent_messages(20)
+            .unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.id == expected_message_id)
+                .count(),
+            1
+        );
+        let condition = test_runtime
+            .runtime
+            .storage()
+            .latest_wait_conditions_for_agent("default")
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == condition_id)
+            .unwrap();
+        assert_eq!(
+            condition.status,
+            crate::types::WaitConditionStatus::Triggered
+        );
+        assert_eq!(
+            condition.trigger_message_id(),
+            Some(expected_message_id.as_str())
+        );
+    }
+
+    #[test]
+    fn stopped_agent_wait_recheck_is_preserved_without_emission() {
+        let test_runtime = test_runtime();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let registration = rt
+            .block_on(test_runtime.runtime.register_wait_for(
+                "default",
+                None,
+                WaitForWakeKind::OperatorInput,
+                None,
+                "stopped recheck operator wait".into(),
+                Some(0),
+            ))
+            .unwrap();
+        set_agent_status(&test_runtime, AgentStatus::Stopped);
+
+        assert!(!rt
+            .block_on(test_runtime.runtime.emit_due_agent_wait_recheck())
+            .unwrap());
+        let condition = test_runtime
+            .runtime
+            .storage()
+            .latest_wait_conditions_for_agent("default")
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == registration.condition.id)
+            .unwrap();
+        assert_eq!(condition.status, crate::types::WaitConditionStatus::Active);
+        assert!(test_runtime
+            .runtime
+            .storage()
+            .read_recent_messages(20)
+            .unwrap()
+            .iter()
+            .all(|message| message.id
+                != crate::ids::wait_recheck_message_id(
+                    &condition.id,
+                    &condition.recheck_at().unwrap().to_rfc3339(),
+                )));
     }
 
     fn set_agent_idle(test_runtime: &TestRuntime) {

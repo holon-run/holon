@@ -2362,7 +2362,6 @@ impl RuntimeHost {
                 && !active_task_owner_ids.contains(&agent_id)
                 && !queue_recovery_candidate_ids.contains(&agent_id)
                 && !active_timer_owner_ids.contains(&agent_id)
-                && !wait_recheck_owner_ids.contains(&agent_id)
             {
                 continue;
             }
@@ -16101,6 +16100,78 @@ mod tests {
             recheck_enqueued,
             "startup recovery should emit the deterministic wait recheck"
         );
+        restarted
+            .recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap();
+        let recheck_events = runtime
+            .storage()
+            .read_recent_events(200)
+            .unwrap()
+            .into_iter()
+            .filter(|event| {
+                event.kind == "wait_condition_recheck_enqueued"
+                    && event.data["wait_id"] == condition.id
+                    && event.data["message_id"] == expected_message_id
+            })
+            .count();
+        assert_eq!(
+            recheck_events, 1,
+            "repeated startup recovery must not enqueue a duplicate wait recheck"
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_preserves_but_does_not_activate_stopped_wait_recheck_owner() {
+        let (_home, host) = canonical_test_host();
+        let agent_id = "startup-stopped-wait-recheck";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        let runtime = host
+            .try_get_loaded_runtime(agent_id)
+            .await
+            .expect("created agent runtime should stay loaded");
+        let registration = runtime
+            .register_wait_for(
+                agent_id,
+                None,
+                crate::runtime::WaitForWakeKind::OperatorInput,
+                None,
+                "stopped wait recheck".into(),
+                Some(0),
+            )
+            .await
+            .unwrap();
+        host.unload_runtime(agent_id).await;
+        let storage = host.agent_storage(agent_id).unwrap();
+        let mut state = storage.read_agent().unwrap().unwrap();
+        state.status = AgentStatus::Stopped;
+        storage.write_agent(&state).unwrap();
+
+        host.recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap();
+
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        let condition = host
+            .runtime_db()
+            .wait_conditions()
+            .latest_for_agent(agent_id)
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == registration.condition.id)
+            .unwrap();
+        assert_eq!(condition.status, crate::types::WaitConditionStatus::Active);
+        assert!(host
+            .agent_storage(agent_id)
+            .unwrap()
+            .read_recent_messages(20)
+            .unwrap()
+            .iter()
+            .all(|message| message.id
+                != crate::ids::wait_recheck_message_id(
+                    &condition.id,
+                    &condition.recheck_at().unwrap().to_rfc3339(),
+                )));
     }
 
     #[tokio::test]
