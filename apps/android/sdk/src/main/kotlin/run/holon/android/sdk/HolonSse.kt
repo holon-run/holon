@@ -3,6 +3,7 @@ package run.holon.android.sdk
 import java.io.Closeable
 import java.io.IOException
 import java.util.LinkedHashSet
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicReference
 import okhttp3.ResponseBody
 import okio.BufferedSource
@@ -121,25 +122,27 @@ public class HolonSseConnection internal constructor(
         check(state.compareAndSet(State.NEW, State.CLAIMED)) {
             "SSE connection has already been consumed or closed"
         }
-        return HolonSseParser.parse(body).let { events ->
-            sequence {
-                check(state.compareAndSet(State.CLAIMED, State.READING)) {
-                    "SSE connection was closed before it could be read"
-                }
-                try {
-                    for (event in events) {
-                        if (deduplicator == null || deduplicator.accept(event)) {
-                            yield(event)
-                        }
+        return sequence {
+            check(state.compareAndSet(State.CLAIMED, State.READING)) {
+                "SSE connection was closed before it could be read"
+            }
+            try {
+                for (event in HolonSseParser.parse(body)) {
+                    if (deduplicator == null || deduplicator.accept(event)) {
+                        yield(event)
                     }
-                } finally {
-                    state.set(State.CLOSED)
-                    body.close()
                 }
+            } finally {
+                state.set(State.CLOSED)
+                body.close()
             }
         }
     }
 
+    /**
+     * Cancels the call immediately. Unread bodies are released in the background;
+     * an active reader retains ownership of its body's cleanup.
+     */
     override fun close() {
         val previous = state.getAndSet(State.CLOSED)
         if (previous == State.CLOSED) {
@@ -147,8 +150,15 @@ public class HolonSseConnection internal constructor(
         }
         cancelCall()
         if (previous == State.NEW || previous == State.CLAIMED) {
-            body.close()
+            bodyCloser.execute { body.close() }
         }
+    }
+
+    private companion object {
+        val bodyCloser =
+            Executors.newSingleThreadExecutor { task ->
+                Thread(task, "holon-sse-close").apply { isDaemon = true }
+            }
     }
 }
 
