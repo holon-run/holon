@@ -1,7 +1,7 @@
 # Agent state workload (D0)
 
-This optimized, offline harness exercises loaded-runtime preview, accepted input
-publication, and actual scheduler-to-provider request construction. It uses a
+This optimized, offline harness exercises loaded-runtime preview, Stopped
+admission/discard publication, and actual scheduler-to-provider request construction. It uses a
 scripted provider; it never sends a network request. It is separate from the
 small `context_snapshot` golden fixture and from real-LLM acceptance.
 
@@ -21,12 +21,23 @@ python3 benchmarks/agent-state/run.py run \
   --warmup-per-agent 2 --measured-per-agent 10
 ```
 
-Then run the frozen sampling policy at least three times per case:
+Then run the frozen sampling policy at least three times per case. The first
+successful full normal pilot produced 40 context samples from 10 responses per
+Agent; the normal gate requires at least 100. Freeze 13 warm/32 measured per
+Agent for normal and 4/8 for pressure, targeting 128 actual context samples per
+run without changing any fixture dimension. The actual sample-count assertion
+remains mandatory. Use the same values for the candidate arm:
 
 ```sh
 python3 benchmarks/agent-state/run.py run \
   --binary /absolute/target/release/deps/agent_state_workload-HASH \
-  --output /private/tmp/holon-agent-state-d0-baseline --label baseline --repeat 3
+  --output /private/tmp/holon-agent-state-d0-baseline --label baseline-normal \
+  --cases normal --repeat 3 --warmup-per-agent 13 --measured-per-agent 32
+
+python3 benchmarks/agent-state/run.py run \
+  --binary /absolute/target/release/deps/agent_state_workload-HASH \
+  --output /private/tmp/holon-agent-state-d0-baseline --label baseline-pressure \
+  --cases pressure --repeat 3 --warmup-per-agent 4 --measured-per-agent 8
 ```
 
 Each case runs in a fresh process. No fixture dimension can be reduced by an
@@ -72,8 +83,14 @@ request assertions reject materializing the full stdout into a request.
 One untimed preview round warms each loaded Agent; five rounds are measured.
 Preview includes acquisition and rendering through `RuntimeHandle::preview_prompt`.
 It does not run the dispatch WorkItemScoped adoption or construct a provider
-request. A separate phase accepts one new 16 KiB message per Agent and verifies
-the ACK includes live queue publication (101 pending).
+request. A separate phase submits one new 16 KiB message per stopped Agent.
+The existing runtime contract persists it as Aborted, keeps live `pending=100`
+and retains the original 100 accepted queue members. The ACK diagnostic verifies
+live state plus durable queue disposition/count; it does not directly observe
+live queue allocations or claim the new message was queued. Verification reads
+are outside each operation's timer. Whole-phase wall time and actual SQL/I/O
+counters include verification; the artifact declares these scopes explicitly. Acceptance and backpressure behavior require
+D3's own evidence; dispatch supplies most commit/publication gate samples.
 
 The dispatch phase uses the actual Host Start, scheduler, owner selector,
 context/resource preparation, provider request builder and terminal writes.
@@ -150,3 +167,11 @@ so activation returned that instance with zero pending inputs. No valid timing
 samples were saved. Its manifest/stdout/stderr remain unchanged; use a new label
 for the corrected cold-setup pilot. The old setup took approximately 124–146
 seconds per Agent; bulk setup acceleration remains unmeasured until that pilot.
+
+The corrected cold-setup pilot (`pilot-cold-v2`) then reached enqueue and failed
+an incorrect `pending=101` assertion. Production explicitly discards new input
+while Stopped, so the next pilot verifies its Aborted disposition and unchanged
+100 pending instead. Original accepted pending fixture dimensions remain fixed.
+The failed cold-v2 artifacts are preserved and supply no valid baseline samples.
+A suspected wait schema issue was withdrawn: current DDL and a read-only SQLite
+`PRAGMA table_info(wait_conditions)` both retain `payload_json`.

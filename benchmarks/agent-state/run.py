@@ -53,6 +53,16 @@ def validate(artifact: dict) -> list[str]:
         errors.append("loaded preview sample count differs")
     if artifact.get("enqueue_commit_publication", {}).get("operations") != loaded:
         errors.append("enqueue sample count differs")
+    if artifact.get("enqueue_commit_publication", {}).get("contract") != {
+        "status": "stopped", "disposition": "aborted", "pending_after_ack": 100,
+        "durable_pending_queue": 100, "live_queue_directly_observed": False,
+    }:
+        errors.append("Stopped discard admission contract differs")
+    enqueue = artifact.get("enqueue_commit_publication", {})
+    for key in ("actual_io_includes_verification", "phase_wall_includes_verification",
+                "operation_latency_excludes_verification"):
+        if enqueue.get(key) is not True:
+            errors.append(f"Stopped discard verification scope missing: {key}")
     groups = artifact.get("scripted_dispatch", {}).get("groups", [])
     if len(groups) != loaded // concurrent:
         errors.append("scripted group count differs")
@@ -99,6 +109,7 @@ def semantic_signature(artifact: dict) -> dict:
         "case": artifact["case"],
         "sampling": artifact["sampling"],
         "fixture": artifact["fixture"],
+        "enqueue_contract": artifact["enqueue_commit_publication"]["contract"],
         "request_topology": [[{
             key: arrival[key] for key in (
                 "agent_id", "ordinal", "phase", "request_kind", "tool_count", "conversation_messages",

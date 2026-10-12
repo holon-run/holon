@@ -936,6 +936,7 @@ async fn measure_enqueue(fixture: &Fixture, case: Case, probe: &mut IoProbe) -> 
         |(index, runtime)| {
             let permits = permits.clone();
             let id = fixture.ids[index].clone();
+            let db = fixture.host.runtime_db();
             async move {
                 let _permit = permits.acquire_owned().await?;
                 let message_id = format!("d0-measured-enqueue-{id}");
@@ -943,11 +944,17 @@ async fn measure_enqueue(fixture: &Fixture, case: Case, probe: &mut IoProbe) -> 
                 let started = Instant::now();
                 let accepted = runtime.enqueue(message).await?;
                 let wall_ns = started.elapsed().as_nanos();
-                ensure!(accepted.id == message_id, "enqueue changed input identity");
-                ensure!(
-                    runtime.agent_state().await?.pending == PENDING_INPUTS + 1,
-                    "enqueue ACK preceded exact live queue publication"
-                );
+                ensure!(accepted.id == message_id, "enqueue changed input identity: expected={message_id} actual={}", accepted.id);
+                let state = runtime.agent_state().await?;
+                let entry = db.queue_entries().latest(&message_id)?;
+                let pending_entries = db.queue_entries().queued_for_agent(&id)?;
+                let actual_status = entry.as_ref().map(|record| &record.status);
+                ensure!(state.pending == PENDING_INPUTS
+                    && state.status == AgentStatus::Stopped
+                    && pending_entries.len() == PENDING_INPUTS
+                    && actual_status == Some(&QueueEntryStatus::Aborted),
+                    "stopped admission ACK mismatch: agent={id} message={message_id} live_pending={} live_status={:?} durable_pending_queue={} new_message_queue_status={actual_status:?}; expected pending={} status=Stopped durable_queue={} new_message=Aborted; live queue allocation not directly observed",
+                    state.pending, state.status, pending_entries.len(), PENDING_INPUTS, PENDING_INPUTS);
                 Ok::<_, anyhow::Error>(OperationSample {
                     agent_index: index,
                     iteration: 0,
@@ -960,7 +967,12 @@ async fn measure_enqueue(fixture: &Fixture, case: Case, probe: &mut IoProbe) -> 
     .await?;
     let elapsed = started.elapsed();
     Ok(json!({
-        "scope": "enqueue admission through durable ACK and publication; state verification outside per-operation timer",
+        "scope": "Stopped discard admission through durable ACK and state publication; new message Aborted, original accepted queue retained; verification outside per-operation timer",
+        "contract": {"status": "stopped", "disposition": "aborted", "pending_after_ack": PENDING_INPUTS,
+            "durable_pending_queue": PENDING_INPUTS, "live_queue_directly_observed": false},
+        "actual_io_includes_verification": true,
+        "phase_wall_includes_verification": true,
+        "operation_latency_excludes_verification": true,
         "wall_ns": elapsed.as_nanos(), "operations": samples.len(),
         "operations_per_second": samples.len() as f64 / elapsed.as_secs_f64(),
         "latency": quantiles(samples.iter().map(|sample| sample.wall_ns)), "samples": samples,
