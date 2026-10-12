@@ -3736,6 +3736,52 @@ impl MessageRepository<'_> {
             .transpose()
     }
 
+    /// Loads the newest trusted operator input for `agent_id` (or for any
+    /// agent when `agent_id` is `None`) without materializing full history.
+    ///
+    /// Predicates and ordering must stay equivalent to the in-memory
+    /// `latest_trusted_operator_input` selection in `context` and to the
+    /// `idx_messages_agent_trusted_operator` partial index.
+    pub fn latest_trusted_operator(
+        &self,
+        agent_id: Option<&str>,
+    ) -> Result<Option<MessageEnvelope>> {
+        let connection = self.db.connection()?;
+        let payload = if let Some(agent_id) = agent_id {
+            connection
+                .query_row(
+                    "SELECT payload_json
+                     FROM messages
+                     WHERE agent_id = ?1
+                       AND message_seq IS NOT NULL
+                       AND json_extract(payload_json, '$.authority_class') = 'operator_instruction'
+                       AND json_extract(payload_json, '$.origin.kind') = 'operator'
+                     ORDER BY message_seq DESC, created_at DESC, message_id DESC
+                     LIMIT 1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+        } else {
+            connection
+                .query_row(
+                    "SELECT payload_json
+                     FROM messages
+                     WHERE message_seq IS NOT NULL
+                       AND json_extract(payload_json, '$.authority_class') = 'operator_instruction'
+                       AND json_extract(payload_json, '$.origin.kind') = 'operator'
+                     ORDER BY message_seq DESC, created_at DESC, message_id DESC
+                     LIMIT 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+        };
+        payload
+            .map(|payload| decode_message_payload(&payload))
+            .transpose()
+    }
+
     pub fn for_turn(
         &self,
         agent_id: &str,
