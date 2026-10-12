@@ -100,6 +100,7 @@ fn resolve_single_episode_recovery(
                 Some(KnownCommit::State {
                     state: Arc::new(state),
                     episodes: Some(Arc::new(episodes)),
+                    input_evidence: None,
                     runtime: None,
                 })
             }
@@ -398,6 +399,7 @@ mod tests {
             state,
             episodes: Some(episodes),
             runtime,
+            ..
         }) = recovery.known
         else {
             panic!("receipt must promote an exact current prepared root");

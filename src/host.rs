@@ -1,3 +1,6 @@
+mod input_evidence;
+mod pending_budget;
+
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
@@ -313,6 +316,7 @@ pub(crate) struct HostInner {
     runtimes: RwLock<HostRuntimeRegistry>,
     shutdown_operation: Mutex<Option<HostShutdownOperation>>,
     mutation_owners: MutationOwnerRegistry,
+    input_evidence_budget: crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
     external_mutation_tasks: Mutex<Vec<JoinHandle<()>>>,
     #[cfg(test)]
     external_publication_fault: AtomicBool,
@@ -836,6 +840,10 @@ impl RuntimeHost {
         event_bus_capacity: usize,
         bootstrap_provider_active: bool,
     ) -> Result<Self> {
+        let input_evidence_budget =
+            crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
+                config.stored_config.runtime.state_memory.resolve()?,
+            )?;
         let runtime_db =
             RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
         let registry = RuntimeRegistry::new(config, runtime_db.clone())?;
@@ -871,6 +879,7 @@ impl RuntimeHost {
                 }),
                 shutdown_operation: Mutex::new(None),
                 mutation_owners: MutationOwnerRegistry::default(),
+                input_evidence_budget,
                 external_mutation_tasks: Mutex::new(Vec::new()),
                 #[cfg(test)]
                 external_publication_fault: AtomicBool::new(false),
@@ -1611,13 +1620,11 @@ impl RuntimeHost {
                 Duration::from_secs(policy.interval_hours.saturating_mul(60 * 60));
             if retention_enabled && now >= next_retention_pass {
                 next_retention_pass = now + retention_round;
-                let db = self.inner.runtime_db.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    db.run_retention_pass(policy, chrono::Utc::now())
-                })
-                .await;
+                let result = self
+                    .run_scoped_retention_pass(policy, chrono::Utc::now())
+                    .await;
                 match result {
-                    Ok(Ok(report)) => {
+                    Ok(report) => {
                         tracing::info!(
                             audit_deleted = report.audit_events.deleted_rows,
                             transcript_deleted = report.transcript_entries.deleted_rows,
@@ -1627,16 +1634,10 @@ impl RuntimeHost {
                             "daemon runtime db retention pass completed"
                         );
                     }
-                    Ok(Err(error)) => {
-                        tracing::warn!(
-                            error = %error,
-                            "daemon runtime db retention pass failed"
-                        );
-                    }
                     Err(error) => {
                         tracing::warn!(
                             error = %error,
-                            "daemon runtime db retention task failed"
+                            "daemon runtime db retention pass failed"
                         );
                     }
                 }
@@ -2305,6 +2306,13 @@ impl RuntimeHost {
         &self,
         reservations: &mut [MutationReservation],
     ) -> Result<()> {
+        crate::runtime::input_recovery::resolve_input_recovery(
+            &self.inner.runtime_db,
+            reservations,
+            &self.inner.input_evidence_budget,
+            &self.runtime_context_config(),
+            &RuntimeModelCatalog::from_config(&self.config()),
+        )?;
         for reservation in reservations.iter_mut() {
             let original_runtime = self.bridge().runtime_for_mutation(reservation).await?;
             crate::runtime::control_recovery::resolve_control_recovery(
@@ -2322,12 +2330,22 @@ impl RuntimeHost {
         )?;
         let known = MutationReservation::validate_group_known(reservations)?;
         let mut notifications = Vec::new();
+        let mut cold_notifications = Vec::new();
         let mut cancellations = Vec::new();
         for (reservation, saved) in reservations.iter().zip(&known) {
             let Some(saved) = saved else {
                 continue;
             };
             if let KnownCommit::Metadata(metadata) = saved {
+                if metadata.identity.as_ref().is_some_and(|identity| {
+                    identity.agent_id == reservation.agent_id()
+                        && identity.incarnation == reservation.identity_incarnation()
+                        && identity.status == AgentRegistryStatus::Deleted
+                }) {
+                    // The original metadata ACK is retained until this exact
+                    // retired scope's durable pending responsibility is checked.
+                    self.reconcile_deleted_pending_budget(reservation)?;
+                }
                 self.bridge()
                     .install_mutation_metadata(
                         reservation.agent_id(),
@@ -2347,6 +2365,13 @@ impl RuntimeHost {
                 if let Some(effects) = runtime.install_saved_mutation(reservation, saved).await? {
                     notifications.push((runtime, effects));
                 }
+            } else if let KnownCommit::State {
+                runtime: Some(facts),
+                ..
+            } = saved
+            {
+                cold_notifications
+                    .push((reservation.agent_id().to_owned(), facts.external_effects()));
             }
         }
         MutationReservation::reconcile_all(reservations, known)?;
@@ -2355,6 +2380,25 @@ impl RuntimeHost {
         }
         for (runtime, effects) in notifications {
             runtime.reissue_mutation_notifications(effects).await;
+        }
+        for (agent_id, mut effects) in cold_notifications {
+            // The original write has already published for every owner. Cold
+            // agents have no scheduler to wake; durable work is seen on activation.
+            effects.fault = None;
+            match self.agent_storage(&agent_id) {
+                Ok(storage) => {
+                    for warning in storage
+                        .publish_transition_events(&effects)
+                        .into_iter()
+                        .chain(storage.notify_transition_memory_index(&effects))
+                    {
+                        tracing::warn!(agent_id, effect = warning.effect, error = %warning.message,
+                            "external input mutation committed with post-commit warning");
+                    }
+                }
+                Err(error) => tracing::warn!(agent_id, error = %error,
+                    "external input mutation notification storage unavailable"),
+            }
         }
         Ok(())
     }
@@ -2410,6 +2454,7 @@ impl RuntimeHost {
                 Ok(KnownCommit::State {
                     state: Arc::new(state),
                     episodes: reservation.prepared_episodes_for_state_only_commit()?,
+                    input_evidence: reservation.prepared_inputs_for_state_only_commit()?,
                     runtime: None,
                 })
             })
@@ -3035,18 +3080,40 @@ impl RuntimeHost {
             // not identity or AgentState. These exact facts remain valid while
             // the owners and preactivation handoff exclude other writers.
             let facts = self.external_identity_facts(&reservations)?;
+            let input_scopes = self.runtime_db().startup_input_recovery_scopes(
+                &reservations
+                    .iter()
+                    .map(|reservation| reservation.agent_id().to_owned())
+                    .collect::<Vec<_>>(),
+            )?;
             let mut handoff = Some(handoff);
             let mut acknowledged = None;
             let committed = self
                 .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
-                    let result = self
-                        .runtime_db()
-                        .recover_interrupted_runtime_state_at_startup();
+                    let result = {
+                        let mut lease=self.inner.runtime_db_maintenance_lock.lock()
+                            .expect("maintenance lease poisoned");
+                        if lease.is_none() {
+                            *lease=Some(crate::runtime_db::RuntimeDbLock::try_lock(
+                                self.config().runtime_db_maintenance_lock_path())?);
+                        }
+                        let proof=crate::runtime_db::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery::for_pre_activation_host(
+                            self.runtime_db(),lease.as_ref().expect("startup lease installed"),
+                            &self.config().runtime_db_maintenance_lock_path(),
+                            handoff.as_ref().expect("startup handoff held"))?;
+                        self.runtime_db().recover_interrupted_runtime_state_at_startup_in_scopes(
+                            &input_scopes,&proof)
+                    };
                     // Installation may await registry/cache locks; activation must
                     // never hold the handoff while waiting for these same owners.
                     drop(handoff.take());
-                    let report = result?;
-                    acknowledged = Some(report);
+                    let committed = result?;
+                    // The Host is still preactivation, so no input domain may
+                    // be published from these historical deltas. The original
+                    // transaction has advanced only its exact qualifications;
+                    // each later bootstrap prepares a coherent current root.
+                    drop(committed.input_deltas);
+                    acknowledged = Some(committed.report);
                     Ok(((), facts))
                 })
                 .await;
@@ -6600,6 +6667,20 @@ impl RuntimeHost {
         drop(reservations);
         drop(bootstrap_guard);
         self.drain_retired_runtime(agent_id, incarnation).await?;
+        // Drain without owner/bootstrap locks; then fence this original scope
+        // again before touching durable rows or the shared agent home.
+        let _cleanup_bootstrap_guard = bootstrap_lock.lock().await;
+        let cleanup_reservations = self
+            .reserve_mutation_scopes(&[(agent_id.to_owned(), incarnation)])
+            .await?;
+        let cleanup_reservation = cleanup_reservations
+            .iter()
+            .find(|reservation| {
+                reservation.agent_id() == agent_id
+                    && reservation.identity_incarnation() == incarnation
+            })
+            .context("private archive lost its original identity scope")?;
+        self.reconcile_deleted_pending_budget(cleanup_reservation)?;
         // Cancel any active wait conditions before removing the data directory.
         // This produces audit events and avoids orphaned active waits.
         let now = chrono::Utc::now();
@@ -6648,6 +6729,9 @@ impl RuntimeHost {
             }
         }
 
+        // Queue cleanup can fail or only partially apply. A fresh empty view,
+        // rather than the best-effort return value, releases Accepted charges.
+        self.reconcile_deleted_pending_budget(cleanup_reservation)?;
         let data_dir = self.agent_data_dir(agent_id);
         if data_dir.exists() {
             fs::remove_dir_all(&data_dir)?;
@@ -6705,8 +6789,7 @@ impl RuntimeHost {
                     .prepare_managed_worktree_for_task(&task.id)
                     .await?;
                 parent_runtime
-                    .storage()
-                    .append_transcript_entry(&TranscriptEntry::new(
+                    .persist_transcript_evidence(&TranscriptEntry::new(
                         parent_state.id.clone(),
                         TranscriptEntryKind::SubagentPrompt,
                         None,
@@ -6717,7 +6800,8 @@ impl RuntimeHost {
                             "task_id": task.id,
                             "workspace_root": seed.worktree_path,
                         }),
-                    ))?;
+                    ))
+                    .await?;
                 child_runtime
                     .enter_worktree(
                         seed.original_cwd.clone(),
@@ -8187,6 +8271,11 @@ fn build_agent_tree_node(
 }
 
 impl RuntimeHostBridge {
+    pub(crate) fn input_evidence_budget(
+        &self,
+    ) -> Result<crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger> {
+        Ok(self.host()?.inner.input_evidence_budget.clone())
+    }
     fn host(&self) -> Result<RuntimeHost> {
         let inner = self
             .inner
@@ -8881,7 +8970,20 @@ mod tests {
         use crate::domain::execution_protocol::{
             ExecutionProtocolState, RejoinFence, WorkItemExecutionRecord, WorkItemExecutionState,
         };
+        use crate::runtime::resident_input_evidence::InputEvidenceScope;
+        use crate::runtime_db::{
+            evidence::{append_message_tx, upsert_agent_state_tx},
+            input_evidence_snapshot::{
+                register_committed_input_evidence_tx, CanonicalInputEvidence,
+            },
+            repositories::{committed_turn_record_tx, upsert_turn_record_tx},
+            transitions::authority_fences_tx,
+        };
 
+        use crate::types::TurnRecord;
+
+        // Every caller has unloaded this Fresh namespace. The consumed source
+        // has canonical evidence and an actual started Turn, but no queue row.
         let storage = host.agent_storage(agent_id).unwrap();
         let mut work_item =
             WorkItemRecord::new(agent_id, "resume interrupted work", WorkItemState::Open);
@@ -8889,96 +8991,341 @@ mod tests {
         storage.append_work_item(&work_item).unwrap();
         let mut agent = storage.read_agent().unwrap().unwrap();
         agent.current_work_item_id = Some(work_item.id.clone());
-        storage.write_agent_for_fixture(&agent).unwrap();
-        let authority = host
-            .runtime_db()
-            .transitions()
-            .load_execution_authority_fences(agent_id)
-            .unwrap();
         let task_id = format!("task-consumed-{agent_id}");
         let message_id = format!("result-consumed-{agent_id}");
         let attempt_id = format!("activation:message:{message_id}");
+        let turn_id = format!("turn-consumed-{agent_id}");
+        let run_id = format!("run-consumed-{agent_id}");
         let rejoin = RejoinFence {
             obligation_id: task_id.clone(),
             generation: 1,
             parent_turn_id: format!("parent-{agent_id}"),
         };
+        let task = TaskRecord {
+            id: task_id.clone(),
+            agent_id: agent_id.into(),
+            kind: crate::types::TaskKind::CommandTask,
+            status: TaskStatus::Completed,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: Some(message_id.clone()),
+            work_item_id: Some(work_item.id.clone()),
+            summary: Some("consumed result".into()),
+            detail: Some(serde_json::json!({
+                "terminal_reentry": false,
+                "rejoin_obligation_id": rejoin.obligation_id,
+                "rejoin_generation": rejoin.generation,
+                "parent_turn_id": rejoin.parent_turn_id,
+            })),
+            recovery: None,
+        };
+        host.runtime_db().tasks().upsert(&task).unwrap();
+        let mut source = MessageEnvelope::new(
+            agent_id,
+            MessageKind::TaskResult,
+            MessageOrigin::Task {
+                task_id: task_id.clone(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "consumed task result".into(),
+            },
+        )
+        .with_admission(
+            crate::types::MessageDeliverySurface::TaskRejoin,
+            crate::types::AdmissionContext::RuntimeOwned,
+        );
+        source.id = message_id.clone();
+        source.task_id = Some(task_id.clone());
+        source.work_item_id = Some(work_item.id.clone());
+        source.turn_id = Some(turn_id.clone());
+        source.metadata = Some(serde_json::json!({
+            "task_id": task.id,
+            "task_kind": task.kind,
+            "task_status": "completed",
+            "task_summary": task.summary,
+            "task_detail": task.detail,
+            "task_recovery": task.recovery,
+            "work_item_id": work_item.id,
+        }));
         host.runtime_db()
-            .tasks()
-            .upsert(&TaskRecord {
-                id: task_id.clone(),
-                agent_id: agent_id.into(),
-                kind: crate::types::TaskKind::CommandTask,
-                status: TaskStatus::Completed,
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-                parent_message_id: Some(message_id.clone()),
-                work_item_id: Some(work_item.id.clone()),
-                summary: Some("consumed result".into()),
-                detail: Some(serde_json::json!({
-                    "terminal_reentry": false,
-                    "rejoin_obligation_id": rejoin.obligation_id,
-                    "rejoin_generation": rejoin.generation,
-                    "parent_turn_id": rejoin.parent_turn_id,
-                })),
-                recovery: None,
+            .transaction(|tx| {
+                let identity: AgentIdentityRecord = serde_json::from_str(&tx.query_row(
+                    "SELECT payload_json FROM agent_identities WHERE agent_id=?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )?)?;
+                let scope = InputEvidenceScope {
+                    agent_id: agent_id.into(),
+                    identity_incarnation: identity.incarnation,
+                };
+                let actual_source = append_message_tx(tx, &source)?.0;
+                let source_generation = actual_source
+                    .message_seq
+                    .expect("canonical TaskResult has an actual sequence");
+                let authority = authority_fences_tx(tx, agent_id)?;
+                agent.turn_index = agent.turn_index.saturating_add(1);
+                let message_count: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM messages WHERE agent_id=?1",
+                    [agent_id],
+                    |row| row.get(0),
+                )?;
+                agent.total_message_count = usize::try_from(message_count)?;
+                upsert_agent_state_tx(tx, &agent)?;
+                let mut turn = TurnRecord::new(agent_id, &turn_id, agent.turn_index);
+                turn.run_id = Some(run_id.clone());
+                turn.current_work_item_id = Some(work_item.id.clone());
+                turn.owner = Some(crate::types::TurnOwner::WorkItem {
+                    work_item_id: work_item.id.clone(),
+                });
+                turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+                    &actual_source,
+                ));
+                turn.input_message_ids = vec![actual_source.id.clone()];
+                upsert_turn_record_tx(tx, &turn)?;
+                let actual_turn = committed_turn_record_tx(tx, agent_id, &turn_id)?.record;
+                let mut execution = ExecutionProtocolState::empty(agent_id);
+                execution.work_items.insert(
+                    work_item.id.clone(),
+                    WorkItemExecutionRecord {
+                        source_revision: work_item.revision,
+                        state: WorkItemExecutionState::InFlight {
+                            generation: 1,
+                            attempt_id: attempt_id.clone(),
+                        },
+                    },
+                );
+                execution.attempts.insert(
+                    attempt_id.clone(),
+                    ExecutionAttempt {
+                        attempt_id: attempt_id.clone(),
+                        agent_id: agent_id.into(),
+                        source_message_id: Some(actual_source.id.clone()),
+                        source: ExecutionSource {
+                            identity: ExecutionSourceIdentity::TaskResult {
+                                task_id: task_id.clone(),
+                                result_message_id: actual_source.id.clone(),
+                            },
+                            generation: source_generation,
+                        },
+                        binding: ExecutionBinding::WorkItem {
+                            work_item_id: work_item.id.clone(),
+                        },
+                        provenance: ExecutionProvenance {
+                            origin: ExecutionOrigin::Task,
+                            trust: ExecutionTrust::RuntimeInstruction,
+                            priority: ExecutionPriority::Normal,
+                            correlation_id: None,
+                            causation_id: None,
+                        },
+                        admitted_fences: AdmittedFences {
+                            source_revision: source_generation,
+                            work_item_source_revision: Some(work_item.revision),
+                            work_item_generation: Some(1),
+                            rejoin: Some(rejoin.clone()),
+                            agent_control_revision: authority.agent_control_revision,
+                            host_registry_revision: authority.host_registry_revision,
+                        },
+                        state: ExecutionAttemptState::Open,
+                        run_id: Some(run_id.clone()),
+                        turn_id: Some(turn_id.clone()),
+                        recovery_of_attempt_id: None,
+                        terminal_outcome_id: None,
+                        admitted_at: Utc::now().to_rfc3339(),
+                        terminal_at: None,
+                    },
+                );
+                crate::runtime_db::transitions::persist_state_tx(tx, &execution)?;
+                let actual_execution =
+                    crate::runtime_db::transitions::execution_protocol_repository::load_state_tx(
+                        tx, agent_id,
+                    )?;
+                register_committed_input_evidence_tx(
+                    tx,
+                    &scope,
+                    &[
+                        CanonicalInputEvidence::Message(actual_source),
+                        CanonicalInputEvidence::Turn(actual_turn),
+                        CanonicalInputEvidence::Attempt(
+                            actual_execution.attempts[&attempt_id].clone(),
+                        ),
+                        CanonicalInputEvidence::WorkExecution {
+                            work_item_id: work_item.id.clone(),
+                            record: actual_execution.work_items[&work_item.id].clone(),
+                        },
+                    ],
+                )?;
+                Ok(())
             })
             .unwrap();
-        let mut execution = ExecutionProtocolState::empty(agent_id);
-        execution.work_items.insert(
-            work_item.id.clone(),
-            WorkItemExecutionRecord {
-                source_revision: work_item.revision,
-                state: WorkItemExecutionState::InFlight {
-                    generation: 1,
-                    attempt_id: attempt_id.clone(),
-                },
-            },
-        );
-        execution.attempts.insert(
-            attempt_id.clone(),
-            ExecutionAttempt {
-                attempt_id: attempt_id.clone(),
-                agent_id: agent_id.into(),
-                source_message_id: Some(message_id.clone()),
-                source: ExecutionSource {
-                    identity: ExecutionSourceIdentity::TaskResult {
-                        task_id,
-                        result_message_id: message_id,
-                    },
-                    generation: 1,
-                },
-                binding: ExecutionBinding::WorkItem {
-                    work_item_id: work_item.id.clone(),
-                },
-                provenance: ExecutionProvenance {
-                    origin: ExecutionOrigin::Task,
-                    trust: ExecutionTrust::RuntimeInstruction,
-                    priority: ExecutionPriority::Normal,
-                    correlation_id: None,
-                    causation_id: None,
-                },
-                admitted_fences: AdmittedFences {
-                    source_revision: 1,
-                    work_item_source_revision: Some(work_item.revision),
-                    work_item_generation: Some(1),
-                    rejoin: Some(rejoin),
-                    agent_control_revision: authority.agent_control_revision,
-                    host_registry_revision: authority.host_registry_revision,
-                },
-                state: ExecutionAttemptState::Open,
-                run_id: None,
-                turn_id: None,
-                recovery_of_attempt_id: None,
-                terminal_outcome_id: None,
-                admitted_at: Utc::now().to_rfc3339(),
-                terminal_at: None,
-            },
-        );
-        host.runtime_db()
-            .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-            .unwrap();
         (work_item.id, attempt_id)
+    }
+
+    #[tokio::test]
+    async fn unloaded_waiting_execution_fixture_has_exact_fresh_input_qualification() {
+        use crate::runtime::resident_input_evidence::{
+            InputEvidenceFamily as Family, InputEvidenceKey as Key, InputEvidenceScope,
+            PreparedInputEvidence,
+        };
+        use crate::runtime_db::input_evidence_snapshot::{
+            load_input_evidence_snapshot_tx, InputEvidenceBootstrapSnapshot,
+            InputEvidenceLoadRequest,
+        };
+
+        let (_home, host) = canonical_test_host();
+        let agent_id = "startup-qualified-wait-fixture";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        host.unload_runtime(agent_id).await;
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        let storage = host.agent_storage(agent_id).unwrap();
+        let work = WorkItemRecord::new(agent_id, "waiting fixture", WorkItemState::Open);
+        storage.append_work_item(&work).unwrap();
+        let scope = InputEvidenceScope {
+            agent_id: agent_id.into(),
+            identity_incarnation: host
+                .runtime_db()
+                .agent_identities()
+                .latest(agent_id)
+                .unwrap()
+                .unwrap()
+                .incarnation,
+        };
+        let key = Key::new(Family::WorkExecution, &work.id);
+        let request = InputEvidenceLoadRequest {
+            windows: Vec::new(),
+            mandatory_roots: [key.clone()].into_iter().collect(),
+            interrupted_sources: Default::default(),
+            record_limit: 64,
+            byte_limit: 64 * 1024,
+        };
+        // A plain storage fixture is not qualification for a Fresh identity.
+        crate::runtime::tests::support::seed_waiting_work_execution(
+            &storage,
+            &work,
+            "wait-qualified-fixture",
+        );
+        assert!(host
+            .runtime_db()
+            .transaction(|tx| load_input_evidence_snapshot_tx(tx, &scope, &request))
+            .is_err());
+        crate::runtime::tests::support::seed_waiting_work_execution_for_unloaded_host(
+            &storage,
+            &work,
+            "wait-qualified-fixture",
+        );
+        let InputEvidenceBootstrapSnapshot::Current(snapshot) = host
+            .runtime_db()
+            .transaction(|tx| load_input_evidence_snapshot_tx(tx, &scope, &request))
+            .unwrap()
+        else {
+            panic!("unloaded fixture namespace should remain current")
+        };
+        let captured = snapshot.resident.capture().unwrap();
+        let record = captured.lookup(&key).unwrap().unwrap();
+        let PreparedInputEvidence::WorkExecution { record, .. } = &record.record else {
+            panic!("fixture should contain an exact WorkExecution")
+        };
+        assert!(matches!(
+            &record.state,
+            crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. }
+                if wait.wait_id == "wait-qualified-fixture"
+        ));
+        assert!(storage.latest_queue_entries().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unloaded_consumed_result_fixture_has_canonical_source_and_started_turn() {
+        use crate::runtime::resident_input_evidence::{
+            InputEvidenceFamily as Family, InputEvidenceKey as Key, InputEvidenceScope,
+            PreparedInputEvidence,
+        };
+        use crate::runtime_db::input_evidence_snapshot::{
+            load_input_evidence_snapshot_tx, InputEvidenceBootstrapSnapshot,
+            InputEvidenceLoadRequest,
+        };
+
+        let (_home, host) = canonical_test_host();
+        let agent_id = "startup-qualified-consumed-fixture";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        host.unload_runtime(agent_id).await;
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        let (work_id, attempt_id) = seed_startup_consumed_result_attempt(&host, agent_id);
+        let scope = InputEvidenceScope {
+            agent_id: agent_id.into(),
+            identity_incarnation: host
+                .runtime_db()
+                .agent_identities()
+                .latest(agent_id)
+                .unwrap()
+                .unwrap()
+                .incarnation,
+        };
+        let request = InputEvidenceLoadRequest {
+            windows: Vec::new(),
+            mandatory_roots: [Key::new(Family::WorkExecution, &work_id)]
+                .into_iter()
+                .collect(),
+            interrupted_sources: Default::default(),
+            record_limit: 64,
+            byte_limit: 64 * 1024,
+        };
+        let InputEvidenceBootstrapSnapshot::Current(snapshot) = host
+            .runtime_db()
+            .transaction(|tx| load_input_evidence_snapshot_tx(tx, &scope, &request))
+            .unwrap()
+        else {
+            panic!("unloaded consumed fixture should remain current")
+        };
+        let captured = snapshot.resident.capture().unwrap();
+        let attempt = captured
+            .lookup(&Key::new(Family::Attempt, &attempt_id))
+            .unwrap()
+            .unwrap();
+        let PreparedInputEvidence::Attempt(attempt) = &attempt.record else {
+            panic!("fixture should capture its actual Attempt")
+        };
+        let source_id = attempt.source_message_id.as_deref().unwrap();
+        let source = captured
+            .lookup(&Key::new(Family::Message, source_id))
+            .unwrap()
+            .unwrap();
+        let PreparedInputEvidence::Message(source) = &source.record else {
+            panic!("fixture should capture its actual TaskResult")
+        };
+        assert_eq!(source.kind, MessageKind::TaskResult);
+        assert_eq!(source.message_seq, Some(attempt.source.generation));
+        assert_eq!(
+            source.message_seq,
+            Some(attempt.admitted_fences.source_revision)
+        );
+        assert_eq!(
+            captured
+                .message_turn_keys
+                .get(source_id)
+                .unwrap()
+                .as_deref(),
+            attempt.turn_id.as_deref()
+        );
+        let turn = captured
+            .lookup(&Key::new(Family::Turn, attempt.turn_id.as_deref().unwrap()))
+            .unwrap()
+            .unwrap();
+        let PreparedInputEvidence::Turn(turn) = &turn.record else {
+            panic!("fixture should capture its actual started Turn")
+        };
+        assert_eq!(turn.run_id, attempt.run_id);
+        assert_eq!(turn.input_message_ids, vec![source_id.to_string()]);
+        assert_eq!(
+            captured.execution.source(source_id).unwrap().attempts.len(),
+            1
+        );
+        assert!(host
+            .runtime_db()
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .is_empty());
     }
 
     fn seed_stopped_startup_cleanup(host: &RuntimeHost) -> (AgentState, String, String, String) {
@@ -9514,7 +9861,13 @@ mod tests {
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), &mut started_wait)
             .await
-            .expect("recovered WorkItem should reenter without an old result wake");
+            .unwrap_or_else(|error| {
+                panic!(
+                    "recovered WorkItem should reenter without an old result wake: {error:?}; state={:?}; events={:?}",
+                    restarted.runtime_db().agent_states().latest(agent_id),
+                    restarted.agent_storage(agent_id).unwrap().read_recent_events(30),
+                )
+            });
         let execution = restarted
             .runtime_db()
             .transitions()
@@ -19009,7 +19362,6 @@ mod tests {
             .unwrap();
         let mut state = storage.read_agent().unwrap().unwrap();
         state.current_work_item_id = Some(work_item.id.clone());
-        storage.write_agent_for_fixture(&state).unwrap();
         let mut message = MessageEnvelope::new(
             agent_id,
             MessageKind::OperatorPrompt,
@@ -19025,15 +19377,43 @@ mod tests {
         );
         message.id = "msg-startup-interrupted-prompt".into();
         message.turn_id = Some("turn-startup-interrupted-prompt".into());
-        storage.append_message(&message).unwrap();
-        storage
-            .append_queue_entry(&QueueEntryRecord {
-                message_id: message.id.clone(),
-                agent_id: agent_id.into(),
-                priority: message.priority,
-                status: QueueEntryStatus::Interrupted,
-                created_at: message.created_at,
-                updated_at: now,
+        // This Fresh identity was already created and unloaded. Seed the
+        // interrupted input through one actual write/qualification transaction.
+        host.runtime_db()
+            .transaction(|tx| {
+                let actual = crate::runtime_db::evidence::append_message_tx(tx, &message)?.0;
+                crate::runtime_db::repositories::upsert_queue_entry_tx(
+                    tx,
+                    &QueueEntryRecord {
+                        message_id: actual.id.clone(),
+                        agent_id: agent_id.into(),
+                        priority: actual.priority.clone(),
+                        status: QueueEntryStatus::Interrupted,
+                        created_at: actual.created_at,
+                        updated_at: now,
+                    },
+                )?;
+                state.pending = 1;
+                state.total_message_count = 1;
+                crate::runtime_db::evidence::upsert_agent_state_tx(tx, &state)?;
+                let identity =
+                    crate::runtime_db::context_inputs::ContextDurableRead::new(tx, agent_id)
+                        .scope_facts()?
+                        .identity
+                        .expect("fixture identity");
+                crate::runtime_db::input_evidence_snapshot::register_committed_input_evidence_tx(
+                    tx,
+                    &crate::runtime::resident_input_evidence::InputEvidenceScope {
+                        agent_id: agent_id.into(),
+                        identity_incarnation: identity.incarnation,
+                    },
+                    &[
+                        crate::runtime_db::input_evidence_snapshot::CanonicalInputEvidence::Message(
+                            actual,
+                        ),
+                    ],
+                )?;
+                Ok(())
             })
             .unwrap();
 
@@ -19232,12 +19612,13 @@ mod tests {
             .latest(&work_item.id)
             .unwrap()
             .unwrap();
-        crate::runtime::tests::support::seed_waiting_work_execution(
+        host.unload_runtime(agent_id).await;
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        crate::runtime::tests::support::seed_waiting_work_execution_for_unloaded_host(
             &storage,
             &registered_work_item,
             &registration.condition.id,
         );
-        host.unload_runtime(agent_id).await;
 
         // The timer is the only recovery signal: no queue or task candidates exist.
         assert!(storage.latest_queue_entries().unwrap().is_empty());
@@ -19266,10 +19647,15 @@ mod tests {
             .unwrap()
             .is_empty());
 
-        restarted
-            .try_get_loaded_runtime(agent_id)
-            .await
-            .expect("startup recovery should activate the timer-only owner");
+        assert!(
+            restarted.try_get_loaded_runtime(agent_id).await.is_some(),
+            "startup recovery should activate the timer-only owner; state={:?}; events={:?}",
+            restarted.runtime_db().agent_states().latest(agent_id),
+            restarted
+                .agent_storage(agent_id)
+                .unwrap()
+                .read_recent_events(30),
+        );
         let storage = restarted.agent_storage(agent_id).unwrap();
         let timer = storage
             .latest_timer_record("timer-startup-owner-1")
@@ -19664,16 +20050,31 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_recovers_prior_process_claims_and_settles_completed_sources() {
-        let (_home, host) = test_host();
-        // Isolate persisted recovery from live replay; owner activation is tested separately.
+        use crate::runtime_db::{
+            evidence::{
+                append_message_tx, insert_brief_evidence_tx, insert_delivery_summary_evidence_tx,
+                upsert_agent_state_tx,
+            },
+            migrations::{apply_migration, ensure_migration_table, MIGRATIONS},
+            repositories::{upsert_queue_entry_tx, upsert_turn_record_tx},
+        };
+        // Model actual pre-feature orphaned rows, before the fixed cutover.
+        // Current-schema raw inserts cannot acquire an old unbound seed.
+        let home = tempdir().unwrap();
+        write_test_model_config(home.path());
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.user_home_dir = Some(home.path().to_path_buf());
+        std::fs::create_dir_all(config.runtime_db_path().parent().unwrap()).unwrap();
+        let mut connection = rusqlite::Connection::open(config.runtime_db_path()).unwrap();
+        ensure_migration_table(&connection).unwrap();
+        for migration in MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version <= 81)
+        {
+            apply_migration(&mut connection, migration).unwrap();
+        }
+        let tx = connection.transaction().unwrap();
         let agent_id = "startup-unregistered-claims".to_string();
-        let runtime_db = host.runtime_db().clone();
-        let storage = AppStorage::new_for_agent(
-            host.agent_data_dir(&agent_id),
-            agent_id.clone(),
-            runtime_db.clone(),
-        )
-        .unwrap();
 
         let make_message = |id: &str| {
             let mut msg = MessageEnvelope::new(
@@ -19703,17 +20104,13 @@ mod tests {
 
         // Orphaned: no activation, no terminal turn
         let msg_a = make_message("msg-orphaned");
-        storage.append_message(&msg_a).unwrap();
-        storage
-            .append_queue_entry(&make_queue_entry(&msg_a, QueueEntryStatus::Dequeued))
-            .unwrap();
+        let msg_a = append_message_tx(&tx, &msg_a).unwrap().0;
+        upsert_queue_entry_tx(&tx, &make_queue_entry(&msg_a, QueueEntryStatus::Dequeued)).unwrap();
 
         // A prior-process execution attempt must be interrupted with its claim.
         let msg_b = make_message("msg-activated");
-        storage.append_message(&msg_b).unwrap();
-        storage
-            .append_queue_entry(&make_queue_entry(&msg_b, QueueEntryStatus::Dequeued))
-            .unwrap();
+        let msg_b = append_message_tx(&tx, &msg_b).unwrap().0;
+        upsert_queue_entry_tx(&tx, &make_queue_entry(&msg_b, QueueEntryStatus::Dequeued)).unwrap();
         let attempt = ExecutionAttempt {
             attempt_id: format!("activation:message:{}", msg_b.id),
             agent_id: agent_id.clone(),
@@ -19722,7 +20119,7 @@ mod tests {
                 identity: ExecutionSourceIdentity::QueueMessage {
                     message_id: msg_b.id.clone(),
                 },
-                generation: 1,
+                generation: msg_b.message_seq.unwrap(),
             },
             binding: ExecutionBinding::AgentLifecycle {
                 agent_id: agent_id.clone(),
@@ -19735,7 +20132,7 @@ mod tests {
                 causation_id: None,
             },
             admitted_fences: AdmittedFences {
-                source_revision: 1,
+                source_revision: msg_b.message_seq.unwrap(),
                 work_item_source_revision: None,
                 work_item_generation: None,
                 rejoin: None,
@@ -19743,7 +20140,7 @@ mod tests {
                 host_registry_revision: 1,
             },
             state: ExecutionAttemptState::Open,
-            run_id: None,
+            run_id: Some("prior-process-claim-run".into()),
             turn_id: None,
             recovery_of_attempt_id: None,
             terminal_outcome_id: None,
@@ -19754,19 +20151,19 @@ mod tests {
         let mut execution =
             crate::domain::execution_protocol::ExecutionProtocolState::empty(&agent_id);
         execution.attempts.insert(attempt_id.clone(), attempt);
-        runtime_db
-            .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+        crate::runtime_db::transitions::persist_state_tx(&tx, &execution)
             .expect("persist execution protocol fixture");
 
         // A legacy activation without a unified attempt no longer protects a claim.
         let msg_legacy = make_message("msg-legacy-activation");
-        storage.append_message(&msg_legacy).unwrap();
-        storage
-            .append_queue_entry(&make_queue_entry(&msg_legacy, QueueEntryStatus::Dequeued))
-            .unwrap();
-        runtime_db
-            .transaction(|tx| {
-                tx.execute(
+        let msg_legacy = append_message_tx(&tx, &msg_legacy).unwrap().0;
+        upsert_queue_entry_tx(
+            &tx,
+            &make_queue_entry(&msg_legacy, QueueEntryStatus::Dequeued),
+        )
+        .unwrap();
+        {
+            tx.execute(
                     "INSERT INTO scheduler_activations
                        (agent_id, activation_id, authority_id, owner_kind, owner_id,
                         work_item_id, admitted_generation, admission_kind,
@@ -19779,17 +20176,13 @@ mod tests {
                         Utc::now().timestamp_millis(),
                         Utc::now().timestamp_millis(),
                     ],
-                )?;
-                Ok(())
-            })
-            .expect("insert legacy activation");
+                ).expect("insert legacy activation");
+        }
 
         // Has terminal turn: completion evidence settles the stale claim.
         let msg_c = make_message("msg-terminal");
-        storage.append_message(&msg_c).unwrap();
-        storage
-            .append_queue_entry(&make_queue_entry(&msg_c, QueueEntryStatus::Dequeued))
-            .unwrap();
+        let msg_c = append_message_tx(&tx, &msg_c).unwrap().0;
+        upsert_queue_entry_tx(&tx, &make_queue_entry(&msg_c, QueueEntryStatus::Dequeued)).unwrap();
         let mut turn = crate::types::TurnRecord::new(&agent_id, "turn-terminal", 0);
         turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&msg_c));
         turn.terminal = Some(crate::types::TurnTerminalSummary {
@@ -19799,17 +20192,16 @@ mod tests {
             completed_at: Utc::now(),
             duration_ms: 100,
         });
-        runtime_db
-            .turn_records()
-            .upsert(&turn)
-            .expect("upsert turn");
+        upsert_turn_record_tx(&tx, &turn).expect("upsert turn");
 
         // Has a result brief without a terminal turn: should also settle, not replay.
         let msg_result = make_message("msg-result-brief");
-        storage.append_message(&msg_result).unwrap();
-        storage
-            .append_queue_entry(&make_queue_entry(&msg_result, QueueEntryStatus::Dequeued))
-            .unwrap();
+        let msg_result = append_message_tx(&tx, &msg_result).unwrap().0;
+        upsert_queue_entry_tx(
+            &tx,
+            &make_queue_entry(&msg_result, QueueEntryStatus::Dequeued),
+        )
+        .unwrap();
         let result_brief = BriefRecord::new(
             &agent_id,
             BriefKind::Result,
@@ -19817,14 +20209,16 @@ mod tests {
             Some(msg_result.id.clone()),
             None,
         );
-        storage.append_brief(&result_brief).unwrap();
+        insert_brief_evidence_tx(&tx, &result_brief).unwrap();
 
         // Has failure evidence: should settle as aborted, not replay.
         let msg_failure = make_message("msg-failure-brief");
-        storage.append_message(&msg_failure).unwrap();
-        storage
-            .append_queue_entry(&make_queue_entry(&msg_failure, QueueEntryStatus::Dequeued))
-            .unwrap();
+        let msg_failure = append_message_tx(&tx, &msg_failure).unwrap().0;
+        upsert_queue_entry_tx(
+            &tx,
+            &make_queue_entry(&msg_failure, QueueEntryStatus::Dequeued),
+        )
+        .unwrap();
         let failure_brief = BriefRecord::new(
             &agent_id,
             BriefKind::Failure,
@@ -19832,19 +20226,21 @@ mod tests {
             Some(msg_failure.id.clone()),
             None,
         );
-        storage.append_brief(&failure_brief).unwrap();
+        insert_brief_evidence_tx(&tx, &failure_brief).unwrap();
 
         // Has delivery evidence attached to its trigger turn: should settle, not replay.
         let msg_delivery = make_message("msg-delivery");
-        storage.append_message(&msg_delivery).unwrap();
-        storage
-            .append_queue_entry(&make_queue_entry(&msg_delivery, QueueEntryStatus::Dequeued))
-            .unwrap();
+        let msg_delivery = append_message_tx(&tx, &msg_delivery).unwrap().0;
+        upsert_queue_entry_tx(
+            &tx,
+            &make_queue_entry(&msg_delivery, QueueEntryStatus::Dequeued),
+        )
+        .unwrap();
         let mut delivery_turn = crate::types::TurnRecord::new(&agent_id, "turn-delivery", 1);
         delivery_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
             &msg_delivery,
         ));
-        storage.append_turn(&delivery_turn).unwrap();
+        upsert_turn_record_tx(&tx, &delivery_turn).unwrap();
         let mut delivery = DeliverySummaryRecord::new(
             &agent_id,
             "work-delivery",
@@ -19853,7 +20249,26 @@ mod tests {
             None,
         );
         delivery.turn_id = Some(delivery_turn.turn_id);
-        storage.append_delivery_summary(&delivery).unwrap();
+        insert_delivery_summary_evidence_tx(&tx, &delivery).unwrap();
+        // The old process claimed input but had not started a Turn yet.
+        let mut prior_state = AgentState::new(&agent_id);
+        prior_state.status = AgentStatus::AwakeRunning;
+        prior_state.current_run_id = Some("prior-process-claim-run".into());
+        prior_state.pending = 7;
+        prior_state.total_message_count = 7;
+        upsert_agent_state_tx(&tx, &prior_state).unwrap();
+        tx.commit().unwrap();
+        drop(connection);
+
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        let runtime_db = host.runtime_db().clone();
+        let storage = AppStorage::new_for_agent(
+            host.agent_data_dir(&agent_id),
+            agent_id.clone(),
+            runtime_db.clone(),
+        )
+        .unwrap();
 
         let recovered = host
             .recover_orphaned_queue_claims_at_startup()

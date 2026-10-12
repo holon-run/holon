@@ -3,12 +3,22 @@
 use super::*;
 use crate::{
     context::{
-        acquire_durable_context, inputs::ContextInputs, observe_context_resources,
+        acquire_durable_context,
+        inputs::{ContextInputs, ResidentContextInputs},
+        observe_context_resources, ContextConfig, ContextHistoryPreparation,
         FilesystemContextResources,
     },
     domain::execution_protocol::{ExecutionAttemptState, ExecutionBinding},
     prompt::{build_effective_prompt_from_context_snapshot, ToolPromptContext},
-    runtime_db::context_inputs::ContextDurableRead,
+    runtime::resident_input_evidence::{
+        InputEvidenceFamily as Family, InputEvidenceKey, InputWindowSelector, LEGACY_INPUT_WINDOW,
+    },
+    runtime_db::{
+        context_inputs::ContextDurableRead,
+        input_evidence_snapshot::{
+            InputEvidenceLoadRequest, InputEvidenceSnapshotError, InputWindowRequest,
+        },
+    },
     types::TurnOwner,
 };
 
@@ -79,12 +89,10 @@ impl RuntimeHandle {
         require_execution: bool,
     ) -> Result<EffectivePrompt> {
         // RuntimeMutation owns a reservation and private copies, never a held
-        // RuntimeAgent mutex. Existing domain adapters remain explicit in D1.
+        // RuntimeAgent mutex. Remaining domain adapters stay explicit in D3.
         let mut mutation = self.begin_mutation().await?;
-        if require_execution && sync_agent_message_count(&self.inner.storage, &mut mutation.state)?
-        {
-            mutation.persist_state(&self.inner.storage).await?;
-        }
+        // D3 Message writers publish the exact count with the accepted payload;
+        // this consumer never repairs it by counting historical Message rows.
         // Derive from one immutable config publication, not the independently
         // updated legacy context_config cell used by provider reconfiguration.
         let config_version = self.inner.config_snapshot.load_full();
@@ -100,8 +108,7 @@ impl RuntimeHandle {
             .prompt_budget_estimated_tokens
             .checked_sub(crate::prompt::time::RUNTIME_TIME_RESERVED_TOKENS)
             .ok_or_else(|| anyhow!("context budget cannot reserve runtime time"))?;
-        let captured = mutation.capture_context(config.recent_episode_candidates)?;
-        let state = captured.state.as_ref();
+        let state = &mutation.state;
         anyhow::ensure!(state.id == message.agent_id, "context input agent mismatch");
         let identity_record = self
             .inner
@@ -114,6 +121,29 @@ impl RuntimeHandle {
         let workspace = self.workspace_view_from_state(state)?;
         let model = self.model_state_for_turn(state, fallback_model);
         let history_policy = turn::context_history_preparation(&state.id, &model.effective_model);
+        let (mandatory_roots, record_limit, byte_limit) =
+            mutation.context_input_evidence_policy()?;
+        let input_request = context_input_evidence_request(
+            state,
+            require_execution.then_some(message),
+            &config,
+            history_policy,
+            mandatory_roots,
+            record_limit,
+            byte_limit,
+        )?;
+        mutation
+            .prepare_owner_input_request(&input_request, config.recent_episode_candidates)
+            .await?;
+        let captured = mutation
+            .capture_context_with_inputs(config.recent_episode_candidates, &input_request)?;
+        let state = captured.state.as_ref();
+        let resident = captured.input_evidence.as_ref().ok_or_else(|| {
+            InputEvidenceSnapshotError::NeedsPreparation(
+                "loaded context input domain is not prepared".into(),
+            )
+        })?;
+
         let (provider, tools, apply_patch_surface, _, _) = self
             .provider_tool_selection_for_turn(&identity, fallback_model)
             .await?;
@@ -125,10 +155,11 @@ impl RuntimeHandle {
             let mut connection = self.inner.runtime_db.connection()?;
             let transaction =
                 connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
-            let inputs = ContextDurableRead::new(&transaction, &state.id);
+            let durable_inputs = ContextDurableRead::new(&transaction, &state.id);
+            let inputs = ResidentContextInputs::new(&durable_inputs, resident)?;
             // The first SELECT fixes the SQLite view. All subsequent durable
             // context and history reads use this same borrowed transaction.
-            let scope = inputs.scope_facts()?;
+            let scope = durable_inputs.scope_facts()?;
             let durable_identity = scope
                 .identity
                 .as_ref()
@@ -149,7 +180,7 @@ impl RuntimeHandle {
             if require_execution {
                 validate_context_execution(&inputs, state, message)?;
             }
-            let entries = inputs
+            let entries = durable_inputs
                 .workspace_entries()?
                 .into_iter()
                 .map(|entry| (entry.workspace_id, entry.workspace_anchor))
@@ -160,7 +191,7 @@ impl RuntimeHandle {
                 &state.attached_workspaces,
                 &entries,
             );
-            execution.execution_roots = inputs
+            execution.execution_roots = durable_inputs
                 .execution_roots_for_workspaces(&state.attached_workspaces)?
                 .into_iter()
                 .map(|entry| crate::system::ExecutionRootRef {
@@ -238,7 +269,7 @@ impl RuntimeHandle {
             control_revision,
             resource_observation = snapshot.resources().generation,
             resource_digest = %snapshot.resources().digest,
-            "prepared owner-coherent context with explicit legacy domain adapters"
+            "prepared context from resident input evidence and explicit remaining domain adapters"
         );
         drop(mutation);
         build_effective_prompt_from_context_snapshot(
@@ -254,6 +285,111 @@ impl RuntimeHandle {
             },
         )
     }
+}
+
+/// Shared by explicit preparation actors and loaded capture. It freezes only
+/// policy and typed roots; it never hydrates, adopts hinted Turns or reads SQL.
+pub(super) fn context_input_evidence_request(
+    state: &AgentState,
+    message: Option<&MessageEnvelope>,
+    config: &ContextConfig,
+    history: ContextHistoryPreparation,
+    mut mandatory_roots: BTreeSet<InputEvidenceKey>,
+    record_limit: usize,
+    byte_limit: usize,
+) -> Result<InputEvidenceLoadRequest> {
+    anyhow::ensure!(
+        record_limit > 0 && byte_limit > 0,
+        "input evidence budget must be positive"
+    );
+    for requested in [config.recent_messages, config.recent_briefs]
+        .into_iter()
+        .chain(history.work_item_scoped_window)
+    {
+        if requested > LEGACY_INPUT_WINDOW {
+            return Err(InputEvidenceSnapshotError::PolicyOutsideQualification {
+                requested,
+                maximum: LEGACY_INPUT_WINDOW,
+            }
+            .into());
+        }
+    }
+    anyhow::ensure!(
+        history.selector != crate::projection_eval::HistorySelector::WorkItemScoped
+            || history.work_item_scoped_window.is_some(),
+        "work-item history policy requires a frozen window before acquisition"
+    );
+    let mut recovery = false;
+    if let Some(message) = message {
+        anyhow::ensure!(message.agent_id == state.id, "context input agent mismatch");
+        mandatory_roots.insert(InputEvidenceKey::new(Family::Message, &message.id));
+        if let Some((turn_id, message_id, _)) = provider_recovery::continuity_sources(message)? {
+            recovery = true;
+            mandatory_roots.insert(InputEvidenceKey::new(Family::Turn, turn_id));
+            mandatory_roots.insert(InputEvidenceKey::new(Family::Message, message_id));
+        }
+        // Message.turn_id is only a preallocated/replay hint. The resident
+        // loader follows the canonical assignment edge, never this raw hint.
+    }
+    if let Some(binding) = &state.current_execution_binding {
+        mandatory_roots.insert(InputEvidenceKey::new(
+            Family::Message,
+            &binding.source_message_id,
+        ));
+        mandatory_roots.insert(InputEvidenceKey::new(Family::Turn, &binding.turn_id));
+        if let Some(attempt_id) = &binding.activation_id {
+            mandatory_roots.insert(InputEvidenceKey::new(Family::Attempt, attempt_id));
+        }
+        if let Some(work_item_id) = &binding.work_item_id {
+            mandatory_roots.insert(InputEvidenceKey::new(Family::WorkExecution, work_item_id));
+        }
+    }
+    let mut windows = vec![
+        InputWindowRequest {
+            selector: InputWindowSelector::GlobalTurns,
+            limit: config.recent_messages + 1,
+        },
+        InputWindowRequest {
+            selector: InputWindowSelector::RecentBriefs,
+            limit: config.recent_briefs,
+        },
+        InputWindowRequest {
+            selector: InputWindowSelector::RecentTools,
+            limit: config.recent_messages,
+        },
+        InputWindowRequest {
+            selector: InputWindowSelector::RecentTranscript,
+            limit: config.recent_messages,
+        },
+        InputWindowRequest {
+            selector: InputWindowSelector::TrustedOperator,
+            limit: 1,
+        },
+    ];
+    let work_item_id = if let Some(binding) = &state.current_execution_binding {
+        binding.work_item_id.as_ref()
+    } else if recovery {
+        None
+    } else {
+        state.current_work_item_id.as_ref()
+    };
+    if let (Some(work_item_id), Some(limit)) = (work_item_id, history.work_item_scoped_window) {
+        windows.push(InputWindowRequest {
+            selector: InputWindowSelector::OwnerTurns {
+                owner: TurnOwner::WorkItem {
+                    work_item_id: work_item_id.clone(),
+                },
+            },
+            limit: limit + 1,
+        });
+    }
+    Ok(InputEvidenceLoadRequest {
+        interrupted_sources: Default::default(),
+        windows,
+        mandatory_roots,
+        record_limit,
+        byte_limit,
+    })
 }
 
 fn validate_context_execution(
@@ -335,6 +471,172 @@ mod tests {
         )
         .unwrap();
         (home, runtime)
+    }
+
+    #[test]
+    fn input_request_preserves_hints_without_adopting_unstarted_turns() {
+        let state = AgentState::new("context-capture");
+        for kind in [MessageKind::OperatorPrompt, MessageKind::TaskResult] {
+            let mut message = MessageEnvelope::new(
+                "context-capture",
+                kind,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "accepted before a Turn exists".into(),
+                },
+            );
+            message.turn_id = Some("preallocated-not-started".into());
+            message
+                .source_refs
+                .insert("unvalidated".into(), "turn:arbitrary-body-ref".into());
+            let request = context_input_evidence_request(
+                &state,
+                Some(&message),
+                &context_config(),
+                ContextHistoryPreparation::default(),
+                BTreeSet::new(),
+                128,
+                1024 * 1024,
+            )
+            .unwrap();
+            assert_eq!(
+                request.mandatory_roots,
+                BTreeSet::from([InputEvidenceKey::new(Family::Message, &message.id)])
+            );
+        }
+        let request = context_input_evidence_request(
+            &state,
+            None,
+            &context_config(),
+            ContextHistoryPreparation::default(),
+            BTreeSet::new(),
+            128,
+            1024 * 1024,
+        )
+        .unwrap();
+        assert!(
+            request.mandatory_roots.is_empty(),
+            "synthetic preview text is not a durable Message"
+        );
+    }
+
+    #[test]
+    fn input_request_freezes_current_binding_and_both_history_windows() {
+        let mut state = AgentState::new("context-capture");
+        state.current_work_item_id = Some("queue-owner-must-not-leak".into());
+        state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+            activation_id: Some("attempt-original".into()),
+            admission_provenance: None,
+            claimed_work_revision: None,
+            source_message_id: "message-original".into(),
+            turn_id: "turn-original".into(),
+            work_item_id: Some("execution-owner".into()),
+            owner: Some(TurnOwner::WorkItem {
+                work_item_id: "execution-owner".into(),
+            }),
+        });
+        let history = ContextHistoryPreparation {
+            selector: crate::projection_eval::HistorySelector::WorkItemScoped,
+            work_item_scoped_window: Some(64),
+            window_source: "frozen-test-policy",
+        };
+        let config = context_config();
+        let request = context_input_evidence_request(
+            &state,
+            None,
+            &config,
+            history,
+            BTreeSet::from([InputEvidenceKey::new(
+                Family::Message,
+                "accepted-queue-root",
+            )]),
+            512,
+            2 * 1024 * 1024,
+        )
+        .unwrap();
+        for (family, id) in [
+            (Family::Message, "accepted-queue-root"),
+            (Family::Message, "message-original"),
+            (Family::Turn, "turn-original"),
+            (Family::Attempt, "attempt-original"),
+            (Family::WorkExecution, "execution-owner"),
+        ] {
+            assert!(request
+                .mandatory_roots
+                .contains(&InputEvidenceKey::new(family, id)));
+        }
+        assert!(request
+            .windows
+            .iter()
+            .any(|window| window.selector == InputWindowSelector::GlobalTurns
+                && window.limit == config.recent_messages + 1));
+        assert!(request.windows.iter().any(|window| window.selector
+            == InputWindowSelector::OwnerTurns {
+                owner: TurnOwner::WorkItem {
+                    work_item_id: "execution-owner".into()
+                }
+            }
+            && window.limit == 65));
+        assert!(!request
+            .windows
+            .iter()
+            .any(|window| matches!(&window.selector,
+            InputWindowSelector::OwnerTurns {owner:TurnOwner::WorkItem {work_item_id}}
+                if work_item_id=="queue-owner-must-not-leak")));
+    }
+
+    #[test]
+    fn input_request_rejects_public_policy_expansion_before_capture() {
+        let state = AgentState::new("context-capture");
+        for (messages, briefs, owner_window) in
+            [(513, 8, None), (12, 513, None), (12, 8, Some(513))]
+        {
+            let mut config = context_config();
+            config.recent_messages = messages;
+            config.recent_briefs = briefs;
+            let history = ContextHistoryPreparation {
+                work_item_scoped_window: owner_window,
+                ..ContextHistoryPreparation::default()
+            };
+            let error = context_input_evidence_request(
+                &state,
+                None,
+                &config,
+                history,
+                BTreeSet::new(),
+                1024,
+                1024 * 1024,
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<InputEvidenceSnapshotError>(),
+                Some(InputEvidenceSnapshotError::PolicyOutsideQualification {
+                    requested: 513,
+                    maximum: 512
+                })
+            ));
+        }
+        let mut config = context_config();
+        config.recent_messages = 512;
+        let request = context_input_evidence_request(
+            &state,
+            None,
+            &config,
+            ContextHistoryPreparation::default(),
+            BTreeSet::new(),
+            1024,
+            1024 * 1024,
+        )
+        .unwrap();
+        assert_eq!(
+            request.windows[0].limit, 513,
+            "one already-qualified current candidate is distinct from policy expansion"
+        );
     }
 
     #[tokio::test]
@@ -488,7 +790,7 @@ mod tests {
             .context_capture_checkpoint
             .armed
             .store(true, Ordering::SeqCst);
-        let loop_task = tokio::spawn(runtime.clone().run());
+        let mut loop_task = tokio::spawn(runtime.clone().run());
         for attempt in 0..3 {
             tokio::time::timeout(
                 std::time::Duration::from_secs(10),
@@ -525,10 +827,12 @@ mod tests {
                 {
                     break;
                 }
-                assert!(
-                    !loop_task.is_finished(),
-                    "run loop failed before preserving accepted input"
-                );
+                if loop_task.is_finished() {
+                    panic!(
+                        "run loop failed before preserving accepted input: {:?}",
+                        (&mut loop_task).await
+                    );
+                }
                 tokio::task::yield_now().await;
             }
         })

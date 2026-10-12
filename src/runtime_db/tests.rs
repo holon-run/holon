@@ -2524,7 +2524,7 @@ INSERT INTO scheduler_rollout_command_results (
                         "source":{"identity":{"kind":"runtime_recovery","recovery_id":"recovery-a"},"generation":1},
                         "binding":{"kind":"agent_lifecycle","agent_id":"agent-a"},
                         "provenance":{"origin":"runtime_recovery","trust":"runtime_instruction","priority":"normal"},
-                        "admitted_fences":{"source_revision":1,"agent_control_revision":0,"host_registry_revision":0},
+                        "admitted_fences":{"source_revision":1,"agent_control_revision":1,"host_registry_revision":1},
                         "state":"open", "admitted_at":"2026-08-16T00:00:00Z"
                     }))?;
                     let mut recovered = attempt.clone();
@@ -2613,7 +2613,7 @@ INSERT INTO scheduler_rollout_command_results (
                 "{error:#}"
             );
 
-            let connection = open_connection(&db_path)?;
+            let mut connection = open_connection(&db_path)?;
             assert_eq!(current_schema_version(&connection)?, 46);
             for table in RETIRED_SCHEDULER_TABLES {
                 assert!(
@@ -2626,6 +2626,114 @@ INSERT INTO scheduler_rollout_command_results (
                 &format!("UPDATE {table} SET payload_json=?1"),
                 [&recovered_payload],
             )?;
+            if table == "execution_protocol_attempts" {
+                // v47's status fence is the subject above. Before the later
+                // fixed input cutover, model a real recovered legacy execution,
+                // not an Interrupted row with no source/Turn/terminal outcome.
+                migrate_through(&mut connection, 81)?;
+                let tx = connection.transaction()?;
+                let mut source = MessageEnvelope::new(
+                    "agent-a",
+                    crate::types::MessageKind::InternalFollowup,
+                    crate::types::MessageOrigin::System {
+                        subsystem: "migration47_fixture".into(),
+                    },
+                    crate::types::AuthorityClass::RuntimeInstruction,
+                    crate::types::Priority::Normal,
+                    crate::types::MessageBody::Text {
+                        text: "recovered original input".into(),
+                    },
+                );
+                source.id = "recovery-a".into();
+                source.turn_id = Some("recovered-turn-a".into());
+                source.created_at = "2026-08-16T00:00:00Z".parse()?;
+                let source = crate::runtime_db::evidence::append_message_tx(&tx, &source)?.0;
+                let mut original: ExecutionAttempt = serde_json::from_str(&active_payload)?;
+                original.source_message_id = Some(source.id.clone());
+                original.source.generation = source.message_seq.unwrap();
+                original.admitted_fences.source_revision = source.message_seq.unwrap();
+                original.turn_id = source.turn_id.clone();
+                let mut predecessor_source = source.clone();
+                predecessor_source.id = "predecessor-source-a".into();
+                predecessor_source.message_seq = None;
+                predecessor_source.turn_id = Some("predecessor-turn-a".into());
+                predecessor_source.created_at = "2026-08-15T23:59:00Z".parse()?;
+                let predecessor_source =
+                    crate::runtime_db::evidence::append_message_tx(&tx, &predecessor_source)?.0;
+                let mut predecessor = original.clone();
+                predecessor.attempt_id = "predecessor-attempt-a".into();
+                predecessor.source_message_id = Some(predecessor_source.id.clone());
+                predecessor.source.identity =
+                    crate::domain::execution_protocol::ExecutionSourceIdentity::InternalFollowup {
+                        message_id: predecessor_source.id.clone(),
+                    };
+                predecessor.source.generation = predecessor_source.message_seq.unwrap();
+                predecessor.admitted_fences.source_revision = predecessor.source.generation;
+                predecessor.provenance.origin =
+                    crate::domain::execution_protocol::ExecutionOrigin::System;
+                predecessor.turn_id = predecessor_source.turn_id.clone();
+                predecessor.admitted_at = "2026-08-15T23:59:00Z".into();
+                let predecessor = crate::domain::execution_protocol::admit_execution(
+                    &crate::domain::execution_protocol::ExecutionProtocolState::empty("agent-a"),
+                    &crate::domain::execution_protocol::AdmitExecution {
+                        attempt: predecessor,
+                    },
+                )
+                .map_err(anyhow::Error::msg)?;
+                let predecessor = crate::domain::execution_protocol::interrupt_execution(
+                    &predecessor.state,
+                    &crate::domain::execution_protocol::InterruptExecution {
+                        attempt_id: "predecessor-attempt-a".into(),
+                        outcome_id: "predecessor-outcome-a".into(),
+                        reason: "original interrupted input".into(),
+                        interrupted_at: "2026-08-15T23:59:30Z".into(),
+                    },
+                )
+                .map_err(anyhow::Error::msg)?;
+                original.recovery_of_attempt_id = Some("predecessor-attempt-a".into());
+                let admitted = crate::domain::execution_protocol::admit_execution(
+                    &predecessor.state,
+                    &crate::domain::execution_protocol::AdmitExecution { attempt: original },
+                )
+                .map_err(anyhow::Error::msg)?;
+                let interrupted = crate::domain::execution_protocol::interrupt_execution(
+                    &admitted.state,
+                    &crate::domain::execution_protocol::InterruptExecution {
+                        attempt_id: "attempt-a".into(),
+                        outcome_id: "recovered-outcome-a".into(),
+                        reason: "recovered".into(),
+                        interrupted_at: "2026-08-16T00:01:00Z".into(),
+                    },
+                )
+                .map_err(anyhow::Error::msg)?;
+                crate::runtime_db::transitions::persist_state_tx(&tx, &interrupted.state)?;
+                for (source, turn_id, turn_index, completed_at) in [
+                    (
+                        predecessor_source,
+                        "predecessor-turn-a",
+                        1,
+                        "2026-08-15T23:59:30Z",
+                    ),
+                    (source, "recovered-turn-a", 2, "2026-08-16T00:01:00Z"),
+                ] {
+                    let mut turn = TurnRecord::new("agent-a", turn_id, turn_index);
+                    turn.created_at = source.created_at;
+                    turn.owner = Some(TurnOwner::AgentLifecycle {
+                        agent_id: "agent-a".into(),
+                    });
+                    turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&source));
+                    turn.input_message_ids = vec![source.id];
+                    turn.terminal = Some(crate::types::TurnTerminalSummary {
+                        kind: crate::types::TurnTerminalKind::Interrupted,
+                        reason: Some("recovered".into()),
+                        no_brief_reason: None,
+                        completed_at: completed_at.parse()?,
+                        duration_ms: 0,
+                    });
+                    crate::runtime_db::repositories::upsert_turn_record_tx(&tx, &turn)?;
+                }
+                tx.commit()?;
+            }
             drop(connection);
 
             RuntimeDb::open_and_migrate(&db_path, &lock_path)?;

@@ -972,8 +972,10 @@ impl RuntimeHandle {
                         break 'outer;
                     };
                     let expected_state = guard.state.clone();
+                    let inputs = guard.capture_input_evidence()?;
                     match self.operator_interjection_plan(
                         agent_id,
+                        &inputs,
                         &expected_state,
                         &message,
                         round,
@@ -985,11 +987,17 @@ impl RuntimeHandle {
                         .current_turn_id
                         .as_deref()
                         .ok_or_else(|| anyhow::anyhow!("interjection has no current turn"))?;
-                    let mut turn_record = self
-                        .inner
-                        .storage
-                        .read_turn_by_id(turn_id)?
+                    use crate::runtime::resident_input_evidence::{
+                        InputEvidenceFamily as Family, InputEvidenceKey as Key,
+                        PreparedInputEvidence,
+                    };
+                    let turn = inputs
+                        .lookup(&Key::new(Family::Turn, turn_id))?
                         .ok_or_else(|| anyhow::anyhow!("interjection turn is not persisted"))?;
+                    let PreparedInputEvidence::Turn(turn) = &turn.record else {
+                        anyhow::bail!("interjection current Turn has another evidence family");
+                    };
+                    let mut turn_record = turn.clone();
                     anyhow::ensure!(
                         turn_record.terminal.is_none(),
                         "interjection turn is already terminal"
@@ -1047,7 +1055,6 @@ impl RuntimeHandle {
                         }),
                     );
                     let operation_id = audit_event.id.clone();
-                    let db = self.inner.runtime_db.clone();
                     let command = crate::runtime_db::transitions::QueueTransitionCommand {
                         agent_id: message.agent_id.clone(),
                         operation: crate::runtime_db::transitions::QueueOperation::Interject,
@@ -1068,7 +1075,12 @@ impl RuntimeHandle {
                         brief_evidence: Vec::new(),
                     };
                     let commit_result = guard
-                        .commit_transition(operation_id, || db.transitions().commit_queue(&command))
+                        .commit_prepared_queue(
+                            operation_id,
+                            crate::runtime_db::transitions::PreparedQueueTransition::new(
+                                Clone::clone(&command),
+                            ),
+                        )
                         .await;
                     let commit = match commit_result {
                         Ok(commit) => commit,
@@ -1104,6 +1116,7 @@ impl RuntimeHandle {
     fn operator_interjection_plan(
         &self,
         agent_id: &str,
+        inputs: &crate::runtime::resident_input_evidence::CapturedInputEvidence,
         expected_state: &crate::types::AgentState,
         message: &MessageEnvelope,
         round: usize,
@@ -1152,14 +1165,13 @@ impl RuntimeHandle {
                 ));
             }
         };
-        let execution = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(agent_id)?
-            .ok_or_else(|| {
-                anyhow::anyhow!("operator interjection requires unified execution authority")
-            })?;
+        anyhow::ensure!(
+            inputs.scope.agent_id == agent_id && expected_state.id == agent_id,
+            "operator interjection resident scope disagrees with its State"
+        );
+        let execution = inputs.execution_state_if_initialized()?.ok_or_else(|| {
+            anyhow::anyhow!("operator interjection requires unified execution authority")
+        })?;
         let attempt = execution.attempts.get(activation_id).ok_or_else(|| {
             anyhow::anyhow!("operator interjection references an unknown execution attempt")
         })?;
@@ -3036,7 +3048,9 @@ impl<'a> TurnExecution<'a> {
                 )
             };
             let assistant_round_id = assistant_round_transcript_entry.id.clone();
-            runtime.persist_transcript_evidence(&assistant_round_transcript_entry)?;
+            runtime
+                .persist_transcript_evidence(&assistant_round_transcript_entry)
+                .await?;
             if round_purpose == AssistantRoundPurpose::AgentResponse
                 && current_round_has_assistant_text
             {
@@ -3109,16 +3123,18 @@ impl<'a> TurnExecution<'a> {
                             tool_result_envelopes: Vec::new(),
                             follow_up_user_texts: vec![continuation_text.clone()],
                         });
-                        runtime.persist_transcript_evidence(&TranscriptEntry::new(
-                            agent_id.to_string(),
-                            TranscriptEntryKind::ContinuationPrompt,
-                            Some(round),
-                            None,
-                            serde_json::json!({
-                                "text": continuation_text,
-                                "reason": "wait_report_corrective_retry",
-                            }),
-                        ))?;
+                        runtime
+                            .persist_transcript_evidence(&TranscriptEntry::new(
+                                agent_id.to_string(),
+                                TranscriptEntryKind::ContinuationPrompt,
+                                Some(round),
+                                None,
+                                serde_json::json!({
+                                    "text": continuation_text,
+                                    "reason": "wait_report_corrective_retry",
+                                }),
+                            ))
+                            .await?;
                         pending_wait_report = Some(pending);
                         continue;
                     }
@@ -3131,16 +3147,18 @@ impl<'a> TurnExecution<'a> {
                         && pending.report_tool_rounds >= MAX_REPORT_TOOL_ROUNDS
                     {
                         report_fallback_notice = Some(WAIT_REPORT_FALLBACK_NOTICE);
-                        runtime.persist_transcript_evidence(&TranscriptEntry::new(
-                            agent_id.to_string(),
-                            TranscriptEntryKind::ContinuationPrompt,
-                            Some(round),
-                            None,
-                            serde_json::json!({
-                                "text": WAIT_REPORT_FALLBACK_NOTICE,
-                                "reason": "wait_report_fallback_notice",
-                            }),
-                        ))?;
+                        runtime
+                            .persist_transcript_evidence(&TranscriptEntry::new(
+                                agent_id.to_string(),
+                                TranscriptEntryKind::ContinuationPrompt,
+                                Some(round),
+                                None,
+                                serde_json::json!({
+                                    "text": WAIT_REPORT_FALLBACK_NOTICE,
+                                    "reason": "wait_report_fallback_notice",
+                                }),
+                            ))
+                            .await?;
                         runtime.inner.storage.append_event(&AuditEvent::legacy(
                             "report_fallback_notice_injected",
                             serde_json::json!({
@@ -3179,7 +3197,9 @@ impl<'a> TurnExecution<'a> {
                             "tool_error": &error,
                         });
                         failed_record.summary = format!("Failed: {}", failed_record.tool_name);
-                        runtime.persist_tool_execution_evidence(&failed_record)?;
+                        runtime
+                            .persist_tool_execution_evidence(&failed_record)
+                            .await?;
                         runtime.inner.storage.append_event(&AuditEvent::legacy(
                             "wait_report_request_failed",
                             serde_json::json!({
@@ -3223,7 +3243,9 @@ impl<'a> TurnExecution<'a> {
                             ));
                             prepared_wait_for = Some(prepared);
                         } else {
-                            runtime.persist_tool_execution_evidence(&success_record)?;
+                            runtime
+                                .persist_tool_execution_evidence(&success_record)
+                                .await?;
                         }
                         if !result.should_sleep {
                             // The task result may have been consumed or claimed while
@@ -3237,16 +3259,18 @@ impl<'a> TurnExecution<'a> {
                                  was published. Continue the current turn; the pending-report \
                                  restriction no longer applies."
                             );
-                            runtime.persist_transcript_evidence(&TranscriptEntry::new(
-                                agent_id.to_string(),
-                                TranscriptEntryKind::ContinuationPrompt,
-                                Some(round),
-                                None,
-                                serde_json::json!({
-                                    "text": continuation_text,
-                                    "reason": "wait_report_continue_turn",
-                                }),
-                            ))?;
+                            runtime
+                                .persist_transcript_evidence(&TranscriptEntry::new(
+                                    agent_id.to_string(),
+                                    TranscriptEntryKind::ContinuationPrompt,
+                                    Some(round),
+                                    None,
+                                    serde_json::json!({
+                                        "text": continuation_text,
+                                        "reason": "wait_report_continue_turn",
+                                    }),
+                                ))
+                                .await?;
                             completed_rounds.push(TurnRoundRecord {
                                 inference_time: Some(inference_time.clone()),
                                 round,
@@ -3346,17 +3370,19 @@ impl<'a> TurnExecution<'a> {
                             tool_result_envelopes: Vec::new(),
                             follow_up_user_texts: vec![continuation_text.clone()],
                         });
-                        runtime.persist_transcript_evidence(&TranscriptEntry::new(
-                            agent_id.to_string(),
-                            TranscriptEntryKind::ContinuationPrompt,
-                            Some(round),
-                            None,
-                            serde_json::json!({
-                                "text": continuation_text,
-                                "reason": "completion_report_expected",
-                                "completion_request_id": pending.request_id,
-                            }),
-                        ))?;
+                        runtime
+                            .persist_transcript_evidence(&TranscriptEntry::new(
+                                agent_id.to_string(),
+                                TranscriptEntryKind::ContinuationPrompt,
+                                Some(round),
+                                None,
+                                serde_json::json!({
+                                    "text": continuation_text,
+                                    "reason": "completion_report_expected",
+                                    "completion_request_id": pending.request_id,
+                                }),
+                            ))
+                            .await?;
                         runtime.inner.storage.append_event(&AuditEvent::legacy(
                             "completion_report_request_corrective_retry",
                             serde_json::json!({
@@ -3398,17 +3424,19 @@ impl<'a> TurnExecution<'a> {
                         && pending.report_tool_rounds >= MAX_REPORT_TOOL_ROUNDS
                     {
                         report_fallback_notice = Some(COMPLETION_REPORT_FALLBACK_NOTICE);
-                        runtime.persist_transcript_evidence(&TranscriptEntry::new(
-                            agent_id.to_string(),
-                            TranscriptEntryKind::ContinuationPrompt,
-                            Some(round),
-                            None,
-                            serde_json::json!({
-                                "text": COMPLETION_REPORT_FALLBACK_NOTICE,
-                                "reason": "completion_report_fallback_notice",
-                                "completion_request_id": pending.request_id,
-                            }),
-                        ))?;
+                        runtime
+                            .persist_transcript_evidence(&TranscriptEntry::new(
+                                agent_id.to_string(),
+                                TranscriptEntryKind::ContinuationPrompt,
+                                Some(round),
+                                None,
+                                serde_json::json!({
+                                    "text": COMPLETION_REPORT_FALLBACK_NOTICE,
+                                    "reason": "completion_report_fallback_notice",
+                                    "completion_request_id": pending.request_id,
+                                }),
+                            ))
+                            .await?;
                         runtime.inner.storage.append_event(&AuditEvent::legacy(
                             "report_fallback_notice_injected",
                             serde_json::json!({
@@ -3548,7 +3576,9 @@ impl<'a> TurnExecution<'a> {
                                 false
                             }
                         } else {
-                            runtime.persist_tool_execution_evidence(&success_record)?;
+                            runtime
+                                .persist_tool_execution_evidence(&success_record)
+                                .await?;
                             runtime.inner.storage.append_event(&completion_event)?;
                             true
                         };
@@ -3557,17 +3587,19 @@ impl<'a> TurnExecution<'a> {
                         "WorkItem {} was completed as a detached target. Continue the current execution objective; this completion does not end the current turn.",
                         pending.work_item_id
                     );
-                        runtime.persist_transcript_evidence(&TranscriptEntry::new(
-                            agent_id.to_string(),
-                            TranscriptEntryKind::ContinuationPrompt,
-                            Some(round),
-                            None,
-                            serde_json::json!({
-                                "text": continuation_text,
-                                "reason": "detached_work_item_completed",
-                                "completion_request_id": pending.request_id,
-                            }),
-                        ))?;
+                        runtime
+                            .persist_transcript_evidence(&TranscriptEntry::new(
+                                agent_id.to_string(),
+                                TranscriptEntryKind::ContinuationPrompt,
+                                Some(round),
+                                None,
+                                serde_json::json!({
+                                    "text": continuation_text,
+                                    "reason": "detached_work_item_completed",
+                                    "completion_request_id": pending.request_id,
+                                }),
+                            ))
+                            .await?;
                         completed_rounds.push(TurnRoundRecord {
                             inference_time: Some(inference_time.clone()),
                             round,
@@ -3723,16 +3755,18 @@ impl<'a> TurnExecution<'a> {
                         tool_result_envelopes: Vec::new(),
                         follow_up_user_texts: vec![continuation_text.clone()],
                     });
-                    runtime.persist_transcript_evidence(&TranscriptEntry::new(
-                        agent_id.to_string(),
-                        TranscriptEntryKind::ContinuationPrompt,
-                        Some(round),
-                        None,
-                        serde_json::json!({
-                            "text": continuation_text,
-                            "reason": "max_output_tokens",
-                        }),
-                    ))?;
+                    runtime
+                        .persist_transcript_evidence(&TranscriptEntry::new(
+                            agent_id.to_string(),
+                            TranscriptEntryKind::ContinuationPrompt,
+                            Some(round),
+                            None,
+                            serde_json::json!({
+                                "text": continuation_text,
+                                "reason": "max_output_tokens",
+                            }),
+                        ))
+                        .await?;
                     runtime.inner.storage.append_event(&AuditEvent::legacy(
                         "max_output_tokens_recovery",
                         serde_json::json!({
@@ -3793,16 +3827,18 @@ impl<'a> TurnExecution<'a> {
                     completed_round_assistant_blocks,
                     text_blocks,
                 ));
-                runtime.persist_transcript_evidence(&TranscriptEntry::new(
-                    agent_id.to_string(),
-                    TranscriptEntryKind::ContinuationPrompt,
-                    Some(round),
-                    None,
-                    serde_json::json!({
-                        "text": CHECKPOINT_RESUME_PROMPT,
-                        "reason": "turn_local_checkpoint",
-                    }),
-                ))?;
+                runtime
+                    .persist_transcript_evidence(&TranscriptEntry::new(
+                        agent_id.to_string(),
+                        TranscriptEntryKind::ContinuationPrompt,
+                        Some(round),
+                        None,
+                        serde_json::json!({
+                            "text": CHECKPOINT_RESUME_PROMPT,
+                            "reason": "turn_local_checkpoint",
+                        }),
+                    ))
+                    .await?;
                 runtime.inner.storage.append_event(&AuditEvent::legacy(
                     "turn_local_checkpoint_resume_requested",
                     serde_json::json!({
@@ -3837,17 +3873,19 @@ impl<'a> TurnExecution<'a> {
                     tool_result_envelopes: Vec::new(),
                     follow_up_user_texts: vec![continuation_text.clone()],
                 });
-                runtime.persist_transcript_evidence(&TranscriptEntry::new(
-                    agent_id.to_string(),
-                    TranscriptEntryKind::ContinuationPrompt,
-                    Some(round),
-                    None,
-                    serde_json::json!({
-                        "text": continuation_text,
-                        "reason": "wait_report_error_follow_up",
-                        "tool_call_id": tool_call_id,
-                    }),
-                ))?;
+                runtime
+                    .persist_transcript_evidence(&TranscriptEntry::new(
+                        agent_id.to_string(),
+                        TranscriptEntryKind::ContinuationPrompt,
+                        Some(round),
+                        None,
+                        serde_json::json!({
+                            "text": continuation_text,
+                            "reason": "wait_report_error_follow_up",
+                            "tool_call_id": tool_call_id,
+                        }),
+                    ))
+                    .await?;
                 runtime.inner.storage.append_event(&AuditEvent::legacy(
                     "wait_report_error_follow_up_injected",
                     serde_json::json!({
@@ -3868,16 +3906,18 @@ impl<'a> TurnExecution<'a> {
                             completed_round_assistant_blocks,
                             text_blocks,
                         ));
-                        runtime.persist_transcript_evidence(&TranscriptEntry::new(
-                            agent_id.to_string(),
-                            TranscriptEntryKind::ContinuationPrompt,
-                            Some(round),
-                            None,
-                            serde_json::json!({
-                                "text": CHECKPOINT_RESUME_PROMPT,
-                                "reason": "checkpoint_operator_delivery_pending",
-                            }),
-                        ))?;
+                        runtime
+                            .persist_transcript_evidence(&TranscriptEntry::new(
+                                agent_id.to_string(),
+                                TranscriptEntryKind::ContinuationPrompt,
+                                Some(round),
+                                None,
+                                serde_json::json!({
+                                    "text": CHECKPOINT_RESUME_PROMPT,
+                                    "reason": "checkpoint_operator_delivery_pending",
+                                }),
+                            ))
+                            .await?;
                         runtime.inner.storage.append_event(&AuditEvent::legacy(
                             "checkpoint_operator_delivery_retry",
                             serde_json::json!({
@@ -4014,7 +4054,9 @@ impl<'a> TurnExecution<'a> {
                         summary: format!("Failed: {tool_name} not exposed for round"),
                         invocation_surface: None,
                     };
-                    runtime.persist_tool_execution_evidence(&failed_record)?;
+                    runtime
+                        .persist_tool_execution_evidence(&failed_record)
+                        .await?;
                     tool_execution_refs.push((tool_call_id.clone(), failed_id.clone()));
                     runtime.inner.storage.append_event(&AuditEvent::legacy(
                         "tool_execution_failed",
@@ -4334,7 +4376,7 @@ impl<'a> TurnExecution<'a> {
                                 prepared.command.audit_events.push(tool_executed_event);
                                 prepared_wait_for = Some(prepared);
                             } else {
-                                runtime.persist_tool_execution_evidence(&record)?;
+                                runtime.persist_tool_execution_evidence(&record).await?;
                                 runtime.inner.storage.append_event(&tool_executed_event)?;
                                 runtime
                                     .clear_current_turn_external_side_effect_possible(
@@ -4514,7 +4556,9 @@ impl<'a> TurnExecution<'a> {
                             summary: format!("Failed: {tool_name}"),
                             invocation_surface: None,
                         };
-                        runtime.persist_tool_execution_evidence(&failed_record)?;
+                        runtime
+                            .persist_tool_execution_evidence(&failed_record)
+                            .await?;
                         tool_execution_refs.push((tool_call_id.clone(), failed_id.clone()));
                         runtime.inner.storage.append_event(&AuditEvent::legacy(
                             "tool_execution_failed",
@@ -4615,7 +4659,9 @@ impl<'a> TurnExecution<'a> {
             if let Some(prepared) = prepared_work_item_completion.as_mut() {
                 prepared.transcript_entries.push(tool_results_transcript);
             } else {
-                runtime.persist_transcript_evidence(&tool_results_transcript)?;
+                runtime
+                    .persist_transcript_evidence(&tool_results_transcript)
+                    .await?;
             }
             #[cfg(test)]
             if execution_terminal_transition_seen {

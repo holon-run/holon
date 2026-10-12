@@ -107,6 +107,7 @@ fn resolve_control_recovery_with_run(
                     Some(KnownCommit::State {
                         state,
                         episodes: Some(episodes),
+                        input_evidence: None,
                         runtime: Some(Arc::new(runtime)),
                     })
                 }

@@ -3507,8 +3507,25 @@ fn print_scheduler_recovery_report(
         .then(|| RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path()))
         .transpose()
         .context("scheduler recovery apply requires holon serve to be stopped")?;
+    let maintenance = _maintenance_lock
+        .as_ref()
+        .map(|lease| {
+            holon::runtime_db::OfflineInputMaintenance::for_database(
+                &runtime_db,
+                lease,
+                &config.runtime_db_maintenance_lock_path(),
+            )
+        })
+        .transpose()?;
     if all_affected {
-        return print_all_scheduler_recovery_reports(config, &runtime_db, json, apply, no_backup);
+        return print_all_scheduler_recovery_reports(
+            config,
+            &runtime_db,
+            json,
+            apply,
+            no_backup,
+            maintenance.as_ref(),
+        );
     }
     let agent_id = agent.unwrap_or_else(|| config.default_agent_id.clone());
     let storage = AppStorage::new_for_agent(
@@ -3526,12 +3543,15 @@ fn print_scheduler_recovery_report(
             holon::runtime::SchedulerRecoveryBackupPolicy::Required
         };
         apply_result = Some((
-            holon::runtime::apply_scheduler_recovery_plan_with_backup_policy(
+            holon::runtime::apply_scheduler_recovery_plan_with_maintenance(
                 &storage,
                 &runtime_db,
                 &agent_id,
                 &report,
                 backup_policy,
+                maintenance
+                    .as_ref()
+                    .context("scheduler recovery maintenance capability missing")?,
             )?,
             backup_policy,
         ));
@@ -3627,6 +3647,7 @@ fn print_all_scheduler_recovery_reports(
     json: bool,
     apply: bool,
     no_backup: bool,
+    maintenance: Option<&holon::runtime_db::OfflineInputMaintenance<'_>>,
 ) -> Result<()> {
     let before = runtime_db.retired_scheduler_cleanup_inventory()?;
     let agent_ids = before.affected_agents();
@@ -3663,19 +3684,21 @@ fn print_all_scheduler_recovery_reports(
             let Some(report) = report else {
                 continue;
             };
-            changed += holon::runtime::apply_scheduler_recovery_plan_with_backup_policy(
+            changed += holon::runtime::apply_scheduler_recovery_plan_with_maintenance(
                 storage,
                 runtime_db,
                 agent_id,
                 report,
                 holon::runtime::SchedulerRecoveryBackupPolicy::SkipApproved,
+                maintenance.context("scheduler recovery maintenance capability missing")?,
             )?
             .0;
         }
         let after_exact = runtime_db.retired_scheduler_cleanup_inventory()?;
-        for result in
-            runtime_db.apply_retired_scheduler_cleanup_fallbacks(&after_exact.affected_agents())?
-        {
+        for result in runtime_db.apply_retired_scheduler_cleanup_fallbacks_with_maintenance(
+            &after_exact.affected_agents(),
+            maintenance.context("scheduler fallback maintenance capability missing")?,
+        )? {
             changed += result.actions.len();
             fallback_results.push(result);
         }
@@ -4180,11 +4203,17 @@ fn handle_runtime_db_debug_command(
                 } else {
                     Some(db.create_wait_final_brief_publication_repair_backup()?)
                 };
-                db.apply_wait_final_brief_publication_repair_plan(
+                let maintenance = holon::runtime_db::OfflineInputMaintenance::for_database(
+                    &db,
+                    &_maintenance_lock,
+                    &config.runtime_db_maintenance_lock_path(),
+                )?;
+                db.apply_wait_final_brief_publication_repair_plan_with_maintenance(
                     plan,
                     diagnostic_sample_limit,
                     backup_path,
                     &mut progress,
+                    &maintenance,
                 )?
             } else {
                 db.prepare_wait_final_brief_publication_repair(
@@ -4268,11 +4297,17 @@ fn handle_runtime_db_debug_command(
                 } else {
                     Some(db.create_turn_settlement_repair_backup()?)
                 };
-                db.apply_turn_settlement_repair_plan(
+                let maintenance = holon::runtime_db::OfflineInputMaintenance::for_database(
+                    &db,
+                    &_maintenance_lock,
+                    &config.runtime_db_maintenance_lock_path(),
+                )?;
+                db.apply_turn_settlement_repair_plan_with_maintenance(
                     plan,
                     backup_path,
                     diagnostic_sample_limit,
                     &mut progress,
+                    &maintenance,
                 )?
             } else {
                 RuntimeDb::prepare_turn_settlement_repair_read_only(

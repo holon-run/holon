@@ -79,20 +79,37 @@ impl RuntimeHandle {
     }
 
     pub(super) async fn persist_brief(&self, brief: &BriefRecord) -> Result<()> {
-        let mut bound_brief = brief.clone();
-        let default_turn_work_item_id = {
-            let guard = self.inner.agent.lock().await;
-            bound_brief.workspace_id = guard
-                .state
-                .active_workspace_entry
-                .as_ref()
-                .map(|entry| entry.workspace_id.clone())
-                .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string());
-            if bound_brief.turn_id.is_none() {
-                bound_brief.turn_id = guard.state.current_turn_id.clone();
-            }
-            guard.state.current_turn_work_item_id.clone()
-        };
+        let runtime = self.clone();
+        let brief = brief.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let result = runtime.persist_brief_owned(brief).await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .map_err(|_| anyhow!("owned Brief publication worker stopped"))?
+    }
+
+    async fn persist_brief_owned(&self, mut bound_brief: BriefRecord) -> Result<()> {
+        let (workspace_id, turn_id, default_turn_work_item_id) = self
+            .read_committed_agent(|agent| {
+                (
+                    agent
+                        .state
+                        .active_workspace_entry
+                        .as_ref()
+                        .map(|entry| entry.workspace_id.clone())
+                        .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string()),
+                    agent.state.current_turn_id.clone(),
+                    agent.state.current_turn_work_item_id.clone(),
+                )
+            })
+            .await?;
+        bound_brief.workspace_id = workspace_id;
+        if bound_brief.turn_id.is_none() {
+            bound_brief.turn_id = turn_id;
+        }
         if bound_brief.work_item_id.is_none() && bound_brief.kind == BriefKind::Result {
             if let Some(work_item) = self.pending_completion_intent_for_brief(&bound_brief)? {
                 bound_brief.work_item_id = Some(work_item.id.clone());
@@ -114,13 +131,27 @@ impl RuntimeHandle {
         // same Brief reuse the committed event instead of appending a
         // duplicate.
         let created_event = brief_created_event_for(&bound_brief)?;
-        self.inner
-            .storage
-            .append_brief_with_created_event(&bound_brief, &created_event)?;
-        self.inner.notify.notify_one();
-        let mut guard = self.begin_mutation().await?;
-        guard.state.last_brief_at = Some(bound_brief.created_at);
-        guard.persist_state(&self.inner.storage).await?;
+        let fault = self.take_transition_fault();
+        let mut mutation = self.begin_mutation().await?;
+        let prepared = self.inner.storage.prepare_input_evidence(
+            mutation.input_evidence_scope(),
+            created_event.id.clone(),
+            bound_brief.created_at,
+            crate::runtime_db::prepared_input_evidence::InputEvidenceWrite::BriefCreated {
+                brief: bound_brief,
+                event: created_event,
+            },
+        )?;
+        let original = mutation.commit_prepared_evidence(prepared, fault).await?;
+        let crate::runtime_db::input_mutation_receipts::InputMutationResult::Evidence {
+            created_at: Some(created_at),
+            ..
+        } = original
+        else {
+            bail!("Brief acknowledgement omitted its original timestamp");
+        };
+        mutation.state.last_brief_at = Some(created_at);
+        mutation.persist_state(&self.inner.storage).await?;
         Ok(())
     }
 
@@ -244,5 +275,146 @@ fn operator_message_status(
         QueueEntryStatus::Aborted => OperatorMessageStatus::Failed,
         QueueEntryStatus::Dropped => OperatorMessageStatus::Dropped,
         QueueEntryStatus::Quarantined => OperatorMessageStatus::Quarantined,
+    }
+}
+
+#[cfg(test)]
+mod input_evidence_tests {
+    use super::*;
+    use crate::runtime::tests::support::{context_config, StubProvider};
+
+    fn fixture() -> (tempfile::TempDir, tempfile::TempDir, RuntimeHandle) {
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            home.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            String::new(),
+            Arc::new(StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        runtime
+            .runtime_db()
+            .agent_identities()
+            .upsert(&crate::types::AgentIdentityRecord::new(
+                "default",
+                crate::types::AgentKind::Default,
+                crate::types::AgentVisibility::Public,
+                crate::types::AgentOwnership::SelfOwned,
+                crate::types::AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            ))
+            .unwrap();
+        (home, workspace, runtime)
+    }
+
+    #[tokio::test]
+    async fn brief_known_publication_fault_restores_exact_event_once() {
+        let (_home, _workspace, runtime) = fixture();
+        runtime
+            .storage()
+            .enable_event_bus(crate::storage::EventBus::new(16))
+            .unwrap();
+        let mut receiver = runtime.storage().subscribe_events().unwrap().unwrap();
+        let brief = BriefRecord::new("default", BriefKind::Ack, "exact Brief ACK", None, None);
+        runtime.inject_next_transition_fault(TransitionFaultPoint::BeforeCacheUpdate);
+        runtime.persist_brief(&brief).await.unwrap();
+
+        let actual = runtime
+            .storage()
+            .read_brief_by_id(&brief.id)
+            .unwrap()
+            .unwrap();
+        let events = runtime.storage().read_recent_events(32).unwrap();
+        let created = events
+            .iter()
+            .filter(|event| event.kind == "brief_created")
+            .collect::<Vec<_>>();
+        assert_eq!(created.len(), 1);
+        assert_eq!(actual.created_event_seq, Some(created[0].event_seq));
+        assert_eq!(
+            runtime.agent_state().await.unwrap().last_brief_at,
+            Some(actual.created_at)
+        );
+        assert!(runtime.inner.mutation_owner.capture().is_ok());
+        let mut published = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            if event.event.kind == "brief_created" {
+                published.push(event.event);
+            }
+        }
+        assert_eq!(published, vec![(*created[0]).clone()]);
+
+        runtime.persist_brief(&brief).await.unwrap();
+        assert_eq!(
+            runtime.storage().read_brief_by_id(&brief.id).unwrap(),
+            Some(actual)
+        );
+        assert_eq!(
+            runtime
+                .storage()
+                .read_recent_events(32)
+                .unwrap()
+                .iter()
+                .filter(|event| event.kind == "brief_created")
+                .count(),
+            1
+        );
+        while let Ok(event) = receiver.try_recv() {
+            assert_ne!(
+                event.event.kind, "brief_created",
+                "replay cannot republish its audit event"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn accepted_brief_worker_survives_cancelled_api_caller() {
+        let (_home, _workspace, runtime) = fixture();
+        let reservation = runtime.inner.mutation_owner.reserve().await.unwrap();
+        let brief = BriefRecord::new("default", BriefKind::Ack, "owned publication", None, None);
+        let caller_runtime = runtime.clone();
+        let caller_brief = brief.clone();
+        let caller = tokio::spawn(async move { caller_runtime.persist_brief(&caller_brief).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if !runtime.inner.mutation_tasks.lock().unwrap().all_finished() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        drop(reservation);
+        runtime.join_owned_mutations().await.unwrap();
+
+        let actual = runtime
+            .storage()
+            .read_brief_by_id(&brief.id)
+            .unwrap()
+            .unwrap();
+        assert!(actual.created_event_seq.is_some());
+        assert_eq!(
+            runtime.agent_state().await.unwrap().last_brief_at,
+            Some(actual.created_at)
+        );
+        assert_eq!(
+            runtime
+                .storage()
+                .read_recent_events(32)
+                .unwrap()
+                .iter()
+                .filter(|event| event.kind == "brief_created")
+                .count(),
+            1
+        );
+        assert!(runtime.inner.mutation_owner.capture().is_ok());
     }
 }

@@ -4530,3 +4530,47 @@ fn reclamation_reminders_default_to_enabled_in_schema() {
         .expect("idle_retirement_enabled schema entry");
     assert_eq!(retirement.default, serde_json::json!(false));
 }
+
+#[test]
+fn state_memory_limits_have_explicit_defaults_and_positive_config_keys() {
+    let mut config = HolonConfigFile::default();
+    let defaults = super::StateMemoryLimits::default();
+    assert_eq!(config.runtime.state_memory.resolve().unwrap(), defaults);
+    assert!(config.runtime.is_empty());
+    for (key, expected) in [
+        ("runtime.state_memory.history_per_agent_bytes", 33554432u64),
+        ("runtime.state_memory.history_host_bytes", 536870912u64),
+        ("runtime.state_memory.pending_per_agent_count", 1024u64),
+        ("runtime.state_memory.pending_per_agent_bytes", 33554432u64),
+        ("runtime.state_memory.pending_host_bytes", 268435456u64),
+        ("runtime.state_memory.record_limit", 65536u64),
+    ] {
+        let entry = config_schema()
+            .into_iter()
+            .find(|entry| entry.key == key)
+            .unwrap();
+        assert_eq!(entry.default, serde_json::json!(expected));
+        set_config_key(&mut config, key, "17").unwrap();
+        assert_eq!(get_config_key(&config, key).unwrap(), serde_json::json!(17));
+        assert!(!config.runtime.is_empty());
+        let roundtrip: HolonConfigFile =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(
+            get_config_key(&roundtrip, key).unwrap(),
+            serde_json::json!(17)
+        );
+        assert!(set_config_key(&mut config, key, "0").is_err());
+        assert!(set_config_key(&mut config, key, "-1").is_err());
+        unset_config_key(&mut config, key).unwrap();
+        assert_eq!(
+            get_config_key(&config, key).unwrap(),
+            serde_json::Value::Null
+        );
+        let field = key.rsplit('.').next().unwrap();
+        let raw = serde_json::json!({"runtime":{"state_memory":{(field):0}}});
+        assert!(serde_json::from_value::<HolonConfigFile>(raw).is_err());
+    }
+    assert!(config.runtime.is_empty());
+    config.runtime.state_memory.pending_host_bytes = Some(0);
+    assert!(config.runtime.state_memory.resolve().is_err());
+}

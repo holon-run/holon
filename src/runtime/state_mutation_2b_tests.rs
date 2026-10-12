@@ -158,10 +158,10 @@ async fn rejected_compound_candidate_does_not_install_transient_queue_changes() 
         fault: Some(TransitionFaultPoint::BeforeCommit),
     };
     let error = candidate
-        .commit_transition(crate::ids::audit_event_id(), || {
+        .commit_transition(crate::ids::audit_event_id(), |scope| {
             runtime
                 .runtime_db()
-                .transitions()
+                .transitions_in_scope(scope)
                 .commit_agent_posture(&command)
         })
         .await

@@ -44,6 +44,7 @@ use crate::{
         ProjectionEvidenceIndex, ProjectionEvidenceRef, ProjectionEvidenceRole, ProjectionOwner,
     },
     prompt::PromptSection,
+    runtime::resident_input_evidence::ToolContextProjection,
     storage::{is_active_task_status, AppStorage},
     system::{execution_policy_summary_lines, ExecutionSnapshot},
     tool::helpers::truncate_text,
@@ -52,11 +53,13 @@ use crate::{
         CommandTaskStatusSnapshot, ContextEpisodeRecord, ContinuationClass, ContinuationResolution,
         ContinuationTriggerKind, ExternalTriggerRecord, ExternalTriggerScope,
         ExternalTriggerStatus, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
-        SkillsRuntimeView, TaskRecord, TodoItemState, ToolExecutionRecord, ToolExecutionStatus,
-        TranscriptEntry, TranscriptEntryKind, TurnRecord, WaitConditionRecord, WorkItemRecord,
-        WorkItemRefStatus,
+        SkillsRuntimeView, TaskRecord, TodoItemState, ToolExecutionStatus, TranscriptEntry,
+        TranscriptEntryKind, TurnRecord, WaitConditionRecord, WorkItemRecord, WorkItemRefStatus,
     },
 };
+
+#[cfg(test)]
+use crate::types::ToolExecutionRecord;
 
 const ACTIVE_TASKS_CONTEXT_LIMIT: usize = 5;
 const ACTIVE_TASK_SUMMARY_CHAR_BUDGET: usize = 240;
@@ -250,6 +253,7 @@ pub(crate) fn reproject_work_item_scoped_with_limit(
         return Ok(WorkItemScopedReprojection::NoOwnedTurnRecords);
     };
     let evidence = build_recent_turn_projection_evidence(
+        &history.observations,
         &history.turn_records,
         &history.messages,
         &history.briefs,
@@ -675,6 +679,7 @@ pub fn build_context_from_snapshot(
         .min(config.turn_projection_budget());
     let recent_turns_compact_budget = recent_turns_budget.min(128);
     let projection_evidence = build_projection_evidence(
+        &snapshot.data.history.observations,
         agent,
         current_message,
         current_work_item,
@@ -800,13 +805,14 @@ pub fn build_context_from_snapshot(
 }
 
 fn build_projection_evidence(
+    observations: &HistoryObservations,
     agent: &AgentState,
     current_message: &MessageEnvelope,
     current_work_item: Option<&WorkItemRecord>,
     turn_records: &[TurnRecord],
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
+    tools: &[ToolContextProjection],
 ) -> ProjectionEvidenceIndex {
     let mut evidence = ProjectionEvidenceIndex::new();
     let current_owner = agent
@@ -868,9 +874,8 @@ fn build_projection_evidence(
         .max_by(|left, right| compare_message_recency(left, right))
         .map(|message| message.id.as_str());
     for message in messages {
-        let owner = message
-            .turn_id
-            .as_deref()
+        let owner = observations
+            .assigned_turn_for_message(&message.id)
             .and_then(|turn_id| turn_owners.get(turn_id))
             .map(ProjectionOwner::from)
             .unwrap_or_else(|| projection_owner(message.work_item_id.as_deref(), &agent.id));
@@ -918,10 +923,11 @@ fn build_projection_evidence(
 }
 
 fn build_recent_turn_projection_evidence(
+    observations: &HistoryObservations,
     turn_records: &[TurnRecord],
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
+    tools: &[ToolContextProjection],
     fallback_owner: ProjectionOwner,
 ) -> Vec<ProjectionEvidenceRef> {
     let turn_owners = turn_records
@@ -956,7 +962,7 @@ fn build_recent_turn_projection_evidence(
             } else {
                 ProjectionEvidenceRole::Input
             },
-            owner_for_turn(message.turn_id.as_deref()),
+            owner_for_turn(observations.assigned_turn_for_message(&message.id)),
         )
     }));
     evidence.extend(briefs.iter().map(|brief| {
@@ -993,7 +999,7 @@ fn hydrate_recent_turn_references(
     turn_records: &[TurnRecord],
     messages: &mut Vec<MessageEnvelope>,
     briefs: &mut Vec<BriefRecord>,
-    tools: &mut Vec<ToolExecutionRecord>,
+    tools: &mut Vec<ToolContextProjection>,
 ) -> Result<()> {
     let mut message_ids = messages
         .iter()
@@ -1014,14 +1020,15 @@ fn hydrate_recent_turn_references(
                 continue;
             }
             if let Some(message) = storage.message_by_id(message_id)? {
-                if turn_record_owns_object(record, message.turn_id.as_deref()) {
+                let assigned_turn = storage.assigned_turn_for_message(message_id)?;
+                if turn_record_owns_object(record, assigned_turn.as_deref()) {
                     message_ids.insert(message.id.clone());
                     messages.push(message);
                 } else {
                     tracing::warn!(
                         turn_id = %record.turn_id,
                         message_id = %message_id,
-                        object_turn_id = ?message.turn_id,
+                        assigned_turn_id = ?assigned_turn,
                         "recent_turns ignored cross-turn input message reference"
                     );
                 }
@@ -1041,14 +1048,15 @@ fn hydrate_recent_turn_references(
         {
             if !message_ids.contains(message_id) {
                 if let Some(message) = storage.message_by_id(message_id)? {
-                    if turn_record_owns_object(record, message.turn_id.as_deref()) {
+                    let assigned_turn = storage.assigned_turn_for_message(message_id)?;
+                    if turn_record_owns_object(record, assigned_turn.as_deref()) {
                         message_ids.insert(message.id.clone());
                         messages.push(message);
                     } else {
                         tracing::warn!(
                             turn_id = %record.turn_id,
                             message_id = %message_id,
-                            object_turn_id = ?message.turn_id,
+                            assigned_turn_id = ?assigned_turn,
                             "recent_turns ignored cross-turn trigger message reference"
                         );
                     }
@@ -1508,7 +1516,7 @@ fn work_item_plan_status_label(status: crate::types::WorkItemPlanStatus) -> &'st
 fn render_current_work_item_process_trace(
     work_item: &WorkItemRecord,
     briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
+    tools: &[ToolContextProjection],
     transcript: &[TranscriptEntry],
 ) -> Option<String> {
     let mut lines = vec!["Recent current WorkItem process trace:".to_string()];
@@ -1766,34 +1774,42 @@ struct CompletionReportProjection {
 }
 
 fn latest_completion_report_by_work_item(
-    storage: &impl ContextInputs,
+    inputs: &impl ContextInputs,
     agent_id: &str,
+    work_item_ids: &BTreeSet<String>,
 ) -> Result<BTreeMap<String, CompletionReportProjection>> {
     let mut summaries = BTreeMap::new();
-    for brief in storage
-        .briefs(usize::MAX)?
-        .into_iter()
-        .rev()
-        .filter(|brief| brief.agent_id == agent_id)
-        .filter(|brief| brief.kind == crate::types::BriefKind::Result)
-        .filter(|brief| !brief.text.is_empty())
-    {
-        if let Some(work_item_id) = brief.work_item_id.as_ref() {
-            summaries
-                .entry(work_item_id.clone())
-                .or_insert_with(|| CompletionReportProjection {
-                    text: resolved_brief_text_from_inputs(storage, &brief),
-                    brief_id: Some(brief.id.clone()),
-                    source_brief: Some(brief),
-                });
+    for work_item_id in work_item_ids {
+        if let Some(input) = inputs.latest_completion_brief_for_work_item(work_item_id)? {
+            anyhow::ensure!(
+                input.brief.agent_id == agent_id
+                    && input.brief.work_item_id.as_deref() == Some(work_item_id),
+                "completion report scope mismatch"
+            );
+            let text = resolved_brief_text_from_values(
+                &input.brief,
+                input.content_source.as_ref(),
+                input.source_message.as_ref(),
+            );
+            summaries.insert(
+                work_item_id.clone(),
+                CompletionReportProjection {
+                    text,
+                    brief_id: Some(input.brief.id.clone()),
+                    source_brief: Some(input.brief),
+                },
+            );
         }
     }
-    for summary in storage
+    for summary in inputs
         .delivery_summaries(usize::MAX)?
         .into_iter()
         .rev()
-        .filter(|summary| summary.agent_id == agent_id)
-        .filter(|summary| !summary.text.is_empty())
+        .filter(|summary| {
+            summary.agent_id == agent_id
+                && work_item_ids.contains(&summary.work_item_id)
+                && !summary.text.is_empty()
+        })
     {
         summaries
             .entry(summary.work_item_id)
@@ -2104,34 +2120,52 @@ fn render_continuity_brief_line(
     }
 }
 
-fn resolved_brief_text_from_inputs(inputs: &impl ContextInputs, brief: &BriefRecord) -> String {
-    let resolved = (|| -> Result<Option<String>> {
-        let crate::types::BriefContentSource::TranscriptEntry { entry_id, .. } =
-            &brief.content_source
-        else {
-            return Ok(Some(brief.text.clone()));
-        };
-        let Some(entry) = inputs.transcript_by_id(entry_id)? else {
-            return Ok(None);
-        };
+fn resolved_brief_text_from_inputs(
+    inputs: &impl ContextInputs,
+    brief: &BriefRecord,
+) -> Result<String> {
+    let crate::types::BriefContentSource::TranscriptEntry { entry_id, .. } = &brief.content_source
+    else {
+        return Ok(brief.text.clone());
+    };
+    let entry = inputs.transcript_by_id(entry_id)?;
+    let message = match &entry {
+        Some(entry) if entry.kind == TranscriptEntryKind::IncomingMessage => entry
+            .related_message_id
+            .as_deref()
+            .map(|id| inputs.message_by_id(id))
+            .transpose()?
+            .flatten(),
+        _ => None,
+    };
+    Ok(resolved_brief_text_from_values(
+        brief,
+        entry.as_ref(),
+        message.as_ref(),
+    ))
+}
+
+/// Explicitly missing/pruned source keeps the persisted Brief fallback. An
+/// unprepared source is an acquisition error, never silently treated as absent.
+fn resolved_brief_text_from_values(
+    brief: &BriefRecord,
+    entry: Option<&TranscriptEntry>,
+    message: Option<&MessageEnvelope>,
+) -> String {
+    let resolved = entry.and_then(|entry| {
         if entry.kind == TranscriptEntryKind::IncomingMessage {
-            if let Some(message_id) = entry.related_message_id.as_deref() {
-                if let Some(message) = inputs.message_by_id(message_id)? {
-                    return Ok(match &message.body {
-                        MessageBody::Text { text } | MessageBody::Brief { text, .. } => {
-                            (!text.trim().is_empty()).then(|| text.clone())
-                        }
-                        MessageBody::Json { value } => serde_json::to_string(value).ok(),
-                    });
-                }
+            if let Some(message) = message {
+                return match &message.body {
+                    MessageBody::Text { text } | MessageBody::Brief { text, .. } => {
+                        (!text.trim().is_empty()).then(|| text.clone())
+                    }
+                    MessageBody::Json { value } => serde_json::to_string(value).ok(),
+                };
             }
         }
-        Ok(crate::object_resolver::transcript_text(&entry))
-    })();
-    resolved
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| brief.text.clone())
+        crate::object_resolver::transcript_text(entry)
+    });
+    resolved.unwrap_or_else(|| brief.text.clone())
 }
 
 fn render_current_input_body_with_budget(
@@ -2544,7 +2578,7 @@ fn render_recent_turns_with_budget_from_snapshot(
     turn_records: &[TurnRecord],
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
+    tools: &[ToolContextProjection],
     transcript: &[TranscriptEntry],
     current_message: &MessageEnvelope,
     current_work_item: Option<&WorkItemRecord>,
@@ -2568,7 +2602,7 @@ fn render_turn_records_with_budget_from_snapshot(
     turn_records: &[TurnRecord],
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
+    tools: &[ToolContextProjection],
     transcript: &[TranscriptEntry],
     current_message: &MessageEnvelope,
     current_work_item: Option<&WorkItemRecord>,
@@ -2587,7 +2621,7 @@ fn render_turn_records_with_budget_from_snapshot(
         .and_then(|operator| {
             turn_records
                 .iter()
-                .find(|record| turn_record_matches_message(record, operator))
+                .find(|record| observations.message_belongs_to_turn(record, &operator.id))
         })
         .map(|record| record.turn_id.clone());
     let latest_previous_turn_id = turn_records
@@ -2634,7 +2668,7 @@ fn render_turn_records_with_budget_from_snapshot(
     if let Some(operator) = latest_operator_for_continuation {
         if let Some(record) = turn_records
             .iter()
-            .find(|record| turn_record_matches_message(record, operator))
+            .find(|record| observations.message_belongs_to_turn(record, &operator.id))
         {
             if let Some(rendered) = render_current_continuation_turn_record_projection_from_snapshot(
                 observations,
@@ -2679,7 +2713,7 @@ fn render_turn_record_projection_with_transcript_from_snapshot(
     record: &TurnRecord,
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
+    tools: &[ToolContextProjection],
     transcript: &[TranscriptEntry],
     continuation: Option<&MessageEnvelope>,
     mode: RecentTurnProjectionMode,
@@ -2690,7 +2724,7 @@ fn render_turn_record_projection_with_transcript_from_snapshot(
         .iter()
         .find_map(|id| {
             messages.iter().find(|message| {
-                message.id == *id && turn_record_owns_object(record, message.turn_id.as_deref())
+                message.id == *id && observations.message_belongs_to_turn(record, &message.id)
             })
         })
         .or_else(|| {
@@ -2701,7 +2735,7 @@ fn render_turn_record_projection_with_transcript_from_snapshot(
                 .and_then(|id| {
                     messages.iter().find(|message| {
                         message.id == *id
-                            && turn_record_owns_object(record, message.turn_id.as_deref())
+                            && observations.message_belongs_to_turn(record, &message.id)
                     })
                 })
         });
@@ -2863,7 +2897,7 @@ fn render_turn_record_projection_with_transcript_from_snapshot(
 fn render_turn_execution_sequence(
     record: &TurnRecord,
     briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
+    tools: &[ToolContextProjection],
     transcript: &[TranscriptEntry],
     mode: RecentTurnProjectionMode,
 ) -> (Vec<String>, bool) {
@@ -2978,7 +3012,7 @@ fn render_current_continuation_turn_record_projection_from_snapshot(
     operator: &MessageEnvelope,
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
+    tools: &[ToolContextProjection],
     transcript: &[TranscriptEntry],
     current_work_item: Option<&WorkItemRecord>,
     budget: usize,
@@ -3011,7 +3045,7 @@ fn render_current_continuation_turn_record_projection_from_snapshot(
             sanitize_inline(&truncate_text(&work_item.objective, 160))
         ));
     }
-    if !turn_record_matches_message(record, operator) {
+    if !observations.message_belongs_to_turn(record, &operator.id) {
         lines.push(format!(
             "  - continues input id: {}",
             sanitize_inline(&operator.id)
@@ -3022,6 +3056,7 @@ fn render_current_continuation_turn_record_projection_from_snapshot(
     Some(rendered)
 }
 
+#[cfg(test)]
 fn turn_record_matches_message(record: &TurnRecord, message: &MessageEnvelope) -> bool {
     turn_record_owns_object(record, message.turn_id.as_deref())
 }
@@ -3065,7 +3100,23 @@ fn turn_trigger_summary_label(trigger: &crate::types::TurnTriggerSummary) -> &'s
     }
 }
 
-fn command_output_refs(record: &ToolExecutionRecord, batch_item_index: Option<usize>) -> String {
+fn command_output_refs(record: &ToolContextProjection) -> String {
+    if record.tool_name != "ExecCommand" || !record.command.has_output_evidence {
+        return String::new();
+    }
+    format!(
+        " stdout_ref={} stderr_ref={} output_ref={}",
+        crate::tool::helpers::command_output_source_ref(&record.id, None, "stdout"),
+        crate::tool::helpers::command_output_source_ref(&record.id, None, "stderr"),
+        crate::tool::helpers::command_output_source_ref(&record.id, None, "output")
+    )
+}
+
+#[cfg(test)]
+fn legacy_command_output_refs(
+    record: &ToolExecutionRecord,
+    batch_item_index: Option<usize>,
+) -> String {
     let output = match (record.tool_name.as_str(), batch_item_index) {
         ("ExecCommand", None) => tool_result_payload(record),
         ("ExecCommandBatch", Some(index)) => match tool_result_payload(record)
@@ -3098,6 +3149,7 @@ fn command_output_refs(record: &ToolExecutionRecord, batch_item_index: Option<us
     )
 }
 
+#[cfg(test)]
 fn tool_result_payload(record: &ToolExecutionRecord) -> &Value {
     record
         .output
@@ -3111,7 +3163,7 @@ fn tool_result_payload(record: &ToolExecutionRecord) -> &Value {
         .unwrap_or(&record.output)
 }
 
-fn tool_execution_rollup_ref(record: &ToolExecutionRecord) -> String {
+fn tool_execution_rollup_ref(record: &ToolContextProjection) -> String {
     crate::tool::helpers::command_output_source_ref(&record.id, None, "output")
 }
 
@@ -3124,75 +3176,41 @@ fn status_label(status: &ToolExecutionStatus) -> &'static str {
     }
 }
 
-fn command_disposition(record: &ToolExecutionRecord) -> Option<&str> {
-    tool_result_payload(record)
-        .get("disposition")
-        .and_then(Value::as_str)
+fn command_disposition(record: &ToolContextProjection) -> Option<&str> {
+    record.command.disposition.as_deref()
 }
 
-fn command_task_id(record: &ToolExecutionRecord) -> Option<&str> {
-    tool_result_payload(record)
-        .get("task_handle")
-        .and_then(|handle| handle.get("task_id"))
-        .and_then(Value::as_str)
+fn command_task_id(record: &ToolContextProjection) -> Option<&str> {
+    record.command.task_id.as_deref()
 }
 
-fn command_exit_status(record: &ToolExecutionRecord) -> Option<i64> {
-    tool_result_payload(record)
-        .get("exit_status")
-        .or_else(|| tool_result_payload(record).get("exit_code"))
-        .and_then(Value::as_i64)
+fn command_exit_status(record: &ToolContextProjection) -> Option<i64> {
+    record.command.exit_status
 }
 
-fn command_has_nonzero_exit_status(record: &ToolExecutionRecord) -> bool {
+fn command_has_nonzero_exit_status(record: &ToolContextProjection) -> bool {
     command_exit_status(record).is_some_and(|status| status != 0)
 }
 
-fn value_has_artifact(value: &Value) -> bool {
-    value
-        .get("artifacts")
-        .and_then(Value::as_array)
-        .is_some_and(|artifacts| !artifacts.is_empty())
-        || [
-            "artifact",
-            "stdout_artifact",
-            "stderr_artifact",
-            "output_artifact",
-        ]
-        .iter()
-        .any(|key| value.get(key).is_some())
-}
-
-fn value_is_truncated(value: &Value) -> bool {
-    [
-        "truncated",
-        "initial_output_truncated",
-        "stdout_truncated",
-        "stderr_truncated",
-        "output_truncated",
-    ]
-    .iter()
-    .any(|key| value.get(key).and_then(Value::as_bool).unwrap_or(false))
-}
-
-fn tool_execution_needs_old_turn_alert(record: &ToolExecutionRecord) -> bool {
+fn tool_execution_needs_old_turn_alert(record: &ToolContextProjection) -> bool {
     matches!(record.status, ToolExecutionStatus::Error)
         || command_has_nonzero_exit_status(record)
-        || (record.tool_name == "ExecCommandBatch" && batch_item_counts(record).failed > 0)
+        || (record.tool_name == "ExecCommandBatch" && record.batch_failed > 0)
         || matches!(
             command_disposition(record),
             Some("promoted_to_task" | "already_running")
         )
-        || value_is_truncated(tool_result_payload(record))
-        || value_has_artifact(tool_result_payload(record))
+        || record.command.truncated
+        || record.command.has_artifact
 }
 
-fn tool_execution_needs_old_turn_failure_count(record: &ToolExecutionRecord) -> bool {
+fn tool_execution_needs_old_turn_failure_count(record: &ToolContextProjection) -> bool {
     matches!(record.status, ToolExecutionStatus::Error)
         || command_has_nonzero_exit_status(record)
-        || (record.tool_name == "ExecCommandBatch" && batch_item_counts(record).failed > 0)
+        || (record.tool_name == "ExecCommandBatch" && record.batch_failed > 0)
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct BatchItemCounts {
     succeeded: usize,
@@ -3201,7 +3219,8 @@ struct BatchItemCounts {
     unknown: usize,
 }
 
-fn batch_item_counts(record: &ToolExecutionRecord) -> BatchItemCounts {
+#[cfg(test)]
+fn legacy_batch_item_counts(record: &ToolExecutionRecord) -> BatchItemCounts {
     let total = record
         .input
         .get("items")
@@ -3237,7 +3256,7 @@ fn batch_item_counts(record: &ToolExecutionRecord) -> BatchItemCounts {
     counts
 }
 
-fn render_recent_tool_execution_rollup(records: &[&ToolExecutionRecord]) -> Vec<String> {
+fn render_recent_tool_execution_rollup(records: &[&ToolContextProjection]) -> Vec<String> {
     let total = records.len();
     let success = records
         .iter()
@@ -3277,7 +3296,7 @@ fn render_recent_tool_execution_rollup(records: &[&ToolExecutionRecord]) -> Vec<
     lines
 }
 
-fn render_recent_tool_execution_alert(record: &ToolExecutionRecord) -> String {
+fn render_recent_tool_execution_alert(record: &ToolContextProjection) -> String {
     let mut parts = vec![
         format!(
             "- alert: {} status={} tool_execution_id={}",
@@ -3304,15 +3323,12 @@ fn render_recent_tool_execution_alert(record: &ToolExecutionRecord) -> String {
             "cmd_ref={}",
             crate::tool::helpers::command_receipt_source_ref(&record.id, None)
         ));
-        let output_refs = command_output_refs(record, None);
+        let output_refs = command_output_refs(record);
         if !output_refs.is_empty() {
             parts.push(output_refs.trim().to_string());
         }
-        if let Some(cmd) = record.input.get("cmd").and_then(Value::as_str) {
-            parts.push(format!(
-                "cmd_preview={}",
-                crate::tool::helpers::command_preview(cmd)
-            ));
+        if let Some(preview) = record.command.command_preview.as_deref() {
+            parts.push(format!("cmd_preview={preview}"));
         }
     }
     parts.join(" ")
@@ -3320,6 +3336,8 @@ fn render_recent_tool_execution_alert(record: &ToolExecutionRecord) -> String {
 
 #[cfg(test)]
 fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
+    let projection = crate::runtime::resident_input_evidence::project_tool_record(record)
+        .expect("valid fixture tool projection");
     let prefix = format!(
         "- [{}][{}] {} {}",
         trust_label(&record.authority_class),
@@ -3337,8 +3355,8 @@ fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
                     "{prefix} tool_execution_id={} cmd_ref={}{}{} cmd_preview={}",
                     record.id,
                     crate::tool::helpers::command_receipt_source_ref(&record.id, None),
-                    command_output_refs(record, None),
-                    command_task_id(record)
+                    legacy_command_output_refs(record, None),
+                    command_task_id(&projection)
                         .map(|task_id| format!(" task_id={}", sanitize_inline(task_id)))
                         .unwrap_or_default(),
                     crate::tool::helpers::command_preview(cmd)
@@ -3349,7 +3367,7 @@ fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
             let Some(items) = record.input.get("items").and_then(Value::as_array) else {
                 return format!("{prefix} tool_execution_id={}", record.id);
             };
-            let counts = batch_item_counts(record);
+            let counts = legacy_batch_item_counts(record);
             let refs = items
                 .iter()
                 .enumerate()
@@ -3359,7 +3377,7 @@ fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
                     Some(format!(
                         "{{index={index}, cmd_ref={},{} cmd_preview={}}}",
                         crate::tool::helpers::command_receipt_source_ref(&record.id, Some(index)),
-                        command_output_refs(record, Some(index)),
+                        legacy_command_output_refs(record, Some(index)),
                         crate::tool::helpers::command_preview(cmd)
                     ))
                 })
@@ -3797,13 +3815,18 @@ fn render_turn_records_with_budget(
     current_work_item: Option<&WorkItemRecord>,
     budget: usize,
 ) -> Option<String> {
-    let observations = HistoryObservations::capture(storage, turn_records, briefs);
+    let tools = tools
+        .iter()
+        .map(crate::runtime::resident_input_evidence::project_tool_record)
+        .collect::<Result<Vec<_>>>()
+        .expect("valid fixture tool projections");
+    let observations = HistoryObservations::capture(storage, turn_records, briefs, messages);
     render_turn_records_with_budget_from_snapshot(
         &observations,
         turn_records,
         messages,
         briefs,
-        tools,
+        &tools,
         transcript,
         current_message,
         current_work_item,
@@ -3823,13 +3846,19 @@ fn render_turn_record_projection_with_transcript(
     mode: RecentTurnProjectionMode,
     budget: usize,
 ) -> Option<String> {
-    let observations = HistoryObservations::capture(storage, std::slice::from_ref(record), briefs);
+    let tools = tools
+        .iter()
+        .map(crate::runtime::resident_input_evidence::project_tool_record)
+        .collect::<Result<Vec<_>>>()
+        .expect("valid fixture tool projections");
+    let observations =
+        HistoryObservations::capture(storage, std::slice::from_ref(record), briefs, messages);
     render_turn_record_projection_with_transcript_from_snapshot(
         &observations,
         record,
         messages,
         briefs,
-        tools,
+        &tools,
         transcript,
         continuation,
         mode,
@@ -4492,6 +4521,19 @@ mod tests {
         );
         source.turn_id = Some("turn-replay-source".into());
         storage.append_message(&source).unwrap();
+        // A payload hint is not ownership. Persist the actual original Turn
+        // before the replay so its source assignment remains historical.
+        let mut source_turn = TurnRecord::new("default", "turn-replay-source", 7);
+        source_turn.input_message_ids = vec![source.id.clone()];
+        source_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&source));
+        source_turn.terminal = Some(crate::types::TurnTerminalSummary {
+            kind: crate::types::TurnTerminalKind::Interrupted,
+            reason: Some("fixture interrupted original dispatch".into()),
+            no_brief_reason: Some(crate::types::TurnNoBriefReason::Interrupted),
+            completed_at: chrono::Utc::now(),
+            duration_ms: 1,
+        });
+        storage.append_turn(&source_turn).unwrap();
 
         let mut replay = TurnRecord::new("default", "turn-replay-attempt", 8);
         replay.input_message_ids = vec![source.id.clone()];
@@ -4500,9 +4542,13 @@ mod tests {
             source_message_id: source.id.clone(),
             source_turn_id: "turn-replay-source".into(),
             reason: "interrupted_queue_claim_reentry".into(),
-            prior_terminal: None,
+            prior_terminal: source_turn.terminal.clone(),
         });
         storage.append_turn(&replay).unwrap();
+        let assigned: String = storage.runtime_db().unwrap().unwrap().connection().unwrap()
+            .query_row("SELECT turn_id FROM conversation_input_assignments WHERE agent_id=?1 AND message_id=?2",
+                rusqlite::params!["default", source.id], |row| row.get(0)).unwrap();
+        assert_eq!(assigned, source_turn.turn_id);
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -4524,7 +4570,12 @@ mod tests {
             &SkillsRuntimeView::default(),
             &current_message,
             None,
-            &ContextConfig::default(),
+            &ContextConfig {
+                // Select only the replay projection: rendering the source Turn
+                // itself would legitimately show its own original input body.
+                recent_messages: 1,
+                ..ContextConfig::default()
+            },
             dir.path(),
         )
         .unwrap();
@@ -4535,11 +4586,14 @@ mod tests {
             .expect("recent_turns section")
             .content
             .clone();
+        assert!(recent_turns.contains("  - turn_id: turn-replay-attempt"));
+        assert!(!recent_turns.contains("  - turn_id: turn-replay-source"));
         assert!(recent_turns.contains("source_turn_id=turn-replay-source"));
         assert!(recent_turns.contains(
             "projection advisory: replay provenance is historical evidence, not continuation identity"
         ));
         assert!(!recent_turns.contains("Historical input must not become current continuation."));
+        assert!(!recent_turns.contains("  - continues input:"));
     }
 
     #[test]
@@ -4565,6 +4619,14 @@ mod tests {
         cross_turn_message.turn_id = Some("turn-other".into());
         cross_turn_message.message_seq = Some(turn_index);
         storage.append_message(&cross_turn_message).unwrap();
+        // Freeze a real foreign assignment before the corrupt references below;
+        // Message.turn_id alone is only an untrusted preallocation/replay hint.
+        let mut other_turn = TurnRecord::new("default", "turn-other", turn_index - 1);
+        other_turn.input_message_ids = vec![cross_turn_message.id.clone()];
+        other_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+            &cross_turn_message,
+        ));
+        storage.append_turn(&other_turn).unwrap();
 
         let mut owned_brief = BriefRecord::new(
             "default",
@@ -4618,8 +4680,42 @@ mod tests {
         turn.produced_brief_ids = vec![owned_brief.id.clone(), cross_turn_brief.id.clone()];
         turn.tool_execution_ids = vec![owned_tool.id.clone(), cross_turn_tool.id.clone()];
         storage.append_turn(&turn).unwrap();
+        let assigned: String = storage.runtime_db().unwrap().unwrap().connection().unwrap()
+            .query_row("SELECT turn_id FROM conversation_input_assignments WHERE agent_id=?1 AND message_id=?2",
+                rusqlite::params!["default", cross_turn_message.id], |row| row.get(0)).unwrap();
+        assert_eq!(assigned, other_turn.turn_id);
 
-        let context = context_for_storage(&storage, "default");
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue".into(),
+            },
+        );
+        let state = AgentState::new("default");
+        let context = build_context(
+            &storage,
+            &state,
+            &execution_snapshot_for(&state),
+            &SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                // Test the owned Turn's references, not the foreign Turn's
+                // legitimate standalone history projection.
+                recent_messages: 1,
+                recent_briefs: 4,
+                ..ContextConfig::default()
+            },
+            storage.data_dir(),
+        )
+        .unwrap();
         let recent_turns = context
             .sections
             .iter()
@@ -4628,6 +4724,8 @@ mod tests {
             .content
             .clone();
 
+        assert!(recent_turns.contains("  - turn_id: turn-owned"));
+        assert!(!recent_turns.contains("  - turn_id: turn-other"));
         assert!(recent_turns.contains("  - trigger: unavailable"));
         assert!(recent_turns.contains("owned result remains visible"));
         assert!(recent_turns.contains("tool_execution:tool-owned:output"));
@@ -5998,7 +6096,12 @@ mod tests {
             summary: "sleep promoted to task".into(),
             invocation_surface: None,
         };
-        let records = vec![&success, &failed, &promoted];
+        let projected = [&success, &failed, &promoted]
+            .into_iter()
+            .map(crate::runtime::resident_input_evidence::project_tool_record)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        let records = projected.iter().collect::<Vec<_>>();
         let rendered = render_recent_tool_execution_rollup(&records).join("\n");
 
         assert!(rendered.contains("total=3 success=2 error=1 promoted=1"));

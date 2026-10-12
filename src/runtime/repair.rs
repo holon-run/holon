@@ -126,13 +126,16 @@ impl RuntimeHandle {
                     let commit = {
                         let mut mutation = self.begin_mutation().await?;
                         mutation
-                            .commit_transition(crate::ids::audit_event_id(), || {
-                                self.inner.runtime_db.transitions().commit_wait(
-                                    &crate::runtime_db::transitions::WaitTransitionCommand {
-                                        task_result_admission: None,
-                                        agent_id: agent_id.clone(),
-                                        work_items: Vec::new(),
-                                        expected_wait_conditions: vec![
+                            .commit_transition(crate::ids::audit_event_id(), |scope| {
+                                self.inner
+                                    .runtime_db
+                                    .transitions_in_scope(scope)
+                                    .commit_wait(
+                                        &crate::runtime_db::transitions::WaitTransitionCommand {
+                                            task_result_admission: None,
+                                            agent_id: agent_id.clone(),
+                                            work_items: Vec::new(),
+                                            expected_wait_conditions: vec![
                                 crate::runtime_db::transitions::WaitConditionExpectation {
                                     id: current.id.clone(),
                                     agent_id: current.agent_id.clone(),
@@ -140,23 +143,23 @@ impl RuntimeHandle {
                                     updated_at: current.updated_at,
                                 },
                             ],
-                                        wait_conditions: vec![cancelled],
-                                        timer_wake: None,
-                                        agent_state: None,
-                                        audit_events: vec![AuditEvent::legacy(
-                                            "scheduler_wait_repaired",
-                                            serde_json::json!({
-                                                "agent_id": agent_id,
-                                                "wait_id": wait_id,
-                                                "action": "cancel",
-                                                "reason": reason,
-                                            }),
-                                        )],
-                                        index_changes: Vec::new(),
-                                        notify_scheduler: true,
-                                        fault: self.take_transition_fault(),
-                                    },
-                                )
+                                            wait_conditions: vec![cancelled],
+                                            timer_wake: None,
+                                            agent_state: None,
+                                            audit_events: vec![AuditEvent::legacy(
+                                                "scheduler_wait_repaired",
+                                                serde_json::json!({
+                                                    "agent_id": agent_id,
+                                                    "wait_id": wait_id,
+                                                    "action": "cancel",
+                                                    "reason": reason,
+                                                }),
+                                            )],
+                                            index_changes: Vec::new(),
+                                            notify_scheduler: true,
+                                            fault: self.take_transition_fault(),
+                                        },
+                                    )
                             })
                             .await
                     }?;
@@ -227,9 +230,7 @@ impl RuntimeHandle {
                             record: Box::new(mutation.state.clone()),
                         };
                         mutation
-                            .commit_transition(crate::ids::audit_event_id(), || {
-                                self.inner.runtime_db.transitions().commit_queue(
-                        &crate::runtime_db::transitions::QueueTransitionCommand {
+                            .commit_prepared_queue(crate::ids::audit_event_id(), crate::runtime_db::transitions::PreparedQueueTransition::new(Clone::clone(&crate::runtime_db::transitions::QueueTransitionCommand {
                             agent_id: agent_id.clone(),
                             operation: crate::runtime_db::transitions::QueueOperation::RepairDrop,
                             mutation:
@@ -254,9 +255,7 @@ impl RuntimeHandle {
                             notify_scheduler: true,
                             fault: self.take_transition_fault(),
                             brief_evidence: Vec::new(),
-                        },
-                    )
-                            })
+                        })))
                             .await
                     }?;
                     self.apply_transition_commit(commit).await;

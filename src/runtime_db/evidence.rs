@@ -120,6 +120,147 @@ pub struct EvidencePayloadRow {
     pub payload_json: String,
 }
 
+/// Canonical message-to-turn link; replay may keep the source Turn as owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommittedTurnInputAssignment {
+    pub agent_id: String,
+    pub message_id: String,
+    pub turn_id: String,
+    pub revision: u64,
+    pub assigned_at: DateTime<Utc>,
+}
+
+/// Exact final source projection read in the canonical writer transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommittedConversationSourceRevision {
+    pub agent_id: String,
+    pub source_kind: String,
+    pub source_id: String,
+    pub turn_id: Option<String>,
+    pub revision: u64,
+    pub activity_seq: Option<u64>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommittedConversationTurnRevision {
+    pub agent_id: String,
+    pub turn_id: String,
+    pub revision: super::conversation::ConversationTurnRevision,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommittedTurnRecord {
+    pub record: crate::types::TurnRecord,
+    pub input_assignments: Vec<CommittedTurnInputAssignment>,
+    pub revision: super::conversation::ConversationTurnRevision,
+    /// Includes unchanged input sources so replay can install exact facts idempotently.
+    pub affected_source_revisions: Vec<CommittedConversationSourceRevision>,
+    /// Requested Turn plus actual input assignment targets, each once by ID.
+    pub affected_turn_revisions: Vec<CommittedConversationTurnRevision>,
+}
+
+pub(crate) fn committed_evidence_record_tx<T: serde::de::DeserializeOwned>(
+    tx: &Transaction<'_>,
+    kind: EvidenceKind,
+    agent_id: &str,
+    id: &str,
+) -> Result<T> {
+    let payload: String = tx
+        .query_row(
+            &format!(
+                "SELECT payload_json FROM {} WHERE agent_id = ?1 AND evidence_id = ?2",
+                kind.table_name()
+            ),
+            params![agent_id, id],
+            |row| row.get(0),
+        )
+        .with_context(|| {
+            format!(
+                "reading committed {} {id} for agent {agent_id}",
+                kind.table_name()
+            )
+        })?;
+    serde_json::from_str(&payload).context("decoding committed evidence")
+}
+
+pub(crate) fn committed_message_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    id: &str,
+) -> Result<MessageEnvelope> {
+    let record: MessageEnvelope =
+        committed_evidence_record_tx(tx, EvidenceKind::Message, agent_id, id)?;
+    let sequence: Option<i64> = tx.query_row(
+        "SELECT message_seq FROM messages WHERE agent_id = ?1 AND evidence_id = ?2",
+        params![agent_id, id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        record.id == id
+            && record.agent_id == agent_id
+            && record.message_seq == sequence.map(u64::try_from).transpose()?,
+        "committed message payload/sequence projection mismatch for {id}"
+    );
+    Ok(record)
+}
+
+pub(crate) fn committed_transcript_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    id: &str,
+) -> Result<TranscriptEntry> {
+    let record: TranscriptEntry =
+        committed_evidence_record_tx(tx, EvidenceKind::TranscriptEntry, agent_id, id)?;
+    let sequence: Option<i64> = tx.query_row(
+        "SELECT transcript_seq FROM transcript_entries WHERE agent_id = ?1 AND evidence_id = ?2",
+        params![agent_id, id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        record.id == id
+            && record.agent_id == agent_id
+            && record.transcript_seq == sequence.map(u64::try_from).transpose()?,
+        "committed transcript payload/sequence projection mismatch for {id}"
+    );
+    Ok(record)
+}
+
+pub(crate) fn committed_tool_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    id: &str,
+) -> Result<ToolExecutionRecord> {
+    let record: ToolExecutionRecord =
+        committed_evidence_record_tx(tx, EvidenceKind::ToolExecution, agent_id, id)?;
+    anyhow::ensure!(
+        record.id == id && record.agent_id == agent_id,
+        "committed tool scope mismatch for {id}"
+    );
+    Ok(record)
+}
+
+pub(crate) fn committed_brief_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    id: &str,
+) -> Result<BriefRecord> {
+    let record: BriefRecord = committed_evidence_record_tx(tx, EvidenceKind::Brief, agent_id, id)?;
+    let event_seq: Option<i64> = tx.query_row(
+        "SELECT created_event_seq FROM briefs WHERE agent_id = ?1 AND evidence_id = ?2",
+        params![agent_id, id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        record.id == id
+            && record.agent_id == agent_id
+            && record.created_event_seq == event_seq.map(u64::try_from).transpose()?,
+        "committed brief payload/event projection mismatch for {id}"
+    );
+    Ok(record)
+}
+
 pub(crate) struct EvidenceInsert<'a> {
     table: &'static str,
     evidence_id: &'a str,
@@ -260,7 +401,10 @@ pub(crate) fn append_message_tx(
         &agent_sequence_scope(&message.agent_id),
     )?);
     upsert_message_tx(tx, &message)?;
-    Ok((message, true))
+    Ok((
+        committed_message_tx(tx, &message.agent_id, &message.id)?,
+        true,
+    ))
 }
 
 pub(crate) fn insert_transcript_evidence_tx(
@@ -291,7 +435,10 @@ pub(crate) fn append_transcript_entry_tx(
         &agent_sequence_scope(&entry.agent_id),
     )?);
     upsert_transcript_entry_tx(tx, &entry)?;
-    Ok((entry, true))
+    Ok((
+        committed_transcript_tx(tx, &entry.agent_id, &entry.id)?,
+        true,
+    ))
 }
 
 pub(crate) fn upsert_agent_state_tx(tx: &Transaction<'_>, record: &AgentState) -> Result<()> {
@@ -1031,13 +1178,15 @@ pub(crate) fn upsert_brief_with_created_event_seq_tx(
             event_seq
         );
         existing.created_event_seq = Some(event_seq);
+        let payload = full_payload_json(&existing)?;
         tx.execute(
-            "UPDATE briefs SET payload_json = ?1, created_event_seq = ?2
+            "UPDATE briefs SET payload_json = ?1, created_event_seq = ?2, content_hash = ?4
              WHERE evidence_id = ?3",
             params![
-                full_payload_json(&existing)?,
+                payload,
                 i64::try_from(event_seq).ok(),
-                &brief.id
+                &brief.id,
+                content_hash(&payload),
             ],
         )?;
         if let Some(turn_id) = existing.turn_id.as_deref() {
@@ -1092,6 +1241,7 @@ pub(crate) fn append_brief_with_created_event_tx(
     let (event, event_inserted) = append_audit_event_tx(tx, agent_id, event)?;
     let brief = upsert_brief_with_created_event_seq_tx(tx, brief, event.event_seq)?;
     insert_runtime_index_changes_tx(tx, index_changes)?;
+    let brief = committed_brief_tx(tx, &brief.agent_id, &brief.id)?;
     Ok(BriefCreatedCommit {
         brief,
         event,
@@ -1427,3 +1577,7 @@ fn enum_string<T: serde::Serialize>(value: &T) -> Result<String> {
 fn timestamp(value: chrono::DateTime<chrono::Utc>) -> String {
     value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
+
+#[cfg(test)]
+#[path = "standalone_evidence_tests.rs"]
+mod standalone_evidence_tests;

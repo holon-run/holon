@@ -42,7 +42,7 @@ pub(crate) enum TaskResultSettlementDisposition {
     InvalidOrStale,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct TaskResultActivationSettlement {
     pub activation_id: String,
     pub disposition: TaskResultSettlementDisposition,

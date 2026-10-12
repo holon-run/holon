@@ -225,11 +225,29 @@ impl RuntimeDb {
     }
 }
 
-pub(super) fn load_episode_memory_snapshot_in(
+pub(crate) fn load_episode_memory_snapshot_in(
     connection: &Connection,
     scope: &EpisodeMemoryLoadScope,
     recent_limit: usize,
     witness: Option<(&EpisodeMemoryKey, &str, &EpisodeMemoryInvocation)>,
+) -> Result<EpisodeMemoryBootstrapSnapshot> {
+    load_episode_memory_snapshot_inner(connection, scope, recent_limit, witness, false)
+}
+/// Bounded read by an already accepted original input receipt. It grants no new
+/// Episode writer or activation permission to a Deleting identity.
+pub(crate) fn load_episode_memory_for_input_recovery_in(
+    connection: &Connection,
+    scope: &EpisodeMemoryLoadScope,
+    recent_limit: usize,
+) -> Result<EpisodeMemoryBootstrapSnapshot> {
+    load_episode_memory_snapshot_inner(connection, scope, recent_limit, None, true)
+}
+fn load_episode_memory_snapshot_inner(
+    connection: &Connection,
+    scope: &EpisodeMemoryLoadScope,
+    recent_limit: usize,
+    witness: Option<(&EpisodeMemoryKey, &str, &EpisodeMemoryInvocation)>,
+    original_recovery: bool,
 ) -> Result<EpisodeMemoryBootstrapSnapshot> {
     ensure!(
         !scope.agent_id.is_empty() && scope.identity_incarnation > 0,
@@ -250,7 +268,8 @@ pub(super) fn load_episode_memory_snapshot_in(
     };
     let Some(identity) = identity.filter(|identity| {
         identity.incarnation == scope.identity_incarnation
-            && identity.status == AgentRegistryStatus::Active
+            && (identity.status == AgentRegistryStatus::Active
+                || (original_recovery && identity.status == AgentRegistryStatus::Deleting))
     }) else {
         return Ok(EpisodeMemoryBootstrapSnapshot::Retired {
             requested_scope: scope.clone(),
@@ -540,6 +559,8 @@ struct ContinuitySeed {
 
 /// Called once inside migration v82, under the existing DB migration lease.
 /// The boundary and each initial membership set are frozen in that transaction.
+/// Existing Deleting scopes retain their admitted cleanup provenance; this does
+/// not authorize activation or new input admission.
 pub(super) fn capture_episode_continuity_upgrade_tx(
     tx: &Transaction<'_>,
     captured_at: DateTime<Utc>,
@@ -601,7 +622,7 @@ pub(super) fn capture_episode_continuity_upgrade_tx(
         };
         if identity
             .as_ref()
-            .is_some_and(|identity| identity.status != AgentRegistryStatus::Active)
+            .is_some_and(|identity| identity.status == AgentRegistryStatus::Deleted)
         {
             continue;
         }
@@ -655,13 +676,14 @@ pub(super) fn ensure_fresh_episode_continuity_tx(
 }
 
 /// Explicit legacy identity import, called before its first canonical upsert.
-/// Ordinary identity creation does not call this actor.
+/// Ordinary identity creation does not call this actor. Imported Deleting scopes
+/// may retain their original cleanup provenance, pending the first-import seal.
 pub(super) fn prepare_imported_identity_continuity_tx(
     tx: &Transaction<'_>,
     identity: &AgentIdentityRecord,
     captured_at: DateTime<Utc>,
 ) -> Result<()> {
-    if identity.status != AgentRegistryStatus::Active {
+    if identity.status == AgentRegistryStatus::Deleted {
         return Ok(());
     }
     if let Some(current) = load_identity(tx, &identity.agent_id)? {
@@ -739,6 +761,10 @@ pub(super) fn bind_unbound_episode_continuity_tx(
     bound_at: DateTime<Utc>,
 ) -> Result<bool> {
     ensure!(
+        identity.status == AgentRegistryStatus::Active,
+        "legacy materialization requires an Active identity"
+    );
+    ensure!(
         load_identity(tx, &identity.agent_id)?.is_none(),
         "legacy materialization requires no current identity"
     );
@@ -801,7 +827,7 @@ pub(super) fn seal_imported_episode_continuity_tx(
             if seed
                 .incarnation
                 .is_some_and(|incarnation| incarnation != current.incarnation)
-                || current.status != AgentRegistryStatus::Active
+                || current.status == AgentRegistryStatus::Deleted
             {
                 continue;
             }
@@ -865,6 +891,12 @@ pub(super) fn seal_imported_episode_continuity_tx(
         tx.execute(
             "INSERT INTO episode_continuity_imports (seed_id, checkpoint_digest, roots_json, captured_at) VALUES (?1, ?2, ?3, ?4)",
             params![seed.id, checkpoint_digest, serde_json::to_string(&roots)?, captured_at.to_rfc3339()],
+        )?;
+        super::input_evidence_snapshot::capture_input_evidence_seed_tx(
+            tx,
+            &seed.id,
+            "first_import",
+            false,
         )?;
     }
     Ok(())
@@ -992,6 +1024,17 @@ fn insert_seed_with_candidates_tx(
             identity.map(serde_json::to_vec).transpose()?.map(|bytes| bytes_digest(&bytes)), serde_json::to_string(roots)?,
             serde_json::to_string(&candidates)?, import_required, captured_at.to_rfc3339()],
     )?;
+    if matches!(
+        source_kind,
+        "legacy_identity_import" | "legacy_state_import"
+    ) {
+        super::input_evidence_snapshot::capture_input_evidence_seed_tx(
+            tx,
+            &seed_id,
+            "legacy_import",
+            true,
+        )?;
+    }
     Ok(ContinuitySeed {
         id: seed_id,
         agent_id: agent_id.to_owned(),
@@ -1007,8 +1050,10 @@ fn insert_legacy_binding_tx(
     bound_at: DateTime<Utc>,
 ) -> Result<()> {
     ensure!(
-        identity.status == AgentRegistryStatus::Active
-            && identity.incarnation > 0
+        matches!(
+            identity.status,
+            AgentRegistryStatus::Active | AgentRegistryStatus::Deleting
+        ) && identity.incarnation > 0
             && identity.agent_id == seed.agent_id
             && seed
                 .incarnation
@@ -1597,13 +1642,32 @@ fn expand_episode_root_refs(
                     "message continuity projection mismatch"
                 );
                 collector.work_item(message.work_item_id.as_deref());
-                collector.optional_ref("turn", message.turn_id.as_deref());
+                // A preallocated/replay hint grants no old Turn. Historical
+                // schemas without assignments have no proven owning edge.
+                if root_table_available(tables, "conversation_input_assignments") {
+                    let assigned: Option<(String, String)> = connection
+                        .query_row(
+                            "SELECT agent_id,turn_id FROM conversation_input_assignments WHERE message_id=?1",
+                            [&message.id],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .optional()?;
+                    if let Some((assigned_agent, turn_id)) = assigned {
+                        ensure!(
+                            assigned_agent == agent_id,
+                            "message continuity assignment scope mismatch"
+                        );
+                        collector.reference("turn", &turn_id);
+                    }
+                }
                 collector.optional_ref("task", message.task_id.as_deref());
                 for source_ref in message.source_refs.values() {
                     collector.source_ref(source_ref);
                 }
-                if let Some((source_turn_id, source_message_id, terminal_kind)) =
-                    crate::runtime::provider_recovery::continuity_sources(&message)?
+                // A typed Message may carry invalid recovery authority. Its
+                // scheduler rejection must remain reachable after cutover.
+                if let Ok(Some((source_turn_id, source_message_id, terminal_kind))) =
+                    crate::runtime::provider_recovery::continuity_sources(&message)
                 {
                     collect_provider_recovery_refs(
                         connection,
@@ -2332,9 +2396,9 @@ mod tests {
     fn insert_attempt(tx: &Transaction<'_>, attempt: &ExecutionAttempt) {
         tx.execute("INSERT INTO execution_protocol_attempts (agent_id, attempt_id, lifecycle_state,
            source_identity_json, source_generation, recovery_of_attempt_id, terminal_outcome_id, payload_json)
-           VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7)",
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
            params![attempt.agent_id, attempt.attempt_id, serde_json::to_value(attempt.state).unwrap().as_str().unwrap(),
-             serde_json::to_string(&attempt.source.identity).unwrap(), attempt.recovery_of_attempt_id,
+             serde_json::to_string(&attempt.source.identity).unwrap(), i64::try_from(attempt.source.generation).unwrap(), attempt.recovery_of_attempt_id,
              attempt.terminal_outcome_id, serde_json::to_string(attempt).unwrap()]).unwrap();
     }
 
@@ -2358,7 +2422,9 @@ mod tests {
             root.turn_id = Some("root-turn".into());
             root.source_refs
                 .insert("context".into(), "episode:recovery-root-episode".into());
-            upsert_message_tx(tx, &root).unwrap();
+            let root = crate::runtime_db::evidence::append_message_tx(tx, &root)
+                .unwrap()
+                .0;
             let mut turn = TurnRecord::new("agent-a", "root-turn", 1);
             turn.owner = Some(crate::types::TurnOwner::Command);
             turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&root));
@@ -2380,48 +2446,72 @@ mod tests {
                 "state": "settled", "turn_id": turn.turn_id, "terminal_outcome_id": "root-outcome", "admitted_at": time().to_rfc3339(),
             })).unwrap();
             insert_attempt(tx, &predecessor);
+            let outcome = crate::domain::execution_protocol::ExecutionOutcomeRecord {
+                outcome_id: "root-outcome".into(),
+                attempt_id: predecessor.attempt_id.clone(),
+                outcome: crate::domain::execution_protocol::ExecutionOutcome::Command(
+                    crate::domain::execution_protocol::CommandResult::Applied {
+                        references: Vec::new(),
+                    },
+                ),
+                created_at: time().to_rfc3339(),
+            };
             tx.execute("INSERT INTO execution_protocol_outcomes (agent_id, outcome_id, attempt_id, payload_json)
-               VALUES ('agent-a', 'root-outcome', 'settled-predecessor', '{}')", []).unwrap();
+               VALUES ('agent-a', 'root-outcome', 'settled-predecessor', ?1)", [serde_json::to_string(&outcome).unwrap()]).unwrap();
+            let mut recovery = MessageEnvelope::new(
+                "agent-a",
+                crate::types::MessageKind::InternalFollowup,
+                crate::types::MessageOrigin::System {
+                    subsystem: "model_lineage_recovery".into(),
+                },
+                crate::types::AuthorityClass::RuntimeInstruction,
+                crate::types::Priority::Next,
+                crate::types::MessageBody::Text {
+                    text: "recover".into(),
+                },
+            )
+            .with_admission(
+                crate::types::MessageDeliverySurface::RuntimeSystem,
+                crate::types::AdmissionContext::RuntimeOwned,
+            );
+            recovery.id = if queued_only {
+                "queued-recovery"
+            } else {
+                "live-recovery-message"
+            }
+            .into();
+            recovery.causation_id = Some(root.id.clone());
+            recovery
+                .source_refs
+                .insert("source_message_id".into(), root.id.clone());
+            recovery
+                .source_refs
+                .insert("source_turn_id".into(), turn.turn_id.clone());
+            recovery.metadata = Some(serde_json::json!({ "provider_recovery": {
+                "fallback_model_ref": "openai/gpt-5.4", "source_message_id": root.id,
+                "source_turn_id": turn.turn_id, "source_terminal_kind": "deferred_to_fallback", "source_round": 1,
+            }}));
+            let recovery = crate::runtime_db::evidence::append_message_tx(tx, &recovery)
+                .unwrap()
+                .0;
             if queued_only {
-                let mut recovery = MessageEnvelope::new(
-                    "agent-a",
-                    crate::types::MessageKind::InternalFollowup,
-                    crate::types::MessageOrigin::System {
-                        subsystem: "model_lineage_recovery".into(),
-                    },
-                    crate::types::AuthorityClass::RuntimeInstruction,
-                    crate::types::Priority::Next,
-                    crate::types::MessageBody::Text {
-                        text: "recover".into(),
-                    },
-                )
-                .with_admission(
-                    crate::types::MessageDeliverySurface::RuntimeSystem,
-                    crate::types::AdmissionContext::RuntimeOwned,
-                );
-                recovery.id = "queued-recovery".into();
-                recovery.causation_id = Some(root.id.clone());
-                recovery
-                    .source_refs
-                    .insert("source_message_id".into(), root.id.clone());
-                recovery
-                    .source_refs
-                    .insert("source_turn_id".into(), turn.turn_id.clone());
-                recovery.metadata = Some(serde_json::json!({ "provider_recovery": {
-                    "fallback_model_ref": "openai/gpt-5.4", "source_message_id": root.id,
-                    "source_turn_id": turn.turn_id, "source_terminal_kind": "deferred_to_fallback", "source_round": 1,
-                }}));
-                upsert_message_tx(tx, &recovery).unwrap();
                 tx.execute("INSERT INTO queue_entries (message_id, agent_id, priority, status, created_at, updated_at, payload_json)
                     VALUES ('queued-recovery', 'agent-a', 'next', 'queued', ?1, ?1, '{}')", [time().to_rfc3339()]).unwrap();
             } else {
                 let mut live = predecessor.clone();
                 live.attempt_id = "live-recovery".into();
-                live.source_message_id = None;
-                live.turn_id = None;
+                live.source_message_id = Some(recovery.id.clone());
+                live.turn_id = Some("live-recovery-turn".into());
                 live.source.identity = ExecutionSourceIdentity::RuntimeRecovery {
-                    recovery_id: "recovery-key".into(),
+                    recovery_id: recovery.id.clone(),
                 };
+                live.source.generation = recovery.message_seq.unwrap();
+                live.admitted_fences.source_revision = live.source.generation;
+                let mut started = TurnRecord::new("agent-a", "live-recovery-turn", 2);
+                started.owner = Some(crate::types::TurnOwner::Command);
+                started.trigger = Some(crate::types::TurnTriggerSummary::from_message(&recovery));
+                started.input_message_ids = vec![recovery.id.clone()];
+                crate::runtime_db::repositories::upsert_turn_record_tx(tx, &started).unwrap();
                 live.recovery_of_attempt_id = Some(predecessor.attempt_id.clone());
                 live.state = crate::domain::execution_protocol::ExecutionAttemptState::Open;
                 live.terminal_outcome_id = None;
@@ -2636,3 +2726,7 @@ mod tests {
         assert!(!seeds_table);
     }
 }
+
+#[cfg(test)]
+#[path = "episode_snapshot_deleting_upgrade_tests.rs"]
+mod deleting_upgrade_tests;

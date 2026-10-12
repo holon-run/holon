@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
 
 use crate::runtime_db::RuntimeDb;
@@ -79,122 +79,38 @@ impl DestructiveOperationRepository<'_> {
         &self,
         record: &DestructiveOperationRecord,
     ) -> Result<PlannedDestructiveOperation> {
+        self.db
+            .transaction(|tx| Ok(plan_and_schedule_tx(tx, record)?.0))
+    }
+
+    pub(crate) fn plan_and_schedule_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &DestructiveOperationRecord,
+    ) -> Result<
+        crate::runtime_db::input_evidence_writes::InputEvidenceCommit<PlannedDestructiveOperation>,
+    > {
         self.db.transaction(|tx| {
-            let existing = tx
-                .query_row(
-                    "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
-                            verification_target, recovery_policy, command_digest,
-                            created_at, updated_at
-                     FROM destructive_operations WHERE operation_id = ?1",
-                    [&record.operation_id],
-                    decode_operation,
-                )
-                .optional()?;
-            if let Some(existing) = existing {
-                if existing.owner_turn_id != record.owner_turn_id
-                    || existing.owner_work_item_id != record.owner_work_item_id
-                    || existing.command_digest != record.command_digest
-                    || existing.verification_target != record.verification_target
-                {
-                    return Err(anyhow!(
-                        "destructive operation id {} is bound to a different operation",
-                        record.operation_id
-                    ));
-                }
-                if existing.phase == DestructiveOperationPhase::Planned {
-                    // The previous dispatch attempt failed before leaving the
-                    // daemon; re-arm the same durable id instead of minting a
-                    // new one.
-                    tx.execute(
-                        "UPDATE destructive_operations SET phase = 'scheduled', updated_at = ?1
-                         WHERE operation_id = ?2",
-                        params![Utc::now().to_rfc3339(), &record.operation_id],
-                    )?;
-                    let mut rearmed = existing;
-                    rearmed.phase = DestructiveOperationPhase::Scheduled;
-                    return Ok(PlannedDestructiveOperation {
-                        record: rearmed,
-                        should_dispatch: true,
-                    });
-                }
-                return Ok(PlannedDestructiveOperation {
-                    record: existing,
-                    should_dispatch: false,
-                });
-            }
-
-            if let Some(work_item_id) = record.owner_work_item_id.as_deref() {
-                let active = tx
-                    .query_row(
-                        "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
-                                verification_target, recovery_policy, command_digest,
-                                created_at, updated_at
-                         FROM destructive_operations
-                         WHERE owner_work_item_id = ?1 AND phase != 'verified'
-                         ORDER BY updated_at DESC
-                         LIMIT 1",
-                        [work_item_id],
-                        decode_operation,
-                    )
-                    .optional()?;
-                if let Some(active) = active {
-                    return Ok(PlannedDestructiveOperation {
-                        record: active,
-                        should_dispatch: false,
-                    });
-                }
-            }
-
-            let payload = tx
-                .query_row(
-                    "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
-                    [&record.owner_turn_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .ok_or_else(|| anyhow!("owner turn {} is not durable", record.owner_turn_id))?;
-            let mut turn: TurnRecord = serde_json::from_str(&payload)?;
-            if let Some(existing_id) = turn.destructive_operation_id.as_deref() {
-                if existing_id != record.operation_id {
-                    return Err(anyhow!(
-                        "owner turn {} already has destructive operation {}",
-                        record.owner_turn_id,
-                        existing_id
-                    ));
-                }
-            }
-            turn.destructive_operation_id = Some(record.operation_id.clone());
-            tx.execute(
-                "UPDATE turn_records SET payload_json = ?1 WHERE turn_id = ?2",
-                params![serde_json::to_string(&turn)?, record.owner_turn_id],
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &scope.agent_id,
             )?;
-            tx.execute(
-                "INSERT INTO destructive_operations
-                 (operation_id, owner_turn_id, owner_work_item_id, phase,
-                  verification_target, recovery_policy, command_digest, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, 'scheduled', ?4, ?5, ?6, ?7, ?7)",
-                params![
-                    record.operation_id,
-                    record.owner_turn_id,
-                    record.owner_work_item_id,
-                    record.verification_target,
-                    record.recovery_policy,
-                    record.command_digest,
-                    record.created_at.to_rfc3339(),
-                ],
+            let owner_agent: String = tx.query_row(
+                "SELECT agent_id FROM turn_records WHERE turn_id=?1",
+                [&record.owner_turn_id],
+                |row| row.get(0),
             )?;
-            let scheduled = tx.query_row(
-                "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
-                         verification_target, recovery_policy, command_digest,
-                         created_at, updated_at
-                 FROM destructive_operations WHERE operation_id = ?1",
-                [&record.operation_id],
-                decode_operation,
-            )?;
-            Ok(PlannedDestructiveOperation {
-                record: scheduled,
-                should_dispatch: true,
-            })
+            anyhow::ensure!(
+                owner_agent == scope.agent_id,
+                "destructive operation Turn differs from reserved scope"
+            );
+            let (planned, turn) = plan_and_schedule_tx(tx, record)?;
+            let facts = turn
+                .into_iter()
+                .map(super::input_evidence_snapshot::CanonicalInputEvidence::Turn)
+                .collect::<Vec<_>>();
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, planned, &facts)
         })
     }
 
@@ -284,6 +200,145 @@ impl DestructiveOperationRepository<'_> {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(operations)
     }
+}
+
+fn plan_and_schedule_tx(
+    tx: &Transaction<'_>,
+    record: &DestructiveOperationRecord,
+) -> Result<(PlannedDestructiveOperation, Option<TurnRecord>)> {
+    let existing = tx
+        .query_row(
+            "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
+                            verification_target, recovery_policy, command_digest,
+                            created_at, updated_at
+                     FROM destructive_operations WHERE operation_id = ?1",
+            [&record.operation_id],
+            decode_operation,
+        )
+        .optional()?;
+    if let Some(existing) = existing {
+        if existing.owner_turn_id != record.owner_turn_id
+            || existing.owner_work_item_id != record.owner_work_item_id
+            || existing.command_digest != record.command_digest
+            || existing.verification_target != record.verification_target
+        {
+            return Err(anyhow!(
+                "destructive operation id {} is bound to a different operation",
+                record.operation_id
+            ));
+        }
+        if existing.phase == DestructiveOperationPhase::Planned {
+            // The previous dispatch attempt failed before leaving the
+            // daemon; re-arm the same durable id instead of minting a
+            // new one.
+            tx.execute(
+                "UPDATE destructive_operations SET phase = 'scheduled', updated_at = ?1
+                         WHERE operation_id = ?2",
+                params![Utc::now().to_rfc3339(), &record.operation_id],
+            )?;
+            let mut rearmed = existing;
+            rearmed.phase = DestructiveOperationPhase::Scheduled;
+            return Ok((
+                PlannedDestructiveOperation {
+                    record: rearmed,
+                    should_dispatch: true,
+                },
+                None,
+            ));
+        }
+        return Ok((
+            PlannedDestructiveOperation {
+                record: existing,
+                should_dispatch: false,
+            },
+            None,
+        ));
+    }
+
+    if let Some(work_item_id) = record.owner_work_item_id.as_deref() {
+        let active = tx
+            .query_row(
+                "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
+                                verification_target, recovery_policy, command_digest,
+                                created_at, updated_at
+                         FROM destructive_operations
+                         WHERE owner_work_item_id = ?1 AND phase != 'verified'
+                         ORDER BY updated_at DESC
+                         LIMIT 1",
+                [work_item_id],
+                decode_operation,
+            )
+            .optional()?;
+        if let Some(active) = active {
+            return Ok((
+                PlannedDestructiveOperation {
+                    record: active,
+                    should_dispatch: false,
+                },
+                None,
+            ));
+        }
+    }
+
+    let payload = tx
+        .query_row(
+            "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
+            [&record.owner_turn_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("owner turn {} is not durable", record.owner_turn_id))?;
+    let mut turn: TurnRecord = serde_json::from_str(&payload)?;
+    if let Some(existing_id) = turn.destructive_operation_id.as_deref() {
+        if existing_id != record.operation_id {
+            return Err(anyhow!(
+                "owner turn {} already has destructive operation {}",
+                record.owner_turn_id,
+                existing_id
+            ));
+        }
+    }
+    turn.destructive_operation_id = Some(record.operation_id.clone());
+    tx.execute(
+        "UPDATE turn_records SET payload_json = ?1 WHERE turn_id = ?2",
+        params![serde_json::to_string(&turn)?, record.owner_turn_id],
+    )?;
+    tx.execute(
+        "INSERT INTO destructive_operations
+                 (operation_id, owner_turn_id, owner_work_item_id, phase,
+                  verification_target, recovery_policy, command_digest, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'scheduled', ?4, ?5, ?6, ?7, ?7)",
+        params![
+            record.operation_id,
+            record.owner_turn_id,
+            record.owner_work_item_id,
+            record.verification_target,
+            record.recovery_policy,
+            record.command_digest,
+            record.created_at.to_rfc3339(),
+        ],
+    )?;
+    let scheduled = tx.query_row(
+        "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
+                         verification_target, recovery_policy, command_digest,
+                         created_at, updated_at
+                 FROM destructive_operations WHERE operation_id = ?1",
+        [&record.operation_id],
+        decode_operation,
+    )?;
+    let actual_payload: String = tx.query_row(
+        "SELECT payload_json FROM turn_records WHERE agent_id=?1 AND turn_id=?2",
+        params![turn.agent_id, turn.turn_id],
+        |row| row.get(0),
+    )?;
+    let actual: TurnRecord = serde_json::from_str(&actual_payload)?;
+    Ok((
+        PlannedDestructiveOperation {
+            record: scheduled,
+            should_dispatch: true,
+        },
+        Some(actual),
+    ))
 }
 
 fn decode_operation(row: &rusqlite::Row<'_>) -> rusqlite::Result<DestructiveOperationRecord> {

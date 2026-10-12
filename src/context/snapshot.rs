@@ -147,6 +147,11 @@ impl ContextSnapshot {
 
 #[derive(Debug)]
 pub(super) struct ContextSnapshotData {
+    input_budget: Option<(
+        crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        crate::runtime::resident_input_evidence::InputEvidenceScope,
+    )>,
+    input_budget_guard: Option<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
     pub agent: AgentState,
     pub execution: ExecutionSnapshot,
     pub skills: SkillsRuntimeView,
@@ -171,19 +176,73 @@ pub(super) struct ContextSnapshotData {
     pub pending_task_results: Vec<PendingTaskResult>,
 }
 
+impl ContextSnapshotData {
+    fn observe_owned_input_bytes(&mut self) -> Result<()> {
+        use crate::runtime::input_evidence_budget::{
+            serialized_bytes, InputMemoryCategory, OwnedBytesEstimate,
+        };
+        let Some((budget, scope)) = &self.input_budget else {
+            return Ok(());
+        };
+        let history_bytes = |history: &HistorySnapshot| {
+            serialized_bytes(&(
+                &history.turn_records,
+                &history.messages,
+                &history.briefs,
+                &history.tools,
+                &history.transcript,
+                &history.observations,
+            ))
+        };
+        let mut payload_bytes = history_bytes(&self.history)?;
+        if let Some(scoped) = &self.scoped_history {
+            payload_bytes = payload_bytes
+                .checked_add(history_bytes(&scoped.history)?)
+                .ok_or_else(|| anyhow::anyhow!("owned context input byte count overflow"))?;
+        }
+        let recovery = self.recovery_source.as_ref().map(|source| {
+            (
+                &source.predecessor,
+                &source.source_turn,
+                &source.root_message,
+            )
+        });
+        payload_bytes = payload_bytes
+            .checked_add(serialized_bytes(&(
+                &self.current_message,
+                &self.continuation_anchor_messages,
+                recovery,
+            ))?)
+            .ok_or_else(|| anyhow::anyhow!("owned context input byte count overflow"))?;
+        // This is the owned D3 input footprint. Other domains/resources and
+        // provider/tool temporaries remain outside this estimate and are reported separately.
+        let metadata_estimate_bytes = std::mem::size_of::<Self>() as u64;
+        self.input_budget_guard = Some(budget.register_owned_bytes(
+            scope,
+            InputMemoryCategory::PreparedPrompt,
+            OwnedBytesEstimate {
+                payload_bytes,
+                metadata_estimate_bytes,
+            },
+        )?);
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct HistorySnapshot {
     pub turn_records: Vec<TurnRecord>,
     pub messages: Vec<MessageEnvelope>,
     pub briefs: Vec<BriefRecord>,
-    pub tools: Vec<ToolExecutionRecord>,
+    pub tools: Vec<ToolContextProjection>,
     pub transcript: Vec<TranscriptEntry>,
     pub observations: HistoryObservations,
 }
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub(super) struct HistoryObservations {
     brief_text: BTreeMap<String, String>,
     valid_trigger_summary: BTreeMap<String, bool>,
+    message_turn_ids: BTreeMap<String, Option<String>>,
 }
 impl HistoryObservations {
     #[cfg(test)]
@@ -191,40 +250,121 @@ impl HistoryObservations {
         storage: &AppStorage,
         turns: &[TurnRecord],
         briefs: &[BriefRecord],
+        messages: &[MessageEnvelope],
     ) -> Self {
-        Self::capture_inputs(storage, turns, briefs)
-    }
-    pub(super) fn capture_inputs(
-        inputs: &impl ContextInputs,
-        turns: &[TurnRecord],
-        briefs: &[BriefRecord],
-    ) -> Self {
+        // Pure formatter fixtures explicitly model assignment observations in
+        // their supplied records. Production capture always uses the typed read.
+        let mut message_turn_ids = messages
+            .iter()
+            .map(|message| (message.id.clone(), message.turn_id.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut valid_trigger_summary = BTreeMap::new();
+        for turn in turns {
+            let valid = match turn
+                .trigger
+                .as_ref()
+                .and_then(|trigger| trigger.message_id.as_ref())
+            {
+                Some(id) => {
+                    if !message_turn_ids.contains_key(id) {
+                        if let Some(message) =
+                            storage.read_message_by_id(id).expect("fixture Message")
+                        {
+                            message_turn_ids.insert(id.clone(), message.turn_id);
+                        }
+                    }
+                    message_turn_ids
+                        .get(id)
+                        .is_none_or(|assigned| turn_record_owns_object(turn, assigned.as_deref()))
+                }
+                None => true,
+            };
+            valid_trigger_summary.insert(turn.turn_id.clone(), valid);
+        }
         let brief_text = briefs
             .iter()
             .map(|brief| {
                 (
                     brief.id.clone(),
-                    resolved_brief_text_from_inputs(inputs, brief),
+                    resolved_brief_text_from_inputs(storage, brief).expect("fixture Brief source"),
                 )
             })
             .collect();
-        let valid_trigger_summary = turns.iter().map(|record| {
-            let valid = record.trigger.as_ref().and_then(|trigger| trigger.message_id.as_ref()).is_none_or(|message_id| {
-                match inputs.message_by_id(message_id) {
-                    Ok(Some(message)) => turn_record_owns_object(record, message.turn_id.as_deref()),
-                    Ok(None) => true,
-                    Err(error) => {
-                        tracing::warn!(turn_id = %record.turn_id, message_id = %message_id, %error, "context preparation could not validate persisted trigger summary");
-                        false
-                    }
-                }
-            });
-            (record.turn_id.clone(), valid)
-        }).collect();
         Self {
             brief_text,
             valid_trigger_summary,
+            message_turn_ids,
         }
+    }
+    pub(super) fn capture_inputs(
+        inputs: &impl ContextInputs,
+        turns: &[TurnRecord],
+        briefs: &[BriefRecord],
+        messages: &[MessageEnvelope],
+    ) -> Result<Self> {
+        let brief_text = briefs
+            .iter()
+            .map(|brief| {
+                Ok((
+                    brief.id.clone(),
+                    resolved_brief_text_from_inputs(inputs, brief)?,
+                ))
+            })
+            .collect::<Result<_>>()?;
+        let mut message_ids = messages
+            .iter()
+            .map(|message| message.id.clone())
+            .collect::<BTreeSet<_>>();
+        for turn in turns {
+            message_ids.extend(turn.input_message_ids.iter().cloned());
+            message_ids.extend(
+                turn.trigger
+                    .as_ref()
+                    .and_then(|trigger| trigger.message_id.clone()),
+            );
+        }
+        let message_turn_ids = message_ids
+            .into_iter()
+            .map(|id| {
+                let assignment = inputs.assigned_turn_for_message(&id)?;
+                Ok((id, assignment))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let valid_trigger_summary = turns
+            .iter()
+            .map(|record| {
+                let valid = match record
+                    .trigger
+                    .as_ref()
+                    .and_then(|trigger| trigger.message_id.as_ref())
+                {
+                    Some(id) => match inputs.message_by_id(id)? {
+                        Some(_) => turn_record_owns_object(
+                            record,
+                            message_turn_ids
+                                .get(id)
+                                .and_then(|assigned| assigned.as_deref()),
+                        ),
+                        None => true,
+                    },
+                    None => true,
+                };
+                Ok((record.turn_id.clone(), valid))
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self {
+            brief_text,
+            valid_trigger_summary,
+            message_turn_ids,
+        })
+    }
+    pub(super) fn assigned_turn_for_message(&self, id: &str) -> Option<&str> {
+        self.message_turn_ids
+            .get(id)
+            .and_then(|assigned| assigned.as_deref())
+    }
+    pub(super) fn message_belongs_to_turn(&self, turn: &TurnRecord, id: &str) -> bool {
+        turn_record_owns_object(turn, self.assigned_turn_for_message(id))
     }
     pub(super) fn brief_text<'a>(&'a self, brief: &'a BriefRecord) -> &'a str {
         self.brief_text
@@ -424,7 +564,8 @@ fn acquire_durable_context_inputs(
             current_message,
             || inputs.execution_protocol_state(&current_message.agent_id),
             |id| inputs.message_by_id(id),
-            |id| inputs.turn_by_id(id)
+            |id| inputs.turn_by_id(id),
+            |id| inputs.assigned_turn_for_message(id)
         ),
         |v| usize::from(v.is_some())
     );
@@ -519,18 +660,20 @@ fn acquire_durable_context_inputs(
         .into_iter()
         .take(ACTIVE_TASKS_CONTEXT_LIMIT)
         .collect();
+    let completion_work_item_ids = current_work_item
+        .iter()
+        .chain(work_queue_projection.current.iter())
+        .chain(candidate_items(&work_queue_projection))
+        .map(|work| work.id.clone())
+        .collect::<BTreeSet<_>>();
     let completion_reports = read!(
         "completion_reports",
-        latest_completion_report_by_work_item(inputs, &agent.id),
+        latest_completion_report_by_work_item(inputs, &agent.id, &completion_work_item_ids),
         BTreeMap::len
     );
     let observations = read!(
         "history_observations",
-        Ok(HistoryObservations::capture_inputs(
-            inputs,
-            &turn_records,
-            &briefs
-        )),
+        HistoryObservations::capture_inputs(inputs, &turn_records, &briefs, &messages),
         |_| 0
     );
     let pending_task_results = read!(
@@ -562,7 +705,9 @@ fn acquire_durable_context_inputs(
         }),
         _ => None,
     };
-    let data = ContextSnapshotData {
+    let mut data = ContextSnapshotData {
+        input_budget: inputs.input_budget(),
+        input_budget_guard: None,
         agent: agent.clone(),
         execution: execution.clone(),
         skills: skills.clone(),
@@ -586,6 +731,7 @@ fn acquire_durable_context_inputs(
         notes_content: None,
         pending_task_results,
     };
+    data.observe_owned_input_bytes()?;
     Ok(DurableContextInputs {
         data,
         acquisition: report,
@@ -695,39 +841,20 @@ pub(super) fn load_pending_task_results(
     else {
         return Ok(Vec::new());
     };
-    let mut pending = Vec::new();
-    let mut seen_replies = std::collections::BTreeSet::new();
-    for record in storage.admitted_settlements(&agent.id, activation_id)? {
-        if record.message_id == current_message.id {
-            continue;
-        }
-        let message = storage.message_by_id(&record.message_id)?;
-        if message
-            .as_ref()
-            .and_then(crate::wake_contract::agent_message_reply_reference)
-            == Some(current_message.id.as_str())
-        {
-            continue;
-        }
-        // Match the renderer's bound and deduplication before touching reply storage.
-        let reply = if pending.len() < PENDING_TASK_RESULTS_CONTEXT_LIMIT {
-            message
-                .as_ref()
-                .and_then(crate::wake_contract::agent_message_reply_reference)
-                .filter(|id| seen_replies.insert((*id).to_owned()))
-                .map(|id| storage.message_by_id(id))
-                .transpose()?
-                .flatten()
-        } else {
-            None
-        };
-        pending.push(PendingTaskResult {
-            record,
-            message,
-            reply,
-        });
-    }
-    Ok(pending)
+    Ok(storage
+        .admitted_settlement_inputs(
+            &agent.id,
+            activation_id,
+            &current_message.id,
+            PENDING_TASK_RESULTS_CONTEXT_LIMIT,
+        )?
+        .into_iter()
+        .map(|input| PendingTaskResult {
+            record: input.record,
+            message: input.message,
+            reply: input.reply,
+        })
+        .collect())
 }
 
 fn acquire_scoped_history(
@@ -766,7 +893,8 @@ fn acquire_scoped_history(
         .map(|record| record.turn_id.clone())
         .collect::<Vec<_>>();
     let transcript = inputs.transcript_for_turns(&ids)?;
-    let observations = HistoryObservations::capture_inputs(inputs, &turn_records, &briefs);
+    let observations =
+        HistoryObservations::capture_inputs(inputs, &turn_records, &briefs, &messages)?;
     Ok(HistorySnapshot {
         turn_records,
         messages,
@@ -1009,6 +1137,96 @@ mod tests {
     };
 
     #[test]
+    fn copied_brief_source_is_metered_until_last_snapshot_clone_drops() {
+        use crate::runtime::{
+            input_evidence_budget::{InputEvidenceBudgetLedger, InputMemoryCategory},
+            resident_input_evidence::InputEvidenceScope,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let agent = AgentState::new("default");
+        storage.write_agent_for_fixture(&agent).unwrap();
+        let source_text = "outside-window-source".repeat(16_384);
+        let source = TranscriptEntry::new(
+            "default",
+            TranscriptEntryKind::AssistantRound,
+            None,
+            None,
+            serde_json::json!({"blocks":[{"type":"text","text":source_text}]}),
+        );
+        storage.append_transcript_entry(&source).unwrap();
+        let mut brief =
+            BriefRecord::new("default", BriefKind::Result, "short fallback", None, None);
+        brief.content_source = BriefContentSource::TranscriptEntry {
+            entry_id: source.id.clone(),
+            relation: BriefContentSourceRelation::Finalizes,
+        };
+        storage.append_brief(&brief).unwrap();
+        let message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "continue".into(),
+            },
+        );
+        let config = ContextConfig {
+            recent_messages: 0,
+            recent_briefs: 1,
+            ..Default::default()
+        };
+        let execution = super::super::tests::execution_snapshot_for(&agent);
+        let mut snapshot = capture_context_from_storage(
+            &storage,
+            &agent,
+            &execution,
+            &SkillsRuntimeView::default(),
+            &message,
+            None,
+            &config,
+            dir.path(),
+            None,
+        )
+        .unwrap();
+        let budget =
+            InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits::default()).unwrap();
+        let data = Arc::get_mut(&mut snapshot.data).unwrap();
+        let history = Arc::get_mut(&mut data.history).unwrap();
+        assert!(history.observations.brief_text[&brief.id].contains(&source_text));
+        // Only the resolved copy remains in the snapshot; the cold transcript
+        // record itself need not be in the selected history.
+        history.transcript.clear();
+        data.input_budget = Some((
+            budget.clone(),
+            InputEvidenceScope {
+                agent_id: "default".into(),
+                identity_incarnation: 1,
+            },
+        ));
+        data.observe_owned_input_bytes().unwrap();
+        let usage = budget.report().unwrap();
+        assert!(usage.owned.payload_bytes >= source_text.len() as u64);
+        assert_eq!(
+            usage.categories[&InputMemoryCategory::PreparedPrompt].allocations,
+            1
+        );
+        let clone = snapshot.clone();
+        assert!(Arc::ptr_eq(&snapshot.data, &clone.data));
+        drop((snapshot, storage));
+        assert_eq!(
+            budget.report().unwrap().owned.payload_bytes,
+            usage.owned.payload_bytes
+        );
+        drop(clone);
+        assert_eq!(budget.report().unwrap().observed_bytes, 0);
+    }
+
+    #[test]
     fn descriptors_keep_current_revision_and_completion_sources_outside_history() {
         let dir = tempfile::tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
@@ -1127,6 +1345,7 @@ mod coherent_acquisition_tests {
     }
     fn captured(agent: &AgentState, limit: usize) -> CapturedAgentContext {
         CapturedAgentContext {
+            input_evidence: None,
             token: PublicationToken {
                 identity_incarnation: 1,
                 owner_epoch: 1,
@@ -1425,16 +1644,34 @@ mod coherent_acquisition_tests {
         fn message_by_id(&self, id: &str) -> Result<Option<MessageEnvelope>> {
             panic!("durable reads must not precede resident scope validation")
         }
+        fn assigned_turn_for_message(&self, id: &str) -> Result<Option<String>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
         fn briefs(&self, limit: usize) -> Result<Vec<BriefRecord>> {
             panic!("durable reads must not precede resident scope validation")
         }
         fn brief_by_id(&self, id: &str) -> Result<Option<BriefRecord>> {
             panic!("durable reads must not precede resident scope validation")
         }
-        fn tools(&self, limit: usize) -> Result<Vec<ToolExecutionRecord>> {
+        fn latest_completion_brief_for_work_item(
+            &self,
+            id: &str,
+        ) -> Result<Option<crate::runtime_db::context_inputs::CompletionBriefInput>> {
             panic!("durable reads must not precede resident scope validation")
         }
-        fn tool_by_id(&self, id: &str) -> Result<Option<ToolExecutionRecord>> {
+        fn admitted_settlement_inputs(
+            &self,
+            agent_id: &str,
+            activation_id: &str,
+            current_message_id: &str,
+            reply_limit: usize,
+        ) -> Result<Vec<crate::runtime_db::context_inputs::AdmittedSettlementInput>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn tools(&self, limit: usize) -> Result<Vec<ToolContextProjection>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn tool_by_id(&self, id: &str) -> Result<Option<ToolContextProjection>> {
             panic!("durable reads must not precede resident scope validation")
         }
         fn turns(&self, limit: usize) -> Result<Vec<TurnRecord>> {

@@ -146,6 +146,24 @@ bytes. Projection metadata refers to the canonical fact and has no independent
 mutation authority. Referencing an allocation containing a full body retains
 and accounts for that whole allocation, even when only its preview is rendered.
 
+Input qualification tracks the canonical payload and its actual dependency
+relationships. Observer revisions, such as a conversation display revision
+advanced by a queue status change, do not invalidate an unchanged input body.
+A fixed upgrade checkpoint must include a body digest for records without a
+canonical content hash. A selected body is checked against that digest after
+its metadata and byte-budget preflight, before its first materialization.
+Payload hints do not establish a Turn assignment or authorize loading another
+record; only the canonical relationship or a validated recovery proof does.
+
+An asserted provider-recovery source may be invalid because its canonical
+Message or Turn does not exist. Preparation can capture a dedicated, bounded
+authority-validation proof of that absence in the same persistence view. It
+does not turn a missing, unqualified, foreign, or pruned record into a general
+empty lookup. Related source writes invalidate the proof and require a newly
+prepared closure before the scheduler can reject the input; a source that has
+become valid requires replanning. Selecting a recovery message as ordinary
+history does not itself grant its asserted sources authority or residency.
+
 Use standard collections and explicit copy-on-write ownership. The design
 does not require a persistent-collection library, generic actor framework, or
 multi-version database. An affected index may still cost O(n) to copy; sharing
@@ -188,6 +206,17 @@ budget. Account pending input bytes separately, apply backpressure before
 accepting more input, and release them to history policy only after consumption
 or cancellation and all continuity pins end. Bootstrap restores pending input
 before readiness; ordinary queue claim is not a cold-hydration exemption.
+
+Logical accepted-input accounting follows the durable pending obligation across
+runtime unload and reload. Physical allocation accounting follows the actual
+shared buffers and their remaining owners; releasing a runtime does not erase
+an accepted or indeterminate admission ticket. Within a live Host ledger, a
+fresh pending read preserves the original accepted ticket identity rather than
+issuing a new allowance. A known deletion acknowledgement releases Accepted
+charges only under the original identity reservation, with a fresh coherent view
+proving the same incarnation is Deleted and has no pending queue entries. A
+tombstone alone does not prove its pending obligations ended. Unknown admissions
+remain fenced until their original commit family resolves them.
 
 Bootstrap reads current facts and bounded continuity through one coherent
 database read transaction. Focused loaders use queue identities, by-ID/batch-ID
@@ -290,6 +319,16 @@ owner replacement fences old handles, and publication advances only within the
 current owner epoch. A successor inherits unresolved recovery responsibility;
 claiming ownership does not itself open the publication gate.
 
+Retiring an identity closes new admission while preserving narrowly proven
+cleanup for its already accepted executions. A cleanup command validates the
+same incarnation, original qualified source and actual execution relationship,
+and the original State expectation in its transaction. Its finite write set
+may settle the original queue item and create the corresponding terminal
+evidence; it cannot start a new run or Turn, grant unrelated history current
+membership, or recreate evidence with a pruned current alias. An exact original
+receipt remains recoverable in that retiring incarnation. Cleanup authority
+does not grant ordinary context activation or access to a successor identity.
+
 Unloaded metadata mutations can load the necessary state, use the same commit
 protocol, and release it without starting a provider or scheduler execution.
 Read-only access to unloaded agents continues to use durable reads and must not
@@ -303,6 +342,12 @@ loaded, temporary, or retiring instance is active. A known commit retains its
 original recovery result across publication repair; rerunning SQL must not
 replace an already consumed recovery result.
 
+Offline repair borrows the caller's existing exclusive maintenance lease for
+that database. Each original repair transaction freezes and validates its finite
+qualified input footprint before writing, then refreshes the actual changed
+versions in the same transaction. A maintenance capability cannot adopt late
+history or grant an unrelated new identity old continuity.
+
 Cross-agent delivery submits a command to the target owner and preserves its
 existing authorization, delivery identity, and receipt protocol. The sender
 does not mutate the target snapshot or hold its own mutation lock while waiting
@@ -315,6 +360,13 @@ deadlock-free host protocol; an agent command does not hold its mutation lock
 while awaiting another owner. All affected snapshots must be reconciled to the
 commit or marked unavailable before reservations are released. A partially
 published host transaction cannot grant execution from mismatched owner views.
+
+A transaction may reserve an additional owner solely to coordinate a recovery
+gate. Such a reservation does not authorize a business write to that namespace.
+The prepared command validates every mutable target against its primary scope,
+including existing rows reached through global IDs. A truly absent read-only
+namespace can remain absent; a State row without its identity is an error.
+The original receipt still covers the complete reserved group.
 
 ### Memory-first preparation, commit-before-publication
 
@@ -467,6 +519,14 @@ Replay does not redispatch completed or indeterminate non-idempotent effects.
 Safe scheduler/index notifications may be reissued, and unfinished durable
 cancellation/cleanup obligations continue under their original run/task
 generation. Returning the original receipt does not assert physical completion.
+
+A newly submitted invocation that finds a fully observed original receipt does
+not republish that invocation's historical events or recreate its physical
+cancellation responsibility. This differs from resolving the original lost
+acknowledgement or repairing its known publication failure, which still owns
+the original unresolved installation and notification responsibility. Both
+paths reconcile affected caches from current coherent records and preserve
+the original small command result, including successful no-op outcomes.
 
 Control commits the complete administrative transition together: posture and
 admission facts, affected tasks/results, waits, timers and pending wakes,
@@ -628,6 +688,13 @@ the active workspace alone is not an authorization boundary.
 Missing optional history is represented as unavailable; missing mandatory
 continuity evidence prevents `Ready` with a typed reason.
 
+An explicit preparation uses the caller's frozen selector windows, history
+limits, recovery sources and resource version under the same reservation as
+capture. It may add required accepted/current-owner dependencies, but it does
+not reselect the model or replace that request with default policy. The owner
+retains all accepted payloads; each request pins only its selected dependency
+closure, rather than pinning the entire pending queue or published root.
+
 Hydration has explicit ref/count/byte/depth limits and records its reason,
 source reads, bytes, and duration. Oversized bodies remain addressable through
 existing tools with bounded previews. Hitting a bound cannot silently remove
@@ -787,6 +854,13 @@ Already captured immutable snapshots may retain their materialized copies
 until release; those copies must not be reinserted into persistence or presented
 as proof that a durable source still exists. Subsequent lookups observe the
 pruned state under the existing resolver contract.
+
+Transcript and tool evidence belonging to a current Deleting identity stays
+protected until retirement completes. The retention planner checks this in its
+own coherent view, including dry-run and deletion; it does not bypass an
+unresolved owner or grant a Deleting identity ordinary writer authority. After
+the identity becomes Deleted, the existing age, floor, and durable-root rules
+apply again. A stalled retirement can therefore delay evidence reclamation.
 
 A memory pin preserves bytes for an in-flight snapshot; it is not a new durable
 retention root. Evidence required for restart/replay must be protected through

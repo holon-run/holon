@@ -1,17 +1,26 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
 use crate::types::{MessageEnvelope, Priority};
 
 #[derive(Debug, Default, Clone)]
 pub struct RuntimeQueue {
-    interject: VecDeque<MessageEnvelope>,
-    next: VecDeque<MessageEnvelope>,
-    normal: VecDeque<MessageEnvelope>,
-    background: VecDeque<MessageEnvelope>,
+    interject: VecDeque<Arc<MessageEnvelope>>,
+    next: VecDeque<Arc<MessageEnvelope>>,
+    normal: VecDeque<Arc<MessageEnvelope>>,
+    background: VecDeque<Arc<MessageEnvelope>>,
 }
 
 impl RuntimeQueue {
+    pub(crate) fn shared_messages(&self) -> impl Iterator<Item = &Arc<MessageEnvelope>> {
+        self.interject
+            .iter()
+            .chain(&self.next)
+            .chain(&self.normal)
+            .chain(&self.background)
+    }
+
     pub fn push(&mut self, message: MessageEnvelope) {
+        let message = Arc::new(message);
         match message.priority {
             Priority::Interject => self.interject.push_back(message),
             Priority::Next => self.next.push_back(message),
@@ -21,6 +30,7 @@ impl RuntimeQueue {
     }
 
     pub fn push_front(&mut self, message: MessageEnvelope) {
+        let message = Arc::new(message);
         match message.priority {
             Priority::Interject => self.interject.push_front(message),
             Priority::Next => self.next.push_front(message),
@@ -35,6 +45,7 @@ impl RuntimeQueue {
             .or_else(|| self.next.pop_front())
             .or_else(|| self.normal.pop_front())
             .or_else(|| self.background.pop_front())
+            .map(into_owned_message)
     }
 
     pub fn peek(&self) -> Option<&MessageEnvelope> {
@@ -43,6 +54,7 @@ impl RuntimeQueue {
             .or_else(|| self.next.front())
             .or_else(|| self.normal.front())
             .or_else(|| self.background.front())
+            .map(Arc::as_ref)
     }
 
     pub fn pop_if_next(&mut self, message_id: &str) -> Option<MessageEnvelope> {
@@ -73,6 +85,7 @@ impl RuntimeQueue {
             .or_else(|| self.next.iter().find(|message| predicate(message)))
             .or_else(|| self.normal.iter().find(|message| predicate(message)))
             .or_else(|| self.background.iter().find(|message| predicate(message)))
+            .map(Arc::as_ref)
     }
 
     pub fn pop_selected(
@@ -103,11 +116,15 @@ impl RuntimeQueue {
 }
 
 fn pop_matching_from(
-    queue: &mut VecDeque<MessageEnvelope>,
+    queue: &mut VecDeque<Arc<MessageEnvelope>>,
     predicate: &mut impl FnMut(&MessageEnvelope) -> bool,
 ) -> Option<MessageEnvelope> {
-    let position = queue.iter().position(predicate)?;
-    queue.remove(position)
+    let position = queue.iter().position(|message| predicate(message))?;
+    queue.remove(position).map(into_owned_message)
+}
+
+fn into_owned_message(message: Arc<MessageEnvelope>) -> MessageEnvelope {
+    Arc::try_unwrap(message).unwrap_or_else(|message| message.as_ref().clone())
 }
 
 #[cfg(test)]
@@ -142,6 +159,27 @@ mod tests {
             priority,
             MessageBody::Text { text: text.into() },
         )
+    }
+
+    #[test]
+    fn candidate_queue_shares_pending_bodies_and_keeps_private_membership() {
+        let mut current = RuntimeQueue::default();
+        let message = msg(Priority::Normal, &"x".repeat(16 * 1024));
+        let id = message.id.clone();
+        current.push(message);
+        let mut candidate = current.clone();
+        assert!(Arc::ptr_eq(
+            current.normal.front().unwrap(),
+            candidate.normal.front().unwrap()
+        ));
+        let old = Arc::downgrade(current.normal.front().unwrap());
+        assert_eq!(candidate.pop().unwrap().id, id);
+        assert!(candidate.is_empty());
+        assert_eq!(current.len(), 1);
+        drop(candidate);
+        assert!(old.upgrade().is_some());
+        drop(current);
+        assert!(old.upgrade().is_none());
     }
 
     #[test]

@@ -23,16 +23,29 @@ pub(crate) struct MutationWitness {
     // Unknown COMMIT retains the original physical targets with the owner ticket.
     control_cancellation: Option<Arc<super::control::PreparedControlCancellation>>,
     control_owner_epoch: Option<u64>,
+    input_attempt: Option<crate::runtime_db::input_mutation_receipts::OriginalInputMutationAttempt>,
+    input_pending_accepted: Arc<AtomicBool>,
+    // This invocation observed typed Replayed; it owns no old side effects.
+    input_storage_replayed: Arc<AtomicBool>,
+    input_runtime: Vec<Arc<super::state_mutation::RuntimeMutationFacts>>,
+    input_pending: Vec<(
+        super::input_evidence_budget::InputEvidenceBudgetLedger,
+        super::input_evidence_budget::PendingAdmissionTicket,
+    )>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MutationWitnessKind {
     EpisodeMemory,
     Control,
+    InputMutation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MutationWitnessFamily {
+    InputMutation {
+        prepared: crate::runtime_db::input_mutation_receipts::PreparedInputMutation,
+    },
     EpisodeMemory {
         key: EpisodeMemoryKey,
         invocation: EpisodeMemoryInvocation,
@@ -46,6 +59,155 @@ pub(crate) enum MutationWitnessFamily {
 }
 
 impl MutationWitness {
+    pub(crate) fn input_mutation(
+        operation_id: String,
+        attempt: crate::runtime_db::input_mutation_receipts::OriginalInputMutationAttempt,
+        pending: Vec<(
+            super::input_evidence_budget::InputEvidenceBudgetLedger,
+            super::input_evidence_budget::PendingAdmissionTicket,
+        )>,
+    ) -> Result<Self> {
+        ensure!(
+            operation_id == attempt.prepared().command_nonce(),
+            "input witness operation differs from original nonce"
+        );
+        ensure!(
+            !attempt.original_attempt_finished(),
+            "input witness attempt already finished"
+        );
+        if let Some((ledger, _)) = pending.first() {
+            ensure!(
+                pending.iter().all(|(other, _)| ledger.same_ledger(other)),
+                "original pending tickets require one coordinator ledger"
+            );
+        }
+        Ok(Self {
+            operation_id,
+            family: MutationWitnessFamily::InputMutation {
+                prepared: attempt.prepared().clone(),
+            },
+            original_attempt_finished: Arc::new(AtomicBool::new(false)),
+            control_cancellation: None,
+            control_owner_epoch: None,
+            input_attempt: Some(attempt),
+            input_pending: pending,
+            input_runtime: Vec::new(),
+            input_pending_accepted: Arc::new(AtomicBool::new(false)),
+            input_storage_replayed: Arc::new(AtomicBool::new(false)),
+        })
+    }
+    pub(crate) fn with_input_runtime(
+        mut self,
+        runtime: Vec<Arc<super::state_mutation::RuntimeMutationFacts>>,
+    ) -> Result<Self> {
+        ensure!(
+            self.kind() == MutationWitnessKind::InputMutation,
+            "runtime input targets require input witness"
+        );
+        let mut ids = std::collections::BTreeSet::new();
+        let MutationWitnessFamily::InputMutation { prepared } = &self.family else {
+            unreachable!()
+        };
+        for facts in &runtime {
+            ensure!(
+                ids.insert(facts.state.id.clone())
+                    && prepared
+                        .scopes()
+                        .iter()
+                        .any(|scope| scope.agent_id == facts.state.id),
+                "saved input runtime is outside original scope group"
+            );
+        }
+        self.input_runtime = runtime;
+        Ok(self)
+    }
+    pub(super) fn input_runtime(
+        &self,
+        agent_id: &str,
+    ) -> Option<&Arc<super::state_mutation::RuntimeMutationFacts>> {
+        self.input_runtime
+            .iter()
+            .find(|facts| facts.state.id == agent_id)
+    }
+    pub(crate) fn input_attempt(
+        &self,
+    ) -> Option<&crate::runtime_db::input_mutation_receipts::OriginalInputMutationAttempt> {
+        self.input_attempt.as_ref()
+    }
+    pub(crate) fn mark_input_storage_replayed(&self) -> Result<()> {
+        ensure!(
+            self.kind() == MutationWitnessKind::InputMutation,
+            "storage replay observation requires an input witness"
+        );
+        ensure!(
+            !self.original_attempt_finished(),
+            "storage replay must be recorded before original attempt completion"
+        );
+        self.input_storage_replayed.store(true, Ordering::Release);
+        Ok(())
+    }
+    pub(crate) fn input_storage_replayed(&self) -> bool {
+        self.input_storage_replayed.load(Ordering::Acquire)
+    }
+    fn resolve_pending(
+        &self,
+        resolution: super::input_evidence_budget::PendingTicketResolution,
+    ) -> Result<()> {
+        if let Some((ledger, _)) = self.input_pending.first() {
+            ledger.resolve_original_tickets(
+                &self
+                    .input_pending
+                    .iter()
+                    .map(|(_, ticket)| ticket)
+                    .collect::<Vec<_>>(),
+                resolution,
+            )?;
+        }
+        Ok(())
+    }
+    pub(crate) fn mark_pending_started(&self) -> Result<()> {
+        self.resolve_pending(super::input_evidence_budget::PendingTicketResolution::Started)
+    }
+    pub(crate) fn mark_pending_unknown(&self) -> Result<()> {
+        self.resolve_pending(super::input_evidence_budget::PendingTicketResolution::Unknown)
+    }
+    #[cfg(test)]
+    pub(crate) fn mark_pending_accepted(&self) -> Result<()> {
+        self.mark_pending_result(true, false)
+    }
+    pub(crate) fn mark_pending_result(&self, accepted: bool, fresh_receipt: bool) -> Result<()> {
+        if !self.input_pending_accepted.load(Ordering::Acquire) {
+            self.resolve_pending(if accepted {
+                super::input_evidence_budget::PendingTicketResolution::Accepted
+            } else if fresh_receipt {
+                super::input_evidence_budget::PendingTicketResolution::FreshNotCommitted
+            } else {
+                super::input_evidence_budget::PendingTicketResolution::DefinitelyNotCommitted
+            })?;
+            self.input_pending_accepted.store(true, Ordering::Release);
+        }
+        Ok(())
+    }
+    pub(crate) fn release_pending_not_committed(&self, fresh_proof: bool) -> Result<()> {
+        self.resolve_pending(if fresh_proof {
+            super::input_evidence_budget::PendingTicketResolution::FreshNotCommitted
+        } else {
+            super::input_evidence_budget::PendingTicketResolution::DefinitelyNotCommitted
+        })
+    }
+    pub(crate) fn matches_scope_group(
+        &self,
+        scopes: &[super::resident_input_evidence::InputEvidenceScope],
+    ) -> bool {
+        match &self.family {
+            MutationWitnessFamily::InputMutation { prepared } => prepared.scopes() == scopes,
+            _ => {
+                scopes.len() == 1
+                    && self.owner() == (scopes[0].agent_id.as_str(), scopes[0].identity_incarnation)
+            }
+        }
+    }
+
     pub(crate) fn episode_memory(
         operation_id: String,
         command: &EpisodeMemoryTransitionCommand,
@@ -64,6 +226,11 @@ impl MutationWitness {
             original_attempt_finished: Arc::new(AtomicBool::new(false)),
             control_cancellation: None,
             control_owner_epoch: None,
+            input_attempt: None,
+            input_pending: Vec::new(),
+            input_runtime: Vec::new(),
+            input_pending_accepted: Arc::new(AtomicBool::new(false)),
+            input_storage_replayed: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -87,11 +254,17 @@ impl MutationWitness {
             original_attempt_finished: Arc::new(AtomicBool::new(false)),
             control_cancellation: Some(cancellation),
             control_owner_epoch: Some(owner_epoch),
+            input_attempt: None,
+            input_pending: Vec::new(),
+            input_runtime: Vec::new(),
+            input_pending_accepted: Arc::new(AtomicBool::new(false)),
+            input_storage_replayed: Arc::new(AtomicBool::new(false)),
         })
     }
 
     pub(crate) fn kind(&self) -> MutationWitnessKind {
         match self.family {
+            MutationWitnessFamily::InputMutation { .. } => MutationWitnessKind::InputMutation,
             MutationWitnessFamily::EpisodeMemory { .. } => MutationWitnessKind::EpisodeMemory,
             MutationWitnessFamily::Control { .. } => MutationWitnessKind::Control,
         }
@@ -121,23 +294,38 @@ impl MutationWitness {
                 (&key.agent_id, key.identity_incarnation)
             }
             MutationWitnessFamily::Control { key, .. } => (&key.agent_id, key.identity_incarnation),
+            MutationWitnessFamily::InputMutation { prepared } => {
+                let scope = &prepared.scopes()[0];
+                (&scope.agent_id, scope.identity_incarnation)
+            }
         }
     }
 
     /// Called immediately when the synchronous storage invocation returns, on
     /// both success and failure, before any async installation can be cancelled.
     pub(crate) fn finish_original_attempt(&self) {
+        if let Some(attempt) = &self.input_attempt {
+            attempt.finish_original_attempt();
+        }
         self.original_attempt_finished
             .store(true, Ordering::Release);
     }
 
     pub(crate) fn original_attempt_finished(&self) -> bool {
+        if let Some(attempt) = &self.input_attempt {
+            return attempt.original_attempt_finished();
+        }
         self.original_attempt_finished.load(Ordering::Acquire)
     }
 
     pub(crate) fn same_attempt(&self, other: &Self) -> bool {
         self.operation_id == other.operation_id
             && self.family == other.family
+            && match (&self.input_attempt, &other.input_attempt) {
+                (Some(a), Some(b)) => a.same_attempt(b),
+                (None, None) => true,
+                _ => false,
+            }
             && Arc::ptr_eq(
                 &self.original_attempt_finished,
                 &other.original_attempt_finished,
@@ -167,6 +355,11 @@ mod tests {
             original_attempt_finished: Arc::new(AtomicBool::new(false)),
             control_cancellation: None,
             control_owner_epoch: None,
+            input_attempt: None,
+            input_pending: Vec::new(),
+            input_runtime: Vec::new(),
+            input_pending_accepted: Arc::new(AtomicBool::new(false)),
+            input_storage_replayed: Arc::new(AtomicBool::new(false)),
         }
     }
 

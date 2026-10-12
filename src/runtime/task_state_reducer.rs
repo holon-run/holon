@@ -377,8 +377,11 @@ impl RuntimeHandle {
         let commit = agent_guard
             .as_mut()
             .expect("prepared mutation")
-            .commit_transition(crate::ids::audit_event_id(), || {
-                self.commit_task_transition(command)
+            .commit_transition(crate::ids::audit_event_id(), |scope| {
+                self.inner
+                    .runtime_db
+                    .transitions_in_scope(scope)
+                    .commit_task_with_execution_protocol(command, &Default::default())
             })
             .await?;
         drop(agent_guard);
@@ -924,6 +927,38 @@ mod tests {
         message
     }
 
+    async fn persisted_task_result_message(
+        runtime: &RuntimeHandle,
+        task_id: &str,
+    ) -> MessageEnvelope {
+        let message = task_result_message(task_id);
+        let message_id = message.id.clone();
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let prepared = crate::runtime_db::prepared_input_evidence::PreparedInputEvidence::message(
+            mutation.input_evidence_scope(),
+            crate::ids::audit_event_id(),
+            Utc::now(),
+            message,
+            Vec::new(),
+        )
+        .unwrap();
+        // These tests call the reducer directly rather than dispatching a queue
+        // entry. Preserve its required canonical source through the test-only
+        // evidence writer without inventing an unsettled queue claim.
+        mutation
+            .commit_prepared_evidence(prepared, None)
+            .await
+            .unwrap();
+        drop(mutation);
+        let message = runtime
+            .storage()
+            .read_message_by_id(&message_id)
+            .unwrap()
+            .unwrap();
+        assert!(message.message_seq.is_some());
+        message
+    }
+
     #[test]
     fn stale_non_terminal_updates_are_ignored_after_terminal_status_exists() {
         let dir = tempdir().unwrap();
@@ -1216,7 +1251,7 @@ mod tests {
 
         runtime
             .reduce_task_result_message(
-                &task_result_message("task-1"),
+                &persisted_task_result_message(&runtime, "task-1").await,
                 scheduler_blocking_task("task-1", TaskStatus::Completed),
                 false,
                 None,
@@ -1231,7 +1266,7 @@ mod tests {
 
         runtime
             .reduce_task_result_message(
-                &task_result_message("task-2"),
+                &persisted_task_result_message(&runtime, "task-2").await,
                 scheduler_blocking_task("task-2", TaskStatus::Completed),
                 false,
                 None,
@@ -1254,7 +1289,7 @@ mod tests {
 
         runtime
             .reduce_task_result_message(
-                &task_result_message("task-1"),
+                &persisted_task_result_message(&runtime, "task-1").await,
                 task("task-1", TaskStatus::Completed, false),
                 false,
                 None,
@@ -1292,7 +1327,12 @@ mod tests {
         let mut stale = task("task-1", TaskStatus::Completed, false);
         stale.detail = Some(json!({"parent_turn_id": "turn-parent"}));
         runtime
-            .reduce_task_result_message(&task_result_message("task-1"), stale, true, None)
+            .reduce_task_result_message(
+                &persisted_task_result_message(&runtime, "task-1").await,
+                stale,
+                true,
+                None,
+            )
             .await
             .unwrap();
 
@@ -1339,11 +1379,21 @@ mod tests {
         redispatched.created_at += chrono::Duration::seconds(1);
         redispatched.updated_at += chrono::Duration::seconds(1);
         runtime
-            .reduce_task_result_message(&task_result_message("task-1"), repeated, false, None)
+            .reduce_task_result_message(
+                &persisted_task_result_message(&runtime, "task-1").await,
+                repeated,
+                false,
+                None,
+            )
             .await
             .unwrap();
         runtime
-            .reduce_task_result_message(&task_result_message("task-1"), redispatched, false, None)
+            .reduce_task_result_message(
+                &persisted_task_result_message(&runtime, "task-1").await,
+                redispatched,
+                false,
+                None,
+            )
             .await
             .unwrap();
 
@@ -1376,7 +1426,7 @@ mod tests {
         original.detail = Some(json!({"version": 1}));
         runtime
             .reduce_task_result_message(
-                &task_result_message("task-1"),
+                &persisted_task_result_message(&runtime, "task-1").await,
                 original.clone(),
                 false,
                 None,
@@ -1403,7 +1453,7 @@ mod tests {
         // concurrently-updated DB record, causing a conflict error.
         runtime
             .reduce_task_result_message(
-                &task_result_message("task-1"),
+                &persisted_task_result_message(&runtime, "task-1").await,
                 original.clone(),
                 false,
                 None,
@@ -1455,7 +1505,12 @@ mod tests {
         command_task.status = TaskStatus::Completed;
         command_task.updated_at = Utc::now();
         runtime
-            .reduce_task_result_message(&task_result_message("task-1"), command_task, false, None)
+            .reduce_task_result_message(
+                &persisted_task_result_message(&runtime, "task-1").await,
+                command_task,
+                false,
+                None,
+            )
             .await
             .unwrap();
 

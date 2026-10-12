@@ -344,6 +344,72 @@ pub(crate) fn seed_waiting_work_execution(
     );
 }
 
+/// The caller has unloaded the Host runtime before this exact fixture write.
+/// Plain pre-bootstrap fixtures above intentionally keep their legacy path.
+pub(crate) fn seed_waiting_work_execution_for_unloaded_host(
+    storage: &AppStorage,
+    work_item: &WorkItemRecord,
+    wait_id: &str,
+) {
+    use crate::domain::execution_protocol::{WorkItemExecutionRecord, WorkItemExecutionState};
+    use crate::runtime::resident_input_evidence::InputEvidenceScope;
+    use crate::runtime_db::input_evidence_snapshot::{
+        register_committed_input_evidence_tx, CanonicalInputEvidence,
+    };
+    use crate::runtime_db::transitions::execution_protocol_repository::{
+        load_state_unchecked_tx, persist_repaired_state_tx,
+    };
+
+    let runtime_db = storage
+        .runtime_db()
+        .unwrap()
+        .expect("test storage should expose RuntimeDb");
+    runtime_db
+        .transaction(|tx| {
+            let identity: crate::types::AgentIdentityRecord =
+                serde_json::from_str(&tx.query_row(
+                    "SELECT payload_json FROM agent_identities WHERE agent_id=?1",
+                    [&work_item.agent_id],
+                    |row| row.get::<_, String>(0),
+                )?)?;
+            let scope = InputEvidenceScope {
+                agent_id: work_item.agent_id.clone(),
+                identity_incarnation: identity.incarnation,
+            };
+            let previous = load_state_unchecked_tx(tx, &work_item.agent_id)?;
+            let mut execution = previous.clone();
+            execution.work_items.insert(
+                work_item.id.clone(),
+                WorkItemExecutionRecord {
+                    source_revision: work_item.revision,
+                    state: WorkItemExecutionState::Waiting {
+                        generation: work_item.revision.max(1),
+                        wait: crate::domain::execution_protocol::WaitReference {
+                            wait_id: wait_id.into(),
+                        },
+                    },
+                },
+            );
+            persist_repaired_state_tx(tx, &previous, &execution)?;
+            let actual: WorkItemExecutionRecord = serde_json::from_str(&tx.query_row(
+                "SELECT payload_json FROM execution_protocol_work_items
+                 WHERE agent_id=?1 AND work_item_id=?2",
+                rusqlite::params![work_item.agent_id, work_item.id],
+                |row| row.get::<_, String>(0),
+            )?)?;
+            register_committed_input_evidence_tx(
+                tx,
+                &scope,
+                &[CanonicalInputEvidence::WorkExecution {
+                    work_item_id: work_item.id.clone(),
+                    record: actual,
+                }],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+}
+
 fn seed_work_execution(
     storage: &AppStorage,
     work_item: &WorkItemRecord,

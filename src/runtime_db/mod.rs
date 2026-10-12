@@ -14,6 +14,7 @@ pub mod agent_message_delivery;
 pub mod agent_relations;
 pub mod audit;
 pub mod authentication;
+pub(crate) mod bootstrap_inputs;
 pub mod brief_publication_repair;
 pub mod connection;
 pub mod content_reports;
@@ -24,9 +25,15 @@ pub mod destructive_operations;
 pub(crate) mod episode_memory;
 pub(crate) mod episode_snapshot;
 pub mod evidence;
+pub(crate) mod input_evidence_snapshot;
+pub(crate) mod input_evidence_writes;
+pub(crate) mod input_mutation_receipts;
+pub(crate) mod input_preparation;
+pub(crate) mod input_recovery_install;
 mod legacy_scheduler_wire;
 pub mod migrations;
 pub mod persistence;
+pub(crate) mod prepared_input_evidence;
 pub(crate) mod reclamation;
 pub(crate) mod reclamation_reminders;
 pub mod repositories;
@@ -36,6 +43,9 @@ pub mod storage_domain;
 pub(crate) mod task_result_settlement;
 pub(crate) mod transitions;
 pub mod turn_settlement_repair;
+pub use input_evidence_snapshot::maintenance::{
+    NeedsOfflineInputMaintenance, OfflineInputMaintenance,
+};
 pub mod types;
 pub mod unread;
 pub mod write_queue;
@@ -983,12 +993,31 @@ impl RuntimeDb {
         &self,
         agent_ids: &[String],
     ) -> Result<Vec<RetiredSchedulerFallbackResult>> {
+        self.apply_retired_scheduler_cleanup_fallbacks_inner(agent_ids, None)
+    }
+
+    pub fn apply_retired_scheduler_cleanup_fallbacks_with_maintenance(
+        &self,
+        agent_ids: &[String],
+        maintenance: &OfflineInputMaintenance<'_>,
+    ) -> Result<Vec<RetiredSchedulerFallbackResult>> {
+        self.apply_retired_scheduler_cleanup_fallbacks_inner(agent_ids, Some(maintenance))
+    }
+
+    fn apply_retired_scheduler_cleanup_fallbacks_inner(
+        &self,
+        agent_ids: &[String],
+        maintenance: Option<&OfflineInputMaintenance<'_>>,
+    ) -> Result<Vec<RetiredSchedulerFallbackResult>> {
         self.transaction(|tx| {
             agent_ids
                 .iter()
                 .map(|agent_id| {
                     retired_scheduler_cleanup::apply_retired_scheduler_cleanup_fallback(
-                        tx, agent_id,
+                        tx,
+                        self,
+                        agent_id,
+                        maintenance,
                     )
                 })
                 .collect()

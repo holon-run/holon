@@ -322,3 +322,123 @@ async fn arbitrary_aborted_queue_is_not_an_original_control_stop_proof() {
     );
     drop(scheduled);
 }
+
+async fn deleting_service_shutdown_preserves_original_admission(fault: bool) {
+    let home = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let runtime = runtime_fixture(home.path(), workspace.path(), started.clone());
+    let source = runtime.enqueue(prompt()).await.unwrap();
+    let mut running = tokio::spawn(runtime.clone().run());
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::select! {
+            _ = started.notified() => {},
+            result = &mut running => panic!("run exited before provider start: {result:?}"),
+        }
+    })
+    .await
+    .unwrap();
+    let agent_id = runtime.instance_agent_id();
+    let before = runtime
+        .runtime_db()
+        .transitions()
+        .load_execution_protocol_state_if_initialized(agent_id)
+        .unwrap()
+        .unwrap();
+    let attempt = before
+        .attempts
+        .values()
+        .find(|attempt| attempt.source_message_id.as_deref() == Some(source.id.as_str()))
+        .unwrap()
+        .clone();
+    assert!(before.outcomes.is_empty());
+    let mut identity = runtime
+        .runtime_db()
+        .agent_identities()
+        .latest(&agent_id)
+        .unwrap()
+        .unwrap();
+    identity.status = crate::types::AgentRegistryStatus::Deleting;
+    runtime
+        .runtime_db()
+        .agent_identities()
+        .upsert(&identity)
+        .unwrap();
+    if fault {
+        runtime.inject_next_transition_fault(
+            crate::runtime_db::transitions::TransitionFaultPoint::BeforeCacheUpdate,
+        );
+    }
+    let shutdown = runtime.request_service_shutdown().await;
+    if fault {
+        assert!(shutdown.is_err());
+    } else {
+        shutdown.unwrap();
+    }
+    runtime.reconcile_posture_observation().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), running)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    runtime.join_idle_owned_tasks().await.unwrap();
+    runtime.inner.control_cancellations.drain().await.unwrap();
+    let after = runtime
+        .runtime_db()
+        .transitions()
+        .load_execution_protocol_state_if_initialized(agent_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        after.attempts.len(),
+        before.attempts.len(),
+        "shutdown cannot admit a replacement attempt"
+    );
+    let settled = &after.attempts[&attempt.attempt_id];
+    assert_ne!(
+        settled.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Open
+    );
+    assert!(
+        settled.terminal_outcome_id.as_ref().is_some_and(|id| after
+            .outcomes
+            .get(id)
+            .is_some_and(|outcome| outcome.attempt_id == attempt.attempt_id)),
+        "original admitted cleanup must create and qualify its first Outcome"
+    );
+    let outcome_id = settled.terminal_outcome_id.as_ref().unwrap();
+    assert!(runtime.runtime_db().connection().unwrap().query_row(
+        "SELECT EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family='outcome' AND record_id=?3 AND availability='present')",
+        rusqlite::params![agent_id, runtime.inner.identity_incarnation, outcome_id], |row| row.get::<_, bool>(0)).unwrap());
+    assert!(runtime
+        .storage()
+        .read_recent_turns(16)
+        .unwrap()
+        .iter()
+        .any(|turn| turn.terminal.is_some() && turn.input_message_ids.contains(&source.id)));
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .agent_identities()
+            .latest(&agent_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        crate::types::AgentRegistryStatus::Deleting
+    );
+    assert!(runtime.inner.mutation_owner.capture().unwrap().is_some());
+    assert!(
+        runtime.enqueue(prompt()).await.is_err(),
+        "retirement keeps new admission closed"
+    );
+}
+
+#[tokio::test]
+async fn deleting_service_shutdown_settles_original_provider_attempt_and_outcome() {
+    deleting_service_shutdown_preserves_original_admission(false).await;
+}
+
+#[tokio::test]
+async fn deleting_service_shutdown_known_publication_fault_preserves_original_cleanup() {
+    deleting_service_shutdown_preserves_original_admission(true).await;
+}

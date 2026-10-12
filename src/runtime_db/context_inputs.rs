@@ -13,9 +13,10 @@ use crate::{
         WORK_QUEUE_NON_OPEN_WINDOW,
     },
     types::{
-        AgentIdentityRecord, AgentState, BriefRecord, DeliverySummaryRecord, ExecutionRootEntry,
-        ExternalTriggerRecord, MessageEnvelope, TaskRecord, ToolExecutionRecord, TranscriptEntry,
-        TurnOwner, TurnRecord, WaitConditionRecord, WorkItemRecord, WorkspaceEntry,
+        AgentIdentityRecord, AgentState, BriefContentSource, BriefRecord, DeliverySummaryRecord,
+        ExecutionRootEntry, ExternalTriggerRecord, MessageEnvelope, TaskRecord,
+        ToolExecutionRecord, TranscriptEntry, TurnOwner, TurnRecord, WaitConditionRecord,
+        WorkItemRecord, WorkspaceEntry,
     },
 };
 
@@ -34,6 +35,22 @@ pub(crate) struct ContextScopeFacts {
     pub control_revision: Option<u64>,
 }
 
+/// Temporary D4 Work aggregate; its exact source is prepared in the same read view.
+#[derive(Debug, Clone)]
+pub(crate) struct CompletionBriefInput {
+    pub brief: BriefRecord,
+    pub content_source: Option<TranscriptEntry>,
+    pub source_message: Option<MessageEnvelope>,
+}
+
+/// Temporary D5 settlement aggregate, separate from resident Message lookup.
+#[derive(Debug, Clone)]
+pub(crate) struct AdmittedSettlementInput {
+    pub record: TaskResultSettlementRecord,
+    pub message: Option<MessageEnvelope>,
+    pub reply: Option<MessageEnvelope>,
+}
+
 /// This adapter cannot open a connection, write, or read a filesystem resource.
 pub(crate) struct ContextDurableRead<'a> {
     connection: &'a Connection,
@@ -46,6 +63,10 @@ impl<'a> ContextDurableRead<'a> {
             connection: transaction,
             agent_id,
         }
+    }
+
+    pub(crate) fn agent_id(&self) -> &str {
+        self.agent_id
     }
 
     pub(crate) fn scope_facts(&self) -> Result<ContextScopeFacts> {
@@ -125,6 +146,28 @@ impl<'a> ContextDurableRead<'a> {
         )
     }
 
+    /// Same-transaction assignment observation. A missing row is explicitly unassigned.
+    pub(crate) fn assigned_turn_for_message(&self, id: &str) -> Result<Option<String>> {
+        let assignment = self
+            .connection
+            .query_row(
+                "SELECT agent_id,turn_id FROM conversation_input_assignments WHERE message_id=?1",
+                [id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        assignment
+            .map(|(agent_id, turn_id)| {
+                self.check_scope(&agent_id)?;
+                ensure!(
+                    !turn_id.trim().is_empty(),
+                    "context assignment Turn ID is empty"
+                );
+                Ok(turn_id)
+            })
+            .transpose()
+    }
+
     pub(crate) fn briefs(&self, limit: usize) -> Result<Vec<BriefRecord>> {
         self.records(
             self.evidence::<BriefRecord>(EvidenceKind::Brief, limit)?,
@@ -137,6 +180,57 @@ impl<'a> ContextDurableRead<'a> {
             self.evidence_by_id::<BriefRecord>(EvidenceKind::Brief, id)?,
             |record| &record.agent_id,
         )
+    }
+
+    /// D4 must replace this Work index and its source closure with resident facts.
+    pub(crate) fn latest_completion_brief_for_work_item(
+        &self,
+        work_item_id: &str,
+    ) -> Result<Option<CompletionBriefInput>> {
+        let payload = self
+            .connection
+            .query_row(
+                "SELECT payload_json FROM briefs
+             WHERE agent_id=?1 AND work_item_id=?2 AND kind='result'
+               AND length(json_extract(payload_json,'$.text')) > 0
+             ORDER BY created_at DESC,evidence_id DESC LIMIT 1",
+                rusqlite::params![self.agent_id, work_item_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(payload) = payload else {
+            return Ok(None);
+        };
+        let brief: BriefRecord = serde_json::from_str(&payload)?;
+        self.check_scope(&brief.agent_id)?;
+        ensure!(
+            brief.work_item_id.as_deref() == Some(work_item_id)
+                && brief.kind == crate::types::BriefKind::Result
+                && !brief.text.is_empty(),
+            "completion brief projection mismatch"
+        );
+        let content_source = match &brief.content_source {
+            BriefContentSource::TranscriptEntry { entry_id, .. } => {
+                self.transcript_by_id(entry_id)?
+            }
+            _ => None,
+        };
+        let source_message = match &content_source {
+            Some(entry) if entry.kind == crate::types::TranscriptEntryKind::IncomingMessage => {
+                entry
+                    .related_message_id
+                    .as_deref()
+                    .map(|id| self.message_by_id(id))
+                    .transpose()?
+                    .flatten()
+            }
+            _ => None,
+        };
+        Ok(Some(CompletionBriefInput {
+            brief,
+            content_source,
+            source_message,
+        }))
     }
 
     pub(crate) fn tools(&self, limit: usize) -> Result<Vec<ToolExecutionRecord>> {
@@ -337,6 +431,22 @@ impl<'a> ContextDurableRead<'a> {
         Ok(records)
     }
 
+    /// Message reads here belong only to the un-migrated settlement aggregate.
+    pub(crate) fn admitted_settlement_inputs(
+        &self,
+        agent_id: &str,
+        activation_id: &str,
+        current_message_id: &str,
+        reply_limit: usize,
+    ) -> Result<Vec<AdmittedSettlementInput>> {
+        prepare_admitted_settlement_inputs(
+            self.admitted_settlements(agent_id, activation_id)?,
+            current_message_id,
+            reply_limit,
+            |id| self.message_by_id(id),
+        )
+    }
+
     fn evidence<T: serde::de::DeserializeOwned>(
         &self,
         kind: EvidenceKind,
@@ -387,6 +497,48 @@ impl<'a> ContextDurableRead<'a> {
         }
         Ok(record)
     }
+}
+
+/// Preserve the old renderer's exclusion, bound and reply de-duplication before
+/// touching reply bodies. The callback is acquisition-only and already scoped.
+pub(crate) fn prepare_admitted_settlement_inputs(
+    records: Vec<TaskResultSettlementRecord>,
+    current_message_id: &str,
+    reply_limit: usize,
+    mut message_by_id: impl FnMut(&str) -> Result<Option<MessageEnvelope>>,
+) -> Result<Vec<AdmittedSettlementInput>> {
+    let mut pending = Vec::new();
+    let mut seen_replies = BTreeSet::new();
+    for record in records {
+        if record.message_id == current_message_id {
+            continue;
+        }
+        let message = message_by_id(&record.message_id)?;
+        if message
+            .as_ref()
+            .and_then(crate::wake_contract::agent_message_reply_reference)
+            == Some(current_message_id)
+        {
+            continue;
+        }
+        let reply = if pending.len() < reply_limit {
+            message
+                .as_ref()
+                .and_then(crate::wake_contract::agent_message_reply_reference)
+                .filter(|id| seen_replies.insert((*id).to_owned()))
+                .map(&mut message_by_id)
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        pending.push(AdmittedSettlementInput {
+            record,
+            message,
+            reply,
+        });
+    }
+    Ok(pending)
 }
 
 #[cfg(test)]

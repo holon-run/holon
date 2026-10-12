@@ -399,6 +399,11 @@ pub struct RuntimeConfigFile {
     pub retention: RuntimeRetentionConfigFile,
     #[serde(
         default,
+        skip_serializing_if = "RuntimeStateMemoryConfigFile::is_empty"
+    )]
+    pub state_memory: RuntimeStateMemoryConfigFile,
+    #[serde(
+        default,
         skip_serializing_if = "RuntimeReclamationConfigFile::is_empty"
     )]
     pub reclamation: RuntimeReclamationConfigFile,
@@ -412,6 +417,133 @@ pub struct RuntimeConfigFile {
         skip_serializing_if = "RuntimeObservabilityConfigFile::is_empty"
     )]
     pub observability: RuntimeObservabilityConfigFile,
+}
+
+/// Host-lifetime limits. Historical bytes are separate from current facts,
+/// pending input bodies, candidate allocations and in-flight pins.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeStateMemoryConfigFile {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_state_memory_limit"
+    )]
+    pub history_per_agent_bytes: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_state_memory_limit"
+    )]
+    pub history_host_bytes: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_state_memory_limit"
+    )]
+    pub pending_per_agent_count: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_state_memory_limit"
+    )]
+    pub pending_per_agent_bytes: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_state_memory_limit"
+    )]
+    pub pending_host_bytes: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_state_memory_limit"
+    )]
+    pub record_limit: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct StateMemoryLimits {
+    pub history_per_agent_bytes: u64,
+    pub history_host_bytes: u64,
+    pub pending_per_agent_count: u64,
+    pub pending_per_agent_bytes: u64,
+    pub pending_host_bytes: u64,
+    pub record_limit: u64,
+}
+impl Default for StateMemoryLimits {
+    fn default() -> Self {
+        Self {
+            history_per_agent_bytes: 33554432,
+            history_host_bytes: 536870912,
+            pending_per_agent_count: 1024,
+            pending_per_agent_bytes: 33554432,
+            pending_host_bytes: 268435456,
+            record_limit: 65536,
+        }
+    }
+}
+impl RuntimeStateMemoryConfigFile {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.history_per_agent_bytes.is_none()
+            && self.history_host_bytes.is_none()
+            && self.pending_per_agent_count.is_none()
+            && self.pending_per_agent_bytes.is_none()
+            && self.pending_host_bytes.is_none()
+            && self.record_limit.is_none()
+    }
+    pub fn resolve(&self) -> Result<StateMemoryLimits> {
+        let defaults = StateMemoryLimits::default();
+        let limits = StateMemoryLimits {
+            history_per_agent_bytes: self
+                .history_per_agent_bytes
+                .unwrap_or(defaults.history_per_agent_bytes),
+            history_host_bytes: self
+                .history_host_bytes
+                .unwrap_or(defaults.history_host_bytes),
+            pending_per_agent_count: self
+                .pending_per_agent_count
+                .unwrap_or(defaults.pending_per_agent_count),
+            pending_per_agent_bytes: self
+                .pending_per_agent_bytes
+                .unwrap_or(defaults.pending_per_agent_bytes),
+            pending_host_bytes: self
+                .pending_host_bytes
+                .unwrap_or(defaults.pending_host_bytes),
+            record_limit: self.record_limit.unwrap_or(defaults.record_limit),
+        };
+        limits.validate()?;
+        Ok(limits)
+    }
+}
+impl StateMemoryLimits {
+    pub fn validate(&self) -> Result<()> {
+        for (name, value) in [
+            ("history_per_agent_bytes", self.history_per_agent_bytes),
+            ("history_host_bytes", self.history_host_bytes),
+            ("pending_per_agent_count", self.pending_per_agent_count),
+            ("pending_per_agent_bytes", self.pending_per_agent_bytes),
+            ("pending_host_bytes", self.pending_host_bytes),
+            ("record_limit", self.record_limit),
+        ] {
+            if value == 0 {
+                return Err(anyhow!("runtime.state_memory.{name} must be positive"));
+            }
+        }
+        Ok(())
+    }
+}
+fn deserialize_optional_state_memory_limit<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<u64>::deserialize(deserializer)?;
+    if value == Some(0) {
+        return Err(D::Error::custom("state memory limits must be positive"));
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -689,6 +821,7 @@ impl RuntimeConfigFile {
             && self.disable_provider_fallback.is_none()
             && self.scheduler.is_none()
             && self.retention.is_empty()
+            && self.state_memory.is_empty()
             && self.reclamation.is_empty()
             && self.diagnostics.is_empty()
             && self.observability.is_empty()

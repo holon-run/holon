@@ -207,11 +207,13 @@ fn render_operator_interjection_text(message: &MessageEnvelope) -> String {
 }
 
 impl RuntimeHandle {
-    pub(super) fn persist_started_turn(
-        &self,
+    /// Construct the exact Turn candidate before entering the compound writer.
+    /// Replay terminal evidence is frozen by the caller from its prepared view.
+    pub(super) fn build_started_turn_record(
         state: &crate::types::AgentState,
         message: Option<&MessageEnvelope>,
-    ) -> Result<()> {
+        prior_replay_terminal: Option<TurnTerminalSummary>,
+    ) -> Result<TurnRecord> {
         let turn_id = state
             .current_turn_id
             .as_deref()
@@ -254,17 +256,11 @@ impl RuntimeHandle {
                     source_message_id: message.id.clone(),
                     source_turn_id: source_turn_id.to_owned(),
                     reason: "interrupted_queue_claim_reentry".into(),
-                    prior_terminal: self
-                        .inner
-                        .storage
-                        .read_turn_by_id(source_turn_id)?
-                        .and_then(|turn| turn.terminal),
+                    prior_terminal: prior_replay_terminal,
                 });
             }
         }
-        // Publish the canonical identity before provider work starts. The read
-        // model must not wait for the terminal record to assign this input.
-        self.inner.storage.append_turn(&record)
+        Ok(record)
     }
 
     pub(super) async fn begin_reducer_only_turn(

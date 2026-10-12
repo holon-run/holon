@@ -149,7 +149,15 @@ impl RuntimeHandle {
             };
             let operation_id = command.audit_events[0].id.clone();
             let commit = mutation
-                .commit_transition(operation_id, || self.commit_work_item_transition(&command))
+                .commit_transition(operation_id, |scope| {
+                    self.inner
+                        .runtime_db
+                        .transitions_in_scope(scope)
+                        .commit_work_item_with_execution_protocol(
+                            &command,
+                            &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
+                        )
+                })
                 .await?;
             drop(mutation);
             self.apply_transition_commit(commit).await;
@@ -225,7 +233,15 @@ impl RuntimeHandle {
             };
             let operation_id = command.audit_events[0].id.clone();
             let commit = mutation
-                .commit_transition(operation_id, || self.commit_work_item_transition(&command))
+                .commit_transition(operation_id, |scope| {
+                    self.inner
+                        .runtime_db
+                        .transitions_in_scope(scope)
+                        .commit_work_item_with_execution_protocol(
+                            &command,
+                            &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
+                        )
+                })
                 .await?;
             drop(mutation);
             self.apply_transition_commit(commit).await;
@@ -2578,7 +2594,7 @@ mod tests {
             let before = runtime.inner.agent.lock().await.state.clone();
             let mut mutation = runtime.begin_mutation().await.unwrap();
             mutation
-                .commit_transition("unknown-before-shutdown".into(), || {
+                .commit_transition("unknown-before-shutdown".into(), |_scope| {
                     Err(anyhow!("lost SQL acknowledgement"))
                 })
                 .await
@@ -2624,7 +2640,7 @@ mod tests {
             let before = runtime.inner.agent.lock().await.state.clone();
             let mut mutation = runtime.begin_mutation().await.unwrap();
             mutation
-                .commit_transition("unknown-before-retirement".into(), || {
+                .commit_transition("unknown-before-retirement".into(), |_scope| {
                     Err(anyhow!("lost SQL acknowledgement"))
                 })
                 .await

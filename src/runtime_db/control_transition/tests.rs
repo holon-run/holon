@@ -269,6 +269,16 @@ impl Fixture {
         activation_in_binding: bool,
         binding: Option<ExecutionBinding>,
     ) -> MessageEnvelope {
+        self.seed_claim_with_hint(started, activation_in_binding, binding, None)
+    }
+
+    fn seed_claim_with_hint(
+        &self,
+        started: bool,
+        activation_in_binding: bool,
+        binding: Option<ExecutionBinding>,
+        hint: Option<&str>,
+    ) -> MessageEnvelope {
         let owner = binding.as_ref().map(|binding| match binding {
             ExecutionBinding::Command => crate::types::TurnOwner::Command,
             ExecutionBinding::AgentLifecycle { agent_id } => {
@@ -292,6 +302,7 @@ impl Fixture {
             },
         );
         message.id = "consuming-control".into();
+        message.turn_id = hint.map(str::to_owned);
         message.created_at = self.time;
         self.db
             .transaction(|tx| {
@@ -340,7 +351,7 @@ impl Fixture {
                             },
                             state: ExecutionAttemptState::Open,
                             run_id: None,
-                            turn_id: None,
+                            turn_id: message.turn_id.clone(),
                             recovery_of_attempt_id: None,
                             terminal_outcome_id: None,
                             admitted_at: self.time.to_rfc3339(),
@@ -377,6 +388,7 @@ impl Fixture {
                     });
                 }
                 upsert_agent_state_tx(tx, &state)?;
+                self.qualify_claim_tx(tx)?;
                 Ok(())
             })
             .unwrap();
@@ -407,10 +419,45 @@ impl Fixture {
                 .unwrap();
                 turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
                 upsert_turn_record_tx(tx, &turn)?;
+                self.qualify_claim_tx(tx)?;
                 Ok(())
             })
             .unwrap();
         message
+    }
+
+    fn qualify_claim_tx(&self, tx: &rusqlite::Transaction<'_>) -> Result<()> {
+        use crate::runtime_db::input_evidence_snapshot::{
+            register_committed_input_evidence_tx, CanonicalInputEvidence as Fact,
+        };
+        let source: MessageEnvelope = payload_optional(
+            tx,
+            "SELECT payload_json FROM messages WHERE message_id=?1",
+            "consuming-control",
+        )?
+        .context("fixture source missing")?;
+        let mut facts = vec![Fact::Message(source)];
+        if let Some(turn) = payload_optional::<TurnRecord>(
+            tx,
+            "SELECT payload_json FROM turn_records WHERE turn_id=?1",
+            "started-turn",
+        )? {
+            facts.push(Fact::Turn(turn));
+        }
+        if let Some(protocol) =
+            execution_protocol_repository::context_execution_protocol_on(tx, &self.key.agent_id)?
+        {
+            facts.extend(protocol.attempts.into_values().map(Fact::Attempt));
+        }
+        register_committed_input_evidence_tx(
+            tx,
+            &crate::runtime::resident_input_evidence::InputEvidenceScope {
+                agent_id: self.key.agent_id.clone(),
+                identity_incarnation: self.key.identity_incarnation,
+            },
+            &facts,
+        )?;
+        Ok(())
     }
 
     fn db_state(&self, connection: &Connection) -> Result<AgentState> {
@@ -754,19 +801,12 @@ fn healthy_start_preserves_claim_window_and_started_command_with_unbound_attempt
 }
 
 fn seed_preallocated_claim(f: &Fixture) -> MessageEnvelope {
-    let mut message = f.seed_command_claim(false, false);
-    message.turn_id = Some("preallocated-unstarted-turn".into());
-    f.db.transaction(|tx| {
-        crate::runtime_db::evidence::upsert_message_tx(tx, &message)?;
-        let mut protocol =
-            execution_protocol_repository::context_execution_protocol_on(tx, &f.key.agent_id)?
-                .unwrap();
-        protocol.attempts.get_mut("attempt-1").unwrap().turn_id = message.turn_id.clone();
-        execution_protocol_repository::persist_state_tx(tx, &protocol)?;
-        Ok(())
-    })
-    .unwrap();
-    message
+    f.seed_claim_with_hint(
+        false,
+        false,
+        Some(ExecutionBinding::Command),
+        Some("preallocated-unstarted-turn"),
+    )
 }
 
 #[test]

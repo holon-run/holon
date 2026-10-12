@@ -75,6 +75,32 @@ fn closure_decision() -> ClosureDecision {
     }
 }
 
+// Direct reducer tests bypass the scheduler, but still need its actual,
+// committed source input. Do not manufacture an unclaimed pending queue.
+async fn persist_dispatch_source(
+    runtime: &RuntimeHandle,
+    message: MessageEnvelope,
+) -> MessageEnvelope {
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    let prepared = crate::runtime_db::prepared_input_evidence::PreparedInputEvidence::message(
+        mutation.input_evidence_scope(),
+        crate::ids::audit_event_id(),
+        message.created_at,
+        message.clone(),
+        Vec::new(),
+    )
+    .unwrap();
+    mutation
+        .commit_prepared_evidence(prepared, None)
+        .await
+        .unwrap();
+    runtime
+        .storage()
+        .read_message_by_id(&message.id)
+        .unwrap()
+        .unwrap()
+}
+
 async fn fresh_runtime() -> (TempDir, TempDir, RuntimeHandle) {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -271,6 +297,7 @@ async fn message_dispatch_future_is_heap_bounded() {
         MessageKind::BriefAck,
         MessageBody::Text { text: "ack".into() },
     );
+    let message = persist_dispatch_source(&runtime, message).await;
     let plan = runtime
         .build_message_dispatch_plan(
             &message,
@@ -298,6 +325,7 @@ async fn dispatch_brief_ack_is_noop() {
         MessageKind::BriefAck,
         MessageBody::Text { text: "ack".into() },
     );
+    let msg = persist_dispatch_source(&runtime, msg).await;
     let plan = runtime
         .build_message_dispatch_plan(
             &msg,
@@ -333,6 +361,7 @@ async fn dispatch_brief_result_is_noop() {
     );
     let trace_context = crate::observability::TraceContext::new_root(true);
     msg.trace_context = Some(trace_context.clone());
+    let msg = persist_dispatch_source(&runtime, msg).await;
     let message_id = msg.id.clone();
     let plan = runtime
         .build_message_dispatch_plan(
@@ -380,13 +409,27 @@ async fn reducer_only_dispatch_preserves_parent_turn_identity() {
         completed_at: Utc::now(),
         duration_ms: 1,
     });
-    runtime.storage().append_turn(&parent).unwrap();
-
     let mut msg = message_of_kind(
         MessageKind::BriefAck,
         MessageBody::Text { text: "ack".into() },
     );
     msg.turn_id = Some(parent.turn_id.clone());
+    let msg = persist_dispatch_source(&runtime, msg).await;
+    parent.input_message_ids.push(msg.id.clone());
+    parent.trigger = Some(crate::types::TurnTriggerSummary::from_message(&msg));
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    let prepared = crate::runtime_db::prepared_input_evidence::PreparedInputEvidence::turn(
+        mutation.input_evidence_scope(),
+        crate::ids::audit_event_id(),
+        parent.created_at,
+        parent.clone(),
+    )
+    .unwrap();
+    mutation
+        .commit_prepared_evidence(prepared, None)
+        .await
+        .unwrap();
+    drop(mutation);
     let plan = runtime
         .build_message_dispatch_plan(
             &msg,
@@ -448,6 +491,7 @@ async fn dispatch_control_with_unknown_text_returns_error() {
             text: "weird-action".into(),
         },
     );
+    let msg = persist_dispatch_source(&runtime, msg).await;
     let plan = runtime
         .build_message_dispatch_plan(
             &msg,
@@ -509,6 +553,7 @@ async fn dispatch_interactive_kind_with_model_reentry_false_skips_interactive_pr
             text: "interactive payload".into(),
         },
     );
+    let msg = persist_dispatch_source(&runtime, msg).await;
     let plan = runtime
         .build_message_dispatch_plan(
             &msg,

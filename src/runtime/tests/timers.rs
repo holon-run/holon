@@ -1,6 +1,64 @@
 use super::super::*;
 use super::support::*;
 
+// These recovery cases model canonical rows from before the fixed D3 cutover.
+// Current-schema raw inserts deliberately cannot acquire legacy eligibility.
+fn seed_legacy_timer_backlog(
+    data_dir: &std::path::Path,
+    timers: &[TimerRecord],
+    messages: &[MessageEnvelope],
+) {
+    use crate::runtime_db::{
+        evidence::{append_message_tx, upsert_agent_identity_tx, upsert_agent_state_tx},
+        migrations::{apply_migration, ensure_migration_table, MIGRATIONS},
+        repositories::{upsert_queue_entry_tx, upsert_timer_tx},
+    };
+    let path = data_dir.join(".holon/state/runtime.sqlite");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut connection = rusqlite::Connection::open(path).unwrap();
+    ensure_migration_table(&connection).unwrap();
+    for migration in MIGRATIONS
+        .iter()
+        .filter(|migration| migration.version <= 81)
+    {
+        apply_migration(&mut connection, migration).unwrap();
+    }
+    let tx = connection.transaction().unwrap();
+    let identity = crate::types::AgentIdentityRecord::new(
+        "default",
+        crate::types::AgentKind::Default,
+        crate::types::AgentVisibility::Public,
+        crate::types::AgentOwnership::SelfOwned,
+        crate::types::AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    upsert_agent_identity_tx(&tx, &identity).unwrap();
+    let mut state = AgentState::new("default");
+    state.pending = messages.len();
+    state.total_message_count = messages.len();
+    upsert_agent_state_tx(&tx, &state).unwrap();
+    for timer in timers {
+        upsert_timer_tx(&tx, timer).unwrap();
+    }
+    for message in messages {
+        let message = append_message_tx(&tx, message).unwrap().0;
+        upsert_queue_entry_tx(
+            &tx,
+            &QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Queued,
+                created_at: message.created_at,
+                updated_at: message.created_at,
+            },
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
+}
+
 // Keep the test task runnable so paused Tokio cannot jump to the old deadline.
 async fn yield_timer_loop() {
     for _ in 0..20 {
@@ -800,7 +858,6 @@ async fn recovery_normalizes_legacy_timer_backlog_idempotently() {
     let workspace = tempdir().unwrap();
     let clock = controlled_clock();
     let now = clock.now();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let active_timer = TimerRecord {
         id: "legacy-active-timer".into(),
         agent_id: "default".into(),
@@ -821,9 +878,8 @@ async fn recovery_normalizes_legacy_timer_backlog_idempotently() {
         summary: Some("legacy cancelled".into()),
         ..active_timer.clone()
     };
-    storage.append_timer(&active_timer).unwrap();
-    storage.append_timer(&cancelled_timer).unwrap();
 
+    let mut messages = Vec::new();
     let mut active_message_ids = Vec::new();
     let mut cancelled_message_ids = Vec::new();
     for (timer, ids) in [
@@ -850,20 +906,16 @@ async fn recovery_normalizes_legacy_timer_backlog_idempotently() {
                     AdmissionContext::RuntimeOwned,
                 )
             };
-            storage.append_message(&message).unwrap();
-            storage
-                .append_queue_entry(&QueueEntryRecord {
-                    message_id: message.id.clone(),
-                    agent_id: "default".into(),
-                    priority: Priority::Next,
-                    status: QueueEntryStatus::Queued,
-                    created_at: message.created_at,
-                    updated_at: message.created_at,
-                })
-                .unwrap();
-            ids.push(message.id);
+            ids.push(message.id.clone());
+            messages.push(message);
         }
     }
+
+    seed_legacy_timer_backlog(
+        dir.path(),
+        &[active_timer.clone(), cancelled_timer.clone()],
+        &messages,
+    );
 
     let make_runtime = || {
         RuntimeHandle::new_with_clock(
@@ -952,7 +1004,6 @@ async fn recovery_reactivates_incorporated_wake_for_restored_timer_message() {
     let workspace = tempdir().unwrap();
     let clock = controlled_clock();
     let now = clock.now();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let timer = TimerRecord {
         id: "timer-restored".into(),
         agent_id: "default".into(),
@@ -966,7 +1017,6 @@ async fn recovery_reactivates_incorporated_wake_for_restored_timer_message() {
         last_fired_at: Some(now),
         fire_count: 1,
     };
-    storage.append_timer(&timer).unwrap();
     let message = MessageEnvelope {
         metadata: Some(serde_json::json!({ "timer_id": timer.id })),
         ..MessageEnvelope::new(
@@ -986,17 +1036,7 @@ async fn recovery_reactivates_incorporated_wake_for_restored_timer_message() {
             AdmissionContext::RuntimeOwned,
         )
     };
-    storage.append_message(&message).unwrap();
-    storage
-        .append_queue_entry(&QueueEntryRecord {
-            message_id: message.id.clone(),
-            agent_id: "default".into(),
-            priority: Priority::Next,
-            status: QueueEntryStatus::Queued,
-            created_at: message.created_at,
-            updated_at: message.created_at,
-        })
-        .unwrap();
+    seed_legacy_timer_backlog(dir.path(), &[timer.clone()], &[message.clone()]);
 
     let make_runtime = || {
         RuntimeHandle::new_with_clock(

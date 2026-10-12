@@ -207,6 +207,21 @@ pub(crate) fn isolate_legacy_cross_agent_execution_bindings(
     message: &mut MessageEnvelope,
     delivery: &AgentMessageDeliveryRecord,
 ) -> bool {
+    if delivery.state != AgentMessageDeliveryState::Queued
+        || !legacy_cross_agent_caller_bindings_match(message, delivery)
+    {
+        return false;
+    }
+    message.turn_id = None;
+    message.task_id = None;
+    message.work_item_id = None;
+    true
+}
+
+pub(crate) fn legacy_cross_agent_caller_bindings_match(
+    message: &MessageEnvelope,
+    delivery: &AgentMessageDeliveryRecord,
+) -> bool {
     let Some(caller_agent_id) = delivery.caller.caller_agent_id.as_deref() else {
         return false;
     };
@@ -214,7 +229,6 @@ pub(crate) fn isolate_legacy_cross_agent_execution_bindings(
         || delivery.target_agent_id != message.agent_id
         || delivery.message_id.as_deref() != Some(message.id.as_str())
         || delivery.outcome != AgentMessageDeliveryOutcome::Accepted
-        || delivery.state != AgentMessageDeliveryState::Queued
     {
         return false;
     }
@@ -226,14 +240,7 @@ pub(crate) fn isolate_legacy_cross_agent_execution_bindings(
     let bindings_match = message.turn_id == caller.current_turn_id
         && message.task_id == caller.current_task_id
         && message.work_item_id == caller.current_work_item_id;
-    if !has_source_binding || !bindings_match {
-        return false;
-    }
-
-    message.turn_id = None;
-    message.task_id = None;
-    message.work_item_id = None;
-    true
+    has_source_binding && bindings_match
 }
 
 #[cfg(test)]

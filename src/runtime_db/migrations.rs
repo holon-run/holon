@@ -3935,6 +3935,16 @@ CREATE INDEX IF NOT EXISTS idx_episode_memory_results_episode_scope
         name: "control_command_receipts_and_cancellation_obligations",
         sql: include_str!("control_transition/schema.sql"),
     },
+    Migration {
+        version: 84,
+        name: "qualified_input_evidence",
+        sql: super::input_evidence_snapshot::INPUT_EVIDENCE_SCHEMA,
+    },
+    Migration {
+        version: 85,
+        name: "original_input_mutation_receipts",
+        sql: super::input_mutation_receipts::INPUT_MUTATION_RECEIPT_SCHEMA,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4239,6 +4249,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     transaction.execute_batch(migration.sql)?;
     if migration.name == "explicit_episode_continuity" {
         super::episode_snapshot::capture_episode_continuity_upgrade_tx(transaction, Utc::now())?;
+    }
+    if migration.name == "qualified_input_evidence" {
+        super::input_evidence_snapshot::capture_input_evidence_upgrade_tx(transaction, Utc::now())?;
     }
     if migration.name == "execution_protocol_authority" {
         backfill_execution_protocol_authority(transaction)?;

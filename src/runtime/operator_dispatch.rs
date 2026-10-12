@@ -130,18 +130,34 @@ impl RuntimeHandle {
         self.reconfigure_provider_for_turn(model_selection.fallback_model())
             .await?;
         if let Some(recovery) = model_selection.recovery.as_ref() {
-            let source = crate::runtime::provider_recovery::resolve_for_context(
-                &self.inner.storage,
-                message,
-            )?
-            .ok_or_else(|| anyhow!("provider recovery source resolution missing"))?;
-            let (turn_id, run_id) = {
-                let guard = self.inner.agent.lock().await;
-                (
-                    guard.state.current_turn_id.clone(),
-                    guard.state.current_run_id.clone(),
-                )
-            };
+            let mut mutation = self.begin_mutation().await?;
+            let roots = crate::runtime::provider_recovery::continuity_sources(message)?
+                .map(|(turn, source, _)| {
+                    std::collections::BTreeSet::from([
+                        super::resident_input_evidence::InputEvidenceKey::new(
+                            super::resident_input_evidence::InputEvidenceFamily::Turn,
+                            turn,
+                        ),
+                        super::resident_input_evidence::InputEvidenceKey::new(
+                            super::resident_input_evidence::InputEvidenceFamily::Message,
+                            source,
+                        ),
+                    ])
+                })
+                .unwrap_or_default();
+            mutation
+                .prepare_owner_inputs(roots, Default::default())
+                .await?;
+            let captured = mutation.capture_input_evidence()?;
+            let protocol = captured.protocol_state()?;
+            let source = crate::runtime::provider_recovery::resolve_from_captured(
+                &captured, message, &protocol,
+            )?;
+            let (turn_id, run_id) = (
+                mutation.state.current_turn_id.clone(),
+                mutation.state.current_run_id.clone(),
+            );
+            drop(mutation);
             self.inner.storage.append_event(&AuditEvent::legacy(
                 "recovery_turn_started",
                 serde_json::json!({
@@ -160,7 +176,7 @@ impl RuntimeHandle {
                 }),
             ))?;
         }
-        self.record_incoming_transcript_entry(message)?;
+        self.record_incoming_transcript_entry(message).await?;
         self.inner
             .storage
             .append_event(&brief::make_acknowledgement_event(message))?;

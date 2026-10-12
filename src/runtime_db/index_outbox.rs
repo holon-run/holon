@@ -14,7 +14,7 @@ pub struct RuntimeIndexOutboxRepository<'a> {
 }
 
 /// Runtime index operation (upsert or delete).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum RuntimeIndexOperation {
     Upsert,
     Delete,
@@ -37,7 +37,7 @@ impl RuntimeIndexOperation {
 }
 
 /// Runtime index change event.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RuntimeIndexChange {
     pub agent_id: String,
     pub source_kind: String,

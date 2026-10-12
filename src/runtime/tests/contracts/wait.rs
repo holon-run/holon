@@ -70,7 +70,7 @@ fn late_task_result_message(task_id: &str, work_item_id: &str) -> MessageEnvelop
     message
 }
 
-fn persist_open_work_execution(
+async fn persist_open_work_execution(
     harness: &LifecycleHarness,
     work_item: &WorkItemRecord,
     attempt_id: &str,
@@ -132,12 +132,7 @@ fn persist_open_work_execution(
             terminal_at: None,
         },
     );
-    harness
-        .runtime()
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-        .unwrap();
+    publish_contract_execution(harness, execution, true).await;
 }
 
 async fn persist_waiting_work_execution(
@@ -169,12 +164,219 @@ async fn persist_waiting_work_execution(
             },
         },
     );
-    harness
-        .runtime()
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-        .unwrap();
+    publish_contract_execution(harness, execution, false).await;
+}
+
+// Current-schema protocol fixtures are actual original-owner writes. Open
+// attempts also need a real source/started Turn, not fabricated preallocation.
+fn publish_contract_execution(
+    harness: &LifecycleHarness,
+    execution: crate::domain::execution_protocol::ExecutionProtocolState,
+    with_started_sources: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+    Box::pin(async move {
+        use crate::runtime_db::{
+            evidence::{append_message_tx, upsert_agent_state_tx},
+            input_evidence_snapshot::{
+                register_committed_input_evidence_tx, CanonicalInputEvidence as Fact,
+            },
+            repositories::{committed_turn_record_tx, upsert_turn_record_tx},
+            transitions::{
+                execution_protocol_repository, AgentStateMutation, PostCommitEffects,
+                TransitionCommit,
+            },
+        };
+        let runtime = harness.runtime();
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let before = mutation.state.clone();
+        mutation
+            .commit_transition(crate::ids::audit_event_id(), |scope| {
+                runtime.inner.runtime_db.transaction(|tx| {
+                    let previous =
+                        execution_protocol_repository::load_state_unchecked_tx(tx, "default")?;
+                    let mut final_execution = previous.clone();
+                    let mut state = before.clone();
+                    let mut messages = Vec::new();
+                    let mut turns = Vec::new();
+                    if with_started_sources {
+                        for attempt in execution.attempts.values() {
+                            let mut source = MessageEnvelope::new(
+                                "default",
+                                MessageKind::InternalFollowup,
+                                MessageOrigin::System {
+                                    subsystem: "contract_work_continuation".into(),
+                                },
+                                AuthorityClass::RuntimeInstruction,
+                                Priority::Normal,
+                                MessageBody::Text {
+                                    text: "already-started contract work".into(),
+                                },
+                            )
+                            .with_admission(
+                                MessageDeliverySurface::RuntimeSystem,
+                                AdmissionContext::RuntimeOwned,
+                            );
+                            source.id = attempt.source_message_id.clone().expect("fixture source");
+                            source.work_item_id = match &attempt.binding {
+                                crate::domain::execution_protocol::ExecutionBinding::WorkItem {
+                                    work_item_id,
+                                } => Some(work_item_id.clone()),
+                                _ => None,
+                            };
+                            source.turn_id = attempt.turn_id.clone();
+                            source.created_at = harness.now();
+                            let source = append_message_tx(tx, &source)?.0;
+                            state.turn_index += 1;
+                            let mut turn = crate::types::TurnRecord::new(
+                                "default",
+                                attempt.turn_id.clone().expect("fixture Turn"),
+                                state.turn_index,
+                            );
+                            turn.owner = source.work_item_id.as_ref().map(|id| {
+                                crate::types::TurnOwner::WorkItem {
+                                    work_item_id: id.clone(),
+                                }
+                            });
+                            turn.current_work_item_id = source.work_item_id.clone();
+                            turn.trigger =
+                                Some(crate::types::TurnTriggerSummary::from_message(&source));
+                            turn.input_message_ids = vec![source.id.clone()];
+                            upsert_turn_record_tx(tx, &turn)?;
+                            turns.push(
+                                committed_turn_record_tx(tx, "default", &turn.turn_id)?.record,
+                            );
+                            messages.push(source);
+                        }
+                    }
+                    final_execution
+                        .work_items
+                        .extend(execution.work_items.clone());
+                    final_execution.attempts.extend(execution.attempts.clone());
+                    final_execution.outcomes.extend(execution.outcomes.clone());
+                    execution_protocol_repository::persist_repaired_state_tx(
+                        tx,
+                        &previous,
+                        &final_execution,
+                    )?;
+                    let final_execution =
+                        execution_protocol_repository::load_state_tx(tx, "default")?;
+                    let mut facts = messages
+                        .iter()
+                        .cloned()
+                        .map(Fact::Message)
+                        .chain(turns.iter().cloned().map(Fact::Turn))
+                        .collect::<Vec<_>>();
+                    facts.extend(
+                        execution
+                            .attempts
+                            .keys()
+                            .map(|id| Fact::Attempt(final_execution.attempts[id].clone())),
+                    );
+                    facts.extend(execution.work_items.keys().map(|id| Fact::WorkExecution {
+                        work_item_id: id.clone(),
+                        record: final_execution.work_items[id].clone(),
+                    }));
+                    let count: i64 = tx.query_row(
+                        "SELECT COUNT(*) FROM messages WHERE agent_id='default'",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    state.total_message_count = usize::try_from(count)?;
+                    upsert_agent_state_tx(tx, &state)?;
+                    let input_evidence_delta =
+                        register_committed_input_evidence_tx(tx, scope, &facts)?;
+                    Ok(TransitionCommit {
+                        applied: true,
+                        effects: PostCommitEffects {
+                            agent_state: Some(AgentStateMutation {
+                                expected: Some(Box::new(before.clone())),
+                                record: Box::new(state),
+                            }),
+                            messages,
+                            turns,
+                            execution_protocol: Some(final_execution),
+                            input_evidence_delta,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                })
+            })
+            .await
+            .unwrap();
+    })
+}
+
+fn publish_original_reply<'a>(
+    harness: &'a LifecycleHarness,
+    reply: &'a MessageEnvelope,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = MessageEnvelope> + Send + 'a>> {
+    Box::pin(async move {
+        use crate::runtime_db::{
+            evidence::{append_message_tx, upsert_agent_state_tx},
+            input_evidence_snapshot::{
+                register_committed_input_evidence_tx, CanonicalInputEvidence as Fact,
+            },
+            repositories::{committed_turn_record_tx, upsert_turn_record_tx},
+            transitions::{AgentStateMutation, PostCommitEffects, TransitionCommit},
+        };
+        let runtime = harness.runtime();
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let before = mutation.state.clone();
+        let mut stored = None;
+        mutation
+            .commit_transition(crate::ids::audit_event_id(), |scope| {
+                runtime.inner.runtime_db.transaction(|tx| {
+                    let reply = append_message_tx(tx, reply)?.0;
+                    let mut state = before.clone();
+                    state.turn_index += 1;
+                    state.total_message_count += 1;
+                    let mut turn = crate::types::TurnRecord::new(
+                        "default",
+                        reply.turn_id.clone().expect("original reply Turn"),
+                        state.turn_index,
+                    );
+                    turn.owner = Some(crate::types::TurnOwner::AgentLifecycle {
+                        agent_id: "default".into(),
+                    });
+                    turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&reply));
+                    turn.input_message_ids = vec![reply.id.clone()];
+                    turn.terminal = Some(crate::types::TurnTerminalSummary {
+                        kind: crate::types::TurnTerminalKind::Completed,
+                        reason: None,
+                        no_brief_reason: None,
+                        completed_at: harness.now(),
+                        duration_ms: 1,
+                    });
+                    upsert_turn_record_tx(tx, &turn)?;
+                    let turn = committed_turn_record_tx(tx, "default", &turn.turn_id)?.record;
+                    upsert_agent_state_tx(tx, &state)?;
+                    let input_evidence_delta = register_committed_input_evidence_tx(
+                        tx,
+                        scope,
+                        &[Fact::Message(reply.clone()), Fact::Turn(turn.clone())],
+                    )?;
+                    stored = Some(reply.clone());
+                    Ok(TransitionCommit {
+                        applied: true,
+                        effects: PostCommitEffects {
+                            agent_state: Some(AgentStateMutation {
+                                expected: Some(Box::new(before.clone())),
+                                record: Box::new(state),
+                            }),
+                            messages: vec![reply],
+                            turns: vec![turn],
+                            input_evidence_delta,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                })
+            })
+            .await
+            .unwrap();
+        stored.expect("original reply committed")
+    })
 }
 
 #[tokio::test]
@@ -389,7 +591,7 @@ async fn late_task_result_queue_and_execution_settlement_are_atomic() {
             .persist_task_transition_with_message(&terminal, "task_status_updated", &result_message)
             .await
             .unwrap();
-        persist_open_work_execution(&harness, &work_item, "attempt-late-atomic");
+        persist_open_work_execution(&harness, &work_item, "attempt-late-atomic").await;
         let before = harness.snapshot();
         let execution_before = harness
             .runtime()
@@ -1666,7 +1868,7 @@ async fn late_agent_reply_wait_resumes_original_message_with_exact_owner() {
         });
         reply.metadata =
             Some(serde_json::json!({"agent_message_delivery": {"delivery_id":"reply-delivery"}}));
-        harness.runtime().storage().append_message(&reply).unwrap();
+        let reply = publish_original_reply(&harness, &reply).await;
         let task_owner = if different_owner {
             harness
                 .runtime()
@@ -1704,7 +1906,7 @@ async fn late_agent_reply_wait_resumes_original_message_with_exact_owner() {
             .ensure_pending(&terminal, &signal, harness.now())
             .unwrap()
             .expect("reply settlement exists");
-        persist_open_work_execution(&harness, &work, "attempt-before-reply-wait");
+        persist_open_work_execution(&harness, &work, "attempt-before-reply-wait").await;
         let outcome = harness
             .runtime()
             .register_wait_for_outcome(

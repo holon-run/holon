@@ -347,10 +347,10 @@ impl RuntimeHandle {
                         .map(|event| event.id.clone())
                         .unwrap_or_else(crate::ids::audit_event_id);
                     let commit_result = mutation
-                        .commit_transition(operation_id, || {
+                        .commit_transition(operation_id, |scope| {
                             self.inner
                                 .runtime_db
-                                .transitions()
+                                .transitions_in_scope(scope)
                                 .commit_wait_with_execution_protocol_and_task_expectation(
                                     &prepared.command,
                                     &prepared.execution_protocol,
@@ -1590,7 +1590,7 @@ impl RuntimeHandle {
         };
         let fault = self.take_transition_fault();
         let committed = mutation
-            .commit_transition(timer.id.clone(), || {
+            .commit_transition(timer.id.clone(), |_scope| {
                 self.inner.storage.append_timer(&timer)?;
                 Ok(TransitionCommit {
                     applied: true,
@@ -1687,7 +1687,7 @@ impl RuntimeHandle {
             };
             let mut timer_result = None;
             let result = guard
-                .commit_transition(crate::ids::audit_event_id(), || {
+                .commit_transition(crate::ids::audit_event_id(), |_scope| {
                     let result = self.inner.runtime_db.timers().cancel(&command)?;
                     let mut commit = TransitionCommit {
                         applied: result.cancelled,
@@ -1921,27 +1921,26 @@ impl RuntimeHandle {
             let fault = self.take_transition_fault();
             let mut timer_result = None;
             let result = guard
-                .commit_transition(message.id.clone(), || {
-                    let result = self
+                .commit_transition(message.id.clone(), |scope| {
+                    let acknowledged = self
                         .inner
                         .runtime_db
                         .timers()
-                        .fire_with_wait(&command, fault)?;
+                        .fire_with_wait_in_scope(scope, &command, fault)?;
+                    let result = acknowledged.record;
                     let mut commit = TransitionCommit {
                         applied: result.advanced,
                         ..TransitionCommit::default()
                     };
+                    commit.effects.input_evidence_delta = acknowledged.input_delta;
+                    commit.effects.agent_state = acknowledged.agent_state;
                     if result.advanced {
                         commit.effects.timers.push(record.clone());
                         commit.effects.fault = fault;
                         commit.effects.notify_scheduler = result.wake_created;
                         if let Some(message) = result.message.as_ref() {
+                            commit.effects.messages.push(message.clone());
                             commit.effects.queued_messages.push(message.clone());
-                            commit.effects.agent_state =
-                                Some(crate::runtime_db::transitions::AgentStateMutation {
-                                    expected: Some(Box::new(command.agent_state.0.clone())),
-                                    record: Box::new(command.agent_state.1.clone()),
-                                });
                         }
                     }
                     timer_result = Some(result);
@@ -2732,6 +2731,17 @@ mod mutation_tests {
         assert_eq!(mutation.state.pending, 1);
         assert_eq!(mutation.queue.len(), 1);
         let message_id = mutation.queue.peek().unwrap().id.clone();
+        let inputs = mutation.capture_input_evidence().unwrap();
+        assert!(inputs
+            .lookup(
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                    &message_id,
+                ),
+            )
+            .unwrap()
+            .is_some());
+        drop(inputs);
         drop(mutation);
         assert_eq!(
             runtime

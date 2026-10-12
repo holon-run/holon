@@ -1250,11 +1250,46 @@ async fn work_item_mutations_atomically_track_execution_readiness() {
             wait_id: "wait-active".into(),
         },
     };
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &waiting_execution))
-        .unwrap();
+    {
+        use crate::runtime_db::{
+            input_evidence_snapshot::{
+                register_committed_input_evidence_tx, CanonicalInputEvidence as Fact,
+            },
+            transitions::{execution_protocol_repository, PostCommitEffects, TransitionCommit},
+        };
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        mutation
+            .commit_transition(crate::ids::audit_event_id(), |scope| {
+                runtime.inner.runtime_db.transaction(|tx| {
+                    let previous = execution_protocol_repository::load_state_tx(tx, "default")?;
+                    execution_protocol_repository::persist_repaired_state_tx(
+                        tx,
+                        &previous,
+                        &waiting_execution,
+                    )?;
+                    let actual = execution_protocol_repository::load_state_tx(tx, "default")?;
+                    let input_evidence_delta = register_committed_input_evidence_tx(
+                        tx,
+                        scope,
+                        &[Fact::WorkExecution {
+                            work_item_id: work.id.clone(),
+                            record: actual.work_items[&work.id].clone(),
+                        }],
+                    )?;
+                    Ok(TransitionCommit {
+                        applied: true,
+                        effects: PostCommitEffects {
+                            execution_protocol: Some(actual),
+                            input_evidence_delta,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                })
+            })
+            .await
+            .unwrap();
+    }
     let error = runtime
         .update_work_item_fields(
             work.id.clone(),
@@ -2666,6 +2701,17 @@ async fn turn_end_refreshes_changed_work_item_plan_artifact_snapshot() {
 
     assert_eq!(committed.id, work.id);
     assert_eq!(committed.revision, work.revision + 1);
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        execution.work_items[&committed.id].source_revision,
+        committed.revision
+    );
     assert_eq!(committed.plan_status, WorkItemPlanStatus::Ready);
     assert_ne!(
         committed.plan_artifact.as_ref().unwrap().hash,
@@ -4459,6 +4505,32 @@ async fn followup_final_report_completes_child_and_resumes_caller() {
     );
 }
 
+fn persist_completion_test_source(
+    runtime: &RuntimeHandle,
+    message: MessageEnvelope,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = MessageEnvelope> + Send + '_>> {
+    Box::pin(async move {
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let prepared = crate::runtime_db::prepared_input_evidence::PreparedInputEvidence::message(
+            mutation.input_evidence_scope(),
+            crate::ids::audit_event_id(),
+            message.created_at,
+            message.clone(),
+            Vec::new(),
+        )
+        .unwrap();
+        mutation
+            .commit_prepared_evidence(prepared, None)
+            .await
+            .unwrap();
+        runtime
+            .storage()
+            .read_message_by_id(&message.id)
+            .unwrap()
+            .unwrap()
+    })
+}
+
 #[tokio::test]
 async fn completion_intent_does_not_borrow_mismatched_execution_identity() {
     let dir = tempdir().unwrap();
@@ -4501,6 +4573,7 @@ async fn completion_intent_does_not_borrow_mismatched_execution_identity() {
         },
     );
     message.turn_id = Some("turn-active-execution".into());
+    let message = persist_completion_test_source(&runtime, message).await;
     runtime
         .begin_interactive_turn(Some(&message), None, None)
         .await
@@ -4558,6 +4631,7 @@ async fn turn_end_marks_unbound_completion_report_missing_and_persists_restart()
         },
     );
     message.turn_id = Some("turn-missing-completion-report".into());
+    let message = persist_completion_test_source(&runtime, message).await;
     runtime
         .begin_interactive_turn(Some(&message), None, None)
         .await
@@ -4575,8 +4649,17 @@ async fn turn_end_marks_unbound_completion_report_missing_and_persists_restart()
             .report_state,
         CompletionReportState::Pending
     );
+    let execution_before_missing = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap()
+        .work_items[&work_item.id]
+        .clone();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.last_turn_terminal = Some(TurnTerminalRecord {
             turn_id: message.turn_id.clone().unwrap(),
             turn_index: guard.state.turn_index,
@@ -4588,7 +4671,7 @@ async fn turn_end_marks_unbound_completion_report_missing_and_persists_restart()
             completed_at: Utc::now(),
             duration_ms: 10,
         });
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     assert!(
@@ -4605,6 +4688,18 @@ async fn turn_end_marks_unbound_completion_report_missing_and_persists_restart()
         .unwrap()
         .unwrap();
     assert_eq!(missing.result_brief_id, None);
+    let execution_after_missing = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(missing.state, WorkItemState::Completing);
+    assert_eq!(
+        execution_after_missing.work_items[&work_item.id], execution_before_missing,
+        "report metadata on Completing Work must preserve the execution record"
+    );
     assert_eq!(
         missing
             .completion_intent
@@ -7967,11 +8062,11 @@ async fn commit_prepared_wait_for(runtime: &RuntimeHandle, result: &crate::tool:
         .expect("WaitFor should prepare canonical settlement");
     let mut mutation = runtime.begin_mutation().await.unwrap();
     let commit = mutation
-        .commit_transition(crate::ids::audit_event_id(), || {
+        .commit_transition(crate::ids::audit_event_id(), |scope| {
             runtime
                 .inner
                 .runtime_db
-                .transitions()
+                .transitions_in_scope(scope)
                 .commit_wait_with_execution_protocol_and_task_expectation(
                     &prepared.command,
                     &prepared.execution_protocol,

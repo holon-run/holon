@@ -287,9 +287,7 @@ impl RuntimeHost {
             .runtime_db()
             .orphan_cleanup_notice(&operator, DELETION_BATCH_LIMIT)?
         {
-            let event = brief_created_event_for(&brief)?;
-            self.agent_storage(&operator)?
-                .append_brief_with_created_event(&brief, &event)?;
+            self.persist_cold_brief_evidence(brief.clone()).await?;
             self.runtime_db().acknowledge_subagent_reminder(&brief.id)?;
         }
         let messages = self

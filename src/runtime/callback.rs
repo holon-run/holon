@@ -48,7 +48,7 @@ impl RuntimeHandle {
         let token = generate_callback_token();
         let mut result = None;
         let commit = mutation
-            .commit_transition(crate::ids::audit_event_id(), || {
+            .commit_transition(crate::ids::audit_event_id(), |_scope| {
                 let (descriptor, revoked, created) = self
                     .inner
                     .runtime_db
@@ -155,7 +155,7 @@ impl RuntimeHandle {
         updated_descriptor.last_delivered_at = Some(now);
         updated_descriptor.delivery_count += 1;
         let commit = mutation
-            .commit_transition(crate::ids::audit_event_id(), || {
+            .commit_transition(crate::ids::audit_event_id(), |_scope| {
                 self.inner
                     .runtime_db
                     .external_triggers()
@@ -228,7 +228,7 @@ impl RuntimeHandle {
         revoked.status = ExternalTriggerStatus::Revoked;
         revoked.revoked_at = Some(Utc::now());
         let commit = mutation
-            .commit_transition(crate::ids::audit_event_id(), || {
+            .commit_transition(crate::ids::audit_event_id(), |_scope| {
                 self.inner.runtime_db.external_triggers().upsert(&revoked)?;
                 Ok(TransitionCommit {
                     applied: true,
@@ -265,7 +265,7 @@ impl RuntimeHandle {
         let token = generate_callback_token();
         let mut result = None;
         let commit = mutation
-            .commit_transition(crate::ids::audit_event_id(), || {
+            .commit_transition(crate::ids::audit_event_id(), |_scope| {
                 let (descriptor, revoked) = self
                     .inner
                     .runtime_db

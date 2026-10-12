@@ -497,6 +497,7 @@ fn state_facts(state: Arc<AgentState>) -> KnownCommit {
     KnownCommit::State {
         state,
         episodes: None,
+        input_evidence: None,
         runtime: None,
     }
 }
@@ -758,6 +759,7 @@ fn prepared_facts(state: Arc<AgentState>, episodes: Arc<ResidentEpisodes>) -> Kn
     KnownCommit::State {
         state,
         episodes: Some(episodes),
+        input_evidence: None,
         runtime: None,
     }
 }
@@ -1230,3 +1232,6 @@ async fn retired_receipt_resolution_rejects_current_active_or_any_successor_stat
         assert_needs_reconcile(&owner, &key);
     }
 }
+
+#[path = "mutation_owner_tests/input_recovery.rs"]
+mod input_recovery;

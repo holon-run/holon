@@ -928,6 +928,11 @@ impl RuntimeDb {
                 return Err(RuntimeStateTransitionConflict::concurrent_mutation("control_targets", &command.key.agent_id).into());
             }
             validate_source_tx(tx, command)?;
+            for turn in &command.interrupted_turns {
+                    super::input_evidence_snapshot::validate_existing_input_evidence_tx(tx,&crate::runtime::resident_input_evidence::InputEvidenceScope { agent_id: command.key.agent_id.clone(), identity_incarnation: command.key.identity_incarnation },
+                        &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                            crate::runtime::resident_input_evidence::InputEvidenceFamily::Turn,&turn.turn_id))?;
+            }
             for result in &command.task_results {
                 ensure!(!tx.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE evidence_id = ?1)",
                     [&result.message.id], |row| row.get::<_, bool>(0))?,
@@ -1015,9 +1020,14 @@ impl RuntimeDb {
                 if let Some(record) = &mut occupancy {
                     record.released_at = Some(command.prepared_at); upsert_workspace_occupancy_tx(tx, record)?;
                 }
-                for turn in &command.interrupted_turns { upsert_turn_record_tx(tx, turn)?; }
+                for turn in &command.interrupted_turns {
+                    upsert_turn_record_tx(tx, turn)?;
+                }
             }
-            execution_protocol_repository::persist_execution_commands_tx(tx, prepared_execution)?;
+            let input_scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+                agent_id: command.key.agent_id.clone(), identity_incarnation: command.key.identity_incarnation,
+            };
+            let (_, mut input_delta) = execution_protocol_repository::persist_execution_commands_with_input_facts_tx(tx, prepared_execution, Some(&input_scope))?;
             #[cfg(test)] inject_fault(command, ControlFaultPoint::AfterExecutionWorkspaceWrites)?;
             if command.candidate.as_ref() != &command.expected.state {
                 upsert_agent_state_at_tx(tx, &command.candidate, command.prepared_at)?;
@@ -1109,11 +1119,15 @@ impl RuntimeDb {
                     "SELECT payload_json FROM workspace_occupancies WHERE occupancy_id = ?1", &expected.occupancy_id)?.context("Control occupancy disappeared")?;
                 ensure!(stored == *expected, "Control occupancy release was not persisted exactly");
             }
+            let mut input_facts = result_messages.iter().cloned().map(super::input_evidence_snapshot::CanonicalInputEvidence::Message).collect::<Vec<_>>();
+            input_facts.extend(turns.iter().cloned().map(super::input_evidence_snapshot::CanonicalInputEvidence::Turn));
+            let evidence_delta = super::input_evidence_snapshot::register_committed_input_evidence_tx(tx, &input_scope, &input_facts)?;
+            super::input_evidence_writes::merge_input_evidence_delta(&mut input_delta,evidence_delta)?;
             let transition = TransitionCommit { applied: true, effects: PostCommitEffects {
                 agent_state: (persisted != command.expected.state).then(|| AgentStateMutation { expected: Some(Box::new(command.expected.state.clone())), record: Box::new(persisted.clone()) }),
                 removed_queue_message_ids: final_queue.iter().map(|entry| entry.message_id.clone()).collect(),
                 timers: timers.clone(), tasks: tasks.clone(), external_triggers: external_triggers.clone(),
-                messages: result_messages.clone(), turns: turns.clone(), execution_protocol: execution_protocol.clone(),
+                messages: result_messages.clone(), turns: turns.clone(), execution_protocol: execution_protocol.clone(), input_evidence_delta: input_delta,
                 audit_events, notify_memory_index: !changes.is_empty(), notify_scheduler: true, ..Default::default()
             }, ..Default::default() };
             Ok(ControlCommit::Applied { receipt, delta: Box::new(ControlCommittedDelta { state: persisted, tasks, waits,

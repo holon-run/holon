@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    runtime::resident_input_evidence::{
+        CommittedInputEvidenceDelta, InputEvidenceFamily, InputEvidenceKey, InputEvidenceScope,
+    },
     runtime_db::{
         evidence::{audit_event_sequence_scope, insert_runtime_index_changes_tx},
         write_queue::RuntimeDbWriteContext,
@@ -22,8 +25,9 @@ use crate::{
     },
     tool::helpers::{command_output_source_ref, command_receipt_source_ref},
     types::{
-        BriefRecord, ContextEpisodeRecord, TaskRecord, ToolExecutionRecord, ToolResultData,
-        TranscriptEntry, TurnRecord, WaitConditionRecord, WorkItemRecord, WorkItemRefStatus,
+        AgentIdentityRecord, AgentRegistryStatus, BriefRecord, ContextEpisodeRecord, TaskRecord,
+        ToolExecutionRecord, ToolResultData, TranscriptEntry, TurnRecord, WaitConditionRecord,
+        WorkItemRecord, WorkItemRefStatus,
     },
 };
 
@@ -168,6 +172,35 @@ pub struct RuntimeDbRetentionReport {
     pub incremental_vacuum_ran: bool,
 }
 
+/// Exact canonical removals returned before vacuum/report publication.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RetainedEvidenceRemoval {
+    pub agent_id: String,
+    pub evidence_id: String,
+    pub turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommittedAuditRetentionWatermark {
+    pub scope_key: String,
+    pub oldest_retained_seq: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeDbRetentionCommit {
+    pub report: RuntimeDbRetentionReport,
+    pub removed_transcript_entries: Vec<RetainedEvidenceRemoval>,
+    pub removed_tool_executions: Vec<RetainedEvidenceRemoval>,
+    pub audit_watermarks: Vec<CommittedAuditRetentionWatermark>,
+}
+
+/// Scoped online result; old report/maintenance wrappers remain unchanged.
+#[derive(Debug, Clone)]
+pub(crate) struct ScopedRuntimeDbRetentionCommit {
+    pub committed: RuntimeDbRetentionCommit,
+    pub input_deltas: Vec<(InputEvidenceScope, CommittedInputEvidenceDelta)>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeDbCompactReport {
     pub started_at: DateTime<Utc>,
@@ -196,6 +229,7 @@ struct StrongRoots {
 
 struct EvidenceCandidate {
     id: String,
+    agent_id: String,
     turn_id: Option<String>,
     message_id: Option<String>,
     task_id: Option<String>,
@@ -225,21 +259,162 @@ impl RuntimeDb {
         policy: RuntimeDbRetentionPolicy,
         now: DateTime<Utc>,
     ) -> Result<RuntimeDbRetentionReport> {
+        let committed = self.commit_retention_pass(policy, now)?;
+        self.complete_retention_maintenance(committed.report)
+    }
+
+    /// Commit only canonical deletions and index intents. The caller must install
+    /// returned removals before allowing fresh resident captures for affected scopes.
+    pub fn commit_retention_pass(
+        &self,
+        policy: RuntimeDbRetentionPolicy,
+        now: DateTime<Utc>,
+    ) -> Result<RuntimeDbRetentionCommit> {
         let policy = policy.validate()?;
         if !policy.enabled {
             let connection = self.connection()?;
-            return build_retention_report(&connection, &policy, now, true, None);
+            return build_retention_commit(&connection, &policy, now, true, None);
         }
-        let transaction_policy = policy.clone();
-        let mut report = self.transaction_with_context(
+        self.transaction_with_context(
             RuntimeDbWriteContext::sync("runtime_db.retention", "retained_evidence"),
-            |tx| build_retention_report(tx, &transaction_policy, now, false, Some(tx)),
-        )?;
+            |tx| build_retention_commit(tx, &policy, now, false, Some(tx)),
+        )
+    }
+
+    /// Reservation inventory only. The deleting transaction rechecks the complete
+    /// active namespace set, so a concurrently created identity cannot escape it.
+    pub(crate) fn retention_input_scopes(
+        &self,
+        policy: RuntimeDbRetentionPolicy,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<InputEvidenceScope>> {
+        let policy = policy.validate()?;
+        if !policy.enabled {
+            return Ok(Vec::new());
+        }
+        let mut connection = self.connection()?;
+        let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+        let scopes = retention_affected_input_scopes_tx(&tx, &policy, now)?;
+        tx.commit()?;
+        Ok(scopes)
+    }
+
+    pub(crate) fn commit_retention_pass_in_scopes(
+        &self,
+        policy: RuntimeDbRetentionPolicy,
+        now: DateTime<Utc>,
+        scopes: &[InputEvidenceScope],
+    ) -> Result<ScopedRuntimeDbRetentionCommit> {
+        let policy = policy.validate()?;
+        if !policy.enabled {
+            return Ok(ScopedRuntimeDbRetentionCommit {
+                committed: self.commit_retention_pass(policy, now)?,
+                input_deltas: Vec::new(),
+            });
+        }
+        self.transaction_with_context(
+            RuntimeDbWriteContext::sync("runtime_db.retention.scoped", "retained_evidence"),
+            |tx| self.commit_retention_pass_in_scopes_tx(tx, &policy, now, scopes),
+        )
+    }
+
+    pub(super) fn commit_retention_pass_in_scopes_tx(
+        &self,
+        tx: &Transaction<'_>,
+        policy: &RuntimeDbRetentionPolicy,
+        now: DateTime<Utc>,
+        scopes: &[InputEvidenceScope],
+    ) -> Result<ScopedRuntimeDbRetentionCommit> {
+        let supplied = scopes
+            .iter()
+            .map(|s| (s.agent_id.clone(), s.identity_incarnation))
+            .collect::<BTreeSet<_>>();
+        anyhow::ensure!(
+            supplied.len() == scopes.len(),
+            "duplicate retention input scope"
+        );
+        let current = retention_affected_input_scopes_tx(tx, &policy, now)?;
+        let actual = current
+            .iter()
+            .map(|s| (s.agent_id.clone(), s.identity_incarnation))
+            .collect::<BTreeSet<_>>();
+        anyhow::ensure!(
+            supplied == actual,
+            "retention reservation inventory changed before SQL"
+        );
+        for scope in scopes {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &scope.agent_id,
+            )?;
+        }
+        let committed = build_retention_commit(tx, &policy, now, false, Some(tx))?;
+        let mut input_deltas = Vec::new();
+        for scope in scopes {
+            let mut keys = Vec::new();
+            let mut related = BTreeSet::new();
+            for (family, removals, source_kinds) in [
+                (
+                    InputEvidenceFamily::Transcript,
+                    &committed.removed_transcript_entries,
+                    &["assistant", "error"][..],
+                ),
+                (
+                    InputEvidenceFamily::ToolExecution,
+                    &committed.removed_tool_executions,
+                    &["tool"][..],
+                ),
+            ] {
+                for removed in removals.iter().filter(|r| r.agent_id == scope.agent_id) {
+                    keys.push(InputEvidenceKey::new(family, &removed.evidence_id));
+                    if let Some(turn) = &removed.turn_id {
+                        related.insert(InputEvidenceKey::new(InputEvidenceFamily::Turn, turn));
+                    }
+                    for kind in source_kinds {
+                        let turn:Option<String>=tx.query_row("SELECT turn_id FROM conversation_source_revisions WHERE agent_id=?1 AND source_kind=?2 AND source_id=?3",params![scope.agent_id,kind,removed.evidence_id],|row|row.get(0)).optional()?.flatten();
+                        if let Some(turn) = turn {
+                            related.insert(InputEvidenceKey::new(InputEvidenceFamily::Turn, turn));
+                        }
+                    }
+                }
+            }
+            if keys.is_empty() {
+                continue;
+            }
+            let mut delta = super::input_evidence_snapshot::register_pruned_input_evidence_tx(
+                tx, scope, &keys,
+            )?;
+            // Actual surviving projection footprint only; never grant a
+            // previously unqualified historical Turn by reading it here.
+            let refresh = super::input_evidence_snapshot::refresh_related_input_evidence_tx(
+                tx,
+                scope,
+                &related.into_iter().collect::<Vec<_>>(),
+            )?;
+            super::input_evidence_writes::merge_input_evidence_delta(&mut delta, refresh)?;
+            input_deltas.push((scope.clone(), delta));
+        }
+        Ok(ScopedRuntimeDbRetentionCommit {
+            committed,
+            input_deltas,
+        })
+    }
+
+    /// Space reclamation and diagnostics are separate from canonical retention.
+    /// A failure here does not undo the already returned retention commit.
+    pub fn complete_retention_maintenance(
+        &self,
+        mut report: RuntimeDbRetentionReport,
+    ) -> Result<RuntimeDbRetentionReport> {
+        if report.dry_run || !report.enabled {
+            return Ok(report);
+        }
         let connection = self.connection()?;
         if pragma_u64(&connection, "auto_vacuum")? == 2 {
             connection.execute_batch(&format!(
                 "PRAGMA incremental_vacuum({});",
-                policy.incremental_vacuum_pages
+                report.policy.incremental_vacuum_pages
             ))?;
             report.incremental_vacuum_ran = true;
         }
@@ -359,6 +534,40 @@ fn wal_sidecar_path(db_path: &Path) -> std::path::PathBuf {
     wal.into()
 }
 
+fn retention_affected_input_scopes_tx(
+    tx: &Transaction<'_>,
+    policy: &RuntimeDbRetentionPolicy,
+    now: DateTime<Utc>,
+) -> Result<Vec<InputEvidenceScope>> {
+    let roots = collect_strong_roots(tx)?;
+    let mut agents = BTreeSet::new();
+    plan_evidence_table(
+        tx,
+        None,
+        "transcript_entries",
+        now - retention_days(policy.transcript_entries_days)?,
+        policy.transcript_entries_min_rows,
+        &roots,
+        true,
+        false,
+        &mut Vec::new(),
+        Some(&mut agents),
+    )?;
+    plan_evidence_table(
+        tx,
+        None,
+        "tool_executions",
+        now - retention_days(policy.tool_executions_days)?,
+        policy.tool_executions_min_rows,
+        &roots,
+        true,
+        true,
+        &mut Vec::new(),
+        Some(&mut agents),
+    )?;
+    super::input_evidence_writes::current_input_evidence_scopes_tx(tx, &agents)
+}
+
 fn build_retention_report(
     connection: &Connection,
     policy: &RuntimeDbRetentionPolicy,
@@ -366,15 +575,29 @@ fn build_retention_report(
     dry_run: bool,
     delete_tx: Option<&Transaction<'_>>,
 ) -> Result<RuntimeDbRetentionReport> {
+    Ok(build_retention_commit(connection, policy, now, dry_run, delete_tx)?.report)
+}
+
+fn build_retention_commit(
+    connection: &Connection,
+    policy: &RuntimeDbRetentionPolicy,
+    now: DateTime<Utc>,
+    dry_run: bool,
+    delete_tx: Option<&Transaction<'_>>,
+) -> Result<RuntimeDbRetentionCommit> {
     let started = Instant::now();
     let stats = database_page_stats(connection)?;
     let roots = collect_strong_roots(connection)?;
+    let mut audit_watermarks = Vec::new();
+    let mut removed_transcript_entries = Vec::new();
+    let mut removed_tool_executions = Vec::new();
     let (audit_events, audit_scopes_observed, audit_scopes_skipped) = plan_audit_events(
         connection,
         delete_tx,
         now - retention_days(policy.audit_events_days)?,
         policy.audit_events_min_rows_per_scope,
         dry_run,
+        &mut audit_watermarks,
     )?;
     let transcript_entries = plan_evidence_table(
         connection,
@@ -385,6 +608,8 @@ fn build_retention_report(
         &roots,
         dry_run,
         false,
+        &mut removed_transcript_entries,
+        None,
     )?;
     let tool_executions = plan_evidence_table(
         connection,
@@ -395,8 +620,10 @@ fn build_retention_report(
         &roots,
         dry_run,
         true,
+        &mut removed_tool_executions,
+        None,
     )?;
-    Ok(RuntimeDbRetentionReport {
+    let report = RuntimeDbRetentionReport {
         dry_run,
         enabled: policy.enabled,
         started_at: now,
@@ -415,6 +642,12 @@ fn build_retention_report(
         estimated_reclaimable_bytes_before: stats.page_size.saturating_mul(stats.freelist_pages),
         incremental_vacuum_pages_requested: policy.incremental_vacuum_pages,
         incremental_vacuum_ran: false,
+    };
+    Ok(RuntimeDbRetentionCommit {
+        report,
+        removed_transcript_entries,
+        removed_tool_executions,
+        audit_watermarks,
     })
 }
 
@@ -424,6 +657,7 @@ fn plan_audit_events(
     cutoff: DateTime<Utc>,
     minimum_rows: usize,
     dry_run: bool,
+    watermarks: &mut Vec<CommittedAuditRetentionWatermark>,
 ) -> Result<(RuntimeDbRetentionTableReport, u64, u64)> {
     let mut report = RuntimeDbRetentionTableReport::default();
     let mut statement = connection.prepare(
@@ -459,6 +693,17 @@ fn plan_audit_events(
             let deleted =
                 delete_audit_prefix(tx, agent_id.as_deref(), first_retained_seq, planned)?;
             report.deleted_rows = report.deleted_rows.saturating_add(deleted as u64);
+            if deleted > 0 {
+                let scope_key = audit_event_sequence_scope(agent_id.as_deref());
+                let oldest_retained_seq: i64 = tx.query_row(
+                    "SELECT oldest_retained_seq FROM audit_event_retention_watermarks WHERE scope_key = ?1",
+                    [&scope_key], |row| row.get(0),
+                )?;
+                watermarks.push(CommittedAuditRetentionWatermark {
+                    scope_key,
+                    oldest_retained_seq: u64::try_from(oldest_retained_seq)?,
+                });
+            }
         }
     }
     report.skipped_below_minimum_rows = observed_scopes > 0 && observed_scopes == skipped_scopes;
@@ -619,6 +864,8 @@ fn plan_evidence_table(
     roots: &StrongRoots,
     dry_run: bool,
     delete_index_sources: bool,
+    removed: &mut Vec<RetainedEvidenceRemoval>,
+    scope_inventory: Option<&mut BTreeSet<String>>,
 ) -> Result<RuntimeDbRetentionTableReport> {
     let mut report = RuntimeDbRetentionTableReport::default();
     report.observed_rows =
@@ -632,7 +879,7 @@ fn plan_evidence_table(
     let removable_capacity = report.observed_rows.saturating_sub(minimum_rows as u64);
     let sql = format!(
         "SELECT evidence_id, turn_id, message_id, task_id, work_item_id,
-                CASE WHEN ?2 THEN payload_json ELSE NULL END
+                CASE WHEN ?2 THEN payload_json ELSE NULL END, agent_id
          FROM {table}
          WHERE created_at < ?1
          ORDER BY created_at ASC, evidence_id ASC"
@@ -641,6 +888,7 @@ fn plan_evidence_table(
     let rows = statement.query_map(params![timestamp(cutoff), delete_index_sources], |row| {
         Ok(EvidenceCandidate {
             id: row.get(0)?,
+            agent_id: row.get(6)?,
             turn_id: row.get(1)?,
             message_id: row.get(2)?,
             task_id: row.get(3)?,
@@ -649,10 +897,24 @@ fn plan_evidence_table(
         })
     })?;
     let mut deletions = Vec::new();
+    let mut deleting_identities = BTreeMap::new();
     for candidate in rows {
         let candidate = candidate?;
         report.candidate_rows = report.candidate_rows.saturating_add(1);
-        if let Some(reason) = candidate_protection_reason(&candidate, roots) {
+        let identity_deleting = if let Some(deleting) = deleting_identities.get(&candidate.agent_id)
+        {
+            *deleting
+        } else {
+            let deleting = retention_identity_is_deleting(connection, &candidate.agent_id)?;
+            deleting_identities.insert(candidate.agent_id.clone(), deleting);
+            deleting
+        };
+        let protection = if identity_deleting {
+            Some("identity_deleting")
+        } else {
+            candidate_protection_reason(&candidate, roots)
+        };
+        if let Some(reason) = protection {
             report.protected_rows = report.protected_rows.saturating_add(1);
             *report.protection_reasons.entry(reason.into()).or_default() += 1;
         } else if deletions.len() < RETENTION_DELETE_BATCH_ROWS
@@ -662,11 +924,34 @@ fn plan_evidence_table(
         }
     }
     report.planned_delete_rows = deletions.len() as u64;
+    if let Some(agents) = scope_inventory {
+        agents.extend(deletions.iter().map(|row| row.agent_id.clone()));
+    }
     if dry_run || deletions.is_empty() {
         return Ok(report);
     }
     let tx = delete_tx.ok_or_else(|| anyhow!("{table} retention delete requires transaction"))?;
     for candidate in &deletions {
+        let deleted = tx.execute(
+            &format!("DELETE FROM {table} WHERE agent_id = ?1 AND evidence_id = ?2"),
+            params![candidate.agent_id, candidate.id],
+        )?;
+        if deleted == 0 {
+            continue;
+        }
+        // Do not publish tombstones or removals for a row retained by SQL.
+        let retained: bool = tx.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM {table} WHERE agent_id = ?1 AND evidence_id = ?2)"
+            ),
+            params![candidate.agent_id, candidate.id],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            !retained,
+            "retention delete retained evidence {}",
+            candidate.id
+        );
         if delete_index_sources {
             let record: ToolExecutionRecord =
                 serde_json::from_str(candidate.payload_json.as_deref().ok_or_else(|| {
@@ -674,13 +959,39 @@ fn plan_evidence_table(
                 })?)?;
             insert_runtime_index_changes_tx(tx, &tool_index_delete_changes(&record))?;
         }
-        tx.execute(
-            &format!("DELETE FROM {table} WHERE evidence_id = ?1"),
-            [&candidate.id],
-        )?;
+        removed.push(RetainedEvidenceRemoval {
+            agent_id: candidate.agent_id.clone(),
+            evidence_id: candidate.id.clone(),
+            turn_id: candidate.turn_id.clone(),
+        });
+        report.deleted_rows = report.deleted_rows.saturating_add(1);
     }
-    report.deleted_rows = deletions.len() as u64;
     Ok(report)
+}
+
+// Pending retirement may still consume this incarnation's evidence. Planning,
+// owner inventory, and actual deletion all use this same transaction-local test.
+fn retention_identity_is_deleting(connection: &Connection, agent_id: &str) -> Result<bool> {
+    let row: Option<(String, String, String)> = connection
+        .query_row(
+            "SELECT agent_id, status, payload_json FROM agent_identities WHERE agent_id=?1",
+            [agent_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((row_agent_id, status, payload)) = row else {
+        return Ok(false);
+    };
+    let normalized: AgentRegistryStatus = serde_json::from_value(Value::String(status))?;
+    let identity: AgentIdentityRecord = serde_json::from_str(&payload)?;
+    anyhow::ensure!(
+        row_agent_id == agent_id
+            && identity.agent_id == row_agent_id
+            && identity.incarnation > 0
+            && identity.status == normalized,
+        "retention identity projection mismatch for {agent_id}"
+    );
+    Ok(identity.status == AgentRegistryStatus::Deleting)
 }
 
 fn candidate_protection_reason(
@@ -1177,7 +1488,17 @@ mod tests {
             Ok(())
         })?;
 
-        let report = db.run_retention_pass(policy(), now)?;
+        let committed = db.commit_retention_pass(policy(), now)?;
+        assert_eq!(
+            committed.audit_watermarks,
+            vec![CommittedAuditRetentionWatermark {
+                scope_key: "agent:agent-a".into(),
+                oldest_retained_seq: 4,
+            }]
+        );
+        assert!(committed.removed_transcript_entries.is_empty());
+        assert!(committed.removed_tool_executions.is_empty());
+        let report = db.complete_retention_maintenance(committed.report)?;
         assert_eq!(report.audit_events.candidate_rows, 3);
         assert_eq!(report.audit_events.deleted_rows, 3);
         let connection = db.connection()?;
@@ -1354,6 +1675,116 @@ mod tests {
         let retried = db.run_wal_checkpoint_pass()?;
         assert!(!retried.busy);
         assert_eq!(retried.wal_bytes_after, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn retention_commit_returns_scoped_removals_before_maintenance() -> Result<()> {
+        let (_directory, db) = runtime_db()?;
+        let now = Utc::now();
+        for (id, agent_id, old) in [
+            ("old-a", "agent-a", true),
+            ("old-b", "agent-b", true),
+            ("recent-b", "agent-b", false),
+        ] {
+            let mut entry = TranscriptEntry::new(
+                agent_id,
+                TranscriptEntryKind::IncomingMessage,
+                None,
+                None,
+                serde_json::json!({}),
+            );
+            entry.id = id.into();
+            entry.created_at = if old { now - Duration::days(60) } else { now };
+            db.transcript_entries().append(&entry)?;
+        }
+        let active_turn = TurnRecord::new("agent-a", "turn-active", 1);
+        db.turn_records().upsert(&active_turn)?;
+        let old = now - Duration::days(60);
+        db.evidence()
+            .append_tool_execution(&tool("protected", Some("turn-active"), old))?;
+        db.evidence()
+            .append_tool_execution(&tool("removed", None, old))?;
+        let committed = db.commit_retention_pass(policy(), now)?;
+        assert_eq!(
+            committed.removed_transcript_entries,
+            vec![
+                RetainedEvidenceRemoval {
+                    agent_id: "agent-a".into(),
+                    evidence_id: "old-a".into(),
+                    turn_id: None
+                },
+                RetainedEvidenceRemoval {
+                    agent_id: "agent-b".into(),
+                    evidence_id: "old-b".into(),
+                    turn_id: None
+                },
+            ]
+        );
+        assert_eq!(
+            committed.removed_tool_executions,
+            vec![RetainedEvidenceRemoval {
+                agent_id: "agent-a".into(),
+                evidence_id: "removed".into(),
+                turn_id: None,
+            }]
+        );
+        assert_eq!(committed.report.transcript_entries.deleted_rows, 2);
+        assert_eq!(committed.report.tool_executions.deleted_rows, 1);
+        assert!(!committed.report.incremental_vacuum_ran);
+        assert!(db
+            .transcript_entries()
+            .by_id(Some("agent-a"), "old-a")?
+            .is_none());
+        assert!(db
+            .evidence()
+            .tool_execution_by_id("agent-a", "protected")?
+            .is_some());
+        // The SQL result already exists even when later diagnostic persistence fails.
+        db.connection()?.execute_batch(
+            "CREATE TRIGGER fail_retention_report BEFORE INSERT ON runtime_metadata
+             BEGIN SELECT RAISE(ABORT, 'diagnostic failure'); END;",
+        )?;
+        assert!(db.complete_retention_maintenance(committed.report).is_err());
+        assert!(db
+            .transcript_entries()
+            .by_id(Some("agent-b"), "old-b")?
+            .is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn retention_commit_reports_no_removal_or_tombstone_when_sql_retains_tool() -> Result<()> {
+        let (_directory, db) = runtime_db()?;
+        let now = Utc::now();
+        db.evidence()
+            .append_tool_execution(&tool("old", None, now - Duration::days(60)))?;
+        db.evidence()
+            .append_tool_execution(&tool("recent", None, now))?;
+        db.connection()?.execute_batch(
+            "CREATE TRIGGER retain_tool BEFORE DELETE ON tool_executions
+             BEGIN SELECT RAISE(IGNORE); END;",
+        )?;
+        let committed = db.commit_retention_pass(policy(), now)?;
+        assert_eq!(committed.report.tool_executions.planned_delete_rows, 1);
+        assert_eq!(committed.report.tool_executions.deleted_rows, 0);
+        assert!(committed.removed_tool_executions.is_empty());
+        assert!(db
+            .evidence()
+            .tool_execution_by_id("agent-a", "old")?
+            .is_some());
+        let tombstones: u64 = db.connection()?.query_row(
+            "SELECT COUNT(*) FROM runtime_index_outbox WHERE operation = 'delete'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(tombstones, 0);
+        let mut disabled = policy();
+        disabled.enabled = false;
+        let dry = db.commit_retention_pass(disabled, now)?;
+        assert!(dry.report.dry_run);
+        assert!(dry.removed_tool_executions.is_empty());
+        assert!(dry.audit_watermarks.is_empty());
         Ok(())
     }
 }

@@ -2995,6 +2995,124 @@ async fn turn_local_compaction_fails_fast_when_baseline_exceeds_budget() {
     );
 }
 
+// History fixtures use the original owner and transaction, including actual
+// source sequence, canonical assignment, State projection and input publication.
+fn publish_committed_history_fixture<'a>(
+    runtime: &'a RuntimeHandle,
+    turn_id: &'a str,
+    index: u64,
+    owner: Option<&'a str>,
+    text: String,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+    Box::pin(async move {
+        use crate::runtime::resident_input_evidence::{
+            InputEvidenceFamily as Family, InputEvidenceKey as Key,
+        };
+        use crate::runtime_db::{
+            evidence::{append_message_tx, upsert_agent_state_tx},
+            input_evidence_snapshot::{
+                register_committed_input_evidence_tx, validate_existing_input_evidence_tx,
+                CanonicalInputEvidence as Fact,
+            },
+            repositories::{committed_turn_record_tx, upsert_turn_record_tx},
+            transitions::{AgentStateMutation, PostCommitEffects, TransitionCommit},
+        };
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text { text },
+        );
+        message.turn_id = Some(turn_id.into());
+        message.work_item_id = owner.map(str::to_string);
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let expected = mutation.state.clone();
+        let committed = mutation
+            .commit_transition(crate::ids::audit_event_id(), |scope| {
+                runtime.inner.runtime_db.transaction(|tx| {
+                    validate_existing_input_evidence_tx(
+                        tx,
+                        scope,
+                        &Key::new(Family::Message, &message.id),
+                    )?;
+                    validate_existing_input_evidence_tx(
+                        tx,
+                        scope,
+                        &Key::new(Family::Turn, turn_id),
+                    )?;
+                    let actual_message = append_message_tx(tx, &message)?.0;
+                    let mut turn = TurnRecord::new("default", turn_id, index);
+                    turn.owner = owner.map(|id| crate::types::TurnOwner::WorkItem {
+                        work_item_id: id.into(),
+                    });
+                    turn.current_work_item_id = owner.map(str::to_string);
+                    turn.input_message_ids = vec![actual_message.id.clone()];
+                    turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+                        &actual_message,
+                    ));
+                    upsert_turn_record_tx(tx, &turn)?;
+                    let actual_turn =
+                        committed_turn_record_tx(tx, &turn.agent_id, &turn.turn_id)?.record;
+                    let payload: String = tx.query_row(
+                        "SELECT payload_json FROM agent_states WHERE agent_id=?1",
+                        [&turn.agent_id],
+                        |row| row.get(0),
+                    )?;
+                    let mut state: AgentState = serde_json::from_str(&payload)?;
+                    anyhow::ensure!(
+                        state == expected,
+                        "history fixture State changed outside original owner"
+                    );
+                    state.turn_index = state.turn_index.max(actual_turn.turn_index);
+                    let message_count: i64 = tx.query_row(
+                        "SELECT COUNT(*) FROM messages WHERE agent_id=?1",
+                        [&turn.agent_id],
+                        |row| row.get(0),
+                    )?;
+                    state.total_message_count = usize::try_from(message_count)?;
+                    upsert_agent_state_tx(tx, &state)?;
+                    let payload: String = tx.query_row(
+                        "SELECT payload_json FROM agent_states WHERE agent_id=?1",
+                        [&turn.agent_id],
+                        |row| row.get(0),
+                    )?;
+                    let actual_state: AgentState = serde_json::from_str(&payload)?;
+                    let input_evidence_delta = register_committed_input_evidence_tx(
+                        tx,
+                        scope,
+                        &[
+                            Fact::Message(actual_message.clone()),
+                            Fact::Turn(actual_turn.clone()),
+                        ],
+                    )?;
+                    Ok(TransitionCommit {
+                        applied: true,
+                        effects: PostCommitEffects {
+                            agent_state: Some(AgentStateMutation {
+                                expected: Some(Box::new(expected.clone())),
+                                record: Box::new(actual_state),
+                            }),
+                            input_evidence_delta,
+                            messages: vec![actual_message],
+                            turns: vec![actual_turn],
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                })
+            })
+            .await
+            .unwrap();
+        drop(mutation);
+        runtime.apply_transition_commit(committed).await;
+    })
+}
+
 #[tokio::test]
 async fn prepared_scoped_prompt_and_budget_retry_survive_storage_removal() {
     let dir = tempdir().unwrap();
@@ -3026,74 +3144,84 @@ async fn prepared_scoped_prompt_and_budget_retry_survive_storage_removal() {
         .await
         .unwrap();
     runtime.pick_work_item(work_item.id.clone()).await.unwrap();
-    {
-        let mut guard = runtime.begin_mutation().await.unwrap();
-        guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
-            activation_id: Some("activation_scoped_snapshot".into()),
-            admission_provenance: None,
-            source_message_id: "message_scoped_snapshot".into(),
-            turn_id: "turn_scoped_snapshot".into(),
-            owner: Some(crate::types::TurnOwner::WorkItem {
-                work_item_id: work_item.id.clone(),
-            }),
-            work_item_id: Some(work_item.id.clone()),
-            claimed_work_revision: Some(work_item.revision),
-        });
-        guard.persist_state(&runtime.inner.storage).await.unwrap();
-    }
-    let append_history = |turn_id: &str, index: u64, owner: &str, text: String| {
-        let mut message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text { text },
-        );
-        message.turn_id = Some(turn_id.into());
-        message.work_item_id = Some(owner.into());
-        runtime.storage().append_message(&message).unwrap();
-        let mut turn = TurnRecord::new("default", turn_id, index);
-        turn.owner = Some(crate::types::TurnOwner::WorkItem {
-            work_item_id: owner.into(),
-        });
-        turn.current_work_item_id = Some(owner.into());
-        turn.input_message_ids = vec![message.id.clone()];
-        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
-        runtime.storage().append_turn(&turn).unwrap();
-    };
-    append_history(
+    publish_committed_history_fixture(
+        &runtime,
         "turn-owner-snapshot",
         1,
-        &work_item.id,
+        Some(&work_item.id),
         format!("OWNER_SNAPSHOT_INPUT {}", "owner-evidence ".repeat(1000)),
-    );
-    append_history(
+    )
+    .await;
+    publish_committed_history_fixture(
+        &runtime,
         "turn-unrelated-snapshot",
         2,
-        "work-unrelated",
+        Some("work-unrelated"),
         "UNRELATED_RECENT_INPUT".into(),
+    )
+    .await;
+    // Scoped history requires the actual execution owner, not only UI focus.
+    // Keep the real current source out of both prepared history windows.
+    let mut source = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue the owner task".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpControlPrompt,
+        AdmissionContext::ControlAuthenticated,
     );
-    let original = runtime
-        .preview_prompt(
-            "continue the owner task".into(),
-            AuthorityClass::OperatorInstruction,
-        )
+    source.work_item_id = Some(work_item.id.clone());
+    let source = runtime.enqueue(source).await.unwrap();
+    let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    {
+        scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+        _ => panic!("scoped history source must be claimed"),
+    };
+    assert_eq!(scheduled.message.id, source.id);
+    assert!(scheduled.scheduler_decision.model_reentry);
+    runtime
+        .begin_interactive_turn(Some(&scheduled.message), None, None)
         .await
         .unwrap();
+    let original = runtime
+        .build_loaded_context_prompt(&scheduled.message, None, None, true)
+        .await
+        .unwrap();
+    assert!(matches!(
+        &original.projection_owner,
+        crate::projection_eval::ProjectionOwner::WorkItem { work_item_id }
+            if work_item_id == &work_item.id
+    ));
+    assert!(
+        original.context_sections.iter().any(|section| {
+            section.name == "current_work_item" && section.content.contains(&work_item.id)
+        }),
+        "prepared prompt must display its actual execution WorkItem"
+    );
     let prepared = original.clone();
     let window = prepared.history_policy().work_item_scoped_window.unwrap();
     let prepared_id = prepared.context_snapshot_id();
     assert_eq!(prepared_id, original.context_snapshot_id());
-    append_history(
+    publish_committed_history_fixture(
+        &runtime,
         "turn-late-snapshot",
-        3,
-        &work_item.id,
+        4,
+        Some(&work_item.id),
         "LATE_STORAGE_INPUT".into(),
-    );
+    )
+    .await;
     drop(runtime);
     drop(dir);
     drop(workspace);
@@ -3171,33 +3299,17 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
 
     let identity = runtime.agent_identity_view().await.unwrap();
     let (_, available_tools, _, _, _) = runtime.provider_tool_selection(&identity).await.unwrap();
-    let mut historical_message = MessageEnvelope::new(
-        "default",
-        MessageKind::OperatorPrompt,
-        MessageOrigin::Operator {
-            actor_id: None,
-            actor_display_name: None,
-        },
-        AuthorityClass::OperatorInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: format!(
-                "historical context {}",
-                "large-history-token ".repeat(12_000)
-            ),
-        },
-    );
-    historical_message.turn_id = Some("turn-large-history".into());
-    runtime
-        .storage()
-        .append_message(&historical_message)
-        .unwrap();
-    let mut historical_turn = TurnRecord::new("default", "turn-large-history", 1);
-    historical_turn.input_message_ids = vec![historical_message.id.clone()];
-    historical_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
-        &historical_message,
-    ));
-    runtime.storage().append_turn(&historical_turn).unwrap();
+    publish_committed_history_fixture(
+        &runtime,
+        "turn-large-history",
+        1,
+        None,
+        format!(
+            "historical context {}",
+            "large-history-token ".repeat(12_000)
+        ),
+    )
+    .await;
 
     let prompt = runtime
         .preview_prompt(
@@ -3503,31 +3615,14 @@ async fn context_length_exceeded_turn_recovers_once_with_recent_turns() {
     // inside the window with ~1/8-budget margins against description drift.
     let historical_repeats =
         public_tools_prompt_budget_estimated_tokens() * 7 / 8 * 4 / "historical context".len();
-    let historical_message = MessageEnvelope::new(
-        "default",
-        MessageKind::OperatorPrompt,
-        MessageOrigin::Operator {
-            actor_id: None,
-            actor_display_name: None,
-        },
-        AuthorityClass::OperatorInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "historical context".repeat(historical_repeats),
-        },
-    );
-    let mut historical_turn = TurnRecord::new("default", "turn-context-recovery-history", 1);
-    let mut historical_message = historical_message;
-    historical_message.turn_id = Some(historical_turn.turn_id.clone());
-    historical_turn.input_message_ids = vec![historical_message.id.clone()];
-    historical_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
-        &historical_message,
-    ));
-    runtime
-        .storage()
-        .append_message(&historical_message)
-        .unwrap();
-    runtime.storage().append_turn(&historical_turn).unwrap();
+    publish_committed_history_fixture(
+        &runtime,
+        "turn-context-recovery-history",
+        1,
+        None,
+        "historical context".repeat(historical_repeats),
+    )
+    .await;
 
     let message = MessageEnvelope::new(
         "default",

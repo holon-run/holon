@@ -1,6 +1,6 @@
 //! Domain repository implementations and their transaction helpers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
@@ -3044,6 +3044,170 @@ fn cancel_active_timers_for_agent_tx(
     Ok(count)
 }
 
+pub(crate) struct ScopedTimerWakeRecovery {
+    pub result: TimerWakeRecoveryResult,
+    pub queue_entries: Vec<QueueEntryRecord>,
+    pub scope_facts: super::context_inputs::ContextScopeFacts,
+}
+
+fn normalize_timer_wakes_for_recovery_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<TimerWakeRecoveryResult> {
+    let live_messages = {
+        let mut statement = tx.prepare(
+            "SELECT q.payload_json, m.payload_json
+             FROM queue_entries q
+             JOIN messages m ON m.message_id = q.message_id
+             WHERE q.agent_id = ?1 AND q.status IN ('queued', 'interrupted')
+             ORDER BY q.created_at ASC, q.message_id ASC",
+        )?;
+        let rows = statement.query_map([agent_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.map(|row| {
+            let (queue_payload, message_payload) = row?;
+            Ok((
+                decode_queue_entry_payload(&queue_payload)?,
+                decode_message_payload(&message_payload)?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?
+    };
+    let pending_wakes = {
+        let mut statement = tx.prepare(
+            "SELECT w.timer_id, w.message_id, w.fire_count
+             FROM timer_wakes w
+             JOIN timers t ON t.timer_id = w.timer_id
+             WHERE t.agent_id = ?1 AND w.status = 'pending'",
+        )?;
+        let rows = statement.query_map([agent_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()?
+    };
+
+    let mut result = TimerWakeRecoveryResult::default();
+    let mut wakes_by_timer = pending_wakes
+        .into_iter()
+        .map(|(timer_id, message_id, fire_count)| (timer_id, (message_id, fire_count)))
+        .collect::<BTreeMap<_, _>>();
+    let mut messages_by_timer = BTreeMap::<String, Vec<(QueueEntryRecord, MessageEnvelope)>>::new();
+    for (entry, message) in live_messages {
+        let MessageOrigin::Timer { timer_id } = &message.origin else {
+            continue;
+        };
+        messages_by_timer
+            .entry(timer_id.clone())
+            .or_default()
+            .push((entry, message));
+    }
+
+    for (timer_id, messages) in messages_by_timer {
+        let timer = timer_tx(tx, &timer_id)?;
+        let timer_accepts_wake = timer.as_ref().is_some_and(|timer| {
+            matches!(timer.status, TimerStatus::Active | TimerStatus::Completed)
+        });
+        let existing_wake = wakes_by_timer.remove(&timer_id);
+        let keep_index = if timer_accepts_wake {
+            existing_wake
+                .as_ref()
+                .and_then(|(message_id, _)| {
+                    messages
+                        .iter()
+                        .position(|(_, message)| message.id == *message_id)
+                })
+                .or(Some(0))
+        } else {
+            None
+        };
+
+        for (index, (mut entry, _)) in messages.iter().cloned().enumerate() {
+            if Some(index) == keep_index {
+                continue;
+            }
+            entry.status = QueueEntryStatus::Dropped;
+            entry.updated_at = Utc::now();
+            upsert_queue_entry_tx(tx, &entry)?;
+            result.dropped_message_ids.push(entry.message_id);
+        }
+
+        match keep_index {
+            Some(index) => {
+                let (entry, message) = &messages[index];
+                if existing_wake
+                    .as_ref()
+                    .is_some_and(|(message_id, _)| message_id == &message.id)
+                {
+                    result.retained_wakes += 1;
+                    continue;
+                }
+                if existing_wake.is_some() {
+                    result.invalidated_wakes += tx.execute(
+                        "UPDATE timer_wakes
+                         SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
+                         WHERE timer_id = ?1 AND status = 'pending'",
+                        params![timer_id, timestamp(Utc::now())],
+                    )?;
+                }
+                let fire_count = message
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("timer_fire_count"))
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_else(|| timer.as_ref().map_or(1, |timer| timer.fire_count.max(1)));
+                // A wake row for this exact pair may already exist when a claimed
+                // message was restored to the queue after a restart. Reactivate it
+                // instead of inserting a duplicate row for the composite primary key.
+                let now = timestamp(Utc::now());
+                let reactivated = tx.execute(
+                    "UPDATE timer_wakes
+                     SET status = 'pending', fire_count = ?3, updated_at = ?4,
+                         incorporated_at = NULL, cancelled_at = NULL
+                     WHERE timer_id = ?1 AND message_id = ?2 AND status != 'pending'",
+                    params![timer_id, message.id, fire_count as i64, now],
+                )?;
+                if reactivated > 0 {
+                    result.reactivated_wakes += reactivated;
+                    continue;
+                }
+                let created_at = timestamp(entry.created_at);
+                tx.execute(
+                    "INSERT INTO timer_wakes
+                     (timer_id, message_id, fire_count, status, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
+                    params![timer_id, message.id, fire_count as i64, created_at],
+                )?;
+                result.created_wakes += 1;
+            }
+            None => {
+                if existing_wake.is_some() {
+                    result.invalidated_wakes += tx.execute(
+                        "UPDATE timer_wakes
+                         SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
+                         WHERE timer_id = ?1 AND status = 'pending'",
+                        params![timer_id, timestamp(Utc::now())],
+                    )?;
+                }
+            }
+        }
+    }
+
+    for (timer_id, _) in wakes_by_timer {
+        result.invalidated_wakes += tx.execute(
+            "UPDATE timer_wakes
+             SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
+             WHERE timer_id = ?1 AND status = 'pending'",
+            params![timer_id, timestamp(Utc::now())],
+        )?;
+    }
+    Ok(result)
+}
+
 impl TimerRepository<'_> {
     pub fn cancel_active_for_agent(
         &self,
@@ -3131,162 +3295,56 @@ impl TimerRepository<'_> {
     }
 
     pub fn normalize_wakes_for_recovery(&self, agent_id: &str) -> Result<TimerWakeRecoveryResult> {
+        self.db
+            .transaction(|tx| normalize_timer_wakes_for_recovery_tx(tx, agent_id))
+    }
+
+    pub(crate) fn normalize_wakes_for_recovery_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        budget: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<ScopedTimerWakeRecovery> {
         self.db.transaction(|tx| {
-            let live_messages = {
-                let mut statement = tx.prepare(
-                    "SELECT q.payload_json, m.payload_json
-                     FROM queue_entries q
-                     JOIN messages m ON m.message_id = q.message_id
-                     WHERE q.agent_id = ?1 AND q.status IN ('queued', 'interrupted')
-                     ORDER BY q.created_at ASC, q.message_id ASC",
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &scope.agent_id,
+            )?;
+            super::bootstrap_inputs::pending_metadata_tx(tx, scope, budget)?;
+            let result = normalize_timer_wakes_for_recovery_tx(tx, &scope.agent_id)?;
+            let mut queue_entries = Vec::new();
+            for id in &result.dropped_message_ids {
+                let payload: String = tx.query_row(
+                    "SELECT payload_json FROM queue_entries WHERE message_id=?1",
+                    [id],
+                    |r| r.get(0),
                 )?;
-                let rows = statement.query_map([agent_id], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?;
-                rows.map(|row| {
-                    let (queue_payload, message_payload) = row?;
-                    Ok((
-                        decode_queue_entry_payload(&queue_payload)?,
-                        decode_message_payload(&message_payload)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>>>()?
-            };
-            let pending_wakes = {
-                let mut statement = tx.prepare(
-                    "SELECT w.timer_id, w.message_id, w.fire_count
-                     FROM timer_wakes w
-                     JOIN timers t ON t.timer_id = w.timer_id
-                     WHERE t.agent_id = ?1 AND w.status = 'pending'",
-                )?;
-                let rows = statement.query_map([agent_id], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
-                    ))
-                })?;
-                rows.collect::<std::result::Result<Vec<_>, _>>()?
-            };
-
-            let mut result = TimerWakeRecoveryResult::default();
-            let mut wakes_by_timer = pending_wakes
-                .into_iter()
-                .map(|(timer_id, message_id, fire_count)| (timer_id, (message_id, fire_count)))
-                .collect::<BTreeMap<_, _>>();
-            let mut messages_by_timer =
-                BTreeMap::<String, Vec<(QueueEntryRecord, MessageEnvelope)>>::new();
-            for (entry, message) in live_messages {
-                let MessageOrigin::Timer { timer_id } = &message.origin else {
-                    continue;
-                };
-                messages_by_timer
-                    .entry(timer_id.clone())
-                    .or_default()
-                    .push((entry, message));
+                let record = decode_queue_entry_payload(&payload)?;
+                anyhow::ensure!(
+                    record.agent_id == scope.agent_id
+                        && record.message_id == *id
+                        && record.status == QueueEntryStatus::Dropped,
+                    "timer recovery queue ACK mismatch"
+                );
+                queue_entries.push(record);
             }
-
-            for (timer_id, messages) in messages_by_timer {
-                let timer = timer_tx(tx, &timer_id)?;
-                let timer_accepts_wake = timer.as_ref().is_some_and(|timer| {
-                    matches!(timer.status, TimerStatus::Active | TimerStatus::Completed)
-                });
-                let existing_wake = wakes_by_timer.remove(&timer_id);
-                let keep_index = if timer_accepts_wake {
-                    existing_wake
-                        .as_ref()
-                        .and_then(|(message_id, _)| {
-                            messages
-                                .iter()
-                                .position(|(_, message)| message.id == *message_id)
-                        })
-                        .or(Some(0))
-                } else {
-                    None
-                };
-
-                for (index, (mut entry, _)) in messages.iter().cloned().enumerate() {
-                    if Some(index) == keep_index {
-                        continue;
-                    }
-                    entry.status = QueueEntryStatus::Dropped;
-                    entry.updated_at = Utc::now();
-                    upsert_queue_entry_tx(tx, &entry)?;
-                    result.dropped_message_ids.push(entry.message_id);
-                }
-
-                match keep_index {
-                    Some(index) => {
-                        let (entry, message) = &messages[index];
-                        if existing_wake
-                            .as_ref()
-                            .is_some_and(|(message_id, _)| message_id == &message.id)
-                        {
-                            result.retained_wakes += 1;
-                            continue;
-                        }
-                        if existing_wake.is_some() {
-                            result.invalidated_wakes += tx.execute(
-                                "UPDATE timer_wakes
-                                 SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
-                                 WHERE timer_id = ?1 AND status = 'pending'",
-                                params![timer_id, timestamp(Utc::now())],
-                            )?;
-                        }
-                        let fire_count = message
-                            .metadata
-                            .as_ref()
-                            .and_then(|metadata| metadata.get("timer_fire_count"))
-                            .and_then(serde_json::Value::as_u64)
-                            .unwrap_or_else(|| {
-                                timer.as_ref().map_or(1, |timer| timer.fire_count.max(1))
-                            });
-                        // A wake row for this exact pair may already exist when a claimed
-                        // message was restored to the queue after a restart. Reactivate it
-                        // instead of inserting a duplicate row for the composite primary key.
-                        let now = timestamp(Utc::now());
-                        let reactivated = tx.execute(
-                            "UPDATE timer_wakes
-                             SET status = 'pending', fire_count = ?3, updated_at = ?4,
-                                 incorporated_at = NULL, cancelled_at = NULL
-                             WHERE timer_id = ?1 AND message_id = ?2 AND status != 'pending'",
-                            params![timer_id, message.id, fire_count as i64, now],
-                        )?;
-                        if reactivated > 0 {
-                            result.reactivated_wakes += reactivated;
-                            continue;
-                        }
-                        let created_at = timestamp(entry.created_at);
-                        tx.execute(
-                            "INSERT INTO timer_wakes
-                             (timer_id, message_id, fire_count, status, created_at, updated_at)
-                             VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
-                            params![timer_id, message.id, fire_count as i64, created_at],
-                        )?;
-                        result.created_wakes += 1;
-                    }
-                    None => {
-                        if existing_wake.is_some() {
-                            result.invalidated_wakes += tx.execute(
-                                "UPDATE timer_wakes
-                                 SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
-                                 WHERE timer_id = ?1 AND status = 'pending'",
-                                params![timer_id, timestamp(Utc::now())],
-                            )?;
-                        }
-                    }
-                }
-            }
-
-            for (timer_id, _) in wakes_by_timer {
-                result.invalidated_wakes += tx.execute(
-                    "UPDATE timer_wakes
-                     SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
-                     WHERE timer_id = ?1 AND status = 'pending'",
-                    params![timer_id, timestamp(Utc::now())],
-                )?;
-            }
-            Ok(result)
+            let scope_facts = super::context_inputs::ContextDurableRead::new(tx, &scope.agent_id)
+                .scope_facts()?;
+            anyhow::ensure!(
+                scope_facts
+                    .identity
+                    .as_ref()
+                    .is_some_and(
+                        |identity| identity.incarnation == scope.identity_incarnation
+                            && identity.status == AgentRegistryStatus::Active
+                    ),
+                "timer recovery identity changed inside transaction"
+            );
+            Ok(ScopedTimerWakeRecovery {
+                result,
+                queue_entries,
+                scope_facts,
+            })
         })
     }
 
@@ -3299,14 +3357,44 @@ impl TimerRepository<'_> {
         command: &TimerFire,
         fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
     ) -> Result<TimerFireResult> {
+        self.fire_with_wait_inner(command, fault, None)
+            .map(|ack| ack.record)
+    }
+
+    pub(crate) fn fire_with_wait_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        command: &TimerFire,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TimerFireResult>> {
+        self.fire_with_wait_inner(command, fault, Some(scope))
+    }
+
+    fn fire_with_wait_inner(
+        &self,
+        command: &TimerFire,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+        input_scope: Option<&crate::runtime::resident_input_evidence::InputEvidenceScope>,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TimerFireResult>> {
         self.db.transaction(|tx| {
+            if let Some(scope) = input_scope {
+                super::input_evidence_writes::validate_input_evidence_scope_tx(
+                    tx,
+                    scope,
+                    &command.expected.agent_id,
+                )?;
+            }
             if timer_tx(tx, &command.expected.id)?.as_ref() != Some(&command.expected)
                 || command.expected.status != TimerStatus::Active
             {
-                return Ok(TimerFireResult {
-                    advanced: false,
-                    wake_created: false,
-                    message: None,
+                return Ok(super::input_evidence_writes::InputEvidenceCommit {
+                    record: TimerFireResult {
+                        advanced: false,
+                        wake_created: false,
+                        message: None,
+                    },
+                    input_delta: Default::default(),
+                    agent_state: None,
                 });
             }
             if command.record.id != command.expected.id
@@ -3322,10 +3410,14 @@ impl TimerRepository<'_> {
                 |row| row.get::<_, bool>(0),
             )?;
             if pending {
-                return Ok(TimerFireResult {
-                    advanced: true,
-                    wake_created: false,
-                    message: None,
+                return Ok(super::input_evidence_writes::InputEvidenceCommit {
+                    record: TimerFireResult {
+                        advanced: true,
+                        wake_created: false,
+                        message: None,
+                    },
+                    input_delta: Default::default(),
+                    agent_state: None,
                 });
             }
             let actual_agent_state = tx
@@ -3349,6 +3441,18 @@ impl TimerRepository<'_> {
             {
                 return Err(anyhow!("invalid timer wake message or queue entry"));
             }
+            if let Some(scope) = input_scope {
+                // A retried append cannot grant a same-name historical Message
+                // to a Fresh successor or resurrect a pruned evidence ID.
+                super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                    tx,
+                    scope,
+                    &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                        crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                        &command.message.id,
+                    ),
+                )?;
+            }
             inject_fault(
                 fault,
                 crate::runtime_db::transitions::TransitionFaultPoint::AfterValidation,
@@ -3369,15 +3473,54 @@ impl TimerRepository<'_> {
                 params![command.record.id, command.message.id, command.record.fire_count as i64, now],
             )?;
             upsert_agent_state_tx(tx, &command.agent_state.1)?;
+            let result = TimerFireResult {
+                advanced: true,
+                wake_created: true,
+                message: Some(wake.message),
+            };
+            let acknowledgement = if let Some(scope) = input_scope {
+                let actual = committed_message_tx(tx, &scope.agent_id, &command.message.id)?;
+                let facts = [
+                    super::input_evidence_snapshot::CanonicalInputEvidence::Message(actual.clone()),
+                ];
+                let mut acknowledgement =
+                    super::input_evidence_writes::acknowledge_input_evidence_tx(
+                        tx,
+                        scope,
+                        TimerFireResult { message: Some(actual), ..result },
+                        &facts,
+                    )?;
+                let payload: String = tx.query_row(
+                    "SELECT payload_json FROM agent_states WHERE agent_id=?1",
+                    [&scope.agent_id],
+                    |row| row.get(0),
+                )?;
+                let actual: AgentState = serde_json::from_str(&payload)?;
+                let mut expected_ack = command.agent_state.1.clone();
+                expected_ack.total_message_count = actual.total_message_count;
+                anyhow::ensure!(
+                    actual == expected_ack,
+                    "timer fire State ACK differs from the committed wake projection"
+                );
+                acknowledgement.agent_state = Some(
+                    super::transitions::AgentStateMutation {
+                        expected: Some(Box::new(command.agent_state.0.clone())),
+                        record: Box::new(actual),
+                    },
+                );
+                acknowledgement
+            } else {
+                super::input_evidence_writes::InputEvidenceCommit {
+                    record: result,
+                    input_delta: Default::default(),
+                    agent_state: None,
+                }
+            };
             inject_fault(
                 fault,
                 crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,
             )?;
-            Ok(TimerFireResult {
-                advanced: true,
-                wake_created: true,
-                message: Some(wake.message),
-            })
+            Ok(acknowledgement)
         })
     }
 
@@ -3585,7 +3728,15 @@ impl TurnRecordRepository<'_> {
     }
 
     pub fn upsert(&self, record: &TurnRecord) -> Result<()> {
+        // Legacy import may run before conversation projection tables exist.
         self.db.transaction(|tx| upsert_turn_record_tx(tx, record))
+    }
+
+    pub fn upsert_committed(&self, record: &TurnRecord) -> Result<CommittedTurnRecord> {
+        self.db.transaction(|tx| {
+            upsert_turn_record_tx(tx, record)?;
+            committed_turn_record_tx(tx, &record.agent_id, &record.turn_id)
+        })
     }
 
     pub fn by_id(&self, agent_id: Option<&str>, turn_id: &str) -> Result<Option<TurnRecord>> {
@@ -3661,7 +3812,14 @@ impl MessageRepository<'_> {
     }
 
     pub fn upsert(&self, message: &MessageEnvelope) -> Result<()> {
-        self.db.transaction(|tx| upsert_message_tx(tx, message))
+        self.upsert_committed(message).map(|_| ())
+    }
+
+    pub fn upsert_committed(&self, message: &MessageEnvelope) -> Result<MessageEnvelope> {
+        self.db.transaction(|tx| {
+            upsert_message_tx(tx, message)?;
+            committed_message_tx(tx, &message.agent_id, &message.id)
+        })
     }
 
     pub fn append_with_index_changes(
@@ -3674,7 +3832,7 @@ impl MessageRepository<'_> {
             if inserted {
                 insert_runtime_index_changes_tx(tx, changes)?;
             }
-            Ok(appended)
+            committed_message_tx(tx, &appended.agent_id, &appended.id)
         })
     }
 
@@ -3683,18 +3841,40 @@ impl MessageRepository<'_> {
         message: &MessageEnvelope,
         changes: &[RuntimeIndexChange],
     ) -> Result<()> {
+        self.upsert_with_index_changes_committed(message, changes)
+            .map(|_| ())
+    }
+
+    pub fn upsert_with_index_changes_committed(
+        &self,
+        message: &MessageEnvelope,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<MessageEnvelope> {
         self.db.transaction(|tx| {
             upsert_message_tx(tx, message)?;
-            insert_runtime_index_changes_tx(tx, changes)
+            insert_runtime_index_changes_tx(tx, changes)?;
+            committed_message_tx(tx, &message.agent_id, &message.id)
         })
     }
 
     pub fn upsert_many(&self, messages: &[MessageEnvelope]) -> Result<()> {
+        self.upsert_many_committed(messages).map(|_| ())
+    }
+
+    pub fn upsert_many_committed(
+        &self,
+        messages: &[MessageEnvelope],
+    ) -> Result<Vec<MessageEnvelope>> {
         self.db.transaction(|tx| {
             for message in messages {
                 upsert_message_tx(tx, message)?;
             }
-            Ok(())
+            let mut seen = std::collections::BTreeSet::new();
+            messages
+                .iter()
+                .filter(|message| seen.insert((&message.agent_id, &message.id)))
+                .map(|message| committed_message_tx(tx, &message.agent_id, &message.id))
+                .collect()
         })
     }
 
@@ -3888,21 +4068,41 @@ impl TranscriptRepository<'_> {
     }
 
     pub fn upsert(&self, entry: &TranscriptEntry) -> Result<()> {
-        self.db
-            .transaction(|tx| upsert_transcript_entry_tx(tx, entry))
+        self.upsert_committed(entry).map(|_| ())
+    }
+
+    pub fn upsert_committed(&self, entry: &TranscriptEntry) -> Result<TranscriptEntry> {
+        self.db.transaction(|tx| {
+            upsert_transcript_entry_tx(tx, entry)?;
+            committed_transcript_tx(tx, &entry.agent_id, &entry.id)
+        })
     }
 
     pub fn append(&self, entry: &TranscriptEntry) -> Result<TranscriptEntry> {
-        self.db
-            .transaction(|tx| append_transcript_entry_tx(tx, entry).map(|(entry, _)| entry))
+        self.db.transaction(|tx| {
+            append_transcript_entry_tx(tx, entry)?;
+            committed_transcript_tx(tx, &entry.agent_id, &entry.id)
+        })
     }
 
     pub fn upsert_many(&self, entries: &[TranscriptEntry]) -> Result<()> {
+        self.upsert_many_committed(entries).map(|_| ())
+    }
+
+    pub fn upsert_many_committed(
+        &self,
+        entries: &[TranscriptEntry],
+    ) -> Result<Vec<TranscriptEntry>> {
         self.db.transaction(|tx| {
             for entry in entries {
                 upsert_transcript_entry_tx(tx, entry)?;
             }
-            Ok(())
+            let mut seen = std::collections::BTreeSet::new();
+            entries
+                .iter()
+                .filter(|entry| seen.insert((&entry.agent_id, &entry.id)))
+                .map(|entry| committed_transcript_tx(tx, &entry.agent_id, &entry.id))
+                .collect()
         })
     }
 
@@ -4023,18 +4223,42 @@ impl EvidenceRepository<'_> {
     }
 
     pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
-        self.db
-            .transaction(|tx| insert_message_evidence_tx(tx, message))
+        self.append_message_committed(message).map(|_| ())
+    }
+
+    pub fn append_message_committed(&self, message: &MessageEnvelope) -> Result<MessageEnvelope> {
+        self.db.transaction(|tx| {
+            insert_message_evidence_tx(tx, message)?;
+            committed_message_tx(tx, &message.agent_id, &message.id)
+        })
     }
 
     pub fn append_transcript_entry(&self, entry: &TranscriptEntry) -> Result<()> {
-        self.db
-            .transaction(|tx| insert_transcript_evidence_tx(tx, entry))
+        self.append_transcript_entry_committed(entry).map(|_| ())
+    }
+
+    pub fn append_transcript_entry_committed(
+        &self,
+        entry: &TranscriptEntry,
+    ) -> Result<TranscriptEntry> {
+        self.db.transaction(|tx| {
+            insert_transcript_evidence_tx(tx, entry)?;
+            committed_transcript_tx(tx, &entry.agent_id, &entry.id)
+        })
     }
 
     pub fn append_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
-        self.db
-            .transaction(|tx| insert_tool_evidence_tx(tx, record))
+        self.append_tool_execution_committed(record).map(|_| ())
+    }
+
+    pub fn append_tool_execution_committed(
+        &self,
+        record: &ToolExecutionRecord,
+    ) -> Result<ToolExecutionRecord> {
+        self.db.transaction(|tx| {
+            insert_tool_evidence_tx(tx, record)?;
+            committed_tool_tx(tx, &record.agent_id, &record.id)
+        })
     }
 
     pub fn append_tool_execution_with_index_changes(
@@ -4042,15 +4266,31 @@ impl EvidenceRepository<'_> {
         record: &ToolExecutionRecord,
         changes: &[RuntimeIndexChange],
     ) -> Result<()> {
+        self.append_tool_execution_with_index_changes_committed(record, changes)
+            .map(|_| ())
+    }
+
+    pub fn append_tool_execution_with_index_changes_committed(
+        &self,
+        record: &ToolExecutionRecord,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<ToolExecutionRecord> {
         self.db.transaction(|tx| {
             insert_tool_evidence_tx(tx, record)?;
-            insert_runtime_index_changes_tx(tx, changes)
+            insert_runtime_index_changes_tx(tx, changes)?;
+            committed_tool_tx(tx, &record.agent_id, &record.id)
         })
     }
 
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
-        self.db
-            .transaction(|tx| insert_brief_evidence_tx(tx, brief))
+        self.append_brief_committed(brief).map(|_| ())
+    }
+
+    pub fn append_brief_committed(&self, brief: &BriefRecord) -> Result<BriefRecord> {
+        self.db.transaction(|tx| {
+            insert_brief_evidence_tx(tx, brief)?;
+            committed_brief_tx(tx, &brief.agent_id, &brief.id)
+        })
     }
 
     pub fn append_brief_with_index_changes(
@@ -4058,9 +4298,19 @@ impl EvidenceRepository<'_> {
         brief: &BriefRecord,
         changes: &[RuntimeIndexChange],
     ) -> Result<()> {
+        self.append_brief_with_index_changes_committed(brief, changes)
+            .map(|_| ())
+    }
+
+    pub fn append_brief_with_index_changes_committed(
+        &self,
+        brief: &BriefRecord,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<BriefRecord> {
         self.db.transaction(|tx| {
             insert_brief_evidence_tx(tx, brief)?;
-            insert_runtime_index_changes_tx(tx, changes)
+            insert_runtime_index_changes_tx(tx, changes)?;
+            committed_brief_tx(tx, &brief.agent_id, &brief.id)
         })
     }
 
@@ -5941,6 +6191,111 @@ fn merge_legacy_turn_evidence_tx(tx: &Transaction<'_>, derived: &TurnRecord) -> 
     Ok(existing)
 }
 
+pub(crate) fn committed_turn_record_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    turn_id: &str,
+) -> Result<CommittedTurnRecord> {
+    let payload: String = tx.query_row(
+        "SELECT payload_json FROM turn_records WHERE agent_id = ?1 AND turn_id = ?2",
+        params![agent_id, turn_id],
+        |row| row.get(0),
+    )?;
+    let record = decode_turn_record_payload(&payload)?;
+    anyhow::ensure!(
+        record.agent_id == agent_id && record.turn_id == turn_id,
+        "committed Turn scope mismatch for {turn_id}"
+    );
+    let mut input_assignments = Vec::new();
+    let mut affected_source_revisions = Vec::new();
+    let mut affected_turn_ids = BTreeSet::from([turn_id.to_string()]);
+    for message_id in record.input_message_ids.iter().collect::<BTreeSet<_>>() {
+        let (assigned_turn_id, revision, assigned_at): (String, i64, String) = tx.query_row(
+            "SELECT turn_id, revision, assigned_at FROM conversation_input_assignments WHERE agent_id = ?1 AND message_id = ?2",
+            params![agent_id, message_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).with_context(|| format!("reading committed input assignment for {message_id}"))?;
+        affected_turn_ids.insert(assigned_turn_id.clone());
+        let (source_agent_id, source_turn_id, source_revision, activity_seq, updated_at): (
+            String,
+            Option<String>,
+            i64,
+            Option<i64>,
+            String,
+        ) = tx
+            .query_row(
+                "SELECT agent_id, turn_id, revision, activity_seq, updated_at
+                 FROM conversation_source_revisions WHERE source_kind = ?1 AND source_id = ?2",
+                params![SOURCE_OPERATOR, message_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .with_context(|| {
+                format!("reading committed input source projection for {message_id}")
+            })?;
+        anyhow::ensure!(
+            source_agent_id == agent_id
+                && source_turn_id.as_deref() == Some(assigned_turn_id.as_str()),
+            "committed input source projection scope mismatch for {message_id}"
+        );
+        affected_source_revisions.push(CommittedConversationSourceRevision {
+            agent_id: source_agent_id,
+            source_kind: SOURCE_OPERATOR.into(),
+            source_id: message_id.clone(),
+            turn_id: source_turn_id,
+            revision: u64::try_from(source_revision)?,
+            activity_seq: activity_seq.map(u64::try_from).transpose()?,
+            updated_at: parse_timestamp(&updated_at)?,
+        });
+        input_assignments.push(CommittedTurnInputAssignment {
+            agent_id: agent_id.into(),
+            message_id: message_id.clone(),
+            turn_id: assigned_turn_id,
+            revision: u64::try_from(revision)?,
+            assigned_at: parse_timestamp(&assigned_at)?,
+        });
+    }
+    let mut affected_turn_revisions = Vec::new();
+    for affected_turn_id in affected_turn_ids {
+        let (summary, detail, result_settled, updated_at): (i64, i64, bool, String) = tx
+            .query_row(
+                "SELECT summary_revision, detail_revision, result_settled, updated_at
+             FROM conversation_turn_revisions WHERE agent_id = ?1 AND turn_id = ?2",
+                params![agent_id, affected_turn_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .with_context(|| format!("reading committed Turn projection for {affected_turn_id}"))?;
+        affected_turn_revisions.push(CommittedConversationTurnRevision {
+            agent_id: agent_id.into(),
+            turn_id: affected_turn_id,
+            revision: super::conversation::ConversationTurnRevision {
+                summary: u64::try_from(summary)?,
+                detail: u64::try_from(detail)?,
+                result_settled,
+            },
+            updated_at: parse_timestamp(&updated_at)?,
+        });
+    }
+    let revision = affected_turn_revisions
+        .iter()
+        .find(|projection| projection.turn_id == turn_id)
+        .ok_or_else(|| anyhow!("requested Turn projection missing from committed facts"))?
+        .revision;
+    Ok(CommittedTurnRecord {
+        record,
+        input_assignments,
+        revision,
+        affected_source_revisions,
+        affected_turn_revisions,
+    })
+}
+
 pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -> Result<()> {
     if let Some(owner) = record.owner.as_ref() {
         let owner_work_item_id = owner.work_item_id();
@@ -7387,4 +7742,309 @@ pub(crate) fn context_work_items_by_ids_on(
         );
     }
     Ok(records)
+}
+
+// Focused qualification fixtures use these non-receipted adapters. Production
+// evidence writes use the prepared whole-transaction command.
+#[cfg(test)]
+impl TurnRecordRepository<'_> {
+    pub(crate) fn upsert_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &TurnRecord,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<CommittedTurnRecord>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Turn,
+                    &record.turn_id,
+                ),
+            )?;
+            upsert_turn_record_tx(tx, record)?;
+            let actual = committed_turn_record_tx(tx, &record.agent_id, &record.turn_id)?;
+            let facts = [
+                super::input_evidence_snapshot::CanonicalInputEvidence::Turn(actual.record.clone()),
+            ];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
+}
+#[cfg(test)]
+impl MessageRepository<'_> {
+    pub(crate) fn upsert_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &MessageEnvelope,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<MessageEnvelope>> {
+        self.upsert_with_index_changes_in_scope(scope, record, &[])
+    }
+    pub(crate) fn upsert_with_index_changes_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &MessageEnvelope,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<MessageEnvelope>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                    &record.id,
+                ),
+            )?;
+            upsert_message_tx(tx, record)?;
+            insert_runtime_index_changes_tx(tx, changes)?;
+            let actual = committed_message_tx(tx, &record.agent_id, &record.id)?;
+            let facts =
+                [super::input_evidence_snapshot::CanonicalInputEvidence::Message(actual.clone())];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
+    pub(crate) fn append_with_index_changes_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &MessageEnvelope,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<MessageEnvelope>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                    &record.id,
+                ),
+            )?;
+            let (stored, inserted) = append_message_tx(tx, record)?;
+            if inserted {
+                insert_runtime_index_changes_tx(tx, changes)?;
+            }
+            let actual = committed_message_tx(tx, &stored.agent_id, &stored.id)?;
+            let facts =
+                [super::input_evidence_snapshot::CanonicalInputEvidence::Message(actual.clone())];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
+}
+#[cfg(test)]
+impl TranscriptRepository<'_> {
+    pub(crate) fn upsert_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &TranscriptEntry,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TranscriptEntry>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Transcript,
+                    &record.id,
+                ),
+            )?;
+            upsert_transcript_entry_tx(tx, record)?;
+            let actual = committed_transcript_tx(tx, &record.agent_id, &record.id)?;
+            let facts = [
+                super::input_evidence_snapshot::CanonicalInputEvidence::Transcript(actual.clone()),
+            ];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
+    pub(crate) fn append_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &TranscriptEntry,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TranscriptEntry>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Transcript,
+                    &record.id,
+                ),
+            )?;
+            append_transcript_entry_tx(tx, record)?;
+            let actual = committed_transcript_tx(tx, &record.agent_id, &record.id)?;
+            let facts = [
+                super::input_evidence_snapshot::CanonicalInputEvidence::Transcript(actual.clone()),
+            ];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
+}
+#[cfg(test)]
+impl EvidenceRepository<'_> {
+    pub(crate) fn append_message_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &MessageEnvelope,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<MessageEnvelope>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                    &record.id,
+                ),
+            )?;
+            insert_message_evidence_tx(tx, record)?;
+            let actual = committed_message_tx(tx, &record.agent_id, &record.id)?;
+            let facts =
+                [super::input_evidence_snapshot::CanonicalInputEvidence::Message(actual.clone())];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
+    pub(crate) fn append_transcript_entry_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &TranscriptEntry,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TranscriptEntry>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Transcript,
+                    &record.id,
+                ),
+            )?;
+            insert_transcript_evidence_tx(tx, record)?;
+            let actual = committed_transcript_tx(tx, &record.agent_id, &record.id)?;
+            let facts = [
+                super::input_evidence_snapshot::CanonicalInputEvidence::Transcript(actual.clone()),
+            ];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
+    pub(crate) fn append_tool_execution_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &ToolExecutionRecord,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<()>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::ToolExecution,
+                    &record.id,
+                ),
+            )?;
+            insert_tool_evidence_tx(tx, record)?;
+            insert_runtime_index_changes_tx(tx, changes)?;
+            let actual = committed_tool_tx(tx, &record.agent_id, &record.id)?;
+            let facts =
+                [super::input_evidence_snapshot::CanonicalInputEvidence::ToolExecution(actual)];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, (), &facts)
+        })
+    }
+    pub(crate) fn append_brief_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &BriefRecord,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<BriefRecord>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Brief,
+                    &record.id,
+                ),
+            )?;
+            insert_brief_evidence_tx(tx, record)?;
+            insert_runtime_index_changes_tx(tx, changes)?;
+            let actual = committed_brief_tx(tx, &record.agent_id, &record.id)?;
+            let facts =
+                [super::input_evidence_snapshot::CanonicalInputEvidence::Brief(actual.clone())];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
+    pub(crate) fn append_brief_with_created_event_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        agent_id: Option<&str>,
+        record: &BriefRecord,
+        event: &AuditEvent,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<
+        super::input_evidence_writes::InputEvidenceCommit<super::evidence::BriefCreatedCommit>,
+    > {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            anyhow::ensure!(
+                agent_id == Some(scope.agent_id.as_str()),
+                "Brief audit owner differs from reserved input scope"
+            );
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Brief,
+                    &record.id,
+                ),
+            )?;
+            let actual = append_brief_with_created_event_tx(tx, agent_id, record, event, changes)?;
+            let facts = [
+                super::input_evidence_snapshot::CanonicalInputEvidence::Brief(actual.brief.clone()),
+            ];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
 }

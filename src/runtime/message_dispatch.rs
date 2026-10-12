@@ -572,12 +572,23 @@ impl RuntimeHandle {
         };
         let operation_id = command.audit_events[0].id.clone();
         let commit = mutation
-            .commit_transition(operation_id, || self.commit_work_item_transition(&command))
+            .commit_transition(operation_id, |scope| {
+                self.inner
+                    .runtime_db
+                    .transitions_in_scope(scope)
+                    .commit_work_item_with_execution_protocol(
+                        &command,
+                        &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
+                    )
+            })
             .await?;
         Ok(Some(commit))
     }
 
-    pub(super) fn record_incoming_transcript_entry(&self, message: &MessageEnvelope) -> Result<()> {
+    pub(super) async fn record_incoming_transcript_entry(
+        &self,
+        message: &MessageEnvelope,
+    ) -> Result<()> {
         self.persist_transcript_evidence(&TranscriptEntry::new(
             message.agent_id.clone(),
             TranscriptEntryKind::IncomingMessage,
@@ -595,6 +606,7 @@ impl RuntimeHandle {
                 "causation_id": message.causation_id.clone(),
             }),
         ))
+        .await
     }
 }
 

@@ -543,11 +543,14 @@ async fn cold_metadata_group_recovers_without_inventing_a_child_state_or_repeati
     mutation.state.total_output_tokens += 23;
     let expected = mutation.state.clone();
     runtime.inject_next_transition_fault(TransitionFaultPoint::BeforeCacheUpdate);
-    mutation.persist_state(runtime.storage()).await.unwrap_err();
-    assert!(matches!(
-        runtime.inner.mutation_owner.capture(),
-        Err(MutationOwnerError::NeedsReconcile(_))
-    ));
+    let error = mutation.persist_state(runtime.storage()).await.unwrap_err();
+    assert!(
+        matches!(
+            runtime.inner.mutation_owner.capture(),
+            Err(MutationOwnerError::NeedsReconcile(_))
+        ),
+        "expected a committed publication fault, got {error:#}"
+    );
     assert!(matches!(
         child.capture(),
         Err(MutationOwnerError::NeedsReconcile(_))
@@ -580,6 +583,48 @@ async fn cold_metadata_group_recovers_without_inventing_a_child_state_or_repeati
 }
 
 #[tokio::test]
+async fn readonly_group_member_with_orphan_state_rejects_before_primary_commit() {
+    let (runtime, _data, _workspace) = stale_runtime().await;
+    let before = runtime.agent_state().await.unwrap();
+    let child = runtime
+        .inner
+        .standalone_related_mutation_owners
+        .current_owner("cold-child", 1)
+        .unwrap();
+    let orphan = AgentState::new("cold-child");
+    runtime
+        .runtime_db()
+        .agent_states()
+        .upsert_for_fixture(&orphan)
+        .unwrap();
+    let mut mutation = runtime
+        .begin_mutation_with_owners(vec![runtime.inner.mutation_owner.clone(), child.clone()])
+        .await
+        .unwrap();
+    mutation.state.total_output_tokens += 23;
+    let error = mutation.persist_state(runtime.storage()).await.unwrap_err();
+    assert!(format!("{error:#}").contains("State without a durable identity"));
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .agent_states()
+            .latest("default")
+            .unwrap(),
+        Some(before)
+    );
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .agent_states()
+            .latest("cold-child")
+            .unwrap(),
+        Some(orphan)
+    );
+    assert!(runtime.inner.mutation_owner.capture().is_ok());
+    assert!(child.capture().unwrap().is_none());
+}
+
+#[tokio::test]
 async fn unknown_group_keeps_parent_and_absent_child_fenced() {
     let (runtime, _data, _workspace) = stale_runtime().await;
     let child = runtime
@@ -593,7 +638,7 @@ async fn unknown_group_keeps_parent_and_absent_child_fenced() {
         .unwrap();
     let before = mutation.state.clone();
     let error = mutation
-        .commit_transition("unknown-group".into(), || {
+        .commit_transition("unknown-group".into(), |_scope| {
             Err(anyhow!("lost acknowledgement"))
         })
         .await
@@ -645,5 +690,89 @@ async fn definitely_rolled_back_group_opens_all_scopes_without_installing_candid
             .unwrap()
             .unwrap(),
         before
+    );
+}
+
+#[tokio::test]
+async fn acknowledged_input_projection_error_keeps_known_state_and_original_effects() {
+    use super::super::resident_input_evidence::{
+        CommittedEvidenceRemoval, InputEvidenceFamily, InputEvidenceKey, InputEvidenceScope,
+    };
+    let (runtime, _data, _workspace) = stale_runtime().await;
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    assert!(mutation.input_evidence.is_some());
+    let previous = mutation.last_persisted_state.clone();
+    let mut next = previous.clone();
+    next.total_output_tokens += 11;
+    let event = AuditEvent::legacy("input_projection_error_fixture", serde_json::json!({}));
+    let command = crate::runtime_db::transitions::AgentPostureTransitionCommand {
+        agent_id: next.id.clone(),
+        expected_incarnation: Some(runtime.inner.identity_incarnation),
+        agent_state: crate::runtime_db::transitions::AgentStateMutation {
+            expected: Some(Box::new(previous)),
+            record: Box::new(next.clone()),
+        },
+        audit_events: vec![event.clone()],
+        fault: None,
+    };
+    let error = mutation
+        .commit_transition(event.id.clone(), |scope| {
+            let mut committed = runtime
+                .inner
+                .runtime_db
+                .transitions_in_scope(scope)
+                .commit_agent_posture(&command)?;
+            committed
+                .effects
+                .input_evidence_delta
+                .removals
+                .push(CommittedEvidenceRemoval {
+                    scope: InputEvidenceScope {
+                        agent_id: "foreign-input".into(),
+                        identity_incarnation: 1,
+                    },
+                    key: InputEvidenceKey::new(InputEvidenceFamily::Message, "never-installed"),
+                    revision: 1,
+                    previous_content_digest: None,
+                });
+            Ok(committed)
+        })
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("committed; input publication requires preparation"));
+    let recovery = mutation.reservations[mutation.primary_index]
+        .recovery()
+        .unwrap()
+        .unwrap();
+    let Some(KnownCommit::State {
+        state,
+        input_evidence: None,
+        runtime: Some(facts),
+        ..
+    }) = recovery.known
+    else {
+        panic!("an acknowledged write must retain Known facts even when input projection fails");
+    };
+    assert_eq!(state.as_ref(), &next);
+    assert_eq!(facts.effects.audit_events[0].id, event.id);
+    drop(mutation);
+    let events = runtime.storage().read_recent_events(100).unwrap();
+    runtime.reconcile_posture_observation().await.unwrap();
+    let root = runtime.inner.mutation_owner.capture().unwrap().unwrap();
+    assert_eq!(root.state.as_ref(), &next);
+    assert!(
+        root.input_evidence.is_none(),
+        "failed derived data remains explicitly unprepared"
+    );
+    assert_eq!(runtime.storage().read_recent_events(100).unwrap(), events);
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .agent_states()
+            .latest("default")
+            .unwrap(),
+        Some(next)
     );
 }

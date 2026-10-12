@@ -19,21 +19,26 @@ pub(crate) mod episode_recovery;
 pub(crate) mod execution_admission;
 mod failure;
 mod first_run_intro;
+pub(crate) mod input_evidence_budget;
+mod input_preparation;
+pub(crate) mod input_recovery;
 mod lifecycle;
 mod message_dispatch;
 pub(crate) mod mutation_owner;
-mod mutation_witness;
+pub(crate) mod mutation_witness;
 mod operator;
 mod operator_dispatch;
 pub(crate) mod provider_recovery;
 mod provider_turn;
 mod repair;
+pub(crate) mod resident_input_evidence;
 pub(crate) mod resident_state;
 mod scheduler;
 mod scheduler_acceptance;
 mod scheduler_continuation;
 pub(crate) mod scheduler_executor;
 mod state_mutation;
+pub(crate) use state_mutation::RuntimeMutationFacts;
 mod subagent;
 mod task_result_recovery;
 mod task_state_reducer;
@@ -54,7 +59,8 @@ pub(crate) use agent_message_delivery::{
     enable_delivery_checkpoint, release_delivery_checkpoint, wait_for_delivery_checkpoint,
 };
 pub(crate) use agent_message_delivery::{
-    AgentMessageDeliveryService, PreparedAgentMessageDelivery,
+    legacy_cross_agent_caller_bindings_match, AgentMessageDeliveryService,
+    PreparedAgentMessageDelivery,
 };
 pub use first_run_intro::maybe_enqueue_first_run_intro;
 pub(crate) use lifecycle::LightweightAgentStateProjection;
@@ -113,7 +119,7 @@ use crate::{
     agents_md::load_agents_md,
     brief,
     config::{ModelRouteRef, RuntimeModelCatalog},
-    context::{sync_agent_message_count, ContextConfig},
+    context::ContextConfig,
     host::RuntimeHostBridge,
     ingress::WakeDisposition,
     memory::refresh_working_memory,
@@ -427,6 +433,7 @@ pub struct RuntimeHandle {
 struct RuntimeInner {
     identity_incarnation: u64,
     mutation_owner: mutation_owner::MutationOwner,
+    input_evidence_budget: input_evidence_budget::InputEvidenceBudgetLedger,
     standalone_related_mutation_owners: mutation_owner::MutationOwnerRegistry,
     agent: Mutex<RuntimeAgent>,
     projection_cache: Mutex<AgentRuntimeProjectionCache>,
@@ -2388,6 +2395,7 @@ pub fn apply_scheduler_recovery_plan(
         report,
         SchedulerRecoveryBackupPolicy::Required,
         None,
+        None,
     )
 }
 
@@ -2412,24 +2420,26 @@ pub fn apply_scheduler_recovery_plan_with_backup_policy(
         report,
         backup_policy,
         None,
+        None,
     )
 }
 
-#[cfg(test)]
-fn apply_scheduler_recovery_plan_with_task_result_fault(
+pub fn apply_scheduler_recovery_plan_with_maintenance(
     storage: &AppStorage,
     runtime_db: &RuntimeDb,
     agent_id: &str,
     report: &SchedulerRecoveryReport,
-    fault: crate::runtime_db::transitions::TransitionFaultPoint,
+    backup_policy: SchedulerRecoveryBackupPolicy,
+    maintenance: &crate::runtime_db::OfflineInputMaintenance<'_>,
 ) -> Result<(usize, Option<std::path::PathBuf>)> {
     apply_scheduler_recovery_plan_with_options(
         storage,
         runtime_db,
         agent_id,
         report,
-        SchedulerRecoveryBackupPolicy::SkipApproved,
-        Some(fault),
+        backup_policy,
+        None,
+        Some(maintenance),
     )
 }
 
@@ -2440,6 +2450,7 @@ fn apply_scheduler_recovery_plan_with_options(
     report: &SchedulerRecoveryReport,
     backup_policy: SchedulerRecoveryBackupPolicy,
     task_result_fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+    maintenance: Option<&crate::runtime_db::OfflineInputMaintenance<'_>>,
 ) -> Result<(usize, Option<std::path::PathBuf>)> {
     let recoveries = report
         .candidates
@@ -2506,42 +2517,45 @@ fn apply_scheduler_recovery_plan_with_options(
         if &current_entry == proposed_entry && candidate.proposed_commands.is_empty() {
             continue;
         }
-        let commit = runtime_db.transitions().commit_scheduler_recovery(
-            &crate::runtime_db::transitions::QueueTransitionCommand {
-                agent_id: agent_id.to_string(),
-                operation: if proposed_entry.status == QueueEntryStatus::Queued {
-                    crate::runtime_db::transitions::QueueOperation::Requeue
-                } else {
-                    crate::runtime_db::transitions::QueueOperation::Settle
+        let commit = runtime_db
+            .transitions()
+            .commit_scheduler_recovery_with_maintenance(
+                &crate::runtime_db::transitions::QueueTransitionCommand {
+                    agent_id: agent_id.to_string(),
+                    operation: if proposed_entry.status == QueueEntryStatus::Queued {
+                        crate::runtime_db::transitions::QueueOperation::Requeue
+                    } else {
+                        crate::runtime_db::transitions::QueueOperation::Settle
+                    },
+                    mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                        expected: current_entry,
+                        record: proposed_entry.clone(),
+                    },
+                    scheduler_claim_work_item: None,
+                    agent_state: None,
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    turn_record: None,
+                    audit_events: vec![AuditEvent::legacy(
+                        "scheduler_execution_recovered",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "message_id": candidate.message_id,
+                            "activation_id": candidate.activation_id,
+                            "work_item_id": candidate.work_item_id,
+                            "reason": candidate.reason,
+                        }),
+                    )],
+                    notify_scheduler: true,
+                    fault: None,
+                    brief_evidence: Vec::new(),
                 },
-                mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                    expected: current_entry,
-                    record: proposed_entry.clone(),
+                &crate::runtime_db::transitions::ExecutionProtocolTransition {
+                    bootstrap: None,
+                    commands: candidate.proposed_commands.clone(),
                 },
-                scheduler_claim_work_item: None,
-                agent_state: None,
-                message_evidence: Vec::new(),
-                transcript_entries: Vec::new(),
-                turn_record: None,
-                audit_events: vec![AuditEvent::legacy(
-                    "scheduler_execution_recovered",
-                    serde_json::json!({
-                        "agent_id": agent_id,
-                        "message_id": candidate.message_id,
-                        "activation_id": candidate.activation_id,
-                        "work_item_id": candidate.work_item_id,
-                        "reason": candidate.reason,
-                    }),
-                )],
-                notify_scheduler: true,
-                fault: None,
-                brief_evidence: Vec::new(),
-            },
-            &crate::runtime_db::transitions::ExecutionProtocolTransition {
-                bootstrap: None,
-                commands: candidate.proposed_commands.clone(),
-            },
-        )?;
+                maintenance,
+            )?;
         applied |= commit.applied;
     }
     for (candidate, expected_entry, proposed_entry, command) in task_result_claim_recovery {
@@ -2565,42 +2579,45 @@ fn apply_scheduler_recovery_plan_with_options(
                 candidate.message_id
             ));
         }
-        let commit = runtime_db.transitions().commit_scheduler_recovery(
-            &crate::runtime_db::transitions::QueueTransitionCommand {
-                agent_id: agent_id.to_string(),
-                operation: if proposed_entry.status == QueueEntryStatus::Queued {
-                    crate::runtime_db::transitions::QueueOperation::Requeue
-                } else {
-                    crate::runtime_db::transitions::QueueOperation::Settle
+        let commit = runtime_db
+            .transitions()
+            .commit_scheduler_recovery_with_maintenance(
+                &crate::runtime_db::transitions::QueueTransitionCommand {
+                    agent_id: agent_id.to_string(),
+                    operation: if proposed_entry.status == QueueEntryStatus::Queued {
+                        crate::runtime_db::transitions::QueueOperation::Requeue
+                    } else {
+                        crate::runtime_db::transitions::QueueOperation::Settle
+                    },
+                    mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                        expected: expected_entry.clone(),
+                        record: proposed_entry.clone(),
+                    },
+                    scheduler_claim_work_item: None,
+                    agent_state: None,
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    turn_record: None,
+                    audit_events: vec![AuditEvent::legacy(
+                        "scheduler_task_result_claim_recovered",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "message_id": candidate.message_id,
+                            "activation_id": candidate.activation_id,
+                            "work_item_id": candidate.work_item_id,
+                            "reason": candidate.reason,
+                        }),
+                    )],
+                    notify_scheduler: true,
+                    fault: task_result_fault,
+                    brief_evidence: Vec::new(),
                 },
-                mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                    expected: expected_entry.clone(),
-                    record: proposed_entry.clone(),
+                &crate::runtime_db::transitions::ExecutionProtocolTransition {
+                    bootstrap: None,
+                    commands: vec![command.clone()],
                 },
-                scheduler_claim_work_item: None,
-                agent_state: None,
-                message_evidence: Vec::new(),
-                transcript_entries: Vec::new(),
-                turn_record: None,
-                audit_events: vec![AuditEvent::legacy(
-                    "scheduler_task_result_claim_recovered",
-                    serde_json::json!({
-                        "agent_id": agent_id,
-                        "message_id": candidate.message_id,
-                        "activation_id": candidate.activation_id,
-                        "work_item_id": candidate.work_item_id,
-                        "reason": candidate.reason,
-                    }),
-                )],
-                notify_scheduler: true,
-                fault: task_result_fault,
-                brief_evidence: Vec::new(),
-            },
-            &crate::runtime_db::transitions::ExecutionProtocolTransition {
-                bootstrap: None,
-                commands: vec![command.clone()],
-            },
-        )?;
+                maintenance,
+            )?;
         applied |= commit.applied;
         if commit.applied {
             crate::diagnostics::record_unsettled_claim_recovery();
@@ -2630,10 +2647,11 @@ fn apply_scheduler_recovery_plan_with_options(
             .collect::<Vec<_>>();
         match runtime_db
             .transitions()
-            .commit_execution_protocol_recovery_plan(
+            .commit_execution_protocol_recovery_plan_with_maintenance(
                 agent_id,
                 &continuation_reconciliation,
                 &audit_events,
+                maintenance,
             )?
         {
             crate::runtime_db::transitions::execution_protocol_repository::ExecutionProtocolRecoveryCommitOutcome::Applied(
@@ -2905,6 +2923,7 @@ struct RuntimeAgent {
     state: AgentState,
     last_persisted_state: AgentState,
     queue: RuntimeQueue,
+    _queue_budget_view: Option<Arc<input_evidence_budget::BudgetViewGuard>>,
     current_run_abort: Option<CurrentRunAbortHandle>,
 }
 
@@ -3136,77 +3155,6 @@ impl RuntimeHandle {
         self.take_transition_fault()
     }
 
-    pub(super) fn commit_work_item_transition(
-        &self,
-        command: &crate::runtime_db::transitions::WorkItemTransitionCommand,
-    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
-        self.commit_work_item_transition_with_execution(
-            command,
-            &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
-        )
-    }
-
-    pub(super) fn commit_work_item_transition_with_execution(
-        &self,
-        command: &crate::runtime_db::transitions::WorkItemTransitionCommand,
-        execution_protocol: &crate::runtime_db::transitions::ExecutionProtocolTransition,
-    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
-        self.inner
-            .runtime_db
-            .transitions()
-            .commit_work_item_with_execution_protocol(command, execution_protocol)
-    }
-
-    pub(super) fn commit_work_item_focus_transition(
-        &self,
-        command: &crate::runtime_db::transitions::WorkItemFocusTransitionCommand,
-    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
-        self.commit_work_item_focus_transition_with_execution(
-            command,
-            &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
-        )
-    }
-
-    pub(super) fn commit_work_item_focus_transition_with_execution(
-        &self,
-        command: &crate::runtime_db::transitions::WorkItemFocusTransitionCommand,
-        execution_protocol: &crate::runtime_db::transitions::ExecutionProtocolTransition,
-    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
-        self.inner
-            .runtime_db
-            .transitions()
-            .commit_work_item_focus_with_execution_protocol(command, execution_protocol)
-    }
-
-    pub(super) fn commit_work_item_focus_transition_with_execution_and_completion_tool(
-        &self,
-        command: &crate::runtime_db::transitions::WorkItemFocusTransitionCommand,
-        execution_protocol: &crate::runtime_db::transitions::ExecutionProtocolTransition,
-        tool_execution: &crate::types::ToolExecutionRecord,
-    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
-        self.inner
-            .runtime_db
-            .transitions()
-            .commit_work_item_focus_with_execution_protocol_and_completion_tool(
-                command,
-                execution_protocol,
-                tool_execution,
-            )
-    }
-
-    pub(super) fn commit_task_transition(
-        &self,
-        command: &crate::runtime_db::transitions::TaskTransitionCommand,
-    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
-        self.inner
-            .runtime_db
-            .transitions()
-            .commit_task_with_execution_protocol(
-                command,
-                &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
-            )
-    }
-
     pub(super) fn inject_next_acceptance_transition_fault(
         &self,
         fault: TransitionFaultPoint,
@@ -3354,19 +3302,14 @@ impl RuntimeHandle {
     }
 
     #[cfg(test)]
-    async fn apply_claim_work_item_plan_status_before_commit(&self) -> Result<()> {
-        let injected = self
-            .inner
+    fn take_claim_work_item_plan_status_before_commit(
+        &self,
+    ) -> Option<(String, crate::types::WorkItemPlanStatus)> {
+        self.inner
             .claim_work_item_plan_status_before_commit
             .lock()
             .expect("claim WorkItem mutation lock poisoned")
-            .take();
-        let Some((work_item_id, plan_status)) = injected else {
-            return Ok(());
-        };
-        self.update_work_item_fields(work_item_id, None, Some(plan_status), None, None, None)
-            .await?;
-        Ok(())
+            .take()
     }
 
     pub(super) fn take_transition_warnings(&self) -> Vec<PostCommitWarning> {
@@ -3430,7 +3373,7 @@ impl RuntimeHandle {
     pub(crate) async fn record_timer_projection(&self, record: &TimerRecord) -> Result<()> {
         let mut mutation = self.begin_mutation().await?;
         let commit = mutation
-            .commit_transition(crate::ids::audit_event_id(), || {
+            .commit_transition(crate::ids::audit_event_id(), |_scope| {
                 self.inner.storage.append_timer(record)?;
                 Ok(TransitionCommit {
                     applied: true,
@@ -4133,61 +4076,108 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    async fn begin_interactive_turn_with_provenance(
+    #[inline(never)]
+    fn begin_interactive_turn_with_provenance<'a>(
+        &'a self,
+        message: Option<&'a MessageEnvelope>,
+        operator_binding_id: Option<&'a str>,
+        operator_reply_route_id: Option<&'a str>,
+        execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<(String, u64)>> + Send + 'a>>
+    {
+        // The prepared input and private candidate stay on this heap frame,
+        // rather than enlarging every dispatch/recovery caller's stack frame.
+        Box::pin(self.begin_interactive_turn_with_provenance_inner(
+            message,
+            operator_binding_id,
+            operator_reply_route_id,
+            execution_admission_provenance,
+        ))
+    }
+
+    async fn begin_interactive_turn_with_provenance_inner(
         &self,
         message: Option<&MessageEnvelope>,
         operator_binding_id: Option<&str>,
         operator_reply_route_id: Option<&str>,
         execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
     ) -> Result<(String, u64)> {
-        let replay_source = if let Some(message) = message {
-            if let Some(source_turn_id) = message.source_refs.get("replay_source_turn_id") {
-                Some((
-                    source_turn_id.clone(),
-                    self.inner
-                        .runtime_db
-                        .turn_records()
-                        .by_id(Some(&message.agent_id), source_turn_id)?,
+        use self::resident_input_evidence::{
+            InputEvidenceFamily as Family, InputEvidenceKey as Key,
+        };
+        let mut guard = self.begin_mutation().await?;
+        let mut roots = std::collections::BTreeSet::new();
+        if let Some(message) = message {
+            anyhow::ensure!(
+                message.agent_id == guard.state.id,
+                "turn input agent mismatch"
+            );
+            roots.insert(Key::new(Family::Message, &message.id));
+        }
+        if let Some(ExecutionAdmissionProvenance::Canonical { activation_id, .. }) =
+            execution_admission_provenance.as_ref()
+        {
+            roots.insert(Key::new(Family::Attempt, activation_id));
+        }
+        guard
+            .prepare_owner_inputs(roots, Default::default())
+            .await?;
+        let inputs = guard.capture_input_evidence()?;
+        let execution = inputs.execution_state_if_initialized()?;
+        // A payload Turn ID is a preallocation/replay hint. Only this captured
+        // canonical assignment grants the previous Turn's body and terminal.
+        let assigned_source_turn = if let Some(message) = message {
+            let assignment = inputs.message_turn_keys.get(&message.id).ok_or_else(|| {
+                self::resident_input_evidence::InputEvidenceReadError::NeedsPreparation(Key::new(
+                    Family::Message,
+                    &message.id,
                 ))
-            } else {
-                None
-            }
+            })?;
+            assignment
+                .as_deref()
+                .map(|turn_id| {
+                    provider_recovery::captured_turn(&inputs, turn_id)?
+                        .map(|turn| (turn_id.to_owned(), turn))
+                        .ok_or_else(|| anyhow!("assigned turn input source is unavailable"))
+                })
+                .transpose()?
         } else {
             None
         };
-        let terminal_source_turn = if replay_source.is_none() {
-            if let Some(message) = message {
-                if let Some(source_turn_id) = normalized_turn_id(message.turn_id.as_deref()) {
-                    self.inner
-                        .runtime_db
-                        .turn_records()
-                        .by_id(Some(&message.agent_id), &source_turn_id)?
-                        .filter(|turn| turn.terminal.is_some())
-                        .map(|turn| (source_turn_id, turn))
+        let replay_source = message
+            .and_then(|message| message.source_refs.get("replay_source_turn_id"))
+            .map(|source_turn_id| {
+                if let Some((assigned_id, source)) = &assigned_source_turn {
+                    (assigned_id.clone(), Some(source.clone()))
                 } else {
-                    None
+                    // Interrupted claim-only reentry may have no started Turn.
+                    // Keep its hint without reading or granting an old body.
+                    (source_turn_id.clone(), None)
                 }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+            });
+        let terminal_source_turn = replay_source
+            .is_none()
+            .then_some(assigned_source_turn.as_ref())
+            .flatten()
+            .filter(|(_, turn)| turn.terminal.is_some())
+            .cloned();
         #[allow(deprecated)]
         let canonical_execution_binding = match execution_admission_provenance.as_ref() {
             Some(ExecutionAdmissionProvenance::Canonical { activation_id, .. }) => {
                 let message = message.ok_or_else(|| {
                     anyhow!("canonical execution admission requires a source message")
                 })?;
-                let attempt = self
-                    .inner
-                    .runtime_db
-                    .transitions()
-                    .load_execution_protocol_state_if_initialized(&message.agent_id)?
+                let attempt = execution
+                    .as_ref()
                     .and_then(|state| state.attempts.get(activation_id).cloned())
                     .ok_or_else(|| {
                         anyhow!("canonical execution admission references an unknown attempt")
                     })?;
+                anyhow::ensure!(
+                    attempt.agent_id == message.agent_id
+                        && attempt.source_message_id.as_deref() == Some(message.id.as_str()),
+                    "canonical turn admission source differs from the original claim"
+                );
                 let claimed_work_revision = attempt.admitted_fences.work_item_source_revision;
                 let owner = match attempt.binding {
                     crate::domain::execution_protocol::ExecutionBinding::WorkItem {
@@ -4214,13 +4204,11 @@ impl RuntimeHandle {
         };
         if let Some(message) = message {
             let work_item_id = message.work_item_id.clone().or_else(|| {
-                self.inner.agent.try_lock().ok().and_then(|guard| {
-                    guard
-                        .state
-                        .current_turn_work_item_id
-                        .clone()
-                        .or_else(|| guard.state.current_work_item_id.clone())
-                })
+                guard
+                    .state
+                    .current_turn_work_item_id
+                    .clone()
+                    .or_else(|| guard.state.current_work_item_id.clone())
             });
             let activation_id = scheduler_executor::canonical_activation_id(&message.id);
             let scenario = match message.delivery_surface {
@@ -4235,11 +4223,8 @@ impl RuntimeHandle {
             let authoritative_without_activation = work_item_id.is_some()
                 && message.authority_class == AuthorityClass::RuntimeInstruction
                 && scenario.is_some()
-                && self
-                    .inner
-                    .runtime_db
-                    .transitions()
-                    .load_execution_protocol_state_if_initialized(&message.agent_id)?
+                && execution
+                    .as_ref()
                     .is_none_or(|state| !state.attempts.contains_key(&activation_id));
             if authoritative_without_activation {
                 self.inner.storage.append_event(&AuditEvent::legacy(
@@ -4255,7 +4240,6 @@ impl RuntimeHandle {
             }
         }
         let state = {
-            let mut guard = self.begin_mutation().await?;
             guard.state.turn_index += 1;
             let turn_id = if replay_source.is_some() || terminal_source_turn.is_some() {
                 crate::ids::turn_id()
@@ -4339,10 +4323,37 @@ impl RuntimeHandle {
             guard.state.active_skills.retain(|skill| {
                 matches!(skill.activation_state, SkillActivationState::SessionActive)
             });
-            guard.persist_state(&self.inner.storage).await?;
+            let prior_terminal = terminal_source_turn
+                .as_ref()
+                .map(|(_, turn)| turn)
+                .or_else(|| replay_source.as_ref().and_then(|(_, turn)| turn.as_ref()))
+                .and_then(|turn| turn.terminal.clone());
+            let mut started_turn =
+                Self::build_started_turn_record(&guard.state, message, prior_terminal.clone())?;
+            if let (Some(message), Some((source_id, _))) = (
+                message,
+                replay_source
+                    .as_ref()
+                    .map(|(id, turn)| (id, turn.as_ref()))
+                    .or_else(|| {
+                        terminal_source_turn
+                            .as_ref()
+                            .map(|(id, turn)| (id, Some(turn)))
+                    }),
+            ) {
+                started_turn.replay = Some(crate::types::TurnReplayProvenance {
+                    source_message_id: message.id.clone(),
+                    source_turn_id: source_id.clone(),
+                    reason: "interrupted_queue_claim_reentry".into(),
+                    prior_terminal,
+                });
+            }
+            // The posture, actual input assignment and started Turn publish as
+            // one acknowledged candidate, so no reader sees a dangling binding.
+            guard.persist_state_with_started_turn(started_turn).await?;
             guard.state.clone()
         };
-        self.persist_started_turn(&state, message)?;
+        drop(guard);
         self.append_state_changed_events(&state)?;
         if let Some(message) = message {
             self.inner.storage.append_event(&AuditEvent::legacy(
@@ -4711,11 +4722,6 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         delivery: Option<&AgentMessageDeliveryRecord>,
     ) -> Result<TransitionCommit> {
-        let message_is_new = self
-            .inner
-            .storage
-            .read_message_by_id(&message.id)?
-            .is_none();
         let existing_queue_entry = self.inner.runtime_db.queue_entries().latest(&message.id)?;
         if existing_queue_entry.as_ref().is_some_and(|entry| {
             matches!(
@@ -4806,11 +4812,8 @@ impl RuntimeHandle {
                 .len()
                 .saturating_add(usize::from(queue_needs_push && !discard_due_to_stop));
             committed_state.last_wake_reason = Some(format!("{:?}", message.kind));
-            committed_state.total_message_count = self
-                .inner
-                .storage
-                .count_messages()?
-                .saturating_add(usize::from(message_is_new));
+            // The original transaction returns its actual canonical count.
+            committed_state.total_message_count = guard.state.total_message_count;
             if !discard_due_to_stop
                 && scheduler::apply_message_wake_projection(&mut committed_state)
             {
@@ -4877,20 +4880,11 @@ impl RuntimeHandle {
                 fault: self.take_transition_fault(),
                 brief_evidence: Vec::new(),
             };
+            let mut prepared =
+                crate::runtime_db::transitions::PreparedQueueTransition::new(command);
+            prepared.delivery = delivery.cloned();
             guard
-                .commit_transition(crate::ids::audit_event_id(), || {
-                    if let Some(delivery) = delivery {
-                        self.inner
-                            .runtime_db
-                            .transitions()
-                            .commit_delivery_admission(&command, delivery)
-                    } else {
-                        self.inner
-                            .runtime_db
-                            .transitions()
-                            .commit_queue_with_wait_trigger(&command)
-                    }
-                })
+                .commit_prepared_queue(crate::ids::audit_event_id(), prepared)
                 .await?
         };
         Ok(commit)
@@ -5218,12 +5212,7 @@ impl RuntimeHandle {
                 fault: self.take_terminal_transition_fault(),
             };
             let result = mutation
-                .commit_transition(crate::ids::audit_event_id(), || {
-                    self.inner
-                        .runtime_db
-                        .transitions()
-                        .commit_turn_terminal(&command)
-                })
+                .commit_prepared_terminal(crate::ids::audit_event_id(), command)
                 .await;
             drop(mutation);
             match result {
@@ -5527,61 +5516,32 @@ impl RuntimeHandle {
                     })
                 })
                 .transpose()?;
-            let commit = mutation
-                .commit_transition(crate::ids::audit_event_id(), || {
-                    if let Some(completion) = completion.as_ref() {
-                        self.inner.runtime_db.transitions().commit_queue_terminal(
-                            &command,
-                            &execution_protocol,
-                            Some(completion),
-                            &[],
-                            task_result_settlement.as_ref(),
-                        )
-                    } else if let Some(prepared) = prepared_wait.as_deref() {
-                        let terminal_tool_executions = prepared
-                            .tool_execution
-                            .as_ref()
+            let mut prepared =
+                crate::runtime_db::transitions::PreparedQueueTransition::new(command.clone());
+            prepared.execution_protocol = execution_protocol.clone();
+            prepared.task_result_settlement = task_result_settlement.clone();
+            if let Some(completion) = completion {
+                prepared.completion = Some(completion);
+            } else if let Some(wait) = prepared_wait.as_deref() {
+                prepared.wait_registration = Some(wait.command.clone());
+                prepared.task_expectation = wait.expected_task.clone();
+                prepared.timer_wake_claim = wait.command.timer_wake.clone();
+                prepared.terminal_tool_executions = wait
+                    .tool_execution
+                    .as_ref()
+                    .into_iter()
+                    .chain(
+                        terminal_transition
                             .into_iter()
-                            .chain(
-                                terminal_transition
-                                    .into_iter()
-                                    .flat_map(|transition| &transition.terminal_tool_executions),
-                            )
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        self.inner
-                            .runtime_db
-                            .transitions()
-                            .commit_queue_terminal_with_wait(
-                                &command,
-                                &execution_protocol,
-                                &prepared.command,
-                                prepared.expected_task.as_ref(),
-                                &terminal_tool_executions,
-                                task_result_settlement.as_ref(),
-                            )
-                    } else if terminal_transition
-                        .is_some_and(|transition| !transition.terminal_tool_executions.is_empty())
-                    {
-                        self.inner.runtime_db.transitions().commit_queue_terminal(
-                            &command,
-                            &execution_protocol,
-                            None,
-                            &terminal_transition
-                                .expect("terminal tool executions require a terminal transition")
-                                .terminal_tool_executions,
-                            task_result_settlement.as_ref(),
-                        )
-                    } else {
-                        self.inner.runtime_db.transitions().commit_queue_terminal(
-                            &command,
-                            &execution_protocol,
-                            None,
-                            &[],
-                            task_result_settlement.as_ref(),
-                        )
-                    }
-                })
+                            .flat_map(|transition| &transition.terminal_tool_executions),
+                    )
+                    .cloned()
+                    .collect();
+            } else if let Some(terminal) = terminal_transition {
+                prepared.terminal_tool_executions = terminal.terminal_tool_executions.clone();
+            }
+            let commit = mutation
+                .commit_prepared_queue(crate::ids::audit_event_id(), prepared)
                 .await;
             drop(mutation);
             match commit {
@@ -6046,9 +6006,12 @@ impl RuntimeHandle {
                 brief_evidence: Vec::new(),
             };
             let commit = guard
-                .commit_transition(crate::ids::audit_event_id(), || {
-                    self.inner.runtime_db.transitions().commit_queue(command)
-                })
+                .commit_prepared_queue(
+                    crate::ids::audit_event_id(),
+                    crate::runtime_db::transitions::PreparedQueueTransition::new(Clone::clone(
+                        command,
+                    )),
+                )
                 .await?;
             if !commit.applied {
                 continue;
@@ -6061,19 +6024,23 @@ impl RuntimeHandle {
         Ok(superseded)
     }
 
-    pub(crate) fn persist_transcript_evidence(&self, entry: &TranscriptEntry) -> Result<()> {
-        self.inner.storage.append_transcript_entry(entry)?;
-        self.inner.notify.notify_one();
-        Ok(())
+    pub(crate) async fn persist_transcript_evidence(&self, entry: &TranscriptEntry) -> Result<()> {
+        self.persist_prepared_evidence(
+            crate::runtime_db::prepared_input_evidence::InputEvidenceWrite::Transcript(
+                entry.clone(),
+            ),
+        )
+        .await
     }
 
-    pub(crate) fn persist_tool_execution_evidence(
+    pub(crate) async fn persist_tool_execution_evidence(
         &self,
         record: &ToolExecutionRecord,
     ) -> Result<()> {
-        self.inner.storage.append_tool_execution(record)?;
-        self.inner.notify.notify_one();
-        Ok(())
+        self.persist_prepared_evidence(
+            crate::runtime_db::prepared_input_evidence::InputEvidenceWrite::Tool(record.clone()),
+        )
+        .await
     }
 
     #[inline(never)]
@@ -6838,12 +6805,7 @@ impl RuntimeHandle {
                 let execution_protocol =
                     crate::runtime_db::transitions::ExecutionProtocolTransition::default();
                 let commit = guard
-                    .commit_transition(crate::ids::audit_event_id(), || {
-                        self.inner
-                            .runtime_db
-                            .transitions()
-                            .commit_queue_with_execution_protocol(
-                            &crate::runtime_db::transitions::QueueTransitionCommand {
+                    .commit_prepared_queue(crate::ids::audit_event_id(), { let mut prepared = crate::runtime_db::transitions::PreparedQueueTransition::new(Clone::clone(&crate::runtime_db::transitions::QueueTransitionCommand {
                                 agent_id: agent_id.clone(),
                                 operation: crate::runtime_db::transitions::QueueOperation::Settle,
                                 mutation:
@@ -6874,10 +6836,7 @@ impl RuntimeHandle {
                                 notify_scheduler: true,
                                 fault: self.take_transition_fault(),
                                 brief_evidence: Vec::new(),
-                            },
-                            &execution_protocol,
-                        )
-                    })
+                            })); prepared.execution_protocol = Clone::clone(&execution_protocol); prepared })
                     .await?;
                 if commit.applied {
                     recovered += 1;
@@ -6912,12 +6871,7 @@ impl RuntimeHandle {
                         ],
                     };
                 let commit = guard
-                    .commit_transition(crate::ids::audit_event_id(), || {
-                        self.inner
-                            .runtime_db
-                            .transitions()
-                            .commit_queue_with_execution_protocol(
-                            &crate::runtime_db::transitions::QueueTransitionCommand {
+                    .commit_prepared_queue(crate::ids::audit_event_id(), { let mut prepared = crate::runtime_db::transitions::PreparedQueueTransition::new(Clone::clone(&crate::runtime_db::transitions::QueueTransitionCommand {
                                 agent_id: agent_id.clone(),
                                 operation: crate::runtime_db::transitions::QueueOperation::Settle,
                                 mutation:
@@ -6948,10 +6902,7 @@ impl RuntimeHandle {
                                 notify_scheduler: true,
                                 fault: self.take_transition_fault(),
                                 brief_evidence: Vec::new(),
-                            },
-                            &execution_protocol,
-                        )
-                    })
+                            })); prepared.execution_protocol = Clone::clone(&execution_protocol); prepared })
                     .await?;
                 if commit.applied {
                     recovered += 1;
@@ -6972,13 +6923,7 @@ impl RuntimeHandle {
                 let execution_protocol =
                     task_result_recovery.expect("TaskResult recovery was checked");
                 let commit = guard
-                    .commit_transition(crate::ids::audit_event_id(), || {
-                        self
-                    .inner
-                    .runtime_db
-                    .transitions()
-                    .commit_queue_with_execution_protocol(
-                        &crate::runtime_db::transitions::QueueTransitionCommand {
+                    .commit_prepared_queue(crate::ids::audit_event_id(), { let mut prepared = crate::runtime_db::transitions::PreparedQueueTransition::new(Clone::clone(&crate::runtime_db::transitions::QueueTransitionCommand {
                             agent_id: agent_id.clone(),
                             operation: crate::runtime_db::transitions::QueueOperation::Requeue,
                             mutation:
@@ -7006,10 +6951,7 @@ impl RuntimeHandle {
                             notify_scheduler: true,
                             fault: self.take_transition_fault(),
                             brief_evidence: Vec::new(),
-                        },
-                        &execution_protocol,
-                    )
-                    })
+                        })); prepared.execution_protocol = Clone::clone(&execution_protocol); prepared })
                     .await?;
                 if commit.applied {
                     recovered += 1;
@@ -7033,8 +6975,7 @@ impl RuntimeHandle {
                 entry.updated_at = self.now();
                 let message_id = entry.message_id.clone();
                 let queue_status = entry.status.clone();
-                let commit = guard.commit_transition(crate::ids::audit_event_id(), || self.inner.runtime_db.transitions().commit_queue(
-                    &crate::runtime_db::transitions::QueueTransitionCommand {
+                let commit = guard.commit_prepared_queue(crate::ids::audit_event_id(), crate::runtime_db::transitions::PreparedQueueTransition::new(Clone::clone(&crate::runtime_db::transitions::QueueTransitionCommand {
                         agent_id: agent_id.clone(),
                         operation: crate::runtime_db::transitions::QueueOperation::Settle,
                         mutation:
@@ -7063,8 +7004,7 @@ impl RuntimeHandle {
                         notify_scheduler: true,
                         fault: self.take_transition_fault(),
                         brief_evidence: Vec::new(),
-                    },
-                )).await?;
+                    }))).await?;
                 if commit.applied {
                     recovered += 1;
                 }
@@ -7080,8 +7020,7 @@ impl RuntimeHandle {
                 entry.status = QueueEntryStatus::Interrupted;
                 entry.updated_at = self.now();
                 let message_id = entry.message_id.clone();
-                let commit = guard.commit_transition(crate::ids::audit_event_id(), || self.inner.runtime_db.transitions().commit_queue(
-                    &crate::runtime_db::transitions::QueueTransitionCommand {
+                let commit = guard.commit_prepared_queue(crate::ids::audit_event_id(), crate::runtime_db::transitions::PreparedQueueTransition::new(Clone::clone(&crate::runtime_db::transitions::QueueTransitionCommand {
                         agent_id: agent_id.clone(),
                         operation: crate::runtime_db::transitions::QueueOperation::Settle,
                         mutation:
@@ -7110,8 +7049,7 @@ impl RuntimeHandle {
                         notify_scheduler: true,
                         fault: self.take_transition_fault(),
                         brief_evidence: Vec::new(),
-                    },
-                )).await?;
+                    }))).await?;
                 if commit.applied {
                     recovered += 1;
                     guard
@@ -7143,43 +7081,41 @@ impl RuntimeHandle {
                 terminal_turn,
             )?;
             let commit = guard
-                .commit_transition(crate::ids::audit_event_id(), || {
-                    self.inner
-                        .runtime_db
-                        .transitions()
-                        .commit_queue_with_execution_protocol(
-                            &crate::runtime_db::transitions::QueueTransitionCommand {
-                                agent_id: agent_id.clone(),
-                                operation: crate::runtime_db::transitions::QueueOperation::Settle,
-                                mutation:
-                                    crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                                        expected: expected_entry,
-                                        record: entry,
-                                    },
-                                scheduler_claim_work_item: None,
-                                agent_state: None,
-                                message_evidence: Vec::new(),
-                                transcript_entries: Vec::new(),
-                                turn_record: terminal_turn.cloned(),
-                                audit_events: vec![AuditEvent::legacy(
-                                    "scheduler_bootstrap_claim_recovered",
-                                    serde_json::json!({
-                                        "agent_id": agent_id,
-                                        "message_id": message_id,
-                                        "activation_id": activation_id,
-                                        "work_item_id": work_item_id,
-                                        "queue_status": queue_status,
-                                        "recovery_outcome": recovery_outcome,
-                                        "terminal_turn_id": terminal_turn_id,
-                                        "provenance": "bootstrap_reconciliation",
-                                    }),
-                                )],
-                                notify_scheduler: true,
-                                fault: self.take_transition_fault(),
-                                brief_evidence: Vec::new(),
-                            },
-                            &execution_protocol,
-                        )
+                .commit_prepared_queue(crate::ids::audit_event_id(), {
+                    let mut prepared = crate::runtime_db::transitions::PreparedQueueTransition::new(
+                        Clone::clone(&crate::runtime_db::transitions::QueueTransitionCommand {
+                            agent_id: agent_id.clone(),
+                            operation: crate::runtime_db::transitions::QueueOperation::Settle,
+                            mutation:
+                                crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                                    expected: expected_entry,
+                                    record: entry,
+                                },
+                            scheduler_claim_work_item: None,
+                            agent_state: None,
+                            message_evidence: Vec::new(),
+                            transcript_entries: Vec::new(),
+                            turn_record: terminal_turn.cloned(),
+                            audit_events: vec![AuditEvent::legacy(
+                                "scheduler_bootstrap_claim_recovered",
+                                serde_json::json!({
+                                    "agent_id": agent_id,
+                                    "message_id": message_id,
+                                    "activation_id": activation_id,
+                                    "work_item_id": work_item_id,
+                                    "queue_status": queue_status,
+                                    "recovery_outcome": recovery_outcome,
+                                    "terminal_turn_id": terminal_turn_id,
+                                    "provenance": "bootstrap_reconciliation",
+                                }),
+                            )],
+                            notify_scheduler: true,
+                            fault: self.take_transition_fault(),
+                            brief_evidence: Vec::new(),
+                        }),
+                    );
+                    prepared.execution_protocol = Clone::clone(&execution_protocol);
+                    prepared
                 })
                 .await?;
             if commit.applied {
@@ -7399,3 +7335,7 @@ mod state_mutation_2b_tests;
 #[cfg(test)]
 #[path = "runtime/tests/control_stop_settlement.rs"]
 mod control_stop_settlement_tests;
+
+#[cfg(test)]
+#[path = "runtime/begin_turn_input_tests.rs"]
+mod begin_turn_input_tests;

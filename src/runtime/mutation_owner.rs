@@ -11,6 +11,7 @@ use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 use super::{
     mutation_witness::{MutationWitness, MutationWitnessKind},
+    resident_input_evidence::{InputEvidenceScope, ResidentInputEvidence},
     resident_state::ResidentEpisodes,
 };
 
@@ -53,6 +54,7 @@ pub(crate) enum KnownCommit {
         state: Arc<AgentState>,
         // Explicit prepared domain; None means unprepared, not ready empty.
         episodes: Option<Arc<ResidentEpisodes>>,
+        input_evidence: Option<Arc<ResidentInputEvidence>>,
         runtime: Option<Arc<super::state_mutation::RuntimeMutationFacts>>,
     },
     Metadata(Arc<IdentityMutationFacts>),
@@ -72,11 +74,13 @@ impl KnownCommit {
                 Self::State {
                     state: a,
                     episodes: ae,
+                    input_evidence: ai,
                     runtime: ar,
                 },
                 Self::State {
                     state: b,
                     episodes: be,
+                    input_evidence: bi,
                     runtime: br,
                 },
             ) => {
@@ -87,6 +91,11 @@ impl KnownCommit {
                         _ => false,
                     }
                     && match (ar, br) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                        _ => false,
+                    }
+                    && match (ai, bi) {
                         (None, None) => true,
                         (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                         _ => false,
@@ -121,6 +130,9 @@ pub(crate) struct RecoveryRecord {
     pub(super) committed_runtime: Option<Arc<super::state_mutation::RuntimeMutationFacts>>,
     pub known: Option<KnownCommit>,
     pub witness: Option<MutationWitness>,
+    // A successor claim clears its root. Preserve the original cold boundary
+    // so recovery cannot reinterpret a formerly published State as absent.
+    original_root_absent: bool,
     group: Arc<RecoveryGroup>,
 }
 
@@ -483,12 +495,29 @@ impl MutationReservation {
         self.owner.incarnation
     }
 
+    /// A preparation actor may only derive a new domain from a Ready root under
+    /// this original reservation. Pending or replaced scopes remain fenced.
+    pub(crate) fn capture_ready_snapshot(
+        &self,
+    ) -> Result<Option<Arc<PostureObservation>>, MutationOwnerError> {
+        self.owner.capture()
+    }
+
     /// A State-only command preserves this domain; call before begin_all fences
     /// capture. Unprepared remains explicit and is never promoted here.
     pub(crate) fn prepared_episodes_for_state_only_commit(
         &self,
     ) -> Result<Option<Arc<super::resident_state::ResidentEpisodes>>, MutationOwnerError> {
         Ok(self.owner.capture()?.and_then(|root| root.episodes.clone()))
+    }
+
+    pub(crate) fn prepared_inputs_for_state_only_commit(
+        &self,
+    ) -> Result<Option<Arc<ResidentInputEvidence>>, MutationOwnerError> {
+        Ok(self
+            .owner
+            .capture()?
+            .and_then(|root| root.input_evidence.clone()))
     }
 
     pub(crate) fn validate_owner(&self, owner: &MutationOwner) -> Result<(), MutationOwnerError> {
@@ -553,6 +582,18 @@ impl MutationReservation {
                 return Err(MutationOwnerError::TicketMismatch);
             }
         }
+        if let KnownCommit::State {
+            input_evidence: Some(inputs),
+            ..
+        } = known
+        {
+            if !inputs.belongs_to(&InputEvidenceScope {
+                agent_id: self.owner.agent_id.clone(),
+                identity_incarnation: self.owner.incarnation,
+            }) {
+                return Err(MutationOwnerError::TicketMismatch);
+            }
+        }
         if let KnownCommit::Metadata(facts) = known {
             if let Some(identity) = &facts.identity {
                 if identity.agent_id != self.owner.agent_id
@@ -605,17 +646,15 @@ impl MutationReservation {
             }
         }
         if let Some(witness) = &witness {
-            if reservations.len() != 1
-                || !matches!(
-                    witness.kind(),
-                    MutationWitnessKind::EpisodeMemory | MutationWitnessKind::Control
-                )
+            let scopes = reservations
+                .iter()
+                .map(|reservation| InputEvidenceScope {
+                    agent_id: reservation.agent_id().to_owned(),
+                    identity_incarnation: reservation.identity_incarnation(),
+                })
+                .collect::<Vec<_>>();
+            if !witness.matches_scope_group(&scopes)
                 || witness.operation_id() != operation_id
-                || witness.owner()
-                    != (
-                        reservations[0].agent_id(),
-                        reservations[0].identity_incarnation(),
-                    )
                 || witness.original_attempt_finished()
             {
                 return Err(MutationOwnerError::TicketMismatch);
@@ -639,7 +678,10 @@ impl MutationReservation {
                 })
                 .collect(),
         });
-        for (publication, key) in publications.iter_mut().zip(&keys) {
+        for ((reservation, publication), key) in
+            reservations.iter().zip(&mut publications).zip(&keys)
+        {
+            let original_root_absent = reservation.owner.slot.root.load_full().is_none();
             publication.recovery = Some(RecoveryRecord {
                 key: key.clone(),
                 phase: RecoveryPhase::Committing,
@@ -647,6 +689,7 @@ impl MutationReservation {
                 committed_runtime: None,
                 known: None,
                 witness: witness.clone(),
+                original_root_absent,
                 group: group.clone(),
             });
         }
@@ -733,6 +776,171 @@ impl MutationReservation {
             MutationWitnessKind::Control,
             committed,
         )
+    }
+
+    /// Validate the complete original group without clearing any publication
+    /// gate. Negative resolution uses this before fallible pending-ticket
+    /// release, while retaining the same reservations through the final clear.
+    pub(crate) fn validate_input_unknown(
+        reservations: &[Self],
+        key: &RecoveryKey,
+        witness: &MutationWitness,
+    ) -> Result<(), MutationOwnerError> {
+        Self::validate_order(reservations)?;
+        let publications = reservations
+            .iter()
+            .map(|reservation| {
+                reservation
+                    .owner
+                    .slot
+                    .publication
+                    .lock()
+                    .expect("publication poisoned")
+            })
+            .collect::<Vec<_>>();
+        Self::validate_input_unknown_locked(reservations, &publications, key, witness).map(|_| ())
+    }
+
+    fn validate_input_unknown_locked(
+        reservations: &[Self],
+        publications: &[std::sync::MutexGuard<'_, Publication>],
+        key: &RecoveryKey,
+        witness: &MutationWitness,
+    ) -> Result<Vec<usize>, MutationOwnerError> {
+        Self::validate_complete_groups(reservations, publications)?;
+        if witness.kind() != MutationWitnessKind::InputMutation
+            || witness.operation_id() != key.operation_id
+        {
+            return Err(MutationOwnerError::TicketMismatch);
+        }
+        // reserve_all may contain other ready scopes or complete recovery
+        // groups. Only this original attempt's members may be resolved here.
+        let selected = publications
+            .iter()
+            .enumerate()
+            .filter_map(|(index, publication)| {
+                publication
+                    .recovery
+                    .as_ref()
+                    .filter(|recovery| {
+                        recovery.key.operation_id == key.operation_id
+                            && recovery
+                                .witness
+                                .as_ref()
+                                .is_some_and(|saved| saved.same_attempt(witness))
+                    })
+                    .map(|_| index)
+            })
+            .collect::<Vec<_>>();
+        let scopes = selected
+            .iter()
+            .map(|&index| InputEvidenceScope {
+                agent_id: reservations[index].agent_id().to_owned(),
+                identity_incarnation: reservations[index].identity_incarnation(),
+            })
+            .collect::<Vec<_>>();
+        if !witness.matches_scope_group(&scopes)
+            || !selected.iter().any(|&index| {
+                reservations[index].agent_id() == key.agent_id
+                    && reservations[index].identity_incarnation() == key.identity_incarnation
+            })
+        {
+            return Err(MutationOwnerError::TicketMismatch);
+        }
+        for &index in &selected {
+            let reservation = &reservations[index];
+            let recovery = publications[index]
+                .recovery
+                .as_ref()
+                .expect("selected recovery");
+            if recovery.known.is_some()
+                || recovery.key.agent_id != reservation.agent_id()
+                || recovery.key.identity_incarnation != reservation.identity_incarnation()
+                || recovery.group.members.len() != selected.len()
+            {
+                return Err(MutationOwnerError::TicketMismatch);
+            }
+        }
+        if !witness.original_attempt_finished() {
+            return Err(MutationOwnerError::NeedsReconcile(key.clone()));
+        }
+        Ok(selected)
+    }
+
+    /// Promote only the complete original group, after fresh whole-transaction
+    /// receipt resolution. Current roots are independent of the original result.
+    pub(crate) fn resolve_input_unknown(
+        reservations: &mut [Self],
+        key: &RecoveryKey,
+        witness: &MutationWitness,
+        committed: Option<Vec<KnownCommit>>,
+    ) -> Result<WitnessUnknownResolution, MutationOwnerError> {
+        Self::validate_order(reservations)?;
+        let mut publications = reservations
+            .iter()
+            .map(|reservation| {
+                reservation
+                    .owner
+                    .slot
+                    .publication
+                    .lock()
+                    .expect("publication poisoned")
+            })
+            .collect::<Vec<_>>();
+        let selected =
+            Self::validate_input_unknown_locked(reservations, &publications, key, witness)?;
+        if let Some(known) = committed {
+            if known.len() != selected.len() {
+                return Err(MutationOwnerError::TicketMismatch);
+            }
+            for (&index, facts) in selected.iter().zip(&known) {
+                let reservation = &reservations[index];
+                let publication = &publications[index];
+                match facts {
+                    KnownCommit::State {
+                        episodes: Some(_),
+                        input_evidence: Some(_),
+                        ..
+                    } => {}
+                    KnownCommit::Metadata(metadata) => {
+                        let cold_current = metadata.state.is_none()
+                            && metadata.identity.as_ref().is_some_and(|identity| {
+                                identity.agent_id == reservation.agent_id()
+                                    && identity.incarnation == reservation.identity_incarnation()
+                                    && identity.status == AgentRegistryStatus::Active
+                            })
+                            && publication
+                                .recovery
+                                .as_ref()
+                                .is_some_and(|recovery| recovery.original_root_absent)
+                            && reservation.owner.slot.root.load_full().is_none();
+                        if !cold_current {
+                            validate_retired_episode_facts(facts, reservation.owner.incarnation)?;
+                        }
+                    }
+                    _ => return Err(MutationOwnerError::TicketMismatch),
+                }
+                reservation.validate_known(facts)?;
+            }
+            for (&index, facts) in selected.iter().zip(known) {
+                let recovery = publications[index]
+                    .recovery
+                    .as_mut()
+                    .expect("validated group");
+                recovery.set_known(facts);
+                recovery.phase = RecoveryPhase::NeedsReconcile;
+            }
+            Ok(WitnessUnknownResolution::Known)
+        } else {
+            for &index in &selected {
+                publications[index].recovery = None;
+            }
+            drop(publications);
+            for index in selected {
+                reservations[index].ticket = None;
+            }
+            Ok(WitnessUnknownResolution::NotCommitted)
+        }
     }
 
     fn resolve_witness_unknown(
@@ -999,6 +1207,15 @@ impl MutationReservation {
         state: Arc<AgentState>,
         episodes: Option<Arc<ResidentEpisodes>>,
     ) -> Result<(), MutationOwnerError> {
+        self.committed_prepared_with_inputs(state, episodes, None)
+    }
+
+    pub(crate) fn committed_prepared_with_inputs(
+        &self,
+        state: Arc<AgentState>,
+        episodes: Option<Arc<ResidentEpisodes>>,
+        input_evidence: Option<Arc<ResidentInputEvidence>>,
+    ) -> Result<(), MutationOwnerError> {
         let mut publication = self
             .owner
             .slot
@@ -1013,6 +1230,7 @@ impl MutationReservation {
         let known = KnownCommit::State {
             state,
             episodes,
+            input_evidence,
             runtime: recovery.committed_runtime.clone(),
         };
         self.validate_known(&known)?;
@@ -1124,6 +1342,21 @@ impl MutationReservation {
                     .flatten()
             }),
         };
+        let input_evidence = match &known {
+            KnownCommit::State { input_evidence, .. } => input_evidence.clone(),
+            KnownCommit::Metadata(facts) => facts.identity.as_ref().and_then(|identity| {
+                (identity.incarnation == self.owner.incarnation
+                    && identity.status == AgentRegistryStatus::Active)
+                    .then(|| {
+                        self.owner
+                            .slot
+                            .root
+                            .load_full()
+                            .and_then(|root| root.input_evidence.clone())
+                    })
+                    .flatten()
+            }),
+        };
         let observation = known.state().map(|state| {
             Arc::new(PostureObservation {
                 token: PublicationToken {
@@ -1133,6 +1366,7 @@ impl MutationReservation {
                 },
                 state: state.clone(),
                 episodes,
+                input_evidence,
             })
         });
         self.owner.slot.root.store(observation.clone());

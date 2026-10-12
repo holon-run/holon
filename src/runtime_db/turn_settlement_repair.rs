@@ -3,21 +3,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    domain::execution_protocol::{
-        self, ExecutionAttempt, ExecutionAttemptState, InterruptExecution,
-    },
+    domain::execution_protocol::{ExecutionAttempt, ExecutionAttemptState, InterruptExecution},
     runtime_db::{
         connection::ensure_runtime_db_sidecars_are_consistent,
         evidence::{append_audit_event_tx, upsert_agent_state_tx},
         repositories::{upsert_queue_entry_tx, upsert_turn_record_tx},
-        transitions::{execution_protocol_repository::load_state_unchecked_tx, persist_state_tx},
         RuntimeDb, RUNTIME_DB_BUSY_TIMEOUT,
     },
     types::{
@@ -200,7 +197,41 @@ impl RuntimeDb {
         plan_path: &Path,
         backup_path: Option<PathBuf>,
         diagnostic_sample_limit: usize,
+        progress: impl FnMut(&TurnSettlementRepairProgress),
+    ) -> Result<TurnSettlementRepairReport> {
+        self.apply_turn_settlement_repair_plan_inner(
+            plan_path,
+            backup_path,
+            diagnostic_sample_limit,
+            progress,
+            None,
+        )
+    }
+
+    pub fn apply_turn_settlement_repair_plan_with_maintenance(
+        &self,
+        plan_path: &Path,
+        backup_path: Option<PathBuf>,
+        diagnostic_sample_limit: usize,
+        progress: impl FnMut(&TurnSettlementRepairProgress),
+        maintenance: &crate::runtime_db::OfflineInputMaintenance<'_>,
+    ) -> Result<TurnSettlementRepairReport> {
+        self.apply_turn_settlement_repair_plan_inner(
+            plan_path,
+            backup_path,
+            diagnostic_sample_limit,
+            progress,
+            Some(maintenance),
+        )
+    }
+
+    fn apply_turn_settlement_repair_plan_inner(
+        &self,
+        plan_path: &Path,
+        backup_path: Option<PathBuf>,
+        diagnostic_sample_limit: usize,
         mut progress: impl FnMut(&TurnSettlementRepairProgress),
+        maintenance: Option<&crate::runtime_db::OfflineInputMaintenance<'_>>,
     ) -> Result<TurnSettlementRepairReport> {
         let connection = self.connection()?;
         let plan = read_plan(plan_path)?;
@@ -211,7 +242,7 @@ impl RuntimeDb {
             let mut already_settled = 0;
             let mut diagnostics = Vec::new();
             for candidate in &plan.candidates {
-                match apply_candidate(tx, candidate)? {
+                match apply_candidate(tx, self, candidate, maintenance)? {
                     ApplyDisposition::Applied => {
                         repaired += 1;
                         push_diagnostic(
@@ -767,7 +798,9 @@ fn load_evidence<T: for<'de> Deserialize<'de>>(
 
 fn apply_candidate(
     tx: &Transaction<'_>,
+    db: &RuntimeDb,
     candidate: &TurnSettlementRepairCandidate,
+    maintenance: Option<&crate::runtime_db::OfflineInputMaintenance<'_>>,
 ) -> Result<ApplyDisposition> {
     let current_turn = tx
         .query_row(
@@ -814,18 +847,47 @@ fn apply_candidate(
         &candidate.turn_id,
         &candidate.attempt_id,
     );
-    let state = load_state_unchecked_tx(tx, &candidate.agent_id)?;
-    let transition = execution_protocol::interrupt_execution(
-        &state,
-        &InterruptExecution {
+    let command = crate::domain::execution_protocol::ExecutionProtocolCommand::Interrupt(
+        InterruptExecution {
             attempt_id: candidate.attempt_id.clone(),
             outcome_id: outcome_id.clone(),
             reason: REPAIR_REASON.into(),
             interrupted_at: now.to_rfc3339(),
         },
-    )
-    .map_err(|error| anyhow!("interrupting orphaned execution attempt: {error}"))?;
-    persist_state_tx(tx, &transition.state)?;
+    );
+    use crate::runtime_db::transitions::execution_protocol_repository as protocol_repository;
+    let existing = protocol_repository::load_state_unchecked_tx(tx, &candidate.agent_id)?;
+    let prepared = protocol_repository::validate_execution_commands_tx(
+        tx,
+        &candidate.agent_id,
+        Some(&existing),
+        &[command.clone()],
+        &[],
+        &[],
+        &[],
+    )?;
+    use crate::runtime::resident_input_evidence::{
+        InputEvidenceFamily as Family, InputEvidenceKey as Key,
+    };
+    let mut keys = prepared
+        .as_ref()
+        .map(|x| x.input_keys())
+        .unwrap_or_default();
+    keys.extend([
+        Key::new(Family::Message, &candidate.message_id),
+        Key::new(Family::Turn, &candidate.turn_id),
+    ]);
+    let input =
+        crate::runtime_db::input_evidence_snapshot::maintenance::prepare_offline_input_repair_tx(
+            tx,
+            db,
+            &candidate.agent_id,
+            &keys,
+            &[command],
+            maintenance,
+        )?;
+    // The canonical command result proves any new Outcome for an unbound seed.
+    protocol_repository::persist_execution_commands_with_touched_facts_tx(tx, prepared)?;
 
     let mut queue = snapshot.queue.clone();
     queue.status = QueueEntryStatus::Interrupted;
@@ -926,6 +988,7 @@ fn apply_candidate(
     );
     audit.created_at = now;
     append_audit_event_tx(tx, Some(&candidate.agent_id), &audit)?;
+    input.finish_tx(tx)?;
     Ok(ApplyDisposition::Applied)
 }
 
@@ -1034,6 +1097,13 @@ mod tests {
     }
 
     fn seed_orphaned_turn(db: &RuntimeDb) -> Result<(String, String, String)> {
+        seed_orphaned_turn_fixture(db, false)
+    }
+
+    fn seed_orphaned_turn_fixture(
+        db: &RuntimeDb,
+        canonical_input: bool,
+    ) -> Result<(String, String, String)> {
         let agent_id = "agent-a".to_string();
         let turn_id = "turn-a".to_string();
         let attempt_id = "attempt-a".to_string();
@@ -1056,6 +1126,9 @@ mod tests {
         );
         message.id = "message-a".into();
         message.turn_id = Some(turn_id.clone());
+        if canonical_input {
+            message.message_seq = Some(1);
+        }
         db.messages().upsert(&message)?;
         db.queue_entries().upsert(&QueueEntryRecord {
             message_id: message.id.clone(),
@@ -1071,6 +1144,10 @@ mod tests {
             interaction_id: "interaction-a".into(),
         });
         turn.input_message_ids = vec![message.id.clone()];
+        if canonical_input {
+            turn.run_id = Some("run-a".into());
+            turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
+        }
         db.turn_records().upsert(&turn)?;
 
         let now = Utc::now();
@@ -1174,8 +1251,119 @@ mod tests {
             work_item_id: None,
             claimed_work_revision: None,
         });
+        if canonical_input {
+            agent_state.turn_index = turn.turn_index;
+            agent_state
+                .current_execution_binding
+                .as_mut()
+                .unwrap()
+                .activation_id = Some(attempt_id.clone());
+        }
         db.agent_states().upsert_for_fixture(&agent_state)?;
         Ok((agent_id, turn_id, attempt_id))
+    }
+
+    #[test]
+    fn qualified_turn_settlement_refreshes_actual_protocol_and_queue_in_original_tx() -> Result<()>
+    {
+        use crate::runtime::resident_input_evidence::{
+            InputEvidenceFamily as Family, InputEvidenceKey as Key, InputEvidenceScope,
+        };
+        use crate::runtime_db::input_evidence_snapshot::{
+            register_committed_input_evidence_tx, validate_existing_input_evidence_tx,
+            CanonicalInputEvidence as Fact,
+        };
+        let (directory, db, plan_path) = fixture()?;
+        let (agent, turn_id, attempt_id) = seed_orphaned_turn_fixture(&db, true)?;
+        let scope = InputEvidenceScope {
+            agent_id: agent.clone(),
+            identity_incarnation: 1,
+        };
+        db.transaction(|tx| {
+            let identity = crate::types::AgentIdentityRecord::new(
+                &agent,
+                crate::types::AgentKind::Named,
+                crate::types::AgentVisibility::Public,
+                crate::types::AgentOwnership::SelfOwned,
+                crate::types::AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            );
+            crate::runtime_db::evidence::upsert_agent_identity_tx(tx, &identity)?;
+            let payload: String = tx.query_row(
+                "SELECT payload_json FROM messages WHERE evidence_id='message-a'",
+                [],
+                |r| r.get(0),
+            )?;
+            let message: MessageEnvelope = serde_json::from_str(&payload)?;
+            let payload: String = tx.query_row(
+                "SELECT payload_json FROM turn_records WHERE turn_id=?1",
+                [&turn_id],
+                |r| r.get(0),
+            )?;
+            let turn: TurnRecord = serde_json::from_str(&payload)?;
+            let protocol = load_state_unchecked_tx(tx, &agent)?;
+            register_committed_input_evidence_tx(
+                tx,
+                &scope,
+                &[
+                    Fact::Message(message),
+                    Fact::Turn(turn),
+                    Fact::Attempt(protocol.attempts[&attempt_id].clone()),
+                ],
+            )?;
+            Ok(())
+        })?;
+        db.prepare_turn_settlement_repair(
+            Some(&plan_path),
+            Some(&agent),
+            Some(&turn_id),
+            10,
+            |_| {},
+        )?;
+        let missing_authority = db
+            .apply_turn_settlement_repair_plan(&plan_path, None, 10, |_| {})
+            .unwrap_err();
+        assert!(
+            missing_authority
+                .downcast_ref::<crate::runtime_db::NeedsOfflineInputMaintenance>()
+                .is_some(),
+            "{missing_authority:#}"
+        );
+        assert!(db
+            .turn_records()
+            .by_id(Some(&agent), &turn_id)?
+            .unwrap()
+            .terminal
+            .is_none());
+        let path = directory.path().join("runtime-maintenance.lock");
+        let lease = crate::runtime_db::RuntimeDbLock::try_lock(&path)?;
+        let authority =
+            crate::runtime_db::OfflineInputMaintenance::for_database(&db, &lease, &path)?;
+        let report = db.apply_turn_settlement_repair_plan_with_maintenance(
+            &plan_path,
+            None,
+            10,
+            |_| {},
+            &authority,
+        )?;
+        assert_eq!(report.repaired_turns, 1);
+        db.transaction(|tx| {
+            for key in [
+                Key::new(Family::Message, "message-a"),
+                Key::new(Family::Turn, &turn_id),
+                Key::new(Family::Attempt, &attempt_id),
+            ] {
+                validate_existing_input_evidence_tx(tx, &scope, &key)?;
+            }
+            let protocol = load_state_unchecked_tx(tx, &agent)?;
+            let outcome = protocol.attempts[&attempt_id]
+                .terminal_outcome_id
+                .as_ref()
+                .unwrap();
+            validate_existing_input_evidence_tx(tx, &scope, &Key::new(Family::Outcome, outcome))
+        })?;
+        Ok(())
     }
 
     #[test]

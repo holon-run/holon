@@ -349,6 +349,41 @@ impl AppStorage {
         self.store.event_log().append_many(events)
     }
 
+    /// SQL-only commits return canonical facts before any runtime publication.
+    pub fn commit_message_evidence(&self, record: &MessageEnvelope) -> Result<MessageEnvelope> {
+        self.store.commit_message_evidence(record)
+    }
+
+    pub fn commit_transcript_evidence(&self, record: &TranscriptEntry) -> Result<TranscriptEntry> {
+        self.store.commit_transcript_evidence(record)
+    }
+
+    pub fn commit_tool_execution_evidence(
+        &self,
+        record: &ToolExecutionRecord,
+    ) -> Result<ToolExecutionRecord> {
+        self.store.commit_tool_execution_evidence(record)
+    }
+
+    pub fn commit_brief_evidence(&self, record: &BriefRecord) -> Result<BriefRecord> {
+        self.store.commit_brief_evidence(record)
+    }
+
+    pub fn commit_brief_with_created_event(
+        &self,
+        record: &BriefRecord,
+        event: &crate::types::AuditEvent,
+    ) -> Result<crate::runtime_db::evidence::BriefCreatedCommit> {
+        self.store.commit_brief_with_created_event(record, event)
+    }
+
+    pub fn commit_turn_record(
+        &self,
+        record: &TurnRecord,
+    ) -> Result<crate::runtime_db::evidence::CommittedTurnRecord> {
+        self.store.commit_turn_record(record)
+    }
+
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
         self.store.append_brief(brief)
     }
@@ -5486,5 +5521,29 @@ mod tests {
             b"legacy"
         );
         assert!(legacy.is_dir(), "legacy directory should remain untouched");
+    }
+}
+
+impl AppStorage {
+    pub(crate) fn prepare_input_evidence(
+        &self,
+        scope: crate::runtime::resident_input_evidence::InputEvidenceScope,
+        nonce: String,
+        at: chrono::DateTime<chrono::Utc>,
+        write: crate::runtime_db::prepared_input_evidence::InputEvidenceWrite,
+    ) -> Result<crate::runtime_db::prepared_input_evidence::PreparedInputEvidence> {
+        self.store.prepare_input_evidence(scope, nonce, at, write)
+    }
+    pub(crate) fn commit_prepared_input_evidence(
+        &self,
+        prepared: &crate::runtime_db::prepared_input_evidence::PreparedInputEvidence,
+    ) -> Result<
+        crate::runtime_db::transitions::InputMutationExecution<
+            crate::runtime_db::input_evidence_writes::InputEvidenceCommit<
+                crate::runtime_db::prepared_input_evidence::PreparedEvidenceValue,
+            >,
+        >,
+    > {
+        self.store.commit_prepared_input_evidence(prepared)
     }
 }

@@ -1219,9 +1219,12 @@ impl RuntimeHandle {
                 };
                 let operation_id = command.audit_events[0].id.clone();
                 let commit_result = guard
-                    .commit_transition(operation_id, || {
-                        self.inner.runtime_db.transitions().commit_queue(&command)
-                    })
+                    .commit_prepared_queue(
+                        operation_id,
+                        crate::runtime_db::transitions::PreparedQueueTransition::new(Clone::clone(
+                            &command,
+                        )),
+                    )
                     .await;
                 let commit = match commit_result {
                     Ok(commit) => commit,

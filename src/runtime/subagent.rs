@@ -280,7 +280,8 @@ impl RuntimeHandle {
             None,
             None,
             prompt_metadata,
-        ))?;
+        ))
+        .await?;
         let response = self
             .current_provider()
             .await
@@ -319,7 +320,8 @@ impl RuntimeHandle {
                     "metadata": assistant_metadata,
                 }),
             )
-        })?;
+        })
+        .await?;
 
         let text = sanitize_subagent_result(
             &response
