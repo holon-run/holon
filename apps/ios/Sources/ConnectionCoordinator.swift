@@ -210,8 +210,17 @@ final class ConnectionCoordinator {
     }
 
     func connect(_ profile: ConnectionProfile) async {
-        // A profile switch must never expose the previous profile while restoring the next one.
-        readingContext = nil
+        // Validate before withdrawing online identity: a transient reconnect can keep its
+        // confirmed reading scope, but a staged login, scope change, or profile switch cannot.
+        let restoredContext = Result { try store.confirmedReadingContext(for: profile) }
+        switch restoredContext {
+        case .success(let context):
+            if selectedProfile != profile || readingContext != context {
+                readingContext = nil
+            }
+        case .failure:
+            readingContext = nil
+        }
         guard invalidate() else { return }
         pendingPairing = nil
         selectedProfile = profile
@@ -219,7 +228,7 @@ final class ConnectionCoordinator {
         status = .connecting
         do {
             try store.select(profile.id)
-            do { readingContext = try store.confirmedReadingContext(for: profile) }
+            do { readingContext = try restoredContext.get() }
             catch { finish(.storageError); return }
             let client = try makeTransport(profile)
             transport = client

@@ -289,6 +289,97 @@ class UIFixtureSetupContracts(unittest.TestCase):
         initialize.assert_called_once_with(UUID)
         install.assert_not_called()
 
+    def test_offline_reading_and_sign_out_are_default_cases_before_network_deletion(self):
+        cases = self.run_setup(Mock(), Mock(), share=False)
+        methods = [method for method, _ in cases]
+        cold = methods.index("testOfflineReadingCacheColdLaunchAndRetry")
+        sign_out = methods.index("testOfflineReadingCacheSignOutBoundary")
+        self.assertLess(methods.index("testAuthenticatedNativeWorkflow"), cold)
+        self.assertLess(cold, sign_out)
+        self.assertLess(sign_out, methods.index("testNetworkManagementWorkflow"))
+        self.assertEqual(cases[cold][1], "large")
+        self.assertEqual(cases[sign_out][1], "large")
+
+    def test_real_offline_case_loop_seeds_after_onboarding_and_exports_real_brief_oracle(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        loop = next(node for node in ast.walk(tree)
+                    if isinstance(node, ast.For) and isinstance(node.target, ast.Tuple)
+                    and any(isinstance(target, ast.Name) and target.id == "case_bundle"
+                            for target in node.target.elts))
+        methods = ["testAuthenticatedNativeWorkflow", "testOfflineReadingCacheColdLaunchAndRetry",
+                   "testOfflineReadingCacheSignOutBoundary"]
+        turns = [{"turn_id": "initial-turn", "key": {"turn_index": 0}, "brief_ids": ["initial-brief"]}]
+        seed_active = threading.Event()
+        tickets, runs, seeded = [], [], []
+
+        def local(method, path, payload=None):
+            if path == "/auth/pairing/issue":
+                self.assertFalse(seed_active.is_set(), "Issue the single-use ticket after history preparation")
+                tickets.append(str(len(tickets)))
+                return {"ticket": tickets[-1]}
+            if method == "POST" and path.endswith("/enqueue"):
+                self.assertTrue(seed_active.is_set())
+                seeded.append(payload["text"])
+                index = len(turns)
+                turns.append({"turn_id": "turn-" + str(index), "key": {"turn_index": index},
+                              "brief_ids": ["brief-" + str(index)], "inputs": [payload]})
+                return {}
+            if path.endswith("/conversation") or path.endswith("/conversation?limit=60"):
+                return {"turns": list(reversed(turns))}
+            if path.endswith("/briefs/initial-brief"):
+                return {"id": "initial-brief", "text": "# Real result\n\nActual fixture body cache oracle."}
+            self.fail("Unexpected fixture call: " + path)
+
+        def run(command, env):
+            method = next(argument.rsplit("/", 1)[-1] for argument in command
+                          if argument.startswith("-only-testing:"))
+            runs.append(method)
+            self.assertEqual(env["TEST_RUNNER_HOLON_UI_PAIRING_CODE"], tickets[-1])
+            if method == methods[0]:
+                self.assertEqual(seeded, [], "Do not evict the earlier onboarding smoke's original latest window")
+            else:
+                self.assertEqual(seeded, [f"IOS_HISTORY_{number:03}" for number in range(25)])
+                self.assertEqual(env["TEST_RUNNER_HOLON_UI_HISTORY_OLDER_TOP"], "initial-turn")
+                self.assertEqual(env["TEST_RUNNER_HOLON_UI_OFFLINE_BODY_MARKER"], "Actual fixture body cache oracle.")
+            return Mock(returncode=0)
+
+        namespace = dict(fixture_helpers(), cases=[(method, "large") for method in methods],
+            bundles=[Path(method + ".xcresult") for method in methods], history_acceptance=False,
+            history_seed_active=seed_active, agent="holon-tester", local=local,
+            lost_response_acceptance=False, fixture_evidence=None,
+            simulator=UUID, repo=str(ROOT), destination="fixture", derived="fixture", test_env={},
+            simulator_text_size=lambda *args: nullcontext(),
+            simulator_appearance=lambda *args: nullcontext(),
+            runtime_text_size_control=lambda *args: nullcontext(("fixture", "fixture")),
+            subprocess=Mock(run=run))
+        exec(compile(ast.Module(body=[loop], type_ignores=[]), str(source), "exec"), namespace)
+        self.assertEqual(runs, methods)
+        self.assertEqual(len(tickets), 3, "Each independently selectable authenticated case gets a fresh ticket")
+        self.assertFalse(seed_active.is_set())
+
+    def test_offline_control_is_exported_only_to_runner_with_proxy_endpoint(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        block = next(node for node in ast.walk(tree)
+                     if isinstance(node, ast.If) and isinstance(node.test, ast.Name)
+                     and node.test.id == "proxy"
+                     and any(isinstance(child, ast.Name) and child.id == "runner_inputs"
+                             for child in ast.walk(node)))
+        export = next(node for node in ast.walk(tree)
+                      if isinstance(node, ast.For) and isinstance(node.target, ast.Tuple)
+                      and any(isinstance(child, ast.Constant)
+                              and child.value == "TEST_RUNNER_HOLON_UI_" for child in ast.walk(node)))
+        namespace = dict(proxy=Mock(server_port=12345), runner_inputs={},
+                         proxy_control_token="fixture-runner-only-control",
+                         lost_response_acceptance=False, test_env={})
+        exec(compile(ast.Module(body=[block, export], type_ignores=[]), str(source), "exec"), namespace)
+        self.assertEqual(namespace["test_env"], {
+            "TEST_RUNNER_HOLON_UI_ENDPOINT": "http://127.0.0.1:12345/api",
+            "TEST_RUNNER_HOLON_UI_NODE_CONTROL_URL": "http://127.0.0.1:12345/fixture/node-availability",
+            "TEST_RUNNER_HOLON_UI_NODE_CONTROL_TOKEN": "fixture-runner-only-control",
+        })
+
 
 class UIFixtureEvidenceContracts(unittest.TestCase):
     def setUp(self):
@@ -549,7 +640,9 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
         namespace = dict(self.helpers, port=upstream.server_port, fixture_evidence=evidence,
             fixture_case="testLostResponseAndProcessRecovery", prompt_evidence=[],
             lost_receipts=[], lost_lock=threading.Lock(), release_lost_response=release,
-            lost_response_acceptance=True, share_acceptance=True, proxy_control_token="do-not-record-control-token")
+            lost_response_acceptance=True, share_acceptance=True, proxy_control_token="do-not-record-control-token",
+            proxy_available=threading.Event(), proxy_connections=set(), proxy_state_lock=threading.Lock())
+        namespace["proxy_available"].set()
         proxy_class = next(node for node in ast.walk(self.tree)
                            if isinstance(node, ast.ClassDef) and node.name == "LostResponseProxy")
         self.execute([proxy_class], namespace)
@@ -732,6 +825,141 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
             self.assertEqual(daemon.wait.call_args_list, [call(timeout=8), call()])
 
 
+class UIFixtureProxyAvailabilityContracts(unittest.TestCase):
+    def setUp(self):
+        self.requests = []
+        self.release_stream = threading.Event()
+        self.addCleanup(self.release_stream.set)
+        requests, release_stream = self.requests, self.release_stream
+
+        class Upstream(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                requests.append((self.command, self.path))
+                self.send_response(200)
+                if self.path == "/api/events":
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.end_headers()
+                    self.wfile.write(b"data: initial-stream-event\n\n")
+                    self.wfile.flush()
+                    release_stream.wait(timeout=5)
+                else:
+                    data = b'{"agents":["isolated-agent"]}'
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+
+            def do_POST(self):
+                requests.append((self.command, self.path))
+                data = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        upstream = self.start_server(Upstream)
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        proxy_class = next(node for node in ast.walk(tree)
+                           if isinstance(node, ast.ClassDef) and node.name == "LostResponseProxy")
+        self.namespace = dict(fixture_helpers(), port=upstream.server_port, fixture_evidence=None,
+            fixture_case=None, prompt_evidence=[], lost_receipts=[], lost_lock=threading.Lock(),
+            release_lost_response=threading.Event(), lost_response_acceptance=False,
+            share_acceptance=False, proxy_control_token="fixture-runner-only-control",
+            proxy_available=threading.Event(), proxy_connections=set(), proxy_state_lock=threading.Lock())
+        self.namespace["proxy_available"].set()
+        exec(compile(ast.Module(body=[proxy_class], type_ignores=[]), str(source), "exec"), self.namespace)
+        self.proxy = self.start_server(self.namespace["LostResponseProxy"])
+        self.upstream = upstream
+
+    def start_server(self, handler):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        server.daemon_threads = True
+        worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .05})
+        worker.start()
+        self.addCleanup(worker.join, 5)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server
+
+    def request(self, method, path, body=None, token=None, server=None):
+        connection = http.client.HTTPConnection("127.0.0.1", (server or self.proxy).server_port, timeout=3)
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        try:
+            connection.request(method, path, body=body, headers=headers)
+            response = connection.getresponse()
+            return response.status, response.read()
+        finally:
+            connection.close()
+
+    def toggle(self, available):
+        status, data = self.request("POST", "/fixture/node-availability",
+            json.dumps({"available": available}).encode(), token="fixture-runner-only-control")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data), {"available": available})
+
+    def test_unavailability_blocks_reads_and_writes_without_stopping_upstream(self):
+        status, data = self.request("GET", "/api/agents")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data), {"agents": ["isolated-agent"]})
+        self.toggle(False)
+        before = list(self.requests)
+        self.assertEqual(self.request("GET", "/api/agents")[0], 503)
+        self.assertEqual(self.request("POST", "/api/agents/isolated-agent/prompt", b"{}")[0], 503)
+        self.assertEqual(self.requests, before, "Unavailable requests cannot reach the isolated node")
+        self.assertEqual(self.request("GET", "/api/agents", server=self.upstream)[0], 200,
+                         "Only the fixture proxy is disabled, not its upstream daemon")
+        self.toggle(True)
+        status, data = self.request("POST", "/api/echo", b'{"text":"normal-pairing-session"}')
+        self.assertEqual(status, 200)
+        self.assertEqual(data, b'{"text":"normal-pairing-session"}')
+        self.assertEqual(self.request("GET", "/api/agents")[0], 200)
+        self.assertFalse(any(path.startswith("/fixture/") for _, path in self.requests))
+
+    def test_control_requires_runner_token_and_strict_boolean_payload(self):
+        for token in (None, "ordinary-app-session-token"):
+            with self.subTest(token=token):
+                status, _ = self.request("POST", "/fixture/node-availability",
+                    b'{"available":false}', token=token)
+                self.assertEqual(status, 403)
+                self.assertTrue(self.namespace["proxy_available"].is_set())
+        for payload in (b"{}", b'{"available":0}', b'{"available":"false"}',
+                        b'{"available":false,"extra":1}', b"[]", b"invalid", b"", b"x" * 129):
+            with self.subTest(payload=payload):
+                status, _ = self.request("POST", "/fixture/node-availability",
+                    payload, token="fixture-runner-only-control")
+                self.assertEqual(status, 400)
+                self.assertTrue(self.namespace["proxy_available"].is_set())
+        self.assertEqual(self.requests, [])
+        self.toggle(False)
+        self.assertEqual(self.request("POST", "/fixture/release-lost-response",
+                                     token="ordinary-app-session-token")[0], 403)
+        self.assertFalse(self.namespace["release_lost_response"].is_set())
+        self.assertEqual(self.request("POST", "/fixture/release-lost-response",
+                                     token="fixture-runner-only-control")[0], 204)
+        self.assertTrue(self.namespace["release_lost_response"].is_set(),
+                        "Keep the existing lost-response/share control protocol")
+
+    def test_unavailability_disconnects_already_established_quiet_sse(self):
+        connection = http.client.HTTPConnection("127.0.0.1", self.proxy.server_port, timeout=3)
+        self.addCleanup(connection.close)
+        connection.request("GET", "/api/events")
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.readline(), b"data: initial-stream-event\n")
+        self.assertEqual(response.readline(), b"\n")
+        self.toggle(False)
+        self.assertEqual(response.read(), b"", "Quiet SSE must close immediately, not after a heartbeat timeout")
+        self.assertFalse(self.release_stream.is_set(), "The upstream stream was still quiet when disconnected")
+        self.assertEqual(self.request("GET", "/api/events")[0], 503)
+        self.toggle(True)
+        self.assertEqual(self.request("GET", "/api/agents")[0], 200)
+
+
 class UIFixtureProviderContracts(unittest.TestCase):
     def test_history_window_oracle_matches_reader_snapshot_limit(self):
         source = ROOT / "scripts/ios_ui_fixture.py"
@@ -741,7 +969,7 @@ class UIFixtureProviderContracts(unittest.TestCase):
                      and isinstance(node.test.left, ast.Name) and node.test.left.id == "method"
                      and any(isinstance(value, ast.Constant)
                              and value.value == "testConversationHistoryWindowPosition"
-                             for value in node.test.comparators))
+                             for value in ast.walk(node.test)))
         code = compile(ast.Module(body=[block], type_ignores=[]), str(source), "exec")
         for count, older, newer in [(25, 0, 5), (33, 0, 13), (60, 25, 40)]:
             with self.subTest(turns=count):
@@ -765,22 +993,15 @@ class UIFixtureProviderContracts(unittest.TestCase):
                 local.assert_called_once_with("GET", "/agents/holon-tester/conversation?limit=60")
 
     def test_failed_history_seed_clears_scope(self):
-        source = ROOT / "scripts/ios_ui_fixture.py"
-        tree = ast.parse(source.read_text(), filename=str(source))
-        seed_block = next(node for node in ast.walk(tree)
-                          if isinstance(node, ast.If) and isinstance(node.test, ast.Name)
-                          and node.test.id == "history_acceptance")
+        helpers = fixture_helpers()
         history_seed_active = threading.Event()
 
         def fail_seed(*args):
             self.assertTrue(history_seed_active.is_set())
             raise RuntimeError("seed stopped")
 
-        namespace = dict(history_acceptance=True, history_seed_active=history_seed_active,
-                         agent="holon-tester", local=fail_seed)
         with self.assertRaisesRegex(RuntimeError, "seed stopped"):
-            exec(compile(ast.Module(body=[seed_block], type_ignores=[]),
-                         str(source), "exec"), namespace)
+            helpers["seed_fixture_history"](fail_seed, "holon-tester", history_seed_active)
         self.assertFalse(history_seed_active.is_set())
 
     def test_history_seed_scope_preserves_normal_and_streaming_markdown(self):

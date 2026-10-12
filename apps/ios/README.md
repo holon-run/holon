@@ -21,6 +21,33 @@ Markdown links remain directly tappable in the normal reader.
 Internal TestFlight delivery does not establish physical-device or App Store
 acceptance: see [release preparation](RELEASE.md) for the remaining gates.
 
+## Cached and offline reading
+
+Agents and conversations restore their bounded local cache before refreshing.
+Previously fetched turns, history, brief bodies and reading positions remain
+readable after restarting the app when the network or node is unavailable.
+The app labels cached content and background refresh separately; uncached
+conversations or brief bodies explain that a connection is needed. Retry and
+foreground reentry attempt to reconnect. Execution details and files are not
+offline downloads, and unseen content is not promised.
+
+Offline restoration uses this device's previously confirmed reading context,
+not an online identity or a staged login token. Sending, read markers, reporting
+and server controls require a live connection. Logout, profile removal, account
+replacement and confirmed authorization denial revoke the relevant cache.
+Remote revocation cannot be discovered while disconnected.
+
+The cache lives in Application Support, is excluded from backup, and requests
+complete file protection. It is capacity-bounded rather than age-expired;
+eviction, device lock, storage failure and uninstall can make content unavailable.
+Loaded history is retained only within those bounds: an encoded snapshot over
+256 KiB falls back to the confirmed server live window for persistence, and a
+merged window over 180 closed turns falls back to that live window for display.
+Previously loaded history outside the retained window is not guaranteed after
+restart.
+See the [cache-first reading contract](../../docs/rfcs/ios-offline-reading-cache.md)
+for bounds, migration and device-verification limits.
+
 ## Report AI content
 
 Long-press an AI result or its turn and choose **Report AI content**.
@@ -116,7 +143,7 @@ For each relevant authenticated agent scope, erase draft text and remove its
 attachments in the editor; delete removable entries in the queue. Active sends
 cannot be deleted there. Discard shared inbox entries separately. Switching
 identity hides old scoped content but is not a general disk-wipe command.
-Read-cache authorization failures invalidate the affected partition; there is
+Logout, profile removal and read-cache authorization failures invalidate the affected partition; there is
 no user-facing purge-all cache button. Removing the app (not offloading it)
 removes its ordinary sandbox, but is not a guarantee about Keychain, shared
 containers, backups, exported reports or daemon-side data. Log out first.
@@ -183,8 +210,9 @@ restored after each case, including failed tests.
   Scene inactivity cancels foreground work; returning rebuilds authoritative
   snapshots. Historical pagination does not advance the live cursor. Identity
   changes synchronously revoke the old view before another transport is bound.
-  Cached content is read-only, contains no credentials, and is accessible only
-  after network/runtime/user/visibility identity has been confirmed.
+  Cached content is read-only, contains no credentials, and uses a separately
+  persisted, previously confirmed network/runtime/user/visibility context.
+  Roster and selected-conversation refresh do not wait for each other.
 - Briefs are primary content, operator input is preserved, and execution details
   remain expandable rather than becoming another summary. Read-cursor failures
   have their own status; only server confirmation counts as a successful read.

@@ -115,6 +115,25 @@ def record_fixture_prompt(evidence, number, case, path, body, data, status, deli
     return record
 
 
+def seed_fixture_history(local, agent, history_seed_active):
+    # Keep short seed replies scoped to preparation, never to later UI prompts.
+    history_seed_active.set()
+    try:
+        for number in range(25):
+            marker = f"IOS_HISTORY_{number:03}"
+            local("POST", f"/agents/{agent}/enqueue", {"text": marker})
+            for attempt in range(200):
+                history = local("GET", f"/agents/{agent}/conversation")
+                if any(marker in json.dumps(turn) and turn.get("brief_ids")
+                       for turn in history.get("turns", [])):
+                    break
+                time.sleep(.1)
+            else:
+                raise RuntimeError("history fixture turn did not finish")
+    finally:
+        history_seed_active.clear()
+
+
 def conversation_inputs(conversation):
     # History includes running turns. Overlay active membership by turn identity,
     # never by message ID: duplicate logical inputs must still fail validation.
@@ -345,6 +364,10 @@ with fixture_directory(repo) as root:
     fixture_case = None
     lost_lock = threading.Lock()
     proxy_control_token = secrets.token_hex(32)
+    proxy_available = threading.Event()
+    proxy_available.set()
+    proxy_connections = set()
+    proxy_state_lock = threading.Lock()
 
     class LostResponseProxy(http.server.BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -354,6 +377,39 @@ with fixture_directory(repo) as root:
             self.forward()
 
         def do_POST(self):
+            if self.path == "/fixture/node-availability":
+                if self.headers.get("Authorization") != "Bearer " + proxy_control_token:
+                    self.send_error(403); return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 128:
+                        raise ValueError("invalid control length")
+                    payload = json.loads(self.rfile.read(length))
+                    if not isinstance(payload, dict) or set(payload) != {"available"} or type(payload["available"]) is not bool:
+                        raise ValueError("invalid availability")
+                except (ValueError, TypeError):
+                    self.send_error(400); return
+                with proxy_state_lock:
+                    if payload["available"]:
+                        proxy_available.set()
+                    else:
+                        proxy_available.clear()
+                    connections = list(proxy_connections) if not payload["available"] else []
+                # Interrupt both ends of established streams, including quiet SSE.
+                # The real isolated daemon and the host network remain untouched.
+                for sockets in connections:
+                    for connection in sockets:
+                        try:
+                            connection.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+                data = json.dumps({"available": proxy_available.is_set()}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             if self.path == "/fixture/release-lost-response":
                 if self.headers.get("Authorization") != "Bearer " + proxy_control_token:
                     self.send_error(403); return
@@ -362,6 +418,9 @@ with fixture_directory(repo) as root:
             self.forward()
 
         def forward(self):
+            if not proxy_available.is_set():
+                self.send_error(503, "isolated fixture node unavailable")
+                return
             length = int(self.headers.get("Content-Length", "0"))
             if length > 32 * 1024 * 1024:
                 self.send_error(413); return
@@ -370,7 +429,15 @@ with fixture_directory(repo) as root:
             # must not manufacture unrelated offline failures during acceptance.
             upstream = http.client.HTTPConnection("127.0.0.1", port,
                                                   timeout=90 if self.command == "GET" else 15)
+            sockets = None
             try:
+                upstream.connect()
+                with proxy_state_lock:
+                    if not proxy_available.is_set():
+                        self.send_error(503, "isolated fixture node unavailable")
+                        return
+                    sockets = (upstream.sock, self.connection)
+                    proxy_connections.add(sockets)
                 headers = {key: value for key, value in self.headers.items()
                            if key.lower() not in ("host", "connection", "transfer-encoding")}
                 # Parse the actual receipt rather than URLSession's compressed
@@ -420,12 +487,14 @@ with fixture_directory(repo) as root:
                     if not data:
                         break
                     self.wfile.write(data); self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError, socket.timeout, http.client.IncompleteRead):
+            except (OSError, http.client.HTTPException):
                 pass  # Native backgrounding closes its foreground SSE connection.
             finally:
+                with proxy_state_lock:
+                    proxy_connections.discard(sockets)
                 upstream.close()
 
-    if lost_response_acceptance or (share_acceptance and fixture_evidence is not None):
+    if mode != "--sdk-only" or lost_response_acceptance or (share_acceptance and fixture_evidence is not None):
         proxy = http.server.ThreadingHTTPServer(("127.0.0.1", 0), LostResponseProxy)
         proxy.daemon_threads = True
         threading.Thread(target=proxy.serve_forever, daemon=True).start()
@@ -528,21 +597,7 @@ with fixture_directory(repo) as root:
             rich_turn = None
             rich_additional_work = None
             if history_acceptance:
-                history_seed_active.set()
-                try:
-                    for number in range(25):
-                        marker = f"IOS_HISTORY_{number:03}"
-                        local("POST", f"/agents/{agent}/enqueue", {"text": marker})
-                        for attempt in range(200):
-                            history = local("GET", f"/agents/{agent}/conversation")
-                            if any(marker in json.dumps(turn) and turn.get("brief_ids")
-                                   for turn in history.get("turns", [])):
-                                break
-                            time.sleep(.1)
-                        else:
-                            raise RuntimeError("history fixture turn did not finish")
-                finally:
-                    history_seed_active.clear()
+                seed_fixture_history(local, agent, history_seed_active)
             if rich_activity_acceptance:
                 # All rich data lives in this temporary daemon, never a production Agent.
                 for number in range(90):
@@ -675,7 +730,10 @@ with fixture_directory(repo) as root:
                     "TASK_MARKER": "IOS_POPULATED_OUTPUT",
                     "FILE_REFERENCE": str(workspace / file_path), "FILE_MARKER": "IOS_POPULATED_FILE"}
                 if proxy:
-                    runner_inputs.update(ENDPOINT=f"http://127.0.0.1:{proxy.server_port}/api")
+                    runner_inputs.update(
+                        ENDPOINT=f"http://127.0.0.1:{proxy.server_port}/api",
+                        NODE_CONTROL_URL=f"http://127.0.0.1:{proxy.server_port}/fixture/node-availability",
+                        NODE_CONTROL_TOKEN=proxy_control_token)
                     if lost_response_acceptance:
                         runner_inputs.update(
                             LOSS_CONTROL_URL=f"http://127.0.0.1:{proxy.server_port}/fixture/release-lost-response",
@@ -709,6 +767,7 @@ with fixture_directory(repo) as root:
                          ("testPairingPreviewStaysOfflineAndCanCancel", "large"),
                          # Authenticate through shipped onboarding before diagnostics.
                          ("testAuthenticatedNativeWorkflow", "large"),
+                         ("testOfflineReadingCacheColdLaunchAndRetry", "large"),
                          ("testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored", "large"),
                          ("testChineseDiagnosticsDarkAccessibilitySize", MAXIMUM_TEXT_SIZE),
                          ("testDiagnosticsControlsRespondToRuntimeTextSize", MAXIMUM_TEXT_SIZE),
@@ -733,6 +792,7 @@ with fixture_directory(repo) as root:
                         ("testContentReportAcceptedReceiptCannotSubmitTwice", "large"),
                     ])
                 cases.append(("testLoginConsentRestorationAndWithdrawal", "large"))
+                cases.append(("testOfflineReadingCacheSignOutBoundary", "large"))
                 # Deletes the saved fixture session, so run last in a full sweep.
                 cases.append(("testNetworkManagementWorkflow", "large"))
                 selected_cases = os.environ.get("IOS_UI_CASES")
@@ -752,6 +812,10 @@ with fixture_directory(repo) as root:
                     install(simulator, repo, root)
                 for (method, content_size), case_bundle in zip(cases, bundles):
                     fixture_case = method
+                    if method == "testOfflineReadingCacheColdLaunchAndRetry" and not history_acceptance:
+                        # Do not push the onboarding smoke's original brief out of
+                        # its latest window before that earlier case has read it.
+                        seed_fixture_history(local, agent, history_seed_active)
                     loss_case = lost_response_acceptance and method in {
                         "testLostResponseAndProcessRecovery", "testDirectAgentShareWorkflow"}
                     if loss_case:
@@ -779,6 +843,8 @@ with fixture_directory(repo) as root:
                             test_env["TEST_RUNNER_HOLON_UI_APPEARANCE"] = appearance
                             if method in {"testAuthenticatedNativeWorkflow", "testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored",
                                           "testDirectAgentShareWorkflow", "testNetworkManagementWorkflow",
+                                          "testOfflineReadingCacheColdLaunchAndRetry",
+                                          "testOfflineReadingCacheSignOutBoundary",
                                           "testTaskResultProcessWorkflow",
                                           "testContentReportFullResponseIncludesTail",
                                           "testContentReportConfirmationCancelDoesNotPersist",
@@ -788,7 +854,7 @@ with fixture_directory(repo) as root:
                                 # warm the build; issue only when redemption is about to run.
                                 ticket = local("POST", "/auth/pairing/issue")["ticket"]
                                 test_env["TEST_RUNNER_HOLON_UI_PAIRING_CODE"] = ticket
-                            if method == "testConversationHistoryWindowPosition":
+                            if method in {"testConversationHistoryWindowPosition", "testOfflineReadingCacheColdLaunchAndRetry"}:
                                 # Match ReadingTransport's bounded summary, not the server default.
                                 history = local("GET", f"/agents/{agent}/conversation?limit=60")
                                 turns = sorted(history["turns"], key=lambda turn: turn["key"]["turn_index"])
@@ -797,6 +863,21 @@ with fixture_directory(repo) as root:
                                 older_end = max(20, len(turns) - 15)
                                 test_env["TEST_RUNNER_HOLON_UI_HISTORY_OLDER_TOP"] = turns[older_end - 20]["turn_id"]
                                 test_env["TEST_RUNNER_HOLON_UI_HISTORY_NEWER_TOP"] = turns[len(turns) - 20]["turn_id"]
+                                if method == "testOfflineReadingCacheColdLaunchAndRetry":
+                                    # Derive the oracle from a real brief in the older window.
+                                    # Reading/cache population still happens only through UI.
+                                    brief_ids = turns[older_end - 20].get("brief_ids", [])
+                                    if not brief_ids:
+                                        raise RuntimeError("offline reading needs a completed historical brief")
+                                    brief = local("GET", f"/agents/{agent}/briefs/{brief_ids[-1]}")
+                                    text = next((brief.get(key) for key in ("text", "body", "content")
+                                                 if isinstance(brief.get(key), str)), "")
+                                    marker = next((line.strip() for line in text.splitlines()
+                                                   if len(line.strip()) >= 12
+                                                   and not line.strip().startswith(("#", "*", "-", ">", "|", "`"))), None)
+                                    if marker is None:
+                                        raise RuntimeError("offline reading brief has no visible body marker")
+                                    test_env["TEST_RUNNER_HOLON_UI_OFFLINE_BODY_MARKER"] = marker
                             try:
                                 result = subprocess.run(["xcodebuild", "-project", repo + "/apps/ios/Holon.xcodeproj",
                                     "-scheme", "Holon", "-destination", destination,

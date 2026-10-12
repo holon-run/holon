@@ -124,3 +124,30 @@ struct ReadingPartition: Hashable, Codable, Sendable {
         self.visibility = visibility
     }
 }
+
+/// Keep the server's live cursor authoritative while retaining a bounded history window.
+enum ReadingSnapshotWindow {
+    static let maximumTurns = 180
+    static let maximumBytes = 262_144
+
+    static func merging(_ live: HolonConversationSnapshot,
+                        history: HolonConversationSnapshot?) throws -> HolonConversationSnapshot {
+        guard let history, history.eventLogEpoch == live.eventLogEpoch else { return live }
+        let merged = try mergeConversationHistory(live, page: history, maximumTurns: Int.max)
+        guard case .array(let turns) = merged.raw["turns"],
+              turns.filter({ $0["execution"]?["kind"] != .string("active") }).count <= maximumTurns else {
+            // Capacity eviction falls back to a real server window, never an invented page cursor.
+            return live
+        }
+        return merged
+    }
+
+    /// Run on a worker. An oversized history window falls back to the confirmed live tail.
+    static func cacheCandidates(_ displayed: HolonConversationSnapshot,
+                                liveWindow: HolonConversationSnapshot?) -> [JSONValue] {
+        var values = [displayed.raw]
+        if let liveWindow, liveWindow.eventLogEpoch == displayed.eventLogEpoch,
+           liveWindow.raw != displayed.raw { values.append(liveWindow.raw) }
+        return values.filter { ((try? JSONEncoder().encode($0).count) ?? Int.max) <= maximumBytes }
+    }
+}

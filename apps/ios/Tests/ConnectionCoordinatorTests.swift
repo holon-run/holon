@@ -203,6 +203,17 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(c.launchState, .ready)
         XCTAssertNil(c.identity)
         XCTAssertTrue(purged.isEmpty)
+        await transport.block(.authenticationMode)
+        let retry = Task { await c.refresh() }
+        await transport.waitUntilEntered()
+        XCTAssertEqual(c.readingContext, context)
+        XCTAssertEqual(c.launchState, .ready, "Retrying offline bootstrap must not restore a launch-screen gate")
+        XCTAssertNil(c.identity)
+        await transport.release()
+        await retry.value
+        XCTAssertEqual(c.readingContext, context)
+        XCTAssertEqual(c.status, .networkError)
+        XCTAssertTrue(purged.isEmpty)
     }
 
     func testExpiredCredentialRestoresOnlyLocalScopeAndClearsExtensionCapability() async throws {
@@ -238,6 +249,216 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(c.status, .networkError)
         XCTAssertNotNil(c.readingContext)
         XCTAssertNil(try sharing.read())
+    }
+
+    func testSameProfileReconnectPreservesReadingScopeWhileWithdrawingOnlineIdentity() async throws {
+        let cases: [(CoordinatorTransport.BootstrapFailure?, ConnectionStatus)] = [
+            (nil, .connected), (.authenticationMode, .networkError), (nil, .timedOut)
+        ]
+        for (failure, expectedStatus) in cases {
+            let f = try fixture()
+            let p = try profile(f)
+            try saved(f, profile: p)
+            let transport = CoordinatorTransport()
+            let c = coordinator(f, transport: transport,
+                                deadline: expectedStatus == .timedOut ? .milliseconds(30) : .seconds(30))
+            await c.connect(p)
+            let previousIdentity = try XCTUnwrap(c.identity)
+            let context = try XCTUnwrap(c.readingContext)
+            var withdrawals: [ConfirmedReadingContext?] = []
+            var purged: [ReadingPartition] = []
+            c.onIdentityChange = { [weak c] in
+                guard let c, c.identity == nil else { return }
+                withdrawals.append(c.readingContext)
+                XCTAssertEqual(c.readingContext, context)
+                XCTAssertEqual(c.launchState, .ready)
+            }
+            c.onReadingInvalidation = { purged.append($0) }
+            if let failure { await transport.failBootstrap(failure) }
+            await transport.block(.authenticationMode)
+            let retry = Task { await c.refresh() }
+            await transport.waitUntilEntered()
+            XCTAssertEqual(c.readingContext, context)
+            XCTAssertEqual(c.launchState, .ready)
+            XCTAssertNil(c.identity)
+            XCTAssertEqual(withdrawals, [context])
+            do {
+                _ = try await c.makeAuthenticatedClient()
+                XCTFail("Preserved reading context must not preserve online authority")
+            } catch { XCTAssertEqual(error as? HolonClientError, .staleConnection) }
+            if expectedStatus == .timedOut {
+                try await Task.sleep(for: .milliseconds(100))
+                XCTAssertEqual(c.status, .timedOut)
+                XCTAssertEqual(c.readingContext, context)
+                XCTAssertEqual(c.launchState, .ready)
+            }
+            await transport.release()
+            await retry.value
+            XCTAssertEqual(c.status, expectedStatus)
+            XCTAssertEqual(c.readingContext, context)
+            XCTAssertEqual(c.launchState, .ready)
+            XCTAssertTrue(purged.isEmpty)
+            XCTAssertEqual(try f.store.confirmedReadingContext(for: p), context)
+            if expectedStatus == .connected {
+                XCTAssertNotNil(c.identity)
+                XCTAssertNotEqual(c.identity?.generation, previousIdentity.generation)
+            } else {
+                XCTAssertNil(c.identity)
+            }
+        }
+    }
+
+    func testSameProfileReconnectWithdrawsScopeBeforeNotifyingForChangedLocalContext() async throws {
+        for change in ["network", "runtime", "user", "visibility", "staged-login"] {
+            let stagedLogin = change == "staged-login"
+            let f = try fixture()
+            let p = try profile(f)
+            try saved(f, profile: p)
+            let transport = CoordinatorTransport(mode: "oidc")
+            let c = coordinator(f, transport: transport)
+            await c.connect(p)
+            let previous = try XCTUnwrap(c.readingContext)
+            let replacement = try XCTUnwrap(ConfirmedReadingContext(profile: p, identity: .init(
+                networkID: change == "network" ? "other-network" : previous.partition.network,
+                runtimeID: change == "runtime" ? "other-runtime" : previous.partition.runtime,
+                userID: change == "user" ? "other-user" : previous.partition.user,
+                visibilityScopeID: change == "visibility" ? "other-private" : previous.partition.visibility)))
+            if stagedLogin {
+                try f.store.stageSession(.init(apiBaseURL: p.apiBaseURL, credential: "new-account",
+                                              userID: "other-user", expiresAt: nil), for: p)
+            } else {
+                try f.store.saveConfirmedReadingContext(replacement, for: p)
+            }
+            var withdrawals = 0
+            c.onIdentityChange = { [weak c] in
+                guard let c, c.identity == nil else { return }
+                withdrawals += 1
+                XCTAssertNil(c.readingContext, "A changed \(change) must be withdrawn before identity observers run")
+            }
+            await transport.block(.authenticationMode)
+            await transport.failBootstrap(.authenticationMode)
+            let retry = Task { await c.refresh() }
+            await transport.waitUntilEntered()
+            XCTAssertEqual(withdrawals, 1)
+            XCTAssertNil(c.identity)
+            if stagedLogin {
+                XCTAssertNil(c.readingContext)
+                XCTAssertNil(try f.store.confirmedReadingContext(for: p))
+            } else {
+                XCTAssertEqual(c.readingContext, replacement)
+                XCTAssertNotEqual(c.readingContext?.partition, previous.partition)
+            }
+            await transport.release()
+            await retry.value
+            XCTAssertEqual(c.status, .networkError)
+        }
+    }
+
+    func testSameProfileReconnectPermissionFailurePurgesRetainedScope() async throws {
+        for code in [401, 403] {
+            let f = try fixture()
+            let p = try profile(f)
+            try saved(f, profile: p)
+            let transport = CoordinatorTransport()
+            let c = coordinator(f, transport: transport)
+            await c.connect(p)
+            let context = try XCTUnwrap(c.readingContext)
+            var withdrawals: [ConfirmedReadingContext?] = []
+            var purged: [ReadingPartition] = []
+            c.onIdentityChange = { [weak c] in
+                guard let c, c.identity == nil else { return }
+                withdrawals.append(c.readingContext)
+            }
+            c.onReadingInvalidation = { [weak c] in
+                purged.append($0)
+                XCTAssertNil(c?.readingContext)
+                XCTAssertNil(c?.identity)
+            }
+            await transport.failUser(HolonHTTPFailure(statusCode: code, identity: .init(networkID: "fixture")))
+            await c.refresh()
+            XCTAssertEqual(withdrawals, [context])
+            XCTAssertEqual(c.status, code == 401 ? .sessionExpired : .permissionDenied)
+            XCTAssertNil(c.identity)
+            XCTAssertNil(c.readingContext)
+            XCTAssertEqual(purged, [context.partition])
+            XCTAssertNil(try f.store.confirmedReadingContext(for: p))
+            XCTAssertNil(try f.store.session(for: p))
+        }
+    }
+
+    func testSameProfileReconnectWithUnreadableScopeWithdrawsBeforeIdentityNotification() async throws {
+        for startOffline in [false, true] {
+            let f = try fixture()
+            let p = try profile(f)
+            try saved(f, profile: p)
+            try f.store.select(p.id)
+            let transport = CoordinatorTransport()
+            if startOffline { await transport.failBootstrap(.authenticationMode) }
+            let c = coordinator(f, transport: transport)
+            await c.restore()
+            let previous = try XCTUnwrap(c.readingContext)
+            let previousBindings = await transport.bindings.count
+            XCTAssertEqual(c.identity == nil, startOffline)
+            try f.vault.write(Data("not-json".utf8), account: "confirmed-reading.\(p.id.uuidString)")
+            var withdrawals = 0
+            c.onIdentityChange = { [weak c] in
+                guard let c, c.identity == nil else { return }
+                withdrawals += 1
+                XCTAssertNil(c.readingContext)
+                XCTAssertNil(c.readingContext?.partition)
+            }
+            await c.refresh()
+            XCTAssertEqual(withdrawals, startOffline ? 0 : 1)
+            XCTAssertEqual(c.status, .storageError)
+            XCTAssertNil(c.identity)
+            XCTAssertNil(c.readingContext)
+            XCTAssertNil(c.readingContext?.partition)
+            XCTAssertNotEqual(c.readingContext?.partition, previous.partition)
+            XCTAssertEqual(c.launchState, .connection)
+            let bindings = await transport.bindings.count
+            XCTAssertEqual(bindings, previousBindings, "Unreadable scope must fail before binding a reconnect session")
+            do {
+                _ = try await c.makeAuthenticatedClient()
+                XCTFail("Unreadable scope must not retain online authority")
+            } catch { XCTAssertEqual(error as? HolonClientError, .staleConnection) }
+        }
+    }
+
+    func testProfileSwitchWithdrawsPreviousScopeBeforeIdentityNotification() async throws {
+        let f = try fixture()
+        let a = try profile(f)
+        let b = try profile(f, name: "B")
+        try saved(f, profile: a)
+        let target = try XCTUnwrap(ConfirmedReadingContext(profile: b, identity: .init(
+            networkID: b.id.uuidString, runtimeID: "B-runtime", userID: "B-user",
+            visibilityScopeID: "B-private")))
+        try f.store.saveConfirmedReadingContext(target, for: b)
+        let transport = CoordinatorTransport()
+        let c = coordinator(f, transport: transport)
+        await c.connect(a)
+        let previous = try XCTUnwrap(c.readingContext)
+        var withdrawals = 0
+        var purged: [ReadingPartition] = []
+        c.onIdentityChange = { [weak c] in
+            guard let c, c.identity == nil else { return }
+            withdrawals += 1
+            XCTAssertNil(c.readingContext)
+        }
+        c.onReadingInvalidation = { purged.append($0) }
+        await transport.block(.authenticationMode)
+        await transport.failBootstrap(.authenticationMode)
+        let switching = Task { await c.connect(b) }
+        await transport.waitUntilEntered()
+        XCTAssertEqual(withdrawals, 1)
+        XCTAssertEqual(c.selectedProfile, b)
+        XCTAssertEqual(c.readingContext, target)
+        XCTAssertNil(c.identity)
+        XCTAssertEqual(try f.store.confirmedReadingContext(for: a), previous)
+        XCTAssertTrue(purged.isEmpty, "Switching nodes must not delete the old node's cache")
+        await transport.release()
+        await switching.value
+        XCTAssertEqual(c.status, .networkError)
+        XCTAssertEqual(c.readingContext, target)
     }
 
     func testAnonymousConfirmationPersistsScopeForNextOfflineLaunch() async throws {
@@ -422,11 +643,22 @@ final class ConnectionCoordinatorTests: XCTestCase {
         try f.store.select(p.id)
         let transport = CoordinatorTransport(gate: .user)
         let c = coordinator(f, transport: transport)
+        var promotedContext: ConfirmedReadingContext?
+        var promotions = 0
+        c.onIdentityChange = { [weak c] in
+            guard let c, let identity = c.identity else { return }
+            promotedContext = c.readingContext
+            promotions += 1
+            XCTAssertEqual(c.readingContext?.profile, p)
+            XCTAssertEqual(c.readingContext?.partition,
+                           ReadingPartition(apiBaseURL: p.apiBaseURL, identity: identity))
+        }
         let restoration = Task { await c.restore() }
         await transport.waitUntilEntered()
         XCTAssertEqual(c.launchState, .ready)
         XCTAssertNotNil(c.readingContext)
         XCTAssertNil(c.identity)
+        XCTAssertNil(promotedContext)
         // A second appearance cannot prematurely finish the first restoration.
         await c.restore()
         XCTAssertEqual(c.launchState, .ready)
@@ -434,8 +666,11 @@ final class ConnectionCoordinatorTests: XCTestCase {
         await restoration.value
         XCTAssertEqual(c.launchState, .ready)
         let identity = try XCTUnwrap(c.identity)
+        XCTAssertEqual(promotedContext, c.readingContext)
+        XCTAssertEqual(promotions, 1)
         await c.restore()
         XCTAssertEqual(c.identity, identity)
+        XCTAssertEqual(promotions, 1, "Repeated appearance must not restart online activation")
         c.handleClientFailure(HolonHTTPFailure(statusCode: 503, identity: identity), expectedIdentity: identity)
         XCTAssertEqual(c.launchState, .ready, "Transient offline state retains confirmed identity")
         c.handleClientFailure(HolonHTTPFailure(statusCode: 401, identity: identity), expectedIdentity: identity)
@@ -613,6 +848,15 @@ final class ConnectionCoordinatorTests: XCTestCase {
         try saved(f, profile: p)
         let c = coordinator(f, transport: CoordinatorTransport())
         await c.connect(p)
+        let confirmed = try XCTUnwrap(c.readingContext)
+        var offlineObservations = 0
+        var purged: [ReadingPartition] = []
+        c.onIdentityChange = { [weak c] in
+            XCTAssertNil(c?.identity)
+            XCTAssertEqual(c?.readingContext, confirmed)
+            offlineObservations += 1
+        }
+        c.onReadingInvalidation = { purged.append($0) }
         let session = try XCTUnwrap(f.store.session(for: p))
         try f.store.saveSession(StoredSession(
             credential: session.credential, runtimeID: session.runtimeID, userID: session.userID,
@@ -628,6 +872,8 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(c.status, .sessionExpired)
         XCTAssertNotNil(c.readingContext, "Credential expiry alone does not revoke local content")
         XCTAssertEqual(try f.store.confirmedReadingContext(for: p), c.readingContext)
+        XCTAssertEqual(offlineObservations, 1, "The App observer must receive the retained read-only context")
+        XCTAssertTrue(purged.isEmpty)
     }
 
     func testNewOIDCConnectionDoesNotAttemptUnauthenticatedHandshake() async throws {

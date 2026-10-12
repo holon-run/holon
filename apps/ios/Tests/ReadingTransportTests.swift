@@ -14,7 +14,9 @@ private final class ReadingIdentityProtocol: URLProtocol, @unchecked Sendable {
         if request.url!.path.hasSuffix("/agents/snapshot") {
             body = #"{"runtime_id":"runtime","visibility_scope_id":"private","event_log_epoch":"epoch","agents":[{"agent":{"identity":{"agent_id":"A","name":"Agent A"},"current_run_id":"run-A"}}]}"#
         } else if request.url!.path.hasSuffix("/conversation") {
-            body = #"{"runtime_id":"runtime","visibility_scope_id":"private","agent_id":"A","event_log_epoch":"epoch","snapshot_cursor":"live-1","snapshot_through_seq":7,"event_head_seq":7,"schema_version":1,"query_version":1,"has_more":false,"next_before_cursor":null,"turns":[],"active_turns":[],"pending_inputs":[]}"#
+            let agentID = request.url!.deletingLastPathComponent().lastPathComponent
+            let epoch = agentID == "new-epoch" ? "next-epoch" : "epoch"
+            body = #"{"runtime_id":"runtime","visibility_scope_id":"private","agent_id":"\#(agentID)","event_log_epoch":"\#(epoch)","snapshot_cursor":"live-1","snapshot_through_seq":7,"event_head_seq":7,"schema_version":1,"query_version":1,"has_more":false,"next_before_cursor":null,"turns":[],"active_turns":[],"pending_inputs":[]}"#
         } else if request.url!.path.contains("/tool-executions/") {
             let id = request.url!.lastPathComponent
             let agent = id == "wrong-owner" ? "B" : "A"
@@ -61,6 +63,23 @@ final class ReadingTransportTests: XCTestCase {
         await transport.close()
     }
 
+    func testConversationDoesNotRequireRoster() async throws {
+        let (_, transport, _) = try await fixture()
+        let snapshot = try await transport.conversation(agentID: "A", before: nil)
+        XCTAssertEqual(snapshot.agentID, "A")
+        XCTAssertEqual(snapshot.eventLogEpoch, "epoch")
+        await transport.close()
+    }
+
+    func testConversationEstablishesItsOwnEpochAfterRoster() async throws {
+        let (_, transport, _) = try await fixture()
+        _ = try await transport.roster()
+        let snapshot = try await transport.conversation(agentID: "new-epoch", before: nil)
+        XCTAssertEqual(snapshot.agentID, "new-epoch")
+        XCTAssertEqual(snapshot.eventLogEpoch, "next-epoch")
+        await transport.close()
+    }
+
     func testReboundSDKGenerationCannotReadThroughOldTransport() async throws {
         let (client, transport, _) = try await fixture()
         _ = try await transport.brief(agentID: "A", briefID: "brief")
@@ -71,6 +90,12 @@ final class ReadingTransportTests: XCTestCase {
             XCTFail("An old transport must not adopt a new SDK generation")
         } catch is CancellationError {
             // Same business partition does not authorize adopting a new generation.
+        }
+        do {
+            _ = try await transport.conversation(agentID: "A", before: nil)
+            XCTFail("Conversation must retain the transport's SDK generation fence")
+        } catch is CancellationError {
+            // Conversation refresh is independent of roster, not of identity.
         }
         await transport.close()
     }

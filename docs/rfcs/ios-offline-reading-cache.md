@@ -71,10 +71,20 @@ remain limits to availability; no secure-erasure promise is made.
 
 Restore first, then refresh in the background. Selecting a conversation must not
 wait for the roster request. Keep cached content visible during refresh and
-preserve loaded history when the epoch remains unchanged. Prefetch a bounded
-tail of brief bodies; visible-body requests share the same bounded concurrency
-budget. Returning to a previously opened conversation restores its bodies
+preserve loaded history when the epoch remains unchanged. On successful
+conversation bootstrap, prefetch a bounded tail of at most eight unloaded brief
+bodies; SSE commits merge and persist without starting another prefetch.
+Visible-body and activity requests
+share the same two-slot expansion budget. Returning to a previously opened conversation restores its bodies
 without waiting for the node.
+
+History retention remains capacity-bounded. A merged window with more than
+180 closed turns falls back to the confirmed server live window for display.
+If the displayed snapshot exceeds 256 KiB when encoded, persistence tries the
+confirmed same-epoch live window instead; it never invents a pagination cursor.
+If that live window also exceeds the encoding limit, the old cache is preserved.
+Cold restart restores only the retained window, not every previously loaded
+history page.
 
 Manual retry and foreground reentry attempt revalidation. Restored reading
 context and authenticated transports have distinct lifetimes; stale callbacks

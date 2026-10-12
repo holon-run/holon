@@ -38,10 +38,16 @@ final class AppRouter {
         restoringAgent = saved.agentID
     }
 
+    /// Cached membership permits restoration; only a successful current roster can reject it.
     func restore(agents: [ReadingAgent], authoritative: Bool) {
-        guard authoritative, path.isEmpty, let id = restoringAgent else { return }
-        restoringAgent = nil
-        if agents.contains(where: { $0.id == id }) { path = [.conversation(id)] }
+        guard path.isEmpty, let id = restoringAgent else { return }
+        if agents.contains(where: { $0.id == id }) {
+            restoringAgent = nil
+            path = [.conversation(id)]
+        } else if authoritative {
+            restoringAgent = nil
+            preferences?.removeObject(forKey: key)
+        }
     }
 
     func remember() {

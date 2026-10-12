@@ -16,25 +16,40 @@ struct ReadingView: View {
     var body: some View {
             List {
                 Section {
-                    NavigationLink(value: AppRoute.connections) {
-                        HStack {
-                            Image(systemName: "network").foregroundStyle(.secondary)
-                            Text(verbatim: connection.selectedProfile?.name ?? "")
-                            Spacer()
-                            if reader.status != .live {
-                                Text(LocalizedStringKey("reading.status." + reader.status.rawValue))
-                                    .font(.caption).foregroundStyle(.secondary)
+                    // Keep one list row while connection state changes offscreen.
+                    VStack(alignment: .leading, spacing: 12) {
+                        NavigationLink(value: AppRoute.connections) {
+                            HStack {
+                                Image(systemName: "network").foregroundStyle(.secondary)
+                                Text(verbatim: connection.selectedProfile?.name ?? "")
+                                Spacer()
+                                if let key = ReadingPresentation.connectionStatusKey(
+                                    status: reader.status, hasContent: true,
+                                    isCached: reader.isShowingCachedContent, isRefreshing: reader.isRefreshing
+                                ) {
+                                    Text(LocalizedStringKey(key))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                        .accessibilityIdentifier("agents.connectionStatus")
+                                }
                             }
                         }
-                    }
-                    .accessibilityIdentifier("connection.manage")
-                    if reader.status == .syncing && reader.agents.isEmpty { ProgressView() }
-                    if reader.agents.isEmpty {
-                        if reader.status == .live {
-                            Text("reading.noAgentsConnected")
-                            Button("connection.refresh") { Task { await reader.refresh() } }
-                        } else if reader.status != .syncing {
-                            Text("reading.emptyAgents")
+                        .accessibilityIdentifier("connection.manage")
+                        if reader.status == .syncing && reader.agents.isEmpty { ProgressView() }
+                        if reader.agents.isEmpty {
+                            if reader.status == .live {
+                                Text("reading.noAgentsConnected")
+                                Button("connection.refresh") { Task { await reader.refresh() } }
+                                    .buttonStyle(.borderless)
+                            } else if reader.status == .offline {
+                                Text("reading.cache.noAgents")
+                            } else if reader.status != .syncing {
+                                Text("reading.emptyAgents")
+                            }
+                        }
+                        if ReadingPresentation.showsConnectionRetry(status: reader.status, isRefreshing: reader.isRefreshing) {
+                            Button("reading.retry") { Task { await reader.refresh() } }
+                                .buttonStyle(.borderless)
+                                .accessibilityIdentifier("agents.retry")
                         }
                     }
                 }
@@ -82,6 +97,7 @@ struct ReadingView: View {
             .listStyle(.plain)
             .searchable(text: $query, prompt: Text("agents.search"))
             .navigationTitle("agents.title")
+            .navigationBarTitleDisplayMode(.inline)
             .refreshable { await reader.refresh() }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -153,6 +169,8 @@ struct ConversationReadingView: View {
 
     var body: some View {
         GeometryReader { geometry in
+        Group {
+        if reader.snapshot == nil || initializedAgent == reader.snapshot?.agentID {
         ScrollView {
             // The explicit turn window is bounded to20. Use its actual heights:
             // lazy offscreen estimates can loop while scrolling rich results.
@@ -176,18 +194,22 @@ struct ConversationReadingView: View {
                             if let first = visibleTurns.first { scrollRequest = .top(first.id) }
                         }
                     }
-                        .disabled(reader.isLoadingHistory)
+                        .disabled(reader.isLoadingHistory || (turnRange.lowerBound == 0 && reader.status != .live))
                         .accessibilityIdentifier("conversation.older")
                 }
                 if reader.isLoadingHistory { ProgressView() }
+                if reader.status == .offline && reader.snapshot == nil {
+                    Text("reading.cache.noConversation").foregroundStyle(.secondary)
+                        .accessibilityIdentifier("conversation.notCached")
+                }
                 if reader.snapshot != nil && turns.isEmpty && reader.snapshot?.raw["pending_inputs"].viewArray.isEmpty == true {
                     Text("reading.emptyConversation")
                 }
                 ForEach(visibleTurns) { turn in
                     ReadingTurnView(turn: turn, reader: reader)
-                        .environment(\.holonOpenReference, openReference)
-                        .environment(\.holonOpenWork, openWork)
-                        .environment(\.holonOpenTask, openTask)
+                        .environment(\.holonOpenReference, reader.status == .live ? openReference : nil)
+                        .environment(\.holonOpenWork, reader.status == .live ? openWork : nil)
+                        .environment(\.holonOpenTask, reader.status == .live ? openTask : nil)
                         .id(turn.id)
                 }
                 if turnRange.upperBound < turns.count {
@@ -202,14 +224,14 @@ struct ConversationReadingView: View {
                 }
                 ForEach((reader.snapshot?.raw["pending_inputs"].viewArray ?? []).filter { $0["presentation_class"] == .string("operator") && TaskResultInput($0) == nil }, id: \.viewMessageID) { input in
                     ReadingInputView(input: input)
-                        .environment(\.holonOpenReference, openReference)
+                        .environment(\.holonOpenReference, reader.status == .live ? openReference : nil)
                         .accessibilityIdentifier("pending." + input.viewMessageID)
                 }
                 PendingEventsView(inputs: (reader.snapshot?.raw["pending_inputs"].viewArray ?? []).filter { $0["presentation_class"] != .string("operator") || TaskResultInput($0) != nil }, agentID: reader.selectedAgentID)
-                    .environment(\.holonOpenTask, openTask)
+                    .environment(\.holonOpenTask, reader.status == .live ? openTask : nil)
                 if let sender {
                     LocalMessageView(sender: sender, canonicalIDs: LocalMessageProjection.canonicalIDs(reader.snapshot?.raw))
-                        .environment(\.holonOpenReference, openReference)
+                        .environment(\.holonOpenReference, reader.status == .live ? openReference : nil)
                 }
                 Color.clear.frame(height: 1).id("conversation-tail")
             }
@@ -219,7 +241,8 @@ struct ConversationReadingView: View {
             .scrollTargetLayout()
         }
         .scrollPosition($scrollPosition)
-        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        // Initial layout must not override a saved historical ID with the tail.
+        .defaultScrollAnchor(reader.readingPosition == nil ? .bottom : .top, for: .initialOffset)
         .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.1) { ids in
             visibleTurnIDs = ids
         }
@@ -240,22 +263,16 @@ struct ConversationReadingView: View {
             nearBottom = value
             if value { newContent = false }
         }
-        .task(id: reader.snapshot?.agentID) {
-            guard let agent = reader.snapshot?.agentID, initializedAgent != agent else { return }
-            initializedAgent = agent
-            if let saved = reader.readingPosition {
-                follow.reviewHistory()
-                historyEndTurnID = ConversationTurnWindow.restoringEnd(ids: turnIDs, turnID: saved)
-                scrollRequest = .top(saved)
-            } else { follow.showLatest(); historyEndTurnID = nil; scrollRequest = .latest }
-        }
         .task(id: scrollRequest) {
             guard let request = scrollRequest else { return }
             // Keep the ID/edge as native position state so the new window's
             // committed layout resolves it, rather than a one-shot proxy read.
             switch request {
             case .top(let id):
-                if visibleTurns.contains(where: { $0.id == id }) { scrollPosition.scrollTo(id: id, anchor: .top) }
+                if visibleTurns.contains(where: { $0.id == id }) {
+                    scrollPosition.scrollTo(id: id, anchor: .top)
+                    reader.rememberPosition(turnID: id)
+                }
             case .latest: scrollPosition.scrollTo(edge: .bottom)
             }
             scrollRequest = nil
@@ -265,7 +282,7 @@ struct ConversationReadingView: View {
             else { newContent = true }
         }
         .onChange(of: reader.snapshot?.eventLogEpoch) { old, new in
-            if old != nil, old != new { follow.showLatest(); historyEndTurnID = nil; scrollRequest = .latest }
+            if let old, let new, old != new { follow.showLatest(); historyEndTurnID = nil; scrollRequest = .latest }
         }
         .overlay(alignment: .bottomTrailing) {
             if !nearBottom || historyEndTurnID != nil || !follow.followsLatest {
@@ -280,15 +297,44 @@ struct ConversationReadingView: View {
                 .accessibilityIdentifier("conversation.latest").padding(12)
             }
         }
+        } else {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        }
+        .task(id: reader.snapshot?.agentID) {
+            guard let agent = reader.snapshot?.agentID else { initializedAgent = nil; return }
+            guard initializedAgent != agent else { return }
+            // Mount the snapshot's window only after its initial native target
+            // is ready. A post-layout scroll cannot define the first layout.
+            if let saved = reader.readingPosition, turnIDs.contains(saved) {
+                follow.reviewHistory()
+                historyEndTurnID = ConversationTurnWindow.restoringEnd(ids: turnIDs, turnID: saved)
+                scrollPosition = ScrollPosition(id: saved, anchor: .top)
+            } else {
+                follow.showLatest()
+                historyEndTurnID = nil
+                scrollPosition = ScrollPosition(idType: String.self)
+                scrollPosition.scrollTo(edge: .bottom)
+            }
+            scrollRequest = nil
+            visibleTurnIDs = []
+            userScrolling = false
+            newContent = false
+            initializedAgent = agent
+        }
         .navigationTitle(Text(verbatim: reader.agents.first { $0.id == reader.selectedAgentID }?.name ?? "Holon"))
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .top, spacing: 0) {
-            ConversationConnectionStatus(status: reader.status, hasSnapshot: reader.snapshot != nil) {
+            ConversationConnectionStatus(status: reader.status, hasSnapshot: reader.snapshot != nil,
+                                         isCached: reader.isShowingCachedContent, isRefreshing: reader.isRefreshing) {
                 Task { await reader.refresh() }
             }
         }
         .safeAreaInset(edge: .bottom) {
-            if let sender {
+            if reader.status != .live {
+                Text("reading.cache.readOnly").font(.caption).foregroundStyle(.secondary).padding()
+                    .accessibilityIdentifier("conversation.readOnly")
+            } else if let sender {
                 SendingView(sender: sender, currentRunID: currentRunID, commonModels: reader.agents.compactMap(\.effectiveModel))
             } else {
                 Text("status.storageError").font(.caption).padding()
@@ -297,7 +343,7 @@ struct ConversationReadingView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
-                    if let agent = reader.selectedAgentID {
+                    if reader.status == .live, let agent = reader.selectedAgentID {
                         NavigationLink(value: AppRoute.work(agent)) { Label("work.title", systemImage: "checklist") }
                             .accessibilityIdentifier("conversation.work")
                         NavigationLink(value: AppRoute.files(agent)) { Label("files.title", systemImage: "folder") }
@@ -444,18 +490,23 @@ struct ReadingInputView: View {
 struct ConversationConnectionStatus: View {
     let status: ReadingStatus
     let hasSnapshot: Bool
+    var isCached = false
+    var isRefreshing = false
     var retry: () -> Void
     var body: some View {
-        if status != .live || !hasSnapshot {
+        if let key = ReadingPresentation.connectionStatusKey(
+            status: status, hasContent: hasSnapshot, isCached: isCached, isRefreshing: isRefreshing
+        ) {
             HStack(spacing: 8) {
-                if status == .syncing || (status == .live && !hasSnapshot) {
+                if isRefreshing || status == .syncing || (status == .live && !hasSnapshot) {
                     ProgressView().controlSize(.mini)
-                } else { Image(systemName: "wifi.exclamationmark") }
-                Text(LocalizedStringKey(status == .live ? "reading.loadingConversation" : "reading.status." + status.rawValue))
+                } else { Image(systemName: isCached && status == .live ? "internaldrive" : "wifi.exclamationmark") }
+                Text(LocalizedStringKey(key))
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
-                if status == .offline {
+                if ReadingPresentation.showsConnectionRetry(status: status, isRefreshing: isRefreshing) {
                     Button("reading.retry", action: retry).font(.caption).frame(minHeight: 44)
+                        .accessibilityIdentifier("conversation.retry")
                 }
             }
             .padding(.horizontal, 16).padding(.vertical, 8)
@@ -515,7 +566,8 @@ private struct ReadingBriefView: View {
             } else {
                 BriefPlaceholderView(briefID: briefID, state: BriefPlaceholderState(
                     isLoading: reader.loadingBriefs.contains(briefID),
-                    hasFailed: reader.failedBriefs.contains(briefID)
+                    hasFailed: reader.failedBriefs.contains(briefID),
+                    canLoad: reader.status == .live
                 )) { Task { await reader.loadBrief(briefID) } }
             }
         }
@@ -538,6 +590,28 @@ private struct ReadingBriefView: View {
 }
 
 enum ReadingPresentation {
+    static func connectionStatusKey(status: ReadingStatus, hasContent: Bool,
+                                    isCached: Bool, isRefreshing: Bool) -> String? {
+        if status == .permissionDenied || status == .sessionExpired || status == .incompatible {
+            return "reading.status." + status.rawValue
+        }
+        if isRefreshing || status == .syncing {
+            return isCached ? "reading.cache.refreshing" : "reading.status.syncing"
+        }
+        if status == .offline {
+            return isCached ? "reading.cache.offline" : "reading.status.offline"
+        }
+        if status == .live {
+            if !hasContent { return "reading.loadingConversation" }
+            return isCached ? "reading.cache.saved" : nil
+        }
+        return "reading.status." + status.rawValue
+    }
+
+    static func showsConnectionRetry(status: ReadingStatus, isRefreshing: Bool) -> Bool {
+        !isRefreshing && (status == .offline || status == .incompatible)
+    }
+
     static func date(_ value: String) -> Date? {
         let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
