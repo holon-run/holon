@@ -33,6 +33,125 @@ final class ConnectionStoreTests: XCTestCase {
         return "session." + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
+    private func readingContext(_ profile: ConnectionProfile, network: String = "network",
+                                runtime: String = "runtime", user: String = "user",
+                                visibility: String = "private") throws -> ConfirmedReadingContext {
+        try XCTUnwrap(ConfirmedReadingContext(profile: profile, identity: .init(
+            networkID: network, runtimeID: runtime, userID: user, visibilityScopeID: visibility)))
+    }
+
+    func testConfirmedReadingContextIsCredentialFreeAndSurvivesExpiredSession() throws {
+        try fixture { defaults, vault in
+            let store = try ConnectionStore(defaults: defaults, vault: vault)
+            let p = try profile()
+            try store.saveProfile(p)
+            defer { try? store.removeProfile(p.id) }
+            let context = try readingContext(p)
+            try store.saveSession(session(expiry: .distantPast), for: p)
+            try store.saveConfirmedReadingContext(context, for: p)
+            let data = try XCTUnwrap(vault.read(account: "confirmed-reading.\(p.id.uuidString)"))
+            let json = String(decoding: data, as: UTF8.self)
+            XCTAssertFalse(json.contains("session-secret"))
+            XCTAssertFalse(json.contains("credential"))
+            XCTAssertFalse(json.contains("expiresAt"))
+            let reopened = try ConnectionStore(defaults: defaults, vault: vault)
+            XCTAssertNil(try reopened.session(for: p))
+            XCTAssertEqual(try reopened.confirmedReadingContext(for: p), context)
+            XCTAssertEqual(try store.confirmedReadingContext(for: p), context)
+            try reopened.removeSession(for: p)
+            XCTAssertNil(try reopened.confirmedReadingContext(for: p))
+        }
+    }
+
+    func testLegacyConfirmedScopeMigratesBeforeExpiredCredentialIsRemoved() throws {
+        try fixture { defaults, vault in
+            let store = try ConnectionStore(defaults: defaults, vault: vault)
+            let p = try profile()
+            try store.saveProfile(p)
+            defer { try? store.removeProfile(p.id) }
+            try store.saveSession(session(expiry: Date(timeIntervalSince1970: 100)), for: p)
+            XCTAssertNil(try vault.read(account: "confirmed-reading.\(p.id.uuidString)"))
+            let reopened = try ConnectionStore(defaults: defaults, vault: vault)
+            XCTAssertNil(try reopened.session(for: p))
+            let context = try XCTUnwrap(reopened.confirmedReadingContext(for: p))
+            XCTAssertEqual(context, try readingContext(p, network: p.id.uuidString))
+            XCTAssertNil(try vault.read(account: "session-index.\(p.id.uuidString)"))
+            XCTAssertEqual(try ConnectionStore(defaults: defaults, vault: vault)
+                .confirmedReadingContext(for: p), context)
+        }
+    }
+
+    func testStagedExchangeDeletesReadingContextAndCannotInheritLegacyScope() throws {
+        try fixture { defaults, vault in
+            let store = try ConnectionStore(defaults: defaults, vault: vault)
+            let p = try profile()
+            try store.saveProfile(p)
+            defer { try? store.removeProfile(p.id) }
+            try store.saveSession(session(), for: p)
+            try store.saveConfirmedReadingContext(readingContext(p), for: p)
+            try store.stageSession(.init(apiBaseURL: p.apiBaseURL, credential: "new-account",
+                userID: "other-user", expiresAt: nil), for: p)
+            XCTAssertNil(try vault.read(account: "confirmed-reading.\(p.id.uuidString)"))
+            XCTAssertNil(try store.confirmedReadingContext(for: p))
+            XCTAssertNil(try store.session(for: p))
+            XCTAssertNotNil(try store.pendingSession(for: p))
+
+            // A pre-migration staged record must also fence a legacy confirmed pair, even if expired.
+            try store.removeSession(for: p)
+            try store.saveSession(session(), for: p)
+            let expired = PendingCredential(apiBaseURL: p.apiBaseURL, credential: "expired-account",
+                                           userID: "other-user", expiresAt: .distantPast)
+            try vault.write(JSONEncoder().encode(expired), account: "pending-session.\(p.id.uuidString)")
+            XCTAssertNil(try store.confirmedReadingContext(for: p))
+            XCTAssertNil(try store.pendingSession(for: p))
+            XCTAssertNil(try store.session(for: p))
+            XCTAssertNil(try store.confirmedReadingContext(for: p))
+        }
+    }
+
+    func testReadingContextPartitionsAllScopeDimensionsAndProfileChangesRemoveIt() throws {
+        try fixture { defaults, vault in
+            let store = try ConnectionStore(defaults: defaults, vault: vault)
+            let p = try profile()
+            let other = try profile(base: "https://other.example.com/api")
+            try store.saveProfile(p)
+            try store.saveProfile(other)
+            defer { try? store.removeProfile(p.id); try? store.removeProfile(other.id) }
+            let original = try readingContext(p)
+            for context in [try readingContext(p, network: "other-network"),
+                            try readingContext(p, runtime: "other-runtime"),
+                            try readingContext(p, user: "other-user"),
+                            try readingContext(p, visibility: "shared")] {
+                XCTAssertNotEqual(context.partition, original.partition)
+                try store.saveConfirmedReadingContext(context, for: p)
+                XCTAssertEqual(try store.confirmedReadingContext(for: p), context)
+                XCTAssertNil(try store.confirmedReadingContext(for: other))
+                XCTAssertThrowsError(try store.saveConfirmedReadingContext(context, for: other))
+            }
+            let changed = try profile(id: p.id, base: "https://example.com/new-api")
+            try store.saveProfile(changed)
+            XCTAssertNil(try store.confirmedReadingContext(for: changed))
+            XCTAssertNil(try vault.read(account: "confirmed-reading.\(p.id.uuidString)"))
+            try store.removeProfile(changed.id)
+        }
+    }
+
+    func testMalformedOrMismatchedReadingContextFailsClosedInsteadOfMigrating() throws {
+        try fixture { defaults, vault in
+            let store = try ConnectionStore(defaults: defaults, vault: vault)
+            let p = try profile()
+            let other = try profile(base: "https://other.example.com/api")
+            try store.saveProfile(p)
+            defer { try? store.removeProfile(p.id) }
+            try store.saveSession(session(), for: p)
+            let key = "confirmed-reading.\(p.id.uuidString)"
+            try vault.write(Data("corrupt".utf8), account: key)
+            XCTAssertThrowsError(try store.confirmedReadingContext(for: p))
+            try vault.write(JSONEncoder().encode(readingContext(other)), account: key)
+            XCTAssertThrowsError(try store.confirmedReadingContext(for: p))
+        }
+    }
+
     func testStagedCredentialSurvivesReopenAndPromotesWithoutIdentityLeak() throws {
         try fixture { defaults, vault in
             let store = try ConnectionStore(defaults: defaults, vault: vault)
@@ -222,31 +341,44 @@ final class ConnectionStoreTests: XCTestCase {
     }
 
     func testLegacyDedupKeepsSelectedPartitionAndRemovesDiscardedCredentials() throws {
-        try fixture { defaults, vault in
-            let first = try profile()
-            let selected = try profile(base: "https://EXAMPLE.com:443/api/")
-            // Seed the previous format with separate UUID-scoped sessions, without migrating credentials.
-            for p in [first, selected] {
-                let scope = ["profileID": p.id.uuidString, "base": p.apiBaseURL.absoluteString,
-                             "runtime": "runtime", "user": "user", "visibility": "private"]
-                try vault.write(JSONEncoder().encode(session()), account: account(p, session()))
-                try vault.write(JSONEncoder().encode(scope), account: "session-index.\(p.id.uuidString)")
-                let pending = PendingCredential(apiBaseURL: p.apiBaseURL, credential: "pending", userID: "user", expiresAt: nil)
-                try vault.write(JSONEncoder().encode(pending), account: "pending-session.\(p.id.uuidString)")
+        for selectedIsStaged in [false, true] {
+            try fixture { defaults, vault in
+                let first = try profile()
+                let selected = try profile(base: "https://EXAMPLE.com:443/api/")
+                // Seed the previous format with separate UUID-scoped sessions, without migrating credentials.
+                for p in [first, selected] {
+                    let scope = ["profileID": p.id.uuidString, "base": p.apiBaseURL.absoluteString,
+                                 "runtime": "runtime", "user": "user", "visibility": "private"]
+                    try vault.write(JSONEncoder().encode(session()), account: account(p, session()))
+                    try vault.write(JSONEncoder().encode(scope), account: "session-index.\(p.id.uuidString)")
+                    if p.id != selected.id || selectedIsStaged {
+                        let pending = PendingCredential(apiBaseURL: p.apiBaseURL, credential: "pending", userID: "user", expiresAt: nil)
+                        try vault.write(JSONEncoder().encode(pending), account: "pending-session.\(p.id.uuidString)")
+                    }
+                }
+                struct LegacyState: Encodable { let profiles: [ConnectionProfile]; let selectedID: UUID? }
+                defaults.set(try JSONEncoder().encode(LegacyState(profiles: [first, selected], selectedID: selected.id)),
+                             forKey: "run.holon.ios.connectionProfiles.v1")
+                let store = try ConnectionStore(defaults: defaults, vault: vault)
+                defer { try? store.removeProfile(selected.id) }
+                XCTAssertEqual(store.profiles, [selected])
+                XCTAssertEqual(store.selectedID, selected.id)
+                if selectedIsStaged {
+                    XCTAssertNil(try store.session(for: selected))
+                    XCTAssertNil(try store.confirmedReadingContext(for: selected))
+                    XCTAssertNil(try vault.read(account: account(selected, session())))
+                    XCTAssertNil(try vault.read(account: "session-index.\(selected.id.uuidString)"))
+                    XCTAssertEqual(try store.pendingSession(for: selected)?.credential, "pending")
+                } else {
+                    XCTAssertEqual(try store.session(for: selected), session())
+                    XCTAssertEqual(try store.confirmedReadingContext(for: selected)?.partition.user, "user")
+                    XCTAssertNil(try store.pendingSession(for: selected))
+                }
+                XCTAssertNil(try vault.read(account: account(first, session())))
+                XCTAssertNil(try vault.read(account: "session-index.\(first.id.uuidString)"))
+                XCTAssertNil(try vault.read(account: "pending-session.\(first.id.uuidString)"))
+                XCTAssertEqual(try ConnectionStore(defaults: defaults, vault: vault).profiles, [selected])
             }
-            struct LegacyState: Encodable { let profiles: [ConnectionProfile]; let selectedID: UUID? }
-            defaults.set(try JSONEncoder().encode(LegacyState(profiles: [first, selected], selectedID: selected.id)),
-                         forKey: "run.holon.ios.connectionProfiles.v1")
-            let store = try ConnectionStore(defaults: defaults, vault: vault)
-            defer { try? store.removeProfile(selected.id) }
-            XCTAssertEqual(store.profiles, [selected])
-            XCTAssertEqual(store.selectedID, selected.id)
-            XCTAssertEqual(try store.session(for: selected), session())
-            XCTAssertEqual(try store.pendingSession(for: selected)?.credential, "pending")
-            XCTAssertNil(try vault.read(account: account(first, session())))
-            XCTAssertNil(try vault.read(account: "session-index.\(first.id.uuidString)"))
-            XCTAssertNil(try vault.read(account: "pending-session.\(first.id.uuidString)"))
-            XCTAssertEqual(try ConnectionStore(defaults: defaults, vault: vault).profiles, [selected])
         }
     }
 

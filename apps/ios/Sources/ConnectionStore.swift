@@ -78,6 +78,19 @@ struct PendingCredential: Codable, Sendable, CustomStringConvertible, CustomDebu
     var debugDescription: String { description }
 }
 
+/// Local reading scope only: neither a credential nor proof of current online authority.
+struct ConfirmedReadingContext: Codable, Equatable, Sendable {
+    let profile: ConnectionProfile
+    let partition: ReadingPartition
+
+    init?(profile: ConnectionProfile, identity: HolonConnectionIdentity) {
+        guard !identity.networkID.isEmpty,
+              let partition = ReadingPartition(apiBaseURL: profile.apiBaseURL, identity: identity) else { return nil }
+        self.profile = profile
+        self.partition = partition
+    }
+}
+
 @MainActor
 final class ConnectionStore {
     enum Failure: Error { case invalidStorage, unknownProfile, duplicateEndpoint }
@@ -196,6 +209,53 @@ final class ConnectionStore {
 
     private func indexAccount(_ profile: ConnectionProfile) -> String { "session-index.\(profile.id.uuidString)" }
     private func pendingAccount(_ profile: ConnectionProfile) -> String { "pending-session.\(profile.id.uuidString)" }
+    private func readingAccount(_ profile: ConnectionProfile) -> String { "confirmed-reading.\(profile.id.uuidString)" }
+
+    func confirmedReadingContext(for profile: ConnectionProfile) throws -> ConfirmedReadingContext? {
+        try validate(profile)
+        // Even an expired or malformed staged exchange cannot inherit the previous account's scope.
+        if try vault.read(account: pendingAccount(profile)) != nil {
+            try removeConfirmedReadingContext(for: profile)
+            try removeConfirmedSession(for: profile)
+            return nil
+        }
+        if let data = try vault.read(account: readingAccount(profile)) {
+            guard let stored = try? JSONDecoder().decode(ConfirmedReadingContext.self, from: data),
+                  stored.profile.id == profile.id, stored.profile.apiBaseURL == profile.apiBaseURL,
+                  stored.profile.allowInsecureHTTP == profile.allowInsecureHTTP,
+                  let context = ConfirmedReadingContext(profile: profile, identity: .init(
+                    networkID: stored.partition.network, runtimeID: stored.partition.runtime,
+                    userID: stored.partition.user, visibilityScopeID: stored.partition.visibility)),
+                  context.partition == stored.partition else { throw Failure.invalidStorage }
+            return context
+        }
+        // Read the legacy confirmed pair directly: credential expiry does not expire local content.
+        guard let scope = try scope(for: profile),
+              let data = try vault.read(account: scope.account) else { return nil }
+        guard let session = try? JSONDecoder().decode(StoredSession.self, from: data),
+              session.runtimeID == scope.runtime, session.userID == scope.user,
+              session.visibilityScopeID == scope.visibility,
+              let context = ConfirmedReadingContext(profile: profile, identity: .init(
+                networkID: profile.id.uuidString, runtimeID: scope.runtime,
+                userID: scope.user, visibilityScopeID: scope.visibility)) else { throw Failure.invalidStorage }
+        try saveConfirmedReadingContext(context, for: profile)
+        return context
+    }
+
+    func saveConfirmedReadingContext(_ context: ConfirmedReadingContext, for profile: ConnectionProfile) throws {
+        try validate(profile)
+        guard context.profile == profile,
+              let checked = ConfirmedReadingContext(profile: profile, identity: .init(
+                networkID: context.partition.network, runtimeID: context.partition.runtime,
+                userID: context.partition.user, visibilityScopeID: context.partition.visibility)),
+              checked.partition == context.partition else { throw Failure.invalidStorage }
+        try vault.write(try JSONEncoder().encode(context), account: readingAccount(profile))
+    }
+
+    private func removeConfirmedReadingContext(for profile: ConnectionProfile) throws {
+        try validate(profile)
+        try vault.remove(account: readingAccount(profile))
+    }
 
     func pendingSession(for profile: ConnectionProfile, now: Date = Date()) throws -> PendingCredential? {
         try validate(profile)
@@ -217,6 +277,7 @@ final class ConnectionStore {
               !pending.userID.isEmpty, pending.expiresAt.map({ $0 > Date() }) ?? true else {
             throw Failure.invalidStorage
         }
+        try removeSession(for: profile)
         try vault.write(try JSONEncoder().encode(pending), account: pendingAccount(profile))
     }
 
@@ -231,6 +292,8 @@ final class ConnectionStore {
 
     func session(for profile: ConnectionProfile, now: Date = Date()) throws -> StoredSession? {
         try validate(profile)
+        // Migrate before removing an expired legacy credential and its scope index.
+        _ = try confirmedReadingContext(for: profile)
         guard let scope = try scope(for: profile), let data = try vault.read(account: scope.account) else { return nil }
         guard let session = try? JSONDecoder().decode(StoredSession.self, from: data),
               session.runtimeID == scope.runtime, session.userID == scope.user,
@@ -261,6 +324,7 @@ final class ConnectionStore {
 
     func removeSession(for profile: ConnectionProfile) throws {
         try validate(profile)
+        try removeConfirmedReadingContext(for: profile)
         try vault.remove(account: pendingAccount(profile))
         try removeConfirmedSession(for: profile)
     }

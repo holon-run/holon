@@ -67,6 +67,7 @@ private actor SDKConnectionTransport: ConnectionTransport {
 @Observable @MainActor
 final class ConnectionCoordinator {
     private(set) var status: ConnectionStatus = .disconnected
+    private(set) var readingContext: ConfirmedReadingContext?
     private(set) var identity: HolonConnectionIdentity? {
         didSet {
             if identity == nil { try? sharingVault?.clear() }
@@ -77,6 +78,7 @@ final class ConnectionCoordinator {
     private(set) var authenticationMode: String?
     private(set) var hasRestored = false
     var launchState: ConnectionLaunchState {
+        if readingContext != nil { return .ready }
         if !hasRestored { return .restoring }
         return identity == nil ? .connection : .ready
     }
@@ -91,6 +93,7 @@ final class ConnectionCoordinator {
     @ObservationIgnored private let makeTransport: @Sendable (ConnectionProfile) throws -> any ConnectionTransport
     @ObservationIgnored private let deadline: Duration
     @ObservationIgnored var onIdentityChange: (() -> Void)?
+    @ObservationIgnored var onReadingInvalidation: ((ReadingPartition) -> Void)?
     @ObservationIgnored private var transport: (any ConnectionTransport)?
     @ObservationIgnored private var epoch = UUID()
     @ObservationIgnored private var timeout: Task<Void, Never>?
@@ -174,11 +177,12 @@ final class ConnectionCoordinator {
     func removeProfile(_ profile: ConnectionProfile) async {
         guard profiles.contains(profile) else { return }
         let removingSelected = selectedProfile?.id == profile.id
-        if removingSelected {
-            guard invalidate() else { return }
-            pendingPairing = nil
-        }
         do {
+            try revokeReadingContext(for: profile)
+            if removingSelected {
+                guard invalidate() else { return }
+                pendingPairing = nil
+            }
             if let pending = try proofStore.loadPending(apiBaseURL: profile.apiBaseURL) {
                 try proofStore.remove(pending)
             }
@@ -206,6 +210,8 @@ final class ConnectionCoordinator {
     }
 
     func connect(_ profile: ConnectionProfile) async {
+        // A profile switch must never expose the previous profile while restoring the next one.
+        readingContext = nil
         guard invalidate() else { return }
         pendingPairing = nil
         selectedProfile = profile
@@ -213,6 +219,8 @@ final class ConnectionCoordinator {
         status = .connecting
         do {
             try store.select(profile.id)
+            do { readingContext = try store.confirmedReadingContext(for: profile) }
+            catch { finish(.storageError); return }
             let client = try makeTransport(profile)
             transport = client
             armTimeout(stamp: stamp)
@@ -245,6 +253,9 @@ final class ConnectionCoordinator {
             do { handshake = try await client.handshake() }
             catch let failure as HolonHTTPFailure where candidate == nil && failure.statusCode == 401 {
                 guard current(stamp) else { return }
+                do {
+                    try revokeReadingContext(for: profile)
+                } catch { finish(.storageError); return }
                 finish(.needsLogin)
                 return
             }
@@ -269,7 +280,7 @@ final class ConnectionCoordinator {
 
     func login(token: String) async {
         guard let profile = selectedProfile, let client = transport, !isBusy else { return }
-        let stamp = beginAuthentication()
+        guard let stamp = beginAuthentication() else { return }
         do {
             let session = try await client.exchange(token, verifier: nil)
             guard current(stamp) else { return }
@@ -301,10 +312,12 @@ final class ConnectionCoordinator {
             let profile = try addProfile(name: endpoint.apiBaseURL.host ?? "Holon",
                                          apiBaseURL: endpoint.apiBaseURL,
                                          allowInsecureHTTP: allowInsecureHTTP)
+            readingContext = nil
             guard invalidate() else { return }
             pendingPairing = nil
             selectedProfile = profile
             try store.select(profile.id)
+            try revokeReadingContext(for: profile)
             let stamp = epoch
             let client = try makeTransport(profile)
             transport = client
@@ -315,17 +328,19 @@ final class ConnectionCoordinator {
                 guard current(stamp) else { return }
                 try await install(session, client: client, profile: profile, stamp: stamp)
             } catch { handle(error, stamp: stamp, authenticating: true) }
-        } catch { finish(.loginFailed) }
+        } catch {
+            finish(error is ConnectionStore.Failure || error is CredentialVault.Failure ? .storageError : .loginFailed)
+        }
     }
 
     func startOrganizationLogin(anchor: ASPresentationAnchor) {
         guard supportsOIDC, !isBusy, let profile = selectedProfile else { return }
         cancelLogin()
+        guard let stamp = beginAuthentication() else { return }
         do {
             let pending = try NativeLoginProof.make(apiBaseURL: profile.apiBaseURL)
             try proofStore.save(pending)
             proof = pending
-            let stamp = epoch
             let authentication = NativeBrowserAuthentication(anchor: anchor)
             browser = authentication
             try authentication.prepare(proof: pending) { [weak self] result in
@@ -391,11 +406,14 @@ final class ConnectionCoordinator {
     func logout() async {
         guard let profile = selectedProfile else { return }
         let previous = transport
+        var readingRevoked = true
+        do {
+            try revokeReadingContext(for: profile)
+        }
+        catch { readingRevoked = false }
         let cleaned = invalidate(closeTransport: false)
         let stamp = epoch
-        status = cleaned ? .needsLogin : .storageError
-        do { try store.removeSession(for: profile) }
-        catch { status = .storageError }
+        status = cleaned && readingRevoked ? .needsLogin : .storageError
         // Local deletion is authoritative even when server revocation is unavailable.
         try? await previous?.revoke()
         await previous?.close()
@@ -407,7 +425,7 @@ final class ConnectionCoordinator {
         guard current(expectedStamp), !exchangingTicket, let client = transport, let profile = selectedProfile,
               proof.apiBaseURL == profile.apiBaseURL, proof.isValid(at: Date()) else { return }
         exchangingTicket = true
-        let stamp = beginAuthentication()
+        guard let stamp = beginAuthentication() else { return }
         do {
             let session = try await client.exchange(ticket, verifier: proof.verifier)
             guard current(stamp) else { return }
@@ -486,9 +504,22 @@ final class ConnectionCoordinator {
                                     expiresAt: expiresAt)
         let bound = try await client.bind(context)
         guard current(stamp) else { return }
-        if credential != nil {
-            do { try store.saveSession(context, for: profile) }
-            catch { finish(.storageError); return }
+        do {
+            guard let confirmed = ConfirmedReadingContext(profile: profile, identity: bound) else {
+                throw ConnectionStore.Failure.invalidStorage
+            }
+            if let previous = readingContext, previous.partition != confirmed.partition {
+                try revokeReadingContext(for: profile)
+            }
+            if credential != nil { try store.saveSession(context, for: profile) }
+            try store.saveConfirmedReadingContext(confirmed, for: profile)
+            readingContext = confirmed
+        } catch {
+            // A failed promotion must not publish an in-memory scope or an extension capability.
+            readingContext = nil
+            try? store.removeSession(for: profile)
+            finish(.storageError)
+            return
         }
         usesStoredSession = credential != nil
         // Only authoritative, fully promoted sessions become extension capabilities.
@@ -508,19 +539,20 @@ final class ConnectionCoordinator {
     private func handle(_ error: Error, stamp: UUID, authenticating: Bool) {
         guard current(stamp) else { return }
         if let failure = error as? HolonHTTPFailure {
-            if failure.statusCode == 403 { finish(.permissionDenied) }
+            if failure.statusCode == 403 || HolonAPIError.requiresSessionRenewal(
+                statusCode: failure.statusCode, code: failure.apiError?.code) {
+                do {
+                    if let selectedProfile {
+                        try revokeReadingContext(for: selectedProfile)
+                    }
+                    finish(failure.statusCode == 403 ? .permissionDenied : (authenticating ? .loginFailed : .sessionExpired))
+                } catch { finish(.storageError) }
+            }
             else if authenticating && ([408, 429].contains(failure.statusCode) || failure.statusCode >= 500) {
                 finish(.networkError)
             }
             else if authenticating { finish(.loginFailed) }
-            else if HolonAPIError.requiresSessionRenewal(
-                statusCode: failure.statusCode, code: failure.apiError?.code) {
-                identity = nil
-                do {
-                    if let selectedProfile { try store.removeSession(for: selectedProfile) }
-                    finish(.sessionExpired)
-                } catch { finish(.storageError) }
-            } else { finish(.networkError) }
+            else { finish(.networkError) }
         } else if error is URLError {
             finish(.networkError)
         } else if error is CancellationError || error as? HolonClientError == .staleConnection {
@@ -530,10 +562,29 @@ final class ConnectionCoordinator {
 
     private func current(_ stamp: UUID) -> Bool { epoch == stamp && !Task.isCancelled }
 
-    private func beginAuthentication() -> UUID {
+    private func revokeReadingContext(for profile: ConnectionProfile) throws {
+        var previous: ConfirmedReadingContext?
+        if readingContext?.profile.id == profile.id {
+            previous = readingContext
+            readingContext = nil
+        }
+        // Identity observers must never see the withdrawn account's reading scope.
+        if selectedProfile?.id == profile.id { identity = nil }
+        defer {
+            if let previous { onReadingInvalidation?(previous.partition) }
+        }
+        if previous == nil { previous = try store.confirmedReadingContext(for: profile) }
+        try store.removeSession(for: profile)
+    }
+
+    private func beginAuthentication() -> UUID? {
         // Fence prior callbacks and withdraw identity before exchanging credentials.
         epoch = UUID()
-        identity = nil
+        do {
+            if let selectedProfile {
+                try revokeReadingContext(for: selectedProfile)
+            }
+        } catch { finish(.storageError); return nil }
         status = .connecting
         armTimeout(stamp: epoch)
         return epoch
@@ -543,6 +594,7 @@ final class ConnectionCoordinator {
         timeout?.cancel()
         timeout = nil
         status = state
+        if state != .connected { try? sharingVault?.clear() }
         // Release bootstrap even if a request does not return after close().
         if restorationStarted { hasRestored = true }
     }
