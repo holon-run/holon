@@ -24,6 +24,7 @@ enum HolonMenuApp {
 @MainActor
 final class HolonMenuStatusController: NSObject {
     private let popover = NSPopover()
+    private let layout = HolonMenuPopoverLayout()
     private var statusItem: NSStatusItem?
     private var settingsWindow: NSWindow?
 
@@ -36,21 +37,13 @@ final class HolonMenuStatusController: NSObject {
         item.button?.target = self
         statusItem = item
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 320, height: 400)
+        popover.contentSize = layout.contentSize
         popover.contentViewController = NSHostingController(
-            rootView: HolonMenuView(viewModel: viewModel, updater: updater, openSettings: { [weak self] in
-                self?.showSettings(viewModel: viewModel)
-            })
-                .fixedSize(horizontal: false, vertical: true)
-                .background {
-                    GeometryReader { geometry in
-                        Color.clear.preference(key: MenuContentHeightKey.self, value: geometry.size.height)
-                    }
-                }
-                .onPreferenceChange(MenuContentHeightKey.self) { [weak self] height in
-                    guard height > 0 else { return }
-                    self?.popover.contentSize = NSSize(width: 320, height: height)
-                }
+            rootView: HolonMenuPopoverView(
+                layout: layout, viewModel: viewModel, updater: updater,
+                openSettings: { [weak self] in self?.showSettings(viewModel: viewModel) },
+                contentHeightChanged: { [weak self] in self?.updatePopoverSize() }
+            )
                 .task { await viewModel.bootstrap() }
         )
     }
@@ -86,15 +79,20 @@ final class HolonMenuStatusController: NSObject {
         if popover.isShown {
             popover.performClose(nil)
         } else {
+            updatePopoverSize()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
     }
-}
 
-struct MenuContentHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+    private func updatePopoverSize() {
+        if let button = statusItem?.button, let window = button.window, let screen = window.screen {
+            let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
+            layout.maximumHeight = HolonMenuPopoverLayout.maximumHeight(
+                visibleFrame: screen.visibleFrame, anchorFrame: anchor
+            )
+        }
+        if popover.contentSize != layout.contentSize {
+            popover.contentSize = layout.contentSize
+        }
     }
 }

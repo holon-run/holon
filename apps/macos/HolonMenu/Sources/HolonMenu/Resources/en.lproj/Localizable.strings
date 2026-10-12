@@ -113,3 +113,7 @@
 "stale daemon state detected" = "stale daemon state detected";
 "Holon runtime is running." = "Holon runtime is running.";
 "Holon runtime restarted." = "Holon runtime restarted.";
+"Could not check or update Tailscale. See details." = "Could not check or update Tailscale. See details.";
+"Tailscale error details" = "Tailscale error details";
+"Not installed (optional)" = "Not installed (optional)";
+"Status unknown" = "Status unknown";

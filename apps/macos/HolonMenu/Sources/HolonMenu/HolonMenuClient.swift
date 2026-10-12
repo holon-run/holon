@@ -375,6 +375,9 @@ final class HolonCLIClient: HolonDesiredStateClient {
 
     func enableTailscaleServe() async throws -> HolonTailscaleStatus {
         let network = try await tailscaleStatus()
+        guard network.canEnableServe else {
+            throw HolonCLIError.tailscaleServeConflict(network.message)
+        }
         if network.controlAuthenticationAvailable == false {
             let daemon = try await status()
             guard let created = createdDaemon.get(), daemon.healthy,
@@ -404,8 +407,12 @@ final class HolonCLIClient: HolonDesiredStateClient {
             guard restarted.processCreated == true,
                   restarted.httpAddr == daemon.httpAddr,
                   restarted.homeDir == daemon.homeDir,
-                  restarted.healthy, restarted.controlConnectivity,
-                  try await tailscaleStatus().controlAuthenticationAvailable == true else {
+                  restarted.healthy, restarted.controlConnectivity else {
+                throw HolonCLIError.tailscaleServeConflict(L10n.text("Unable to verify restarted daemon authentication before enabling Serve."))
+            }
+            let restartedNetwork = try await tailscaleStatus()
+            guard restartedNetwork.controlAuthenticationAvailable == true,
+                  restartedNetwork.canEnableServe else {
                 throw HolonCLIError.tailscaleServeConflict(L10n.text("Unable to verify restarted daemon authentication before enabling Serve."))
             }
         } else if network.controlAuthenticationAvailable == nil {
@@ -439,8 +446,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
         }
         let payload = try decoder.decode(HolonTailscaleServeResponse.self, from: data)
         return HolonTailscaleStatus(
-            state: !payload.available ? .unavailable : !payload.connected ? .stopped
-                : payload.serving ? .serving : .connected,
+            state: payload.resolvedState,
             hostname: payload.hostname,
             serveURL: payload.serving ? payload.serveUrl.flatMap(URL.init(string:)) : nil,
             message: payload.message,
@@ -448,7 +454,10 @@ final class HolonCLIClient: HolonDesiredStateClient {
             serving: payload.serving,
             conflict: payload.conflict,
             statusKnown: payload.statusKnown,
-            controlAuthenticationAvailable: payload.controlAuthenticationAvailable
+            controlAuthenticationAvailable: payload.controlAuthenticationAvailable,
+            details: payload.details,
+            available: payload.available,
+            connected: payload.connected
         )
     }
 
@@ -703,6 +712,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
 }
 
 private struct HolonTailscaleServeResponse: Decodable {
+    let state: String?
     let desiredEnabled: Bool
     let available: Bool
     let connected: Bool
@@ -713,6 +723,15 @@ private struct HolonTailscaleServeResponse: Decodable {
     let serveUrl: String?
     let message: String
     let controlAuthenticationAvailable: Bool?
+    let details: String?
+
+    var resolvedState: HolonTailscaleState {
+        if let state { return HolonTailscaleState(rawValue: state) ?? .unknown }
+        if !available { return statusKnown ? .unavailable : .unknown }
+        if !connected { return .stopped }
+        guard statusKnown else { return .unknown }
+        return serving ? .serving : .connected
+    }
 }
 
 private struct HolonServeErrorResponse: Decodable {

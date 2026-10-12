@@ -62,6 +62,7 @@ final class HolonMenuViewModelTests: XCTestCase {
             )
         )
         let viewModel = HolonMenuViewModel(client: client)
+        await viewModel.refresh()
 
         viewModel.requestTailscaleServe()
         XCTAssertTrue(viewModel.showTailscaleServeConfirmation)
@@ -75,6 +76,148 @@ final class HolonMenuViewModelTests: XCTestCase {
         )
         XCTAssertEqual(viewModel.tailscaleStatus?.state, .connected)
         viewModel.stopPolling()
+    }
+
+    func testTailscaleProbeErrorClearsAfterSuccessfulRefresh() async {
+        let client = FakeHolonClient(
+            tailscaleStatusError: HolonCLIError.tailscaleServeConflict("Status probe failed")
+        )
+        let viewModel = HolonMenuViewModel(client: client)
+        await viewModel.refresh()
+        XCTAssertEqual(viewModel.tailscaleError, "Status probe failed")
+        XCTAssertNil(viewModel.tailscaleStatus)
+
+        await client.setTailscaleStatusError(nil)
+        await viewModel.refresh()
+        XCTAssertNil(viewModel.tailscaleProbeError)
+        XCTAssertNil(viewModel.tailscaleError)
+        XCTAssertEqual(viewModel.tailscaleStatus?.state, .connected)
+    }
+
+    func testTailscaleUnavailableDoesNotReportProbeError() async {
+        let client = FakeHolonClient(tailscaleStatus: HolonTailscaleStatus(
+            state: .unavailable, hostname: nil, serveURL: nil,
+            message: "Not installed (optional)"
+        ))
+        let viewModel = HolonMenuViewModel(client: client)
+        await viewModel.refresh()
+
+        XCTAssertNil(viewModel.tailscaleError)
+        XCTAssertEqual(viewModel.tailscaleStatus?.title, L10n.text("Not installed (optional)"))
+    }
+
+    func testTailscaleServeRequiresConnectedKnownNonconflictingState() async {
+        let client = FakeHolonClient()
+        let viewModel = HolonMenuViewModel(client: client)
+        viewModel.requestTailscaleServe()
+        XCTAssertFalse(viewModel.showTailscaleServeConfirmation)
+        await viewModel.enableTailscaleServe()
+
+        for state in [HolonTailscaleState.unavailable, .stopped, .loggedOut, .unknown, .serving] {
+            await client.setTailscaleStatus(HolonTailscaleStatus(
+                state: state, hostname: nil, serveURL: nil, message: state.rawValue,
+                statusKnown: true, available: true, connected: true
+            ))
+            await viewModel.refresh()
+            viewModel.requestTailscaleServe()
+            XCTAssertFalse(viewModel.showTailscaleServeConfirmation, state.rawValue)
+            await viewModel.enableTailscaleServe()
+        }
+        for (available, connected, known, conflict) in [
+            (false, true, true, false), (true, false, true, false),
+            (true, true, false, false), (true, true, true, true),
+        ] {
+            await client.setTailscaleStatus(HolonTailscaleStatus(
+                state: .connected, hostname: nil, serveURL: nil, message: "Connected",
+                conflict: conflict, statusKnown: known, available: available, connected: connected
+            ))
+            await viewModel.refresh()
+            viewModel.requestTailscaleServe()
+            XCTAssertFalse(viewModel.showTailscaleServeConfirmation)
+            await viewModel.enableTailscaleServe()
+        }
+        let commands = await client.recordedCommands()
+        XCTAssertFalse(commands.contains(.enableTailscaleServe))
+        XCTAssertNil(viewModel.tailscaleError)
+    }
+
+    func testTailscaleRefreshRevokesConfirmationWhenNoLongerExecutable() async {
+        let client = FakeHolonClient()
+        let viewModel = HolonMenuViewModel(client: client)
+        for state in [HolonTailscaleState.unavailable, .stopped, .loggedOut, .unknown, .serving] {
+            await client.setTailscaleStatus(HolonTailscaleStatus(
+                state: .connected, hostname: nil, serveURL: nil, message: "Connected",
+                statusKnown: true, available: true, connected: true
+            ))
+            await viewModel.refresh()
+            viewModel.requestTailscaleServe()
+            XCTAssertTrue(viewModel.showTailscaleServeConfirmation)
+            await client.setTailscaleStatus(HolonTailscaleStatus(
+                state: state, hostname: nil, serveURL: nil, message: state.rawValue,
+                statusKnown: true, available: true, connected: true
+            ))
+            await viewModel.refresh()
+            XCTAssertFalse(viewModel.showTailscaleServeConfirmation, state.rawValue)
+        }
+    }
+
+    func testTailscaleRefreshRevokesConfirmationWhenBackendBooleanGateChanges() async {
+        let client = FakeHolonClient()
+        let viewModel = HolonMenuViewModel(client: client)
+        for (available, connected) in [(false, true), (true, false)] {
+            await client.setTailscaleStatus(HolonTailscaleStatus(
+                state: .connected, hostname: nil, serveURL: nil, message: "Connected",
+                statusKnown: true, available: true, connected: true
+            ))
+            await viewModel.refresh()
+            viewModel.requestTailscaleServe()
+            XCTAssertTrue(viewModel.showTailscaleServeConfirmation)
+            await client.setTailscaleStatus(HolonTailscaleStatus(
+                state: .connected, hostname: nil, serveURL: nil, message: "Connected",
+                statusKnown: true, available: available, connected: connected
+            ))
+            await viewModel.refresh()
+            XCTAssertFalse(viewModel.showTailscaleServeConfirmation)
+        }
+    }
+
+    func testTailscaleProbeFailureRevokesConfirmation() async {
+        let client = FakeHolonClient()
+        let viewModel = HolonMenuViewModel(client: client)
+        await viewModel.refresh()
+        viewModel.requestTailscaleServe()
+        XCTAssertTrue(viewModel.showTailscaleServeConfirmation)
+
+        await client.setTailscaleStatusError(HolonCLIError.tailscaleServeConflict("Probe failed"))
+        await viewModel.refresh()
+        XCTAssertFalse(viewModel.showTailscaleServeConfirmation)
+        await viewModel.enableTailscaleServe()
+        let commands = await client.recordedCommands()
+        XCTAssertFalse(commands.contains(.enableTailscaleServe))
+    }
+
+    func testTailscaleOperationErrorHasPriorityAndClearsOnSuccessfulRetry() async {
+        let client = FakeHolonClient(
+            enableTailscaleServeError: HolonCLIError.tailscaleServeConflict("Enable failed")
+        )
+        let viewModel = HolonMenuViewModel(client: client)
+        await viewModel.refresh()
+        await viewModel.enableTailscaleServe()
+        await client.setTailscaleStatusError(HolonCLIError.tailscaleServeConflict("Probe failed"))
+        await viewModel.refresh()
+        XCTAssertEqual(viewModel.tailscaleProbeError, "Probe failed")
+        XCTAssertEqual(viewModel.tailscaleError, "Enable failed")
+
+        await client.setTailscaleStatusError(nil)
+        await viewModel.refresh()
+        XCTAssertNil(viewModel.tailscaleProbeError)
+        XCTAssertEqual(viewModel.tailscaleError, "Enable failed")
+
+        await client.setEnableTailscaleServeError(nil)
+        await viewModel.enableTailscaleServe()
+        XCTAssertNil(viewModel.tailscaleOperationError)
+        XCTAssertNil(viewModel.tailscaleError)
+        XCTAssertEqual(viewModel.tailscaleStatus?.state, .serving)
     }
 
     func testBootstrapReplacesIncompatibleDesiredRuntime() async {

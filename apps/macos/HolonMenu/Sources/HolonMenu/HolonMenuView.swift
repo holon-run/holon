@@ -82,10 +82,15 @@ struct HolonMenuView: View {
 
             GroupBox("Tailscale") {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(viewModel.tailscaleStatus?.desiredTitle ?? L10n.text("Checking…"))
+                    Text(viewModel.tailscaleStatus?.title ?? L10n.text("Checking…"))
                         .font(.headline)
-                    Text(viewModel.tailscaleStatus?.actualTitle ?? L10n.text("Checking…"))
-                        .font(.headline)
+                    if let status = viewModel.tailscaleStatus,
+                       status.state == .connected || status.state == .serving {
+                        Text(status.desiredTitle)
+                            .font(.caption)
+                        Text(status.actualTitle)
+                            .font(.caption)
+                    }
                     Text(viewModel.tailscaleStatus.map { L10n.text($0.message) } ?? L10n.text("Checking Tailscale status."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -108,7 +113,7 @@ struct HolonMenuView: View {
                             Task { await viewModel.disableTailscaleServe() }
                         }
                         .disabled(viewModel.isOperating || viewModel.tailscaleStatus?.conflict == true)
-                    } else if viewModel.tailscaleStatus?.statusKnown == true {
+                    } else if viewModel.tailscaleStatus?.canEnableServe == true {
                         if viewModel.showTailscaleServeConfirmation {
                             Text(L10n.text("Holon will expose its local web service over your tailnet. If authentication is missing, the app prepares a private token and may restart its managed daemon, preserving LAN and desktop settings. Externally managed daemons require manual authentication configuration. Your phone needs tailnet membership and ACL access."))
                                 .font(.caption)
@@ -134,15 +139,19 @@ struct HolonMenuView: View {
                             .disabled(viewModel.isOperating || viewModel.tailscaleStatus?.conflict == true)
                         }
                     }
-                    if let error = viewModel.tailscaleError {
-                        Text(error)
-                            .font(.caption2)
+                    if let error = viewModel.tailscaleError ?? viewModel.tailscaleStatus?.details {
+                        Text(L10n.text("Could not check or update Tailscale. See details."))
+                            .font(.caption)
                             .foregroundStyle(.red)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
-                        Button(L10n.text("Copy Tailscale error")) {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(error, forType: .string)
+                        DisclosureGroup(L10n.text("Tailscale error details")) {
+                            Text(error)
+                                .font(.caption2)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                            Button(L10n.text("Copy Tailscale error")) {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(error, forType: .string)
+                            }
                         }
                     }
                 }

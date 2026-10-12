@@ -113,3 +113,7 @@
 "stale daemon state detected" = "检测到过期的守护进程状态";
 "Holon runtime is running." = "Holon 运行时正在运行。";
 "Holon runtime restarted." = "Holon 运行时已重启。";
+"Could not check or update Tailscale. See details." = "无法检查或更新 Tailscale，请查看详情。";
+"Tailscale error details" = "Tailscale 错误详情";
+"Not installed (optional)" = "未安装（可选）";
+"Status unknown" = "状态未知";

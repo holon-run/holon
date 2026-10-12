@@ -86,6 +86,7 @@ final class HolonMenuClientTests: XCTestCase {
         nonisolated(unsafe) static var authenticationAvailable: Bool? = true
         nonisolated(unsafe) static var authenticateBearer = false
         nonisolated(unsafe) static var authMode = "local"
+        nonisolated(unsafe) static var responseBody: String?
 
         override class func canInit(with request: URLRequest) -> Bool { true }
         override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -99,6 +100,7 @@ final class HolonMenuClientTests: XCTestCase {
             ))
             let code = Self.responseCode
             let authMode = Self.authMode
+            let responseBody = Self.responseBody
             let authenticated = Self.authenticationAvailable.map {
                 $0 || Self.authenticateBearer && request.value(forHTTPHeaderField: "Authorization") != nil
             }
@@ -111,12 +113,12 @@ final class HolonMenuClientTests: XCTestCase {
                 client?.urlProtocolDidFinishLoading(self)
                 return
             }
-            client?.urlProtocol(self, didLoad: Data("""
+            client?.urlProtocol(self, didLoad: Data((responseBody ?? """
                 {"desired_enabled":true,"available":true,"connected":true,"status_known":true,
                  "serving":false,"conflict":false,"hostname":"holon.example.ts.net",
                  "serve_url":"https://holon.example.ts.net","message":"Not serving",
                  "control_authentication_available":\(authenticated.map(String.init) ?? "null")}
-                """.utf8))
+                """).utf8))
             client?.urlProtocolDidFinishLoading(self)
         }
         override func stopLoading() {}
@@ -222,6 +224,151 @@ final class HolonMenuClientTests: XCTestCase {
         )
 
         XCTAssertEqual(status.state, .loggedOut)
+    }
+
+    func testTailscaleProbeDecodesOnlyLocalHostnameAndBackendState() {
+        let status = HolonTailscaleStatus.parse(
+            statusOutput: #"{"Peer":{"other":{"DNSName":"peer.example.ts.net.","Note":"Stopped and NeedsLogin"}},"Self":{"DNSName":"holon.example.ts.net."},"BackendState":"Running"}"#,
+            serveOutput: "{}"
+        )
+        XCTAssertEqual(status.state, .connected)
+        XCTAssertEqual(status.hostname, "holon.example.ts.net")
+        XCTAssertTrue(status.canEnableServe)
+    }
+
+    func testMalformedOrUnrecognizedTailscaleProbeIsUnknown() {
+        for output in ["not JSON", "{}", #"{"BackendState":"FutureState"}"#,
+                       #"{"BackendState":"Running","Self":{"DNSName":42}}"#] {
+            let status = HolonTailscaleStatus.parse(statusOutput: output)
+            XCTAssertEqual(status.state, .unknown, output)
+            XCTAssertEqual(status.title, L10n.text("Status unknown"))
+            XCTAssertFalse(status.canEnableServe)
+        }
+    }
+
+    func testTailscaleProbeRequiresKnownServeConfigurationToEnable() {
+        let status = HolonTailscaleStatus.parse(
+            statusOutput: #"{"BackendState":"Running","Self":{"DNSName":"holon.example.ts.net."}}"#,
+            serveOutput: "not JSON"
+        )
+        XCTAssertFalse(status.statusKnown)
+        XCTAssertFalse(status.canEnableServe)
+    }
+
+    func testInactiveTailscaleProbeDoesNotReportStaleServeConfigurationAsServing() {
+        for (backend, state) in [("NeedsLogin", HolonTailscaleState.loggedOut),
+                                 ("NeedsMachineAuth", .loggedOut), ("Stopped", .stopped),
+                                 ("NoState", .stopped), ("Starting", .stopped)] {
+            let status = HolonTailscaleStatus.parse(
+                statusOutput: "{\"BackendState\":\"\(backend)\",\"Self\":{\"DNSName\":\"holon.example.ts.net.\"}}",
+                serveOutput: #"{"Web":{"holon.example.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:7878"}}}}}"#,
+                holonURL: URL(string: "http://127.0.0.1:7878")
+            )
+            XCTAssertEqual(status.state, state)
+            XCTAssertTrue(status.available)
+            XCTAssertFalse(status.connected)
+            XCTAssertNil(status.serveURL)
+            XCTAssertFalse(status.canEnableServe)
+        }
+    }
+
+    private func tailscaleResponse(
+        state: String? = nil,
+        available: Bool = true,
+        connected: Bool = true,
+        known: Bool = true,
+        serving: Bool = false,
+        conflict: Bool = false,
+        details: String? = nil
+    ) -> String {
+        """
+        {"desired_enabled":false,"available":\(available),"connected":\(connected),
+         "status_known":\(known),"serving":\(serving),"conflict":\(conflict),
+         "hostname":"holon.example.ts.net","serve_url":"https://holon.example.ts.net",
+         "message":"Network status","control_authentication_available":true
+         \(state.map { ",\"state\":\"\($0)\"" } ?? "")
+         \(details.map { ",\"details\":\"\($0)\"" } ?? "")}
+        """
+    }
+
+    func testTailscaleControlDecodesExplicitStatesAndOptionalDetails() async throws {
+        defer { ServeURLProtocol.lock.withLock { ServeURLProtocol.responseBody = nil } }
+        let (client, _) = serveClient()
+        for (rawState, state) in [("unavailable", HolonTailscaleState.unavailable),
+                                  ("stopped", .stopped), ("logged_out", .loggedOut),
+                                  ("connected", .connected), ("serving", .serving),
+                                  ("unknown", .unknown), ("future_state", .unknown)] {
+            ServeURLProtocol.lock.withLock {
+                ServeURLProtocol.responseCode = 200
+                ServeURLProtocol.responseBody = tailscaleResponse(
+                    state: rawState, serving: state == .serving, details: "Probe diagnostic"
+                )
+            }
+            let status = try await client.tailscaleStatus()
+            XCTAssertEqual(status.state, state, rawState)
+            XCTAssertTrue(status.available)
+            XCTAssertTrue(status.connected)
+            XCTAssertEqual(status.details, "Probe diagnostic")
+            XCTAssertEqual(status.canEnableServe, state == .connected)
+            if state == .unavailable {
+                XCTAssertEqual(status.title, L10n.text("Not installed (optional)"))
+            }
+        }
+        ServeURLProtocol.lock.withLock {
+            ServeURLProtocol.responseBody = tailscaleResponse(state: "connected")
+        }
+        let status = try await client.tailscaleStatus()
+        XCTAssertNil(status.details)
+    }
+
+    func testTailscaleControlRemainsCompatibleWithLegacyBooleanStates() async throws {
+        defer { ServeURLProtocol.lock.withLock { ServeURLProtocol.responseBody = nil } }
+        let (client, _) = serveClient()
+        let cases: [(String, HolonTailscaleState)] = [
+            (tailscaleResponse(), .connected),
+            (tailscaleResponse(serving: true), .serving),
+            (tailscaleResponse(connected: false), .stopped),
+            (tailscaleResponse(available: false, connected: false), .unavailable),
+            (tailscaleResponse(available: false, connected: false, known: false), .unknown),
+            (tailscaleResponse(known: false), .unknown)
+        ]
+        for (response, expectedState) in cases {
+            ServeURLProtocol.lock.withLock {
+                ServeURLProtocol.responseCode = 200
+                ServeURLProtocol.responseBody = response
+            }
+            let status = try await client.tailscaleStatus()
+            XCTAssertEqual(status.state, expectedState, response)
+            XCTAssertNil(status.details)
+        }
+    }
+
+    func testTailscaleControlRejectsEnableWhenCurrentStateIsNotExecutable() async throws {
+        defer { ServeURLProtocol.lock.withLock { ServeURLProtocol.responseBody = nil } }
+        let (client, launcher) = serveClient()
+        let responses = ["unavailable", "stopped", "logged_out", "unknown", "serving"].map {
+            tailscaleResponse(state: $0)
+        } + [tailscaleResponse(state: "connected", available: false),
+             tailscaleResponse(state: "connected", connected: false),
+             tailscaleResponse(state: "connected", known: false),
+             tailscaleResponse(state: "connected", conflict: true)]
+        for response in responses {
+            ServeURLProtocol.lock.withLock {
+                ServeURLProtocol.responseCode = 200
+                ServeURLProtocol.requests = []
+                ServeURLProtocol.responseBody = response
+            }
+            do {
+                _ = try await client.enableTailscaleServe()
+                XCTFail("Serve must not be enabled for a nonexecutable status")
+            } catch HolonCLIError.tailscaleServeConflict {
+                // Preflight rejects the request before any mutation.
+            }
+            let requests = ServeURLProtocol.lock.withLock { ServeURLProtocol.requests }
+            XCTAssertFalse(requests.contains { $0.0 == "POST" })
+        }
+        let invocations = await launcher.invocations()
+        XCTAssertFalse(invocations.contains { $0.arguments.contains("restart") })
     }
 
     func testClientBuildsDaemonArgumentsAndDecodesJSON() async throws {

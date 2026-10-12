@@ -108,6 +108,7 @@ final class HolonPairingPolicyTests: XCTestCase {
     func testRefreshIsolatesLANFailureFromServeStatus() async {
         let client = FakeHolonClient(lanStatusError: HolonCLIError.invalidWebAddress("missing"))
         let model = HolonMenuViewModel(client: client)
+        await model.refresh()
         await model.enableTailscaleServe()
         await model.refresh()
         XCTAssertNotNil(model.status)
@@ -121,6 +122,7 @@ final class HolonPairingPolicyTests: XCTestCase {
         let client = FakeHolonClient()
         let model = HolonMenuViewModel(client: client)
         await model.enableLAN()
+        await model.refresh()
         await model.enableTailscaleServe()
         XCTAssertEqual(model.connectionURL?.absoluteString, "https://holon.example.ts.net")
         await model.showPairingCode()

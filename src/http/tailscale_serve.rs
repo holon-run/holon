@@ -1,10 +1,23 @@
 use super::*;
+use anyhow::Context;
 use std::process::Command;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TailscaleState {
+    Unavailable,
+    Stopped,
+    LoggedOut,
+    Connected,
+    Serving,
+    Unknown,
+}
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TailscaleServeStatus {
     pub control_authentication_available: bool,
     pub desired_enabled: bool,
+    pub state: TailscaleState,
     pub available: bool,
     pub connected: bool,
     pub status_known: bool,
@@ -16,6 +29,8 @@ pub struct TailscaleServeStatus {
     pub hostname: Option<String>,
     pub serve_url: Option<String>,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
 }
 
 pub(super) trait Runner {
@@ -24,6 +39,10 @@ pub(super) trait Runner {
 }
 
 struct Cli;
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct DaemonStopped(String);
 
 fn tailscale_command() -> Command {
     #[cfg(target_os = "macos")]
@@ -53,10 +72,12 @@ fn tailscale_command() -> Command {
 impl Runner for Cli {
     fn run(&self, args: &[&str]) -> Result<Value> {
         let output = tailscale_command().args(args).output()?;
-        if !output.status.success() {
-            return Err(anyhow!("Tailscale status unavailable"));
-        }
-        serde_json::from_slice(&output.stdout).map_err(Into::into)
+        parse_output(
+            args,
+            output.status.success(),
+            &output.stdout,
+            &output.stderr,
+        )
     }
 
     fn command(&self, args: &[&str]) -> Result<()> {
@@ -68,6 +89,45 @@ impl Runner for Cli {
     }
 }
 
+fn parse_output(args: &[&str], success: bool, stdout: &[u8], stderr: &[u8]) -> Result<Value> {
+    let parsed = serde_json::from_slice::<Value>(stdout);
+    if success {
+        return parsed.context("Invalid Tailscale status JSON");
+    }
+    let backend_status = args == ["status", "--json"];
+    // Defensively accept recognized offline JSON despite a failing exit status.
+    // Never accept failed Serve inspection or a failed connected-state probe.
+    if backend_status
+        && parsed.as_ref().is_ok_and(|status| {
+            matches!(
+                status["BackendState"].as_str(),
+                Some("Stopped" | "NoState" | "Starting" | "NeedsLogin" | "NeedsMachineAuth")
+            )
+        })
+    {
+        return parsed.map_err(Into::into);
+    }
+    let stderr = String::from_utf8_lossy(stderr);
+    let stdout = String::from_utf8_lossy(stdout);
+    let diagnostic = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    let lower = diagnostic.to_ascii_lowercase();
+    if backend_status
+        && (lower.contains("tailscale is not running")
+            || lower.contains("tailscaled is not running")
+            || lower.contains("tailscaled does not appear to be running")
+            || lower.contains(
+                "failed to connect to local tailscale daemon; it doesn't appear to be running",
+            ))
+    {
+        return Err(DaemonStopped(diagnostic.to_owned()).into());
+    }
+    Err(anyhow!("Tailscale status probe failed: {diagnostic}"))
+}
+
 fn inspect(
     runner: &impl Runner,
     desired_enabled: bool,
@@ -77,7 +137,8 @@ fn inspect(
     let mut result = TailscaleServeStatus {
         control_authentication_available: false,
         desired_enabled,
-        available: false,
+        state: TailscaleState::Unknown,
+        available: true,
         connected: false,
         status_known: false,
         serving: false,
@@ -85,31 +146,69 @@ fn inspect(
         legacy_serving: false,
         hostname: None,
         serve_url: None,
-        message: "Tailscale unavailable".into(),
+        message: "Could not check Tailscale; retry".into(),
+        details: None,
     };
-    let Ok(status) = runner.run(&["status", "--json"]) else {
-        return result;
+    let status = match runner.run(&["status", "--json"]) {
+        Ok(status) => status,
+        Err(error) => {
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            {
+                result.available = false;
+                result.state = TailscaleState::Unavailable;
+                result.message =
+                    "Tailscale CLI not found (optional); install it or configure its path".into();
+            } else if error.downcast_ref::<DaemonStopped>().is_some() {
+                result.state = TailscaleState::Stopped;
+                result.message = "Start Tailscale to connect".into();
+            }
+            if result.state == TailscaleState::Unknown {
+                result.details = Some(format!("{error:#}"));
+            }
+            return result;
+        }
     };
-    result.available = true;
-    result.connected = status["BackendState"] == "Running";
+    result.state = match status["BackendState"].as_str() {
+        Some("Running") => TailscaleState::Connected,
+        Some("Stopped" | "NoState" | "Starting") => TailscaleState::Stopped,
+        Some("NeedsLogin" | "NeedsMachineAuth") => TailscaleState::LoggedOut,
+        _ => TailscaleState::Unknown,
+    };
+    result.connected = result.state == TailscaleState::Connected;
     result.hostname = status["Self"]["DNSName"]
         .as_str()
         .map(|name| name.trim_end_matches('.').to_owned())
         .filter(|name| !name.is_empty());
     if !result.connected {
-        result.message = "Tailscale is not connected".into();
+        result.message = match status["BackendState"].as_str() {
+            Some("NeedsLogin") => "Sign in to Tailscale to connect",
+            Some("NeedsMachineAuth") => "Approve this device in Tailscale to connect",
+            Some("Starting") => "Tailscale is starting; wait for it to connect",
+            Some("Stopped" | "NoState") => "Start Tailscale to connect",
+            _ => "Could not determine Tailscale state; retry",
+        }
+        .into();
         return result;
     }
     let Some(hostname) = result.hostname.as_deref() else {
-        result.message = "Tailscale hostname unavailable".into();
+        result.state = TailscaleState::Unknown;
+        result.message = "Tailscale hostname unavailable; check MagicDNS".into();
         return result;
     };
-    let Ok(serve) = runner.run(&["serve", "status", "--json"]) else {
-        result.message = "Tailscale Serve status unavailable".into();
-        return result;
+    let serve = match runner.run(&["serve", "status", "--json"]) {
+        Ok(serve) => serve,
+        Err(error) => {
+            result.state = TailscaleState::Unknown;
+            result.message = "Could not check Tailscale Serve; retry".into();
+            result.details = Some(format!("{error:#}"));
+            return result;
+        }
     };
     if !serve.is_object() || !(serve["Web"].is_null() || serve["Web"].is_object()) {
-        result.message = "Tailscale Serve configuration unavailable".into();
+        result.state = TailscaleState::Unknown;
+        result.message = "Could not read Tailscale Serve configuration; retry".into();
         return result;
     }
     let site = serve["Web"]
@@ -130,6 +229,9 @@ fn inspect(
             .and_then(|tcp| tcp.get("443"))
             .is_some_and(|listener| listener["HTTPS"] != true);
     result.status_known = true;
+    if result.serving {
+        result.state = TailscaleState::Serving;
+    }
     result.message = if result.conflict {
         "A different Tailscale Serve root rule exists"
     } else if result.legacy_serving {
@@ -256,7 +358,7 @@ pub(super) fn change(
         &target,
         legacy_target(state).as_deref(),
     );
-    if !before.status_known {
+    if !before.available || !before.connected || !before.status_known {
         return Err(anyhow!("Tailscale Serve is unavailable"));
     }
     if enabled {
@@ -616,6 +718,328 @@ mod tests {
         }
     }
 
+    struct Backend(Value);
+
+    impl Runner for Backend {
+        fn run(&self, args: &[&str]) -> Result<Value> {
+            assert_eq!(args, ["status", "--json"]);
+            Ok(self.0.clone())
+        }
+
+        fn command(&self, _: &[&str]) -> Result<()> {
+            panic!("backend inspection must not change Serve")
+        }
+    }
+
+    struct FailedProbe(std::io::ErrorKind);
+
+    impl Runner for FailedProbe {
+        fn run(&self, _: &[&str]) -> Result<Value> {
+            Err(std::io::Error::new(self.0, "probe diagnostic").into())
+        }
+
+        fn command(&self, _: &[&str]) -> Result<()> {
+            panic!("a failed probe must not change Serve")
+        }
+    }
+
+    #[test]
+    fn only_a_missing_cli_is_unavailable() {
+        for (kind, expected) in [
+            (std::io::ErrorKind::NotFound, TailscaleState::Unavailable),
+            (
+                std::io::ErrorKind::PermissionDenied,
+                TailscaleState::Unknown,
+            ),
+            (std::io::ErrorKind::TimedOut, TailscaleState::Unknown),
+            (std::io::ErrorKind::InvalidInput, TailscaleState::Unknown),
+            (std::io::ErrorKind::Other, TailscaleState::Unknown),
+        ] {
+            let status = inspect(&FailedProbe(kind), true, "http://127.0.0.1:7878", None);
+            assert_eq!(status.state, expected);
+            assert_eq!(status.available, expected != TailscaleState::Unavailable);
+            assert!(status.desired_enabled);
+            assert!(!status.connected);
+            assert!(!status.status_known);
+            assert!(!status.serving);
+            if expected == TailscaleState::Unknown {
+                assert!(status
+                    .details
+                    .as_deref()
+                    .unwrap()
+                    .contains("probe diagnostic"));
+            } else {
+                assert!(status.details.is_none());
+            }
+            assert!(!status.message.contains("probe diagnostic"));
+            if expected == TailscaleState::Unavailable {
+                assert!(status.message.contains("CLI not found (optional)"));
+                assert!(!status.message.contains("not installed"));
+                assert!(serde_json::to_value(status)
+                    .unwrap()
+                    .get("details")
+                    .is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn disconnected_backend_states_are_installed_but_not_mutable() {
+        for (backend, expected) in [
+            ("Stopped", TailscaleState::Stopped),
+            ("NoState", TailscaleState::Stopped),
+            ("Starting", TailscaleState::Stopped),
+            ("NeedsLogin", TailscaleState::LoggedOut),
+            ("NeedsMachineAuth", TailscaleState::LoggedOut),
+            ("FutureBackendState", TailscaleState::Unknown),
+        ] {
+            let status = inspect(
+                &Backend(json!({"BackendState": backend})),
+                false,
+                "http://127.0.0.1:7878",
+                None,
+            );
+            assert_eq!(status.state, expected);
+            assert!(status.available);
+            assert!(!status.connected);
+            assert!(!status.status_known);
+            assert!(!status.serving);
+            assert!(status.details.is_none());
+        }
+        for malformed in [
+            json!(null),
+            json!([]),
+            json!({}),
+            json!({"BackendState": 1}),
+        ] {
+            let status = inspect(&Backend(malformed), false, "http://127.0.0.1:7878", None);
+            assert_eq!(status.state, TailscaleState::Unknown);
+            assert!(status.available);
+            assert!(!status.status_known);
+        }
+    }
+
+    #[test]
+    fn backend_json_preserves_expected_disconnected_states() {
+        for success in [true, false] {
+            for (backend, expected) in [
+                ("Stopped", TailscaleState::Stopped),
+                ("NoState", TailscaleState::Stopped),
+                ("Starting", TailscaleState::Stopped),
+                ("NeedsLogin", TailscaleState::LoggedOut),
+                ("NeedsMachineAuth", TailscaleState::LoggedOut),
+            ] {
+                let stdout = serde_json::to_vec(&json!({"BackendState": backend})).unwrap();
+                let parsed = parse_output(&["status", "--json"], success, &stdout, b"").unwrap();
+                let status = inspect(&Backend(parsed), false, "http://127.0.0.1:7878", None);
+                assert_eq!(status.state, expected);
+                assert!(status.available);
+                assert!(!status.connected);
+                assert!(!status.status_known);
+                assert!(status.details.is_none());
+                assert!(
+                    parse_output(&["serve", "status", "--json"], false, &stdout, b"denied")
+                        .is_err()
+                );
+            }
+        }
+        assert!(parse_output(
+            &["status", "--json"],
+            false,
+            br#"{"BackendState":"Running"}"#,
+            b"unexpected probe error"
+        )
+        .is_err());
+        assert!(parse_output(&["serve", "status", "--json"], false, b"{}", b"denied").is_err());
+    }
+
+    #[test]
+    fn daemon_stop_diagnostics_are_not_a_missing_installation() {
+        struct OutputProbe(&'static [u8]);
+        impl Runner for OutputProbe {
+            fn run(&self, args: &[&str]) -> Result<Value> {
+                parse_output(args, false, b"", self.0)
+            }
+
+            fn command(&self, _: &[&str]) -> Result<()> {
+                panic!("daemon stop inspection must not change Serve")
+            }
+        }
+        for (diagnostic, expected) in [
+            (&b"Tailscale is not running."[..], TailscaleState::Stopped),
+            (
+                &b"failed to connect to local Tailscale daemon; it doesn't appear to be running"[..],
+                TailscaleState::Stopped,
+            ),
+            (&b"permission denied"[..], TailscaleState::Unknown),
+            (
+                &b"failed to connect to local Tailscale daemon (which appears to be running)"[..],
+                TailscaleState::Unknown,
+            ),
+        ] {
+            let status = inspect(
+                &OutputProbe(diagnostic),
+                false,
+                "http://127.0.0.1:7878",
+                None,
+            );
+            assert_eq!(status.state, expected);
+            assert!(status.available);
+            assert!(!status.status_known);
+            assert_eq!(
+                status.details.is_some(),
+                expected == TailscaleState::Unknown
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_probe_output_is_unknown_not_a_missing_cli() {
+        struct OutputProbe {
+            success: bool,
+            stdout: &'static [u8],
+        }
+        impl Runner for OutputProbe {
+            fn run(&self, args: &[&str]) -> Result<Value> {
+                parse_output(args, self.success, self.stdout, b"probe diagnostic")
+            }
+
+            fn command(&self, _: &[&str]) -> Result<()> {
+                panic!("invalid probe output must not change Serve")
+            }
+        }
+        for success in [false, true] {
+            for stdout in [
+                &b"not JSON"[..],
+                br#"{"BackendState":"NeedsLogin"} trailing garbage"#,
+                b"null",
+                b"[]",
+                b"{}",
+                br#"{"BackendState":1}"#,
+                br#"{"BackendState":"FutureBackendState"}"#,
+            ] {
+                let status = inspect(
+                    &OutputProbe { success, stdout },
+                    false,
+                    "http://127.0.0.1:7878",
+                    None,
+                );
+                assert_eq!(status.state, TailscaleState::Unknown);
+                assert!(status.available);
+                assert!(!status.connected);
+                assert!(!status.status_known);
+                assert!(!status.serving);
+            }
+        }
+        assert!(parse_output(
+            &["serve", "status", "--json"],
+            false,
+            br#"{"BackendState":"NeedsLogin"}"#,
+            b"probe diagnostic"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn malformed_json_is_a_probe_error() {
+        let error = parse_output(&["status", "--json"], true, b"not JSON", b"").unwrap_err();
+        assert!(format!("{error:#}").contains("Invalid Tailscale status JSON"));
+    }
+
+    #[test]
+    fn connected_backend_without_hostname_is_unknown() {
+        let status = inspect(
+            &Backend(json!({"BackendState": "Running"})),
+            false,
+            "http://127.0.0.1:7878",
+            None,
+        );
+        assert_eq!(status.state, TailscaleState::Unknown);
+        assert!(status.available);
+        assert!(status.connected);
+        assert!(!status.status_known);
+    }
+
+    #[test]
+    fn failed_serve_probe_does_not_report_a_missing_cli_or_known_status() {
+        struct FailedServe;
+        impl Runner for FailedServe {
+            fn run(&self, args: &[&str]) -> Result<Value> {
+                if args == ["status", "--json"] {
+                    return Mock { serve: json!({}) }.run(args);
+                }
+                parse_output(args, false, b"{}", b"Serve access denied")
+            }
+
+            fn command(&self, _: &[&str]) -> Result<()> {
+                panic!("unknown Serve status must not be mutated")
+            }
+        }
+        let status = inspect(&FailedServe, true, "http://127.0.0.1:7878", None);
+        assert_eq!(status.state, TailscaleState::Unknown);
+        assert!(status.available);
+        assert!(status.connected);
+        assert!(!status.status_known);
+        assert!(!status.serving);
+        assert!(status
+            .details
+            .as_deref()
+            .unwrap()
+            .contains("Serve access denied"));
+    }
+
+    #[test]
+    fn json_state_is_additive_and_details_are_optional() {
+        for (state, name) in [
+            (TailscaleState::Unavailable, "unavailable"),
+            (TailscaleState::Stopped, "stopped"),
+            (TailscaleState::LoggedOut, "logged_out"),
+            (TailscaleState::Connected, "connected"),
+            (TailscaleState::Serving, "serving"),
+            (TailscaleState::Unknown, "unknown"),
+        ] {
+            assert_eq!(serde_json::to_value(state).unwrap(), name);
+        }
+        let status = inspect(
+            &Mock { serve: json!({}) },
+            false,
+            "http://127.0.0.1:7878",
+            None,
+        );
+        assert_eq!(status.state, TailscaleState::Connected);
+        let json = serde_json::to_value(status).unwrap();
+        assert_eq!(json["state"], "connected");
+        assert_eq!(json["available"], true);
+        assert_eq!(json["connected"], true);
+        assert_eq!(json["status_known"], true);
+        assert_eq!(json["serving"], false);
+        assert!(json.get("details").is_none());
+    }
+
+    #[test]
+    fn unknown_backend_cannot_enable_or_change_desired_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let state = test_state(directory.path(), &address.to_string())
+            .with_http_listener_addresses(address, None);
+        for backend in ["Stopped", "NeedsLogin", "FutureBackendState"] {
+            assert!(change(&state, &Backend(json!({"BackendState": backend})), true).is_err());
+        }
+        assert!(change(
+            &state,
+            &FailedProbe(std::io::ErrorKind::PermissionDenied),
+            true
+        )
+        .is_err());
+        assert_eq!(
+            load_persisted_config_at(&state.host.config().config_file_path)
+                .unwrap()
+                .tailscale_serve_desired_enabled,
+            None
+        );
+    }
+
     #[test]
     fn desired_state_survives_external_rule_removal() {
         let status = inspect(
@@ -730,6 +1154,7 @@ mod tests {
         );
         assert!(status.serving);
         assert!(!status.conflict);
+        assert_eq!(status.state, TailscaleState::Serving);
         assert_eq!(status.message, "Holon is served");
     }
 

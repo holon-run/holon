@@ -5,6 +5,93 @@ import XCTest
 
 @MainActor
 final class HolonMenuLayoutTests: XCTestCase {
+    func testPopoverHeightUsesTheAnchorScreensVisibleArea() {
+        let visible = NSRect(x: 0, y: 40, width: 800, height: 600)
+        let anchor = NSRect(x: 720, y: 650, width: 24, height: 22)
+        XCTAssertEqual(
+            HolonMenuPopoverLayout.maximumHeight(visibleFrame: visible, anchorFrame: anchor), 584
+        )
+        XCTAssertEqual(
+            HolonMenuPopoverLayout.maximumHeight(
+                visibleFrame: visible.offsetBy(dx: -1_920, dy: -900),
+                anchorFrame: anchor.offsetBy(dx: -1_920, dy: -900)
+            ), 584
+        )
+        XCTAssertEqual(
+            HolonMenuPopoverLayout.maximumHeight(
+                visibleFrame: visible,
+                anchorFrame: NSRect(x: 720, y: 400, width: 24, height: 22)
+            ), 344
+        )
+    }
+
+    func testPopoverFitsShortContentAndRecapsWhenTheScreenChanges() {
+        let layout = HolonMenuPopoverLayout()
+        layout.maximumHeight = 500
+        layout.measure(300)
+        XCTAssertEqual(layout.contentSize, NSSize(width: 320, height: 300))
+        layout.measure(1_200)
+        XCTAssertEqual(layout.contentSize.height, 500)
+        layout.maximumHeight = 280
+        XCTAssertEqual(layout.contentSize.height, 280)
+        layout.measure(160)
+        XCTAssertEqual(layout.contentSize.height, 160)
+        layout.measure(.infinity)
+        layout.measure(0)
+        XCTAssertEqual(layout.contentSize.height, 160)
+    }
+
+    func testOversizedMenuScrollsWithinTheViewportAndRemeasuresQRChanges() async throws {
+        let model = HolonMenuViewModel(client: FakeHolonClient())
+        await model.enableLAN()
+        await model.refresh()
+        let layout = HolonMenuPopoverLayout()
+        layout.maximumHeight = 320
+        let hosting = NSHostingController(
+            rootView: HolonMenuPopoverView(
+                layout: layout, viewModel: model, updater: HolonUpdater()
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: layout.contentSize),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentViewController = hosting
+        defer { window.close(); model.stopPolling() }
+        window.orderFront(nil)
+        func settle() async throws {
+            for _ in 0..<20 {
+                hosting.view.layoutSubtreeIfNeeded()
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        try await settle()
+        let collapsed = layout.naturalHeight
+        XCTAssertGreaterThan(collapsed, layout.maximumHeight)
+        XCTAssertEqual(hosting.view.frame.height, 320, accuracy: 1)
+
+        func scrollView(in view: NSView) -> NSScrollView? {
+            if let scroll = view as? NSScrollView { return scroll }
+            return view.subviews.lazy.compactMap { scrollView(in: $0) }.first
+        }
+        let scroll = try XCTUnwrap(scrollView(in: hosting.view))
+        let document = try XCTUnwrap(scroll.documentView)
+        XCTAssertGreaterThan(document.frame.height, scroll.contentView.bounds.height)
+        document.scroll(NSPoint(x: 0, y: document.frame.height))
+        XCTAssertGreaterThan(scroll.contentView.bounds.minY, 0)
+        document.scroll(.zero)
+        XCTAssertEqual(scroll.contentView.bounds.minY, 0, accuracy: 1)
+
+        await model.showPairingCode()
+        try await settle()
+        XCTAssertGreaterThan(layout.naturalHeight, collapsed)
+        XCTAssertEqual(layout.contentSize.height, 320)
+        model.hidePairingCode()
+        try await settle()
+        XCTAssertEqual(layout.naturalHeight, collapsed, accuracy: 1)
+    }
+
     func testMenuHasNoEditableTextField() async {
         let controller = NSHostingController(
             rootView: HolonMenuView(
