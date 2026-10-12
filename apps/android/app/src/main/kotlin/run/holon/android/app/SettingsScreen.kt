@@ -129,6 +129,39 @@ internal fun SettingsScreen(state: HolonUiState, viewModel: SettingsActions, onB
                     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
                     SettingsValue(ui("App"), BuildConfig.VERSION_NAME)
                     Text(ui("连接已有 Holon 主机的移动工作台。打开应用后同步最新状态。"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        when (val result = state.updateState.result) {
+                            null -> ui("可从 GitHub Release 检查新版本。")
+                            is ReleaseUpdateResult.Available -> ui("发现新版本：${result.release.version}")
+                            ReleaseUpdateResult.NoUpdate -> ui("当前已是最新版本。")
+                            is ReleaseUpdateResult.Unavailable -> ui("暂时无法检查更新：${result.reason}")
+                            is ReleaseUpdateResult.InvalidRelease -> ui("最新 Release 暂不可用：${result.reason}")
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(
+                            onClick = viewModel::checkForUpdates,
+                            enabled = !state.updateState.isChecking,
+                        ) {
+                            Text(if (state.updateState.isChecking) ui("检查中…") else ui("检查更新"))
+                        }
+                        (state.updateState.result as? ReleaseUpdateResult.Available)?.let { available ->
+                            TextButton(onClick = { uriHandler.openUri(available.release.releaseUrl) }) {
+                                Text(ui("打开下载页面"))
+                            }
+                        }
+                    }
+                    (state.updateState.result as? ReleaseUpdateResult.Available)?.release?.releaseNotes
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { notes ->
+                            Text(
+                                notes.take(240),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     TextButton(onClick = {
                         uriHandler.openUri(
                             if (UiCopy.effectiveLanguage().startsWith("zh", ignoreCase = true)) "https://holon.run/zh-CN/privacy"

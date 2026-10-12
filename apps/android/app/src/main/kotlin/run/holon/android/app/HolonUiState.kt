@@ -167,6 +167,7 @@ internal data class ShellUiState(
     val agentSection: AgentSection = AgentSection.Results,
     val error: String? = null,
     val statusMessage: String? = null,
+    val updateState: AndroidUpdateUiState = AndroidUpdateUiState(),
 )
 
 internal data class HolonUiState(
@@ -255,6 +256,7 @@ internal data class HolonUiState(
         fileLinkOrigin: FileLinkOrigin? = null,
         error: String? = null,
         statusMessage: String? = null,
+        updateState: AndroidUpdateUiState = AndroidUpdateUiState(),
         search: String = "",
     ) : this(
         connectionState = ConnectionUiState(phase = phase, baseUrl = baseUrl, token = token, showToken = showToken, allowInsecureHttp = allowInsecureHttp, pendingPairing = pendingPairing, authenticationMethod = authenticationMethod, browserLoginUrl = browserLoginUrl),
@@ -263,7 +265,7 @@ internal data class HolonUiState(
         workState = WorkUiState(workItems = workItems, workItemsLimit = workItemsLimit, workItemsHasMore = workItemsHasMore, workItemsLoadingMore = workItemsLoadingMore, selectedWorkItem = selectedWorkItem, tasks = tasks, tasksBusy = tasksBusy, tasksError = tasksError, selectedTask = selectedTask, taskOutput = taskOutput, workItemsBusy = workItemsBusy),
         filesState = FilesUiState(planFile = planFile, workspaces = workspaces, selectedWorkspace = selectedWorkspace, workspaceDirectory = workspaceDirectory, workspaceBusy = workspaceBusy, preparedArtifact = preparedArtifact, fileLinkOrigin = fileLinkOrigin),
         shareState = ShareUiState(pendingShare = pendingShare, queuedShares = queuedShares, shareSending = shareSending, shareError = shareError),
-        shellState = ShellUiState(mainDestination = mainDestination, busy = busy, online = online, lastSyncedAt = lastSyncedAt, session = session, networkProfiles = networkProfiles, switchingNetworkId = switchingNetworkId, selectedAgent = selectedAgent, agentSection = agentSection, error = error, statusMessage = statusMessage),
+        shellState = ShellUiState(mainDestination = mainDestination, busy = busy, online = online, lastSyncedAt = lastSyncedAt, session = session, networkProfiles = networkProfiles, switchingNetworkId = switchingNetworkId, selectedAgent = selectedAgent, agentSection = agentSection, error = error, statusMessage = statusMessage, updateState = updateState),
     )
 
     // Transitional shell adapter; feature state has a single immutable owner.
@@ -354,6 +356,7 @@ internal data class HolonUiState(
     val fileLinkOrigin: FileLinkOrigin? get() = filesState.fileLinkOrigin
     val error: String? get() = shellState.error
     val statusMessage: String? get() = shellState.statusMessage
+    val updateState: AndroidUpdateUiState get() = shellState.updateState
     val search: String get() = agentsState.search
 
     fun copy(
@@ -438,6 +441,7 @@ internal data class HolonUiState(
         fileLinkOrigin: FileLinkOrigin? = this.fileLinkOrigin,
         error: String? = this.error,
         statusMessage: String? = this.statusMessage,
+        updateState: AndroidUpdateUiState = this.updateState,
         search: String = this.search,
     ): HolonUiState = HolonUiState(
         connectionState = ConnectionUiState(phase = phase, baseUrl = baseUrl, token = token, showToken = showToken, allowInsecureHttp = allowInsecureHttp, pendingPairing = pendingPairing, authenticationMethod = authenticationMethod, browserLoginUrl = browserLoginUrl),
@@ -446,7 +450,7 @@ internal data class HolonUiState(
         workState = WorkUiState(workItems = workItems, workItemsLimit = workItemsLimit, workItemsHasMore = workItemsHasMore, workItemsLoadingMore = workItemsLoadingMore, selectedWorkItem = selectedWorkItem, tasks = tasks, tasksBusy = tasksBusy, tasksError = tasksError, selectedTask = selectedTask, taskOutput = taskOutput, workItemsBusy = workItemsBusy),
         filesState = FilesUiState(planFile = planFile, workspaces = workspaces, selectedWorkspace = selectedWorkspace, workspaceDirectory = workspaceDirectory, workspaceBusy = workspaceBusy, preparedArtifact = preparedArtifact, fileLinkOrigin = fileLinkOrigin),
         shareState = ShareUiState(pendingShare = pendingShare, queuedShares = queuedShares, shareSending = shareSending, shareError = shareError),
-        shellState = ShellUiState(mainDestination = mainDestination, busy = busy, online = online, lastSyncedAt = lastSyncedAt, session = session, networkProfiles = networkProfiles, switchingNetworkId = switchingNetworkId, selectedAgent = selectedAgent, agentSection = agentSection, error = error, statusMessage = statusMessage),
+        shellState = ShellUiState(mainDestination = mainDestination, busy = busy, online = online, lastSyncedAt = lastSyncedAt, session = session, networkProfiles = networkProfiles, switchingNetworkId = switchingNetworkId, selectedAgent = selectedAgent, agentSection = agentSection, error = error, statusMessage = statusMessage, updateState = updateState),
     )
 
     val recentAgents: List<AgentSummary>

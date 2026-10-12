@@ -13,11 +13,15 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
@@ -38,6 +42,29 @@ internal fun HolonApp(viewModel: HolonViewModel) {
     }
     if (state.phase == AppPhase.Ready && state.pendingShare != null) {
         ShareToAgentDialog(state, viewModel.screenActions.share)
+    }
+    val available = state.updateState.result as? ReleaseUpdateResult.Available
+    if (state.updateState.showPrompt && available != null) {
+        val uriHandler = LocalUriHandler.current
+        AlertDialog(
+            onDismissRequest = viewModel::dismissUpdatePrompt,
+            title = { Text(ui("发现 Holon 新版本 ${available.release.version}")) },
+            text = {
+                Text(
+                    available.release.releaseNotes.takeIf { it.isNotBlank() }
+                        ?: ui("请打开 GitHub Release 页面查看更新并下载 APK。"),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.dismissUpdatePrompt()
+                    uriHandler.openUri(available.release.releaseUrl)
+                }) { Text(ui("打开下载页面")) }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::dismissUpdatePrompt) { Text(ui("稍后")) }
+            },
+        )
     }
 }
 

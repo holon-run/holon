@@ -65,6 +65,7 @@ internal fun HolonHttpException.isStaleAgentEventCursor(): Boolean =
 
 
 private const val SESSION_KEEPALIVE_INTERVAL_MILLIS = 15 * 60 * 1000L
+private const val RELEASE_UPDATE_CHECK_INTERVAL_MILLIS = 24 * 60 * 60 * 1000L
 
 
 internal class HolonViewModel(
@@ -79,6 +80,10 @@ internal class HolonViewModel(
     private val restoredNavigation = NavigationBookmark.read(savedState)
     private val oidcPreferences =
         application.getSharedPreferences("holon_oidc_login", Context.MODE_PRIVATE)
+    private val releaseUpdatePreferences =
+        application.getSharedPreferences("holon_release_updates", Context.MODE_PRIVATE)
+    private val releaseUpdateChecker = ReleaseUpdateChecker()
+    private var releaseUpdateJob: Job? = null
     private val nativeProofStore = createSessionStore(application)
     private var authenticationProbeJob: Job? = null
     private var authenticationProbeGeneration = 0L
@@ -733,11 +738,50 @@ internal class HolonViewModel(
         }
     }
 
+    fun checkForUpdates() {
+        if (state.value.phase != AppPhase.Ready || releaseUpdateJob?.isActive == true) return
+        val startedAt = System.currentTimeMillis()
+        mutableState.update {
+            it.copy(updateState = it.updateState.copy(isChecking = true, result = null, showPrompt = false))
+        }
+        releaseUpdateJob = viewModelScope.launch {
+            val result = releaseUpdateChecker.check(BuildConfig.VERSION_CODE.toLong())
+            val successful = result is ReleaseUpdateResult.Available || result is ReleaseUpdateResult.NoUpdate
+            if (successful) {
+                releaseUpdatePreferences.edit { putLong("last_successful_check", startedAt) }
+            }
+            mutableState.update {
+                it.copy(
+                    updateState = AndroidUpdateUiState(
+                        isChecking = false,
+                        result = result,
+                        lastCheckedAt = if (successful) startedAt else it.updateState.lastCheckedAt,
+                        showPrompt = result is ReleaseUpdateResult.Available,
+                    ),
+                )
+            }
+        }
+    }
+
+    fun dismissUpdatePrompt() {
+        mutableState.update {
+            it.copy(updateState = it.updateState.copy(showPrompt = false))
+        }
+    }
+
+    private fun maybeCheckForUpdates() {
+        val lastCheck = releaseUpdatePreferences.getLong("last_successful_check", 0L)
+        if (System.currentTimeMillis() - lastCheck >= RELEASE_UPDATE_CHECK_INTERVAL_MILLIS) {
+            checkForUpdates()
+        }
+    }
+
     fun onForeground() {
         foreground = true
         if (state.value.phase != AppPhase.Ready || state.value.busy) return
         startLiveSync(state.value.agents)
         refresh(showProgress = false)
+        maybeCheckForUpdates()
     }
 
     fun onBackground() {
