@@ -2325,6 +2325,12 @@ impl RuntimeHost {
             .active_owner_agent_ids()?
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
+        let wait_recheck_owner_ids = self
+            .runtime_db()
+            .wait_conditions()
+            .recheck_owner_agent_ids()?
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
         let mut recovery_agent_ids = recovered_queue_agent_ids
             .iter()
             .cloned()
@@ -2332,6 +2338,7 @@ impl RuntimeHost {
         recovery_agent_ids.extend(queue_recovery_candidate_ids.iter().cloned());
         recovery_agent_ids.extend(active_task_owner_ids.iter().cloned());
         recovery_agent_ids.extend(active_timer_owner_ids.iter().cloned());
+        recovery_agent_ids.extend(wait_recheck_owner_ids.iter().cloned());
         recovery_agent_ids.extend(
             recovery_report
                 .recovered_execution_agent_ids
@@ -2354,6 +2361,8 @@ impl RuntimeHost {
             if state.status == AgentStatus::Stopped
                 && !active_task_owner_ids.contains(&agent_id)
                 && !queue_recovery_candidate_ids.contains(&agent_id)
+                && !active_timer_owner_ids.contains(&agent_id)
+                && !wait_recheck_owner_ids.contains(&agent_id)
             {
                 continue;
             }
@@ -2429,7 +2438,13 @@ impl RuntimeHost {
             if state.status == AgentStatus::Stopped {
                 stopped_agents.insert(wait.agent_id.clone());
             }
-            if state.status == AgentStatus::Stopped || task_stale || external_stale || timer_stale {
+            let wait_recheck_survives_stop =
+                wait.work_item_id.is_none() && wait.recheck_at().is_some();
+            if (state.status == AgentStatus::Stopped && !wait_recheck_survives_stop)
+                || task_stale
+                || external_stale
+                || timer_stale
+            {
                 let mut cancelled_wait = wait;
                 cancelled_wait.status = WaitConditionStatus::Cancelled;
                 cancelled_wait.updated_at = Utc::now();
@@ -16013,6 +16028,79 @@ mod tests {
         assert_eq!(timer.status, TimerStatus::Completed);
         assert_eq!(timer.fire_count, 1);
         assert_startup_timer_tick_count(&storage, "timer-startup-no-wait-1", 1);
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_activates_wait_recheck_only_owner() {
+        let (_home, host) = canonical_test_host();
+        let config = host.config().as_ref().clone();
+        let agent_id = "startup-wait-recheck-owner";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        let runtime = host
+            .try_get_loaded_runtime(agent_id)
+            .await
+            .expect("created agent runtime should stay loaded");
+        let registration = runtime
+            .register_wait_for(
+                agent_id,
+                None,
+                crate::runtime::WaitForWakeKind::OperatorInput,
+                None,
+                "waiting for operator input".into(),
+                Some(0),
+            )
+            .await
+            .unwrap();
+        let condition = registration.condition;
+        assert!(condition.recheck_at().is_some());
+        assert_eq!(
+            host.runtime_db()
+                .wait_conditions()
+                .recheck_owner_agent_ids()
+                .unwrap(),
+            vec![agent_id.to_string()]
+        );
+        host.unload_runtime(agent_id).await;
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        drop(host);
+
+        let restarted =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        restarted
+            .recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap();
+
+        let runtime = restarted
+            .try_get_loaded_runtime(agent_id)
+            .await
+            .expect("startup recovery should activate the wait-recheck-only owner");
+        let expected_message_id = crate::ids::wait_recheck_message_id(
+            &condition.id,
+            &condition.recheck_at().unwrap().to_rfc3339(),
+        );
+        let mut recheck_enqueued = false;
+        for _ in 0..100 {
+            if runtime
+                .storage()
+                .read_recent_events(100)
+                .unwrap()
+                .iter()
+                .any(|event| {
+                    event.kind == "wait_condition_recheck_enqueued"
+                        && event.data["wait_id"] == condition.id
+                        && event.data["message_id"] == expected_message_id
+                })
+            {
+                recheck_enqueued = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            recheck_enqueued,
+            "startup recovery should emit the deterministic wait recheck"
+        );
     }
 
     #[tokio::test]
