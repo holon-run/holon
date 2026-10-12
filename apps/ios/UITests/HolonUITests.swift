@@ -1112,8 +1112,14 @@ final class HolonUITests: XCTestCase {
         reveal(permission, in: app); permission.switches.firstMatch.tap()
         let next = app.buttons["onboarding.checkAddress"]
         reveal(next, in: app); next.tap()
-        XCTAssertTrue(manage.waitForExistence(timeout: 30), "The saved session should reconnect without another token")
-        manage.tap()
+        // Same-partition reconnect keeps the current Connections route.
+        let reconnected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let status = app.staticTexts["connection.status"]
+            return app.navigationBars["Connections"].exists && status.exists && status.label == "Connected"
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [reconnected], timeout: 30), .completed,
+                       "The saved session should reconnect without another token")
+        XCTAssertFalse(app.secureTextFields["onboarding.token"].exists)
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(rows.firstMatch.identifier, originalID, "Duplicate additions must keep the original partition")
         capture(app, "network-deduplicated")
