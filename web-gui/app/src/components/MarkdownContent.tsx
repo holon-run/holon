@@ -229,7 +229,7 @@ function MarkdownContentView({ text, citations, compact = false, baseFile, fragm
     <div ref={container} className={`markdown-content${compact ? " compact" : ""}`}>
       {fragmentError ? <p role="status" className="inspector-muted">{fragmentError}</p> : null}
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, [remarkFileReferences, { base, prefix }]]}
+        remarkPlugins={[[remarkGfm, { singleTilde: false }], [remarkFileReferences, { base, prefix }]]}
         components={{
           a: ({ children, href, node, ...props }) => {
             const key = node?.properties["data-file-reference"];

@@ -68,7 +68,7 @@ export function remarkFileReferences(options: Options = {}) {
 
 export function collectMarkdownReferences(text: string, base?: ResolvedFileLocation): Map<string, MarkdownReference> {
   const collect = new Map<string, MarkdownReference>();
-  const parser = unified().use(remarkParse).use(remarkGfm).use(remarkFileReferences, { base, collect });
+  const parser = unified().use(remarkParse).use(remarkGfm, { singleTilde: false }).use(remarkFileReferences, { base, collect });
   parser.runSync(parser.parse(text));
   return collect;
 }
