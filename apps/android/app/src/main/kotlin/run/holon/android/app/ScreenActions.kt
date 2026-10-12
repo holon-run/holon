@@ -44,6 +44,8 @@ internal interface SettingsActions {
     fun beginAddNetwork(): Unit
     fun logout(): Unit
     fun refresh(showProgress: Boolean = true): Unit
+    fun checkForUpdates(): Unit
+    fun dismissUpdatePrompt(): Unit
     fun relogin(): Unit
     fun shareTraceWithAgent(): Unit
     fun switchNetwork(networkId: String): Unit
@@ -148,6 +150,8 @@ internal class AndroidScreenActions(private val delegate: HolonViewModel) {
         override fun beginAddNetwork(): Unit { delegate.beginAddNetwork() }
         override fun logout(): Unit { delegate.logout() }
         override fun refresh(showProgress: Boolean): Unit { delegate.refresh(showProgress) }
+        override fun checkForUpdates(): Unit { delegate.checkForUpdates() }
+        override fun dismissUpdatePrompt(): Unit { delegate.dismissUpdatePrompt() }
         override fun relogin(): Unit { delegate.relogin() }
         override fun shareTraceWithAgent(): Unit { delegate.shareTraceWithAgent() }
         override fun switchNetwork(networkId: String): Unit { delegate.switchNetwork(networkId) }
