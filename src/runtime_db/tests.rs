@@ -513,6 +513,266 @@ mod tests {
         identity.status = AgentRegistryStatus::Active;
         identity
     }
+
+    fn operator_origin() -> crate::types::MessageOrigin {
+        crate::types::MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        }
+    }
+
+    fn anchor_candidate_message(
+        id: &str,
+        agent_id: &str,
+        message_seq: Option<u64>,
+        offset_secs: i64,
+        origin: crate::types::MessageOrigin,
+        authority_class: crate::types::AuthorityClass,
+    ) -> MessageEnvelope {
+        let mut message = MessageEnvelope::new(
+            agent_id,
+            crate::types::MessageKind::OperatorPrompt,
+            origin,
+            authority_class,
+            crate::types::Priority::Normal,
+            crate::types::MessageBody::Text { text: id.into() },
+        );
+        message.id = id.into();
+        message.message_seq = message_seq;
+        message.created_at = Utc::now() + chrono::Duration::seconds(offset_secs);
+        message
+    }
+
+    #[test]
+    fn message_latest_trusted_operator_targets_partial_index() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = db.connection()?;
+
+        let index_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type = 'index' AND name = 'idx_messages_agent_trusted_operator'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(index_count, 1, "partial index missing after migration");
+
+        let messages = vec![
+            anchor_candidate_message(
+                "older",
+                "agent-a",
+                Some(10),
+                10,
+                operator_origin(),
+                crate::types::AuthorityClass::OperatorInstruction,
+            ),
+            anchor_candidate_message(
+                "newer",
+                "agent-a",
+                Some(20),
+                20,
+                operator_origin(),
+                crate::types::AuthorityClass::OperatorInstruction,
+            ),
+            anchor_candidate_message(
+                "other-agent",
+                "agent-b",
+                Some(30),
+                30,
+                operator_origin(),
+                crate::types::AuthorityClass::OperatorInstruction,
+            ),
+            // Legacy rows without message_seq must never win the anchor even
+            // when they are newest by created_at.
+            anchor_candidate_message(
+                "legacy-null-seq",
+                "agent-a",
+                None,
+                40,
+                operator_origin(),
+                crate::types::AuthorityClass::OperatorInstruction,
+            ),
+            anchor_candidate_message(
+                "wrong-authority",
+                "agent-a",
+                Some(40),
+                41,
+                operator_origin(),
+                crate::types::AuthorityClass::RuntimeInstruction,
+            ),
+            anchor_candidate_message(
+                "wrong-origin",
+                "agent-a",
+                Some(50),
+                42,
+                crate::types::MessageOrigin::System {
+                    subsystem: "scheduler".into(),
+                },
+                crate::types::AuthorityClass::OperatorInstruction,
+            ),
+        ];
+        db.messages().upsert_many(&messages)?;
+
+        let latest = db
+            .messages()
+            .latest_trusted_operator(Some("agent-a"))?
+            .expect("latest trusted operator expected for agent-a");
+        assert_eq!(latest.id, "newer");
+
+        let mut legacy_trust = serde_json::to_value(anchor_candidate_message(
+            "legacy-trust",
+            "agent-legacy-trust",
+            Some(60),
+            60,
+            operator_origin(),
+            crate::types::AuthorityClass::OperatorInstruction,
+        ))?;
+        let legacy_trust_object = legacy_trust
+            .as_object_mut()
+            .expect("message envelope must serialize as an object");
+        legacy_trust_object.remove("authority_class");
+        legacy_trust_object.insert(
+            "trust".into(),
+            serde_json::Value::String("trusted_operator".into()),
+        );
+        connection.execute(
+            "INSERT INTO messages (
+                evidence_id, agent_id, message_id, message_seq, created_at, kind, payload_json
+             ) VALUES (?1, ?2, ?1, ?3, ?4, ?5, ?6)",
+            params![
+                "legacy-trust",
+                "agent-legacy-trust",
+                60_i64,
+                Utc::now().to_rfc3339(),
+                "operator_prompt",
+                serde_json::to_string(&legacy_trust)?,
+            ],
+        )?;
+        let legacy = db
+            .messages()
+            .latest_trusted_operator(Some("agent-legacy-trust"))?
+            .expect("legacy trust anchor expected");
+        assert_eq!(legacy.id, "legacy-trust");
+
+        let mut legacy_authority = serde_json::to_value(anchor_candidate_message(
+            "legacy-authority",
+            "agent-legacy-authority",
+            Some(70),
+            70,
+            operator_origin(),
+            crate::types::AuthorityClass::OperatorInstruction,
+        ))?;
+        legacy_authority
+            .as_object_mut()
+            .expect("message envelope must serialize as an object")
+            .insert(
+                "authority_class".into(),
+                serde_json::Value::String("trusted_operator".into()),
+            );
+        connection.execute(
+            "INSERT INTO messages (
+                evidence_id, agent_id, message_id, message_seq, created_at, kind, payload_json
+             ) VALUES (?1, ?2, ?1, ?3, ?4, ?5, ?6)",
+            params![
+                "legacy-authority",
+                "agent-legacy-authority",
+                70_i64,
+                Utc::now().to_rfc3339(),
+                "operator_prompt",
+                serde_json::to_string(&legacy_authority)?,
+            ],
+        )?;
+        let legacy = db
+            .messages()
+            .latest_trusted_operator(Some("agent-legacy-authority"))?
+            .expect("legacy authority anchor expected");
+        assert_eq!(legacy.id, "legacy-authority");
+
+        let any_agent = db
+            .messages()
+            .latest_trusted_operator(None)?
+            .expect("latest trusted operator expected across agents");
+        // The unfiltered variant must also honour the expanded compatibility
+        // predicate: legacy-authority carries the highest valid message_seq.
+        assert_eq!(any_agent.id, "legacy-authority");
+
+        // The legacy `trust` field also accepts the canonical value, so both
+        // query variants must select a row that has no `authority_class`.
+        let mut legacy_trust_canonical = serde_json::to_value(anchor_candidate_message(
+            "legacy-trust-canonical",
+            "agent-legacy-trust-canonical",
+            Some(80),
+            80,
+            operator_origin(),
+            crate::types::AuthorityClass::OperatorInstruction,
+        ))?;
+        let legacy_trust_canonical_object = legacy_trust_canonical
+            .as_object_mut()
+            .expect("message envelope must serialize as an object");
+        legacy_trust_canonical_object.remove("authority_class");
+        legacy_trust_canonical_object.insert(
+            "trust".into(),
+            serde_json::Value::String("operator_instruction".into()),
+        );
+        connection.execute(
+            "INSERT INTO messages (
+                evidence_id, agent_id, message_id, message_seq, created_at, kind, payload_json
+             ) VALUES (?1, ?2, ?1, ?3, ?4, ?5, ?6)",
+            params![
+                "legacy-trust-canonical",
+                "agent-legacy-trust-canonical",
+                80_i64,
+                Utc::now().to_rfc3339(),
+                "operator_prompt",
+                serde_json::to_string(&legacy_trust_canonical)?,
+            ],
+        )?;
+        let legacy = db
+            .messages()
+            .latest_trusted_operator(Some("agent-legacy-trust-canonical"))?
+            .expect("canonical legacy trust anchor expected");
+        assert_eq!(legacy.id, "legacy-trust-canonical");
+
+        let any_agent_canonical = db
+            .messages()
+            .latest_trusted_operator(None)?
+            .expect("latest trusted operator expected across agents");
+        assert_eq!(any_agent_canonical.id, "legacy-trust-canonical");
+
+        assert!(db
+            .messages()
+            .latest_trusted_operator(Some("agent-missing"))?
+            .is_none());
+
+        let mut plan_statement = connection.prepare(
+            "EXPLAIN QUERY PLAN \
+             SELECT payload_json FROM messages \
+             WHERE agent_id = ?1 AND message_seq IS NOT NULL \
+               AND ( \
+                 json_extract(payload_json, '$.authority_class') IN ('operator_instruction', 'trusted_operator') \
+                 OR ( \
+                   json_extract(payload_json, '$.authority_class') IS NULL \
+                   AND json_extract(payload_json, '$.trust') IN ('operator_instruction', 'trusted_operator') \
+                 ) \
+               ) \
+               AND json_extract(payload_json, '$.origin.kind') = 'operator' \
+             ORDER BY message_seq DESC, created_at DESC, message_id DESC LIMIT 1",
+        )?;
+        let plan = plan_statement
+            .query_map(params!["agent-a"], |row| row.get::<_, String>(3))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let plan_text = plan.join(" | ");
+        assert!(
+            plan_text.contains("idx_messages_agent_trusted_operator"),
+            "expected partial index lookup, got: {plan_text}"
+        );
+        assert!(
+            !plan_text.contains("SCAN messages"),
+            "query must not scan the messages table, got: {plan_text}"
+        );
+        Ok(())
+    }
+
     fn prepare_pre_execution_protocol_claim(
         db: &RuntimeDb,
         agent_id: &str,

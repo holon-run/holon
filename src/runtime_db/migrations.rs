@@ -3904,6 +3904,23 @@ CREATE INDEX IF NOT EXISTS idx_provider_quota_incidents_retry
   ON provider_quota_incidents(next_retry_at, consecutive_failures);
 "#,
     },
+    Migration {
+        version: 81,
+        name: "messages_trusted_operator_anchor_index",
+        sql: r#"
+CREATE INDEX IF NOT EXISTS idx_messages_agent_trusted_operator
+  ON messages(agent_id, message_seq DESC, created_at DESC, message_id DESC)
+  WHERE message_seq IS NOT NULL
+    AND (
+      json_extract(payload_json, '$.authority_class') IN ('operator_instruction', 'trusted_operator')
+      OR (
+        json_extract(payload_json, '$.authority_class') IS NULL
+        AND json_extract(payload_json, '$.trust') IN ('operator_instruction', 'trusted_operator')
+      )
+    )
+    AND json_extract(payload_json, '$.origin.kind') = 'operator';
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4091,6 +4108,22 @@ pub(crate) fn schema_fingerprint(connection: &Connection) -> Result<String> {
     Ok(content_hash(&rows.join("\n")))
 }
 
+// Legacy databases that predate the messages table must still migrate: the
+// anchor index only applies when message evidence exists, mirroring the
+// guarded messages indexes in turn_replay_source_index.
+fn migrate_messages_trusted_operator_anchor_index(
+    connection: &mut Connection,
+    migration: &Migration,
+) -> Result<()> {
+    let transaction = connection.transaction()?;
+    if table_exists_tx(&transaction, "messages")? {
+        transaction.execute_batch(migration.sql)?;
+    }
+    record_migration(&transaction, migration)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration) -> Result<()> {
     let existing_name: Option<String> = connection
         .query_row(
@@ -4134,6 +4167,9 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
         }
         if migration.name == "drop_retired_scheduler_schema" {
             return migrate_retired_scheduler_schema(connection, migration);
+        }
+        if migration.name == "messages_trusted_operator_anchor_index" {
+            return migrate_messages_trusted_operator_anchor_index(connection, migration);
         }
 
         let transaction = connection.transaction()?;

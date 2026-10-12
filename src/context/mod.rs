@@ -333,11 +333,15 @@ pub fn build_context_with_default_external_ingress(
     let mut messages = Vec::new();
     let recovery_source =
         crate::runtime::provider_recovery::resolve_for_context(storage, current_message)?;
-    let continuation_anchor_messages = if recovery_source.is_some() {
-        Vec::new()
-    } else {
-        storage.read_all_messages()?
-    };
+    // The continuation anchor needs at most one historical message: the latest
+    // trusted operator input. A trusted operator current input is used
+    // directly, so only other paths read history, via a targeted query.
+    let continuation_anchor_operator =
+        if recovery_source.is_some() || is_trusted_operator_input(current_message) {
+            None
+        } else {
+            storage.read_latest_trusted_operator_message()?
+        };
     let mut briefs = storage.read_recent_briefs(config.recent_briefs)?;
     let mut tools = storage.read_recent_tool_executions(config.recent_messages)?;
     let mut turn_records = history_turns_without_current_input(
@@ -656,14 +660,14 @@ pub fn build_context_with_default_external_ingress(
             true,
         ));
     } else if let Some(anchor) = render_continuation_anchor(
-        &continuation_anchor_messages,
+        continuation_anchor_operator.as_ref(),
         current_message,
         continuation,
         current_work_item,
         config.prompt_budget_estimated_tokens,
     ) {
         let compact_anchor = render_continuation_anchor(
-            &continuation_anchor_messages,
+            continuation_anchor_operator.as_ref(),
             current_message,
             continuation,
             current_work_item,
@@ -2223,13 +2227,14 @@ fn render_current_input_section(
 }
 
 fn render_continuation_anchor(
-    messages: &[MessageEnvelope],
+    historical_operator: Option<&MessageEnvelope>,
     current_message: &MessageEnvelope,
     continuation: Option<&ContinuationResolution>,
     current_work_item: Option<&WorkItemRecord>,
     budget: usize,
 ) -> Option<String> {
-    let latest_operator = latest_trusted_operator_input(messages, current_message);
+    let latest_operator =
+        resolve_latest_trusted_operator_input(historical_operator, current_message);
     let relation = current_input_relation(current_message, latest_operator);
     if latest_operator.is_none() && relation.is_none() {
         return None;
@@ -2302,6 +2307,23 @@ fn latest_trusted_operator_input<'a>(
         .iter()
         .filter(|message| is_trusted_operator_input(message) && message.message_seq.is_some())
         .max_by(|left, right| compare_message_recency(left, right))
+}
+
+/// Resolves the continuation anchor operator from the targeted storage lookup.
+///
+/// Semantics match `latest_trusted_operator_input`: the current input wins
+/// when it is trusted operator input, otherwise the latest historical trusted
+/// operator message (loaded via `read_latest_trusted_operator_message`) is
+/// used. `latest_trusted_operator_input` still backs window-scoped lookups
+/// over hydrated recent messages.
+fn resolve_latest_trusted_operator_input<'a>(
+    historical: Option<&'a MessageEnvelope>,
+    current_message: &'a MessageEnvelope,
+) -> Option<&'a MessageEnvelope> {
+    if is_trusted_operator_input(current_message) {
+        return Some(current_message);
+    }
+    historical
 }
 
 fn is_trusted_operator_input(message: &MessageEnvelope) -> bool {
@@ -9937,6 +9959,68 @@ mod tests {
             .expect("sequenced operator message should be selected");
 
         assert_eq!(latest.id, "msg-sequenced");
+    }
+
+    #[test]
+    fn resolve_latest_trusted_operator_input_prefers_current_operator_input() {
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "new request".into(),
+            },
+        );
+        let mut historical = current_message.clone();
+        historical.id = "msg-historical".into();
+        historical.message_seq = Some(7);
+
+        let resolved = resolve_latest_trusted_operator_input(Some(&historical), &current_message);
+        assert_eq!(
+            resolved.map(|message| message.id.clone()),
+            Some(current_message.id)
+        );
+    }
+
+    #[test]
+    fn resolve_latest_trusted_operator_input_falls_back_to_historical_anchor() {
+        let mut historical = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "older request".into(),
+            },
+        );
+        historical.id = "msg-historical".into();
+        historical.message_seq = Some(7);
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::TaskResult,
+            MessageOrigin::System {
+                subsystem: "task".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "task completed".into(),
+            },
+        );
+
+        assert!(resolve_latest_trusted_operator_input(None, &current_message).is_none());
+        let resolved = resolve_latest_trusted_operator_input(Some(&historical), &current_message)
+            .expect("historical anchor expected");
+        assert_eq!(resolved.id, "msg-historical");
     }
 
     fn execution_snapshot_for(session: &AgentState) -> ExecutionSnapshot {

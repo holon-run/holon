@@ -612,6 +612,17 @@ impl AppStorage {
             .all(self.current_agent_id()?.as_deref());
     }
 
+    /// Loads only the latest trusted operator input for the current agent.
+    ///
+    /// Backs the continuation anchor lookup so normal turns do not read and
+    /// decode the whole message history just to find one anchor candidate.
+    pub fn read_latest_trusted_operator_message(&self) -> Result<Option<MessageEnvelope>> {
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db
+            .messages()
+            .latest_trusted_operator(self.current_agent_id()?.as_deref());
+    }
+
     pub fn read_all_message_values(&self) -> Result<Vec<Value>> {
         let runtime_db = self.runtime_db.clone();
         return runtime_db
