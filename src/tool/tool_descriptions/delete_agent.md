@@ -13,7 +13,9 @@ task's output reference and runtime-owned `tool-artifacts/`, `task-output/`,
 and `work-items/` files do not block cleanup. User deliverables (for example
 nonempty `work/`, `notes/`, `media/`, or `apps/`) still block this safe policy.
 The tool and operator CLI share the deletion core and path/worktree safety
-checks; only explicit operator deletion may discard user home data or cancel
-accepted work. Resolve the reported blocker first; do not cancel valid work
+checks, but the CLI's explicit deletion policy may discard user home data or
+cancel accepted work while this tool's safe policy may not. The separate
+`delete_on_terminal` child lifecycle also uses the destructive deletion policy.
+Resolve the reported blocker first; do not cancel valid work
 merely to make cleanup eligible. Public, independent, peer, and recreated
 identities are excluded. No automatic identity TTL applies.

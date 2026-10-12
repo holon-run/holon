@@ -15055,6 +15055,9 @@ mod tests {
             let child =
                 retained_cleanup_fixture(&host, &format!("cleanup-parity-{parent_cleanup}"));
             let home = host.agent_data_dir(&child.agent_id);
+            for name in ["media", "apps"] {
+                fs::create_dir_all(home.join(name)).unwrap();
+            }
             for path in [
                 "tool-artifacts/tool.log",
                 "task-output/task.log",
@@ -15253,7 +15256,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_explicit_operator_deletion_discards_user_home_deliverables() {
+    async fn tool_cleanup_preserves_user_home_deliverables_while_operator_deletion_discards_them() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
         let child = retained_cleanup_fixture(&host, "cleanup-user-data-policy");

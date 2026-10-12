@@ -1449,8 +1449,8 @@ fn deletion_retry_delay(job: &AgentDeletionJob) -> Duration {
 /// directory (not a symlink) that resolves inside the runtime agents root.
 /// Deletion fails closed so a tampered home cannot remove files outside the
 /// runtime data directory.
-/// Runtime-owned state/output is disposable; user deliverables require explicit
-/// operator deletion. Both policies enforce the same path safety boundary.
+/// Runtime-owned state/output is disposable; user deliverables require the
+/// destructive deletion policy. Both policies enforce the same path safety boundary.
 pub(crate) fn ensure_agent_home_deletion_safe(
     data_dir: &Path,
     agents_root: &Path,
@@ -1483,8 +1483,10 @@ pub(crate) fn ensure_agent_home_deletion_safe(
         if runtime_owned {
             continue;
         }
-        let empty_scaffold = matches!(name.to_str(), Some("notes" | "work" | "tmp"))
-            && kind.is_dir()
+        let empty_scaffold = matches!(
+            name.to_str(),
+            Some("notes" | "work" | "tmp" | "media" | "apps")
+        ) && kind.is_dir()
             && std::fs::read_dir(entry.path())?.next().is_none();
         anyhow::ensure!(
             empty_scaffold,
@@ -1623,6 +1625,46 @@ mod tests {
             .unwrap();
             assert_eq!(std::fs::read_to_string(&artifact).unwrap(), "user result");
             std::fs::remove_file(artifact).unwrap();
+        }
+    }
+
+    #[test]
+    fn home_resource_policy_allows_only_empty_user_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("child");
+        for name in ["work", "notes", "tmp", "media", "apps"] {
+            let directory = home.join(name);
+            std::fs::create_dir_all(&directory).unwrap();
+            for policy in [
+                AgentDeletionPolicy::PreserveProtectedResources,
+                AgentDeletionPolicy::DeleteAgentData,
+            ] {
+                ensure_agent_home_deletion_safe(&home, root.path(), policy).unwrap();
+            }
+            let artifact = directory.join("deliverable");
+            std::fs::write(&artifact, "user result").unwrap();
+            assert!(ensure_agent_home_deletion_safe(
+                &home,
+                root.path(),
+                AgentDeletionPolicy::PreserveProtectedResources,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("unregistered_home_artifact"));
+            ensure_agent_home_deletion_safe(
+                &home,
+                root.path(),
+                AgentDeletionPolicy::DeleteAgentData,
+            )
+            .unwrap();
+            assert_eq!(std::fs::read_to_string(&artifact).unwrap(), "user result");
+            std::fs::remove_file(artifact).unwrap();
+            ensure_agent_home_deletion_safe(
+                &home,
+                root.path(),
+                AgentDeletionPolicy::PreserveProtectedResources,
+            )
+            .unwrap();
         }
     }
 

@@ -256,7 +256,9 @@ Tool and operator CLI requests use the same resource classification and deletion
 phases. Authorization selects an explicit policy, not a separate filesystem
 implementation: `parent_cleanup` preserves accepted work and protected resources;
 operator `delete` (and explicit legacy repair) may cancel work and discard user
-home data. Persisted job modes remain compatible.
+home data. The separate `delete_on_terminal` child lifecycle also admits
+`mode=delete` and uses that destructive policy; operator deletion is not its
+exclusive source. Persisted job modes remain compatible.
 
 Both policies reject symlinked homes, paths outside the runtime agents root,
 and dirty/shared/occupied or foreign worktrees. Worktree cleanup requires an
