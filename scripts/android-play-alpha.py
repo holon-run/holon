@@ -71,6 +71,30 @@ def snapshot(session, edit):
     return {track["track"]: track for track in tracks}, testers
 
 
+def track_mismatches(actual, expected):
+    """Compare release semantics; report fixed field names, never API values."""
+    differences = []
+    if {k: v for k, v in actual.items() if k != "releases"} != {
+        k: v for k, v in expected.items() if k != "releases"
+    }:
+        differences.append("track metadata")
+    observed, wanted = actual.get("releases", []), expected.get("releases", [])
+    if len(observed) != len(wanted):
+        return differences + ["release count"]
+    fields = ("name", "versionCodes", "status", "releaseNotes", "inAppUpdatePriority")
+    for release, candidate in zip(observed, wanted):
+        for field in fields:
+            # Publisher defines an omitted inAppUpdatePriority as zero.
+            default = 0 if field == "inAppUpdatePriority" else None
+            if release.get(field, default) != candidate.get(field, default):
+                differences.append(field)
+        if {k: v for k, v in release.items() if k not in fields} != {
+            k: v for k, v in candidate.items() if k not in fields
+        }:
+            differences.append("other release fields")
+    return sorted(set(differences))
+
+
 def discard_edit(session, edit):
     try:
         request(session, "DELETE", f"{API}/{edit}")
@@ -119,8 +143,11 @@ def publish(session, bundle, name, code, status, notes):
         expected = {"track": TRACK, "releases": (releases if status == "draft" else []) + [candidate]}
         request(session, "PUT", f"{API}/{edit}/tracks/{TRACK}", json=expected)
         after, after_testers = snapshot(session, edit)
-        if after[TRACK] != expected or after_testers != testers:
-            raise AlphaError("Alpha edit or tester configuration did not match.")
+        differences = track_mismatches(after.get(TRACK, {}), expected)
+        if differences:
+            raise AlphaError("Alpha track readback mismatch: " + ", ".join(differences) + ".")
+        if after_testers != testers:
+            raise AlphaError("Alpha tester configuration changed; refusing to commit.")
         if {k: v for k, v in before.items() if k != TRACK} != {
             k: v for k, v in after.items() if k != TRACK
         }:
@@ -139,7 +166,15 @@ def publish(session, bundle, name, code, status, notes):
     verification = request(session, "POST", API, json={})["id"]
     try:
         actual, actual_testers = snapshot(session, verification)
-        if actual != after or actual_testers != testers:
+        differences = track_mismatches(actual.get(TRACK, {}), after[TRACK])
+        if differences:
+            raise AlphaError(
+                "Committed Alpha readback mismatch: " + ", ".join(differences)
+                + "; inspect Console before retrying."
+            )
+        if actual_testers != testers or {k: v for k, v in actual.items() if k != TRACK} != {
+            k: v for k, v in after.items() if k != TRACK
+        }:
             raise AlphaError("Committed Alpha readback did not match; inspect Console before retrying.")
     finally:
         discard_edit(session, verification)
