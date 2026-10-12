@@ -49,6 +49,9 @@ class Publisher:
         self.delete_error = None
         self.mutate = None
         self.bad_readback = False
+        self.omit_priority = False
+        self.readback_priority = None
+        self.release_mutation = None
 
     def request(self, method, url, **kwargs):
         self.calls.append((method, url, kwargs))
@@ -57,6 +60,11 @@ class Publisher:
             return Response({"id": str(self.edits)})
         if method == "GET" and url.endswith("/tracks"):
             tracks = deepcopy(self.tracks)
+            if self.omit_priority:
+                for release in tracks[0]["releases"]:
+                    release.pop("inAppUpdatePriority", None)
+            if self.edits == 2 and self.readback_priority is not None:
+                tracks[0]["releases"][-1]["inAppUpdatePriority"] = self.readback_priority
             if self.edits == 2 and self.bad_readback:
                 tracks[0]["releases"] = []
             return Response({"tracks": tracks})
@@ -73,6 +81,8 @@ class Publisher:
             if not url.endswith("/tracks/alpha"):
                 raise AssertionError("Unexpected write outside Alpha")
             self.tracks[0] = deepcopy(kwargs["json"])
+            if self.release_mutation:
+                self.tracks[0]["releases"][-1].update(self.release_mutation)
             if self.mutate == "track":
                 self.tracks[1]["releases"] = [{"status": "draft"}]
             if self.mutate == "testers":
@@ -166,6 +176,62 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(releases[0]["versionCodes"], ["49002"])
         self.assertEqual(releases[1]["status"], "draft")
 
+    def test_omitted_default_priority_is_accepted_before_and_after_commit(self):
+        for status in ("draft", "completed"):
+            with self.subTest(status=status):
+                self.publisher = Publisher()
+                self.publisher.omit_priority = True
+                self.publisher.readback_priority = 0
+                self.assertEqual(self.upload(status), hashlib.sha256(self.bundle.read_bytes()).hexdigest())
+                self.assertEqual(len(self.commits()), 1)
+
+    def test_release_field_mismatches_are_sanitized_and_not_committed(self):
+        for field, value in (
+            ("name", "never-log-release-secret"),
+            ("versionCodes", ["99999"]),
+            ("status", "draft"),
+            ("releaseNotes", [{"language": "en-US", "text": "never-log-release-secret"}]),
+            ("inAppUpdatePriority", 1),
+            ("inAppUpdatePriority", None),
+            ("userFraction", 0.5),
+        ):
+            with self.subTest(field=field):
+                self.publisher = Publisher()
+                self.publisher.release_mutation = {field: value}
+                reason = field if field != "userFraction" else "other release fields"
+                with self.assertRaisesRegex(alpha.AlphaError, reason) as caught:
+                    self.upload()
+                self.assertNotIn("never-log-release-secret", str(caught.exception))
+                self.assertEqual(self.commits(), [])
+                self.assertEqual(self.publisher.calls[-1][:2], ("DELETE", f"{alpha.API}/1"))
+
+    def test_nonzero_committed_priority_is_rejected(self):
+        self.publisher.readback_priority = 1
+        with self.assertRaisesRegex(alpha.AlphaError, "inAppUpdatePriority"):
+            self.upload()
+        self.assertEqual(len(self.commits()), 1)
+
+    def test_priority_comparison_does_not_mutate_snapshots(self):
+        expected = deepcopy(self.publisher.tracks[0])
+        expected["releases"][0]["inAppUpdatePriority"] = 0
+        actual = deepcopy(self.publisher.tracks[0])
+        original = deepcopy(actual)
+        self.assertEqual(alpha.track_mismatches(actual, expected), [])
+        self.assertEqual(actual, original)
+        self.assertEqual(expected["releases"][0]["inAppUpdatePriority"], 0)
+
+    def test_missing_track_or_release_fields_are_not_defaulted(self):
+        expected = deepcopy(self.publisher.tracks[0])
+        for field, reason in (
+            ("track", "track metadata"), ("releases", "release count"),
+            ("versionCodes", "versionCodes"), ("status", "status"),
+        ):
+            with self.subTest(field=field):
+                actual = deepcopy(expected)
+                target = actual if field in ("track", "releases") else actual["releases"][0]
+                del target[field]
+                self.assertIn(reason, alpha.track_mismatches(actual, expected))
+
     def test_invalid_status_or_notes_make_no_api_calls(self):
         for status, notes in (("production", "fix"), ("inProgress", "fix"), ("completed", ""), ("draft", "x" * 501)):
             with self.assertRaises(alpha.AlphaError):
@@ -215,7 +281,8 @@ class PublishTests(unittest.TestCase):
         for mutation in ("track", "testers"):
             self.publisher = Publisher()
             self.publisher.mutate = mutation
-            with self.assertRaises(alpha.AlphaError):
+            reason = "Another Play track" if mutation == "track" else "Alpha tester configuration"
+            with self.assertRaisesRegex(alpha.AlphaError, reason):
                 self.upload()
             self.assertEqual(self.commits(), [])
 
