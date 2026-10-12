@@ -2614,6 +2614,34 @@ impl WaitConditionRepository<'_> {
             .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
     }
 
+    pub fn recheck_owner_agent_ids(&self) -> Result<Vec<String>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT DISTINCT w.agent_id
+             FROM wait_conditions w
+             JOIN agent_identities i
+               ON i.agent_id = w.agent_id
+              AND i.status = 'active'
+             WHERE w.status = 'active'
+               AND w.work_item_id IS NULL
+             ORDER BY w.agent_id ASC",
+        )?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut owners = BTreeMap::new();
+        for agent_id in rows {
+            let has_recheck = self
+                .active_for_agent(&agent_id)?
+                .into_iter()
+                .any(|condition| condition.recheck_at().is_some());
+            if has_recheck {
+                owners.insert(agent_id, ());
+            }
+        }
+        Ok(owners.into_keys().collect())
+    }
+
     pub fn unresolved_all(&self) -> Result<Vec<WaitConditionRecord>> {
         let connection = self.db.connection()?;
         let mut statement = connection.prepare(
