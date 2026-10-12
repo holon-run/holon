@@ -15707,7 +15707,7 @@ mod tests {
             error.to_string().contains("exhausted retry deadline"),
             "unexpected deletion error: {error:#}"
         );
-        let failed = host
+        let mut failed = host
             .runtime_db()
             .agent_deletions()
             .latest_for_agent("delete-locked")
@@ -15729,11 +15729,14 @@ mod tests {
             .is_some());
         assert!(read_started.elapsed() < Duration::from_secs(1));
 
+        // Keep the not-due checks independent of wall-clock progress under load.
+        failed.next_attempt_at = Some(Utc::now() + chrono::Duration::days(1));
+        host.runtime_db().agent_deletions().update(&failed).unwrap();
         for _ in 0..32 {
             host.notify_deletion_coordinator();
             host.execute_deletion_job(failed.clone()).await.unwrap();
         }
-        let still_waiting = host
+        let mut still_waiting = host
             .runtime_db()
             .agent_deletions()
             .latest_for_agent("delete-locked")
@@ -15744,11 +15747,11 @@ mod tests {
 
         blocker.execute_batch("ROLLBACK").unwrap();
         drop(blocker);
-        let wait_for = (still_waiting.next_attempt_at.unwrap() - Utc::now())
-            .to_std()
-            .unwrap_or_default()
-            + Duration::from_millis(100);
-        tokio::time::sleep(wait_for).await;
+        still_waiting.next_attempt_at = Some(Utc::now() - chrono::Duration::days(1));
+        host.runtime_db()
+            .agent_deletions()
+            .update(&still_waiting)
+            .unwrap();
         host.execute_deletion_job(still_waiting).await.unwrap();
         let completed = host
             .runtime_db()
