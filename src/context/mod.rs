@@ -1712,6 +1712,7 @@ fn completion_report_for_work_item(
         return Some(CompletionReportProjection {
             text: summary.clone(),
             brief_id: None,
+            source_brief: None,
         });
     }
     None
@@ -1721,6 +1722,7 @@ fn completion_report_for_work_item(
 struct CompletionReportProjection {
     text: String,
     brief_id: Option<String>,
+    source_brief: Option<BriefRecord>,
 }
 
 fn latest_completion_report_by_work_item(
@@ -1742,6 +1744,7 @@ fn latest_completion_report_by_work_item(
                 .or_insert_with(|| CompletionReportProjection {
                     text: resolved_brief_text(storage, &brief),
                     brief_id: Some(brief.id.clone()),
+                    source_brief: Some(brief),
                 });
         }
     }
@@ -1757,6 +1760,7 @@ fn latest_completion_report_by_work_item(
             .or_insert_with(|| CompletionReportProjection {
                 text: summary.text,
                 brief_id: None,
+                source_brief: None,
             });
     }
     Ok(summaries)
@@ -10140,7 +10144,7 @@ mod tests {
         assert_eq!(latest.id, "msg-sequenced");
     }
 
-    fn execution_snapshot_for(session: &AgentState) -> ExecutionSnapshot {
+    pub(super) fn execution_snapshot_for(session: &AgentState) -> ExecutionSnapshot {
         let workspace_anchor = PathBuf::from("/workspace");
         let execution_root = session
             .worktree_session

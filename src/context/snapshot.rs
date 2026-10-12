@@ -600,6 +600,16 @@ fn descriptors(data: &ContextSnapshotData) -> Vec<ContextSourceDescriptor> {
         .chain(data.continuation_anchor_messages.iter())
         .chain(std::iter::once(&data.current_message))
         .chain(
+            data.pending_task_results
+                .iter()
+                .filter_map(|entry| entry.message.as_ref()),
+        )
+        .chain(
+            data.pending_task_results
+                .iter()
+                .filter_map(|entry| entry.reply.as_ref()),
+        )
+        .chain(
             data.recovery_source
                 .iter()
                 .map(|source| &source.root_message),
@@ -649,7 +659,11 @@ fn descriptors(data: &ContextSnapshotData) -> Vec<ContextSourceDescriptor> {
             .collect();
         out.insert(item.reference.clone(), item);
     }
-    for brief in &data.history.briefs {
+    for brief in data.history.briefs.iter().chain(
+        data.completion_reports
+            .values()
+            .filter_map(|report| report.source_brief.as_ref()),
+    ) {
         let mut item = base(
             format!("brief:{}", brief.id),
             ContextSourceKind::Brief,
@@ -714,7 +728,105 @@ fn descriptors(data: &ContextSnapshotData) -> Vec<ContextSourceDescriptor> {
             item.body_locator = Some(plan.path.display().to_string());
             item.body_digest = Some(plan.hash.clone());
         }
-        out.insert(item.reference.clone(), item);
+        // Current execution's record is inserted first and owns the rendered
+        // current WorkItem, even if the earlier queue observation has the same id.
+        out.entry(item.reference.clone()).or_insert(item);
     }
     out.into_values().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{
+        BriefContentSource, BriefContentSourceRelation, BriefKind, Priority, WorkItemState,
+    };
+
+    #[test]
+    fn descriptors_keep_current_revision_and_completion_sources_outside_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let work = WorkItemRecord::new("default", "current", WorkItemState::Open);
+        let mut completed = WorkItemRecord::new("default", "finished", WorkItemState::Completed);
+        let mut result = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "cold completion",
+            Some("message_completion_source".into()),
+            None,
+        );
+        result.work_item_id = Some(completed.id.clone());
+        result.content_source = BriefContentSource::TranscriptEntry {
+            entry_id: "transcript_completion_source".into(),
+            relation: BriefContentSourceRelation::Finalizes,
+        };
+        completed.result_brief_id = Some(result.id.clone());
+        storage.append_work_item(&completed).unwrap();
+        storage.append_brief(&result).unwrap();
+        storage.append_work_item(&work).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(work.id.clone());
+        storage.write_agent(&agent).unwrap();
+        let execution = super::super::tests::execution_snapshot_for(&agent);
+        let message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "continue".into(),
+            },
+        );
+        let config = ContextConfig {
+            recent_briefs: 0,
+            ..ContextConfig::default()
+        };
+        let mut snapshot = capture_context_from_storage(
+            &storage,
+            &agent,
+            &execution,
+            &SkillsRuntimeView::default(),
+            &message,
+            None,
+            &config,
+            dir.path(),
+            None,
+        )
+        .unwrap();
+        assert!(snapshot.data.history.briefs.is_empty());
+        let full =
+            build_context_from_snapshot(&snapshot, config.prompt_budget_estimated_tokens).unwrap();
+        assert!(full.sections.iter().any(|section| section
+            .content
+            .contains(&format!("Result ref: brief:{}", result.id))));
+        let descriptor = snapshot
+            .descriptors()
+            .iter()
+            .find(|item| item.reference == format!("brief:{}", result.id))
+            .unwrap();
+        assert_eq!(descriptor.content_source, Some(result.content_source));
+        assert_eq!(
+            descriptor.source_refs,
+            vec!["message:message_completion_source"]
+        );
+        assert_eq!(descriptor.work_item_id, Some(completed.id));
+
+        // Reproduce sequential reads returning an older queue and newer current record.
+        let data = Arc::get_mut(&mut snapshot.data).unwrap();
+        assert!(candidate_items(&data.work_queue_projection).any(|item| item.id == work.id));
+        let current = data.current_work_item.as_mut().unwrap();
+        assert_eq!(current.id, work.id);
+        current.revision += 1;
+        let revision = current.revision;
+        let result = descriptors(data);
+        let descriptor = result
+            .iter()
+            .find(|item| item.reference == format!("work_item:{}", work.id))
+            .unwrap();
+        assert_eq!(descriptor.revision, Some(revision));
+    }
 }

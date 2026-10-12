@@ -3028,6 +3028,21 @@ async fn prepared_scoped_prompt_and_budget_retry_survive_storage_removal() {
         .await
         .unwrap();
     runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+            activation_id: Some("activation_scoped_snapshot".into()),
+            admission_provenance: None,
+            source_message_id: "message_scoped_snapshot".into(),
+            turn_id: "turn_scoped_snapshot".into(),
+            owner: Some(crate::types::TurnOwner::WorkItem {
+                work_item_id: work_item.id.clone(),
+            }),
+            work_item_id: Some(work_item.id.clone()),
+            claimed_work_revision: Some(work_item.revision),
+        });
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
     let append_history = |turn_id: &str, index: u64, owner: &str, text: String| {
         let mut message = MessageEnvelope::new(
             "default",
@@ -3074,6 +3089,8 @@ async fn prepared_scoped_prompt_and_budget_retry_survive_storage_removal() {
     let prepared = original
         .prepare_work_item_scoped_history(runtime.storage(), 8)
         .unwrap();
+    let prepared_id = prepared.context_snapshot_id();
+    assert_ne!(prepared_id, original.context_snapshot_id());
     append_history(
         "turn-late-snapshot",
         3,
@@ -3115,12 +3132,14 @@ async fn prepared_scoped_prompt_and_budget_retry_survive_storage_removal() {
             .content
             .clone()
     };
+    assert_eq!(prompt.context_snapshot_id(), prepared_id);
     assert!(history(&prompt).contains("OWNER_SNAPSHOT_INPUT"));
     assert!(!history(&prompt).contains("UNRELATED_RECENT_INPUT"));
     assert!(!history(&prompt).contains("LATE_STORAGE_INPUT"));
     let reduced = prompt
         .reproject_recent_turns(1_000, &[])
         .expect("fixture must contain reducible owner history");
+    assert_eq!(reduced.context_snapshot_id(), prepared_id);
     assert!(history(&reduced).contains("turn-owner-snapshot"));
     assert!(!history(&reduced).contains("UNRELATED_RECENT_INPUT"));
     assert!(!history(&reduced).contains("LATE_STORAGE_INPUT"));
