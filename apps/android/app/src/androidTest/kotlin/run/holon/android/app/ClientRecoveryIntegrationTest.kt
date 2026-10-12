@@ -1,29 +1,45 @@
 package run.holon.android.app
 
 import android.view.inputmethod.InputMethodManager
+import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.Assert.*
 import org.junit.Test
 
 /** Isolated Holon fixture: never sends to a user's Agent or stores a production token. */
 class ClientRecoveryIntegrationTest {
-    @Test fun sessionAndDraftSurviveActivityRecreationAndRelaunch() {
+    @Test fun sessionAndDraftSurviveRecreationOfflineRelaunchAndReconnect() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         val device = UiDevice.getInstance(instrumentation)
+        val offline = AtomicBoolean(false)
+        val currentUserStatus = AtomicInteger(200)
+        val invalidCurrentUser = AtomicBoolean(false)
         MockWebServer().use { server ->
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
+                    if (offline.get()) {
+                        return MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
+                    }
                     val path = request.path.orEmpty().substringBefore('?')
+                    if (path.endsWith("/auth/session/me")) {
+                        if (invalidCurrentUser.get()) return MockResponse().setBody("not-json")
+                        if (currentUserStatus.get() != 200) {
+                            return MockResponse().setResponseCode(currentUserStatus.get()).setBody("{}")
+                        }
+                    }
                     val body = when {
                         request.method == "GET" && path.endsWith("/auth/method") -> """{"mode":"local"}"""
                         path.endsWith("/auth/session/exchange/native") -> """{"ok":true,"credential":"fixture-session","user_id":"test-user","expires_at":null}"""
@@ -132,7 +148,55 @@ class ClientRecoveryIntegrationTest {
                     // A conversation consumes one Back; the root Activity remains alive.
                     scenario.onActivity { assertFalse(it.isFinishing) }
                     assertEquals("durable draft", runBlocking { database.holonDao().draft(session.scopeKey, "holon-tester") })
-                    assertNotNull((store as run.holon.android.sdk.ProfileSessionCredentialStore).read(session.networkId))
+                    val profileStore = store as run.holon.android.sdk.ProfileSessionCredentialStore
+                    val credential = profileStore.read(session.networkId)
+                    assertNotNull(credential)
+
+                    scenario.close()
+                    offline.set(true)
+                    // Exercise the SDK's real IOException -> HolonProtocolException wrapping.
+                    val offlineSession = runBlocking { repository.resume() } as ResumeResult.Offline
+                    assertEquals(session.scopeKey, offlineSession.session.scopeKey)
+                    assertEquals(1, offlineSession.cached.size)
+                    assertEquals("durable draft", runBlocking { repository.cachedConversation("holon-tester") }?.draft)
+                    assertEquals(credential, profileStore.read(session.networkId))
+                    scenario = ActivityScenario.launch(MainActivity::class.java)
+                    assertTrue(device.wait(Until.hasObject(By.textContains(ui("离线缓存"))), 10_000))
+                    assertFalse(device.hasObject(By.text("Connect to Holon")))
+                    device.findObject(By.text("Refactor tester")).click()
+                    assertTrue(device.wait(Until.hasObject(By.text("durable draft")), 10_000))
+                    scenario.recreate()
+                    assertTrue(device.wait(Until.hasObject(By.text("durable draft")), 10_000))
+                    device.pressBack()
+
+                    // Foreground refresh must recover without entering a token again.
+                    offline.set(false)
+                    scenario.moveToState(Lifecycle.State.CREATED)
+                    scenario.moveToState(Lifecycle.State.RESUMED)
+                    assertTrue(device.wait(Until.hasObject(By.textContains(ui("已同步"))), 10_000))
+                    val reconnected = runBlocking { repository.resume() } as ResumeResult.Ready
+                    assertEquals(session.scopeKey, reconnected.session.scopeKey)
+                    assertEquals(credential, profileStore.read(session.networkId))
+                    assertEquals("durable draft", runBlocking { repository.cachedConversation("holon-tester") }?.draft)
+                    scenario.close()
+
+                    // A server outage is recoverable; malformed responses and expired auth are not.
+                    currentUserStatus.set(503)
+                    assertTrue(runBlocking { repository.resume() } is ResumeResult.Offline)
+                    assertEquals(credential, profileStore.read(session.networkId))
+                    currentUserStatus.set(200)
+                    invalidCurrentUser.set(true)
+                    assertTrue(runBlocking { repository.resume() } is ResumeResult.Incompatible)
+                    assertEquals(credential, profileStore.read(session.networkId))
+                    invalidCurrentUser.set(false)
+                    currentUserStatus.set(403)
+                    val forbidden = runBlocking { runCatching { repository.resume() }.exceptionOrNull() }
+                    assertTrue(forbidden is run.holon.android.sdk.HolonHttpException)
+                    assertEquals(403, (forbidden as run.holon.android.sdk.HolonHttpException).statusCode)
+                    assertEquals(credential, profileStore.read(session.networkId))
+                    currentUserStatus.set(401)
+                    assertEquals(ResumeResult.NoSession, runBlocking { repository.resume() })
+                    assertNull(profileStore.read(session.networkId))
                 } finally { scenario.close() }
             } finally {
                 runBlocking { repository.logout() }

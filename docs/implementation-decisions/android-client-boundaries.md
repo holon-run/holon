@@ -17,6 +17,13 @@ invalidate the replacement. Native browser login binds the callback ticket to
 the app's S256 proof; manual local-token login and explicitly confirmed HTTP
 remain supported.
 
+Saved sessions may resume from scoped Room caches when the SDK wraps a transport
+failure in a protocol exception, or the host returns a transient HTTP error.
+Malformed responses and compatibility failures must not become offline success;
+explicit session-expiration responses still clear authentication. Reconnection
+uses the existing foreground refresh and outbox contract, not a new background
+sync or implicit submission of drafts.
+
 ForegroundSyncCoordinator owns one closable roster-hint connection; the selected
 conversation owns one additional stream. Operator previews use bounded
 concurrency, not one permanent stream per Agent. No background service, periodic

@@ -373,6 +373,13 @@ class HolonViewModelTest {
     fun `transport and transient server failures stay recoverable`() {
         assertTrue(HolonProtocolException("request failed", ConnectException()).isTransientNetworkFailure())
         assertTrue(HolonProtocolException("request failed", UnknownHostException()).isTransientNetworkFailure())
+        assertFalse(HolonProtocolException("unsupported protocol").isTransientNetworkFailure())
+        assertFalse(
+            HolonProtocolException(
+                "invalid response",
+                kotlinx.serialization.SerializationException("not JSON"),
+            ).isTransientNetworkFailure(),
+        )
         assertTrue(
             HolonHttpException(
                 statusCode = 503,

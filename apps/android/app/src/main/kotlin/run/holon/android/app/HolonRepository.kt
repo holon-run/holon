@@ -318,7 +318,11 @@ internal class HolonRepository(
                 throw error
             }
         } catch (error: HolonProtocolException) {
-            ResumeResult.Incompatible(saved.baseUrl, humanError(error))
+            if (error.isTransientNetworkFailure()) {
+                offlineResult(saved, candidate)
+            } else {
+                ResumeResult.Incompatible(saved.baseUrl, humanError(error))
+            }
         } catch (error: IOException) {
             offlineResult(saved, candidate)
         }
