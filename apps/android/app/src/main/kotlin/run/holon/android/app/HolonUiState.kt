@@ -66,6 +66,8 @@ internal data class ConnectionUiState(
     val showToken: Boolean = false,
     val allowInsecureHttp: Boolean = false,
     val pendingPairing: ScannedPairing? = null,
+    val authenticationMethod: run.holon.android.sdk.HolonAuthenticationMethod? = null,
+    val browserLoginUrl: String? = null,
 )
 
 internal data class AgentsUiState(
@@ -183,6 +185,8 @@ internal data class HolonUiState(
         showToken: Boolean = false,
         allowInsecureHttp: Boolean = false,
         pendingPairing: ScannedPairing? = null,
+        authenticationMethod: run.holon.android.sdk.HolonAuthenticationMethod? = null,
+        browserLoginUrl: String? = null,
         mainDestination: MainDestination = MainDestination.Agents,
         busy: Boolean = false,
         enqueueing: Boolean = false,
@@ -253,7 +257,7 @@ internal data class HolonUiState(
         statusMessage: String? = null,
         search: String = "",
     ) : this(
-        connectionState = ConnectionUiState(phase = phase, baseUrl = baseUrl, token = token, showToken = showToken, allowInsecureHttp = allowInsecureHttp, pendingPairing = pendingPairing),
+        connectionState = ConnectionUiState(phase = phase, baseUrl = baseUrl, token = token, showToken = showToken, allowInsecureHttp = allowInsecureHttp, pendingPairing = pendingPairing, authenticationMethod = authenticationMethod, browserLoginUrl = browserLoginUrl),
         agentsState = AgentsUiState(agents = agents, operatorPreviews = operatorPreviews, briefReadStates = briefReadStates, briefReadStatesLoaded = briefReadStatesLoaded, readBriefIds = readBriefIds, readBriefsLoaded = readBriefsLoaded, search = search),
         conversationState = ConversationUiState(enqueueing = enqueueing, stagingAttachment = stagingAttachment, abortingRun = abortingRun, modelCatalog = modelCatalog, modelBusy = modelBusy, modelError = modelError, conversation = conversation, syncState = conversationSyncState, lastSyncedAt = conversationLastSyncedAt, olderTurns = olderTurns, historyBeforeCursor = historyBeforeCursor, hasOlderTurns = hasOlderTurns, historyBusy = historyBusy, outbox = outbox, draft = draft, attachments = attachments, briefs = briefs, briefLoads = briefLoads, selectedBrief = selectedBrief, briefOriginWork = briefOriginWork, workOriginBrief = workOriginBrief, selectedTurn = selectedTurn, fullScreenTurn = fullScreenTurn, conversationDetail = conversationDetail, olderActivitiesBusy = olderActivitiesBusy, olderActivitiesLoaded = olderActivitiesLoaded, selectedActivity = selectedActivity, selectedToolExecution = selectedToolExecution, detailBusy = detailBusy),
         workState = WorkUiState(workItems = workItems, workItemsLimit = workItemsLimit, workItemsHasMore = workItemsHasMore, workItemsLoadingMore = workItemsLoadingMore, selectedWorkItem = selectedWorkItem, tasks = tasks, tasksBusy = tasksBusy, tasksError = tasksError, selectedTask = selectedTask, taskOutput = taskOutput, workItemsBusy = workItemsBusy),
@@ -269,6 +273,8 @@ internal data class HolonUiState(
     val showToken: Boolean get() = connectionState.showToken
     val allowInsecureHttp: Boolean get() = connectionState.allowInsecureHttp
     val pendingPairing: ScannedPairing? get() = connectionState.pendingPairing
+    val authenticationMethod: run.holon.android.sdk.HolonAuthenticationMethod? get() = connectionState.authenticationMethod
+    val browserLoginUrl: String? get() = connectionState.browserLoginUrl
     val mainDestination: MainDestination get() = shellState.mainDestination
     val busy: Boolean get() = shellState.busy
     val enqueueing: Boolean get() = conversationState.enqueueing
@@ -357,6 +363,8 @@ internal data class HolonUiState(
         showToken: Boolean = this.showToken,
         allowInsecureHttp: Boolean = this.allowInsecureHttp,
         pendingPairing: ScannedPairing? = this.pendingPairing,
+        authenticationMethod: run.holon.android.sdk.HolonAuthenticationMethod? = this.authenticationMethod,
+        browserLoginUrl: String? = this.browserLoginUrl,
         mainDestination: MainDestination = this.mainDestination,
         busy: Boolean = this.busy,
         enqueueing: Boolean = this.enqueueing,
@@ -432,7 +440,7 @@ internal data class HolonUiState(
         statusMessage: String? = this.statusMessage,
         search: String = this.search,
     ): HolonUiState = HolonUiState(
-        connectionState = ConnectionUiState(phase = phase, baseUrl = baseUrl, token = token, showToken = showToken, allowInsecureHttp = allowInsecureHttp, pendingPairing = pendingPairing),
+        connectionState = ConnectionUiState(phase = phase, baseUrl = baseUrl, token = token, showToken = showToken, allowInsecureHttp = allowInsecureHttp, pendingPairing = pendingPairing, authenticationMethod = authenticationMethod, browserLoginUrl = browserLoginUrl),
         agentsState = AgentsUiState(agents = agents, operatorPreviews = operatorPreviews, briefReadStates = briefReadStates, briefReadStatesLoaded = briefReadStatesLoaded, readBriefIds = readBriefIds, readBriefsLoaded = readBriefsLoaded, search = search),
         conversationState = ConversationUiState(enqueueing = enqueueing, stagingAttachment = stagingAttachment, abortingRun = abortingRun, modelCatalog = modelCatalog, modelBusy = modelBusy, modelError = modelError, conversation = conversation, syncState = conversationSyncState, lastSyncedAt = conversationLastSyncedAt, olderTurns = olderTurns, historyBeforeCursor = historyBeforeCursor, hasOlderTurns = hasOlderTurns, historyBusy = historyBusy, outbox = outbox, draft = draft, attachments = attachments, briefs = briefs, briefLoads = briefLoads, selectedBrief = selectedBrief, briefOriginWork = briefOriginWork, workOriginBrief = workOriginBrief, selectedTurn = selectedTurn, fullScreenTurn = fullScreenTurn, conversationDetail = conversationDetail, olderActivitiesBusy = olderActivitiesBusy, olderActivitiesLoaded = olderActivitiesLoaded, selectedActivity = selectedActivity, selectedToolExecution = selectedToolExecution, detailBusy = detailBusy, reportTarget = reportTarget, reportCategory = reportCategory, reportDescription = reportDescription, reportSubmitting = reportSubmitting, reportError = reportError),
         workState = WorkUiState(workItems = workItems, workItemsLimit = workItemsLimit, workItemsHasMore = workItemsHasMore, workItemsLoadingMore = workItemsLoadingMore, selectedWorkItem = selectedWorkItem, tasks = tasks, tasksBusy = tasksBusy, tasksError = tasksError, selectedTask = selectedTask, taskOutput = taskOutput, workItemsBusy = workItemsBusy),
@@ -472,6 +480,8 @@ internal fun HolonUiState.forAddingNetwork(): HolonUiState =
         token = "",
         showToken = false,
         allowInsecureHttp = false,
+        authenticationMethod = null,
+        browserLoginUrl = null,
         error = null,
         statusMessage = null,
     )
@@ -482,6 +492,8 @@ internal fun HolonUiState.afterCancelAddingNetwork(): HolonUiState =
         baseUrl = session?.baseUrl.orEmpty(),
         token = "",
         showToken = false,
+        authenticationMethod = null,
+        browserLoginUrl = null,
         allowInsecureHttp = networkProfiles.firstOrNull { it.networkId == session?.networkId }?.allowInsecureHttp ?: false,
         error = null,
         statusMessage = null,

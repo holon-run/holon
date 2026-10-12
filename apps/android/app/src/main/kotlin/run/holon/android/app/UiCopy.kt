@@ -504,6 +504,16 @@ internal object UiCopy {
         请求标识冲突，请重新发送|Request ID conflict. Send again.
         请输入 Holon 地址|Enter the Holon address
         请输入 token|Enter the token
+        下一步|Next
+        服务器拒绝了登录方式查询，请检查服务器配置|The server refused sign-in method discovery. Check the server configuration.
+        服务器登录方式不受支持，请检查 Holon 版本和服务器配置|The server's sign-in method is unsupported. Check the Holon version and server configuration.
+        更改地址|Change address
+        正在检查|Checking
+        正在检查服务器登录方式…|Checking the server's sign-in method…
+        输入你自己的 Holon 主机地址，或扫描主机提供的连接二维码。|Enter your own Holon host address, or scan its connection QR code.
+        此服务器使用组织登录，请在浏览器中完成认证后返回 Holon。|This server uses organization sign-in. Complete authentication in your browser, then return to Holon.
+        无法打开浏览器，请确认已安装浏览器后重试|Unable to open a browser. Install a browser and try again.
+        HTTPS 默认安全；HTTP 需要确认。登录方式由你的 Holon 主机决定。|HTTPS is secure by default; HTTP requires confirmation. Your Holon host determines the sign-in method.
         输入无效|Invalid input
         输入框已有内容，请先发送或清空，再编辑失败消息|The composer is not empty. Send or clear it before editing a failed message.
         连接中断，正在重连；当前显示上次同步的内容|Connection lost; reconnecting. Showing last synced content.

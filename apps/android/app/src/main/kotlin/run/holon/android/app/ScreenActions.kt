@@ -16,6 +16,10 @@ internal interface ConnectionActions {
     fun cancelPairing(): Unit
     fun clearError(): Unit
     fun confirmPairing(): Unit
+    fun continueLogin(): Unit
+    fun returnToConnectionAddress(): Unit
+    fun browserLoginHandled(): Unit
+    fun reportBrowserLoginFailure(): Unit
     fun login(): Unit
     fun reportScanFailure(): Unit
     fun setAllowInsecureHttp(value: Boolean): Unit
@@ -118,6 +122,10 @@ internal class AndroidScreenActions(private val delegate: HolonViewModel) {
         override fun cancelPairing(): Unit { delegate.cancelPairing() }
         override fun clearError(): Unit { delegate.clearError() }
         override fun confirmPairing(): Unit { delegate.confirmPairing() }
+        override fun continueLogin(): Unit { delegate.continueLogin() }
+        override fun returnToConnectionAddress(): Unit { delegate.returnToConnectionAddress() }
+        override fun browserLoginHandled(): Unit { delegate.browserLoginHandled() }
+        override fun reportBrowserLoginFailure(): Unit { delegate.reportBrowserLoginFailure() }
         override fun login(): Unit { delegate.login() }
         override fun reportScanFailure(): Unit { delegate.reportScanFailure() }
         override fun setAllowInsecureHttp(value: Boolean): Unit { delegate.setAllowInsecureHttp(value) }

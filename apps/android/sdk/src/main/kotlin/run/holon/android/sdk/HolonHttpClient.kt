@@ -111,6 +111,23 @@ public class HolonHttpClient internal constructor(
     private val sseHttpClient: OkHttpClient =
         sseHttpClient(httpClient)
 
+    /** Discovers the server's login method without sending any existing credentials. */
+    public fun authenticationMethod(): HolonAuthenticationMethod {
+        val response =
+            get(
+                path = "auth/method",
+                serializer = JsonElement.serializer(),
+                unauthenticated = true,
+            ) as? JsonObject
+                ?: throw HolonProtocolException("Holon authentication method response is not an object")
+        val mode = (response["mode"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+        return when (mode) {
+            "local" -> HolonAuthenticationMethod.LocalToken
+            "oidc" -> HolonAuthenticationMethod.Oidc
+            else -> throw HolonProtocolException("Holon authentication method response has an invalid mode")
+        }
+    }
+
     public fun handshake(
         requiredCapabilities: Set<String> = emptySet(),
     ): CompatibilityResult =
@@ -1222,11 +1239,18 @@ public class HolonHttpClient internal constructor(
         path: String,
         query: Map<String, String> = emptyMap(),
         serializer: KSerializer<T>,
+        unauthenticated: Boolean = false,
     ): T {
         try {
             val response =
                 httpClient
-                    .newCall(authorizedRequest(path, query = query).get().build())
+                    .newCall(
+                        (if (unauthenticated) {
+                            Request.Builder().url(endpoint(path, query))
+                        } else {
+                            authorizedRequest(path, query = query)
+                        }).get().build(),
+                    )
                     .execute()
             response.use {
                 val body = it.body?.string().orEmpty()

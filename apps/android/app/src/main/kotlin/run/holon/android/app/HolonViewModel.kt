@@ -80,6 +80,8 @@ internal class HolonViewModel(
     private val oidcPreferences =
         application.getSharedPreferences("holon_oidc_login", Context.MODE_PRIVATE)
     private val nativeProofStore = createSessionStore(application)
+    private var authenticationProbeJob: Job? = null
+    private var authenticationProbeGeneration = 0L
     private var conversationJob: Job? = null
     private var conversationSync: ConversationSyncCoordinator<ConversationBundle>? = null
     private var conversationSyncGeneration = 0L
@@ -259,10 +261,21 @@ internal class HolonViewModel(
         }
     }
 
-    fun setBaseUrl(value: String) =
-        mutableState.update {
-            it.copy(baseUrl = value, allowInsecureHttp = false, pendingPairing = null, error = null)
+    fun setBaseUrl(value: String) = resetConnectionAddress(value, allowHttp = false)
+
+    private fun resetConnectionAddress(address: String, allowHttp: Boolean) {
+        if (state.value.busy && authenticationProbeJob?.isActive != true) return
+        authenticationProbeGeneration += 1
+        authenticationProbeJob?.cancel()
+        authenticationProbeJob = null
+        if (oidcPreferences.contains("state")) {
+            oidcPreferences.edit { clear() }
+            runCatching { nativeProofStore.clear("oidc-login-proof") }
         }
+        mutableState.update {
+            it.forConnectionAddress(address = address, allowHttp = allowHttp).copy(busy = false)
+        }
+    }
 
     fun applyScannedAddress(value: String) {
         if (state.value.busy) return
@@ -301,7 +314,7 @@ internal class HolonViewModel(
     fun setToken(value: String) = mutableState.update { it.copy(token = value, error = null) }
     fun toggleToken() = mutableState.update { it.copy(showToken = !it.showToken) }
     fun setAllowInsecureHttp(value: Boolean) =
-        mutableState.update { it.copy(allowInsecureHttp = value, error = null) }
+        resetConnectionAddress(state.value.baseUrl, allowHttp = value)
     fun setSearch(value: String) = mutableState.update { it.copy(search = value) }
 
     fun beginAddNetwork() {
@@ -539,13 +552,62 @@ internal class HolonViewModel(
         }
     }
 
+    fun returnToConnectionAddress() {
+        if (state.value.busy) return
+        resetConnectionAddress(state.value.baseUrl, state.value.allowInsecureHttp)
+    }
+
+    fun browserLoginHandled() = mutableState.update { it.copy(browserLoginUrl = null) }
+
+    fun reportBrowserLoginFailure() =
+        mutableState.update { it.copy(error = "无法打开浏览器，请确认已安装浏览器后重试") }
+
+    fun continueLogin() {
+        val before = state.value
+        if (before.busy || before.phase !in setOf(AppPhase.SignedOut, AppPhase.AddingNetwork)) return
+        if (before.authenticationMethod != null) return
+        val baseUrl = runCatching { normalizeAddress(before.baseUrl, before.allowInsecureHttp) }
+            .getOrElse { error ->
+                mutableState.update { it.copy(error = humanError(error)) }
+                return
+            }
+        val generation = ++authenticationProbeGeneration
+        mutableState.update { it.copy(busy = true, error = null, statusMessage = "正在检查服务器登录方式…") }
+        authenticationProbeJob = viewModelScope.launch {
+            try {
+                val method = withContext(Dispatchers.IO) {
+                    repository.authenticationMethod(baseUrl, before.allowInsecureHttp)
+                }
+                if (generation != authenticationProbeGeneration ||
+                    state.value.phase != before.phase || state.value.baseUrl != before.baseUrl ||
+                    state.value.allowInsecureHttp != before.allowInsecureHttp) return@launch
+                mutableState.update {
+                    it.copy(busy = false, baseUrl = baseUrl, authenticationMethod = method, statusMessage = null)
+                }
+                if (method == run.holon.android.sdk.HolonAuthenticationMethod.Oidc) {
+                    val url = startOidcLogin()
+                    mutableState.update { it.copy(browserLoginUrl = url) }
+                }
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (generation != authenticationProbeGeneration) return@launch
+                mutableState.update {
+                    it.copy(busy = false, error = authenticationMethodHumanError(error), statusMessage = null)
+                }
+            }
+        }
+    }
+
     fun login() {
+        if (state.value.authenticationMethod != run.holon.android.sdk.HolonAuthenticationMethod.LocalToken) return
         login(null)
     }
 
     fun startOidcLogin(): String? {
         val before = state.value
         if (before.busy || before.phase !in setOf(AppPhase.SignedOut, AppPhase.AddingNetwork)) return null
+        if (before.authenticationMethod != run.holon.android.sdk.HolonAuthenticationMethod.Oidc) return null
         val baseUrl =
             runCatching { normalizeAddress(before.baseUrl, before.allowInsecureHttp) }
                 .getOrElse { error ->

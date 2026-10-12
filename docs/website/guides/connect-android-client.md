@@ -60,10 +60,10 @@ The app exchanges the single-use ticket at `/api/auth/pairing/redeem/native` for
 
 ### Option B: Manual Configuration
 
-1. Open the Holon app.
-2. Enter the **API Base URL** (e.g. `http://10.0.2.2:7878/api` or `https://<your-host>/api`).
-3. Enter your bearer token or bootstrap secret.
-4. Tap **Connect**.
+1. Open the Holon app. The server address starts empty; there is no default hosted server.
+2. Enter your **Holon address** (e.g. `http://10.0.2.2:7878` or `https://<your-host>`), and confirm trusted-network use for HTTP.
+3. Tap **Next**. The app checks the server's authentication method.
+4. For a local-token server, enter your bearer token or bootstrap secret and tap **Sign in**.
 
 The app calls `/api/auth/session/exchange/native`, stores the resulting session credential in Android Keystore, and clears the input token from memory.
 
@@ -71,9 +71,9 @@ The app calls `/api/auth/session/exchange/native`, stores the resulting session 
 
 If your daemon runs with OIDC authentication enabled:
 
-1. Open the Holon app and enter the **API Base URL**.
-2. Tap **Sign in with SSO**.
-3. The app opens your system browser to complete identity provider sign-in.
+1. Open the Holon app and enter your **Holon address**.
+2. Tap **Next**. The app detects that the server uses OIDC.
+3. The app opens your system browser to complete identity provider sign-in. If you return without signing in, **Use organization browser sign-in** lets you retry.
 4. The browser redirects back to Holon via `run.holon.android://oidc/callback`.
 
 The app exchanges the one-time bootstrap ticket for a revocable session credential, encrypts it in Android Keystore for the current profile, and connects immediately.

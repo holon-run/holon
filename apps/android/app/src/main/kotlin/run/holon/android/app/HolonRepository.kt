@@ -146,6 +146,14 @@ internal class HolonRepository(
     private val files = FilesRepository(context, sessions)
     private val work = WorkRepository(sessions)
 
+    fun authenticationMethod(address: String, allowInsecureHttp: Boolean): run.holon.android.sdk.HolonAuthenticationMethod {
+        val baseUrl = normalizeAddress(address, allowInsecureHttp)
+        return HolonHttpClient(
+            baseUrl = baseUrl,
+            insecureHttpHosts = insecureHttpHosts(baseUrl),
+        ).authenticationMethod()
+    }
+
     suspend fun login(
         address: String,
         token: CharArray,
