@@ -115,5 +115,5 @@
 "Holon runtime restarted." = "Holon 运行时已重启。";
 "Could not check or update Tailscale. See details." = "无法检查或更新 Tailscale，请查看详情。";
 "Tailscale error details" = "Tailscale 错误详情";
-"Not installed (optional)" = "未安装（可选）";
+"CLI not found (optional)" = "未找到 CLI（可选）";
 "Status unknown" = "状态未知";

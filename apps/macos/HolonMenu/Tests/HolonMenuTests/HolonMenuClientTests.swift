@@ -311,7 +311,7 @@ final class HolonMenuClientTests: XCTestCase {
             XCTAssertEqual(status.details, "Probe diagnostic")
             XCTAssertEqual(status.canEnableServe, state == .connected)
             if state == .unavailable {
-                XCTAssertEqual(status.title, L10n.text("Not installed (optional)"))
+                XCTAssertEqual(status.title, L10n.text("CLI not found (optional)"))
             }
         }
         ServeURLProtocol.lock.withLock {

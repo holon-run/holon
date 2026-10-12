@@ -97,13 +97,13 @@ final class HolonMenuViewModelTests: XCTestCase {
     func testTailscaleUnavailableDoesNotReportProbeError() async {
         let client = FakeHolonClient(tailscaleStatus: HolonTailscaleStatus(
             state: .unavailable, hostname: nil, serveURL: nil,
-            message: "Not installed (optional)"
+            message: "Tailscale CLI not found (optional); install it or configure its path"
         ))
         let viewModel = HolonMenuViewModel(client: client)
         await viewModel.refresh()
 
         XCTAssertNil(viewModel.tailscaleError)
-        XCTAssertEqual(viewModel.tailscaleStatus?.title, L10n.text("Not installed (optional)"))
+        XCTAssertEqual(viewModel.tailscaleStatus?.title, L10n.text("CLI not found (optional)"))
     }
 
     func testTailscaleServeRequiresConnectedKnownNonconflictingState() async {

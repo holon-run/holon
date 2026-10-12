@@ -105,7 +105,7 @@ struct HolonTailscaleStatus: Equatable, Sendable {
     var title: String {
         switch state {
         case .unavailable:
-            return L10n.text("Not installed (optional)")
+            return L10n.text("CLI not found (optional)")
         case .stopped:
             return L10n.text("Not running")
         case .loggedOut:
