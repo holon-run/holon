@@ -327,8 +327,10 @@ class UIFixtureSetupContracts(unittest.TestCase):
                 return {}
             if path.endswith("/conversation") or path.endswith("/conversation?limit=60"):
                 return {"turns": list(reversed(turns))}
-            if path.endswith("/briefs/initial-brief"):
-                return {"id": "initial-brief", "text": "# Real result\n\nActual fixture body cache oracle."}
+            if "/briefs/" in path:
+                self.assertTrue(any(path.endswith("/briefs/" + brief)
+                                    for turn in turns for brief in turn["brief_ids"]))
+                return {"text": "# Real result\n\nActual fixture body cache oracle."}
             self.fail("Unexpected fixture call: " + path)
 
         def run(command, env):
@@ -339,8 +341,8 @@ class UIFixtureSetupContracts(unittest.TestCase):
             if method == methods[0]:
                 self.assertEqual(seeded, [], "Do not evict the earlier onboarding smoke's original latest window")
             else:
-                self.assertEqual(seeded, [f"IOS_HISTORY_{number:03}" for number in range(25)])
-                self.assertEqual(env["TEST_RUNNER_HOLON_UI_HISTORY_OLDER_TOP"], "initial-turn")
+                self.assertEqual(seeded, [f"IOS_OFFLINE_HISTORY_{number:03}" for number in range(35)])
+                self.assertEqual(env["TEST_RUNNER_HOLON_UI_HISTORY_OLDER_TOP"], "turn-1")
                 self.assertEqual(env["TEST_RUNNER_HOLON_UI_OFFLINE_BODY_MARKER"], "Actual fixture body cache oracle.")
             return Mock(returncode=0)
 
@@ -357,6 +359,58 @@ class UIFixtureSetupContracts(unittest.TestCase):
         self.assertEqual(runs, methods)
         self.assertEqual(len(tickets), 3, "Each independently selectable authenticated case gets a fresh ticket")
         self.assertFalse(seed_active.is_set())
+
+    def test_offline_history_oracle_survives_preceding_brief_less_turns(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        seed = next(node for node in ast.walk(tree)
+                    if isinstance(node, ast.If)
+                    and any(isinstance(value, ast.Constant)
+                            and value.value == "testOfflineReadingCacheColdLaunchAndRetry"
+                            for value in ast.walk(node.test))
+                    and any(isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+                            and value.func.id == "seed_fixture_history"
+                            for statement in node.body for value in ast.walk(statement)))
+        oracle = next(node for node in ast.walk(tree)
+                      if isinstance(node, ast.If)
+                      and any(isinstance(value, ast.Constant)
+                              and value.value == "testConversationHistoryWindowPosition"
+                              for value in ast.walk(node.test)))
+        code = compile(ast.Module(body=[seed, oracle], type_ignores=[]), str(source), "exec")
+        for history_acceptance in (False, True):
+            with self.subTest(history_acceptance=history_acceptance):
+                # Prior cases can leave cancelled/control turns with no brief.
+                turns = [{"turn_id": f"turn-{index}", "key": {"turn_index": index},
+                          "brief_ids": [], "inputs": []} for index in range(70)]
+                seeded = []
+                active = threading.Event()
+
+                def local(method, path, payload=None):
+                    if method == "POST" and path.endswith("/enqueue"):
+                        self.assertTrue(active.is_set())
+                        seeded.append(payload["text"])
+                        index = len(turns)
+                        turns.append({"turn_id": f"turn-{index}", "key": {"turn_index": index},
+                                      "brief_ids": [f"brief-{index}"], "inputs": [payload]})
+                        return {}
+                    if path.endswith("/conversation") or path.endswith("/conversation?limit=60"):
+                        limit = 60 if path.endswith("?limit=60") else 30
+                        return {"turns": list(reversed(turns[-limit:]))}
+                    if "/briefs/" in path:
+                        return {"text": "# Real result\n\nActual fixture body cache oracle."}
+                    self.fail("Unexpected fixture call: " + path)
+
+                environment = {}
+                namespace = dict(fixture_helpers(), local=local, agent="holon-tester",
+                                 history_seed_active=active, history_acceptance=history_acceptance,
+                                 method="testOfflineReadingCacheColdLaunchAndRetry", test_env=environment)
+                exec(code, namespace)
+                self.assertEqual(seeded, [f"IOS_OFFLINE_HISTORY_{number:03}" for number in range(35)])
+                self.assertEqual(environment["TEST_RUNNER_HOLON_UI_HISTORY_OLDER_TOP"], "turn-70")
+                self.assertEqual(environment["TEST_RUNNER_HOLON_UI_HISTORY_NEWER_TOP"], "turn-85")
+                self.assertEqual(environment["TEST_RUNNER_HOLON_UI_OFFLINE_BODY_MARKER"],
+                                 "Actual fixture body cache oracle.")
+                self.assertFalse(active.is_set())
 
     def test_offline_control_is_exported_only_to_runner_with_proxy_endpoint(self):
         source = ROOT / "scripts/ios_ui_fixture.py"

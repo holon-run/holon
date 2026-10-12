@@ -115,12 +115,12 @@ def record_fixture_prompt(evidence, number, case, path, body, data, status, deli
     return record
 
 
-def seed_fixture_history(local, agent, history_seed_active):
+def seed_fixture_history(local, agent, history_seed_active, count=25, marker_prefix="IOS_HISTORY"):
     # Keep short seed replies scoped to preparation, never to later UI prompts.
     history_seed_active.set()
     try:
-        for number in range(25):
-            marker = f"IOS_HISTORY_{number:03}"
+        for number in range(count):
+            marker = f"{marker_prefix}_{number:03}"
             local("POST", f"/agents/{agent}/enqueue", {"text": marker})
             for attempt in range(200):
                 history = local("GET", f"/agents/{agent}/conversation")
@@ -812,10 +812,13 @@ with fixture_directory(repo) as root:
                     install(simulator, repo, root)
                 for (method, content_size), case_bundle in zip(cases, bundles):
                     fixture_case = method
-                    if method == "testOfflineReadingCacheColdLaunchAndRetry" and not history_acceptance:
+                    if method == "testOfflineReadingCacheColdLaunchAndRetry":
                         # Do not push the onboarding smoke's original brief out of
                         # its latest window before that earlier case has read it.
-                        seed_fixture_history(local, agent, history_seed_active)
+                        # The older 20-turn window starts 35 turns from the end.
+                        # Use fresh markers even if history was seeded at startup.
+                        seed_fixture_history(local, agent, history_seed_active,
+                                             count=35, marker_prefix="IOS_OFFLINE_HISTORY")
                     loss_case = lost_response_acceptance and method in {
                         "testLostResponseAndProcessRecovery", "testDirectAgentShareWorkflow"}
                     if loss_case:
