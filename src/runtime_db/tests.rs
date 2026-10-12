@@ -619,11 +619,82 @@ mod tests {
             .expect("latest trusted operator expected for agent-a");
         assert_eq!(latest.id, "newer");
 
+        let mut legacy_trust = serde_json::to_value(anchor_candidate_message(
+            "legacy-trust",
+            "agent-legacy-trust",
+            Some(60),
+            60,
+            operator_origin(),
+            crate::types::AuthorityClass::OperatorInstruction,
+        ))?;
+        let legacy_trust_object = legacy_trust
+            .as_object_mut()
+            .expect("message envelope must serialize as an object");
+        legacy_trust_object.remove("authority_class");
+        legacy_trust_object.insert(
+            "trust".into(),
+            serde_json::Value::String("trusted_operator".into()),
+        );
+        connection.execute(
+            "INSERT INTO messages (
+                evidence_id, agent_id, message_id, message_seq, created_at, kind, payload_json
+             ) VALUES (?1, ?2, ?1, ?3, ?4, ?5, ?6)",
+            params![
+                "legacy-trust",
+                "agent-legacy-trust",
+                60_i64,
+                Utc::now().to_rfc3339(),
+                "operator_prompt",
+                serde_json::to_string(&legacy_trust)?,
+            ],
+        )?;
+        let legacy = db
+            .messages()
+            .latest_trusted_operator(Some("agent-legacy-trust"))?
+            .expect("legacy trust anchor expected");
+        assert_eq!(legacy.id, "legacy-trust");
+
+        let mut legacy_authority = serde_json::to_value(anchor_candidate_message(
+            "legacy-authority",
+            "agent-legacy-authority",
+            Some(70),
+            70,
+            operator_origin(),
+            crate::types::AuthorityClass::OperatorInstruction,
+        ))?;
+        legacy_authority
+            .as_object_mut()
+            .expect("message envelope must serialize as an object")
+            .insert(
+                "authority_class".into(),
+                serde_json::Value::String("trusted_operator".into()),
+            );
+        connection.execute(
+            "INSERT INTO messages (
+                evidence_id, agent_id, message_id, message_seq, created_at, kind, payload_json
+             ) VALUES (?1, ?2, ?1, ?3, ?4, ?5, ?6)",
+            params![
+                "legacy-authority",
+                "agent-legacy-authority",
+                70_i64,
+                Utc::now().to_rfc3339(),
+                "operator_prompt",
+                serde_json::to_string(&legacy_authority)?,
+            ],
+        )?;
+        let legacy = db
+            .messages()
+            .latest_trusted_operator(Some("agent-legacy-authority"))?
+            .expect("legacy authority anchor expected");
+        assert_eq!(legacy.id, "legacy-authority");
+
         let any_agent = db
             .messages()
             .latest_trusted_operator(None)?
             .expect("latest trusted operator expected across agents");
-        assert_eq!(any_agent.id, "other-agent");
+        // The unfiltered variant must also honour the expanded compatibility
+        // predicate: legacy-authority carries the highest valid message_seq.
+        assert_eq!(any_agent.id, "legacy-authority");
 
         assert!(db
             .messages()
@@ -634,7 +705,13 @@ mod tests {
             "EXPLAIN QUERY PLAN \
              SELECT payload_json FROM messages \
              WHERE agent_id = ?1 AND message_seq IS NOT NULL \
-               AND json_extract(payload_json, '$.authority_class') = 'operator_instruction' \
+               AND ( \
+                 json_extract(payload_json, '$.authority_class') IN ('operator_instruction', 'trusted_operator') \
+                 OR ( \
+                   json_extract(payload_json, '$.authority_class') IS NULL \
+                   AND json_extract(payload_json, '$.trust') = 'trusted_operator' \
+                 ) \
+               ) \
                AND json_extract(payload_json, '$.origin.kind') = 'operator' \
              ORDER BY message_seq DESC, created_at DESC, message_id DESC LIMIT 1",
         )?;

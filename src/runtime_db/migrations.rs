@@ -3911,7 +3911,13 @@ CREATE INDEX IF NOT EXISTS idx_provider_quota_incidents_retry
 CREATE INDEX IF NOT EXISTS idx_messages_agent_trusted_operator
   ON messages(agent_id, message_seq DESC, created_at DESC, message_id DESC)
   WHERE message_seq IS NOT NULL
-    AND json_extract(payload_json, '$.authority_class') = 'operator_instruction'
+    AND (
+      json_extract(payload_json, '$.authority_class') IN ('operator_instruction', 'trusted_operator')
+      OR (
+        json_extract(payload_json, '$.authority_class') IS NULL
+        AND json_extract(payload_json, '$.trust') = 'trusted_operator'
+      )
+    )
     AND json_extract(payload_json, '$.origin.kind') = 'operator';
 "#,
     },

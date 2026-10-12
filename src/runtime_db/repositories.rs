@@ -3754,7 +3754,13 @@ impl MessageRepository<'_> {
                      FROM messages
                      WHERE agent_id = ?1
                        AND message_seq IS NOT NULL
-                       AND json_extract(payload_json, '$.authority_class') = 'operator_instruction'
+                       AND (
+                         json_extract(payload_json, '$.authority_class') IN ('operator_instruction', 'trusted_operator')
+                         OR (
+                           json_extract(payload_json, '$.authority_class') IS NULL
+                           AND json_extract(payload_json, '$.trust') = 'trusted_operator'
+                         )
+                       )
                        AND json_extract(payload_json, '$.origin.kind') = 'operator'
                      ORDER BY message_seq DESC, created_at DESC, message_id DESC
                      LIMIT 1",
@@ -3768,7 +3774,13 @@ impl MessageRepository<'_> {
                     "SELECT payload_json
                      FROM messages
                      WHERE message_seq IS NOT NULL
-                       AND json_extract(payload_json, '$.authority_class') = 'operator_instruction'
+                       AND (
+                         json_extract(payload_json, '$.authority_class') IN ('operator_instruction', 'trusted_operator')
+                         OR (
+                           json_extract(payload_json, '$.authority_class') IS NULL
+                           AND json_extract(payload_json, '$.trust') = 'trusted_operator'
+                         )
+                       )
                        AND json_extract(payload_json, '$.origin.kind') = 'operator'
                      ORDER BY message_seq DESC, created_at DESC, message_id DESC
                      LIMIT 1",
