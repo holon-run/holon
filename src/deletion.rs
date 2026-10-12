@@ -22,6 +22,22 @@ use tracing::{debug, info, warn};
 use crate::host::RuntimeHost;
 use crate::types::*;
 
+/// Authorization selects a policy, independent of the request's tool/CLI surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentDeletionPolicy {
+    PreserveProtectedResources,
+    DeleteAgentData,
+}
+
+impl From<AgentDeletionMode> for AgentDeletionPolicy {
+    fn from(mode: AgentDeletionMode) -> Self {
+        match mode {
+            AgentDeletionMode::ParentCleanup => Self::PreserveProtectedResources,
+            AgentDeletionMode::Delete | AgentDeletionMode::CleanupRepair => Self::DeleteAgentData,
+        }
+    }
+}
+
 /// Interval between periodic deletion coordinator safety/observation sweeps.
 /// Deletion admission wakes the coordinator directly and retries use persisted
 /// deadlines, so this cadence only bounds low-priority scans.
@@ -556,42 +572,51 @@ impl RuntimeHost {
             if !file_name.to_string_lossy().ends_with(".deleting_trash") {
                 continue;
             }
-            let Some(name) = file_name.to_str() else {
+            if file_name.to_str().is_none() {
                 // Runtime-created trash names are UTF-8; leave anything
                 // else for an operator instead of deleting silently.
                 warn!(entry = %entry.path().display(), "skipping non-UTF-8 agent home trash name");
                 continue;
-            };
-            // The name may be a live agent home whose legacy id ends with
-            // the reserved suffix rather than trash. Registered non-deleted
-            // identities own their directory; only unclaimed names are trash.
-            if self.registered_home_claimant(name)?.is_some() {
-                warn!(
-                    agent = name,
-                    "skipping agent home colliding with trash suffix"
-                );
-                continue;
             }
             let trash_dir = entry.path();
-            // Refuse to delete anything that is not a runtime-managed
-            // directory inside the agents root: symlinked or otherwise
-            // suspicious entries are reported and left for an operator.
-            if let Err(error) = ensure_deletable_agent_home(&trash_dir, &agents_root) {
-                warn!(trash = %trash_dir.display(), %error, "skipping orphan agent home trash");
-                continue;
-            }
-            match std::fs::remove_dir_all(&trash_dir) {
-                Ok(()) => {
+            match self.remove_orphan_agent_home_trash(&trash_dir).await {
+                Ok(true) => {
                     removed += 1;
                     info!(trash = %trash_dir.display(), "removed orphan agent home trash");
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Ok(false) => {}
                 Err(error) => {
                     warn!(trash = %trash_dir.display(), %error, "failed to remove orphan agent home trash")
                 }
             }
         }
         Ok(removed)
+    }
+
+    pub(crate) async fn remove_orphan_agent_home_trash(&self, trash_dir: &Path) -> Result<bool> {
+        // Enumeration is not ownership evidence. Recheck under the same fence
+        // as deletion admission and Home rename/removal, including legacy aliases.
+        let _home_guard = self.inner.agent_home_cleanup_lock.lock().await;
+        let agents_root = self.config().data_dir.join("agents");
+        let Some(name) = trash_dir.file_name().and_then(|name| name.to_str()) else {
+            return Ok(false);
+        };
+        if !name.ends_with(".deleting_trash")
+            || self.registered_home_claimant(name)?.is_some()
+            || self
+                .registered_trash_alias_claimant(trash_dir, None)?
+                .is_some()
+        {
+            return Ok(false);
+        }
+        ensure_deletable_agent_home(trash_dir, &agents_root)?;
+        match std::fs::remove_dir_all(trash_dir) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error).with_context(|| {
+                format!("removing orphan agent home trash {}", trash_dir.display())
+            }),
+        }
     }
 
     /// Whether `name` belongs to a registered non-deleted agent identity.
@@ -604,6 +629,30 @@ impl RuntimeHost {
             Some(identity) if identity.status != AgentRegistryStatus::Deleted => Some(identity),
             _ => None,
         })
+    }
+
+    /// Home removal and orphan sweeping use the same full/legacy ownership test.
+    fn registered_trash_alias_claimant(
+        &self,
+        trash_dir: &Path,
+        excluded_agent_id: Option<&str>,
+    ) -> Result<Option<AgentIdentityRecord>> {
+        let agents_root = self.config().data_dir.join("agents");
+        Ok(self
+            .runtime_db()
+            .agent_identities()
+            .latest_all()?
+            .into_iter()
+            .find(|identity| {
+                identity.status != AgentRegistryStatus::Deleted
+                    && Some(identity.agent_id.as_str()) != excluded_agent_id
+                    && (agents_root.join(format!("{}.deleting_trash", identity.agent_id))
+                        == trash_dir
+                        || self
+                            .agent_data_dir(&identity.agent_id)
+                            .with_extension("deleting_trash")
+                            == trash_dir)
+            }))
     }
 
     fn emit_legacy_deletion_ambiguity(
@@ -779,25 +828,15 @@ impl RuntimeHost {
         phase: AgentDeletionPhase,
         job: &AgentDeletionJob,
     ) -> Result<()> {
+        let policy = AgentDeletionPolicy::from(job.mode);
         match phase {
-            AgentDeletionPhase::Fence if job.mode == AgentDeletionMode::ParentCleanup => {
-                self.finish_idle_runtime_exit(agent_id, None).await
-            }
-            AgentDeletionPhase::Fence => self.deletion_phase_fence(agent_id).await,
-            AgentDeletionPhase::Quiesce => self.deletion_phase_quiesce(agent_id, job).await,
+            AgentDeletionPhase::Fence => self.deletion_phase_fence(agent_id, policy).await,
+            AgentDeletionPhase::Quiesce => self.deletion_phase_quiesce(agent_id, job, policy).await,
             AgentDeletionPhase::Ingress => self.deletion_phase_ingress(agent_id).await,
             AgentDeletionPhase::Scheduler => self.deletion_phase_scheduler(agent_id).await,
-            AgentDeletionPhase::Workspace if job.mode == AgentDeletionMode::ParentCleanup => {
-                self.deletion_phase_parent_workspace(agent_id).await
-            }
             AgentDeletionPhase::Workspace => self.deletion_phase_workspace(agent_id).await,
             AgentDeletionPhase::Index => self.deletion_phase_index(agent_id).await,
-            AgentDeletionPhase::Home => {
-                if job.mode == AgentDeletionMode::ParentCleanup {
-                    ensure_parent_cleanup_home_safe(&self.agent_data_dir(agent_id))?;
-                }
-                self.deletion_phase_home(agent_id).await
-            }
+            AgentDeletionPhase::Home => self.deletion_phase_home(agent_id, policy).await,
             AgentDeletionPhase::Finalize => {
                 unreachable!("finalize uses the atomic repository path")
             }
@@ -807,7 +846,11 @@ impl RuntimeHost {
     /// Fence: verify the identity is in Deleting state and the runtime is
     /// unloaded. Phase 0-1 already sets the identity and unloads; this is a
     /// safety check for crash recovery.
-    async fn deletion_phase_fence(&self, agent_id: &str) -> Result<()> {
+    async fn deletion_phase_fence(
+        &self,
+        agent_id: &str,
+        policy: AgentDeletionPolicy,
+    ) -> Result<()> {
         let identity = self
             .agent_identity_record(agent_id)?
             .ok_or_else(|| anyhow!("agent {agent_id} identity not found"))?;
@@ -817,16 +860,25 @@ impl RuntimeHost {
                 identity.status
             ));
         }
-        // Ensure runtime is unloaded.
-        self.unload_runtime(agent_id).await;
+        match policy {
+            AgentDeletionPolicy::PreserveProtectedResources => {
+                self.finish_idle_runtime_exit(agent_id, None).await?;
+            }
+            AgentDeletionPolicy::DeleteAgentData => self.unload_runtime(agent_id).await,
+        }
         Ok(())
     }
 
     /// Quiesce: terminalize active tasks, cancel wait conditions and timers.
     /// If cascade_private_children is set, drive private children through
     /// deletion first.
-    async fn deletion_phase_quiesce(&self, agent_id: &str, job: &AgentDeletionJob) -> Result<()> {
-        if job.mode == AgentDeletionMode::ParentCleanup {
+    async fn deletion_phase_quiesce(
+        &self,
+        agent_id: &str,
+        job: &AgentDeletionJob,
+        policy: AgentDeletionPolicy,
+    ) -> Result<()> {
+        if policy == AgentDeletionPolicy::PreserveProtectedResources {
             self.runtime_db().transaction(|tx| {
                 if let Some(blocker) =
                     crate::runtime_db::reclamation::parent_cleanup_blocker_tx(tx, agent_id)?
@@ -835,20 +887,12 @@ impl RuntimeHost {
                 }
                 Ok(())
             })?;
-            // Admitted retention state is not quiesced by any later
-            // ParentCleanup phase; cancel active timers and their pending
-            // wakes so they cannot outlive the deleted identity.
-            let cancelled_timers = self
-                .runtime_db()
-                .timers()
-                .cancel_active_for_agent(agent_id, Utc::now())?;
-            if cancelled_timers > 0 {
-                debug!(
-                    agent_id,
-                    count = cancelled_timers,
-                    "cancelled admitted timers"
-                );
-            }
+        }
+        // Retention timers and pending wakes cannot outlive either policy.
+        self.runtime_db()
+            .timers()
+            .cancel_active_for_agent(agent_id, Utc::now())?;
+        if policy == AgentDeletionPolicy::PreserveProtectedResources {
             return Ok(());
         }
         // Cascade private children first.
@@ -898,19 +942,6 @@ impl RuntimeHost {
                 count = waits_count,
                 "cancelled active wait conditions"
             );
-        }
-
-        // Cancel active timers.
-        let timers = self
-            .runtime_db()
-            .timers()
-            .recent_for_agent(agent_id, usize::MAX)?;
-        for mut timer in timers {
-            if timer.status == TimerStatus::Active {
-                timer.status = TimerStatus::Cancelled;
-
-                self.runtime_db().timers().upsert(&timer)?;
-            }
         }
 
         // Abort pending queue entries to prevent orphaned queued messages.
@@ -1086,13 +1117,8 @@ impl RuntimeHost {
         Ok(())
     }
 
-    /// Workspace: release all workspace occupancies held by this agent and
-    /// remove owned clean managed worktrees.
-    async fn deletion_phase_parent_workspace(&self, agent_id: &str) -> Result<()> {
-        self.check_parent_cleanup_workspaces(agent_id, true).await
-    }
-
-    pub(crate) async fn check_parent_cleanup_workspaces(
+    /// Validate or remove exclusively owned clean runtime-created worktrees.
+    pub(crate) async fn check_agent_deletion_workspaces(
         &self,
         agent_id: &str,
         remove: bool,
@@ -1187,53 +1213,7 @@ impl RuntimeHost {
             );
         }
 
-        // Remove owned managed worktrees that are clean.
-        let all_roots = self.runtime_db().execution_root_entries().latest_all()?;
-        for root in all_roots {
-            if root.removed_at.is_some() {
-                continue;
-            }
-            let Some(worktree) = root.worktree.as_ref() else {
-                continue;
-            };
-            // Only remove worktrees registered by this agent.
-            let dominated_by_agent = worktree.registered_by_agent_id.as_deref() == Some(agent_id)
-                || worktree
-                    .authorized_agent_ids
-                    .iter()
-                    .all(|id| id == agent_id);
-            if !dominated_by_agent {
-                continue;
-            }
-            let worktree_path = &root.filesystem_path;
-            if !worktree_path.exists() {
-                // Already gone; just mark removed.
-                self.runtime_db()
-                    .execution_root_entries()
-                    .mark_removed(&root.execution_root_id)?;
-                continue;
-            }
-            // Check if the worktree is clean (no uncommitted changes).
-            if self.worktree_is_dirty(worktree_path) {
-                return Err(anyhow!(
-                    "worktree {} at {} has uncommitted changes; resolve before deletion can proceed",
-                    root.execution_root_id,
-                    worktree_path.display()
-                ));
-            }
-            // Safe to remove.
-            self.remove_worktree_directory(worktree_path)?;
-            self.runtime_db()
-                .execution_root_entries()
-                .mark_removed(&root.execution_root_id)?;
-            debug!(
-                agent_id,
-                execution_root_id = %root.execution_root_id,
-                "removed managed worktree"
-            );
-        }
-
-        Ok(())
+        self.check_agent_deletion_workspaces(agent_id, true).await
     }
 
     /// Index: remove the agent's documents from the shared memory index.
@@ -1262,22 +1242,23 @@ impl RuntimeHost {
     }
 
     /// Home: rename agent home to trash then delete.
-    async fn deletion_phase_home(&self, agent_id: &str) -> Result<()> {
+    async fn deletion_phase_home(&self, agent_id: &str, policy: AgentDeletionPolicy) -> Result<()> {
+        let _home_guard = self.inner.agent_home_cleanup_lock.lock().await;
         let data_dir = self.agent_data_dir(agent_id);
         // Refuse to delete anything that is not a runtime-managed directory:
         // symlinked homes or paths resolving outside the agents root fail the
         // job instead of removing unintended files.
         let agents_root = self.config().data_dir.join("agents");
         // Rename to a trash name first to avoid partial-state visibility.
-        let trash_dir = data_dir.with_extension("deleting_trash");
-        if !data_dir.exists() {
+        let trash_dir = self.resolve_agent_home_trash_dir(agent_id, policy)?;
+        if !agent_home_present(&data_dir)? {
             // The home is already gone, but a previous attempt may have
             // renamed it to trash and failed before removing the trash.
             // Finish removing the leftover trash so a retry cannot complete
             // the job while silently leaking the directory.
-            if trash_dir.exists() {
-                ensure_deletable_agent_home(&trash_dir, &agents_root)?;
-                self.ensure_trash_dir_unclaimed(&trash_dir)?;
+            if agent_home_present(&trash_dir)? {
+                ensure_agent_home_deletion_safe(&trash_dir, &agents_root, policy)?;
+                self.ensure_trash_dir_unclaimed(&trash_dir, agent_id)?;
                 info!(agent_id, trash = %trash_dir.display(), "removing leftover agent home trash");
                 std::fs::remove_dir_all(&trash_dir).with_context(|| {
                     format!("removing agent home trash {}", trash_dir.display())
@@ -1285,10 +1266,11 @@ impl RuntimeHost {
             }
             return Ok(());
         }
-        ensure_deletable_agent_home(&data_dir, &agents_root)?;
-        if trash_dir.exists() {
+        ensure_agent_home_deletion_safe(&data_dir, &agents_root, policy)?;
+        if agent_home_present(&trash_dir)? {
             // Previous attempt left trash; remove it.
-            self.ensure_trash_dir_unclaimed(&trash_dir)?;
+            self.ensure_trash_dir_unclaimed(&trash_dir, agent_id)?;
+            ensure_agent_home_deletion_safe(&trash_dir, &agents_root, policy)?;
             std::fs::remove_dir_all(&trash_dir).with_context(|| {
                 format!("removing leftover trash directory {}", trash_dir.display())
             })?;
@@ -1306,8 +1288,48 @@ impl RuntimeHost {
         Ok(())
     }
 
-    /// Refuse to remove a trash-named directory owned by a live agent.
-    fn ensure_trash_dir_unclaimed(&self, trash_dir: &Path) -> Result<()> {
+    /// Full IDs own distinct trash names. Recover a legacy extension-replaced
+    /// name only when no other registered identity can own that alias.
+    fn resolve_agent_home_trash_dir(
+        &self,
+        agent_id: &str,
+        policy: AgentDeletionPolicy,
+    ) -> Result<std::path::PathBuf> {
+        let agents_root = self.config().data_dir.join("agents");
+        let home = self.agent_data_dir(agent_id);
+        let trash = agents_root.join(format!("{agent_id}.deleting_trash"));
+        self.ensure_trash_dir_unclaimed(&trash, agent_id)?;
+        let legacy = home.with_extension("deleting_trash");
+        if legacy == trash || !agent_home_present(&legacy)? {
+            return Ok(trash);
+        }
+        self.ensure_trash_dir_unclaimed(&legacy, agent_id)?;
+        anyhow::ensure!(
+            !self
+                .runtime_db()
+                .agent_identities()
+                .latest_all()?
+                .iter()
+                .any(|identity| identity.agent_id != agent_id
+                    && self
+                        .agent_data_dir(&identity.agent_id)
+                        .with_extension("deleting_trash")
+                        == legacy),
+            "ambiguous legacy agent home trash {}; refusing deletion",
+            legacy.display()
+        );
+        anyhow::ensure!(
+            !agent_home_present(&trash)?,
+            "both legacy and current agent home trash exist; resolve before deletion"
+        );
+        ensure_agent_home_deletion_safe(&legacy, &agents_root, policy)?;
+        std::fs::rename(&legacy, &trash)
+            .with_context(|| format!("migrating legacy agent home trash {}", legacy.display()))?;
+        Ok(trash)
+    }
+
+    /// Refuse another identity's home or either version of its trash path.
+    fn ensure_trash_dir_unclaimed(&self, trash_dir: &Path, agent_id: &str) -> Result<()> {
         if let Some(name) = trash_dir.file_name().and_then(|n| n.to_str()) {
             if let Some(claimant) = self.registered_home_claimant(name)? {
                 anyhow::bail!(
@@ -1316,6 +1338,13 @@ impl RuntimeHost {
                     claimant.agent_id
                 );
             }
+        }
+        if let Some(claimant) = self.registered_trash_alias_claimant(trash_dir, Some(agent_id))? {
+            anyhow::bail!(
+                "ambiguous legacy agent home trash {}; aliases trash owned by agent {}; refusing deletion",
+                trash_dir.display(),
+                claimant.agent_id
+            );
         }
         Ok(())
     }
@@ -1348,46 +1377,21 @@ impl RuntimeHost {
             let child_id = &child.agent_id;
             let bootstrap_lock = self.agent_bootstrap_lock(child_id);
             let _bootstrap_guard = bootstrap_lock.lock().await;
-            let (updated_identity, child_job, _) = self.runtime_db().agent_deletions().begin(
-                child_id,
-                child.revision,
-                &parent_job.requested_by,
-                false, // Don't recurse further
-            )?;
+            let (updated_identity, child_job, _) = {
+                let _home_guard = self.inner.agent_home_cleanup_lock.lock().await;
+                self.runtime_db().agent_deletions().begin(
+                    child_id,
+                    child.revision,
+                    &parent_job.requested_by,
+                    false, // Don't recurse further
+                )?
+            };
             self.cache_agent_identity(&updated_identity)?;
             Box::pin(self.execute_deletion_job(child_job))
                 .await
                 .with_context(|| format!("cascading deletion to private child {child_id}"))?;
         }
         Ok(())
-    }
-
-    /// Check if a git worktree has uncommitted changes.
-    fn worktree_is_dirty(&self, path: &Path) -> bool {
-        let output = std::process::Command::new("git")
-            .args(["status", "--porcelain"])
-            .current_dir(path)
-            .output();
-        match output {
-            Ok(output) => !output.stdout.is_empty(),
-            Err(_) => true, // If we can't check, treat as dirty for safety.
-        }
-    }
-
-    /// Remove a worktree directory (git worktree remove or fallback to rm).
-    fn remove_worktree_directory(&self, path: &Path) -> Result<()> {
-        // Try git worktree remove first for clean git state.
-        let output = std::process::Command::new("git")
-            .args(["worktree", "remove", "--force"])
-            .arg(path)
-            .output();
-        match output {
-            Ok(output) if output.status.success() => return Ok(()),
-            _ => {}
-        }
-        // Fallback: remove directory directly.
-        std::fs::remove_dir_all(path)
-            .with_context(|| format!("removing worktree directory {}", path.display()))
     }
 }
 
@@ -1445,29 +1449,44 @@ fn deletion_retry_delay(job: &AgentDeletionJob) -> Duration {
 /// directory (not a symlink) that resolves inside the runtime agents root.
 /// Deletion fails closed so a tampered home cannot remove files outside the
 /// runtime data directory.
-/// Parent cleanup retains unregistered user output rather than guessing whether
-/// a historical link still needs it. Identity configuration is not an artifact.
-pub(crate) fn ensure_parent_cleanup_home_safe(data_dir: &Path) -> Result<()> {
-    if !data_dir.exists() {
+/// Runtime-owned state/output is disposable; user deliverables require the
+/// destructive deletion policy. Both policies enforce the same path safety boundary.
+pub(crate) fn ensure_agent_home_deletion_safe(
+    data_dir: &Path,
+    agents_root: &Path,
+    policy: AgentDeletionPolicy,
+) -> Result<()> {
+    if !agent_home_present(data_dir)? {
         return Ok(());
     }
-    anyhow::ensure!(
-        !std::fs::symlink_metadata(data_dir)?
-            .file_type()
-            .is_symlink(),
-        "agent_cleanup_blocked: symlink_home"
-    );
+    ensure_deletable_agent_home(data_dir, agents_root)?;
+    if policy == AgentDeletionPolicy::DeleteAgentData {
+        return Ok(());
+    }
     for entry in std::fs::read_dir(data_dir)? {
         let entry = entry?;
         let name = entry.file_name();
-        if matches!(
-            name.to_str(),
-            Some(".holon" | "AGENTS.md" | "memory" | "skills")
-        ) {
+        let kind = entry.file_type()?;
+        let runtime_owned = (name == "AGENTS.md" && kind.is_file())
+            || (kind.is_dir()
+                && matches!(
+                    name.to_str(),
+                    Some(
+                        ".holon"
+                            | "memory"
+                            | "skills"
+                            | "work-items"
+                            | "tool-artifacts"
+                            | "task-output"
+                    )
+                ));
+        if runtime_owned {
             continue;
         }
-        let empty_scaffold = matches!(name.to_str(), Some("notes" | "work" | "tmp" | "work-items"))
-            && entry.file_type()?.is_dir()
+        let empty_scaffold = matches!(
+            name.to_str(),
+            Some("notes" | "work" | "tmp" | "media" | "apps")
+        ) && kind.is_dir()
             && std::fs::read_dir(entry.path())?.next().is_none();
         anyhow::ensure!(
             empty_scaffold,
@@ -1476,6 +1495,16 @@ pub(crate) fn ensure_parent_cleanup_home_safe(data_dir: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn agent_home_present(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => {
+            Err(error).with_context(|| format!("inspecting agent home {}", path.display()))
+        }
+    }
 }
 
 fn ensure_deletable_agent_home(data_dir: &Path, agents_root: &Path) -> Result<()> {
@@ -1497,7 +1526,7 @@ fn ensure_deletable_agent_home(data_dir: &Path, agents_root: &Path) -> Result<()
         .with_context(|| format!("canonicalizing agent home {}", data_dir.display()))?;
     let canonical_root = std::fs::canonicalize(agents_root)
         .with_context(|| format!("canonicalizing agents root {}", agents_root.display()))?;
-    if !canonical_home.starts_with(&canonical_root) {
+    if canonical_home == canonical_root || !canonical_home.starts_with(&canonical_root) {
         anyhow::bail!(
             "agent home {} resolves outside agents root {}; refusing deletion",
             canonical_home.display(),
@@ -1554,6 +1583,131 @@ fn delete_agent_memory_index_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn home_resource_policy_classifies_real_runtime_output_and_user_files() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("child");
+        for name in [
+            ".holon",
+            "memory",
+            "skills",
+            "work-items",
+            "tool-artifacts",
+            "task-output",
+        ] {
+            std::fs::create_dir_all(home.join(name)).unwrap();
+            std::fs::write(home.join(name).join("state"), "runtime-owned").unwrap();
+        }
+        std::fs::write(home.join("AGENTS.md"), "configuration").unwrap();
+        for policy in [
+            AgentDeletionPolicy::PreserveProtectedResources,
+            AgentDeletionPolicy::DeleteAgentData,
+        ] {
+            ensure_agent_home_deletion_safe(&home, root.path(), policy).unwrap();
+        }
+        for name in ["work", "notes", "tmp", "media", "apps", "report.md"] {
+            let artifact = home.join(name);
+            std::fs::write(&artifact, "user result").unwrap();
+            assert!(ensure_agent_home_deletion_safe(
+                &home,
+                root.path(),
+                AgentDeletionPolicy::PreserveProtectedResources,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("unregistered_home_artifact"));
+            ensure_agent_home_deletion_safe(
+                &home,
+                root.path(),
+                AgentDeletionPolicy::DeleteAgentData,
+            )
+            .unwrap();
+            assert_eq!(std::fs::read_to_string(&artifact).unwrap(), "user result");
+            std::fs::remove_file(artifact).unwrap();
+        }
+    }
+
+    #[test]
+    fn home_resource_policy_allows_only_empty_user_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("child");
+        for name in ["work", "notes", "tmp", "media", "apps"] {
+            let directory = home.join(name);
+            std::fs::create_dir_all(&directory).unwrap();
+            for policy in [
+                AgentDeletionPolicy::PreserveProtectedResources,
+                AgentDeletionPolicy::DeleteAgentData,
+            ] {
+                ensure_agent_home_deletion_safe(&home, root.path(), policy).unwrap();
+            }
+            let artifact = directory.join("deliverable");
+            std::fs::write(&artifact, "user result").unwrap();
+            assert!(ensure_agent_home_deletion_safe(
+                &home,
+                root.path(),
+                AgentDeletionPolicy::PreserveProtectedResources,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("unregistered_home_artifact"));
+            ensure_agent_home_deletion_safe(
+                &home,
+                root.path(),
+                AgentDeletionPolicy::DeleteAgentData,
+            )
+            .unwrap();
+            assert_eq!(std::fs::read_to_string(&artifact).unwrap(), "user result");
+            std::fs::remove_file(artifact).unwrap();
+            ensure_agent_home_deletion_safe(
+                &home,
+                root.path(),
+                AgentDeletionPolicy::PreserveProtectedResources,
+            )
+            .unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn both_home_policies_reject_symlinks_and_paths_outside_agents_root() {
+        let root = tempfile::tempdir().unwrap();
+        let victim = tempfile::tempdir().unwrap();
+        std::fs::write(victim.path().join("sentinel"), "keep").unwrap();
+        let home = root.path().join("child");
+        std::os::unix::fs::symlink(victim.path(), &home).unwrap();
+        for policy in [
+            AgentDeletionPolicy::PreserveProtectedResources,
+            AgentDeletionPolicy::DeleteAgentData,
+        ] {
+            assert!(ensure_agent_home_deletion_safe(&home, root.path(), policy)
+                .unwrap_err()
+                .to_string()
+                .contains("symlink"));
+            assert!(
+                ensure_agent_home_deletion_safe(victim.path(), root.path(), policy)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("outside agents root")
+            );
+            assert!(ensure_agent_home_deletion_safe(root.path(), root.path(), policy).is_err());
+        }
+        assert_eq!(
+            std::fs::read_to_string(victim.path().join("sentinel")).unwrap(),
+            "keep"
+        );
+        std::fs::remove_file(&home).unwrap();
+        std::os::unix::fs::symlink(victim.path().join("missing"), &home).unwrap();
+        for policy in [
+            AgentDeletionPolicy::PreserveProtectedResources,
+            AgentDeletionPolicy::DeleteAgentData,
+        ] {
+            assert!(
+                ensure_agent_home_deletion_safe(&home, root.path(), policy).is_err(),
+                "a dangling symlink is not a missing home"
+            );
+        }
+    }
 
     fn retry_job(attempts: u32) -> AgentDeletionJob {
         let now = chrono::DateTime::parse_from_rfc3339("2026-09-19T07:00:00Z")

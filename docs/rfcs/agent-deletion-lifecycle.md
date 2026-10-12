@@ -63,9 +63,10 @@ idempotent; revision validation fences only job creation or replacement.
 
 After the fence commits, runtime bootstrap, ingress, wake, prompt, enqueue, and
 control paths must not return or create a runnable runtime for that identity.
-Operator deletion unloads an already loaded runtime at admission. Parent cleanup
+Destructive deletion unloads an already loaded runtime at admission. Safe cleanup
 closes execution admission and cooperatively joins the retiring instance before
-resource removal.
+resource removal. A cross-entry replay follows the already admitted job's policy;
+an operator replay of safe cleanup must not force-abort that instance.
 
 ## Supervised Child Terminal Disposition
 
@@ -245,8 +246,58 @@ The `parent_cleanup` deletion mode fences new execution and references only
 after protected work and resources pass admission. It cooperatively joins owned
 runtime work and never cancels legitimate work to make deletion possible.
 Protected artifacts, descendants, dirty/shared/occupied or foreign worktrees
-block this mode; operator deletion retains its existing explicit semantics.
+block this mode.
 Retries preserve the durable job and parent result. Missing parent/task evidence
 at startup is not authorization to archive a child or remove its home.
+
+### Shared deletion core and explicit policies
+
+Tool and operator CLI requests use the same resource classification and deletion
+phases. Authorization selects an explicit policy, not a separate filesystem
+implementation: `parent_cleanup` preserves accepted work and protected resources;
+operator `delete` (and explicit legacy repair) may cancel work and discard user
+home data. The separate `delete_on_terminal` child lifecycle also admits
+`mode=delete` and uses that destructive policy; operator deletion is not its
+exclusive source. Persisted job modes remain compatible.
+
+Both policies reject symlinked homes, paths outside the runtime agents root,
+and dirty/shared/occupied or foreign worktrees. Worktree cleanup requires an
+exclusively owned, runtime-created, clean registered worktree and successful
+`git worktree remove`; it never force-removes or falls back to directory deletion.
+The operator policy releases its stopped agent's occupancies, not other agents'.
+
+Home classification treats identity configuration and runtime state
+(`.holon/`, `memory/`, `skills/`, `work-items/`) and command/tool output
+(`task-output/`, `tool-artifacts/`) as disposable runtime-owned namespaces.
+The safe policy requires their expected file/directory types, not symlinks.
+Historical terminal command output references do not retain those bytes.
+Registered protected artifacts and user deliverables, including nonempty
+`work/`, `notes/`, `tmp/`, `media/`, `apps/`, or unknown files, still block safe
+cleanup; explicit operator deletion authorizes their removal.
+
+Home validation applies again at physical removal and when resuming from
+rename-to-trash. An in-progress deletion job owns its trash; the orphan sweep
+cannot bypass its policy or a failed Home phase. Host deletion admission, Home,
+and the orphan sweep share an ownership fence. Directory enumeration is not
+ownership evidence: each sweep removal rechecks current identities and both
+full-ID and legacy aliases while holding that fence. Parent task result payloads
+remain readable after the child's runtime-owned files and identity are removed.
+Trash names append `.deleting_trash` to the complete ID, including dots. Legacy
+extension-replaced trash is recovered only with unambiguous identity ownership;
+aliases shared by registered identities fail closed.
+Both Home and the orphan sweep check cross-identity full/legacy aliases,
+including when the current home is absent or the conflicting directory has
+not yet been created. Operator authorization for one identity never authorizes
+removing another identity's home or trash.
+
+An idempotent request from either entry point returns the already admitted job
+and its policy; it does not silently upgrade safe cleanup to destructive deletion
+or restart phases. Parent replays still require current supervision/incarnation
+authorization. Protected resources must be resolved before retrying that job.
+There is no policy-upgrade API for an admitted job: even an operator `delete`
+retry after a safe job fails in Home preserves `PreserveProtectedResources`.
+The operator must first move protected files out of that agent's home or trash,
+then retry the existing job. A parent replay likewise cannot downgrade an
+operator-admitted `DeleteAgentData` job.
 
 See [subagent residency and reclamation](./subagent-residency-and-reclamation.md).
