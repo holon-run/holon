@@ -133,7 +133,33 @@ enum ReadingSnapshotWindow {
     static func merging(_ live: HolonConversationSnapshot,
                         history: HolonConversationSnapshot?) throws -> HolonConversationSnapshot {
         guard let history, history.eventLogEpoch == live.eventLogEpoch else { return live }
-        let merged = try mergeConversationHistory(live, page: history, maximumTurns: Int.max)
+        guard case .array(let liveTurns) = live.raw["turns"],
+              case .array(let cachedTurns) = history.raw["turns"] else {
+            throw HolonConversationError.malformedProtocol
+        }
+        let liveHistory = liveTurns.filter { $0["execution"]?["kind"] != .string("active") }
+        let cachedHistory = cachedTurns.filter { $0["execution"]?["kind"] != .string("active") }
+        let liveIDs = Set(liveHistory.compactMap { $0["turn_id"]?.readingString })
+        let liveStart = liveHistory.compactMap { $0["key"]?["turn_index"]?.readingInteger }.min()
+        let cachedStart = cachedHistory.compactMap { $0["key"]?["turn_index"]?.readingInteger }.min()
+        let extendsHistory: Bool
+        if let liveStart, let cachedStart {
+            extendsHistory = cachedStart < liveStart
+                && cachedHistory.contains { liveIDs.contains($0["turn_id"]?.readingString ?? "") }
+        } else {
+            extendsHistory = false
+        }
+        var page = history
+        if !extendsHistory {
+            // Disjoint/contained cache is readable, but cannot advance the live history frontier.
+            guard case .object(var fields) = history.raw else {
+                throw HolonConversationError.malformedProtocol
+            }
+            fields["has_more"] = .bool(live.hasMore)
+            fields["next_before_cursor"] = live.nextBeforeCursor.map(JSONValue.string) ?? .null
+            page = try HolonConversationSnapshot(raw: .object(fields))
+        }
+        let merged = try mergeConversationHistory(live, page: page, maximumTurns: Int.max)
         guard case .array(let turns) = merged.raw["turns"],
               turns.filter({ $0["execution"]?["kind"] != .string("active") }).count <= maximumTurns else {
             // Capacity eviction falls back to a real server window, never an invented page cursor.

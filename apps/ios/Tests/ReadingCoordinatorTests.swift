@@ -310,10 +310,11 @@ final class ReadingCoordinatorTests: XCTestCase {
         guard case .array(let turns) = coordinator.snapshot?.raw["turns"] else { return [] }
         return turns.compactMap { $0["turn_id"]?.readingString }
     }
-    private func start(cache: ReadingCache? = nil) async throws
+    private func start(cache: ReadingCache? = nil, turns: [JSONValue]? = nil) async throws
         -> (ReadingCoordinator, ReadingFakeTransport, HolonConnectionIdentity) {
         let authority = identity()
         let fake = ReadingFakeTransport(authority: authority)
+        if let turns { await fake.setLiveTurns(turns) }
         let cache = cache ?? ReadingCache(file: nil)
         let coordinator = ReadingCoordinator(cache: cache, prefetchBriefLimit: 0)
         coordinator.activate(transport: fake, identity: authority, apiBaseURL: url)
@@ -1963,6 +1964,61 @@ final class ReadingCoordinatorTests: XCTestCase {
         coordinator.activateOffline(partition: partition)
         coordinator.selectAgent("A")
         XCTAssertEqual(turnIDs(coordinator), ["turn"])
+        coordinator.disconnect()
+    }
+
+    func testSameEpochDisjointWindowsKeepLiveHistoryBoundary() throws {
+        let oldTurns = (1...20).map { readingTurn("turn-\($0)", index: Int64($0)) }
+        let newTurns = (41...100).map { readingTurn("turn-\($0)", index: Int64($0)) }
+        var active = readingTurn("active", index: 200)
+        if case .object(var fields) = active {
+            fields["execution"] = .object(["kind": .string("active")])
+            active = .object(fields)
+        }
+        // A shared active execution does not bridge disjoint terminal history.
+        for sharedActive in [false, true] {
+            let tail = sharedActive ? [active] : []
+            let history = try readingSnapshot(cursor: "cached", more: false, before: nil,
+                                              turns: oldTurns + tail)
+            let live = try readingSnapshot(cursor: "latest", before: "before-41", turns: newTurns + tail)
+            let merged = try ReadingSnapshotWindow.merging(live, history: history)
+            XCTAssertEqual(merged.raw["turns"], .array(oldTurns + newTurns + tail))
+            XCTAssertEqual(merged.snapshotCursor, "latest")
+            XCTAssertTrue(merged.hasMore)
+            XCTAssertEqual(merged.nextBeforeCursor, "before-41")
+        }
+    }
+
+    func testSameEpochContainedCacheKeepsOlderLiveHistoryBoundary() throws {
+        let live = try readingSnapshot(more: false, before: nil,
+                                       turns: (1...60).map { readingTurn("turn-\($0)", index: Int64($0)) })
+        let history = try readingSnapshot(cursor: "cached", before: "before-41",
+                                          turns: (41...60).map { readingTurn("turn-\($0)", index: Int64($0)) })
+        XCTAssertEqual(try ReadingSnapshotWindow.merging(live, history: history), live)
+    }
+
+    func testSameEpochReconnectLoadsGapBetweenCachedAndLiveWindows() async throws {
+        let (coordinator, fake, _) = try await start(
+            turns: (1...20).map { readingTurn("turn-\($0)", index: Int64($0)) })
+        await fake.setHistoryTurns([])
+        await coordinator.loadHistory()
+        XCTAssertFalse(coordinator.canLoadHistory)
+        await fake.setOffline(true)
+        await coordinator.refresh()
+        XCTAssertEqual(coordinator.status, .offline)
+
+        await fake.setLiveTurns((41...100).map { readingTurn("turn-\($0)", index: Int64($0)) })
+        await fake.setOffline(false)
+        await coordinator.refresh()
+        XCTAssertEqual(turnIDs(coordinator).count, 80)
+        XCTAssertTrue(coordinator.canLoadHistory)
+        await fake.setHistoryTurns((1...40).map { readingTurn("turn-\($0)", index: Int64($0)) })
+        await coordinator.loadHistory()
+        XCTAssertEqual(turnIDs(coordinator), (1...100).map { "turn-\($0)" })
+        XCTAssertEqual(coordinator.snapshot?.snapshotCursor, "live-1")
+        XCTAssertFalse(coordinator.canLoadHistory)
+        let cursors = await fake.historyCursors
+        XCTAssertEqual(cursors, ["older-1", "older-1"])
         coordinator.disconnect()
     }
 
