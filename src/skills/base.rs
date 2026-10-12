@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     path::{Path, PathBuf},
     time::Duration,
@@ -893,7 +893,9 @@ fn install_github_remote_skill_from_archive(
     let result =
         match finalize_remote_skill_download(archive, &source.path, &tmp, &destination, package) {
             Ok(()) => Ok(source.path.clone()),
-            Err(original_error) => {
+            Err(original_error)
+                if crate::github_archive::is_directory_not_found(&original_error) =>
+            {
                 // Preserve the legacy non-flat repository behavior without another
                 // network request: the archive is already available locally.
                 let discovered_path = (!is_repo_root_skill_path(&source.path))
@@ -924,6 +926,7 @@ fn install_github_remote_skill_from_archive(
                     Err(original_error)
                 }
             }
+            Err(original_error) => Err(original_error),
         };
     if result.is_err() {
         let _ = fs::remove_dir_all(&tmp);
@@ -2137,23 +2140,29 @@ pub fn update_library_skills_with_progress(
     name_filter: Option<&str>,
     on_progress: impl FnMut(SkillLibraryUpdateProgress),
 ) -> Result<SkillLibraryUpdateResult> {
-    update_library_skills_with_remote_updater(
-        user_home,
-        name_filter,
-        &GithubSkillRemoteUpdater,
-        on_progress,
-    )
+    let mut updater = GithubSkillRemoteUpdater::default();
+    update_library_skills_with_remote_updater(user_home, name_filter, &mut updater, on_progress)
 }
 
 trait SkillRemoteUpdater {
-    fn latest_hash(&self, source: &LockedRemoteSkillSource) -> Result<String>;
-    fn install(&self, source: &LockedRemoteSkillSource, destination: &Path) -> Result<()>;
+    fn latest_hash(&mut self, source: &LockedRemoteSkillSource) -> Result<String>;
+    fn install(&mut self, source: &LockedRemoteSkillSource, destination: &Path) -> Result<()>;
 }
 
-struct GithubSkillRemoteUpdater;
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct GithubArchiveKey {
+    owner: String,
+    repo: String,
+    reference: String,
+}
+
+#[derive(Default)]
+struct GithubSkillRemoteUpdater {
+    archives: HashMap<GithubArchiveKey, GitHubArchive>,
+}
 
 impl SkillRemoteUpdater for GithubSkillRemoteUpdater {
-    fn latest_hash(&self, source: &LockedRemoteSkillSource) -> Result<String> {
+    fn latest_hash(&mut self, source: &LockedRemoteSkillSource) -> Result<String> {
         let tmp = temp_skill_update_dir("hash");
         if tmp.exists() {
             fs::remove_dir_all(&tmp)
@@ -2167,18 +2176,9 @@ impl SkillRemoteUpdater for GithubSkillRemoteUpdater {
         result
     }
 
-    fn install(&self, source: &LockedRemoteSkillSource, destination: &Path) -> Result<()> {
-        let client = remote_skill_client()?;
+    fn install(&mut self, source: &LockedRemoteSkillSource, destination: &Path) -> Result<()> {
+        let archive = self.archive_for(source)?;
         let package = format!("{}/{}", source.owner, source.repo);
-        let reference = archive_reference(&source.reference);
-        let archive = fetch_github_archive(
-            &client,
-            &source.owner,
-            &source.repo,
-            reference,
-            DEFAULT_ARCHIVE_BASE,
-            &package,
-        )?;
         if is_repo_root_skill_path(&source.skill_path) {
             copy_root_skill_from_archive(&archive, destination, &package)
         } else {
@@ -2188,10 +2188,51 @@ impl SkillRemoteUpdater for GithubSkillRemoteUpdater {
     }
 }
 
+impl GithubSkillRemoteUpdater {
+    fn archive_key(source: &LockedRemoteSkillSource) -> GithubArchiveKey {
+        GithubArchiveKey {
+            owner: source.owner.clone(),
+            repo: source.repo.clone(),
+            reference: archive_reference(&source.reference).to_string(),
+        }
+    }
+
+    fn archive_for(&mut self, source: &LockedRemoteSkillSource) -> Result<&GitHubArchive> {
+        let key = Self::archive_key(source);
+        if !self.archives.contains_key(&key) {
+            let client = remote_skill_client()?;
+            let package = format!("{}/{}", source.owner, source.repo);
+            let archive = fetch_github_archive(
+                &client,
+                &source.owner,
+                &source.repo,
+                &key.reference,
+                DEFAULT_ARCHIVE_BASE,
+                &package,
+            )?;
+            self.archives.insert(key.clone(), archive);
+        }
+        Ok(self.archives.get(&key).expect("archive inserted"))
+    }
+
+    #[cfg(test)]
+    fn archive_for_with(
+        &mut self,
+        source: &LockedRemoteSkillSource,
+        fetch: impl FnOnce() -> Result<GitHubArchive>,
+    ) -> Result<&GitHubArchive> {
+        let key = Self::archive_key(source);
+        if !self.archives.contains_key(&key) {
+            self.archives.insert(key.clone(), fetch()?);
+        }
+        Ok(self.archives.get(&key).expect("archive inserted"))
+    }
+}
+
 fn update_library_skills_with_remote_updater(
     user_home: &Path,
     name_filter: Option<&str>,
-    updater: &dyn SkillRemoteUpdater,
+    updater: &mut dyn SkillRemoteUpdater,
     mut on_progress: impl FnMut(SkillLibraryUpdateProgress),
 ) -> Result<SkillLibraryUpdateResult> {
     if let Some(name) = name_filter {
@@ -2414,7 +2455,7 @@ fn github_owner_repo_from_ref(source: &str) -> Option<(String, String)> {
 }
 
 fn update_skill_destination(
-    updater: &dyn SkillRemoteUpdater,
+    updater: &mut dyn SkillRemoteUpdater,
     source: &LockedRemoteSkillSource,
     destination: &Path,
 ) -> Result<()> {
@@ -3286,14 +3327,14 @@ mod tests {
     }
 
     impl SkillRemoteUpdater for FakeSkillRemoteUpdater {
-        fn latest_hash(&self, source: &LockedRemoteSkillSource) -> Result<String> {
+        fn latest_hash(&mut self, source: &LockedRemoteSkillSource) -> Result<String> {
             self.latest_hashes
                 .get(&source.skill_name)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("missing fake hash for {}", source.skill_name))
         }
 
-        fn install(&self, source: &LockedRemoteSkillSource, destination: &Path) -> Result<()> {
+        fn install(&mut self, source: &LockedRemoteSkillSource, destination: &Path) -> Result<()> {
             fs::create_dir_all(destination)
                 .with_context(|| format!("failed to create {}", destination.display()))?;
             fs::write(
@@ -3305,6 +3346,39 @@ mod tests {
             )?;
             Ok(())
         }
+    }
+
+    #[test]
+    fn github_skill_remote_updater_reuses_archive_for_same_repository_reference() {
+        let source = LockedRemoteSkillSource {
+            skill_name: "demo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            reference: String::new(),
+            skill_path: "skills/demo".into(),
+            skill_folder_hash: "hash".into(),
+        };
+        let mut updater = GithubSkillRemoteUpdater::default();
+        let mut fetches = 0;
+        let archive_root = |fetches: &mut usize| {
+            *fetches += 1;
+            let temp_dir = tempdir().unwrap();
+            Ok(GitHubArchive::from_test_root(temp_dir))
+        };
+
+        let first_root = updater
+            .archive_for_with(&source, || archive_root(&mut fetches))
+            .unwrap()
+            .root()
+            .to_path_buf();
+        let second_root = updater
+            .archive_for_with(&source, || archive_root(&mut fetches))
+            .unwrap()
+            .root()
+            .to_path_buf();
+
+        assert_eq!(fetches, 1);
+        assert_eq!(first_root, second_root);
     }
 
     fn write_v3_lock_entry(user_home: &Path, name: &str, hash: &str, extra: serde_json::Value) {
@@ -4428,13 +4502,14 @@ mod tests {
             "# old",
         )
         .unwrap();
-        let updater = FakeSkillRemoteUpdater {
+        let mut updater = FakeSkillRemoteUpdater {
             latest_hashes: HashMap::from([("demo".into(), "same-hash".into())]),
             contents: HashMap::new(),
         };
 
         let result =
-            update_library_skills_with_remote_updater(&user_home, None, &updater, |_| {}).unwrap();
+            update_library_skills_with_remote_updater(&user_home, None, &mut updater, |_| {})
+                .unwrap();
 
         assert_eq!(result.statuses.len(), 1);
         assert_eq!(result.statuses[0].name, "demo");
@@ -4491,14 +4566,18 @@ mod tests {
             "# old",
         )
         .unwrap();
-        let updater = FakeSkillRemoteUpdater {
+        let mut updater = FakeSkillRemoteUpdater {
             latest_hashes: HashMap::from([("demo".into(), "new-hash".into())]),
             contents: HashMap::from([("demo".into(), "# new".into())]),
         };
 
-        let result =
-            update_library_skills_with_remote_updater(&user_home, Some("demo"), &updater, |_| {})
-                .unwrap();
+        let result = update_library_skills_with_remote_updater(
+            &user_home,
+            Some("demo"),
+            &mut updater,
+            |_| {},
+        )
+        .unwrap();
 
         assert_eq!(result.statuses.len(), 1);
         assert_eq!(result.statuses[0].status, SkillLibraryUpdateState::Updated);
@@ -4559,13 +4638,14 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let updater = FakeSkillRemoteUpdater {
+        let mut updater = FakeSkillRemoteUpdater {
             latest_hashes: HashMap::new(),
             contents: HashMap::new(),
         };
 
         let result =
-            update_library_skills_with_remote_updater(&user_home, None, &updater, |_| {}).unwrap();
+            update_library_skills_with_remote_updater(&user_home, None, &mut updater, |_| {})
+                .unwrap();
 
         assert_eq!(result.statuses.len(), 2);
         assert!(result
@@ -4602,11 +4682,11 @@ mod tests {
             Some("old-hash")
         );
 
-        let updater = FakeSkillRemoteUpdater {
+        let mut updater = FakeSkillRemoteUpdater {
             latest_hashes: HashMap::from([("demo".into(), "new-hash".into())]),
             contents: HashMap::from([("demo".into(), "# updated".into())]),
         };
-        update_library_skills_with_remote_updater(&user_home, Some("demo"), &updater, |_| {})
+        update_library_skills_with_remote_updater(&user_home, Some("demo"), &mut updater, |_| {})
             .unwrap();
         let lock = read_skill_lock(&user_home).unwrap();
         let entry = lock

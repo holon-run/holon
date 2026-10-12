@@ -27,6 +27,23 @@ pub(crate) struct ArchiveHttpFailure {
     pub retry_after: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug)]
+pub(crate) struct ArchiveDirectoryNotFound {
+    pub path: PathBuf,
+}
+
+impl fmt::Display for ArchiveDirectoryNotFound {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "archive directory does not exist: {}",
+            self.path.display()
+        )
+    }
+}
+
+impl std::error::Error for ArchiveDirectoryNotFound {}
+
 impl fmt::Display for ArchiveHttpFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.retry_after {
@@ -52,6 +69,16 @@ pub(crate) struct GitHubArchive {
 }
 
 impl GitHubArchive {
+    #[cfg(test)]
+    pub(crate) fn from_test_root(temp_dir: TempDir) -> Self {
+        let root = temp_dir.path().to_path_buf();
+        Self {
+            temp_dir,
+            root,
+            rejected_entries: Vec::new(),
+        }
+    }
+
     pub(crate) async fn fetch(
         client: &crate::github::AsyncClient,
         owner: &str,
@@ -144,11 +171,11 @@ impl GitHubArchive {
             anyhow::bail!("selected archive directory contains unsupported entries");
         }
         let directory = self.root.join(&relative);
-        anyhow::ensure!(
-            directory.is_dir(),
-            "archive directory does not exist: {}",
-            relative.display()
-        );
+        if !directory.is_dir() {
+            return Err(anyhow::Error::new(ArchiveDirectoryNotFound {
+                path: relative,
+            }));
+        }
         Ok(directory)
     }
 
@@ -476,6 +503,12 @@ pub(crate) fn is_not_found(error: &anyhow::Error) -> bool {
             .downcast_ref::<ArchiveHttpFailure>()
             .is_some_and(|failure| failure.status == 404)
     })
+}
+
+pub(crate) fn is_directory_not_found(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.is::<ArchiveDirectoryNotFound>())
 }
 
 #[cfg(test)]

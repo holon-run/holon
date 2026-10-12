@@ -1310,6 +1310,9 @@ fn upsert_remote_source_sync(
             .as_deref()
             .and_then(|error| error.split_once("retry after "))
             .and_then(|(_, value)| value.split_whitespace().next())
+            .map(|value| {
+                value.trim_end_matches(|character| matches!(character, ')' | '.' | ',' | ';'))
+            })
             .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
             .map(|value| value.with_timezone(&Utc));
         let next_retry_at = if retrying {
@@ -3149,10 +3152,10 @@ async fn discover_github_repo_templates_with_client(
 
 /// Discover AgentTemplates from a GitHub repository URL.
 ///
-/// Parses the URL with [`parse_github_repo_url`], resolves the default branch
-/// via the GitHub API when no `/tree/<ref>` is specified, and delegates to
-/// [`discover_github_repo_templates`]. This is the primary entry point for
-/// browsing a remote template library from a repo URL.
+/// Parses the URL with [`parse_github_repo_url`], fetches the requested ref
+/// (or `HEAD` when no `/tree/<ref>` is specified) as a GitHub archive, and
+/// discovers templates from the extracted repository snapshot. This is the
+/// primary entry point for browsing a remote template library from a repo URL.
 pub async fn discover_remote_templates(url: &str) -> Result<Vec<AgentTemplateCatalogEntry>> {
     let parsed = parse_github_repo_url(url)?;
     let github = GitHubTemplateClient::new().await?;
