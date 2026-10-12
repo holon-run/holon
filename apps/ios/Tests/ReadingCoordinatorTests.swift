@@ -28,13 +28,15 @@ private func readingEvent(_ type: String, raw: JSONValue) throws -> HolonSSEEven
     throw HolonConversationError.malformedProtocol
 }
 
-private func readingTurn(_ id: String, index: Int64, text: String? = nil) -> JSONValue {
+private func readingTurn(_ id: String, index: Int64, text: String? = nil,
+                         execution: String? = nil) -> JSONValue {
     var fields: [String: JSONValue] = [
         "turn_id": .string(id),
         "key": .object(["turn_id": .string(id), "turn_index": .integer(index)]),
         "revision": .integer(1), "brief_ids": .array([.string("brief")])
     ]
     if let text { fields["summary"] = .string(text) }
+    if let execution { fields["execution"] = .object(["kind": .string(execution)]) }
     return .object(fields)
 }
 
@@ -1987,6 +1989,69 @@ final class ReadingCoordinatorTests: XCTestCase {
             XCTAssertTrue(merged.hasMore)
             XCTAssertEqual(merged.nextBeforeCursor, "before-41")
         }
+    }
+
+    func testSameEpochRefreshUsesOnlyLiveActiveTurns() throws {
+        let cachedClosed = (1...20).map { readingTurn("turn-\($0)", index: Int64($0)) }
+        // A long-running execution can finish outside the latest terminal window.
+        let staleActive = readingTurn("stale-active", index: 0, execution: "active")
+        let currentActive = readingTurn("current-active", index: 101, execution: "active")
+        let history = try readingSnapshot(cursor: "cached", more: false, before: nil,
+                                          turns: cachedClosed + [staleActive])
+        XCTAssertEqual(history.raw["active_turns"], .array([staleActive]))
+        for firstIndex in [16, 41] {
+            let liveClosed = (firstIndex...100).map { readingTurn("turn-\($0)", index: Int64($0)) }
+            let live = try readingSnapshot(cursor: "latest", before: "before-\(firstIndex)",
+                                           turns: liveClosed + [currentActive])
+            let merged = try ReadingSnapshotWindow.merging(live, history: history)
+            let expectedIndices = firstIndex == 16 ? Array(1...100) : Array(1...20) + Array(41...100)
+            let expectedClosed = expectedIndices.map { readingTurn("turn-\($0)", index: Int64($0)) }
+            XCTAssertEqual(merged.raw["turns"], .array(expectedClosed + [currentActive]))
+            XCTAssertEqual(merged.raw["active_turns"], .array([currentActive]))
+            XCTAssertEqual(merged.snapshotCursor, "latest")
+        }
+    }
+
+    func testSameEpochRefreshPersistsEndedActiveRemovalAcrossColdRestart() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("reading.json")
+        let cache = ReadingCache(file: file)
+        let closed = (1...20).map { readingTurn("turn-\($0)", index: Int64($0)) }
+        let endedActive = readingTurn("turn-21", index: 21, execution: "active")
+        let (coordinator, fake, authority) = try await start(cache: cache, turns: closed + [endedActive])
+        let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+        XCTAssertEqual(coordinator.snapshot?.raw["active_turns"], .array([endedActive]))
+        await fake.setOffline(true)
+        await coordinator.refresh()
+        XCTAssertEqual(coordinator.status, .offline)
+        XCTAssertEqual(coordinator.snapshot?.raw["active_turns"], .array([endedActive]))
+
+        let latest = (41...100).map { readingTurn("turn-\($0)", index: Int64($0)) }
+        let expected = closed + latest
+        await fake.setLiveTurns(latest)
+        await fake.setOffline(false)
+        await coordinator.refresh()
+        XCTAssertEqual(coordinator.status, .live)
+        XCTAssertEqual(coordinator.snapshot?.raw["turns"], .array(expected))
+        XCTAssertEqual(coordinator.snapshot?.raw["active_turns"], .array([]))
+        let saved = try XCTUnwrap(cache.load(partition, agentID: "A"))
+        let persisted = try HolonConversationSnapshot(raw: XCTUnwrap(saved.snapshot))
+        XCTAssertEqual(persisted.raw["turns"], .array(expected))
+        XCTAssertEqual(persisted.raw["active_turns"], .array([]))
+        let flushed = await cache.flush()
+        XCTAssertTrue(flushed)
+        coordinator.disconnect()
+
+        let restored = ReadingCoordinator(cache: ReadingCache(file: file), prefetchBriefLimit: 0)
+        restored.activateOffline(partition: partition)
+        restored.selectAgent("A")
+        try await wait { restored.snapshot != nil }
+        XCTAssertEqual(restored.status, .offline)
+        XCTAssertTrue(restored.isShowingCachedContent)
+        XCTAssertEqual(restored.snapshot?.raw["turns"], .array(expected))
+        XCTAssertEqual(restored.snapshot?.raw["active_turns"], .array([]))
+        restored.disconnect()
     }
 
     func testSameEpochContainedCacheKeepsOlderLiveHistoryBoundary() throws {

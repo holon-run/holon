@@ -149,16 +149,18 @@ enum ReadingSnapshotWindow {
         } else {
             extendsHistory = false
         }
-        var page = history
+        guard case .object(var fields) = history.raw else {
+            throw HolonConversationError.malformedProtocol
+        }
+        // Cached executions cannot contribute activity to a confirmed live snapshot.
+        fields["turns"] = .array(cachedHistory)
+        fields["active_turns"] = .array([])
         if !extendsHistory {
             // Disjoint/contained cache is readable, but cannot advance the live history frontier.
-            guard case .object(var fields) = history.raw else {
-                throw HolonConversationError.malformedProtocol
-            }
             fields["has_more"] = .bool(live.hasMore)
             fields["next_before_cursor"] = live.nextBeforeCursor.map(JSONValue.string) ?? .null
-            page = try HolonConversationSnapshot(raw: .object(fields))
         }
+        let page = try HolonConversationSnapshot(raw: .object(fields))
         let merged = try mergeConversationHistory(live, page: page, maximumTurns: Int.max)
         guard case .array(let turns) = merged.raw["turns"],
               turns.filter({ $0["execution"]?["kind"] != .string("active") }).count <= maximumTurns else {
