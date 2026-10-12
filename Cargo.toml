@@ -47,6 +47,7 @@ decision-openai-decisions = { version = "0.1.0", path = "crates/decision-openai-
 decision-local-onnx = { version = "0.1.0", path = "crates/decision-local-onnx", optional = true }
 holon-model-client = { version = "0.1.0", path = "crates/holon-model-client" }
 encoding_rs = "0.8"
+flate2 = "1.0"
 fs2 = "0.4"
 hyper = { version = "1.5", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service", "http1", "http2"] }
@@ -63,6 +64,8 @@ mime_guess = "2.0"
 schemars = { version = "0.9", features = ["chrono04"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tar = "0.4"
+tempfile = "3.14"
 toml = "1.0"
 sha2 = "0.10"
 jsonwebtoken = { version = ">=10.3.0, <11", features = ["rust_crypto"] }
@@ -88,9 +91,7 @@ default = []
 local-onnx = ["dep:decision-local-onnx", "decision-local-onnx/onnx"]
 
 [dev-dependencies]
-flate2 = "1.0"
 futures-util = "0.3"
-tempfile = "3.14"
 proptest = "1.6"
 tokio = { version = "1.43", features = ["test-util"] }
 

@@ -5,6 +5,7 @@ mod auth;
 pub mod authentication;
 mod callbacks;
 pub(crate) mod github;
+pub(crate) mod github_archive;
 pub mod ids;
 
 pub mod brief;

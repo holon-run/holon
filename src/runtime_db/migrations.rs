@@ -3921,6 +3921,20 @@ CREATE INDEX IF NOT EXISTS idx_messages_agent_trusted_operator
     AND json_extract(payload_json, '$.origin.kind') = 'operator';
 "#,
     },
+    Migration {
+        version: 82,
+        name: "agent_template_remote_source_retry_deadline",
+        sql: r#"
+ALTER TABLE agent_template_remote_source_syncs
+  ADD COLUMN next_retry_at TEXT;
+
+ALTER TABLE agent_template_remote_source_syncs
+  ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS idx_agent_template_remote_source_syncs_retry
+  ON agent_template_remote_source_syncs(next_retry_at, retry_count);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

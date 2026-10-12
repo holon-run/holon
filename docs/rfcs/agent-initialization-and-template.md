@@ -312,6 +312,13 @@ template URL application. A daemon discovers templates in configured remote
 sources by scanning the `agent_templates/` directory and exposes the catalog
 through API responses.
 
+GitHub remote catalogs and explicit GitHub template URLs use a single archive
+download for each sync or resolution. The archive is unpacked with bounded
+resource usage and path/type checks, then templates are discovered and read
+locally; public sources do not require GitHub Contents or repository metadata
+API calls. An omitted ref is represented as `HEAD`, while configured refs
+remain available for reproducible selection.
+
 ### Builtin default template
 
 Holon ships exactly one hidden built-in `holon-default` template as the

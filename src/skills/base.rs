@@ -6,12 +6,14 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+#[cfg(test)]
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tracing::warn;
 
 use crate::github::{BlockingClient, GitHubAuth, RateLimit};
+use crate::github_archive::{ArchiveHttpFailure, GitHubArchive, DEFAULT_ARCHIVE_BASE};
 use crate::types::{
     ActiveSkillRecord, SkillCatalogEntry, SkillInstallMode, SkillRootRegistration,
     SkillRootScanStatus, SkillRootSourceKind, SkillRootView, SkillRootWatchStatus, SkillScope,
@@ -773,17 +775,17 @@ fn remote_package_ref_installs_all_skills(package: &str) -> bool {
 /// Downloads to `tmp`, verifies `SKILL_ENTRYPOINT` exists, records install
 /// metadata, then renames to `destination`.
 fn finalize_remote_skill_download(
-    client: &BlockingClient,
-    source: &RemoteSkillSource,
+    archive: &GitHubArchive,
     skill_path: &str,
     tmp: &Path,
     destination: &Path,
     package: &str,
 ) -> Result<()> {
     if is_repo_root_skill_path(skill_path) {
-        download_github_root_skill(client, source, tmp, package)?;
+        copy_root_skill_from_archive(archive, tmp, package)?;
     } else {
-        download_github_directory(client, source, skill_path, tmp)?;
+        let source_dir = archive.directory(skill_path)?;
+        copy_dir_all(&source_dir, tmp)?;
     }
     if !tmp.join(SKILL_ENTRYPOINT).is_file() {
         bail!(
@@ -809,14 +811,60 @@ fn install_github_remote_skill(
     source: &RemoteSkillSource,
 ) -> Result<String> {
     let client = remote_skill_client()?;
-    install_github_remote_skill_with_client(user_home, package, source, &client)
+    install_github_remote_skill_with_client_and_archive_base(
+        user_home,
+        package,
+        source,
+        &client,
+        DEFAULT_ARCHIVE_BASE,
+    )
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn install_github_remote_skill_with_client(
     user_home: &Path,
     package: &str,
     source: &RemoteSkillSource,
     client: &BlockingClient,
+) -> Result<String> {
+    install_github_remote_skill_with_client_and_archive_base(
+        user_home,
+        package,
+        source,
+        client,
+        DEFAULT_ARCHIVE_BASE,
+    )
+}
+
+fn install_github_remote_skill_with_client_and_archive_base(
+    user_home: &Path,
+    package: &str,
+    source: &RemoteSkillSource,
+    client: &BlockingClient,
+    archive_base: &str,
+) -> Result<String> {
+    let reference = archive_reference(&source.reference);
+    let archive = fetch_github_archive(
+        client,
+        &source.owner,
+        &source.repo,
+        reference,
+        archive_base,
+        package,
+    )?;
+    let source = RemoteSkillSource {
+        reference: reference.to_string(),
+        ..source.clone()
+    };
+    install_github_remote_skill_from_archive(user_home, package, &source, &archive)
+}
+
+fn install_github_remote_skill_from_archive(
+    user_home: &Path,
+    package: &str,
+    source: &RemoteSkillSource,
+    archive: &GitHubArchive,
 ) -> Result<String> {
     let skills_root = user_library_skills_root(user_home);
     fs::create_dir_all(&skills_root)
@@ -842,77 +890,41 @@ fn install_github_remote_skill_with_client(
         fs::remove_dir_all(&tmp).with_context(|| format!("failed to clear {}", tmp.display()))?;
     }
     fs::create_dir_all(&tmp).with_context(|| format!("failed to create {}", tmp.display()))?;
-
-    let effective_ref = resolve_effective_reference(
-        client,
-        &source.owner,
-        &source.repo,
-        &source.reference,
-        package,
-    )?;
-    let resolved_source = RemoteSkillSource {
-        reference: effective_ref.clone(),
-        ..source.clone()
-    };
-
-    // Try the candidate path first (e.g. `skills/my-skill`).
-    let result = finalize_remote_skill_download(
-        client,
-        &resolved_source,
-        &source.path,
-        &tmp,
-        &destination,
-        package,
-    )
-    .map(|()| source.path.clone());
-
-    // Fallback: if the candidate path failed, search the full tree for the
-    // actual skill directory. This handles non-flat catalog layouts where
-    // SKILL.md lives deeper than `skills/<name>/`.
-    // Only fall back for 404 (path not found); transient failures (timeout,
-    // auth, rate limit) should propagate without an avoidable extra API call.
-    let result = match result {
-        Ok(installed_path) => Ok(installed_path),
-        Err(original_error) => {
-            if !original_error
-                .downcast_ref::<RemoteSkillInstallFailed>()
-                .is_some_and(|e| e.status == Some(404))
-            {
-                return Err(original_error);
-            }
-            let _ = fs::remove_dir_all(&tmp);
-            fs::create_dir_all(&tmp)
-                .with_context(|| format!("failed to create {}", tmp.display()))?;
-            match discover_skills_via_tree(
-                client,
-                &source.owner,
-                &source.repo,
-                &effective_ref,
-                "",
-                package,
-            ) {
-                Ok(skills) => match skills
-                    .iter()
-                    .find(|(name, _)| name == &source.skill_name)
-                    .map(|(_, path)| path.clone())
-                    .filter(|path| path != &source.path)
-                {
-                    Some(found_path) => finalize_remote_skill_download(
-                        client,
-                        &resolved_source,
-                        &found_path,
+    let result =
+        match finalize_remote_skill_download(archive, &source.path, &tmp, &destination, package) {
+            Ok(()) => Ok(source.path.clone()),
+            Err(original_error) => {
+                // Preserve the legacy non-flat repository behavior without another
+                // network request: the archive is already available locally.
+                let discovered_path = (!is_repo_root_skill_path(&source.path))
+                    .then(|| {
+                        discover_skills_via_archive(archive, REPO_ROOT_SKILL_PATH, &source.repo)
+                    })
+                    .and_then(|result| result.ok())
+                    .and_then(|skills| {
+                        skills
+                            .into_iter()
+                            .find(|(name, path)| name == &source.skill_name && path != &source.path)
+                            .map(|(_, path)| path)
+                    });
+                if let Some(discovered_path) = discovered_path {
+                    fs::remove_dir_all(&tmp)
+                        .with_context(|| format!("failed to clear {}", tmp.display()))?;
+                    fs::create_dir_all(&tmp)
+                        .with_context(|| format!("failed to create {}", tmp.display()))?;
+                    finalize_remote_skill_download(
+                        archive,
+                        &discovered_path,
                         &tmp,
                         &destination,
                         package,
                     )
-                    .map(|()| found_path),
-                    None => Err(original_error),
-                },
-                Err(error) if error.downcast_ref::<RateLimit>().is_some() => Err(error),
-                Err(_) => Err(original_error),
+                    .map(|()| discovered_path)
+                } else {
+                    Err(original_error)
+                }
             }
-        }
-    };
+        };
     if result.is_err() {
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -925,33 +937,49 @@ fn install_github_remote_skill_set(
     source: &RemoteSkillSetSource,
 ) -> Result<Vec<RemoteSkillInstall>> {
     let client = remote_skill_client()?;
-    install_github_remote_skill_set_with_client(user_home, package, source, &client)
+    install_github_remote_skill_set_with_client_and_archive_base(
+        user_home,
+        package,
+        source,
+        &client,
+        DEFAULT_ARCHIVE_BASE,
+    )
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn install_github_remote_skill_set_with_client(
     user_home: &Path,
     package: &str,
     source: &RemoteSkillSetSource,
     client: &BlockingClient,
 ) -> Result<Vec<RemoteSkillInstall>> {
-    let effective_ref = resolve_effective_reference(
+    install_github_remote_skill_set_with_client_and_archive_base(
+        user_home,
+        package,
+        source,
+        client,
+        DEFAULT_ARCHIVE_BASE,
+    )
+}
+
+fn install_github_remote_skill_set_with_client_and_archive_base(
+    user_home: &Path,
+    package: &str,
+    source: &RemoteSkillSetSource,
+    client: &BlockingClient,
+    archive_base: &str,
+) -> Result<Vec<RemoteSkillInstall>> {
+    let reference = archive_reference(&source.reference);
+    let archive = fetch_github_archive(
         client,
         &source.owner,
         &source.repo,
-        &source.reference,
+        reference,
+        archive_base,
         package,
     )?;
-    let skills = discover_skills_via_tree(
-        client,
-        &source.owner,
-        &source.repo,
-        &effective_ref,
-        &source.path,
-        package,
-    )?;
-    // Deduplicate by skill name: first occurrence wins. Without this, two
-    // different subdirectories exposing the same leaf name would collide via
-    // SkillInstallConflict and abort the whole batch mid-install.
+    let skills = discover_skills_via_archive(&archive, &source.path, &source.repo)?;
     let mut seen = std::collections::HashSet::new();
     let skills: Vec<_> = skills
         .into_iter()
@@ -981,12 +1009,12 @@ fn install_github_remote_skill_set_with_client(
         let source = RemoteSkillSource {
             owner: source.owner.clone(),
             repo: source.repo.clone(),
-            reference: effective_ref.clone(),
+            reference: reference.to_string(),
             path: skill_path,
             skill_name,
         };
         let installed_path =
-            install_github_remote_skill_with_client(user_home, package, &source, &client)?;
+            install_github_remote_skill_from_archive(user_home, package, &source, &archive)?;
         installed.push(RemoteSkillInstall {
             skill_name: source.skill_name,
             owner: source.owner,
@@ -998,6 +1026,117 @@ fn install_github_remote_skill_set_with_client(
     Ok(installed)
 }
 
+fn remote_skill_client() -> Result<BlockingClient> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(REMOTE_SKILL_INSTALL_TIMEOUT_SECONDS))
+        .user_agent(format!("holon/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("failed to create remote skill HTTP client")?;
+    BlockingClient::new(
+        client,
+        GitHubAuth::resolve_blocking(None, &["GITHUB_TOKEN", "GH_TOKEN"]),
+        "https://api.github.com",
+    )
+}
+
+fn archive_reference(reference: &str) -> &str {
+    if reference.is_empty() {
+        "HEAD"
+    } else {
+        reference
+    }
+}
+
+fn fetch_github_archive(
+    client: &BlockingClient,
+    owner: &str,
+    repo: &str,
+    reference: &str,
+    archive_base: &str,
+    package: &str,
+) -> Result<GitHubArchive> {
+    GitHubArchive::fetch_blocking(client, owner, repo, reference, archive_base).map_err(|error| {
+        if error
+            .chain()
+            .any(|cause| cause.is::<ArchiveHttpFailure>() || cause.is::<RateLimit>())
+        {
+            return error.context(format!("failed to fetch remote skill archive '{package}'"));
+        }
+        RemoteSkillInstallFailed {
+            package: package.to_owned(),
+            status: None,
+            stdout: String::new(),
+            stderr: error.to_string(),
+        }
+        .into()
+    })
+}
+
+fn discover_skills_via_archive(
+    archive: &GitHubArchive,
+    path_prefix: &str,
+    repo: &str,
+) -> Result<Vec<(String, String)>> {
+    let root = if is_repo_root_skill_path(path_prefix) {
+        archive.root().to_path_buf()
+    } else {
+        archive.directory(path_prefix)?
+    };
+    let logical_prefix = if is_repo_root_skill_path(path_prefix) {
+        String::new()
+    } else {
+        path_prefix.trim_end_matches('/').to_string()
+    };
+    let mut skills = Vec::new();
+    collect_archive_skill_dirs(&root, &logical_prefix, repo, &mut skills)?;
+    Ok(skills)
+}
+
+fn collect_archive_skill_dirs(
+    directory: &Path,
+    logical_path: &str,
+    repo: &str,
+    skills: &mut Vec<(String, String)>,
+) -> Result<()> {
+    if directory.join(SKILL_ENTRYPOINT).is_file() {
+        let skill_name = logical_path
+            .rsplit('/')
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(repo);
+        validate_skill_name(skill_name)?;
+        let skill_path = if logical_path.is_empty() {
+            REPO_ROOT_SKILL_PATH.to_string()
+        } else {
+            logical_path.to_string()
+        };
+        skills.push((skill_name.to_string(), skill_path));
+    }
+    let mut entries = fs::read_dir(directory)
+        .with_context(|| format!("failed to read {}", directory.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let child_path = if logical_path.is_empty() {
+                name
+            } else {
+                format!("{logical_path}/{name}")
+            };
+            collect_archive_skill_dirs(&entry.path(), &child_path, repo, skills)?;
+        } else if file_type.is_symlink() || !file_type.is_file() {
+            bail!(
+                "selected GitHub archive subtree contains unsupported entry: {}",
+                entry.path().display()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
 struct GithubContentEntry {
     name: String,
@@ -1007,11 +1146,13 @@ struct GithubContentEntry {
     download_url: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
 struct GithubRepoInfo {
     default_branch: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
 struct GithubTreeEntry {
     path: String,
@@ -1019,15 +1160,15 @@ struct GithubTreeEntry {
     kind: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
 struct GithubTreeResponse {
     tree: Vec<GithubTreeEntry>,
     truncated: bool,
 }
 
-/// Resolve the effective Git reference for a remote skill source.
-/// If the reference is empty or `"HEAD"`, queries the repository's actual
-/// default branch via `GET /repos/{o}/{r}`.
+#[cfg(test)]
+#[allow(dead_code)]
 fn resolve_effective_reference(
     client: &BlockingClient,
     owner: &str,
@@ -1041,6 +1182,7 @@ fn resolve_effective_reference(
     resolve_default_branch(client, owner, repo, package)
 }
 
+#[cfg(test)]
 fn resolve_default_branch(
     client: &BlockingClient,
     owner: &str,
@@ -1057,7 +1199,7 @@ fn resolve_default_branch(
             format!("failed to fetch repository metadata for {url}")
         })?;
     if !response.status().is_success() {
-        return Err(remote_skill_api_error(client, response, &package));
+        return Err(remote_skill_api_error(client, response, package));
     }
     let info: GithubRepoInfo = response
         .json()
@@ -1065,9 +1207,7 @@ fn resolve_default_branch(
     Ok(info.default_branch)
 }
 
-/// Discover all skill directories (paths containing `SKILL.md`) via the Git
-/// Trees API. Returns `(skill_name, skill_dir_path)` pairs filtered by
-/// `path_prefix`.
+#[cfg(test)]
 fn discover_skills_via_tree(
     client: &BlockingClient,
     owner: &str,
@@ -1087,7 +1227,7 @@ fn discover_skills_via_tree(
             format!("failed to fetch repository tree for {url}")
         })?;
     if !response.status().is_success() {
-        return Err(remote_skill_api_error(client, response, &package));
+        return Err(remote_skill_api_error(client, response, package));
     }
     let tree_data: GithubTreeResponse = response
         .json()
@@ -1116,19 +1256,7 @@ fn discover_skills_via_tree(
     Ok(skills)
 }
 
-fn remote_skill_client() -> Result<BlockingClient> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(REMOTE_SKILL_INSTALL_TIMEOUT_SECONDS))
-        .user_agent(format!("holon/{}", env!("CARGO_PKG_VERSION")))
-        .build()
-        .context("failed to create remote skill HTTP client")?;
-    BlockingClient::new(
-        client,
-        GitHubAuth::resolve_blocking(None, &["GITHUB_TOKEN", "GH_TOKEN"]),
-        "https://api.github.com",
-    )
-}
-
+#[cfg(test)]
 fn remote_skill_api_error(
     client: &BlockingClient,
     response: reqwest::blocking::Response,
@@ -1148,14 +1276,43 @@ fn remote_skill_api_error(
     .into()
 }
 
+fn copy_root_skill_from_archive(
+    archive: &GitHubArchive,
+    destination: &Path,
+    package: &str,
+) -> Result<()> {
+    let root = archive.root();
+    let skill = root.join(SKILL_ENTRYPOINT);
+    if !skill.is_file() {
+        bail!(
+            "remote skill '{}' did not contain {} at repository root",
+            package,
+            SKILL_ENTRYPOINT
+        );
+    }
+    fs::copy(&skill, destination.join(SKILL_ENTRYPOINT))
+        .with_context(|| format!("failed to copy {}", skill.display()))?;
+    for companion in ROOT_SKILL_COMPANION_DIRS {
+        let source = root.join(companion);
+        if !source.is_dir() {
+            continue;
+        }
+        let checked = archive.directory(companion)?;
+        copy_dir_all(&checked, &destination.join(companion))?;
+    }
+    Ok(())
+}
+
 fn is_repo_root_skill_path(path: &str) -> bool {
     path == REPO_ROOT_SKILL_PATH
 }
 
+#[cfg(test)]
 fn is_root_skill_companion_dir(name: &str) -> bool {
     ROOT_SKILL_COMPANION_DIRS.contains(&name)
 }
 
+#[cfg(test)]
 fn remote_skill_from_tree_blob(path: &str, prefix: &str, repo: &str) -> Option<(String, String)> {
     if path == SKILL_ENTRYPOINT {
         if prefix.is_empty() && validate_skill_name(repo).is_ok() {
@@ -1174,6 +1331,8 @@ fn remote_skill_from_tree_blob(path: &str, prefix: &str, repo: &str) -> Option<(
     Some((name.to_string(), dir.to_string()))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn download_github_root_skill(
     client: &BlockingClient,
     source: &RemoteSkillSource,
@@ -1218,6 +1377,7 @@ fn download_github_root_skill(
     Ok(())
 }
 
+#[cfg(test)]
 fn download_github_directory(
     client: &BlockingClient,
     source: &RemoteSkillSource,
@@ -1254,6 +1414,7 @@ fn download_github_directory(
     Ok(())
 }
 
+#[cfg(test)]
 fn download_github_file(
     client: &BlockingClient,
     package: &str,
@@ -1279,6 +1440,7 @@ fn download_github_file(
     Ok(())
 }
 
+#[cfg(test)]
 fn remote_skill_request<T, F>(
     result: std::result::Result<T, reqwest::Error>,
     package: &str,
@@ -1300,6 +1462,7 @@ where
     })
 }
 
+#[cfg(test)]
 fn validate_github_download_url(download_url: &str) -> Result<()> {
     let url = reqwest::Url::parse(download_url)
         .with_context(|| format!("invalid GitHub download URL {download_url}"))?;
@@ -1309,10 +1472,12 @@ fn validate_github_download_url(download_url: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn github_contents_url(source: &RemoteSkillSource, remote_path: &str) -> String {
     github_contents_url_parts(&source.owner, &source.repo, &source.reference, remote_path)
 }
 
+#[cfg(test)]
 fn github_contents_url_parts(
     owner: &str,
     repo: &str,
@@ -1337,6 +1502,7 @@ fn github_contents_url_parts(
     )
 }
 
+#[cfg(test)]
 fn validate_skill_archive_entry(name: &str) -> Result<()> {
     if name.is_empty() || name.contains(std::path::is_separator) || name == "." || name == ".." {
         bail!("remote skill archive contains invalid entry name: {name}");
@@ -2004,25 +2170,21 @@ impl SkillRemoteUpdater for GithubSkillRemoteUpdater {
     fn install(&self, source: &LockedRemoteSkillSource, destination: &Path) -> Result<()> {
         let client = remote_skill_client()?;
         let package = format!("{}/{}", source.owner, source.repo);
-        let effective_ref = resolve_effective_reference(
+        let reference = archive_reference(&source.reference);
+        let archive = fetch_github_archive(
             &client,
             &source.owner,
             &source.repo,
-            &source.reference,
+            reference,
+            DEFAULT_ARCHIVE_BASE,
             &package,
         )?;
-        download_github_directory(
-            &client,
-            &RemoteSkillSource {
-                owner: source.owner.clone(),
-                repo: source.repo.clone(),
-                reference: effective_ref,
-                path: source.skill_path.clone(),
-                skill_name: source.skill_name.clone(),
-            },
-            &source.skill_path,
-            destination,
-        )
+        if is_repo_root_skill_path(&source.skill_path) {
+            copy_root_skill_from_archive(&archive, destination, &package)
+        } else {
+            let source_dir = archive.directory(&source.skill_path)?;
+            copy_dir_all(&source_dir, destination)
+        }
     }
 }
 
@@ -2775,6 +2937,15 @@ mod tests {
         auth: GitHubAuth,
         timeout: Duration,
     ) -> (BlockingClient, std::thread::JoinHandle<Vec<String>>) {
+        let (client, server, _) = github_mock_with_base(responses, auth, timeout);
+        (client, server)
+    }
+
+    fn github_mock_with_base(
+        responses: Vec<(u16, &'static str, String)>,
+        auth: GitHubAuth,
+        timeout: Duration,
+    ) -> (BlockingClient, std::thread::JoinHandle<Vec<String>>, String) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -2821,7 +2992,7 @@ mod tests {
             &base,
         )
         .unwrap();
-        (client, server)
+        (client, server, base)
     }
 
     fn mock_auth() -> GitHubAuth {
@@ -2999,7 +3170,7 @@ mod tests {
     #[test]
     fn github_skill_404_fallback_preserves_tree_rate_limit_and_stops() {
         let home = tempdir().unwrap();
-        let (client, server) = github_mock(
+        let (client, server, archive_base) = github_mock_with_base(
             vec![
                 (404, "", r#"{"message":"Not Found"}"#.into()),
                 (
@@ -3011,17 +3182,21 @@ mod tests {
             mock_auth(),
             Duration::from_secs(2),
         );
-        let error = install_github_remote_skill_with_client(
+        let error = install_github_remote_skill_with_client_and_archive_base(
             home.path(),
             "owner/repo",
             &mock_source("skills/demo"),
             &client,
+            &archive_base,
         )
         .unwrap_err();
-        assert!(error.downcast_ref::<RateLimit>().is_some(), "{error:#}");
-        assert!(error
-            .to_string()
-            .contains("GitHub API rate limit exceeded (HTTP 403)"));
+        assert!(
+            error
+                .chain()
+                .any(|cause| cause.is::<RateLimit>() || cause.is::<ArchiveHttpFailure>()),
+            "{error:#}"
+        );
+        assert!(format!("{error:#}").contains("HTTP 403"));
         assert!(error.downcast_ref::<RemoteSkillInstallFailed>().is_none());
         assert_eq!(server.join().unwrap().len(), 2);
         assert!(!skill_lock_path(home.path()).exists());
@@ -3031,19 +3206,13 @@ mod tests {
     #[test]
     fn github_skill_root_recursive_and_set_rate_limits_stop() {
         for scenario in ["root", "recursive", "set", "metadata"] {
-            let mut responses = Vec::new();
-            if scenario == "recursive" {
-                responses.push((200, "", r#"[{"name":"nested","path":"skills/demo/nested","type":"dir","download_url":null}]"#.into()));
-            }
-            if scenario == "set" {
-                responses.push((200, "", r#"{"tree":[{"path":"skills/demo/SKILL.md","type":"blob"},{"path":"skills/second/SKILL.md","type":"blob"}],"truncated":false}"#.into()));
-            }
-            responses.push((429, "Retry-After: 1\r\n", "{}".into()));
+            let responses = vec![(429, "Retry-After: 1\r\n", "{}".into())];
             let count = responses.len();
-            let (client, server) = github_mock(responses, mock_auth(), Duration::from_secs(2));
+            let (client, server, archive_base) =
+                github_mock_with_base(responses, mock_auth(), Duration::from_secs(2));
             let home = tempdir().unwrap();
             let error = match scenario {
-                "set" => install_github_remote_skill_set_with_client(
+                "set" => install_github_remote_skill_set_with_client_and_archive_base(
                     home.path(),
                     "owner/repo",
                     &RemoteSkillSetSource {
@@ -3053,12 +3222,13 @@ mod tests {
                         path: "skills".into(),
                     },
                     &client,
+                    &archive_base,
                 )
                 .unwrap_err(),
                 "metadata" => {
                     resolve_default_branch(&client, "owner", "repo", "owner/repo").unwrap_err()
                 }
-                _ => install_github_remote_skill_with_client(
+                _ => install_github_remote_skill_with_client_and_archive_base(
                     home.path(),
                     "owner/repo",
                     &mock_source(if scenario == "root" {
@@ -3067,17 +3237,18 @@ mod tests {
                         "skills/demo"
                     }),
                     &client,
+                    &archive_base,
                 )
                 .unwrap_err(),
             };
             assert!(
-                error.downcast_ref::<RateLimit>().is_some(),
+                error
+                    .chain()
+                    .any(|cause| cause.is::<RateLimit>() || cause.is::<ArchiveHttpFailure>()),
                 "{scenario}: {error:#}"
             );
             assert!(
-                error
-                    .to_string()
-                    .contains("GitHub API rate limit exceeded (HTTP 429)"),
+                format!("{error:#}").contains("HTTP 429"),
                 "{scenario}: {error}"
             );
             assert_eq!(server.join().unwrap().len(), count);

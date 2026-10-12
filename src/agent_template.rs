@@ -10,6 +10,7 @@ use crate::{
         AgentTemplatesConfigFile, CredentialKind,
     },
     github::{ApiFailure, AsyncClient, BlockingClient, GitHubAuth},
+    github_archive::{GitHubArchive, DEFAULT_ARCHIVE_BASE},
     runtime_db::RuntimeDb,
     types::{
         AgentTemplateCatalogEntry, AgentTemplateDetail, AgentTemplateSkillDependency,
@@ -302,6 +303,7 @@ struct GitHubContentsFileResponse {
 }
 
 /// Entry in a GitHub Contents API directory listing response.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct GitHubContentsDirEntry {
     name: String,
@@ -982,11 +984,25 @@ pub fn agent_template_remote_source_needs_sync(
         return Ok(true);
     };
     if row.status != AgentTemplateRemoteSourceSyncStatus::Synced {
+        if row
+            .next_retry_at
+            .is_some_and(|next_retry_at| next_retry_at > Utc::now())
+        {
+            return Ok(false);
+        }
         return Ok(true);
     }
     let Some(last_synced_at) = row.last_synced_at else {
-        return Ok(true);
+        return Ok(row
+            .next_retry_at
+            .is_none_or(|next_retry_at| next_retry_at <= Utc::now()));
     };
+    if row
+        .next_retry_at
+        .is_some_and(|next_retry_at| next_retry_at > Utc::now())
+    {
+        return Ok(false);
+    }
     Ok(Utc::now().signed_duration_since(last_synced_at) >= stale_after)
 }
 
@@ -1000,6 +1016,7 @@ struct RemoteSourceDbRow {
     catalog: Vec<AgentTemplateCatalogEntry>,
     diagnostics: Vec<AgentTemplateCatalogDiagnostic>,
     error: Option<String>,
+    next_retry_at: Option<DateTime<Utc>>,
 }
 
 fn load_remote_source_row(
@@ -1008,7 +1025,7 @@ fn load_remote_source_row(
 ) -> Result<Option<RemoteSourceDbRow>> {
     connection
         .query_row(
-            "SELECT kind, status, last_synced_at, resolved_ref, resolved_revision, catalog_json, diagnostics_json, error \
+            "SELECT kind, status, last_synced_at, resolved_ref, resolved_revision, catalog_json, diagnostics_json, error, next_retry_at \
              FROM agent_template_remote_source_syncs WHERE source_id = ?1",
             [source_id],
             |row| {
@@ -1025,6 +1042,7 @@ fn load_remote_source_row(
                     catalog_json,
                     diagnostics_json,
                     row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                 ))
             },
         )
@@ -1039,6 +1057,7 @@ fn load_remote_source_row(
                 catalog_json,
                 diagnostics_json,
                 error,
+                next_retry_at,
             )| {
                 Ok(RemoteSourceDbRow {
                     kind,
@@ -1054,6 +1073,10 @@ fn load_remote_source_row(
                     diagnostics: serde_json::from_str(&diagnostics_json)
                         .context("failed to decode remote template diagnostics_json")?,
                     error,
+                    next_retry_at: next_retry_at
+                        .map(|value| value.parse())
+                        .transpose()
+                        .context("failed to parse remote source next_retry_at")?,
                 })
             },
         )
@@ -1114,17 +1137,25 @@ pub async fn sync_agent_template_remote_source(
 
     let parsed = parse_github_repo_url(&config.url)?;
     let github = GitHubTemplateClient::from_remote_source_config(user_home, config).await?;
-    let resolved_ref = match config.git_ref.clone().or(parsed.git_ref) {
-        Some(value) => value,
-        None => fetch_default_branch_with_client(&github, &parsed.owner, &parsed.repo).await?,
-    };
-    let mut catalog = discover_github_repo_templates_with_client(
-        &github,
+    let resolved_ref = config
+        .git_ref
+        .clone()
+        .or(parsed.git_ref)
+        .unwrap_or_else(|| "HEAD".to_string());
+    let archive = GitHubArchive::fetch(
+        &github.client,
         &parsed.owner,
         &parsed.repo,
         &resolved_ref,
+        &github_template_archive_base(),
     )
     .await?;
+    let mut catalog = discover_github_repo_templates_from_archive(
+        &archive,
+        &parsed.owner,
+        &parsed.repo,
+        &resolved_ref,
+    )?;
     for entry in &mut catalog {
         entry.source_id = Some(source_id.to_string());
         entry.resolved_ref = Some(resolved_ref.clone());
@@ -1153,8 +1184,8 @@ pub async fn sync_agent_template_remote_source(
     let mut failures = Vec::new();
     let mut installed = 0usize;
     for entry in &catalog {
-        let result = install_remote_template_catalog_entry(
-            &github,
+        let result = install_remote_template_catalog_entry_from_archive(
+            &archive,
             &templates_root,
             &registry,
             source_id,
@@ -1162,8 +1193,7 @@ pub async fn sync_agent_template_remote_source(
             &resolved_ref,
             now,
             entry,
-        )
-        .await;
+        );
         match result {
             Ok(record) => {
                 installed += 1;
@@ -1256,16 +1286,54 @@ fn upsert_remote_source_sync(
     let now = Utc::now().to_rfc3339();
     let created_at = now.clone();
     db.transaction(|tx| {
+        let previous_retry_count: i64 = tx
+            .query_row(
+                "SELECT COALESCE(retry_count, 0) FROM agent_template_remote_source_syncs \
+                 WHERE source_id = ?1",
+                [status.source_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let retrying = matches!(
+            status.status,
+            AgentTemplateRemoteSourceSyncStatus::Failed
+                | AgentTemplateRemoteSourceSyncStatus::PartiallyFailed
+        );
+        let retry_count = if retrying {
+            previous_retry_count.saturating_add(1)
+        } else {
+            0
+        };
+        let retry_after = status
+            .error
+            .as_deref()
+            .and_then(|error| error.split_once("retry after "))
+            .and_then(|(_, value)| value.split_whitespace().next())
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc));
+        let next_retry_at = if retrying {
+            let deadline = retry_after.unwrap_or_else(|| {
+                let delay_seconds = 60_i64
+                    .saturating_mul(1_i64 << (retry_count as u32).min(8))
+                    .min(6 * 60 * 60);
+                Utc::now() + chrono::Duration::seconds(delay_seconds)
+            });
+            Some(deadline.to_rfc3339())
+        } else {
+            None
+        };
         tx.execute(
             "INSERT INTO agent_template_remote_source_syncs \
-             (source_id, kind, url, requested_ref, enabled, status, last_synced_at, resolved_ref, resolved_revision, catalog_json, diagnostics_json, error, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
+             (source_id, kind, url, requested_ref, enabled, status, last_synced_at, resolved_ref, resolved_revision, catalog_json, diagnostics_json, error, next_retry_at, retry_count, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
              ON CONFLICT(source_id) DO UPDATE SET \
                kind = excluded.kind, url = excluded.url, requested_ref = excluded.requested_ref, \
                enabled = excluded.enabled, status = excluded.status, last_synced_at = excluded.last_synced_at, \
                resolved_ref = excluded.resolved_ref, resolved_revision = excluded.resolved_revision, \
                catalog_json = excluded.catalog_json, diagnostics_json = excluded.diagnostics_json, \
-               error = excluded.error, updated_at = excluded.updated_at",
+               error = excluded.error, next_retry_at = excluded.next_retry_at, \
+               retry_count = excluded.retry_count, updated_at = excluded.updated_at",
             params![
                 status.source_id,
                 status.kind,
@@ -1279,6 +1347,8 @@ fn upsert_remote_source_sync(
                 catalog_json,
                 diagnostics_json,
                 status.error,
+                next_retry_at,
+                retry_count,
                 created_at,
                 now,
             ],
@@ -1453,6 +1523,7 @@ pub(crate) async fn resolve_remote_agent_template_detail(
     })
 }
 
+#[allow(dead_code)]
 async fn install_remote_template_catalog_entry(
     github: &GitHubTemplateClient,
     templates_root: &Path,
@@ -2456,10 +2527,10 @@ fn is_github_tree_url(template: &str) -> Result<bool> {
 }
 
 async fn resolve_github_template(template: &str) -> Result<ResolvedTemplate> {
-    let github = GitHubTemplateClient::new().await?;
-    resolve_github_template_with_client(&github, template).await
+    resolve_github_template_archive_first(template).await
 }
 
+#[allow(dead_code)]
 async fn resolve_github_template_with_client(
     github: &GitHubTemplateClient,
     template: &str,
@@ -2612,6 +2683,22 @@ fn load_github_template_credential_profile_token(
 
 fn github_template_api_base() -> String {
     env::var(GITHUB_TEMPLATE_API_BASE_ENV).unwrap_or_else(|_| "https://api.github.com".to_string())
+}
+
+fn github_template_archive_base() -> String {
+    if cfg!(test) {
+        env::var(GITHUB_TEMPLATE_API_BASE_ENV).unwrap_or_else(|_| DEFAULT_ARCHIVE_BASE.to_string())
+    } else {
+        DEFAULT_ARCHIVE_BASE.to_string()
+    }
+}
+
+fn archive_base_for_install(api_base: &str) -> String {
+    if api_base == "https://api.github.com" {
+        github_template_archive_base()
+    } else {
+        api_base.to_string()
+    }
 }
 
 async fn fetch_github_file(
@@ -2798,9 +2885,207 @@ pub(crate) async fn discover_github_repo_templates(
     git_ref: &str,
 ) -> Result<Vec<AgentTemplateCatalogEntry>> {
     let github = GitHubTemplateClient::new().await?;
-    discover_github_repo_templates_with_client(&github, owner, repo, git_ref).await
+    let archive = GitHubArchive::fetch(
+        &github.client,
+        owner,
+        repo,
+        git_ref,
+        &github_template_archive_base(),
+    )
+    .await?;
+    discover_github_repo_templates_from_archive(&archive, owner, repo, git_ref)
 }
 
+fn discover_github_repo_templates_from_archive(
+    archive: &GitHubArchive,
+    owner: &str,
+    repo: &str,
+    git_ref: &str,
+) -> Result<Vec<AgentTemplateCatalogEntry>> {
+    let root = archive.root().join(DEFAULT_REMOTE_TEMPLATE_DIR);
+    if !root.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut catalog_entries = Vec::new();
+    let mut entries = fs::read_dir(&root)
+        .with_context(|| format!("failed to read {}", root.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let template_id = entry.file_name().to_string_lossy().to_string();
+        let template_dir = entry.path();
+        let Some(manifest) = parse_local_template_manifest(&template_dir) else {
+            tracing::warn!(
+                template = %template_id,
+                "skipping remote template: invalid or missing template.toml"
+            );
+            continue;
+        };
+        catalog_entries.push(AgentTemplateCatalogEntry {
+            catalog_id: format!("remote:{owner}/{repo}/{template_id}"),
+            template: format!("remote:{owner}/{repo}#{template_id}"),
+            template_id: template_id.clone(),
+            source: AgentTemplateSourceKind::Remote,
+            path: None,
+            name: manifest.name,
+            schema_version: Some(manifest.schema),
+            description: manifest.summary,
+            included_skills: Vec::new(),
+            source_id: None,
+            resolved_ref: Some(git_ref.to_string()),
+            resolved_revision: None,
+            source_url: Some(format!(
+                "https://github.com/{owner}/{repo}/tree/{git_ref}/{DEFAULT_REMOTE_TEMPLATE_DIR}/{template_id}"
+            )),
+        });
+    }
+    Ok(catalog_entries)
+}
+
+fn resolve_github_template_from_archive(
+    archive: &GitHubArchive,
+    template_url: &str,
+    owner: &str,
+    repo: &str,
+    git_ref: &str,
+    template_path: &str,
+) -> Result<ResolvedTemplate> {
+    let template_dir = archive
+        .directory(template_path)
+        .with_context(|| format!("template directory not found at {template_path}"))?;
+    let agents_md = fs::read_to_string(template_dir.join(TEMPLATE_AGENTS_FILENAME))
+        .with_context(|| format!("failed to read {TEMPLATE_AGENTS_FILENAME}"))?;
+    if agents_md.trim().is_empty() {
+        bail!("GitHub template {template_url} resolved to an empty AGENTS.md");
+    }
+    let skill_refs = parse_skill_refs(template_dir.join(TEMPLATE_SKILLS_FILENAME))?;
+    let template_toml = read_template_manifest_content(&template_dir);
+    let schema_version = template_toml
+        .as_deref()
+        .and_then(parse_template_manifest)
+        .map(|m| m.schema);
+    Ok(ResolvedTemplate {
+        provenance: TemplateProvenanceSource::GitHubUrl {
+            url: template_url.to_string(),
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            git_ref: git_ref.to_string(),
+            template_path: template_path.to_string(),
+        },
+        agents_md,
+        template_toml,
+        skill_refs,
+        schema_version,
+    })
+}
+
+async fn resolve_github_template_archive_first(template: &str) -> Result<ResolvedTemplate> {
+    let url = reqwest::Url::parse(template)?;
+    if url.query().is_some() || url.fragment().is_some() {
+        bail!("GitHub template URL must not include a query string or fragment");
+    }
+    let segments = url
+        .path_segments()
+        .ok_or_else(|| anyhow!("GitHub template URL is missing path segments"))?
+        .collect::<Vec<_>>();
+    if segments.len() < 5 || segments[2] != "tree" {
+        bail!("GitHub template URL must have the form https://github.com/<owner>/<repo>/tree/<ref>/<path-to-template-dir>");
+    }
+    let owner = segments[0];
+    let repo = segments[1];
+    let ref_and_path = &segments[3..];
+    let github = GitHubTemplateClient::new().await?;
+    for split in 1..ref_and_path.len() {
+        let git_ref = ref_and_path[..split].join("/");
+        let template_path = ref_and_path[split..].join("/");
+        let archive = match GitHubArchive::fetch(
+            &github.client,
+            owner,
+            repo,
+            &git_ref,
+            &github_template_archive_base(),
+        )
+        .await
+        {
+            Ok(archive) => archive,
+            Err(error) if github_archive_not_found(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        if let Ok(resolved) = resolve_github_template_from_archive(
+            &archive,
+            template,
+            owner,
+            repo,
+            &git_ref,
+            &template_path,
+        ) {
+            return Ok(resolved);
+        }
+    }
+    bail!("GitHub template URL did not resolve to a readable template directory: {template}")
+}
+
+fn github_archive_not_found(error: &anyhow::Error) -> bool {
+    crate::github_archive::is_not_found(error)
+}
+
+fn install_remote_template_catalog_entry_from_archive(
+    archive: &GitHubArchive,
+    templates_root: &Path,
+    registry: &AgentTemplateRegistry,
+    source_id: &str,
+    source_url: &str,
+    resolved_ref: &str,
+    synced_at: DateTime<Utc>,
+    entry: &AgentTemplateCatalogEntry,
+) -> Result<AgentTemplateRegistryInstalled> {
+    let parsed = parse_github_repo_url(source_url)?;
+    let template_path = format!("{DEFAULT_REMOTE_TEMPLATE_DIR}/{}", entry.template_id);
+    let template_url = entry
+        .source_url
+        .as_deref()
+        .ok_or_else(|| anyhow!("remote template {} has no source URL", entry.catalog_id))?;
+    let resolved = resolve_github_template_from_archive(
+        archive,
+        template_url,
+        &parsed.owner,
+        &parsed.repo,
+        resolved_ref,
+        &template_path,
+    )?;
+    let install_id = choose_remote_template_install_id(templates_root, registry, source_id, entry)?;
+    let destination = templates_root.join(&install_id);
+    let content_hash = resolved_template_content_hash(&resolved);
+    let state = ManagedTemplateState {
+        template_id: entry.template_id.clone(),
+        content_hash: content_hash.clone(),
+        owner: ManagedTemplateOwner::RemoteSource {
+            source_id: source_id.to_string(),
+            url: source_url.to_string(),
+            resolved_ref: resolved_ref.to_string(),
+            source_url: template_url.to_string(),
+            synced_at,
+        },
+    };
+    write_managed_template_dir(&destination, &resolved, &state)
+        .with_context(|| format!("failed to install remote template {}", entry.template_id))?;
+    Ok(AgentTemplateRegistryInstalled {
+        template_id: entry.template_id.clone(),
+        source_id: source_id.to_string(),
+        source_url: source_url.to_string(),
+        source_resolved_ref: resolved_ref.to_string(),
+        template_path: remote_template_source_path(template_url),
+        local_path: install_id,
+        content_hash,
+        synced_at,
+    })
+}
+
+#[allow(dead_code)]
 async fn discover_github_repo_templates_with_client(
     github: &GitHubTemplateClient,
     owner: &str,
@@ -2871,11 +3156,16 @@ async fn discover_github_repo_templates_with_client(
 pub async fn discover_remote_templates(url: &str) -> Result<Vec<AgentTemplateCatalogEntry>> {
     let parsed = parse_github_repo_url(url)?;
     let github = GitHubTemplateClient::new().await?;
-    let git_ref = match parsed.git_ref {
-        Some(r) => r,
-        None => fetch_default_branch_with_client(&github, &parsed.owner, &parsed.repo).await?,
-    };
-    discover_github_repo_templates_with_client(&github, &parsed.owner, &parsed.repo, &git_ref).await
+    let git_ref = parsed.git_ref.unwrap_or_else(|| "HEAD".to_string());
+    let archive = GitHubArchive::fetch(
+        &github.client,
+        &parsed.owner,
+        &parsed.repo,
+        &git_ref,
+        &github_template_archive_base(),
+    )
+    .await?;
+    discover_github_repo_templates_from_archive(&archive, &parsed.owner, &parsed.repo, &git_ref)
 }
 
 async fn materialize_template(agent_home: &Path, template: &ResolvedTemplate) -> Result<()> {
@@ -3141,23 +3431,9 @@ fn install_template_from_github_with_client(
     fs::create_dir_all(&templates_root)
         .with_context(|| format!("failed to create {}", templates_root.display()))?;
 
-    let tmp = templates_root.join(format!(
-        ".tmp-holon-template-{}-{}",
-        std::process::id(),
-        uuid::Uuid::new_v4()
-    ));
-    let _guard = TmpDirGuard(&tmp);
-
-    fs::create_dir_all(&tmp).with_context(|| format!("failed to create {}", tmp.display()))?;
-
-    // GitHub refs (branch/tag names) can contain slashes, making the
-    // ref/path boundary in a tree URL ambiguous.  Try candidate splits
-    // from longest ref to shortest; the first tarball download that
-    // succeeds identifies the correct ref.
     let segments: Vec<&str> = source.all_after_tree.split('/').collect();
-    let mut bytes = None;
-    let mut resolved_path = String::new();
-
+    let mut selected_archive = None;
+    let mut search_dir = None;
     for i in (1..=segments.len()).rev() {
         let candidate_ref = segments[..i].join("/");
         let candidate_path = if i < segments.len() {
@@ -3165,64 +3441,35 @@ fn install_template_from_github_with_client(
         } else {
             String::new()
         };
-        let tarball_url = format!(
-            "{api_base}/repos/{}/{}/tarball/{}",
-            source.owner, source.repo, candidate_ref
-        );
-        let response = client
-            .get(&tarball_url)
-            .header("Accept", "application/vnd.github+json")
-            .send()
-            .context("failed to request GitHub tarball")?;
-        if response.status().is_success() {
-            resolved_path = candidate_path;
-            bytes = Some(
-                response
-                    .bytes()
-                    .context("failed to read GitHub tarball body")?,
-            );
+        let archive = match GitHubArchive::fetch_blocking(
+            client,
+            &source.owner,
+            &source.repo,
+            &candidate_ref,
+            &archive_base_for_install(api_base),
+        ) {
+            Ok(archive) => archive,
+            Err(error) if github_archive_not_found(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        if let Ok(path) = archive.directory(&candidate_path) {
+            selected_archive = Some(archive);
+            search_dir = Some(path);
             break;
         }
-        let failure = client.response_error(response);
-        if failure.rate_limit.is_some() {
-            return Err(github_template_failure(
-                failure,
-                format!(
-                    "GitHub tarball download failed for {}/{}@{candidate_ref}",
-                    source.owner, source.repo
-                ),
-            ));
-        }
     }
-    let bytes = bytes.ok_or_else(|| {
+    let _selected_archive = selected_archive.ok_or_else(|| {
         anyhow!(
-            "GitHub tarball download failed: no valid ref found for '{}'",
+            "GitHub archive download failed: no valid ref/path found for '{}'",
             source.all_after_tree
         )
     })?;
-    let tarball_path = tmp.join("archive.tar.gz");
-    fs::write(&tarball_path, &bytes)
-        .with_context(|| format!("failed to write tarball to {}", tarball_path.display()))?;
-
-    let extract_dir = tmp.join("extracted");
-    fs::create_dir_all(&extract_dir)?;
-    extract_tarball(&tarball_path, &extract_dir)?;
-
-    // GitHub tarballs contain a single top-level directory.
-    let mut search_dir = extract_dir.clone();
-    let entries: Vec<_> = fs::read_dir(&search_dir)?.collect::<Result<_, _>>()?;
-    if entries.len() == 1 && entries[0].path().is_dir() {
-        search_dir = entries[0].path();
-    }
-    if !resolved_path.is_empty() {
-        search_dir = search_dir.join(&resolved_path);
-    }
-    if !search_dir.is_dir() {
-        bail!(
-            "template directory not found at '{}' in the downloaded archive",
-            resolved_path
-        );
-    }
+    let search_dir = search_dir.ok_or_else(|| {
+        anyhow!(
+            "GitHub archive download failed: no valid ref/path found for '{}'",
+            source.all_after_tree
+        )
+    })?;
 
     if !search_dir.join(TEMPLATE_MANIFEST_FILENAME).exists()
         && !search_dir.join("AGENTS.md").exists()
@@ -3266,6 +3513,7 @@ fn install_template_from_github_with_client(
     Ok(template_id)
 }
 
+#[allow(dead_code)]
 struct TmpDirGuard<'a>(&'a Path);
 impl Drop for TmpDirGuard<'_> {
     fn drop(&mut self) {
@@ -3306,6 +3554,7 @@ impl ParsedGithubTemplateUrl {
     }
 }
 
+#[allow(dead_code)]
 fn extract_tarball(tarball_path: &Path, dest: &Path) -> Result<()> {
     let output = std::process::Command::new("tar")
         .arg("-xzf")
@@ -3375,6 +3624,8 @@ mod tests {
     use crate::config::{save_credential_store_at, CredentialProfileFile, CredentialStoreFile};
 
     use super::*;
+
+    mod archive_tests;
 
     struct EnvGuard {
         key: &'static str,
@@ -5502,6 +5753,51 @@ summary = "Implementation agent"
         assert!(!agent_template_remote_source_needs_sync(
             &db,
             source_id,
+            chrono::Duration::hours(24)
+        )
+        .unwrap());
+    }
+
+    #[tokio::test]
+    async fn failed_remote_source_sync_is_deferred_until_retry_deadline() {
+        let _lock = crate::test_env::lock_env();
+        let home = tempdir().unwrap();
+        let db = RuntimeDb::open_and_migrate(
+            home.path().join("runtime.sqlite"),
+            home.path().join("runtime.sqlite.lock"),
+        )
+        .unwrap();
+        let status = AgentTemplateRemoteSourceStatus {
+            source_id: "official".into(),
+            kind: "github".into(),
+            url: "https://github.com/owner/repo".into(),
+            requested_ref: Some("main".into()),
+            enabled: true,
+            status: AgentTemplateRemoteSourceSyncStatus::Failed,
+            last_synced_at: Some(Utc::now()),
+            resolved_ref: None,
+            resolved_revision: None,
+            error: Some(
+                "GitHub archive request failed (HTTP 429; retry after 2099-01-01T00:00:00+00:00)"
+                    .into(),
+            ),
+        };
+        upsert_remote_source_sync(&db, &status, &[], &[]).unwrap();
+
+        let retry_at: String = db
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT next_retry_at FROM agent_template_remote_source_syncs \
+                 WHERE source_id = 'official'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(retry_at.starts_with("2099-01-01T00:00:00"));
+        assert!(!agent_template_remote_source_needs_sync(
+            &db,
+            "official",
             chrono::Duration::hours(24)
         )
         .unwrap());
