@@ -799,10 +799,7 @@ impl RuntimeHandle {
         let command = crate::runtime_db::transitions::QueueTransitionCommand {
             agent_id,
             operation: crate::runtime_db::transitions::QueueOperation::Discard,
-            mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                expected: expected_queue,
-                record: aborted_queue,
-            },
+            mutation: crate::runtime_db::transitions::QueueMutation::Upsert(aborted_queue),
             scheduler_claim_work_item: None,
             agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
                 expected: Some(Box::new(mutation.last_persisted_state.clone())),
@@ -821,7 +818,16 @@ impl RuntimeHandle {
                 self.inner.runtime_db.transitions().commit_queue(&command)
             })
             .await;
-        anyhow::ensure!(result.is_err(), "fixture must leave publication pending");
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => bail!("fixture must leave publication pending"),
+        };
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("committed but publication requires reconciliation"),
+            "fixture must reach the known publication fault: {error:#}"
+        );
         let recovery = mutation.reservations[mutation.primary_index]
             .recovery()?
             .context("fixture recovery facts are missing")?;
