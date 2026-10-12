@@ -24,10 +24,14 @@ class AlphaError(ValueError):
 
 
 def version_data(version, root=ROOT):
-    result = subprocess.run(
-        ["bash", str(root / "scripts/android-release-version.sh"), version],
-        check=True, capture_output=True, text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["bash", str(root / "scripts/android-release-version.sh"), version],
+            check=True, capture_output=True, text=True,
+        )
+    except subprocess.CalledProcessError as error:
+        # This local validator emits fixed rejection text, not API responses.
+        raise AlphaError(error.stderr.strip() or "Android version validation failed.") from error
     data = dict(line.split("=", 1) for line in result.stdout.splitlines())
     return data["version_name"], int(data["version_code"])
 
@@ -65,6 +69,18 @@ def snapshot(session, edit):
     tracks = request(session, "GET", f"{API}/{edit}/tracks")["tracks"]
     testers = request(session, "GET", f"{API}/{edit}/testers/{TRACK}")
     return {track["track"]: track for track in tracks}, testers
+
+
+def discard_edit(session, edit):
+    try:
+        request(session, "DELETE", f"{API}/{edit}")
+    except Exception as error:
+        # Cleanup cannot override a committed result or the original failure.
+        print(
+            f"Warning: temporary Play edit cleanup failed ({type(error).__name__}); "
+            "inspect Console for abandoned edits.",
+            file=sys.stderr,
+        )
 
 
 def publish(session, bundle, name, code, status, notes):
@@ -117,7 +133,7 @@ def publish(session, bundle, name, code, status, notes):
         committed = True
     finally:
         if not committed:
-            request(session, "DELETE", f"{API}/{edit}")
+            discard_edit(session, edit)
 
     # A committed edit alone is not proof of tester availability.
     verification = request(session, "POST", API, json={})["id"]
@@ -126,7 +142,7 @@ def publish(session, bundle, name, code, status, notes):
         if actual != after or actual_testers != testers:
             raise AlphaError("Committed Alpha readback did not match; inspect Console before retrying.")
     finally:
-        request(session, "DELETE", f"{API}/{verification}")
+        discard_edit(session, verification)
     return digest
 
 

@@ -2,12 +2,15 @@
 """Credential-free contract tests run by the Alpha pull-request workflow."""
 
 from copy import deepcopy
+from contextlib import redirect_stderr
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -42,6 +45,8 @@ class Publisher:
         self.upload_code = 50001
         self.upload_hash = None
         self.commit_status = 200
+        self.delete_status = 200
+        self.delete_error = None
         self.mutate = None
         self.bad_readback = False
 
@@ -75,7 +80,11 @@ class Publisher:
             return Response(self.tracks[0])
         if url.endswith(":commit"):
             return Response({}, self.commit_status)
-        if url.endswith(":validate") or method == "DELETE":
+        if method == "DELETE":
+            if self.delete_error:
+                raise self.delete_error
+            return Response({"private_key": "never-log-cleanup-secret"}, self.delete_status)
+        if url.endswith(":validate"):
             return Response({})
         raise AssertionError(f"Unexpected API request: {method} {url}")
 
@@ -102,10 +111,23 @@ class CandidateTests(unittest.TestCase):
             self.assertEqual(self.cargo.read_text(), self.source)
 
     def test_invalid_versions_do_not_mutate(self):
-        for version in ("0.50.1-rc1", "$(echo unsafe)", "0.5000.1"):
-            with self.assertRaises(subprocess.CalledProcessError):
+        for version, reason in (
+            ("0.50.1-rc1", "Expected a stable"),
+            ("$(echo unsafe)", "Expected a stable"),
+            ("0.5000.1", "components exceed"),
+        ):
+            with self.assertRaisesRegex(alpha.AlphaError, reason):
                 alpha.prepare(version, self.root)
             self.assertEqual(self.cargo.read_text(), self.source)
+
+    def test_prepare_cli_reports_local_validation_rejection(self):
+        result = subprocess.run(
+            [sys.executable, "-B", str(ROOT / "scripts/android-play-alpha.py"), "prepare", "0.50.1-rc1"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "Expected a stable major.minor.patch Android release version.\n")
 
 
 class PublishTests(unittest.TestCase):
@@ -209,6 +231,37 @@ class PublishTests(unittest.TestCase):
         with self.assertRaisesRegex(alpha.AlphaError, "readback"):
             self.upload()
         self.assertEqual(len(self.commits()), 1)
+
+    def test_readback_cleanup_failure_does_not_override_success(self):
+        for failure in (500, RuntimeError("never-log-cleanup-secret")):
+            self.publisher = Publisher()
+            if isinstance(failure, int):
+                self.publisher.delete_status = failure
+            else:
+                self.publisher.delete_error = failure
+            warnings = io.StringIO()
+            with redirect_stderr(warnings):
+                self.assertEqual(self.upload(), hashlib.sha256(self.bundle.read_bytes()).hexdigest())
+            self.assertEqual(len(self.commits()), 1)
+            self.assertEqual(self.publisher.edits, 2)
+            self.assertEqual(self.publisher.calls[-1][:2], ("DELETE", f"{alpha.API}/2"))
+            self.assertIn("temporary Play edit cleanup failed", warnings.getvalue())
+            self.assertNotIn("never-log-cleanup-secret", warnings.getvalue())
+
+    def test_cleanup_failure_preserves_commit_and_readback_rejections(self):
+        for stage, reason in (("commit", "HTTP 400"), ("readback", "readback")):
+            self.publisher = Publisher()
+            self.publisher.delete_status = 500
+            if stage == "commit":
+                self.publisher.commit_status = 400
+            else:
+                self.publisher.bad_readback = True
+            warnings = io.StringIO()
+            with redirect_stderr(warnings), self.assertRaisesRegex(alpha.AlphaError, reason):
+                self.upload()
+            self.assertEqual(len(self.commits()), 1)
+            self.assertIn("temporary Play edit cleanup failed", warnings.getvalue())
+            self.assertNotIn("never-log-cleanup-secret", warnings.getvalue())
 
     def test_authentication_error_is_sanitized(self):
         class Denied:
