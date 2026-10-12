@@ -165,6 +165,8 @@ impl RuntimeHandle {
             .storage
             .append_event(&brief::make_acknowledgement_event(message))?;
         let context_build_started = std::time::Instant::now();
+        let _context_preparation =
+            crate::diagnostics::io_probe::context_preparation(&message.agent_id);
         let context_build_started_at = chrono::Utc::now();
         let identity = self.agent_identity_view().await?;
         let default_external_ingress = self

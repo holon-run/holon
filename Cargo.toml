@@ -138,3 +138,7 @@ harness = false
 [[bench]]
 name = "context_snapshot"
 harness = false
+
+[[bench]]
+name = "agent_state_workload"
+harness = false

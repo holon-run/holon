@@ -1,7 +1,7 @@
 use std::{
     fs,
     fs::File,
-    io::{ErrorKind, Read},
+    io::ErrorKind,
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -74,7 +74,7 @@ pub(crate) fn refresh_plan_artifact_metadata(
 
 pub(crate) fn query_plan_artifact(agent_home: &Path, record: &WorkItemRecord) -> PlanArtifactQuery {
     let path = plan_path(agent_home, &record.id);
-    let file = match File::open(&path) {
+    let file = match crate::diagnostics::io_probe::open_file(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == ErrorKind::NotFound => {
             return if record.plan_artifact.is_some() {
@@ -125,7 +125,8 @@ pub(crate) fn describe_plan_artifact(
     owner_agent_id: &str,
     work_item_id: &str,
 ) -> Result<WorkItemPlanArtifact> {
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let file = crate::diagnostics::io_probe::open_file(path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
     describe_open_plan_artifact(file, path, owner_agent_id, work_item_id)
 }
 
@@ -139,7 +140,7 @@ fn describe_open_plan_artifact(
         .metadata()
         .with_context(|| format!("failed to stat {}", path.display()))?;
     let mut content = Vec::new();
-    file.read_to_end(&mut content)
+    crate::diagnostics::io_probe::read_to_end(&mut file, &mut content)
         .with_context(|| format!("failed to read {}", path.display()))?;
     let hash = format!("sha256:{:x}", Sha256::digest(&content));
     let text = String::from_utf8_lossy(&content);

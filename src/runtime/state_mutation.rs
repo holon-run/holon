@@ -56,6 +56,7 @@ pub(super) struct RuntimeMutation {
     candidate: Box<RuntimeAgent>,
     base: Box<RuntimeAgent>,
     deferred_abort: Option<DeferredRunAbort>,
+    measurement_started: Option<std::time::Instant>,
 }
 
 impl std::ops::Deref for RuntimeMutation {
@@ -219,6 +220,13 @@ impl RuntimeMutation {
         self.base = self.candidate.clone();
         self.deferred_abort = None;
         strip_authoritative_effects(&mut committed.effects);
+        if let Some(started) = self.measurement_started.take() {
+            crate::diagnostics::io_probe::record_timing(
+                crate::diagnostics::io_probe::TimingKind::CommitPublication,
+                started.elapsed(),
+            );
+        }
+        self.measurement_started = crate::diagnostics::io_probe::start_timer();
         Ok(committed)
     }
 
@@ -519,6 +527,7 @@ impl RuntimeHandle {
         &self,
         owners: Vec<mutation_owner::MutationOwner>,
     ) -> Result<RuntimeMutation> {
+        let measurement_started = crate::diagnostics::io_probe::start_timer();
         // reserve_all also acquires every member of a pending recovery group.
         let requested = owners.clone();
         let mut reservations = mutation_owner::MutationOwner::reserve_all(owners).await?;
@@ -583,6 +592,7 @@ impl RuntimeHandle {
             base: candidate.clone(),
             candidate,
             deferred_abort: None,
+            measurement_started,
         })
     }
 

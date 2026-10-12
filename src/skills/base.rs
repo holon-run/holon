@@ -159,7 +159,7 @@ pub(crate) fn load_catalog_for_root(
     root_id: String,
 ) -> Result<Vec<SkillCatalogEntry>> {
     let mut entries = Vec::new();
-    let read_dir = match fs::read_dir(root) {
+    let read_dir = match crate::diagnostics::io_probe::read_dir(root) {
         Ok(read_dir) => read_dir,
         Err(error) => {
             warn!("skipping unreadable skill root {}: {error}", root.display());
@@ -196,7 +196,7 @@ pub(crate) fn load_catalog_for_root(
         if !skill_path.is_file() {
             continue;
         }
-        let content = match fs::read_to_string(&skill_path) {
+        let content = match crate::diagnostics::io_probe::read_to_string(&skill_path) {
             Ok(content) => content,
             Err(error) => {
                 warn!(
@@ -1699,7 +1699,9 @@ fn materialize_copied_skill_ref(skills_root: &Path, path: &Path) -> Result<PathB
 
 fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst).with_context(|| format!("failed to create {}", dst.display()))?;
-    for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
+    for entry in crate::diagnostics::io_probe::read_dir(src)
+        .with_context(|| format!("failed to read {}", src.display()))?
+    {
         let entry = entry?;
         let file_type = entry.file_type()?;
         let src_path = entry.path();
@@ -1742,7 +1744,8 @@ fn record_install_metadata(destination: &Path, install_mode: &str) -> Result<()>
 }
 
 fn read_install_metadata(skill_dir: &Path) -> Option<SkillInstallMetadata> {
-    let content = fs::read(skill_dir.join(INSTALL_METADATA_FILENAME)).ok()?;
+    let content =
+        crate::diagnostics::io_probe::read(skill_dir.join(INSTALL_METADATA_FILENAME)).ok()?;
     serde_json::from_slice(&content).ok()
 }
 
@@ -2355,15 +2358,17 @@ fn hash_skill_folder(skill_dir: &Path) -> Result<String> {
     for (relative_path, path) in files {
         hasher.update(relative_path.to_string_lossy().as_bytes());
         hasher.update([0]);
-        hasher
-            .update(fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?);
+        hasher.update(
+            crate::diagnostics::io_probe::read(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?,
+        );
         hasher.update([0]);
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn collect_skill_files(root: &Path, dir: &Path, files: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
-    let mut entries = fs::read_dir(dir)
+    let mut entries = crate::diagnostics::io_probe::read_dir(dir)
         .with_context(|| format!("failed to read {}", dir.display()))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.path());
@@ -2484,7 +2489,8 @@ fn read_skill_lock(user_home: &Path) -> Result<serde_json::Value> {
         }));
     }
     let value: serde_json::Value = serde_json::from_slice(
-        &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
+        &crate::diagnostics::io_probe::read(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?,
     )
     .with_context(|| format!("failed to parse {}", path.display()))?;
     match value {
@@ -2579,7 +2585,7 @@ fn library_skill_dirs(
     name_filter: Option<&str>,
 ) -> Result<BTreeMap<String, PathBuf>> {
     let mut skills = BTreeMap::new();
-    let read_dir = match fs::read_dir(skills_root) {
+    let read_dir = match crate::diagnostics::io_probe::read_dir(skills_root) {
         Ok(read_dir) => read_dir,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(skills),
         Err(error) => {
@@ -2616,7 +2622,7 @@ pub fn list_installed_skills(agent_home: &Path) -> Result<Vec<InstalledSkillView
     let mut entries = Vec::new();
     for skills_root in existing_skill_roots(Some(agent_home), &SKILL_ROOT_SUFFIXES) {
         let root_id = skill_root_id_for_scope(SkillScope::Agent, &skills_root);
-        let read_dir = match fs::read_dir(&skills_root) {
+        let read_dir = match crate::diagnostics::io_probe::read_dir(&skills_root) {
             Ok(read_dir) => read_dir,
             Err(error) => {
                 warn!(
@@ -2635,9 +2641,10 @@ pub fn list_installed_skills(agent_home: &Path) -> Result<Vec<InstalledSkillView
             let skill_name = child.file_name().to_string_lossy().to_string();
             let skill_path = child.path().join(SKILL_ENTRYPOINT);
             let catalog = if skill_path.is_file() {
-                let content = fs::read_to_string(&skill_path).with_context(|| {
-                    format!("failed to read installed skill {}", skill_path.display())
-                })?;
+                let content = crate::diagnostics::io_probe::read_to_string(&skill_path)
+                    .with_context(|| {
+                        format!("failed to read installed skill {}", skill_path.display())
+                    })?;
                 let parsed = parse_skill_metadata(&content);
                 SkillCatalogEntry {
                     skill_id: format!("{root_id}:{skill_name}"),

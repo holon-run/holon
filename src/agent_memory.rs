@@ -40,7 +40,7 @@ pub fn load_agent_memory_with_budget(
 }
 
 fn load_source(path: PathBuf, budget_chars: usize) -> Result<Option<AgentMemorySource>> {
-    let raw = match std::fs::read_to_string(&path) {
+    let raw = match crate::diagnostics::io_probe::read_to_string(&path) {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err.into()),

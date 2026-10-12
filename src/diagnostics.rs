@@ -7,6 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub mod attribution;
+pub mod io_probe;
 
 const HISTOGRAM_UPPER_BOUNDS_MS: [u64; 27] = [
     0,

@@ -113,6 +113,7 @@ impl RuntimeDbSidecarGuard {
 }
 
 pub(crate) fn open_connection(path: &Path) -> Result<Connection> {
+    crate::diagnostics::io_probe::record_db_open();
     use crate::diagnostics::attribution;
     let _attempt = attribution::CONNECTION.start();
     let started_at = Instant::now();
@@ -124,6 +125,7 @@ pub(crate) fn open_connection(path: &Path) -> Result<Connection> {
     let sqlite_open = attribution::SQLITE_OPEN.start();
     let connection =
         Connection::open(path).with_context(|| format!("opening runtime db {}", path.display()))?;
+    crate::diagnostics::io_probe::observe_sql_connection(&connection)?;
     drop(sqlite_open);
     let configure = attribution::CONFIGURE.start();
     enable_persistent_wal(&connection, path)?;

@@ -232,7 +232,7 @@ impl SkillsRegistry {
         registration: &SkillRootRegistration,
     ) -> Option<RootInputFingerprint> {
         let mut children = Vec::new();
-        for child in fs::read_dir(&registration.root_path).ok()? {
+        for child in crate::diagnostics::io_probe::read_dir(&registration.root_path).ok()? {
             let child = child.ok()?;
             let child_path = child.path();
             let file_type = child.file_type().ok()?;

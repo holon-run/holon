@@ -65,7 +65,7 @@ pub fn scan_agent_home_notes(agent_home: &Path) -> Option<Vec<NoteCatalogEntry>>
         return None;
     }
 
-    let read_dir = match std::fs::read_dir(&dir) {
+    let read_dir = match crate::diagnostics::io_probe::read_dir(&dir) {
         Ok(read_dir) => read_dir,
         Err(error) => {
             tracing::debug!(
@@ -92,7 +92,7 @@ pub fn scan_agent_home_notes(agent_home: &Path) -> Option<Vec<NoteCatalogEntry>>
             continue;
         }
         let relative = path_relative_to_agent_home(agent_home, &path);
-        let content = match std::fs::read_to_string(&path) {
+        let content = match crate::diagnostics::io_probe::read_to_string(&path) {
             Ok(content) => content,
             Err(error) => {
                 tracing::debug!(

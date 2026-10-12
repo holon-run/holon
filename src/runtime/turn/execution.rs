@@ -2176,6 +2176,7 @@ impl<'a> TurnExecution<'a> {
                         native_web_search.clone(),
                     );
                     append_inference_time(&mut request.conversation, &inference_time);
+                    crate::diagnostics::io_probe::context_request_prepared(agent_id);
                     crate::diagnostics::record_provider_request_build(
                         request_build_started.elapsed(),
                     );
