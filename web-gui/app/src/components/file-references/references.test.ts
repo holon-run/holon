@@ -9,6 +9,12 @@ const resolved = { status: "resolved" as const, location: base };
 const item = (key: string) => ({ key, reference: { type: "absolute_path", absolutePath: `/${key}` } as FileReference });
 
 describe("shared Markdown references", () => {
+  it("collects bare workspace URIs with single tildes intact", () => {
+    const references = collectMarkdownReferences("see workspace://ws/a~b and 1~2s");
+
+    expect([...references.values()].map(({ raw }) => raw)).toEqual(["workspace://ws/a~b"]);
+  });
+
   it("decodes URL paths once; code paths stay literal", () => {
     const path = "/tmp/空 格(1)%25#?.md";
     const encoded = path.split("/").map(encodeURIComponent).join("/");

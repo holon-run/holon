@@ -65,6 +65,16 @@ describe("MarkdownContent GFM formatting", () => {
 });
 
 describe("MarkdownContent resolve degradation", () => {
+  it("keeps collection and rendering aligned for bare workspace URIs with single tildes", () => {
+    const html = renderToStaticMarkup(
+      <MarkdownContent text="see workspace://ws/a~b and 1~2s" />,
+    );
+
+    expect(html).toContain("workspace://ws/a~b");
+    expect(html).toContain("file-reference-unresolved");
+    expect(html).not.toContain("<del>");
+  });
+
   it("renders the raw reference text without an error state or retry when resolution fails", () => {
     const html = renderToStaticMarkup(
       <MarkdownContent text={"See `/tmp/repo/ambiguous/file.rs` for details."} />,
