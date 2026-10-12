@@ -282,9 +282,11 @@ impl RuntimeHandle {
             | MessageKind::BriefResult => true,
             MessageKind::TaskResult => false,
         };
-        if reducer_only_dispatch {
-            self.begin_reducer_only_turn(&message).await?;
-        }
+        let reducer_dispatch = if reducer_only_dispatch {
+            Some(self.begin_reducer_only_turn(&message).await?)
+        } else {
+            None
+        };
         let task = task?;
         let mut terminal_transition = None;
         let mut reducer_only_reason = None;
@@ -375,6 +377,17 @@ impl RuntimeHandle {
             transition => transition,
         };
 
+        let actual_dispatch = terminal_transition
+            .as_ref()
+            .map(|transition| {
+                (
+                    transition.turn_record.turn_id.clone(),
+                    transition.turn_record.turn_index,
+                )
+            })
+            .or(reducer_dispatch)
+            .ok_or_else(|| anyhow!("post-dispatch memory requires an actual Turn binding"))?;
+
         if let Some(resolution) = continuation_resolution.as_ref() {
             self.persist_last_continuation(resolution).await?;
             self.record_continuation_resolution_event(&message, resolution)
@@ -407,28 +420,70 @@ impl RuntimeHandle {
         self.record_wait_reconciliation_signals(&message).await?;
         let final_closure = self.current_closure_decision().await?;
         {
+            use crate::memory::episode_transition::{
+                plan_episode_memory, EpisodeMemoryPlanInput, FrozenEpisodeMemoryValues,
+            };
+            use crate::runtime_db::episode_memory::{
+                EpisodeMemoryInvocation, EpisodeMemoryKey, EpisodeMemoryTransitionCommand,
+            };
+            let key = EpisodeMemoryKey {
+                agent_id: message.agent_id.clone(),
+                identity_incarnation: self.inner.identity_incarnation,
+                actual_dispatch_turn_id: actual_dispatch.0.clone(),
+            };
+            let invocation = EpisodeMemoryInvocation {
+                message_id: message.id.clone(),
+                turn_index: actual_dispatch.1,
+            };
             let mut guard = self.begin_mutation().await?;
-            let refs_commit = self
-                .refresh_current_work_item_refs(&mut guard, &message)
-                .await?;
-            let work_refs_changed = refs_commit.is_some();
-            let memory_refresh =
-                refresh_working_memory(&self.inner.storage, &mut guard.state, &final_closure)?;
-            let episode_changed = refresh_episode_memory(
-                &self.inner.storage,
-                &mut guard.state,
-                &message,
-                &prior_closure,
-                &final_closure,
-                &memory_refresh.previous_snapshot,
-                &memory_refresh.current_snapshot,
-            )?;
-            if work_refs_changed || memory_refresh.working_memory_updated || episode_changed {
-                guard.persist_state(&self.inner.storage).await?;
-            }
-            drop(guard);
-            if let Some(commit) = refs_commit {
-                self.apply_transition_commit(commit).await;
+            // Original-outcome lookup comes before refresh and ID allocation.
+            // Replaying a phase cannot recompute memory or replace current state.
+            if self
+                .inner
+                .runtime_db
+                .episode_memory_receipt(&key, None, &invocation)?
+                .is_none()
+            {
+                anyhow::ensure!(
+                    guard.state.turn_index == actual_dispatch.1,
+                    "post-dispatch memory cannot advance another Turn"
+                );
+                let refs_commit = self
+                    .refresh_current_work_item_refs(&mut guard, &message)
+                    .await?;
+                let memory_refresh =
+                    refresh_working_memory(&self.inner.storage, &mut guard.state, &final_closure)?;
+                let frozen = FrozenEpisodeMemoryValues {
+                    timestamp: Utc::now(),
+                    initial_builder_id: crate::ids::episode_id(),
+                    fallback_builder_id: crate::ids::episode_id(),
+                    next_builder_id: crate::ids::episode_id(),
+                    audit_event_id: crate::ids::audit_event_id(),
+                };
+                let plan = plan_episode_memory(
+                    EpisodeMemoryPlanInput {
+                        agent: &guard.state,
+                        actual_dispatch_turn_id: &actual_dispatch.0,
+                        trigger: &message,
+                        prior_closure: &prior_closure,
+                        current_closure: &final_closure,
+                        previous_snapshot: &memory_refresh.previous_snapshot,
+                        current_snapshot: &memory_refresh.current_snapshot,
+                    },
+                    &frozen,
+                );
+                let command = EpisodeMemoryTransitionCommand::new(
+                    key,
+                    invocation,
+                    guard.last_persisted_state.clone(),
+                    plan,
+                    frozen.timestamp,
+                )?;
+                guard.commit_episode_memory(&command).await?;
+                drop(guard);
+                if let Some(commit) = refs_commit {
+                    self.apply_transition_commit(commit).await;
+                }
             }
         }
         self.inner.storage.append_event(&AuditEvent::legacy(
@@ -443,9 +498,10 @@ impl RuntimeHandle {
         match terminal_transition {
             Some(transition) => Ok(transition),
             None => {
-                self.build_reducer_only_terminal_transition(
+                self.build_reducer_only_terminal_for_dispatch(
                     reducer_only_reason.unwrap_or("reducer_only/message_consumed"),
                     false,
+                    Some(&actual_dispatch),
                 )
                 .await
             }

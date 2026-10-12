@@ -1,16 +1,23 @@
 //! Context assembly: builds prompt sections from runtime state.
 mod budget;
+pub(crate) mod inputs;
 mod planner;
 mod render;
 mod snapshot;
+use inputs::ContextInputs;
 pub(crate) use planner::ContextPlanEvidence;
 pub(crate) use planner::{ContextPlanDecision, ContextPlanOutcome, ContextPlanReason};
+#[cfg(test)]
 pub(crate) use snapshot::prepare_work_item_scoped_history;
+pub(crate) use snapshot::{
+    acquire_durable_context, observe_context_resources, ContextHistoryPreparation,
+    FilesystemContextResources,
+};
 pub use snapshot::{
     capture_context_from_storage, ContextAcquisitionReport, ContextReadStage, ContextSnapshot,
     ContextSourceDescriptor, ContextSourceKind,
 };
-use snapshot::{HistoryObservations, HistorySnapshot, PendingTaskResult};
+use snapshot::{HistoryObservations, HistorySnapshot, PendingTaskResult, PreparedScopedHistory};
 // Re-import budget helpers for use within this module.
 use budget::{estimate_text_tokens, truncate_section_content};
 use planner::{
@@ -33,7 +40,6 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::{
-    object_resolver::RuntimeObjectResolver,
     projection_eval::{
         ProjectionEvidenceIndex, ProjectionEvidenceRef, ProjectionEvidenceRole, ProjectionOwner,
     },
@@ -113,15 +119,20 @@ pub struct BuiltContext {
     pub(crate) plan_evidence: ContextPlanEvidence,
     pub(crate) projection_evidence: ProjectionEvidenceIndex,
     pub(crate) recent_turns_reprojection: Option<RecentTurnsReprojection>,
+    pub(crate) history_policy: ContextHistoryPreparation,
+    pub(crate) projection_budget: usize,
+    pub(crate) recent_message_limit: usize,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct RecentTurnsReprojection {
     history: std::sync::Arc<HistorySnapshot>,
+    agent_history: std::sync::Arc<HistorySnapshot>,
+    agent_evidence: Vec<ProjectionEvidenceRef>,
+    prepared_scoped: Option<PreparedScopedHistory>,
     current_message: MessageEnvelope,
     current_work_item: Option<WorkItemRecord>,
     initial_budget: usize,
-    scoped_window: Option<usize>,
     snapshot_id: u64,
 }
 
@@ -149,6 +160,29 @@ impl RecentTurnsReprojection {
         let mut reprojection = self.clone();
         reprojection.initial_budget = initial_budget;
         reprojection
+    }
+
+    pub(crate) fn select_recent(&self) -> Self {
+        let mut selected = self.clone();
+        selected.history = selected.agent_history.clone();
+        selected
+    }
+
+    pub(crate) fn select_scoped(&self, window: usize) -> Result<Self> {
+        let scope = self.prepared_scoped.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("work-item history requires explicit snapshot preparation")
+        })?;
+        anyhow::ensure!(
+            scope.window_limit == window,
+            "work-item history policy change requires explicit snapshot preparation"
+        );
+        let mut selected = self.clone();
+        selected.history = scope.history.clone();
+        Ok(selected)
+    }
+
+    pub(crate) fn agent_evidence(&self) -> Vec<ProjectionEvidenceRef> {
+        self.agent_evidence.clone()
     }
 
     pub(crate) fn turn_count(&self) -> usize {
@@ -197,11 +231,8 @@ pub(crate) fn reproject_work_item_scoped_with_limit(
     let Some(work_item) = reprojection.current_work_item.as_ref() else {
         return Ok(WorkItemScopedReprojection::NoCurrentWorkItem);
     };
-    anyhow::ensure!(
-        reprojection.scoped_window == Some(window_limit),
-        "work-item history policy change requires explicit snapshot preparation"
-    );
-    let history = &reprojection.history;
+    let selected = reprojection.select_scoped(window_limit)?;
+    let history = &selected.history;
     if history.turn_records.is_empty() {
         return Ok(WorkItemScopedReprojection::NoOwnedTurnRecords);
     }
@@ -643,13 +674,27 @@ pub fn build_context_from_snapshot(
         .prompt_budget_estimated_tokens
         .min(config.turn_projection_budget());
     let recent_turns_compact_budget = recent_turns_budget.min(128);
+    let projection_evidence = build_projection_evidence(
+        agent,
+        current_message,
+        current_work_item,
+        &turn_records,
+        &messages,
+        &briefs,
+        &tools,
+    );
     let mut recent_turns_reprojection =
         (!turn_records.is_empty()).then(|| RecentTurnsReprojection {
             history: snapshot.data.history.clone(),
+            agent_history: snapshot.data.history.clone(),
+            agent_evidence: projection_evidence
+                .get("recent_turns")
+                .cloned()
+                .unwrap_or_default(),
+            prepared_scoped: snapshot.data.scoped_history.clone(),
             current_message: current_message.clone(),
             current_work_item: current_work_item.cloned(),
             initial_budget: recent_turns_budget,
-            scoped_window: None,
             snapshot_id: snapshot.id(),
         });
     if let Some(content) = render_recent_turns_with_budget_from_snapshot(
@@ -744,17 +789,12 @@ pub fn build_context_from_snapshot(
     }
 
     Ok(BuiltContext {
+        history_policy: data.history_policy,
+        projection_budget: data.config.turn_projection_budget(),
+        recent_message_limit: data.config.recent_messages,
         sections: plan.sections,
         plan_evidence: plan.evidence,
-        projection_evidence: build_projection_evidence(
-            agent,
-            current_message,
-            current_work_item,
-            &turn_records,
-            &messages,
-            &briefs,
-            &tools,
-        ),
+        projection_evidence,
         recent_turns_reprojection,
     })
 }
@@ -949,7 +989,7 @@ fn projection_owner(work_item_id: Option<&str>, agent_id: &str) -> ProjectionOwn
 }
 
 fn hydrate_recent_turn_references(
-    storage: &AppStorage,
+    storage: &impl ContextInputs,
     turn_records: &[TurnRecord],
     messages: &mut Vec<MessageEnvelope>,
     briefs: &mut Vec<BriefRecord>,
@@ -973,7 +1013,7 @@ fn hydrate_recent_turn_references(
             if message_ids.contains(message_id) {
                 continue;
             }
-            if let Some(message) = storage.read_message_by_id(message_id)? {
+            if let Some(message) = storage.message_by_id(message_id)? {
                 if turn_record_owns_object(record, message.turn_id.as_deref()) {
                     message_ids.insert(message.id.clone());
                     messages.push(message);
@@ -1000,7 +1040,7 @@ fn hydrate_recent_turn_references(
             .and_then(|trigger| trigger.message_id.as_ref())
         {
             if !message_ids.contains(message_id) {
-                if let Some(message) = storage.read_message_by_id(message_id)? {
+                if let Some(message) = storage.message_by_id(message_id)? {
                     if turn_record_owns_object(record, message.turn_id.as_deref()) {
                         message_ids.insert(message.id.clone());
                         messages.push(message);
@@ -1026,7 +1066,7 @@ fn hydrate_recent_turn_references(
             if brief_ids.contains(brief_id) {
                 continue;
             }
-            if let Some(brief) = storage.read_brief_by_id(brief_id)? {
+            if let Some(brief) = storage.brief_by_id(brief_id)? {
                 if turn_record_owns_object(record, brief.turn_id.as_deref()) {
                     brief_ids.insert(brief.id.clone());
                     briefs.push(brief);
@@ -1051,7 +1091,7 @@ fn hydrate_recent_turn_references(
             if tool_ids.contains(tool_id) {
                 continue;
             }
-            if let Some(tool) = storage.read_tool_execution_by_id(tool_id)? {
+            if let Some(tool) = storage.tool_by_id(tool_id)? {
                 if turn_record_owns_object(record, tool.turn_id.as_deref()) {
                     tool_ids.insert(tool.id.clone());
                     tools.push(tool);
@@ -1093,11 +1133,11 @@ fn hydrate_recent_turn_references(
 }
 
 fn default_external_ingress(
-    storage: &AppStorage,
+    storage: &impl ContextInputs,
     agent_id: &str,
 ) -> Result<Option<ExternalTriggerRecord>> {
     Ok(storage
-        .latest_external_triggers()?
+        .external_triggers()?
         .into_iter()
         .filter(|record| {
             record.target_agent_id == agent_id
@@ -1726,12 +1766,12 @@ struct CompletionReportProjection {
 }
 
 fn latest_completion_report_by_work_item(
-    storage: &AppStorage,
+    storage: &impl ContextInputs,
     agent_id: &str,
 ) -> Result<BTreeMap<String, CompletionReportProjection>> {
     let mut summaries = BTreeMap::new();
     for brief in storage
-        .read_recent_briefs(usize::MAX)?
+        .briefs(usize::MAX)?
         .into_iter()
         .rev()
         .filter(|brief| brief.agent_id == agent_id)
@@ -1742,14 +1782,14 @@ fn latest_completion_report_by_work_item(
             summaries
                 .entry(work_item_id.clone())
                 .or_insert_with(|| CompletionReportProjection {
-                    text: resolved_brief_text(storage, &brief),
+                    text: resolved_brief_text_from_inputs(storage, &brief),
                     brief_id: Some(brief.id.clone()),
                     source_brief: Some(brief),
                 });
         }
     }
     for summary in storage
-        .read_recent_delivery_summaries(usize::MAX)?
+        .delivery_summaries(usize::MAX)?
         .into_iter()
         .rev()
         .filter(|summary| summary.agent_id == agent_id)
@@ -2064,10 +2104,34 @@ fn render_continuity_brief_line(
     }
 }
 
-fn resolved_brief_text(storage: &AppStorage, brief: &BriefRecord) -> String {
-    RuntimeObjectResolver::new(storage)
-        .resolve_brief_content(brief)
-        .unwrap_or_else(|_| brief.text.clone())
+fn resolved_brief_text_from_inputs(inputs: &impl ContextInputs, brief: &BriefRecord) -> String {
+    let resolved = (|| -> Result<Option<String>> {
+        let crate::types::BriefContentSource::TranscriptEntry { entry_id, .. } =
+            &brief.content_source
+        else {
+            return Ok(Some(brief.text.clone()));
+        };
+        let Some(entry) = inputs.transcript_by_id(entry_id)? else {
+            return Ok(None);
+        };
+        if entry.kind == TranscriptEntryKind::IncomingMessage {
+            if let Some(message_id) = entry.related_message_id.as_deref() {
+                if let Some(message) = inputs.message_by_id(message_id)? {
+                    return Ok(match &message.body {
+                        MessageBody::Text { text } | MessageBody::Brief { text, .. } => {
+                            (!text.trim().is_empty()).then(|| text.clone())
+                        }
+                        MessageBody::Json { value } => serde_json::to_string(value).ok(),
+                    });
+                }
+            }
+        }
+        Ok(crate::object_resolver::transcript_text(&entry))
+    })();
+    resolved
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| brief.text.clone())
 }
 
 fn render_current_input_body_with_budget(
@@ -3396,7 +3460,7 @@ struct EpisodeSelectionAnchor<'a> {
 }
 
 fn build_relevant_episode_memory_section(
-    episodes: &[ContextEpisodeRecord],
+    episodes: &[impl std::borrow::Borrow<ContextEpisodeRecord>],
     _agent: &AgentState,
     current_work_item: Option<&WorkItemRecord>,
     current_message: &MessageEnvelope,
@@ -3460,6 +3524,7 @@ fn build_relevant_episode_memory_section(
     let episode_count = episodes.len();
     let mut ranked = episodes
         .iter()
+        .map(std::borrow::Borrow::borrow)
         .enumerate()
         .filter(|(_, episode)| {
             episode_is_before_recent_turn_window(episode, recent_turn_window_start)
@@ -4230,12 +4295,15 @@ mod tests {
                 text: "continue current work item".into(),
             },
         );
+        let history = std::sync::Arc::new(HistorySnapshot::default());
         let reprojection = RecentTurnsReprojection {
-            history: std::sync::Arc::new(HistorySnapshot::default()),
+            history: history.clone(),
+            agent_history: history,
+            agent_evidence: Vec::new(),
+            prepared_scoped: None,
             current_message,
             current_work_item: Some(work_item),
             initial_budget: 64_000,
-            scoped_window: None,
             snapshot_id: 1,
         };
         let reprojection = prepare_work_item_scoped_history(&storage, &reprojection, 64).unwrap();

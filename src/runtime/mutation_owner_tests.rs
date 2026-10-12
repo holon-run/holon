@@ -496,6 +496,7 @@ fn scoped_state(agent_id: &str, pending: usize) -> Arc<AgentState> {
 fn state_facts(state: Arc<AgentState>) -> KnownCommit {
     KnownCommit::State {
         state,
+        episodes: None,
         runtime: None,
     }
 }
@@ -704,4 +705,528 @@ async fn a_successor_recovers_the_whole_group_without_retaining_resolved_bodies(
     assert!(body.upgrade().is_some());
     drop(successor);
     assert!(body.upgrade().is_none());
+}
+
+// Owner protocol tests exercise process-local responsibility;
+// coherent receipt/storage qualification remains the typed loader's contract.
+fn prepared_episodes(agent_id: &str, incarnation: u64) -> Arc<ResidentEpisodes> {
+    Arc::new(ResidentEpisodes::bootstrap(agent_id, incarnation, 8, true, Vec::new()).unwrap())
+}
+
+fn episode_witness(operation: &str, agent_id: &str, incarnation: u64) -> MutationWitness {
+    use crate::memory::episode_transition::{EpisodeMemoryOutcome, EpisodeMemoryPlan};
+    use crate::runtime_db::episode_memory::{
+        EpisodeMemoryInvocation, EpisodeMemoryKey, EpisodeMemoryTransitionCommand,
+    };
+    let mut candidate = AgentState::new(agent_id);
+    candidate.turn_index = 1;
+    let command = EpisodeMemoryTransitionCommand::new(
+        EpisodeMemoryKey {
+            agent_id: agent_id.into(),
+            identity_incarnation: incarnation,
+            actual_dispatch_turn_id: "actual-turn-a".into(),
+        },
+        EpisodeMemoryInvocation {
+            message_id: "input-a".into(),
+            turn_index: 1,
+        },
+        candidate.clone(),
+        EpisodeMemoryPlan {
+            candidate,
+            finalized_episode: None,
+            audit_events: Vec::new(),
+            outcome: EpisodeMemoryOutcome {
+                episode_memory_changed: false,
+                business_fields_changed: false,
+                boundary_reason: None,
+                finalized_episode_id: None,
+                previous_builder_id: None,
+                active_builder_id: None,
+                compression_epoch_before: 0,
+                compression_epoch_after: 0,
+                archived_episode_count_before: 0,
+                archived_episode_count_after: 0,
+            },
+        },
+        chrono::DateTime::from_timestamp(1, 0).unwrap(),
+    )
+    .unwrap();
+    MutationWitness::episode_memory(operation.into(), &command).unwrap()
+}
+
+fn prepared_facts(state: Arc<AgentState>, episodes: Arc<ResidentEpisodes>) -> KnownCommit {
+    KnownCommit::State {
+        state,
+        episodes: Some(episodes),
+        runtime: None,
+    }
+}
+
+#[tokio::test]
+async fn prepared_publication_keeps_exact_domain_and_rejects_different_saved_arcs() {
+    let owner = MutationOwner::standalone("default", 7);
+    let episodes = prepared_episodes("default", 7);
+    let mut permit = owner.reserve().await.unwrap();
+    permit.begin("prepared-bootstrap".into()).unwrap();
+    permit
+        .committed_prepared(state(1), Some(episodes.clone()))
+        .unwrap();
+    assert!(matches!(
+        permit.committed_prepared(state(1), Some(prepared_episodes("default", 7))),
+        Err(MutationOwnerError::TicketMismatch)
+    ));
+    permit
+        .committed_prepared(state(1), Some(episodes.clone()))
+        .unwrap();
+    let first = permit.publish(state(1)).unwrap();
+    assert!(Arc::ptr_eq(first.episodes.as_ref().unwrap(), &episodes));
+    assert!(Arc::ptr_eq(&owner.capture().unwrap().unwrap(), &first));
+
+    permit
+        .begin("explicitly-unprepared-legacy-writer".into())
+        .unwrap();
+    permit.committed(state(2)).unwrap();
+    let next = permit.publish(state(2)).unwrap();
+    assert!(next.episodes.is_none());
+    assert!(Arc::ptr_eq(first.episodes.as_ref().unwrap(), &episodes));
+}
+
+#[tokio::test]
+async fn prepared_domain_scope_is_validated_before_recording_known_facts() {
+    let owner = MutationOwner::standalone("default", 7);
+    let mut permit = owner.reserve().await.unwrap();
+    let key = permit.begin("bad-domain".into()).unwrap();
+    for episodes in [
+        prepared_episodes("other", 7),
+        prepared_episodes("default", 8),
+    ] {
+        assert!(matches!(
+            permit.committed_prepared(state(1), Some(episodes)),
+            Err(MutationOwnerError::TicketMismatch)
+        ));
+        assert!(permit.recovery().unwrap().unwrap().known.is_none());
+        assert_needs_reconcile(&owner, &key);
+    }
+    permit.definitely_not_committed().unwrap();
+}
+
+#[tokio::test]
+async fn witness_registration_rejects_foreign_scope_multi_owner_or_finished_attempt() {
+    let a = MutationOwner::standalone("agent-a", 1);
+    let b = MutationOwner::standalone("agent-b", 1);
+    let mut permits = MutationOwner::reserve_all(vec![a.clone(), b.clone()])
+        .await
+        .unwrap();
+    let witness = episode_witness("episode", "agent-a", 1);
+    assert!(matches!(
+        MutationReservation::begin_all_with_witness(
+            &mut permits,
+            "episode".into(),
+            witness.clone()
+        ),
+        Err(MutationOwnerError::TicketMismatch)
+    ));
+    assert!(permits.iter().all(|p| p.recovery().unwrap().is_none()));
+    drop(permits);
+    let mut permits = vec![a.reserve().await.unwrap()];
+    for invalid in [
+        episode_witness("other-operation", "agent-a", 1),
+        episode_witness("episode", "agent-b", 1),
+        episode_witness("episode", "agent-a", 2),
+    ] {
+        assert!(matches!(
+            MutationReservation::begin_all_with_witness(&mut permits, "episode".into(), invalid),
+            Err(MutationOwnerError::TicketMismatch)
+        ));
+        assert!(permits[0].recovery().unwrap().is_none());
+    }
+    witness.finish_original_attempt();
+    assert!(matches!(
+        MutationReservation::begin_all_with_witness(&mut permits, "episode".into(), witness),
+        Err(MutationOwnerError::TicketMismatch)
+    ));
+    assert!(permits[0].recovery().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn unfinished_or_reconstructed_witness_cannot_clear_an_unknown_fence() {
+    let owner = MutationOwner::standalone("default", 7);
+    let witness = episode_witness("episode", "default", 7);
+    let key = {
+        let mut permits = vec![owner.reserve().await.unwrap()];
+        MutationReservation::begin_all_with_witness(&mut permits, "episode".into(), witness.clone())
+            .unwrap()
+            .remove(0)
+    };
+    let mut permits = vec![owner.reserve().await.unwrap()];
+    assert!(permits[0].ticket.is_none());
+    assert!(matches!(
+        MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, None),
+        Err(MutationOwnerError::NeedsReconcile(_))
+    ));
+    let reconstructed = episode_witness("episode", "default", 7);
+    reconstructed.finish_original_attempt();
+    assert!(matches!(
+        MutationReservation::resolve_episode_unknown(&mut permits, &key, &reconstructed, None),
+        Err(MutationOwnerError::TicketMismatch)
+    ));
+    assert_needs_reconcile(&owner, &key);
+    witness.finish_original_attempt();
+    assert_eq!(
+        MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, None).unwrap(),
+        EpisodeUnknownResolution::NotCommitted
+    );
+    assert!(owner.capture().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn completed_absence_preserves_the_exact_old_root_and_generation() {
+    let owner = MutationOwner::standalone("default", 7);
+    let old = install_test_observation(&owner, "initial", state(1)).await;
+    let witness = episode_witness("episode", "default", 7);
+    let key = {
+        let mut permits = vec![owner.reserve().await.unwrap()];
+        let key = MutationReservation::begin_all_with_witness(
+            &mut permits,
+            "episode".into(),
+            witness.clone(),
+        )
+        .unwrap()
+        .remove(0);
+        witness.finish_original_attempt();
+        key
+    };
+    let mut permits = vec![owner.reserve().await.unwrap()];
+    assert_eq!(
+        MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, None).unwrap(),
+        EpisodeUnknownResolution::NotCommitted
+    );
+    let current = owner.capture().unwrap().unwrap();
+    assert!(Arc::ptr_eq(&old, &current));
+    assert_eq!(old.token, current.token);
+    assert!(permits[0].recovery().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn receipt_presence_promotes_current_loader_facts_but_does_not_publish() {
+    let owner = MutationOwner::standalone("default", 7);
+    let old = install_test_observation(&owner, "initial", state(1)).await;
+    let witness = episode_witness("episode", "default", 7);
+    let key = {
+        let mut permits = vec![owner.reserve().await.unwrap()];
+        let key = MutationReservation::begin_all_with_witness(
+            &mut permits,
+            "episode".into(),
+            witness.clone(),
+        )
+        .unwrap()
+        .remove(0);
+        witness.finish_original_attempt();
+        key
+    };
+    let episodes = prepared_episodes("default", 7);
+    let mut permits = vec![owner.reserve().await.unwrap()];
+    // A receipt's historical candidate is not installed. The coherent loader's
+    // later current root (version 9) is the only state handed to this resolver.
+    assert_eq!(
+        MutationReservation::resolve_episode_unknown(
+            &mut permits,
+            &key,
+            &witness,
+            Some(prepared_facts(state(9), episodes.clone()))
+        )
+        .unwrap(),
+        EpisodeUnknownResolution::Known
+    );
+    assert_needs_reconcile(&owner, &key);
+    assert!(permits[0].ticket.is_none());
+    assert_eq!(
+        permits[0]
+            .recovery()
+            .unwrap()
+            .unwrap()
+            .committed_state
+            .unwrap()
+            .pending,
+        9
+    );
+    let known = MutationReservation::validate_group_known(&permits).unwrap();
+    let published = MutationReservation::reconcile_all(&mut permits, known)
+        .unwrap()
+        .remove(0)
+        .unwrap();
+    assert_eq!(published.state.pending, 9);
+    assert_eq!(published.token.generation, old.token.generation + 1);
+    assert!(Arc::ptr_eq(published.episodes.as_ref().unwrap(), &episodes));
+    assert!(Arc::ptr_eq(&owner.capture().unwrap().unwrap(), &published));
+}
+
+#[tokio::test]
+async fn witness_survives_epoch_replacement_but_old_owner_access_remains_rejected() {
+    let registry = MutationOwnerRegistry::default();
+    let old = registry.claim("default", 7).unwrap();
+    let witness = episode_witness("episode", "default", 7);
+    let key = {
+        let mut permits = vec![old.reserve().await.unwrap()];
+        let key = MutationReservation::begin_all_with_witness(
+            &mut permits,
+            "episode".into(),
+            witness.clone(),
+        )
+        .unwrap()
+        .remove(0);
+        witness.finish_original_attempt();
+        key
+    };
+    let successor = registry.claim("default", 7).unwrap();
+    assert!(matches!(old.capture(), Err(MutationOwnerError::Replaced)));
+    let mut permits = vec![successor.reserve().await.unwrap()];
+    let saved = permits[0].recovery().unwrap().unwrap().witness.unwrap();
+    assert!(saved.same_attempt(&witness));
+    assert_eq!(
+        MutationReservation::resolve_episode_unknown(
+            &mut permits,
+            &key,
+            &saved,
+            Some(prepared_facts(state(4), prepared_episodes("default", 7)))
+        )
+        .unwrap(),
+        EpisodeUnknownResolution::Known
+    );
+    let known = MutationReservation::validate_group_known(&permits).unwrap();
+    let root = MutationReservation::reconcile_all(&mut permits, known)
+        .unwrap()
+        .remove(0)
+        .unwrap();
+    assert_eq!(root.token.owner_epoch, successor.epoch);
+    assert_eq!(root.state.pending, 4);
+}
+
+#[tokio::test]
+async fn episode_resolver_cannot_resolve_unwitnessed_other_family_or_partial_group() {
+    let a = MutationOwner::standalone("agent-a", 1);
+    let b = MutationOwner::standalone("agent-b", 1);
+    let witness = episode_witness("ordinary", "agent-a", 1);
+    witness.finish_original_attempt();
+    let mut permits = MutationOwner::reserve_all(vec![a.clone(), b.clone()])
+        .await
+        .unwrap();
+    let keys = MutationReservation::begin_all(&mut permits, "ordinary".into()).unwrap();
+    assert!(matches!(
+        MutationReservation::resolve_episode_unknown(&mut permits, &keys[0], &witness, None),
+        Err(MutationOwnerError::TicketMismatch)
+    ));
+    assert!(matches!(
+        MutationReservation::resolve_episode_unknown(&mut permits[..1], &keys[0], &witness, None),
+        Err(MutationOwnerError::NeedsReconcile(_))
+    ));
+    assert_needs_reconcile(&a, &keys[0]);
+    assert_needs_reconcile(&b, &keys[1]);
+    MutationReservation::definitely_not_committed_all(&mut permits).unwrap();
+    drop(permits);
+    let mut permits = vec![a.reserve().await.unwrap()];
+    let key = permits[0].begin("ordinary".into()).unwrap();
+    assert!(matches!(
+        MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, None),
+        Err(MutationOwnerError::TicketMismatch)
+    ));
+    assert_needs_reconcile(&a, &key);
+}
+
+#[tokio::test]
+async fn episode_resolution_rejects_unprepared_or_foreign_facts_without_opening_gate() {
+    let owner = MutationOwner::standalone("default", 7);
+    let witness = episode_witness("episode", "default", 7);
+    let mut permits = vec![owner.reserve().await.unwrap()];
+    let key = MutationReservation::begin_all_with_witness(
+        &mut permits,
+        "episode".into(),
+        witness.clone(),
+    )
+    .unwrap()
+    .remove(0);
+    witness.finish_original_attempt();
+    for invalid in [
+        state_facts(state(2)),
+        prepared_facts(state(2), prepared_episodes("default", 8)),
+    ] {
+        assert!(matches!(
+            MutationReservation::resolve_episode_unknown(
+                &mut permits,
+                &key,
+                &witness,
+                Some(invalid)
+            ),
+            Err(MutationOwnerError::TicketMismatch)
+        ));
+        let recovery = permits[0].recovery().unwrap().unwrap();
+        assert!(recovery.known.is_none());
+        assert_needs_reconcile(&owner, &key);
+    }
+}
+
+#[tokio::test]
+async fn prepared_domains_survive_active_metadata_only_for_the_current_incarnation() {
+    use crate::types::{AgentKind, AgentVisibility};
+    let owner = MutationOwner::standalone("default", 7);
+    let episodes = prepared_episodes("default", 7);
+    let mut permits = vec![owner.reserve().await.unwrap()];
+    permits[0].begin("initial".into()).unwrap();
+    permits[0]
+        .committed_prepared(state(1), Some(episodes.clone()))
+        .unwrap();
+    permits[0].publish(state(1)).unwrap();
+    for (index, status) in [AgentRegistryStatus::Active, AgentRegistryStatus::Deleting]
+        .into_iter()
+        .enumerate()
+    {
+        let timestamp = chrono::DateTime::from_timestamp(1, 0).unwrap();
+        let identity = AgentIdentityRecord {
+            agent_id: "default".into(),
+            name: None,
+            kind: AgentKind::Default,
+            visibility: AgentVisibility::Public,
+            ownership: None,
+            profile_preset: None,
+            durability: None,
+            status,
+            revision: index as u64 + 1,
+            incarnation: 7,
+            parent_agent_id: None,
+            lineage_parent_agent_id: None,
+            delegated_from_task_id: None,
+            created_at: timestamp,
+            updated_at: timestamp,
+            deleted_at: None,
+        };
+        MutationReservation::begin_all(&mut permits, format!("metadata-{index}")).unwrap();
+        MutationReservation::committed_all(
+            &mut permits,
+            vec![KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+                identity: Some(Arc::new(identity)),
+                state: Some(state(2 + index)),
+            }))],
+        )
+        .unwrap();
+        let root = MutationReservation::publish_all_known(&mut permits)
+            .unwrap()
+            .remove(0)
+            .unwrap();
+        if status == AgentRegistryStatus::Active {
+            assert!(Arc::ptr_eq(root.episodes.as_ref().unwrap(), &episodes));
+        } else {
+            assert!(root.episodes.is_none());
+        }
+    }
+}
+
+fn episode_identity(incarnation: u64, status: AgentRegistryStatus) -> Arc<AgentIdentityRecord> {
+    use crate::types::{AgentKind, AgentVisibility};
+    let timestamp = chrono::DateTime::from_timestamp(1, 0).unwrap();
+    Arc::new(AgentIdentityRecord {
+        agent_id: "default".into(),
+        name: None,
+        kind: AgentKind::Default,
+        visibility: AgentVisibility::Public,
+        ownership: None,
+        profile_preset: None,
+        durability: None,
+        status,
+        revision: 1,
+        incarnation,
+        parent_agent_id: None,
+        lineage_parent_agent_id: None,
+        delegated_from_task_id: None,
+        created_at: timestamp,
+        updated_at: timestamp,
+        deleted_at: None,
+    })
+}
+
+#[tokio::test]
+async fn positive_receipt_for_retired_scope_publishes_absence_without_touching_successor() {
+    for identity in [
+        None,
+        Some(episode_identity(7, AgentRegistryStatus::Deleting)),
+        Some(episode_identity(7, AgentRegistryStatus::Deleted)),
+        Some(episode_identity(8, AgentRegistryStatus::Active)),
+    ] {
+        let registry = MutationOwnerRegistry::default();
+        let owner = registry.claim("default", 7).unwrap();
+        let successor = registry.claim("default", 8).unwrap();
+        let next = install_test_observation(&successor, "successor-root", state(20)).await;
+        let initial = install_test_observation(&owner, "old-root", state(1)).await;
+        let old_state = Arc::downgrade(&initial.state);
+        drop(initial);
+        let witness = episode_witness("episode", "default", 7);
+        let mut permits = vec![owner.reserve().await.unwrap()];
+        let key = MutationReservation::begin_all_with_witness(
+            &mut permits,
+            "episode".into(),
+            witness.clone(),
+        )
+        .unwrap()
+        .remove(0);
+        witness.finish_original_attempt();
+        let facts = KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+            identity,
+            state: None,
+        }));
+        assert_eq!(
+            MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, Some(facts))
+                .unwrap(),
+            EpisodeUnknownResolution::Known
+        );
+        assert_needs_reconcile(&owner, &key);
+        assert!(matches!(
+            permits[0].recovery().unwrap().unwrap().known,
+            Some(KnownCommit::Metadata(_))
+        ));
+        let known = MutationReservation::validate_group_known(&permits).unwrap();
+        assert!(MutationReservation::reconcile_all(&mut permits, known).unwrap()[0].is_none());
+        assert!(owner.capture().unwrap().is_none());
+        assert!(old_state.upgrade().is_none());
+        assert!(Arc::ptr_eq(&successor.capture().unwrap().unwrap(), &next));
+    }
+}
+
+#[tokio::test]
+async fn retired_receipt_resolution_rejects_current_active_or_any_successor_state() {
+    let owner = MutationOwner::standalone("default", 7);
+    let witness = episode_witness("episode", "default", 7);
+    let mut permits = vec![owner.reserve().await.unwrap()];
+    let key = MutationReservation::begin_all_with_witness(
+        &mut permits,
+        "episode".into(),
+        witness.clone(),
+    )
+    .unwrap()
+    .remove(0);
+    witness.finish_original_attempt();
+    for facts in [
+        IdentityMutationFacts {
+            identity: Some(episode_identity(7, AgentRegistryStatus::Active)),
+            state: None,
+        },
+        IdentityMutationFacts {
+            identity: Some(episode_identity(8, AgentRegistryStatus::Active)),
+            state: Some(state(8)),
+        },
+        IdentityMutationFacts {
+            identity: Some(episode_identity(6, AgentRegistryStatus::Deleted)),
+            state: None,
+        },
+    ] {
+        assert!(matches!(
+            MutationReservation::resolve_episode_unknown(
+                &mut permits,
+                &key,
+                &witness,
+                Some(KnownCommit::Metadata(Arc::new(facts)))
+            ),
+            Err(MutationOwnerError::TicketMismatch)
+        ));
+        assert!(permits[0].recovery().unwrap().unwrap().known.is_none());
+        assert_needs_reconcile(&owner, &key);
+    }
 }

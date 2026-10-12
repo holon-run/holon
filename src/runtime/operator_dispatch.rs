@@ -168,58 +168,16 @@ impl RuntimeHandle {
         let _context_preparation =
             crate::diagnostics::io_probe::context_preparation(&message.agent_id);
         let context_build_started_at = chrono::Utc::now();
-        let identity = self.agent_identity_view().await?;
-        let default_external_ingress = self
-            .ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
+        self.ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
             .await?;
-        let default_external_ingress = self
-            .inner
-            .runtime_db
-            .external_triggers()
-            .latest(&default_external_ingress.external_trigger_id)?;
-        let context_config = self.current_context_config().await;
-
-        let built = {
-            let mut guard = self.begin_mutation().await?;
-            let agent_changed = sync_agent_message_count(&self.inner.storage, &mut guard.state)?;
-            if agent_changed {
-                guard.persist_state(&self.inner.storage).await?;
-            }
-            let state = guard.state.clone();
-            drop(guard);
-            let (provider, available_tools, apply_patch_surface, _, _) = self
-                .provider_tool_selection_for_turn(&identity, model_selection.fallback_model())
-                .await?;
-            let prompt_tools = provider.prompt_tool_specs(&available_tools);
-            let workspace = self.workspace_view_from_state(&state)?;
-            let execution = self.execution_snapshot_for_view(
-                state.execution_profile.clone(),
-                &workspace,
-                &state.attached_workspaces,
-            );
-            let loaded_agents_md = self.loaded_agents_md_for_state(&state)?;
-            let loaded_agent_memory = self.loaded_agent_memory_for_state()?;
-            let skills = self
-                .skills_runtime_view_for_state(&state, &identity)
-                .await?;
-            build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
-                &self.inner.storage,
-                &state,
-                &execution,
+        let built = self
+            .build_loaded_context_prompt(
                 message,
-                &context_config,
-                &execution.execution_root,
-                self.agent_home().as_path(),
-                &identity,
-                loaded_agents_md,
-                loaded_agent_memory,
-                &skills,
-                &prompt_tools,
-                apply_patch_surface,
                 continuation_resolution,
-                default_external_ingress.as_ref(),
-            )?
-        };
+                model_selection.fallback_model(),
+                true,
+            )
+            .await?;
         let context_build_ms = context_build_started.elapsed().as_millis() as u64;
         let (turn_index, run_id) = {
             let guard = self.inner.agent.lock().await;
@@ -484,47 +442,13 @@ impl RuntimeHandle {
             MessageDeliverySurface::CliPrompt,
             AdmissionContext::LocalProcess,
         );
-        let mut agent = self.agent_state().await?;
-        let _ = sync_agent_message_count(&self.inner.storage, &mut agent)?;
         let prior_closure = self.current_closure_decision().await?;
         let continuation = ContinuationTrigger::from_message(&message, None)
             .map(|trigger| resolve_continuation(&prior_closure, &trigger));
-        let identity = self.agent_identity_view().await?;
-        let default_external_ingress = self
-            .ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
+        self.ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
             .await?;
-        let default_external_ingress = self
-            .inner
-            .runtime_db
-            .external_triggers()
-            .latest(&default_external_ingress.external_trigger_id)?;
-        let (provider, available_tools, apply_patch_surface, _, _) =
-            self.provider_tool_selection(&identity).await?;
-        let prompt_tools = provider.prompt_tool_specs(&available_tools);
-        let execution = self.execution_snapshot().await?;
-        let loaded_agents_md = self.loaded_agents_md_for_state(&agent)?;
-        let loaded_agent_memory = self.loaded_agent_memory_for_state()?;
-        let skills = self
-            .skills_runtime_view_for_state(&agent, &identity)
-            .await?;
-        let context_config = self.current_context_config().await;
-        build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
-            &self.inner.storage,
-            &agent,
-            &execution,
-            &message,
-            &context_config,
-            &execution.execution_root,
-            self.agent_home().as_path(),
-            &identity,
-            loaded_agents_md,
-            loaded_agent_memory,
-            &skills,
-            &prompt_tools,
-            apply_patch_surface,
-            continuation.as_ref(),
-            default_external_ingress.as_ref(),
-        )
+        self.build_loaded_context_prompt(&message, continuation.as_ref(), None, false)
+            .await
     }
 
     pub(super) async fn build_subagent_prompt_for_workspace(
@@ -620,6 +544,7 @@ impl RuntimeHandle {
         )
     }
 
+    #[cfg(test)]
     pub(super) async fn provider_tool_selection(
         &self,
         identity: &AgentIdentityView,

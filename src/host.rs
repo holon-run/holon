@@ -2289,6 +2289,11 @@ impl RuntimeHost {
         &self,
         reservations: &mut [MutationReservation],
     ) -> Result<()> {
+        crate::runtime::episode_recovery::resolve_episode_recovery(
+            &self.inner.runtime_db,
+            reservations,
+            self.config().recent_episode_candidates,
+        )?;
         let known = MutationReservation::validate_group_known(reservations)?;
         let mut notifications = Vec::new();
         for (reservation, saved) in reservations.iter().zip(&known) {
@@ -2363,11 +2368,19 @@ impl RuntimeHost {
         );
         let known = states
             .into_iter()
-            .map(|state| KnownCommit::State {
-                state: Arc::new(state),
-                runtime: None,
+            .zip(reservations.iter())
+            .map(|(state, reservation)| {
+                anyhow::ensure!(
+                    state.id == reservation.agent_id(),
+                    "external State scope mismatch"
+                );
+                Ok(KnownCommit::State {
+                    state: Arc::new(state),
+                    episodes: reservation.prepared_episodes_for_state_only_commit()?,
+                    runtime: None,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         self.commit_external_known(reservations, known, operation_id, persist)
             .await
     }
@@ -11480,7 +11493,8 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 result_turn.terminal.unwrap().reason.as_deref(),
-                Some("reducer_only/parent_turn_already_delivered")
+                Some("reducer_only/parent_turn_already_delivered"),
+                "unexpected TaskResult terminal: events={events:?}"
             );
             let stored_task = parent
                 .runtime_db()
@@ -15827,7 +15841,15 @@ mod tests {
             }
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|error| {
+            let state = host.runtime_db().agent_states().latest(agent_id).unwrap();
+            let events = host
+                .agent_storage_read_only(agent_id)
+                .unwrap()
+                .read_recent_events(100)
+                .unwrap();
+            panic!("idle candidate did not appear: {error:?}, state={state:?}, events={events:?}")
+        })
     }
 
     #[tokio::test]
@@ -19706,5 +19728,67 @@ mod tests {
                 && event.data["next_status"] == "aborted"
                 && event.data["reason"] == "terminal_failure_completion_evidence"
         }));
+    }
+    #[tokio::test]
+    async fn host_state_only_commit_preserves_loaded_episode_domain() {
+        let (_home, host) = test_host();
+        host.create_named_agent("state-only-episodes", None)
+            .await
+            .unwrap();
+        let runtime = host.get_public_agent("state-only-episodes").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        let owner = host
+            .bridge()
+            .mutation_owner_for("state-only-episodes", runtime.instance_incarnation())
+            .unwrap();
+        let before_root = owner.capture().unwrap().unwrap();
+        let episodes = before_root.episodes.as_ref().unwrap().clone();
+        let mut reservations = host
+            .reserve_agent_mutations(&["state-only-episodes".into()])
+            .await
+            .unwrap();
+        let before = host
+            .runtime_db()
+            .agent_states()
+            .latest("state-only-episodes")
+            .unwrap()
+            .unwrap();
+        let mut candidate = before.clone();
+        candidate.total_input_tokens += 1;
+        let command = crate::runtime_db::transitions::AgentPostureTransitionCommand {
+            agent_id: candidate.id.clone(),
+            expected_incarnation: Some(runtime.instance_incarnation()),
+            agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                expected: Some(Box::new(before)),
+                record: Box::new(candidate.clone()),
+            },
+            audit_events: Vec::new(),
+            fault: None,
+        };
+        host.commit_external_agent_states(
+            &mut reservations,
+            vec![candidate.clone()],
+            "fixture-state-only-preserves-episodes".into(),
+            || {
+                host.runtime_db()
+                    .transitions()
+                    .commit_agent_posture(&command)
+            },
+        )
+        .await
+        .unwrap();
+        drop(reservations);
+        let root = owner.capture().unwrap().unwrap();
+        assert_eq!(root.state.as_ref(), &candidate);
+        assert!(Arc::ptr_eq(root.episodes.as_ref().unwrap(), &episodes));
+        assert_eq!(runtime.agent_state().await.unwrap(), candidate);
+        runtime
+            .preview_prompt(
+                "check resident continuity".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await
+            .unwrap();
+        host.shutdown().await.unwrap();
     }
 }

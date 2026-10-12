@@ -111,6 +111,8 @@ impl<'a> LegacyImporter<'a> {
             runtime_db.work_item_continuations().import_empty()?;
         }
         if !self.storage_domain_complete("context_episode_anchors")? {
+            // The continuity checkpoint must include canonical by-ID Turn/Brief refs.
+            self.import_episode_ref_domains()?;
             runtime_db
                 .context_episodes()
                 .import_legacy(self.storage.read_recent_context_episodes(usize::MAX)?)?;
@@ -118,7 +120,7 @@ impl<'a> LegacyImporter<'a> {
         Ok(())
     }
 
-    pub(crate) fn import_derived_domains(&self, agent_id: &str) -> Result<()> {
+    fn import_episode_ref_domains(&self) -> Result<()> {
         let runtime_db = &self.storage.runtime_db;
         let turn_records_complete = self.storage_domain_complete("turn_records")?;
         let evidence_complete = self.storage_domain_complete("evidence")?;
@@ -143,6 +145,12 @@ impl<'a> LegacyImporter<'a> {
                 self.storage.read_recent_delivery_summaries(usize::MAX)?,
             )?;
         }
+        Ok(())
+    }
+
+    pub(crate) fn import_derived_domains(&self, agent_id: &str) -> Result<()> {
+        self.import_episode_ref_domains()?;
+        let runtime_db = &self.storage.runtime_db;
         if !self.storage_domain_complete("audit_events")? {
             runtime_db
                 .audit_events()

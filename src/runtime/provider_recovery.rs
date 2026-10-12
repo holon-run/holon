@@ -12,6 +12,36 @@ use crate::{
     types::{MessageEnvelope, TurnOwner, TurnRecord, TurnTerminalKind},
 };
 
+/// Typed, provenance-checked raw source IDs; callers resolve records coherently.
+pub(crate) fn continuity_sources(
+    message: &MessageEnvelope,
+) -> Result<Option<(String, String, TurnTerminalKind)>> {
+    if !super::turn::TurnModelSelection::message_has_provider_recovery_provenance(message) {
+        return Ok(None);
+    }
+    let selection = super::turn::TurnModelSelection::from_message(message)?;
+    let directive = selection
+        .recovery
+        .ok_or_else(|| anyhow!("provider recovery directive missing"))?;
+    if directive.source_turn_id.is_empty()
+        || directive.source_message_id.is_empty()
+        || !matches!(
+            directive.source_terminal_kind,
+            TurnTerminalKind::DeferredToFallback | TurnTerminalKind::ProviderFailedNeedsRecovery
+        )
+        || message.source_refs.get("source_turn_id") != Some(&directive.source_turn_id)
+        || message.source_refs.get("source_message_id") != Some(&directive.source_message_id)
+        || message.causation_id.as_deref() != Some(directive.source_message_id.as_str())
+    {
+        bail!("provider recovery continuity source references mismatch");
+    }
+    Ok(Some((
+        directive.source_turn_id,
+        directive.source_message_id,
+        directive.source_terminal_kind,
+    )))
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderRecoverySource {
     pub predecessor: ExecutionAttempt,
@@ -23,6 +53,21 @@ pub(crate) fn resolve(
     storage: &AppStorage,
     message: &MessageEnvelope,
     state: &ExecutionProtocolState,
+) -> Result<ProviderRecoverySource> {
+    resolve_with_sources(
+        message,
+        state,
+        |id| storage.read_message_by_id(id),
+        |id| storage.read_turn_by_id(id),
+    )
+}
+
+/// Shared authority/lineage validation over acquisition's read-only capability.
+pub(crate) fn resolve_with_sources(
+    message: &MessageEnvelope,
+    state: &ExecutionProtocolState,
+    mut read_message: impl FnMut(&str) -> Result<Option<MessageEnvelope>>,
+    mut read_turn: impl FnMut(&str) -> Result<Option<TurnRecord>>,
 ) -> Result<ProviderRecoverySource> {
     let mut cursor = message.clone();
     let mut seen = BTreeSet::new();
@@ -51,11 +96,9 @@ pub(crate) fn resolve(
         {
             bail!("provider recovery source references mismatch");
         }
-        let source_message = storage
-            .read_message_by_id(&directive.source_message_id)?
+        let source_message = read_message(&directive.source_message_id)?
             .ok_or_else(|| anyhow!("provider recovery source message missing"))?;
-        let source_turn = storage
-            .read_turn_by_id(&directive.source_turn_id)?
+        let source_turn = read_turn(&directive.source_turn_id)?
             .ok_or_else(|| anyhow!("provider recovery source turn missing"))?;
         if source_message.agent_id != message.agent_id
             || source_message.turn_id.as_deref() != Some(source_turn.turn_id.as_str())
@@ -160,17 +203,32 @@ pub(crate) fn resolve_for_context(
     storage: &AppStorage,
     message: &MessageEnvelope,
 ) -> Result<Option<ProviderRecoverySource>> {
+    resolve_for_context_with_sources(
+        message,
+        || {
+            let db = storage
+                .runtime_db()?
+                .ok_or_else(|| anyhow!("provider recovery database missing"))?;
+            db.transitions()
+                .load_execution_protocol_state_if_initialized(&message.agent_id)
+        },
+        |id| storage.read_message_by_id(id),
+        |id| storage.read_turn_by_id(id),
+    )
+}
+
+pub(crate) fn resolve_for_context_with_sources(
+    message: &MessageEnvelope,
+    load_state: impl FnOnce() -> Result<Option<ExecutionProtocolState>>,
+    read_message: impl FnMut(&str) -> Result<Option<MessageEnvelope>>,
+    read_turn: impl FnMut(&str) -> Result<Option<TurnRecord>>,
+) -> Result<Option<ProviderRecoverySource>> {
     if !super::turn::TurnModelSelection::message_has_provider_recovery_provenance(message) {
         return Ok(None);
     }
-    let db = storage
-        .runtime_db()?
-        .ok_or_else(|| anyhow!("provider recovery database missing"))?;
-    let state = db
-        .transitions()
-        .load_execution_protocol_state_if_initialized(&message.agent_id)?
-        .ok_or_else(|| anyhow!("provider recovery execution state missing"))?;
-    resolve(storage, message, &state).map(Some)
+    let state =
+        load_state()?.ok_or_else(|| anyhow!("provider recovery execution state missing"))?;
+    resolve_with_sources(message, &state, read_message, read_turn).map(Some)
 }
 
 // References are consumed only after durable resolution by context assembly.

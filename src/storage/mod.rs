@@ -47,6 +47,9 @@ pub(crate) use events::{EventBus, EventLogPage, EventLogPageOrder, PublishedAudi
 pub use index_outbox::RuntimeIndexOutbox;
 pub(crate) use legacy::LegacyImporter;
 pub use read_models::RuntimeReadModels;
+pub(crate) use read_models::{
+    derive_context_work_queue, filter_context_active_waits, WORK_QUEUE_NON_OPEN_WINDOW,
+};
 pub use recovery::RecoverySnapshot;
 pub use store::RuntimeStore;
 pub use work_queue::{WorkItemCandidateClass, WorkItemSchedulingProjection, WorkQueueReadModel};

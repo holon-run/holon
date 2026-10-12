@@ -3027,7 +3027,7 @@ async fn prepared_scoped_prompt_and_budget_retry_survive_storage_removal() {
         .unwrap();
     runtime.pick_work_item(work_item.id.clone()).await.unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
             activation_id: Some("activation_scoped_snapshot".into()),
             admission_provenance: None,
@@ -3039,7 +3039,7 @@ async fn prepared_scoped_prompt_and_budget_retry_survive_storage_removal() {
             work_item_id: Some(work_item.id.clone()),
             claimed_work_revision: Some(work_item.revision),
         });
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
     let append_history = |turn_id: &str, index: u64, owner: &str, text: String| {
         let mut message = MessageEnvelope::new(
@@ -3084,11 +3084,10 @@ async fn prepared_scoped_prompt_and_budget_retry_survive_storage_removal() {
         )
         .await
         .unwrap();
-    let prepared = original
-        .prepare_work_item_scoped_history(runtime.storage(), 8)
-        .unwrap();
+    let prepared = original.clone();
+    let window = prepared.history_policy().work_item_scoped_window.unwrap();
     let prepared_id = prepared.context_snapshot_id();
-    assert_ne!(prepared_id, original.context_snapshot_id());
+    assert_eq!(prepared_id, original.context_snapshot_id());
     append_history(
         "turn-late-snapshot",
         3,
@@ -3104,7 +3103,7 @@ async fn prepared_scoped_prompt_and_budget_retry_survive_storage_removal() {
             64_000,
             &[],
             crate::projection_eval::HistorySelector::WorkItemScoped,
-            8,
+            window,
         )
         .unwrap();
     let prompt = match outcome {

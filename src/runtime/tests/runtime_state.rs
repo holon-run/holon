@@ -1751,12 +1751,11 @@ async fn provider_recovery_pinned_root_minimum_fails_closed_before_provider_requ
         .unwrap_err()
         .to_string()
         .contains("pinned_minimum_over_budget"));
-    runtime
-        .inner
-        .context_config
-        .write()
-        .await
+    let mut replacement = runtime.inner.config_snapshot.load_full().as_ref().clone();
+    replacement
+        .base_context_config
         .prompt_budget_estimated_tokens = minimum - 1;
+    runtime.inner.config_snapshot.store(Arc::new(replacement));
     let error = runtime
         .process_interactive_message_deferred_with_cleanup(
             &scheduled.message,

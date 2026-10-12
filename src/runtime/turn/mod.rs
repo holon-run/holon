@@ -34,6 +34,25 @@ pub(crate) use projection::build_round_estimated_tokens;
 #[allow(unused_imports)]
 pub(crate) use projection::estimate_tool_specs_tokens;
 
+pub(super) fn context_history_preparation(
+    agent_id: &str,
+    model: &ModelRouteRef,
+) -> crate::context::ContextHistoryPreparation {
+    let selector = context_management::configured_history_selector(agent_id, model);
+    let window = context_management::configured_work_item_scoped_window_messages();
+    crate::context::ContextHistoryPreparation {
+        selector,
+        work_item_scoped_window: (selector
+            == crate::projection_eval::HistorySelector::WorkItemScoped)
+            .then_some(window.limit),
+        window_source: if selector == crate::projection_eval::HistorySelector::WorkItemScoped {
+            window.source.as_str()
+        } else {
+            "context_config"
+        },
+    }
+}
+
 pub(crate) struct AgentLoopOutcome {
     pub(super) final_text: String,
     pub(super) final_citations: Vec<Citation>,
@@ -248,7 +267,10 @@ impl RuntimeHandle {
         self.inner.storage.append_turn(&record)
     }
 
-    pub(super) async fn begin_reducer_only_turn(&self, message: &MessageEnvelope) -> Result<()> {
+    pub(super) async fn begin_reducer_only_turn(
+        &self,
+        message: &MessageEnvelope,
+    ) -> Result<(String, u64)> {
         let (operator_binding_id, operator_reply_route_id) =
             Self::operator_transport_from_message(message);
         self.begin_interactive_turn_with_provenance(
@@ -265,6 +287,16 @@ impl RuntimeHandle {
         reason: impl Into<String>,
         produced_brief: bool,
     ) -> Result<TurnTerminalTransition> {
+        self.build_reducer_only_terminal_for_dispatch(reason, produced_brief, None)
+            .await
+    }
+
+    pub(super) async fn build_reducer_only_terminal_for_dispatch(
+        &self,
+        reason: impl Into<String>,
+        produced_brief: bool,
+        dispatch: Option<&(String, u64)>,
+    ) -> Result<TurnTerminalTransition> {
         let reason = reason.into();
         let no_brief_reason = reason
             .strip_prefix("reducer_only/")
@@ -272,15 +304,20 @@ impl RuntimeHandle {
             .to_string();
         let terminal = {
             let guard = self.inner.agent.lock().await;
-            let turn_id = guard
-                .state
-                .current_turn_id
-                .clone()
-                .filter(|turn_id| !turn_id.trim().is_empty())
-                .unwrap_or_else(crate::ids::turn_id);
+            let (turn_id, turn_index) = dispatch.cloned().unwrap_or_else(|| {
+                (
+                    guard
+                        .state
+                        .current_turn_id
+                        .clone()
+                        .filter(|turn_id| !turn_id.trim().is_empty())
+                        .unwrap_or_else(crate::ids::turn_id),
+                    guard.state.turn_index,
+                )
+            });
             TurnTerminalRecord {
                 turn_id,
-                turn_index: guard.state.turn_index,
+                turn_index,
                 kind: TurnTerminalKind::Completed,
                 reason: Some(reason.clone()),
                 last_assistant_message: None,

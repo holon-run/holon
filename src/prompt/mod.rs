@@ -18,9 +18,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     context::{
-        build_context_with_default_external_ingress, prepare_work_item_scoped_history,
+        build_context_from_snapshot, build_context_with_default_external_ingress,
         reproject_recent_turns, reproject_work_item_scoped_with_limit, BuiltContext, ContextConfig,
-        ContextPlanEvidence, RecentTurnsReprojection, WorkItemScopedReprojection,
+        ContextHistoryPreparation, ContextPlanEvidence, ContextSnapshot, RecentTurnsReprojection,
+        WorkItemScopedReprojection,
     },
     projection_eval::{
         compare_prompt_history_selectors, manifest_from_effective_prompt,
@@ -94,6 +95,9 @@ pub struct EffectivePrompt {
     pub(crate) projection_evidence: ProjectionEvidenceIndex,
     pub(crate) context_plan_evidence: ContextPlanEvidence,
     pub(crate) recent_turns_reprojection: Option<RecentTurnsReprojection>,
+    pub(crate) frozen_history_policy: ContextHistoryPreparation,
+    pub(crate) frozen_projection_budget: Option<usize>,
+    pub(crate) frozen_recent_message_limit: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -111,8 +115,20 @@ pub(crate) enum HistoryReprojectionOutcome {
 }
 
 impl EffectivePrompt {
-    /// Identity of the prepared history input; scoped preparation creates a new token.
-    /// Budget-only rendering preserves it. This is not an owner publication revision.
+    pub(crate) fn history_policy(&self) -> ContextHistoryPreparation {
+        self.frozen_history_policy
+    }
+
+    pub(crate) fn frozen_projection_budget(&self) -> Option<usize> {
+        self.frozen_projection_budget
+    }
+
+    pub(crate) fn frozen_recent_message_limit(&self) -> Option<usize> {
+        self.frozen_recent_message_limit
+    }
+
+    /// Identity of the prepared history acquisition. Budget and selector rendering
+    /// preserve it. This is not an owner publication revision.
     pub fn context_snapshot_id(&self) -> Option<u64> {
         self.recent_turns_reprojection
             .as_ref()
@@ -136,26 +152,6 @@ impl EffectivePrompt {
         compare_prompt_history_selectors(self)
     }
 
-    /// Prepare owner-scoped evidence once; rendering and retries only use this copy.
-    pub(crate) fn prepare_work_item_scoped_history(
-        &self,
-        storage: &AppStorage,
-        window: usize,
-    ) -> Result<Self> {
-        let mut prompt = self.clone();
-        if !matches!(self.projection_owner, ProjectionOwner::WorkItem { .. }) {
-            return Ok(prompt);
-        }
-        if let Some(reprojection) = self.recent_turns_reprojection.as_ref() {
-            prompt.recent_turns_reprojection = Some(prepare_work_item_scoped_history(
-                storage,
-                reprojection,
-                window,
-            )?);
-        }
-        Ok(prompt)
-    }
-
     pub(crate) fn reproject_for_history_selector(
         &self,
         budget: usize,
@@ -171,12 +167,15 @@ impl EffectivePrompt {
         let Some(reprojection) = self.recent_turns_reprojection.as_ref() else {
             return Ok(HistoryReprojectionOutcome::NoOwnedTurnRecords);
         };
-        let (replacement, replacement_evidence, turns_loaded) = match selector {
+        let (selected, replacement, replacement_evidence, turns_loaded) = match selector {
             HistorySelector::RecentTurns => {
-                let Some(replacement) = reproject_recent_turns(reprojection, budget) else {
+                let selected = reprojection.select_recent();
+                let Some(replacement) = reproject_recent_turns(&selected, budget) else {
                     return Ok(HistoryReprojectionOutcome::NoOwnedTurnRecords);
                 };
-                (replacement, None, reprojection.turn_count())
+                let evidence = selected.agent_evidence();
+                let turns_loaded = selected.turn_count();
+                (selected, replacement, evidence, turns_loaded)
             }
             HistorySelector::WorkItemScoped => {
                 match reproject_work_item_scoped_with_limit(
@@ -194,7 +193,12 @@ impl EffectivePrompt {
                         section,
                         evidence,
                         turns_loaded,
-                    } => (section, Some(evidence), turns_loaded),
+                    } => (
+                        reprojection.select_scoped(work_item_scoped_window)?,
+                        section,
+                        evidence,
+                        turns_loaded,
+                    ),
                 }
             }
         };
@@ -214,11 +218,10 @@ impl EffectivePrompt {
         context_sections.insert(insertion_index, replacement);
         let rendered_context_attachment = render_sections(&context_sections);
         let mut prompt = self.clone();
-        if let Some(evidence) = replacement_evidence {
-            prompt
-                .projection_evidence
-                .insert("recent_turns".to_string(), evidence);
-        }
+        prompt.recent_turns_reprojection = Some(selected);
+        prompt
+            .projection_evidence
+            .insert("recent_turns".to_string(), replacement_evidence);
         prompt
             .context_plan_evidence
             .record_reprojection("recent_turns", Some(&replacement_for_evidence));
@@ -689,6 +692,67 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
         agent_home,
         default_external_ingress,
     )?;
+    assemble_effective_prompt(
+        built_context,
+        session,
+        execution,
+        current_message,
+        workspace_root,
+        agent_home,
+        identity,
+        loaded_agents_md,
+        loaded_agent_memory,
+        skills,
+        available_tools,
+        tool_prompt_context,
+    )
+}
+
+/// Pure prompt construction over a fully prepared context. The acquisition
+/// config has already reserved runtime-time tokens before its SQLite view opens.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_effective_prompt_from_context_snapshot(
+    snapshot: &ContextSnapshot,
+    workspace_root: &Path,
+    agent_home: &Path,
+    identity: &AgentIdentityView,
+    loaded_agents_md: LoadedAgentsMd,
+    loaded_agent_memory: LoadedAgentMemory,
+    available_tools: &[ToolSpec],
+    tool_prompt_context: ToolPromptContext,
+) -> Result<EffectivePrompt> {
+    let built_context = build_context_from_snapshot(snapshot, snapshot.prepared_budget())?;
+    assemble_effective_prompt(
+        built_context,
+        snapshot.agent(),
+        snapshot.execution(),
+        snapshot.current_message(),
+        workspace_root,
+        agent_home,
+        identity,
+        loaded_agents_md,
+        loaded_agent_memory,
+        snapshot.skills(),
+        available_tools,
+        tool_prompt_context,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assemble_effective_prompt(
+    built_context: BuiltContext,
+    session: &AgentState,
+    execution: &ExecutionSnapshot,
+    current_message: &MessageEnvelope,
+    workspace_root: &Path,
+    agent_home: &Path,
+    identity: &AgentIdentityView,
+    loaded_agents_md: LoadedAgentsMd,
+    loaded_agent_memory: LoadedAgentMemory,
+    skills: &SkillsRuntimeView,
+    available_tools: &[ToolSpec],
+    tool_prompt_context: ToolPromptContext,
+) -> Result<EffectivePrompt> {
     let system_sections = build_system_sections(
         identity,
         current_message,
@@ -747,6 +811,9 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
         projection_evidence: built_context.projection_evidence,
         context_plan_evidence: built_context.plan_evidence,
         recent_turns_reprojection: built_context.recent_turns_reprojection,
+        frozen_history_policy: built_context.history_policy,
+        frozen_projection_budget: Some(built_context.projection_budget),
+        frozen_recent_message_limit: Some(built_context.recent_message_limit),
     })
 }
 
@@ -2777,6 +2844,9 @@ mod tests {
                 }],
             },
             recent_turns_reprojection: None,
+            frozen_history_policy: ContextHistoryPreparation::default(),
+            frozen_projection_budget: None,
+            frozen_recent_message_limit: None,
         };
 
         let dump = prompt.render_dump();
@@ -2853,6 +2923,9 @@ mod tests {
                 ],
             },
             recent_turns_reprojection: None,
+            frozen_history_policy: ContextHistoryPreparation::default(),
+            frozen_projection_budget: None,
+            frozen_recent_message_limit: None,
         };
 
         assert_eq!(prompt.history_reprojection_budget(64), 30);
@@ -2891,6 +2964,9 @@ mod tests {
             projection_evidence: ProjectionEvidenceIndex::new(),
             context_plan_evidence: ContextPlanEvidence::default(),
             recent_turns_reprojection: None,
+            frozen_history_policy: ContextHistoryPreparation::default(),
+            frozen_projection_budget: None,
+            frozen_recent_message_limit: None,
         };
 
         let dump = prompt.render_dump();
@@ -2954,6 +3030,9 @@ mod tests {
             projection_evidence: ProjectionEvidenceIndex::new(),
             context_plan_evidence: ContextPlanEvidence::default(),
             recent_turns_reprojection: None,
+            frozen_history_policy: ContextHistoryPreparation::default(),
+            frozen_projection_budget: None,
+            frozen_recent_message_limit: None,
         };
 
         let dump = prompt.render_dump();

@@ -1530,6 +1530,9 @@ fn current_input_summary_extracts_body_from_context_section() {
         projection_evidence: Default::default(),
         context_plan_evidence: Default::default(),
         recent_turns_reprojection: None,
+        frozen_history_policy: crate::context::ContextHistoryPreparation::default(),
+        frozen_projection_budget: None,
+        frozen_recent_message_limit: None,
     };
 
     assert_eq!(

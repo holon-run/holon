@@ -248,6 +248,9 @@ pub fn build_baseline_prompt(spec: &BaselineCaseSpec, budget: usize) -> Effectiv
         projection_evidence,
         context_plan_evidence: plan_evidence,
         recent_turns_reprojection: None,
+        frozen_history_policy: crate::context::ContextHistoryPreparation::default(),
+        frozen_projection_budget: None,
+        frozen_recent_message_limit: None,
     }
 }
 

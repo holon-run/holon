@@ -132,6 +132,13 @@ and records, copying only changed records and the affected index structures.
 Atomic root replacement publishes the complete compatible state together.
 Records and indexes reachable from a published root are not mutated in place.
 
+Each canonical commit returns a typed committed-domain delta containing all
+records and removals in its invariant, including database-assigned sequences.
+It describes the existing transaction; it is not a second event log or mutation
+authority. A domain reader is usable only when coherent bootstrap, every writer,
+removal/availability changes, and recovery cover its dependencies. Partial domain
+coverage does not imply that the complete context or scheduler view is Ready.
+
 A resident record may be a typed projection of a canonical persistence record:
 identity/revision, required current facts, bounded preview, and a body locator.
 It need not retain an entire storage record with embedded stdout or attachment
@@ -181,6 +188,19 @@ budget. Account pending input bytes separately, apply backpressure before
 accepting more input, and release them to history policy only after consumption
 or cancellation and all continuity pins end. Bootstrap restores pending input
 before readiness; ordinary queue claim is not a cold-hydration exemption.
+
+Bootstrap reads current facts and bounded continuity through one coherent
+database read transaction. Focused loaders use queue identities, by-ID/batch-ID
+lookups, and owner tails rather than loading all history to filter it afterward.
+The prepared history coverage includes the current owner's configured window
+and the agent-tail fallback that the enabled selector can use. Ordinary window
+advancement incorporates committed evidence; it does not repeatedly hydrate.
+
+If an existing accepted backlog exceeds the configured activation budget,
+activation reports explicit resource exhaustion with required and available
+capacity. Durable work and identity remain intact; an operator can adjust the
+budget and retry. Activation does not silently drop payloads, overcommit without
+a bound, or replace ordinary claims with per-message cold reads.
 
 If required live metadata or pending payloads exceed resource limits, apply
 explicit admission/backpressure or report resource exhaustion; do not silently
@@ -379,6 +399,17 @@ the deduplication namespace: replacing a process must not hide old receipts.
 A deleted and newly created durable identity cannot reuse another identity's
 receipts. Diagnostic timestamps do not serve as deduplication keys.
 
+New evidence and invocation bindings retain verifiable lifecycle attribution.
+Initial upgrade can explicitly adopt existing live work, pending inputs/results,
+waits, continuations, and recovery obligations together with their mandatory
+source closure. The adoption records permitted owner/reference scopes, policy,
+and upgrade boundary; it does not claim that legacy evidence originally belonged
+to the current incarnation. Later selection of an adopted live owner can prepare
+its bounded history under the same scope. Adoption neither rewrites all old
+payloads nor creates another lifecycle authority or unlimited retention root.
+Identity recreation starts new automatic continuity. Authorized explicit queries
+can still inspect old history, with legacy/unknown attribution represented.
+
 The same identity and payload recover the original result even after subsequent
 state changes. The same identity with a different payload is a conflict. The
 receipt must retain sufficient historical outcome information; looking up the
@@ -421,6 +452,46 @@ old owner exits rather than reloading and overwriting its successor. Releasing
 or replacing an owner still requires commit reconciliation, execution
 quiescence, and producer/admission fencing; publication failure grants no
 shortcut to unload.
+
+Before SQL starts, the owner retains a typed witness descriptor with the recovery
+ticket: command family/version, durable incarnation, stable operation scope,
+request digest, and required invocation binding. A resolver handles only its
+matching family and complete recovery group. Receipt absence proves an attempt
+uncommitted only after that attempt ends, a sufficiently fresh read succeeds,
+and every successful branch (including no-op) is atomically linked to an
+immutable, retained witness. An optional or mutable sub-command witness cannot
+prove the encompassing transaction absent. A receipt recovers the original
+outcome; it never reinstalls a historical candidate over current committed state.
+
+Replay does not redispatch completed or indeterminate non-idempotent effects.
+Safe scheduler/index notifications may be reissued, and unfinished durable
+cancellation/cleanup obligations continue under their original run/task
+generation. Returning the original receipt does not assert physical completion.
+
+Control commits the complete administrative transition together: posture and
+admission facts, affected tasks/results, waits, timers and pending wakes,
+queue disposition, triggers, execution interruptions, workspace occupancy,
+audit/index intents, original outcome, and exact cancellation obligations.
+Pending wakes remain targets even when their one-shot timer has completed.
+A healthy Start preserves the current execution, including the interval
+between canonical claim and Turn creation; it requires the original active
+processing lease and canonical source/attempt proof.
+
+Before an acknowledged claim can yield during installation, the runtime
+retains its original processing completion lease. Stop signals and joins
+these exact run/task/timer generations only after publication. Missing local
+handles are not completion evidence. Proven never-started or joined resources
+may settle their obligations; unprovable legacy or orphan resources are
+durably handed off with explicit needs-attention evidence. In particular, an
+exclusive database lease does not prove an orphan OS command has exited.
+Artifact cleanup requires proof that its original producers ended and that
+the current artifact still belongs to the exact committed task generation.
+
+Runtime retirement stops and drains its own physical producers without
+changing durable Task/Timer intent into an administrative Stop. A Host Start
+that replaces a stopped instance retains the entire admitted handoff before
+closing that instance, targets its exact owner epoch, and never reopens the
+old instance's admission.
 
 Persistence errors retain transaction phase and certainty independently of
 retryability. A failed commit or uncertain cleanup must not rerun a transaction

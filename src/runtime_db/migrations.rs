@@ -3904,6 +3904,32 @@ CREATE INDEX IF NOT EXISTS idx_provider_quota_incidents_retry
   ON provider_quota_incidents(next_retry_at, consecutive_failures);
 "#,
     },
+    Migration {
+        version: 81,
+        name: "episode_memory_results",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS episode_memory_results (
+  agent_id TEXT NOT NULL,
+  identity_incarnation INTEGER NOT NULL CHECK (identity_incarnation > 0),
+  turn_id TEXT NOT NULL,
+  phase_version TEXT NOT NULL,
+  command_digest TEXT NOT NULL,
+  invocation_json TEXT NOT NULL,
+  finalized_episode_id TEXT,
+  result_json TEXT NOT NULL,
+  committed_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, identity_incarnation, turn_id, phase_version)
+);
+CREATE INDEX IF NOT EXISTS idx_episode_memory_results_episode_scope
+  ON episode_memory_results(agent_id, identity_incarnation, finalized_episode_id)
+  WHERE finalized_episode_id IS NOT NULL;
+"#,
+    },
+    Migration {
+        version: 82,
+        name: "explicit_episode_continuity",
+        sql: super::episode_snapshot::EPISODE_CONTINUITY_SCHEMA,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4206,6 +4232,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
         ensure_destructive_operation_command_digest_schema(transaction)?;
     }
     transaction.execute_batch(migration.sql)?;
+    if migration.name == "explicit_episode_continuity" {
+        super::episode_snapshot::capture_episode_continuity_upgrade_tx(transaction, Utc::now())?;
+    }
     if migration.name == "execution_protocol_authority" {
         backfill_execution_protocol_authority(transaction)?;
     }

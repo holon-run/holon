@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
@@ -1231,27 +1231,7 @@ pub(crate) fn load_state_unchecked_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
 ) -> Result<ExecutionProtocolState> {
-    Ok(ExecutionProtocolState {
-        agent_id: agent_id.to_owned(),
-        attempts: load_payload_map(
-            tx,
-            "SELECT attempt_id, payload_json
-             FROM execution_protocol_attempts WHERE agent_id = ?1",
-            agent_id,
-        )?,
-        work_items: load_payload_map(
-            tx,
-            "SELECT work_item_id, payload_json
-             FROM execution_protocol_work_items WHERE agent_id = ?1",
-            agent_id,
-        )?,
-        outcomes: load_payload_map(
-            tx,
-            "SELECT outcome_id, payload_json
-             FROM execution_protocol_outcomes WHERE agent_id = ?1",
-            agent_id,
-        )?,
-    })
+    load_state_unchecked_on(tx, agent_id)
 }
 
 pub(super) fn load_state_tx(
@@ -1268,7 +1248,7 @@ pub(super) fn load_state_tx(
 }
 
 fn load_payload_map<T: DeserializeOwned>(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     sql: &str,
     agent_id: &str,
 ) -> Result<BTreeMap<String, T>> {
@@ -1605,4 +1585,49 @@ mod tests {
         );
         Ok(())
     }
+}
+
+fn load_state_unchecked_on(
+    connection: &Connection,
+    agent_id: &str,
+) -> Result<ExecutionProtocolState> {
+    Ok(ExecutionProtocolState {
+        agent_id: agent_id.to_owned(),
+        attempts: load_payload_map(
+            connection,
+            "SELECT attempt_id, payload_json
+             FROM execution_protocol_attempts WHERE agent_id = ?1",
+            agent_id,
+        )?,
+        work_items: load_payload_map(
+            connection,
+            "SELECT work_item_id, payload_json
+             FROM execution_protocol_work_items WHERE agent_id = ?1",
+            agent_id,
+        )?,
+        outcomes: load_payload_map(
+            connection,
+            "SELECT outcome_id, payload_json
+             FROM execution_protocol_outcomes WHERE agent_id = ?1",
+            agent_id,
+        )?,
+    })
+}
+
+pub(crate) fn context_execution_protocol_on(
+    connection: &Connection,
+    agent_id: &str,
+) -> Result<Option<ExecutionProtocolState>> {
+    let initialized: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM execution_protocol_partitions WHERE agent_id = ?1)",
+        [agent_id],
+        |row| row.get(0),
+    )?;
+    if !initialized {
+        return Ok(None);
+    }
+    let state = load_state_unchecked_on(connection, agent_id)?;
+    execution_protocol::assert_invariants(&state)
+        .map_err(|error| anyhow!("stored execution protocol state is invalid: {error}"))?;
+    Ok(Some(state))
 }

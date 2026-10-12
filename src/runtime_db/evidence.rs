@@ -295,12 +295,20 @@ pub(crate) fn append_transcript_entry_tx(
 }
 
 pub(crate) fn upsert_agent_state_tx(tx: &Transaction<'_>, record: &AgentState) -> Result<()> {
+    upsert_agent_state_at_tx(tx, record, Utc::now())
+}
+
+pub(crate) fn upsert_agent_state_at_tx(
+    tx: &Transaction<'_>,
+    record: &AgentState,
+    updated_at: DateTime<Utc>,
+) -> Result<()> {
     if record.current_run_id.is_some() || record.status == crate::types::AgentStatus::AwakeRunning {
         super::reclamation::ensure_work_admission_tx(tx, &record.id)?;
     }
     let payload_json = serde_json::to_string(record)?;
     let status = enum_string(&record.status)?;
-    let now = timestamp(Utc::now());
+    let now = timestamp(updated_at);
     tx.execute(
         "INSERT INTO agent_states (
             agent_id, status, turn_index, current_run_id, current_work_item_id,
@@ -549,6 +557,16 @@ pub(crate) fn upsert_agent_identity_tx(
     tx: &Transaction<'_>,
     record: &AgentIdentityRecord,
 ) -> Result<()> {
+    let previous_incarnation = tx
+        .query_row(
+            "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+            [&record.agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<AgentIdentityRecord>(&payload))
+        .transpose()?
+        .map(|identity| identity.incarnation);
     // The reservation guard runs before the registry write so a retired id
     // can never regain availability, not even through a stale replay.
     reserve_agent_identity_tx(tx, record)?;
@@ -603,6 +621,21 @@ pub(crate) fn upsert_agent_identity_tx(
             payload_json,
         ],
     )?;
+    if previous_incarnation != Some(record.incarnation) {
+        let stored: String = tx.query_row(
+            "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+            [&record.agent_id],
+            |row| row.get(0),
+        )?;
+        let stored: AgentIdentityRecord = serde_json::from_str(&stored)?;
+        if stored == *record {
+            super::episode_snapshot::ensure_fresh_episode_continuity_tx(
+                tx,
+                record,
+                record.updated_at,
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -811,6 +844,22 @@ pub(crate) fn insert_runtime_index_changes_tx(
     tx: &Transaction<'_>,
     changes: &[RuntimeIndexChange],
 ) -> Result<()> {
+    insert_runtime_index_changes_with_time_tx(tx, changes, None)
+}
+
+pub(crate) fn insert_runtime_index_changes_at_tx(
+    tx: &Transaction<'_>,
+    changes: &[RuntimeIndexChange],
+    created_at: DateTime<Utc>,
+) -> Result<()> {
+    insert_runtime_index_changes_with_time_tx(tx, changes, Some(created_at))
+}
+
+fn insert_runtime_index_changes_with_time_tx(
+    tx: &Transaction<'_>,
+    changes: &[RuntimeIndexChange],
+    created_at: Option<DateTime<Utc>>,
+) -> Result<()> {
     let mut agent_ids = Vec::new();
     for change in changes {
         // Outbox inserts and the produced watermark advance below share one
@@ -828,7 +877,7 @@ pub(crate) fn insert_runtime_index_changes_tx(
                 change.operation.as_str(),
                 change.source_updated_at.map(timestamp),
                 change.reason,
-                timestamp(Utc::now()),
+                timestamp(created_at.unwrap_or_else(Utc::now)),
             ],
         )?;
         if !agent_ids.contains(&change.agent_id) {
@@ -836,7 +885,11 @@ pub(crate) fn insert_runtime_index_changes_tx(
         }
     }
     for agent_id in &agent_ids {
-        update_runtime_index_outbox_watermark_tx(tx, agent_id)?;
+        update_runtime_index_outbox_watermark_at_tx(
+            tx,
+            agent_id,
+            created_at.unwrap_or_else(Utc::now),
+        )?;
     }
     Ok(())
 }
@@ -844,7 +897,11 @@ pub(crate) fn insert_runtime_index_changes_tx(
 /// Advance the agent's monotonic produced watermark to the highest appended
 /// `change_seq`. Deleting consumed outbox rows never lowers this value, which
 /// keeps `produced - applied` meaningful after the outbox is drained.
-fn update_runtime_index_outbox_watermark_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
+fn update_runtime_index_outbox_watermark_at_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    updated_at: DateTime<Utc>,
+) -> Result<()> {
     let produced: i64 = tx.query_row(
         "SELECT COALESCE(MAX(change_seq), 0) FROM runtime_index_outbox WHERE agent_id = ?1",
         params![agent_id],
@@ -860,7 +917,7 @@ fn update_runtime_index_outbox_watermark_tx(tx: &Transaction<'_>, agent_id: &str
                 excluded.produced_change_seq
             ),
             updated_at = excluded.updated_at",
-        params![agent_id, produced, timestamp(Utc::now())],
+        params![agent_id, produced, timestamp(updated_at)],
     )?;
     Ok(())
 }

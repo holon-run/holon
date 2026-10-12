@@ -1,6 +1,8 @@
 //! Explicit storage preparation for immutable, request-scoped context input.
 //! This adapter still performs I/O; its token is not a coherent owner revision.
+use super::inputs::ContextInputs;
 use super::*;
+use crate::runtime::resident_state::CapturedAgentContext;
 use crate::{
     runtime::provider_recovery::ProviderRecoverySource,
     runtime_db::task_result_settlement::TaskResultSettlementRecord, storage::WorkQueueReadModel,
@@ -8,6 +10,7 @@ use crate::{
 };
 use anyhow::Result;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     path::Path,
@@ -106,6 +109,7 @@ pub struct ContextSnapshot {
     pub(super) data: Arc<ContextSnapshotData>,
     acquisition: ContextAcquisitionReport,
     descriptors: Arc<[ContextSourceDescriptor]>,
+    resources: ContextResourceObservation,
 }
 impl ContextSnapshot {
     pub fn id(&self) -> u64 {
@@ -116,6 +120,28 @@ impl ContextSnapshot {
     }
     pub fn descriptors(&self) -> &[ContextSourceDescriptor] {
         &self.descriptors
+    }
+    pub(crate) fn agent(&self) -> &AgentState {
+        &self.data.agent
+    }
+    pub(crate) fn execution(&self) -> &ExecutionSnapshot {
+        &self.data.execution
+    }
+    pub(crate) fn current_message(&self) -> &MessageEnvelope {
+        &self.data.current_message
+    }
+    pub(crate) fn skills(&self) -> &SkillsRuntimeView {
+        &self.data.skills
+    }
+    #[cfg(test)]
+    pub(crate) fn history_policy(&self) -> ContextHistoryPreparation {
+        self.data.history_policy
+    }
+    pub(crate) fn prepared_budget(&self) -> usize {
+        self.data.config.prompt_budget_estimated_tokens
+    }
+    pub(crate) fn resources(&self) -> &ContextResourceObservation {
+        &self.resources
     }
 }
 
@@ -128,10 +154,12 @@ pub(super) struct ContextSnapshotData {
     pub continuation: Option<ContinuationResolution>,
     pub config: ContextConfig,
     pub history: Arc<HistorySnapshot>,
+    pub scoped_history: Option<PreparedScopedHistory>,
+    pub history_policy: ContextHistoryPreparation,
     pub recovery_source: Option<ProviderRecoverySource>,
     pub continuation_anchor_messages: Vec<MessageEnvelope>,
     pub active_wait_conditions: Vec<WaitConditionRecord>,
-    pub episodes: Vec<ContextEpisodeRecord>,
+    pub episodes: Vec<Arc<ContextEpisodeRecord>>,
     pub work_queue_projection: WorkQueueReadModel,
     pub current_work_item: Option<WorkItemRecord>,
     pub default_ingress: Option<ExternalTriggerRecord>,
@@ -158,18 +186,31 @@ pub(super) struct HistoryObservations {
     valid_trigger_summary: BTreeMap<String, bool>,
 }
 impl HistoryObservations {
+    #[cfg(test)]
     pub(super) fn capture(
         storage: &AppStorage,
         turns: &[TurnRecord],
         briefs: &[BriefRecord],
     ) -> Self {
+        Self::capture_inputs(storage, turns, briefs)
+    }
+    pub(super) fn capture_inputs(
+        inputs: &impl ContextInputs,
+        turns: &[TurnRecord],
+        briefs: &[BriefRecord],
+    ) -> Self {
         let brief_text = briefs
             .iter()
-            .map(|brief| (brief.id.clone(), resolved_brief_text(storage, brief)))
+            .map(|brief| {
+                (
+                    brief.id.clone(),
+                    resolved_brief_text_from_inputs(inputs, brief),
+                )
+            })
             .collect();
         let valid_trigger_summary = turns.iter().map(|record| {
             let valid = record.trigger.as_ref().and_then(|trigger| trigger.message_id.as_ref()).is_none_or(|message_id| {
-                match storage.read_message_by_id(message_id) {
+                match inputs.message_by_id(message_id) {
                     Ok(Some(message)) => turn_record_owns_object(record, message.turn_id.as_deref()),
                     Ok(None) => true,
                     Err(error) => {
@@ -206,6 +247,60 @@ pub(super) struct PendingTaskResult {
     pub reply: Option<MessageEnvelope>,
 }
 
+/// Frozen acquisition policy, selected before opening the SQLite view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ContextHistoryPreparation {
+    pub selector: crate::projection_eval::HistorySelector,
+    pub work_item_scoped_window: Option<usize>,
+    pub window_source: &'static str,
+}
+impl Default for ContextHistoryPreparation {
+    fn default() -> Self {
+        Self {
+            selector: crate::projection_eval::HistorySelector::RecentTurns,
+            work_item_scoped_window: None,
+            window_source: "context_config",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PreparedScopedHistory {
+    pub window_limit: usize,
+    pub history: Arc<HistorySnapshot>,
+}
+
+/// Fully owned durable records. Contains no read capability, root/map or transaction.
+pub(crate) struct DurableContextInputs {
+    data: ContextSnapshotData,
+    acquisition: ContextAcquisitionReport,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ContextResourceObservation {
+    pub generation: u64,
+    pub digest: String,
+}
+
+/// Filesystem-only resource capability. Cannot query SQLite or durable records.
+pub(crate) trait ContextResources {
+    fn plan(&self, work_item: &WorkItemRecord) -> Option<WorkItemPlanArtifact>;
+    fn notes(&self) -> Option<String>;
+}
+
+pub(crate) struct FilesystemContextResources<'a> {
+    pub data_dir: &'a Path,
+    pub agent_home: &'a Path,
+}
+impl ContextResources for FilesystemContextResources<'_> {
+    fn plan(&self, item: &WorkItemRecord) -> Option<WorkItemPlanArtifact> {
+        crate::work_item_plan::ensure_plan_artifact(self.data_dir, item, None).ok()
+    }
+    fn notes(&self) -> Option<String> {
+        crate::notes_catalog::render_agent_home_notes_catalog_section(self.agent_home)
+    }
+}
+
 /// Transitional adapter: sequential persistence reads do not claim the atomic
 /// publication guarantee of the future AgentStateStore. Success prepares all
 /// I/O dependencies used by the current renderer, including optional history.
@@ -221,8 +316,103 @@ pub fn capture_context_from_storage(
     agent_home: &Path,
     default_external_ingress_override: Option<&ExternalTriggerRecord>,
 ) -> Result<ContextSnapshot> {
+    // Preserve the legacy full acquisition span: Episode reads through resources.
     let _timer = crate::diagnostics::attribution::CONTEXT_ACQUIRE.start();
     let mut report = ContextAcquisitionReport::default();
+    let episodes = report
+        .read(
+            "episodes",
+            || storage.read_recent_context_episodes(config.recent_episode_candidates),
+            Vec::len,
+        )?
+        .into_iter()
+        .map(Arc::new)
+        .collect();
+    let durable = acquire_durable_context_inputs(
+        storage,
+        agent,
+        execution,
+        skills,
+        current_message,
+        continuation,
+        config,
+        default_external_ingress_override,
+        ContextHistoryPreparation::default(),
+        episodes,
+        report,
+    )?;
+    observe_context_resources(
+        durable,
+        &FilesystemContextResources {
+            data_dir: storage.data_dir(),
+            agent_home,
+        },
+        0,
+    )
+}
+
+/// The caller owns the coherent SQLite snapshot and validates it against the
+/// captured owner root. This function has no filesystem or publication capability.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn acquire_durable_context(
+    inputs: &impl ContextInputs,
+    agent: &AgentState,
+    execution: &ExecutionSnapshot,
+    skills: &SkillsRuntimeView,
+    current_message: &MessageEnvelope,
+    continuation: Option<&ContinuationResolution>,
+    config: &ContextConfig,
+    default_external_ingress_override: Option<&ExternalTriggerRecord>,
+    history_policy: ContextHistoryPreparation,
+    resident: &CapturedAgentContext,
+) -> Result<DurableContextInputs> {
+    anyhow::ensure!(
+        resident.state.as_ref() == agent,
+        "context posture differs from captured owner publication"
+    );
+    anyhow::ensure!(
+        resident.token.identity_incarnation > 0,
+        "context capture has no durable identity"
+    );
+    anyhow::ensure!(
+        config.recent_episode_candidates == resident.episode_candidate_limit,
+        "Episode policy differs from resident capture; explicit target preparation required"
+    );
+    let episodes = resident.episodes.clone();
+    acquire_durable_context_inputs(
+        inputs,
+        agent,
+        execution,
+        skills,
+        current_message,
+        continuation,
+        config,
+        default_external_ingress_override,
+        history_policy,
+        episodes,
+        ContextAcquisitionReport::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn acquire_durable_context_inputs(
+    inputs: &impl ContextInputs,
+    agent: &AgentState,
+    execution: &ExecutionSnapshot,
+    skills: &SkillsRuntimeView,
+    current_message: &MessageEnvelope,
+    continuation: Option<&ContinuationResolution>,
+    config: &ContextConfig,
+    default_external_ingress_override: Option<&ExternalTriggerRecord>,
+    history_policy: ContextHistoryPreparation,
+    episodes: Vec<Arc<ContextEpisodeRecord>>,
+    mut report: ContextAcquisitionReport,
+) -> Result<DurableContextInputs> {
+    anyhow::ensure!(
+        history_policy.selector != crate::projection_eval::HistorySelector::WorkItemScoped
+            || history_policy.work_item_scoped_window.is_some(),
+        "work-item history policy requires a frozen window before acquisition"
+    );
     macro_rules! read {
         ($name:literal, $read:expr, $count:expr) => {
             report.read($name, || $read, $count)?
@@ -230,28 +420,25 @@ pub fn capture_context_from_storage(
     }
     let recovery_source = read!(
         "recovery",
-        crate::runtime::provider_recovery::resolve_for_context(storage, current_message),
+        crate::runtime::provider_recovery::resolve_for_context_with_sources(
+            current_message,
+            || inputs.execution_protocol_state(&current_message.agent_id),
+            |id| inputs.message_by_id(id),
+            |id| inputs.turn_by_id(id)
+        ),
         |v| usize::from(v.is_some())
     );
     let continuation_anchor_messages = if recovery_source.is_some() {
         Vec::new()
     } else {
-        read!("anchor_messages", storage.read_all_messages(), Vec::len)
+        read!("anchor_messages", inputs.anchor_messages(), Vec::len)
     };
-    let mut briefs = read!(
-        "briefs",
-        storage.read_recent_briefs(config.recent_briefs),
-        Vec::len
-    );
-    let mut tools = read!(
-        "tools",
-        storage.read_recent_tool_executions(config.recent_messages),
-        Vec::len
-    );
+    let mut briefs = read!("briefs", inputs.briefs(config.recent_briefs), Vec::len);
+    let mut tools = read!("tools", inputs.tools(config.recent_messages), Vec::len);
     let mut turn_records = history_turns_without_current_input(
         read!(
             "turns",
-            storage.read_recent_turns(config.recent_messages.saturating_add(1)),
+            inputs.turns(config.recent_messages.saturating_add(1)),
             Vec::len
         ),
         &current_message.id,
@@ -269,7 +456,7 @@ pub fn capture_context_from_storage(
     read!(
         "history_references",
         hydrate_recent_turn_references(
-            storage,
+            inputs,
             &turn_records,
             &mut messages,
             &mut briefs,
@@ -279,13 +466,13 @@ pub fn capture_context_from_storage(
     );
     let mut transcript = read!(
         "transcript",
-        storage.read_recent_transcript(config.recent_messages),
+        inputs.transcript(config.recent_messages),
         Vec::len
     );
     if let Some(source) = recovery_source.as_ref() {
         for entry in read!(
             "recovery_transcript",
-            storage.read_transcript_for_turns(&[source.source_turn.turn_id.clone()]),
+            inputs.transcript_for_turns(&[source.source_turn.turn_id.clone()]),
             Vec::len
         ) {
             if !transcript.iter().any(|existing| existing == &entry) {
@@ -293,20 +480,11 @@ pub fn capture_context_from_storage(
             }
         }
     }
-    let active_wait_conditions = read!(
-        "waits",
-        storage.active_wait_conditions_for_agent(&agent.id),
-        Vec::len
-    )
-    .into_iter()
-    .filter(|condition| condition.work_item_id.is_some())
-    .collect();
-    let episodes = read!(
-        "episodes",
-        storage.read_recent_context_episodes(config.recent_episode_candidates),
-        Vec::len
-    );
-    let work_queue_projection = read!("work_queue", storage.work_queue_prompt_projection(), |_| 0);
+    let active_wait_conditions = read!("waits", inputs.active_waits(&agent.id), Vec::len)
+        .into_iter()
+        .filter(|condition| condition.work_item_id.is_some())
+        .collect();
+    let work_queue_projection = read!("work_queue", inputs.work_queue(), |_| 0);
     let execution_work_item = agent
         .current_execution_binding
         .as_ref()
@@ -314,7 +492,7 @@ pub fn capture_context_from_storage(
         .map(|id| {
             report.read(
                 "execution_work_item",
-                || storage.latest_work_item(id),
+                || inputs.work_item(id),
                 |v| usize::from(v.is_some()),
             )
         })
@@ -330,52 +508,121 @@ pub fn capture_context_from_storage(
         Some(record) => Some(record.clone()),
         None => read!(
             "default_ingress",
-            default_external_ingress(storage, &agent.id),
+            default_external_ingress(inputs, &agent.id),
             |v| usize::from(v.is_some())
         ),
     };
-    let active_task_count = read!(
-        "active_task_count",
-        storage.active_task_count_for_agent(&agent.id),
-        |_| 0
-    );
-    let active_tasks = if active_task_count > 0 {
-        read!(
-            "active_tasks",
-            storage.latest_active_task_records_for_agent(&agent.id, ACTIVE_TASKS_CONTEXT_LIMIT),
-            Vec::len
-        )
-    } else {
-        Vec::new()
-    };
+    let all_active_tasks = read!("active_tasks", inputs.active_tasks(&agent.id), Vec::len);
+    let active_task_count = all_active_tasks.len();
+    // Canonical active_for_agent is newest-first; preserve its display slice.
+    let active_tasks = all_active_tasks
+        .into_iter()
+        .take(ACTIVE_TASKS_CONTEXT_LIMIT)
+        .collect();
     let completion_reports = read!(
         "completion_reports",
-        latest_completion_report_by_work_item(storage, &agent.id),
+        latest_completion_report_by_work_item(inputs, &agent.id),
         BTreeMap::len
     );
     let observations = read!(
         "history_observations",
-        Ok(HistoryObservations::capture(
-            storage,
+        Ok(HistoryObservations::capture_inputs(
+            inputs,
             &turn_records,
             &briefs
         )),
         |_| 0
     );
+    let pending_task_results = read!(
+        "pending_task_results",
+        load_pending_task_results(inputs, agent, current_message),
+        Vec::len
+    );
+    let history = Arc::new(HistorySnapshot {
+        turn_records,
+        messages,
+        briefs,
+        tools,
+        transcript,
+        observations,
+    });
+    let scoped_history = match (
+        history_policy.work_item_scoped_window,
+        current_work_item.as_ref(),
+    ) {
+        (Some(window), Some(work_item)) => Some(PreparedScopedHistory {
+            window_limit: window,
+            history: Arc::new(acquire_scoped_history(
+                inputs,
+                current_message,
+                work_item,
+                window,
+                recovery_source.as_ref(),
+            )?),
+        }),
+        _ => None,
+    };
+    let data = ContextSnapshotData {
+        agent: agent.clone(),
+        execution: execution.clone(),
+        skills: skills.clone(),
+        current_message: current_message.clone(),
+        continuation: continuation.cloned(),
+        config: config.clone(),
+        history,
+        scoped_history,
+        history_policy,
+        recovery_source,
+        continuation_anchor_messages,
+        active_wait_conditions,
+        episodes,
+        work_queue_projection,
+        current_work_item,
+        default_ingress,
+        active_task_count,
+        active_tasks,
+        completion_reports,
+        plan_observations: BTreeMap::new(),
+        notes_content: None,
+        pending_task_results,
+    };
+    Ok(DurableContextInputs {
+        data,
+        acquisition: report,
+    })
+}
+
+/// Runs after the read transaction has ended. Observed bytes are frozen here;
+/// the caller must reject an obsolete owner/resource generation before use.
+pub(crate) fn observe_context_resources(
+    durable: DurableContextInputs,
+    resources: &impl ContextResources,
+    resource_generation: u64,
+) -> Result<ContextSnapshot> {
+    let DurableContextInputs {
+        mut data,
+        acquisition: mut report,
+    } = durable;
+    macro_rules! read {
+        ($name:literal, $read:expr, $count:expr) => {
+            report.read($name, || $read, $count)?
+        };
+    }
+    let current_work_item = data.current_work_item.as_ref();
+    let work_queue_projection = &data.work_queue_projection;
+    let completion_reports = &data.completion_reports;
     // Preserve existing creation/error handling at the explicit I/O boundary.
     // WorkItem/file workflows will own creation once resource residency lands.
     let mut plan_observations = BTreeMap::new();
-    if let Some(item) = current_work_item.as_ref() {
-        let artifact = read!(
-            "plan_observations",
-            Ok(crate::work_item_plan::ensure_plan_artifact(storage.data_dir(), item, None).ok()),
-            |v| usize::from(v.is_some())
-        );
+    if let Some(item) = current_work_item {
+        let artifact = read!("plan_observations", Ok(resources.plan(item)), |v| {
+            usize::from(v.is_some())
+        });
         if let Some(artifact) = artifact {
             plan_observations.insert(item.id.clone(), artifact);
         }
     }
-    for item in candidate_items(&work_queue_projection) {
+    for item in candidate_items(work_queue_projection) {
         if current_work_item
             .as_ref()
             .is_some_and(|current| current.id == item.id)
@@ -389,61 +636,36 @@ pub fn capture_context_from_storage(
         {
             continue;
         }
-        let artifact = read!(
-            "plan_observations",
-            Ok(crate::work_item_plan::ensure_plan_artifact(storage.data_dir(), item, None).ok()),
-            |v| usize::from(v.is_some())
-        );
+        let artifact = read!("plan_observations", Ok(resources.plan(item)), |v| {
+            usize::from(v.is_some())
+        });
         if let Some(artifact) = artifact {
             plan_observations.insert(item.id.clone(), artifact);
         }
     }
-    let notes_content = read!(
-        "notes_observation",
-        Ok(crate::notes_catalog::render_agent_home_notes_catalog_section(agent_home)),
-        |v| usize::from(v.is_some())
+    let notes_content = read!("notes_observation", Ok(resources.notes()), |v| usize::from(
+        v.is_some()
+    ));
+
+    data.plan_observations = plan_observations;
+    data.notes_content = notes_content;
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&(
+            &data.plan_observations,
+            &data.notes_content
+        ))?)
     );
-    let pending_task_results = read!(
-        "pending_task_results",
-        load_pending_task_results(storage, agent, current_message),
-        Vec::len
-    );
-    let history = Arc::new(HistorySnapshot {
-        turn_records,
-        messages,
-        briefs,
-        tools,
-        transcript,
-        observations,
-    });
-    let data = ContextSnapshotData {
-        agent: agent.clone(),
-        execution: execution.clone(),
-        skills: skills.clone(),
-        current_message: current_message.clone(),
-        continuation: continuation.cloned(),
-        config: config.clone(),
-        history,
-        recovery_source,
-        continuation_anchor_messages,
-        active_wait_conditions,
-        episodes,
-        work_queue_projection,
-        current_work_item,
-        default_ingress,
-        active_task_count,
-        active_tasks,
-        completion_reports,
-        plan_observations,
-        notes_content,
-        pending_task_results,
-    };
     let descriptors = descriptors(&data).into();
     Ok(ContextSnapshot {
         id: NEXT_SNAPSHOT.fetch_add(1, Ordering::Relaxed),
         data: Arc::new(data),
         acquisition: report,
         descriptors,
+        resources: ContextResourceObservation {
+            generation: resource_generation,
+            digest,
+        },
     })
 }
 
@@ -462,7 +684,7 @@ fn candidate_items(projection: &WorkQueueReadModel) -> impl Iterator<Item = &Wor
 }
 
 pub(super) fn load_pending_task_results(
-    storage: &AppStorage,
+    storage: &impl ContextInputs,
     agent: &AgentState,
     current_message: &MessageEnvelope,
 ) -> Result<Vec<PendingTaskResult>> {
@@ -473,19 +695,13 @@ pub(super) fn load_pending_task_results(
     else {
         return Ok(Vec::new());
     };
-    let Some(db) = storage.runtime_db()? else {
-        return Ok(Vec::new());
-    };
     let mut pending = Vec::new();
     let mut seen_replies = std::collections::BTreeSet::new();
-    for record in db
-        .task_result_settlements()
-        .admitted_for_activation(&agent.id, activation_id)?
-    {
+    for record in storage.admitted_settlements(&agent.id, activation_id)? {
         if record.message_id == current_message.id {
             continue;
         }
-        let message = storage.read_message_by_id(&record.message_id)?;
+        let message = storage.message_by_id(&record.message_id)?;
         if message
             .as_ref()
             .and_then(crate::wake_contract::agent_message_reply_reference)
@@ -499,7 +715,7 @@ pub(super) fn load_pending_task_results(
                 .as_ref()
                 .and_then(crate::wake_contract::agent_message_reply_reference)
                 .filter(|id| seen_replies.insert((*id).to_owned()))
-                .map(|id| storage.read_message_by_id(id))
+                .map(|id| storage.message_by_id(id))
                 .transpose()?
                 .flatten()
         } else {
@@ -514,40 +730,32 @@ pub(super) fn load_pending_task_results(
     Ok(pending)
 }
 
-pub(crate) fn prepare_work_item_scoped_history(
-    storage: &AppStorage,
-    reprojection: &RecentTurnsReprojection,
+fn acquire_scoped_history(
+    inputs: &impl ContextInputs,
+    current_message: &MessageEnvelope,
+    work_item: &WorkItemRecord,
     window_limit: usize,
-) -> Result<RecentTurnsReprojection> {
-    let Some(work_item) = reprojection.current_work_item.as_ref() else {
-        return Ok(reprojection.clone());
-    };
-    if reprojection.scoped_window == Some(window_limit) {
-        return Ok(reprojection.clone());
-    }
-    let _timer = crate::diagnostics::attribution::CONTEXT_HISTORY_PREPARE.start();
+    recovery_source: Option<&ProviderRecoverySource>,
+) -> Result<HistorySnapshot> {
     let owner = crate::types::TurnOwner::WorkItem {
         work_item_id: work_item.id.clone(),
     };
     let mut turn_records = history_turns_without_current_input(
-        storage.read_recent_turns_for_owner(&owner, window_limit.saturating_add(1))?,
-        &reprojection.current_message.id,
+        inputs.turns_for_owner(&owner, window_limit.saturating_add(1))?,
+        &current_message.id,
         window_limit,
     );
-    if let Some(source) = crate::runtime::provider_recovery::resolve_for_context(
-        storage,
-        &reprojection.current_message,
-    )? {
+    if let Some(source) = recovery_source {
         if !turn_records
             .iter()
             .any(|record| record.turn_id == source.source_turn.turn_id)
         {
-            turn_records.push(source.source_turn);
+            turn_records.push(source.source_turn.clone());
         }
     }
     let (mut messages, mut briefs, mut tools) = (Vec::new(), Vec::new(), Vec::new());
     hydrate_recent_turn_references(
-        storage,
+        inputs,
         &turn_records,
         &mut messages,
         &mut briefs,
@@ -557,20 +765,55 @@ pub(crate) fn prepare_work_item_scoped_history(
         .iter()
         .map(|record| record.turn_id.clone())
         .collect::<Vec<_>>();
-    let transcript = storage.read_transcript_for_turns(&ids)?;
-    let observations = HistoryObservations::capture(storage, &turn_records, &briefs);
-    let mut prepared = reprojection.clone();
-    prepared.history = Arc::new(HistorySnapshot {
+    let transcript = inputs.transcript_for_turns(&ids)?;
+    let observations = HistoryObservations::capture_inputs(inputs, &turn_records, &briefs);
+    Ok(HistorySnapshot {
         turn_records,
         messages,
         briefs,
         tools,
         transcript,
         observations,
+    })
+}
+
+/// Legacy explicit I/O adapter retained for fixtures and old preview callers.
+/// The coherent runtime path prepares both windows in acquire_durable_context.
+#[cfg(test)]
+pub(crate) fn prepare_work_item_scoped_history(
+    storage: &AppStorage,
+    reprojection: &RecentTurnsReprojection,
+    window_limit: usize,
+) -> Result<RecentTurnsReprojection> {
+    let Some(work_item) = reprojection.current_work_item.as_ref() else {
+        return Ok(reprojection.clone());
+    };
+    if reprojection
+        .prepared_scoped
+        .as_ref()
+        .is_some_and(|scope| scope.window_limit == window_limit)
+    {
+        return reprojection.select_scoped(window_limit);
+    }
+    let _timer = crate::diagnostics::attribution::CONTEXT_HISTORY_PREPARE.start();
+    let recovery = crate::runtime::provider_recovery::resolve_for_context(
+        storage,
+        &reprojection.current_message,
+    )?;
+    let history = Arc::new(acquire_scoped_history(
+        storage,
+        &reprojection.current_message,
+        work_item,
+        window_limit,
+        recovery.as_ref(),
+    )?);
+    let mut prepared = reprojection.clone();
+    prepared.prepared_scoped = Some(PreparedScopedHistory {
+        window_limit,
+        history,
     });
-    prepared.scoped_window = Some(window_limit);
     prepared.snapshot_id = NEXT_SNAPSHOT.fetch_add(1, Ordering::Relaxed);
-    Ok(prepared)
+    prepared.select_scoped(window_limit)
 }
 
 fn descriptors(data: &ContextSnapshotData) -> Vec<ContextSourceDescriptor> {
@@ -597,6 +840,11 @@ fn descriptors(data: &ContextSnapshotData) -> Vec<ContextSourceDescriptor> {
         .history
         .messages
         .iter()
+        .chain(
+            data.scoped_history
+                .iter()
+                .flat_map(|scope| scope.history.messages.iter()),
+        )
         .chain(data.continuation_anchor_messages.iter())
         .chain(std::iter::once(&data.current_message))
         .chain(
@@ -635,7 +883,11 @@ fn descriptors(data: &ContextSnapshotData) -> Vec<ContextSourceDescriptor> {
         item.body_locator = Some(item.reference.clone());
         out.insert(item.reference.clone(), item);
     }
-    for turn in &data.history.turn_records {
+    for turn in data.history.turn_records.iter().chain(
+        data.scoped_history
+            .iter()
+            .flat_map(|scope| scope.history.turn_records.iter()),
+    ) {
         let mut item = base(
             format!("turn:{}", turn.turn_id),
             ContextSourceKind::Turn,
@@ -659,11 +911,21 @@ fn descriptors(data: &ContextSnapshotData) -> Vec<ContextSourceDescriptor> {
             .collect();
         out.insert(item.reference.clone(), item);
     }
-    for brief in data.history.briefs.iter().chain(
-        data.completion_reports
-            .values()
-            .filter_map(|report| report.source_brief.as_ref()),
-    ) {
+    for brief in data
+        .history
+        .briefs
+        .iter()
+        .chain(
+            data.scoped_history
+                .iter()
+                .flat_map(|scope| scope.history.briefs.iter()),
+        )
+        .chain(
+            data.completion_reports
+                .values()
+                .filter_map(|report| report.source_brief.as_ref()),
+        )
+    {
         let mut item = base(
             format!("brief:{}", brief.id),
             ContextSourceKind::Brief,
@@ -679,7 +941,11 @@ fn descriptors(data: &ContextSnapshotData) -> Vec<ContextSourceDescriptor> {
         item.body_locator = Some(item.reference.clone());
         out.insert(item.reference.clone(), item);
     }
-    for tool in &data.history.tools {
+    for tool in data.history.tools.iter().chain(
+        data.scoped_history
+            .iter()
+            .flat_map(|scope| scope.history.tools.iter()),
+    ) {
         let mut item = base(
             format!("tool_execution:{}:output", tool.id),
             ContextSourceKind::ToolExecution,
@@ -828,5 +1094,449 @@ mod tests {
             .find(|item| item.reference == format!("work_item:{}", work.id))
             .unwrap();
         assert_eq!(descriptor.revision, Some(revision));
+    }
+}
+
+#[cfg(test)]
+mod coherent_acquisition_tests {
+    use super::*;
+    use crate::{
+        domain::execution_protocol::ExecutionProtocolState,
+        projection_eval::HistorySelector,
+        runtime::mutation_owner::PublicationToken,
+        runtime_db::context_inputs::ContextDurableRead,
+        types::{
+            BriefContentSource, BriefContentSourceRelation, BriefKind, DeliverySummaryRecord,
+            Priority, TurnOwner,
+        },
+    };
+    use std::cell::{Cell, RefCell};
+
+    fn message(text: &str) -> MessageEnvelope {
+        MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text { text: text.into() },
+        )
+    }
+    fn captured(agent: &AgentState, limit: usize) -> CapturedAgentContext {
+        CapturedAgentContext {
+            token: PublicationToken {
+                identity_incarnation: 1,
+                owner_epoch: 1,
+                generation: 1,
+            },
+            state: Arc::new(agent.clone()),
+            episode_candidate_limit: limit,
+            episodes: vec![],
+        }
+    }
+    fn append_turn(storage: &AppStorage, id: &str, index: u64, work: &WorkItemRecord, text: &str) {
+        let mut input = message(text);
+        input.turn_id = Some(id.into());
+        input.work_item_id = Some(work.id.clone());
+        storage.append_message(&input).unwrap();
+        let mut entry = TranscriptEntry::new(
+            "default",
+            TranscriptEntryKind::AssistantRound,
+            Some(1),
+            None,
+            serde_json::json!({"turn_id":id,"blocks":[{"type":"text","text":text}]}),
+        );
+        entry.created_at =
+            chrono::DateTime::from_timestamp(i64::try_from(index).unwrap(), 0).unwrap();
+        storage.append_transcript_entry(&entry).unwrap();
+        let mut brief =
+            BriefRecord::new("default", BriefKind::Result, "stored fallback", None, None);
+        brief.turn_id = Some(id.into());
+        brief.work_item_id = Some(work.id.clone());
+        brief.content_source = BriefContentSource::TranscriptEntry {
+            entry_id: entry.id.clone(),
+            relation: BriefContentSourceRelation::Finalizes,
+        };
+        storage.append_brief(&brief).unwrap();
+        let mut turn = TurnRecord::new("default", id, index);
+        turn.created_at = entry.created_at;
+        turn.owner = Some(TurnOwner::WorkItem {
+            work_item_id: work.id.clone(),
+        });
+        turn.current_work_item_id = Some(work.id.clone());
+        turn.input_message_ids.push(input.id.clone());
+        turn.produced_brief_ids.push(brief.id);
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&input));
+        storage.append_turn(&turn).unwrap();
+    }
+    struct Resources {
+        calls: Cell<usize>,
+        notes: RefCell<String>,
+    }
+    impl ContextResources for Resources {
+        fn plan(&self, _: &WorkItemRecord) -> Option<WorkItemPlanArtifact> {
+            self.calls.set(self.calls.get() + 1);
+            None
+        }
+        fn notes(&self) -> Option<String> {
+            self.calls.set(self.calls.get() + 1);
+            Some(self.notes.borrow().clone())
+        }
+    }
+
+    #[test]
+    fn both_history_windows_and_brief_dependencies_use_one_view_then_select_without_capabilities() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = AppStorage::new_for_test(directory.path()).unwrap();
+        let work_a = WorkItemRecord::new("default", "owner A", crate::types::WorkItemState::Open);
+        let work_b = WorkItemRecord::new("default", "owner B", crate::types::WorkItemState::Open);
+        storage.append_work_item(&work_a).unwrap();
+        storage.append_work_item(&work_b).unwrap();
+        let current_message = message("current mandatory root");
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(work_a.id.clone());
+        agent.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+            activation_id: Some("fixture-activation".into()),
+            admission_provenance: None,
+            source_message_id: current_message.id.clone(),
+            turn_id: "fixture-current-turn".into(),
+            owner: Some(TurnOwner::WorkItem {
+                work_item_id: work_a.id.clone(),
+            }),
+            work_item_id: Some(work_a.id.clone()),
+            claimed_work_revision: Some(work_a.revision),
+        });
+        storage.write_agent_for_fixture(&agent).unwrap();
+        append_turn(&storage, "turn-a", 1, &work_a, "owner-A-original-body");
+        append_turn(&storage, "turn-b", 2, &work_b, "agent-tail-B-original-body");
+        let config = ContextConfig {
+            recent_messages: 1,
+            recent_briefs: 0,
+            recent_episode_candidates: 2,
+            prompt_budget_estimated_tokens: 64_000,
+            ..ContextConfig::default()
+        };
+        let history_policy = ContextHistoryPreparation {
+            selector: HistorySelector::WorkItemScoped,
+            work_item_scoped_window: Some(64),
+            window_source: "env",
+        };
+        let execution = super::super::tests::execution_snapshot_for(&agent);
+        let resident = captured(&agent, 2);
+        let db = storage.runtime_db().unwrap().unwrap();
+        let mut connection = db.connection().unwrap();
+        let read = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)
+            .unwrap();
+        // The next commit changes canonical turn/brief/transcript evidence while
+        // the reader's first SELECT pins the older WAL view.
+        let _: i64 = read
+            .query_row("SELECT COUNT(*) FROM agent_states", [], |row| row.get(0))
+            .unwrap();
+        append_turn(
+            &storage,
+            "turn-a-late",
+            3,
+            &work_a,
+            "late-A-must-not-enter-snapshot",
+        );
+        let durable = acquire_durable_context(
+            &ContextDurableRead::new(&read, "default"),
+            &agent,
+            &execution,
+            &SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &config,
+            None,
+            history_policy,
+            &resident,
+        )
+        .unwrap();
+        assert_eq!(durable.data.history.turn_records[0].turn_id, "turn-b");
+        assert_eq!(
+            durable
+                .data
+                .scoped_history
+                .as_ref()
+                .unwrap()
+                .history
+                .turn_records[0]
+                .turn_id,
+            "turn-a"
+        );
+        read.commit().unwrap();
+        drop(connection);
+        let resources = Resources {
+            calls: Cell::new(0),
+            notes: RefCell::new("notes-first-observation".into()),
+        };
+        let snapshot = observe_context_resources(durable, &resources, 7).unwrap();
+        let calls = resources.calls.get();
+        *resources.notes.borrow_mut() = "late-file-must-not-enter-snapshot".into();
+        let built =
+            build_context_from_snapshot(&snapshot, config.prompt_budget_estimated_tokens).unwrap();
+        let reprojection = built.recent_turns_reprojection.unwrap();
+        let scoped = reprojection.select_scoped(64).unwrap();
+        let scoped_render = reproject_recent_turns(&scoped, 64_000).unwrap().content;
+        assert!(scoped_render.contains("owner-A-original-body"));
+        assert!(!scoped_render.contains("late-A-must-not-enter-snapshot"));
+        let recent = scoped.select_recent();
+        let recent_render = reproject_recent_turns(&recent, 64_000).unwrap().content;
+        assert!(recent_render.contains("agent-tail-B-original-body"));
+        assert!(!recent_render.contains("late-A-must-not-enter-snapshot"));
+        assert_eq!(scoped.snapshot_id(), recent.snapshot_id());
+        assert_eq!(snapshot.history_policy(), history_policy);
+        assert_eq!(snapshot.resources().generation, 7);
+        assert!(!snapshot.resources().digest.is_empty());
+        assert!(built
+            .sections
+            .iter()
+            .any(|section| section.content.contains("notes-first-observation")));
+        assert!(!built.sections.iter().any(|section| section
+            .content
+            .contains("late-file-must-not-enter-snapshot")));
+        assert_eq!(resources.calls.get(), calls);
+        assert!(scoped.select_scoped(128).is_err());
+        let identity = crate::types::AgentIdentityView::from_record(
+            &crate::types::AgentIdentityRecord::new(
+                "default",
+                crate::types::AgentKind::Default,
+                crate::types::AgentVisibility::Public,
+                crate::types::AgentOwnership::SelfOwned,
+                crate::types::AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            ),
+            "default",
+        );
+        let prompt = crate::prompt::build_effective_prompt_from_context_snapshot(
+            &snapshot,
+            directory.path(),
+            directory.path(),
+            &identity,
+            crate::types::LoadedAgentsMd::default(),
+            crate::types::LoadedAgentMemory::default(),
+            &[],
+            crate::prompt::ToolPromptContext::default(),
+        )
+        .unwrap();
+        assert_eq!(prompt.history_policy(), history_policy);
+        assert_eq!(
+            prompt.frozen_projection_budget(),
+            Some(config.turn_projection_budget())
+        );
+        assert_eq!(prompt.frozen_recent_message_limit(), Some(1));
+        let selected_prompt = |outcome| match outcome {
+            crate::prompt::HistoryReprojectionOutcome::Adopted { prompt, .. }
+            | crate::prompt::HistoryReprojectionOutcome::IdenticalRenderNoop { prompt, .. } => {
+                prompt
+            }
+            _ => panic!("the fixture has both history windows"),
+        };
+        let scoped_prompt = selected_prompt(
+            prompt
+                .reproject_for_history_selector(64_000, &[], HistorySelector::WorkItemScoped, 64)
+                .unwrap(),
+        );
+        assert!(scoped_prompt
+            .rendered_context_attachment
+            .contains("owner-A-original-body"));
+        let recent_prompt = selected_prompt(
+            scoped_prompt
+                .reproject_for_history_selector(64_000, &[], HistorySelector::RecentTurns, 64)
+                .unwrap(),
+        );
+        assert!(recent_prompt
+            .rendered_context_attachment
+            .contains("agent-tail-B-original-body"));
+        let evidence = recent_prompt
+            .projection_evidence
+            .get("recent_turns")
+            .unwrap();
+        assert!(evidence
+            .iter()
+            .any(|entry| entry.reference == "turn:turn-b"));
+        assert!(!evidence
+            .iter()
+            .any(|entry| entry.reference == "turn:turn-a"));
+        assert_eq!(
+            scoped_prompt.context_snapshot_id(),
+            recent_prompt.context_snapshot_id()
+        );
+        let retry = [512, 128, 64, 16, 1]
+            .into_iter()
+            .find_map(|budget| scoped_prompt.reproject_recent_turns(budget, &[]))
+            .expect("a smaller budget eventually changes the history attachment");
+        let selected_retry = retry.recent_turns_reprojection.as_ref().unwrap();
+        let frozen_retry = reproject_recent_turns(selected_retry, 64_000)
+            .unwrap()
+            .content;
+        assert!(frozen_retry.contains("owner-A-original-body"));
+        assert!(!frozen_retry.contains("agent-tail-B-original-body"));
+        assert!(!frozen_retry.contains("late-A-must-not-enter-snapshot"));
+        assert_eq!(
+            retry.context_snapshot_id(),
+            scoped_prompt.context_snapshot_id()
+        );
+        assert_eq!(resources.calls.get(), calls);
+        // A subsequent explicit acquisition, unlike a selector/budget retry,
+        // sees the new evidence and remains the only place with SQL capability.
+        let mut connection = db.connection().unwrap();
+        let read = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)
+            .unwrap();
+        let fresh = acquire_durable_context(
+            &ContextDurableRead::new(&read, "default"),
+            &agent,
+            &execution,
+            &SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &config,
+            None,
+            history_policy,
+            &resident,
+        )
+        .unwrap();
+        assert_eq!(fresh.data.history.turn_records[0].turn_id, "turn-a-late");
+        assert_eq!(
+            fresh
+                .data
+                .scoped_history
+                .as_ref()
+                .unwrap()
+                .history
+                .turn_records
+                .len(),
+            2
+        );
+    }
+
+    struct NoReads;
+    #[allow(unused_variables)]
+    impl ContextInputs for NoReads {
+        fn anchor_messages(&self) -> Result<Vec<MessageEnvelope>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn message_by_id(&self, id: &str) -> Result<Option<MessageEnvelope>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn briefs(&self, limit: usize) -> Result<Vec<BriefRecord>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn brief_by_id(&self, id: &str) -> Result<Option<BriefRecord>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn tools(&self, limit: usize) -> Result<Vec<ToolExecutionRecord>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn tool_by_id(&self, id: &str) -> Result<Option<ToolExecutionRecord>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn turns(&self, limit: usize) -> Result<Vec<TurnRecord>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn turns_for_owner(&self, owner: &TurnOwner, limit: usize) -> Result<Vec<TurnRecord>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn turn_by_id(&self, id: &str) -> Result<Option<TurnRecord>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn transcript(&self, limit: usize) -> Result<Vec<TranscriptEntry>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn transcript_for_turns(&self, ids: &[String]) -> Result<Vec<TranscriptEntry>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn transcript_by_id(&self, id: &str) -> Result<Option<TranscriptEntry>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn execution_protocol_state(
+            &self,
+            agent_id: &str,
+        ) -> Result<Option<ExecutionProtocolState>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn active_waits(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn work_queue(&self) -> Result<WorkQueueReadModel> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn work_item(&self, id: &str) -> Result<Option<WorkItemRecord>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn external_triggers(&self) -> Result<Vec<ExternalTriggerRecord>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        /// Existing active_for_agent ordering, unbounded so count and display share a view.
+        fn active_tasks(&self, agent_id: &str) -> Result<Vec<TaskRecord>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn delivery_summaries(&self, limit: usize) -> Result<Vec<DeliverySummaryRecord>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+        fn admitted_settlements(
+            &self,
+            agent_id: &str,
+            activation_id: &str,
+        ) -> Result<Vec<TaskResultSettlementRecord>> {
+            panic!("durable reads must not precede resident scope validation")
+        }
+    }
+
+    #[test]
+    fn scoped_selector_without_frozen_window_fails_before_any_durable_query() {
+        let agent = AgentState::new("default");
+        let execution = super::super::tests::execution_snapshot_for(&agent);
+        let config = ContextConfig::default();
+        let result = acquire_durable_context(
+            &NoReads,
+            &agent,
+            &execution,
+            &SkillsRuntimeView::default(),
+            &message("root"),
+            None,
+            &config,
+            None,
+            ContextHistoryPreparation {
+                selector: HistorySelector::WorkItemScoped,
+                work_item_scoped_window: None,
+                window_source: "invalid",
+            },
+            &captured(&agent, config.recent_episode_candidates),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn both_resident_policy_limit_mismatches_fail_before_any_durable_query() {
+        let agent = AgentState::new("default");
+        let execution = super::super::tests::execution_snapshot_for(&agent);
+        let current_message = message("root");
+        for (capture_limit, request_limit) in [(12, 4), (4, 12)] {
+            let resident = captured(&agent, capture_limit);
+            let config = ContextConfig {
+                recent_episode_candidates: request_limit,
+                ..ContextConfig::default()
+            };
+            let result = acquire_durable_context(
+                &NoReads,
+                &agent,
+                &execution,
+                &SkillsRuntimeView::default(),
+                &current_message,
+                None,
+                &config,
+                None,
+                ContextHistoryPreparation::default(),
+                &resident,
+            );
+            assert!(result.is_err());
+        }
     }
 }

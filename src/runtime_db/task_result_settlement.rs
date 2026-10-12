@@ -279,27 +279,7 @@ impl TaskResultSettlementRepository<'_> {
         activation_id: &str,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
         let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
-             FROM task_result_settlements
-             WHERE agent_id = ?1 AND activation_id = ?2 AND state = 'caller_admitted'
-             ORDER BY created_at ASC, result_identity ASC",
-        )?;
-        let rows = statement.query_map(params![agent_id, activation_id], |row| {
-            row.get::<_, String>(0)
-        })?;
-        rows.map(|row| {
-            let payload = row?;
-            serde_json::from_str(&payload).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(error),
-                )
-            })
-        })
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(Into::into)
+        context_admitted_settlements_on(&connection, agent_id, activation_id)
     }
 
     pub(crate) fn admit_message(
@@ -923,4 +903,32 @@ fn latest_for_message_tx(
     payload
         .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
         .transpose()
+}
+
+pub(crate) fn context_admitted_settlements_on(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+    activation_id: &str,
+) -> Result<Vec<TaskResultSettlementRecord>> {
+    let mut statement = connection.prepare(
+        "SELECT payload_json
+         FROM task_result_settlements
+         WHERE agent_id = ?1 AND activation_id = ?2 AND state = 'caller_admitted'
+         ORDER BY created_at ASC, result_identity ASC",
+    )?;
+    let rows = statement.query_map(params![agent_id, activation_id], |row| {
+        row.get::<_, String>(0)
+    })?;
+    rows.map(|row| {
+        let payload = row?;
+        serde_json::from_str(&payload).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })
+    })
+    .collect::<std::result::Result<Vec<_>, _>>()
+    .map_err(Into::into)
 }

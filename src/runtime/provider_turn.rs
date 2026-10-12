@@ -742,6 +742,9 @@ mod tests {
             projection_evidence: Default::default(),
             context_plan_evidence: Default::default(),
             recent_turns_reprojection: None,
+            frozen_history_policy: crate::context::ContextHistoryPreparation::default(),
+            frozen_projection_budget: None,
+            frozen_recent_message_limit: None,
         }
     }
 
@@ -830,6 +833,9 @@ mod tests {
             projection_evidence: Default::default(),
             context_plan_evidence: Default::default(),
             recent_turns_reprojection: None,
+            frozen_history_policy: crate::context::ContextHistoryPreparation::default(),
+            frozen_projection_budget: None,
+            frozen_recent_message_limit: None,
         };
 
         let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, true);

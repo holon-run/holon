@@ -13,7 +13,7 @@ use crate::{
 const EPISODE_FILE_LIMIT: usize = 10;
 const EPISODE_CARRY_FORWARD_LIMIT: usize = 8;
 const EPISODE_SCOPE_HINT_LIMIT: usize = 8;
-const EPISODE_TURN_HARD_CAP: u64 = 12;
+pub(super) const EPISODE_TURN_HARD_CAP: u64 = 12;
 
 pub fn refresh_episode_memory(
     storage: &AppStorage,
@@ -118,7 +118,7 @@ pub fn refresh_episode_memory(
     Ok(changed)
 }
 
-fn episode_phase_snapshot<'a>(
+pub(super) fn episode_phase_snapshot<'a>(
     previous_snapshot: &'a WorkingMemorySnapshot,
     current_snapshot: &'a WorkingMemorySnapshot,
 ) -> &'a WorkingMemorySnapshot {
@@ -144,7 +144,7 @@ fn merge_into_active_episode(
     );
 }
 
-fn merge_into_active_episode_with_turn(
+pub(super) fn merge_into_active_episode_with_turn(
     builder: &mut ActiveEpisodeBuilder,
     turn_index: u64,
     turn_id: Option<&str>,
@@ -232,7 +232,7 @@ fn finalize_active_episode_before_merge(
     Ok(())
 }
 
-fn derive_boundary_reason(
+pub(super) fn derive_boundary_reason(
     trigger: &MessageEnvelope,
     prior_closure: &ClosureDecision,
     current_closure: &ClosureDecision,
@@ -275,7 +275,7 @@ fn derive_boundary_reason(
     None
 }
 
-fn should_start_next_episode(
+pub(super) fn should_start_next_episode(
     snapshot: &WorkingMemorySnapshot,
     current_closure: &ClosureDecision,
 ) -> bool {
@@ -314,7 +314,15 @@ fn finalize_episode(
     builder: ActiveEpisodeBuilder,
     boundary_reason: EpisodeBoundaryReason,
 ) -> ContextEpisodeRecord {
-    let finalized_at = Utc::now();
+    finalize_episode_at(agent, builder, boundary_reason, Utc::now())
+}
+
+pub(super) fn finalize_episode_at(
+    agent: &AgentState,
+    builder: ActiveEpisodeBuilder,
+    boundary_reason: EpisodeBoundaryReason,
+    finalized_at: chrono::DateTime<Utc>,
+) -> ContextEpisodeRecord {
     let source_turn_ids = builder.source_turn_ids.clone();
     let source_refs = source_turn_ids
         .iter()
@@ -367,7 +375,7 @@ fn merge_unique(target: &mut Vec<String>, additions: &[String], limit: usize) {
     }
 }
 
-fn working_snapshot_is_empty(snapshot: &WorkingMemorySnapshot) -> bool {
+pub(super) fn working_snapshot_is_empty(snapshot: &WorkingMemorySnapshot) -> bool {
     snapshot == &WorkingMemorySnapshot::default()
 }
 

@@ -715,6 +715,11 @@ impl RuntimeHandle {
                 (owner, reservation)
             }
         };
+        super::episode_recovery::resolve_episode_recovery(
+            &runtime_db,
+            std::slice::from_mut(&mut bootstrap_reservation),
+            context_config.recent_episode_candidates,
+        )?;
         mutation_owner.validate_bootstrap()?;
         if bootstrap_reservation.recovery()?.is_some() {
             let known = super::mutation_owner::MutationReservation::validate_group_known(
@@ -736,7 +741,11 @@ impl RuntimeHandle {
             active_tasks,
             active_timers,
             projection_cache,
-        } = prepare_runtime_storage_owned(storage_setup, Some(&mut bootstrap_reservation))?;
+        } = prepare_runtime_storage_owned(
+            storage_setup,
+            Some(&mut bootstrap_reservation),
+            context_config.recent_episode_candidates,
+        )?;
         bootstrap_reservation.publish(Arc::new(state.clone()))?;
         drop(bootstrap_reservation);
         if let Some(event_bus) = event_bus {
@@ -796,6 +805,10 @@ impl RuntimeHandle {
                 turn_fallback_model: RwLock::new(None),
                 config_snapshot: ArcSwap::from(config_snapshot),
                 context_config: RwLock::new(resolved_context_config),
+                context_resource_observation: std::sync::atomic::AtomicU64::new(0),
+                #[cfg(test)]
+                context_capture_checkpoint:
+                    super::context_capture::ContextCaptureCheckpoint::default(),
                 view_image_observation_cache: Mutex::new(HashMap::new()),
                 view_image_candidate_health: Mutex::new(ViewImageCandidateHealth::default()),
                 model_discovery_refreshes: Mutex::new(HashSet::new()),
@@ -1574,7 +1587,11 @@ fn prepare_runtime_storage(
     runtime_db: Option<RuntimeDb>,
 ) -> Result<PreparedRuntimeStorage> {
     let setup = prepare_runtime_storage_setup(agent_id, data_dir, initial_workspace, runtime_db)?;
-    prepare_runtime_storage_owned(setup, None)
+    prepare_runtime_storage_owned(
+        setup,
+        None,
+        ContextConfig::default().recent_episode_candidates,
+    )
 }
 
 fn prepare_runtime_storage_setup(
@@ -1625,6 +1642,7 @@ fn prepare_runtime_storage_setup(
 fn prepare_runtime_storage_owned(
     setup: RuntimeStorageSetup,
     mut reservation: Option<&mut super::mutation_owner::MutationReservation>,
+    recent_episode_candidates: usize,
 ) -> Result<PreparedRuntimeStorage> {
     let RuntimeStorageSetup {
         storage,
@@ -1637,21 +1655,6 @@ fn prepare_runtime_storage_owned(
     if let Some(reservation) = reservation.as_deref_mut() {
         reservation.begin(crate::ids::audit_event_id())?;
     }
-    #[cfg(test)]
-    if runtime_db.agent_identities().latest(&agent_id)?.is_none() {
-        runtime_db
-            .agent_identities()
-            .upsert(&crate::types::AgentIdentityRecord::new(
-                agent_id.clone(),
-                crate::types::AgentKind::Default,
-                crate::types::AgentVisibility::Public,
-                crate::types::AgentOwnership::SelfOwned,
-                crate::types::AgentProfilePreset::PublicNamed,
-                None,
-                None,
-            ))?;
-    }
-
     let workspace_entries_complete = storage.legacy_importer().workspace_entries_complete()?;
     if let Some(workspace) = initial_workspace_entry.as_ref() {
         let known = storage.latest_workspace_entries()?;
@@ -1668,6 +1671,39 @@ fn prepare_runtime_storage_owned(
     }
 
     storage.legacy_importer().import_runtime_domains()?;
+    // Standalone construction materializes an explicit durable namespace while
+    // its reservation is held; missing identity is never loader incarnation proof.
+    if runtime_db.agent_identities().latest(&agent_id)?.is_none() {
+        runtime_db
+            .agent_identities()
+            .create_legacy_materialized_with_relations(
+                &crate::types::AgentIdentityRecord::new(
+                    agent_id.clone(),
+                    crate::types::AgentKind::Default,
+                    crate::types::AgentVisibility::Public,
+                    crate::types::AgentOwnership::SelfOwned,
+                    crate::types::AgentProfilePreset::PublicNamed,
+                    None,
+                    None,
+                ),
+                &crate::types::AgentCanonicalRecordSet::default(),
+            )?;
+    }
+    let durable_identity = runtime_db
+        .agent_identities()
+        .latest(&agent_id)?
+        .ok_or_else(|| anyhow!("bootstrap has no durable identity"))?;
+    anyhow::ensure!(
+        durable_identity.status == crate::types::AgentRegistryStatus::Active,
+        "bootstrap identity is no longer active"
+    );
+    if let Some(reservation) = reservation.as_deref() {
+        anyhow::ensure!(
+            durable_identity.incarnation == reservation.identity_incarnation(),
+            "bootstrap imports changed the reserved durable incarnation"
+        );
+    }
+
     let timer_wake_recovery = runtime_db
         .timers()
         .normalize_wakes_for_recovery(&agent_id)?;
@@ -1878,6 +1914,42 @@ fn prepare_runtime_storage_owned(
             .recent_for_agent(&state.id, usize::MAX)?,
         runtime_db.external_triggers().latest_for_agent(&state.id)?,
     );
+
+    let current = runtime_db
+        .load_episode_memory_snapshot(
+            &crate::runtime_db::episode_snapshot::EpisodeMemoryLoadScope {
+                agent_id: agent_id.clone(),
+                identity_incarnation: durable_identity.incarnation,
+            },
+            recent_episode_candidates,
+            None,
+        )?
+        .require_current()?;
+    anyhow::ensure!(
+        current.identity == durable_identity
+            && current.state.as_ref() == Some(&state)
+            && current.control_revision.is_some(),
+        "bootstrap Episode read does not match its canonical State ACK"
+    );
+    tracing::debug!(agent_id = %agent_id,
+        control_revision = current.control_revision,
+        continuity = ?current.continuity,
+        "prepared qualified Episode domain from canonical bootstrap readback");
+    let episodes = Arc::new(super::resident_state::ResidentEpisodes::bootstrap(
+        &agent_id,
+        durable_identity.incarnation,
+        recent_episode_candidates,
+        !current.has_more,
+        current.episodes,
+    )?);
+    if let Some(reservation) = reservation.as_deref_mut() {
+        // Preserve the posture ACK immediately after its SQL, even if derived
+        // preparation fails. The ready readback is a separate installation fact,
+        // not an in-place rewrite of that already acknowledged commit.
+        reservation.publish(Arc::new(state.clone()))?;
+        reservation.begin(crate::ids::audit_event_id())?;
+        reservation.committed_prepared(Arc::new(state.clone()), Some(episodes))?;
+    }
 
     Ok(PreparedRuntimeStorage {
         storage,

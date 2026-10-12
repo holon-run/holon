@@ -49,7 +49,6 @@ use super::completion::{
     rejects_truncated_mutation_tool_call, result_work_item_id, truncated_mutation_recovery_hint,
 };
 use super::context_management::{
-    configured_history_selector, configured_work_item_scoped_window_messages,
     context_management_diagnostic, projection_diagnostic,
     projection_fallback_reason as provider_projection_fallback_reason,
 };
@@ -1978,12 +1977,22 @@ impl<'a> TurnExecution<'a> {
         ) = runtime
             .provider_tool_selection_for_turn(&identity, model_selection.fallback_model())
             .await?;
-        let configured_selector =
-            configured_history_selector(agent_id, &turn_model_state.effective_model);
-        let scoped_window = configured_work_item_scoped_window_messages();
-        let context_config = runtime.current_context_config().await;
+        let history_policy = effective_prompt.history_policy();
+        let configured_selector = history_policy.selector;
+        let recent_message_limit = match effective_prompt.frozen_recent_message_limit() {
+            Some(limit) => limit,
+            None => runtime.current_context_config().await.recent_messages,
+        };
+        let prepared_projection_budget = match effective_prompt.frozen_projection_budget() {
+            Some(budget) => budget,
+            None => runtime
+                .current_context_config()
+                .await
+                .turn_projection_budget(),
+        };
         let projection_budget =
-            effective_prompt.history_reprojection_budget(context_config.turn_projection_budget());
+            effective_prompt.history_reprojection_budget(prepared_projection_budget);
+        let scoped_window_limit = history_policy.work_item_scoped_window.unwrap_or(0);
         let mut projection_selector = configured_selector;
         let mut projection_fallback_reason =
             provider_projection_fallback_reason(provider.as_ref(), configured_selector);
@@ -1996,28 +2005,24 @@ impl<'a> TurnExecution<'a> {
             };
         let mut history_window_limit =
             if configured_selector == crate::projection_eval::HistorySelector::WorkItemScoped {
-                scoped_window.limit
+                scoped_window_limit
             } else {
-                context_config.recent_messages
+                recent_message_limit
             };
         let mut history_window_source =
             if configured_selector == crate::projection_eval::HistorySelector::WorkItemScoped {
-                scoped_window.source.as_str()
+                history_policy.window_source
             } else {
                 "context_config"
             };
         let mut history_window_turns_loaded = effective_prompt.recent_turn_count();
         if configured_selector == crate::projection_eval::HistorySelector::WorkItemScoped {
             if projection_fallback_reason.is_none() {
-                let prepared_prompt = effective_prompt.prepare_work_item_scoped_history(
-                    &runtime.inner.storage,
-                    scoped_window.limit,
-                )?;
-                match prepared_prompt.reproject_for_history_selector(
+                match effective_prompt.reproject_for_history_selector(
                     projection_budget,
                     &available_tools,
                     configured_selector,
-                    scoped_window.limit,
+                    scoped_window_limit,
                 )? {
                     crate::prompt::HistoryReprojectionOutcome::Adopted {
                         prompt,
@@ -2047,7 +2052,7 @@ impl<'a> TurnExecution<'a> {
                 projection_selector = crate::projection_eval::HistorySelector::RecentTurns;
                 projection_outcome = crate::projection_eval::ProjectionOutcome::Fallback;
                 history_window_scope = "agent_recent";
-                history_window_limit = context_config.recent_messages;
+                history_window_limit = recent_message_limit;
                 history_window_source = "context_config";
                 history_window_turns_loaded = effective_prompt.recent_turn_count();
             }

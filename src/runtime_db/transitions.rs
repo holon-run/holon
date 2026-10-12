@@ -124,6 +124,8 @@ pub(crate) enum QueueOperation {
 pub(crate) struct PostCommitEffects {
     pub agent_state: Option<AgentStateMutation>,
     pub agent_identities: Vec<crate::types::AgentIdentityRecord>,
+    pub context_episodes: Vec<crate::types::ContextEpisodeRecord>,
+    pub removed_context_episode_ids: Vec<String>,
     pub queued_messages: Vec<MessageEnvelope>,
     pub removed_queue_message_ids: Vec<String>,
     pub timers: Vec<crate::types::TimerRecord>,

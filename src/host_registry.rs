@@ -46,6 +46,63 @@ impl RuntimeRegistry {
         let host_storage =
             AppStorage::new_global(config.home_dir.join("host"), runtime_db.clone())?;
         host_storage.legacy_importer().import_host_domains()?;
+        // Finish the fixed legacy import cutover before this Host can admit any
+        // runtime or external writer. Lazy activation never expands adoption.
+        let mut legacy_scopes = runtime_db.pending_legacy_episode_import_agent_ids()?;
+        let default_home = config.agent_root_dir().join(&config.default_agent_id);
+        if runtime_db
+            .agent_identities()
+            .latest(&config.default_agent_id)?
+            .is_none()
+            && (default_home.join(".holon/state/agent.json").is_file()
+                || runtime_db.has_unbound_episode_continuity_seed(&config.default_agent_id)?)
+        {
+            legacy_scopes.push(config.default_agent_id.clone());
+        }
+        legacy_scopes.sort_by(|left, right| {
+            (left != &config.default_agent_id)
+                .cmp(&(right != &config.default_agent_id))
+                .then_with(|| left.cmp(right))
+        });
+        legacy_scopes.dedup();
+        // storage_domains is global, but agent.json is scoped. Prepare all fixed
+        // seed State roots before the first scope can seal the global import.
+        if !runtime_db.storage_domain_is_complete("agent_states", "db")? {
+            let mut legacy_states = Vec::new();
+            for agent_id in &legacy_scopes {
+                validate_agent_id_format(agent_id)?;
+                let path = config
+                    .agent_root_dir()
+                    .join(agent_id)
+                    .join(".holon/state/agent.json");
+                if !path.is_file() {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|error| anyhow!("failed to read {}: {error}", path.display()))?;
+                let state: crate::types::AgentState = serde_json::from_str(&text)
+                    .map_err(|error| anyhow!("failed to decode {}: {error}", path.display()))?;
+                anyhow::ensure!(
+                    state.id == *agent_id,
+                    "scoped legacy State `{agent_id}` contains identity `{}`",
+                    state.id
+                );
+                legacy_states.push(state);
+            }
+            if !legacy_scopes.is_empty() {
+                runtime_db
+                    .agent_states()
+                    .import_legacy_many(legacy_states)?;
+            }
+        }
+        for agent_id in legacy_scopes {
+            let storage = AppStorage::new_for_agent(
+                config.agent_root_dir().join(&agent_id),
+                &agent_id,
+                runtime_db.clone(),
+            )?;
+            storage.legacy_importer().import_runtime_domains()?;
+        }
         let agent_identities = host_storage
             .latest_agent_identities()?
             .into_iter()
@@ -405,7 +462,7 @@ impl RuntimeRegistry {
             .runtime_db()?
             .expect("host storage always has a runtime database")
             .agent_identities()
-            .create_with_relations(&record, &relations)?;
+            .create_legacy_materialized_with_relations(&record, &relations)?;
         self.cache_agent_identity(&record)?;
         Ok(record)
     }

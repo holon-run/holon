@@ -274,9 +274,19 @@ pub(crate) fn load_attached_workspace_entries_for(
     attached_workspace_ids: &[String],
     workspace: &WorkspaceView,
 ) -> Result<Vec<(String, PathBuf)>> {
-    let known_entries = load_attached_workspace_entries(storage)?
-        .into_iter()
-        .collect::<HashMap<_, _>>();
+    Ok(select_attached_workspace_entries(
+        &load_attached_workspace_entries(storage)?,
+        attached_workspace_ids,
+        workspace,
+    ))
+}
+
+fn select_attached_workspace_entries(
+    entries: &[(String, PathBuf)],
+    attached_workspace_ids: &[String],
+    workspace: &WorkspaceView,
+) -> Vec<(String, PathBuf)> {
+    let known_entries = entries.iter().cloned().collect::<HashMap<_, _>>();
     let active_workspace_id = workspace.workspace_id().map(ToString::to_string);
     let mut ordered_ids = Vec::new();
 
@@ -303,9 +313,10 @@ pub(crate) fn load_attached_workspace_entries_for(
         }
     }
 
-    Ok(resolved)
+    resolved
 }
 
+#[cfg(test)]
 pub(crate) fn execution_snapshot_for_view(
     profile: ExecutionProfile,
     workspace: &WorkspaceView,
@@ -322,6 +333,28 @@ pub(crate) fn execution_snapshot_for_view(
                     .collect()
             });
 
+    execution_snapshot_with_attached_entries(profile, workspace, attached_workspaces)
+}
+
+/// Pure construction from one already materialized registry view.
+pub(crate) fn execution_snapshot_from_workspace_entries(
+    profile: ExecutionProfile,
+    workspace: &WorkspaceView,
+    attached_workspace_ids: &[String],
+    entries: &[(String, PathBuf)],
+) -> ExecutionSnapshot {
+    execution_snapshot_with_attached_entries(
+        profile,
+        workspace,
+        select_attached_workspace_entries(entries, attached_workspace_ids, workspace),
+    )
+}
+
+fn execution_snapshot_with_attached_entries(
+    profile: ExecutionProfile,
+    workspace: &WorkspaceView,
+    attached_workspaces: Vec<(String, PathBuf)>,
+) -> ExecutionSnapshot {
     ExecutionSnapshot {
         policy: profile.policy_snapshot(),
         profile,

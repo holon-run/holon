@@ -42,6 +42,7 @@ struct DeferredRunAbort {
 pub(crate) struct RuntimeMutationFacts {
     owner_epoch: u64,
     pub(crate) state: Arc<AgentState>,
+    episodes: Option<Arc<super::resident_state::ResidentEpisodes>>,
     queue: RuntimeQueue,
     current_run_abort: Option<CurrentRunAbortHandle>,
     deferred_abort: Option<DeferredRunAbort>,
@@ -53,6 +54,7 @@ pub(super) struct RuntimeMutation {
     reservations: Vec<MutationReservation>,
     primary_index: usize,
     metadata: Vec<Option<Arc<IdentityMutationFacts>>>,
+    episodes: Option<Arc<super::resident_state::ResidentEpisodes>>,
     candidate: Box<RuntimeAgent>,
     base: Box<RuntimeAgent>,
     deferred_abort: Option<DeferredRunAbort>,
@@ -145,17 +147,31 @@ impl RuntimeMutation {
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<TransitionCommit>> + Send + 'a>>
     {
         // Keep transaction future construction out of nested runtime polls.
-        Box::pin(self.commit_transition_inner(operation_id, commit))
+        Box::pin(self.commit_transition_inner(operation_id, None, commit))
     }
 
     async fn commit_transition_inner(
         &mut self,
         operation_id: String,
+        witness: Option<super::mutation_witness::MutationWitness>,
         commit: impl FnOnce() -> Result<TransitionCommit>,
     ) -> Result<TransitionCommit> {
         self.validate_candidate_identity()?;
-        let keys = MutationReservation::begin_all(&mut self.reservations, operation_id)?;
-        let mut committed = match commit() {
+        let keys = match witness.as_ref() {
+            Some(witness) => MutationReservation::begin_all_with_witness(
+                &mut self.reservations,
+                operation_id,
+                witness.clone(),
+            )?,
+            None => MutationReservation::begin_all(&mut self.reservations, operation_id)?,
+        };
+        let result = commit();
+        // The synchronous attempt has ended even when its COMMIT ACK is lost.
+        // Persist this fact before any async installation or caller cancellation.
+        if let Some(witness) = &witness {
+            witness.finish_original_attempt();
+        }
+        let mut committed = match result {
             Ok(committed) => committed,
             Err(error) => {
                 if persistence_certainty(&error)
@@ -202,6 +218,23 @@ impl RuntimeMutation {
                 self.candidate.queue.push(message.clone());
             }
         }
+        if !committed.effects.context_episodes.is_empty()
+            || !committed.effects.removed_context_episode_ids.is_empty()
+        {
+            self.episodes = self
+                .episodes
+                .as_ref()
+                .map(|episodes| {
+                    episodes.with_committed(
+                        self.runtime.inner.identity_incarnation,
+                        &committed.effects.context_episodes,
+                        &committed.effects.removed_context_episode_ids,
+                    )
+                })
+                .transpose()?
+                .flatten()
+                .map(Arc::new);
+        }
         let facts = Arc::new(self.facts(committed.effects.clone()));
         // Retain all authoritative installation facts before the first await
         // after SQL. Cancellation leaves a known commit for the next owner call.
@@ -228,6 +261,59 @@ impl RuntimeMutation {
         }
         self.measurement_started = crate::diagnostics::io_probe::start_timer();
         Ok(committed)
+    }
+
+    pub(super) fn capture_context(
+        &self,
+        episode_limit: usize,
+    ) -> Result<super::resident_state::CapturedAgentContext> {
+        let root = self
+            .runtime
+            .inner
+            .mutation_owner
+            .capture()?
+            .ok_or_else(|| anyhow!("runtime state has not been published"))?;
+        anyhow::ensure!(
+            root.state.as_ref() == &self.candidate.state,
+            "context capture cannot observe a private state candidate"
+        );
+        root.capture_context(episode_limit)
+    }
+
+    pub(super) async fn commit_episode_memory(
+        &mut self,
+        command: &crate::runtime_db::episode_memory::EpisodeMemoryTransitionCommand,
+    ) -> Result<crate::runtime_db::episode_memory::EpisodeMemoryReceipt> {
+        use crate::runtime_db::episode_memory::EpisodeMemoryCommit;
+        let operation_id = crate::ids::audit_event_id();
+        let witness = super::mutation_witness::MutationWitness::episode_memory(
+            operation_id.clone(),
+            command,
+        )?;
+        let db = self.runtime.inner.runtime_db.clone();
+        let mut receipt = None;
+        let commit = self
+            .commit_transition_inner(operation_id, Some(witness), || {
+                match db.commit_episode_memory(command)? {
+                    EpisodeMemoryCommit::Applied {
+                        receipt: saved,
+                        mut transition,
+                        episode,
+                    } => {
+                        receipt = Some(saved);
+                        transition.effects.context_episodes.extend(episode);
+                        Ok(transition)
+                    }
+                    EpisodeMemoryCommit::Replayed { receipt: saved } => {
+                        // Return the original result without reinstalling its old candidate.
+                        receipt = Some(saved);
+                        Ok(TransitionCommit::default())
+                    }
+                }
+            })
+            .await?;
+        self.runtime.apply_transition_commit(commit).await;
+        receipt.ok_or_else(|| anyhow!("episode commit omitted its original result"))
     }
 
     pub(super) async fn install_transient(&mut self) -> Result<()> {
@@ -278,6 +364,12 @@ impl RuntimeMutation {
             }
         }
         self.candidate = Box::new(self.runtime.inner.agent.lock().await.clone());
+        self.episodes = self
+            .runtime
+            .inner
+            .mutation_owner
+            .capture()?
+            .and_then(|root| root.episodes.clone());
         self.base = self.candidate.clone();
         self.deferred_abort = None;
         Ok(true)
@@ -306,6 +398,7 @@ impl RuntimeMutation {
                 if index == self.primary_index {
                     return Ok(KnownCommit::State {
                         state: facts.state.clone(),
+                        episodes: facts.episodes.clone(),
                         runtime: Some(facts.clone()),
                     });
                 }
@@ -369,6 +462,7 @@ impl RuntimeMutation {
         RuntimeMutationFacts {
             owner_epoch: self.reservations[self.primary_index].owner_epoch(),
             state: Arc::new(self.candidate.state.clone()),
+            episodes: self.episodes.clone(),
             queue: self.candidate.queue.clone(),
             current_run_abort: self.candidate.current_run_abort.clone(),
             deferred_abort: self.deferred_abort.clone(),
@@ -386,6 +480,8 @@ fn strip_authoritative_effects(effects: &mut crate::runtime_db::transitions::Pos
     effects.timers.clear();
     effects.external_triggers.clear();
     effects.agent_identities.clear();
+    effects.context_episodes.clear();
+    effects.removed_context_episode_ids.clear();
 }
 
 impl RuntimeHandle {
@@ -547,7 +643,8 @@ impl RuntimeHandle {
                     .is_ok()
             })
             .ok_or_else(|| anyhow!("runtime mutation reservation is missing"))?;
-        if let Some(observation) = self.inner.mutation_owner.capture()? {
+        let observation = self.inner.mutation_owner.capture()?;
+        if let Some(observation) = observation.as_ref() {
             anyhow::ensure!(
                 observation.state.id == self.inner.mutation_owner.agent_id(),
                 "published runtime state identity mismatch"
@@ -589,6 +686,7 @@ impl RuntimeHandle {
             reservations,
             primary_index,
             metadata,
+            episodes: observation.and_then(|root| root.episodes.clone()),
             base: candidate.clone(),
             candidate,
             deferred_abort: None,
@@ -697,6 +795,13 @@ impl RuntimeHandle {
         &self,
         reservations: &mut [MutationReservation],
     ) -> Result<bool> {
+        super::episode_recovery::resolve_episode_recovery(
+            &self.inner.runtime_db,
+            reservations,
+            self.current_context_config()
+                .await
+                .recent_episode_candidates,
+        )?;
         let known = MutationReservation::validate_group_known(reservations).map_err(|error| {
             match error {
                 mutation_owner::MutationOwnerError::NeedsReconcile(key) => anyhow!(
@@ -885,6 +990,7 @@ impl RuntimeHandle {
             KnownCommit::State {
                 state,
                 runtime: facts,
+                ..
             } => {
                 if let Some(facts) = facts
                     .as_ref()

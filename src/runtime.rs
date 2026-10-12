@@ -5,21 +5,25 @@ mod callback;
 mod clock;
 mod closure;
 mod command_task;
+mod context_capture;
 mod continuation;
 pub(crate) mod decision_models;
 pub(crate) mod decision_openai;
 mod delivery;
+pub(crate) mod episode_recovery;
 pub(crate) mod execution_admission;
 mod failure;
 mod first_run_intro;
 mod lifecycle;
 mod message_dispatch;
 pub(crate) mod mutation_owner;
+mod mutation_witness;
 mod operator;
 mod operator_dispatch;
 pub(crate) mod provider_recovery;
 mod provider_turn;
 mod repair;
+pub(crate) mod resident_state;
 mod scheduler;
 mod scheduler_acceptance;
 mod scheduler_continuation;
@@ -107,12 +111,8 @@ use crate::{
     context::{sync_agent_message_count, ContextConfig},
     host::RuntimeHostBridge,
     ingress::WakeDisposition,
-    memory::{refresh_episode_memory, refresh_working_memory},
-    prompt::{
-        build_effective_prompt_with_apply_patch_surface,
-        build_effective_prompt_with_apply_patch_surface_and_default_external_ingress,
-        EffectivePrompt,
-    },
+    memory::refresh_working_memory,
+    prompt::{build_effective_prompt_with_apply_patch_surface, EffectivePrompt},
     provider::{
         provider_attempt_timeline, AgentProvider, ModelBlock, ProviderNativeWebSearchKind,
         ProviderNativeWebSearchRequest,
@@ -434,6 +434,9 @@ struct RuntimeInner {
     provider: RwLock<Arc<dyn AgentProvider>>,
     turn_fallback_model: RwLock<Option<ModelRouteRef>>,
     context_config: RwLock<ContextConfig>,
+    context_resource_observation: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    context_capture_checkpoint: context_capture::ContextCaptureCheckpoint,
     config_snapshot: ArcSwap<ConfigSnapshot>,
     view_image_observation_cache:
         Mutex<HashMap<ViewImageObservationCacheKey, ViewImageObservation>>,
@@ -2668,7 +2671,16 @@ fn runtime_error_queue_settlement(
                 .downcast_ref::<task_state_reducer::TaskTransitionRetryExhausted>()
                 .is_some()
         });
-    if retry_task_result {
+    if error.chain().any(|source| {
+        source
+            .downcast_ref::<context_capture::ContextPreparationRetryExhausted>()
+            .is_some()
+    }) {
+        (
+            QueueEntryStatus::Interrupted,
+            "context_preparation_retry_exhausted",
+        )
+    } else if retry_task_result {
         (
             QueueEntryStatus::Interrupted,
             "task_transition_retry_exhausted",
@@ -3933,6 +3945,7 @@ impl RuntimeHandle {
     /// Registered execution roots for the given workspaces. Used to populate
     /// execution snapshots so historical `workspace://` references with
     /// `?root=` parameters can still be resolved.
+    #[cfg(test)]
     pub(crate) fn execution_root_refs_for_workspaces(
         &self,
         workspace_ids: &[String],
@@ -3957,6 +3970,7 @@ impl RuntimeHandle {
         workspace::workspace_view_from_state(state, self.inner.storage.data_dir().to_path_buf())
     }
 
+    #[cfg(test)]
     fn execution_snapshot_for_view(
         &self,
         profile: crate::system::ExecutionProfile,
@@ -4118,7 +4132,7 @@ impl RuntimeHandle {
         operator_binding_id: Option<&str>,
         operator_reply_route_id: Option<&str>,
         execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
-    ) -> Result<()> {
+    ) -> Result<(String, u64)> {
         let replay_source = if let Some(message) = message {
             if let Some(source_turn_id) = message.source_refs.get("replay_source_turn_id") {
                 Some((
@@ -4352,7 +4366,10 @@ impl RuntimeHandle {
                 ))?;
             }
         }
-        Ok(())
+        Ok((
+            state.current_turn_id.expect("started turn identity"),
+            state.turn_index,
+        ))
     }
 
     #[cfg(test)]
@@ -4394,6 +4411,7 @@ impl RuntimeHandle {
             provenance,
         )
         .await
+        .map(|_| ())
     }
 
     #[cfg(test)]
@@ -4409,6 +4427,7 @@ impl RuntimeHandle {
             None,
         )
         .await
+        .map(|_| ())
     }
 
     fn operator_transport_from_message(
@@ -6164,7 +6183,7 @@ impl RuntimeHandle {
                         .inner
                         .runtime_db
                         .task_result_settlements()
-                        .next_recheck_at(&self.inner.default_agent_id)?;
+                        .next_recheck_at(&idle_snapshot.0.id)?;
                     let next_recheck_at = match (next_recheck_at, result_recheck_at) {
                         (Some(left), Some(right)) => Some(left.min(right)),
                         (left, right) => left.or(right),

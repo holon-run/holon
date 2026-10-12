@@ -64,143 +64,15 @@ impl RuntimeReadModels {
             timer.rows(latest.len());
         }
 
-        let current = current_work_item_id
-            .as_deref()
-            .and_then(|id| latest.get(id))
-            .filter(|item| item.state == WorkItemState::Open)
-            .cloned();
-
-        let trigger_delivery_by_id = self
-            .latest_external_triggers()?
-            .into_iter()
-            .filter(|trigger| trigger.status == ExternalTriggerStatus::Active)
-            .filter_map(|trigger| {
-                trigger
-                    .last_delivered_at
-                    .map(|delivered_at| (trigger.external_trigger_id, delivered_at))
-            })
-            .collect::<BTreeMap<_, _>>();
-        let active_wait_conditions = self
-            .active_wait_conditions_for_scope()?
-            .into_iter()
-            .filter_map(|condition| condition.work_item_id.clone().map(|id| (id, condition)))
-            .fold(
-                BTreeMap::<String, Vec<WaitConditionRecord>>::new(),
-                |mut acc, (id, condition)| {
-                    acc.entry(id).or_default().push(condition);
-                    acc
-                },
-            );
-        let active_continuation_suspended_ids = self
-            .runtime_db
-            .work_item_continuations()
-            .active_for_agent(self.agent_id.as_deref().unwrap_or_default())?
-            .into_iter()
-            .map(|frame| frame.suspended_work_item_id)
-            .collect::<BTreeSet<_>>();
-        let mut items = latest
-            .values()
-            .cloned()
-            .map(|item| {
-                let is_current = current_work_item_id.as_deref() == Some(item.id.as_str())
-                    && item.state == WorkItemState::Open;
-                let yielded = item.state == WorkItemState::Open
-                    && active_continuation_suspended_ids.contains(&item.id);
-                crate::work_item_scheduling::derive_work_item_scheduling(
-                    crate::work_item_scheduling::WorkItemSchedulingFacts {
-                        work_item: &item,
-                        is_current,
-                        is_yielded: yielded,
-                        active_wait_conditions: active_wait_conditions
-                            .get(&item.id)
-                            .map(Vec::as_slice)
-                            .unwrap_or(&[]),
-                        trigger_delivery_by_id: &trigger_delivery_by_id,
-                    },
-                )
-            })
-            .collect::<Vec<_>>();
-
-        items.sort_by(compare_scheduling_projection_order);
-        let current_runnable = items
-            .iter()
-            .find(|item| item.candidate_class == WorkItemCandidateClass::CurrentRunnable)
-            .cloned();
-        let triggered_blocked = items
-            .iter()
-            .filter(|item| item.candidate_class == WorkItemCandidateClass::TriggeredBlocked)
-            .take(3)
-            .cloned()
-            .collect::<Vec<_>>();
-        let queued_runnable = items
-            .iter()
-            .filter(|item| item.candidate_class == WorkItemCandidateClass::QueuedRunnable)
-            .take(5)
-            .cloned()
-            .collect::<Vec<_>>();
-        let yielded = items
-            .iter()
-            .filter(|item| item.candidate_class == WorkItemCandidateClass::Yielded)
-            .take(5)
-            .cloned()
-            .collect::<Vec<_>>();
-        let waiting_for_operator = items
-            .iter()
-            .filter(|item| item.candidate_class == WorkItemCandidateClass::WaitingForOperator)
-            .take(3)
-            .cloned()
-            .collect::<Vec<_>>();
-        let blocked = items
-            .iter()
-            .filter(|item| item.candidate_class == WorkItemCandidateClass::Blocked)
-            .filter(|item| item.scheduling_state != WorkItemSchedulingState::WaitingTask)
-            .take(3)
-            .cloned()
-            .collect::<Vec<_>>();
-        let completing = items
-            .iter()
-            .filter(|item| item.candidate_class == WorkItemCandidateClass::Completing)
-            .take(3)
-            .cloned()
-            .collect::<Vec<_>>();
-        let completed_recent = items
-            .iter()
-            .filter(|item| item.candidate_class == WorkItemCandidateClass::CompletedRecent)
-            .take(3)
-            .cloned()
-            .collect::<Vec<_>>();
-
-        let mut queued_blocked = latest
-            .values()
-            .filter(|item| {
-                item.state == WorkItemState::Open
-                    && Some(item.id.as_str()) != current_work_item_id.as_deref()
-                    && !active_continuation_suspended_ids.contains(&item.id)
-                    && !active_wait_conditions
-                        .get(&item.id)
-                        .is_some_and(|conditions| {
-                            conditions
-                                .iter()
-                                .any(|condition| condition.kind == WaitConditionKind::Task)
-                        })
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        queued_blocked.sort_by(compare_queue_display_order);
-
-        Ok(WorkQueueReadModel {
-            current,
-            queued_blocked,
-            items,
-            current_runnable,
-            triggered_blocked,
-            queued_runnable,
-            yielded,
-            waiting_for_operator,
-            blocked,
-            completing,
-            completed_recent,
-        })
+        Ok(derive_context_work_queue(
+            current_work_item_id,
+            latest,
+            self.latest_external_triggers()?,
+            self.active_wait_conditions_for_scope()?,
+            self.runtime_db
+                .work_item_continuations()
+                .active_for_agent(self.agent_id.as_deref().unwrap_or_default())?,
+        ))
     }
 
     pub fn agent_posture(&self, agent: &AgentState) -> Result<AgentPostureProjection> {
@@ -460,29 +332,13 @@ impl RuntimeReadModels {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let work_item_is_open = {
+        let items = {
             let mut lookup = attribution::WAIT_ITEM.start();
             let items = self.runtime_db.work_items().latest_many(&referenced_ids)?;
             lookup.rows(items.len());
             items
-                .into_iter()
-                .map(|item| (item.id, item.state == WorkItemState::Open))
-                .collect::<BTreeMap<_, _>>()
         };
-        let mut live = Vec::new();
-        for record in records {
-            let Some(work_item_id) = record.work_item_id.as_deref() else {
-                live.push(record);
-                continue;
-            };
-            if work_item_is_open
-                .get(work_item_id)
-                .is_some_and(|is_open| *is_open)
-            {
-                live.push(record);
-            }
-        }
-        Ok(live)
+        Ok(filter_context_active_waits(records, items))
     }
 
     fn read_agent(&self) -> Result<Option<AgentState>> {
@@ -531,4 +387,165 @@ impl RuntimeReadModels {
             None => self.runtime_db.work_item_delegations().latest_all(),
         }
     }
+}
+
+/// Pure scheduling/display selection shared by legacy and coherent context reads.
+pub(crate) fn derive_context_work_queue(
+    current_work_item_id: Option<String>,
+    latest: HashMap<String, WorkItemRecord>,
+    external_triggers: Vec<crate::types::ExternalTriggerRecord>,
+    active_waits: Vec<WaitConditionRecord>,
+    continuations: Vec<crate::types::WorkItemContinuationFrame>,
+) -> WorkQueueReadModel {
+    let current = current_work_item_id
+        .as_deref()
+        .and_then(|id| latest.get(id))
+        .filter(|item| item.state == WorkItemState::Open)
+        .cloned();
+
+    let trigger_delivery_by_id = external_triggers
+        .into_iter()
+        .filter(|trigger| trigger.status == ExternalTriggerStatus::Active)
+        .filter_map(|trigger| {
+            trigger
+                .last_delivered_at
+                .map(|delivered_at| (trigger.external_trigger_id, delivered_at))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let active_wait_conditions = active_waits
+        .into_iter()
+        .filter_map(|condition| condition.work_item_id.clone().map(|id| (id, condition)))
+        .fold(
+            BTreeMap::<String, Vec<WaitConditionRecord>>::new(),
+            |mut acc, (id, condition)| {
+                acc.entry(id).or_default().push(condition);
+                acc
+            },
+        );
+    let active_continuation_suspended_ids = continuations
+        .into_iter()
+        .map(|frame| frame.suspended_work_item_id)
+        .collect::<BTreeSet<_>>();
+    let mut items = latest
+        .values()
+        .cloned()
+        .map(|item| {
+            let is_current = current_work_item_id.as_deref() == Some(item.id.as_str())
+                && item.state == WorkItemState::Open;
+            let yielded = item.state == WorkItemState::Open
+                && active_continuation_suspended_ids.contains(&item.id);
+            crate::work_item_scheduling::derive_work_item_scheduling(
+                crate::work_item_scheduling::WorkItemSchedulingFacts {
+                    work_item: &item,
+                    is_current,
+                    is_yielded: yielded,
+                    active_wait_conditions: active_wait_conditions
+                        .get(&item.id)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]),
+                    trigger_delivery_by_id: &trigger_delivery_by_id,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+
+    items.sort_by(compare_scheduling_projection_order);
+    let current_runnable = items
+        .iter()
+        .find(|item| item.candidate_class == WorkItemCandidateClass::CurrentRunnable)
+        .cloned();
+    let triggered_blocked = items
+        .iter()
+        .filter(|item| item.candidate_class == WorkItemCandidateClass::TriggeredBlocked)
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>();
+    let queued_runnable = items
+        .iter()
+        .filter(|item| item.candidate_class == WorkItemCandidateClass::QueuedRunnable)
+        .take(5)
+        .cloned()
+        .collect::<Vec<_>>();
+    let yielded = items
+        .iter()
+        .filter(|item| item.candidate_class == WorkItemCandidateClass::Yielded)
+        .take(5)
+        .cloned()
+        .collect::<Vec<_>>();
+    let waiting_for_operator = items
+        .iter()
+        .filter(|item| item.candidate_class == WorkItemCandidateClass::WaitingForOperator)
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>();
+    let blocked = items
+        .iter()
+        .filter(|item| item.candidate_class == WorkItemCandidateClass::Blocked)
+        .filter(|item| item.scheduling_state != WorkItemSchedulingState::WaitingTask)
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>();
+    let completing = items
+        .iter()
+        .filter(|item| item.candidate_class == WorkItemCandidateClass::Completing)
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>();
+    let completed_recent = items
+        .iter()
+        .filter(|item| item.candidate_class == WorkItemCandidateClass::CompletedRecent)
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut queued_blocked = latest
+        .values()
+        .filter(|item| {
+            item.state == WorkItemState::Open
+                && Some(item.id.as_str()) != current_work_item_id.as_deref()
+                && !active_continuation_suspended_ids.contains(&item.id)
+                && !active_wait_conditions
+                    .get(&item.id)
+                    .is_some_and(|conditions| {
+                        conditions
+                            .iter()
+                            .any(|condition| condition.kind == WaitConditionKind::Task)
+                    })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    queued_blocked.sort_by(compare_queue_display_order);
+
+    WorkQueueReadModel {
+        current,
+        queued_blocked,
+        items,
+        current_runnable,
+        triggered_blocked,
+        queued_runnable,
+        yielded,
+        waiting_for_operator,
+        blocked,
+        completing,
+        completed_recent,
+    }
+}
+
+pub(crate) fn filter_context_active_waits(
+    records: Vec<WaitConditionRecord>,
+    work_items: Vec<WorkItemRecord>,
+) -> Vec<WaitConditionRecord> {
+    let work_item_is_open = work_items
+        .into_iter()
+        .map(|item| (item.id, item.state == WorkItemState::Open))
+        .collect::<BTreeMap<_, _>>();
+    records
+        .into_iter()
+        .filter(|record| {
+            record
+                .work_item_id
+                .as_ref()
+                .is_none_or(|id| work_item_is_open.get(id).is_some_and(|open| *open))
+        })
+        .collect()
 }

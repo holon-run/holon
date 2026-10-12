@@ -2515,11 +2515,88 @@ INSERT INTO scheduler_rollout_command_results (
                 "dequeued_queue_entries=1",
             ),
         ] {
+            // Later migrations read canonical domain payloads, so the fixture
+            // must keep its normalized recovery status and typed bytes aligned.
+            let (table, active_payload, recovered_payload) = match expected_count {
+                "open_execution_attempts=1" => {
+                    let attempt: ExecutionAttempt = serde_json::from_value(serde_json::json!({
+                        "attempt_id":"attempt-a", "agent_id":"agent-a",
+                        "source":{"identity":{"kind":"runtime_recovery","recovery_id":"recovery-a"},"generation":1},
+                        "binding":{"kind":"agent_lifecycle","agent_id":"agent-a"},
+                        "provenance":{"origin":"runtime_recovery","trust":"runtime_instruction","priority":"normal"},
+                        "admitted_fences":{"source_revision":1,"agent_control_revision":0,"host_registry_revision":0},
+                        "state":"open", "admitted_at":"2026-08-16T00:00:00Z"
+                    }))?;
+                    let mut recovered = attempt.clone();
+                    recovered.state =
+                        crate::domain::execution_protocol::ExecutionAttemptState::Interrupted;
+                    (
+                        "execution_protocol_attempts",
+                        serde_json::to_string(&attempt)?,
+                        serde_json::to_string(&recovered)?,
+                    )
+                }
+                "in_flight_execution_work_items=1" => {
+                    let record = WorkItemExecutionRecord {
+                        source_revision: 1,
+                        state: WorkItemExecutionState::InFlight {
+                            generation: 1,
+                            attempt_id: "attempt-a".into(),
+                        },
+                    };
+                    let recovered = WorkItemExecutionRecord {
+                        source_revision: 1,
+                        state: WorkItemExecutionState::Paused {
+                            generation: 1,
+                            reason: "recovered".into(),
+                        },
+                    };
+                    (
+                        "execution_protocol_work_items",
+                        serde_json::to_string(&record)?,
+                        serde_json::to_string(&recovered)?,
+                    )
+                }
+                "dequeued_queue_entries=1" => {
+                    let at = "2026-08-16T00:00:00Z".parse()?;
+                    let record = QueueEntryRecord {
+                        message_id: "message-a".into(),
+                        agent_id: "agent-a".into(),
+                        priority: crate::types::Priority::Normal,
+                        status: QueueEntryStatus::Dequeued,
+                        created_at: at,
+                        updated_at: at,
+                    };
+                    let mut recovered = record.clone();
+                    recovered.status = QueueEntryStatus::Processed;
+                    recovered.updated_at = "2026-08-16T00:01:00Z".parse()?;
+                    (
+                        "queue_entries",
+                        serde_json::to_string(&record)?,
+                        serde_json::to_string(&recovered)?,
+                    )
+                }
+                _ => unreachable!(),
+            };
             let (_temp_dir, db_path, lock_path) = temp_paths()?;
             {
                 let mut connection = open_connection(&db_path)?;
                 migrate_through(&mut connection, 46)?;
                 connection.execute(active_state_sql, [])?;
+                connection.execute(
+                    &format!("UPDATE {table} SET payload_json=?1"),
+                    [&active_payload],
+                )?;
+                if table == "execution_protocol_attempts" {
+                    connection.execute(
+                        "UPDATE execution_protocol_attempts SET source_identity_json=?1",
+                        [serde_json::to_string(
+                            &serde_json::from_str::<ExecutionAttempt>(&active_payload)?
+                                .source
+                                .identity,
+                        )?],
+                    )?;
+                }
             }
 
             let error = RuntimeDb::open_and_migrate(&db_path, &lock_path)
@@ -2545,6 +2622,10 @@ INSERT INTO scheduler_rollout_command_results (
                 );
             }
             connection.execute(recovery_sql, [])?;
+            connection.execute(
+                &format!("UPDATE {table} SET payload_json=?1"),
+                [&recovered_payload],
+            )?;
             drop(connection);
 
             RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -9223,6 +9304,16 @@ CREATE TABLE working_memory_deltas (
             let mut connection = open_connection(&db_path)?;
             migrate_through(&mut connection, 47)?;
             let now = "2026-01-01T00:00:00.000Z";
+            let identity_payload = |id: &str, deleted: bool, deleted_at: bool| -> Result<String> {
+                let mut identity = agent_identity(id, 0);
+                identity.created_at = now.parse()?;
+                identity.updated_at = identity.created_at;
+                if deleted {
+                    identity.status = AgentRegistryStatus::Deleted;
+                }
+                identity.deleted_at = deleted_at.then_some(identity.created_at);
+                Ok(serde_json::to_string(&identity)?)
+            };
             connection.execute(
                 "INSERT INTO agent_identities (
                     agent_id, kind, visibility, ownership, profile_preset, status,
@@ -9230,17 +9321,25 @@ CREATE TABLE working_memory_deltas (
                     created_at, updated_at, archived_at, payload_json
                  ) VALUES
                     ('agent-keep', 'named', 'public', 'self_owned', 'public_named', 'active',
-                     NULL, NULL, NULL, ?1, ?1, NULL, '{}'),
+                     NULL, NULL, NULL, ?1, ?1, NULL, ?2),
                     ('agent-gone', 'named', 'public', 'self_owned', 'public_named', 'deleted',
-                     NULL, NULL, NULL, ?1, ?1, ?1, '{}'),
+                     NULL, NULL, NULL, ?1, ?1, ?1, ?3),
                     ('agent-del-only', 'named', 'public', 'self_owned', 'public_named', 'deleted',
-                     NULL, NULL, NULL, ?1, ?1, NULL, '{}')",
-                [now],
+                     NULL, NULL, NULL, ?1, ?1, NULL, ?4)",
+                params![
+                    now,
+                    identity_payload("agent-keep", false, false)?,
+                    identity_payload("agent-gone", true, true)?,
+                    identity_payload("agent-del-only", true, false)?
+                ],
             )?;
             connection.execute(
                 "INSERT INTO agent_states (agent_id, status, updated_at, payload_json) VALUES
-                    ('agent-state-only', 'idle', ?1, '{\"id\":\"agent-state-only\"}')",
-                [now],
+                    ('agent-state-only', 'idle', ?1, ?2)",
+                params![
+                    now,
+                    serde_json::to_string(&AgentState::new("agent-state-only"))?
+                ],
             )?;
             connection.execute(
                 "INSERT INTO audit_events (audit_event_id, agent_id, kind, created_at, data_json)
@@ -9388,8 +9487,8 @@ DELETE FROM schema_migrations WHERE version = 67;
             let now = "2026-01-01T00:00:00.000Z";
             connection.execute(
                 "INSERT INTO agent_states (agent_id, status, updated_at, payload_json) VALUES
-                    ('agent-broken', 'idle', ?1, '{\"id\":\"agent-other\"}')",
-                [now],
+                    ('agent-broken', 'idle', ?1, ?2)",
+                params![now, serde_json::to_string(&AgentState::new("agent-other"))?],
             )?;
             connection.execute(
                 "INSERT INTO agent_identities (
@@ -9397,8 +9496,11 @@ DELETE FROM schema_migrations WHERE version = 67;
                     parent_agent_id, lineage_parent_agent_id, delegated_from_task_id,
                     created_at, updated_at, archived_at, payload_json
                  ) VALUES ('agent-reused', 'named', 'public', 'self_owned', 'public_named',
-                     'active', NULL, NULL, NULL, ?1, ?1, NULL, '{}')",
-                [now],
+                     'active', NULL, NULL, NULL, ?1, ?1, NULL, ?2)",
+                params![
+                    now,
+                    serde_json::to_string(&agent_identity("agent-reused", 0))?
+                ],
             )?;
             connection.execute(
                 "INSERT INTO agent_deletion_jobs (
@@ -9409,11 +9511,32 @@ DELETE FROM schema_migrations WHERE version = 67;
             )?;
         }
 
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let foundations = db.observer_sync_foundations()?;
-        assert!(foundations.runtime_identity_stable);
-        assert!(!foundations.agent_identity_reserved);
-        let detail: String = db.connection()?.query_row(
+        // Preserve the exact v48 migration-backfill contract before checking
+        // the latest verifier and v82's stricter canonical adoption boundary.
+        let mut connection = open_connection(&db_path)?;
+        migrate_through(&mut connection, 48)?;
+        let (backfill_verified, backfill_detail): (bool, String) = connection.query_row(
+            "SELECT verified, detail FROM observer_sync_capability_verifications WHERE capability='agent_identity_reserved'",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert!(!backfill_verified);
+        assert!(backfill_detail.contains("migration-backfill"));
+        assert!(backfill_detail.contains("agent_state_identity_mismatch"));
+        assert!(backfill_detail.contains("completed_deletion_with_available_registry"));
+        assert_eq!(current_schema_version(&connection)?, 48);
+        migrate_through(&mut connection, 81)?;
+        crate::runtime_db::ensure_runtime_identity_metadata(&connection)?;
+        crate::runtime_db::observer_sync::verify_observer_sync_foundations(&mut connection)?;
+        let verified = |capability: &str| -> Result<bool> {
+            Ok(connection.query_row(
+                "SELECT verified FROM observer_sync_capability_verifications WHERE capability=?1",
+                [capability],
+                |row| row.get(0),
+            )?)
+        };
+        assert!(verified("runtime_identity_stable")?);
+        assert!(!verified("agent_identity_reserved")?);
+        let detail: String = connection.query_row(
             "SELECT detail FROM observer_sync_capability_verifications
              WHERE capability = 'agent_identity_reserved'",
             [],
@@ -9421,6 +9544,19 @@ DELETE FROM schema_migrations WHERE version = 67;
         )?;
         assert!(detail.contains("agent_state_identity_mismatch"));
         assert!(detail.contains("completed_deletion_with_available_registry"));
+        drop(connection);
+        let error = RuntimeDb::open_and_migrate(&db_path, &lock_path).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("State projection and payload disagree"),
+            "{error:#}"
+        );
+        let connection = open_connection(&db_path)?;
+        assert_eq!(current_schema_version(&connection)?, 81);
+        assert!(!table_exists(&connection, "episode_continuity_seeds")?);
+        let boundary_count:i64 = connection.query_row("SELECT COUNT(*) FROM runtime_metadata WHERE key='episode_continuity/v1/upgrade_boundary'", [], |row|row.get(0))?;
+        assert_eq!(boundary_count, 0);
         Ok(())
     }
 
