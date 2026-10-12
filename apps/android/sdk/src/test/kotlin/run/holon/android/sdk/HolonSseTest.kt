@@ -10,7 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
-import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import okhttp3.MediaType
 import okhttp3.OkHttpClient
@@ -33,6 +33,16 @@ class HolonSseTest {
     @Test
     fun `closing a claimed connection cancels before background body cleanup`() {
         assertUnreadClose(claimBeforeClose = true)
+    }
+
+    @Test
+    fun `background cleanup contains IO failures and continues on the same worker`() {
+        assertBackgroundCloseFailure(IOException("body close failed"))
+    }
+
+    @Test
+    fun `background cleanup contains runtime failures and continues on the same worker`() {
+        assertBackgroundCloseFailure(IllegalStateException("body close failed"))
     }
 
     @Test
@@ -217,6 +227,35 @@ class HolonSseTest {
         assertEquals(1, body.closeCalls.get())
     }
 
+    private fun assertBackgroundCloseFailure(failure: Exception) {
+        for (claimBeforeClose in listOf(false, true)) {
+            val cancellations = AtomicInteger()
+            val body =
+                RecordingBody(Buffer()) {
+                    assertEquals(1, cancellations.get())
+                    throw failure
+                }
+            val connection = HolonSseConnection(body, deduplicator = null) {
+                cancellations.incrementAndGet()
+            }
+            if (claimBeforeClose) {
+                connection.events()
+            }
+
+            connection.close()
+            val nextBody = RecordingBody(Buffer())
+            HolonSseConnection(nextBody, deduplicator = null, cancelCall = {}).close()
+            nextBody.assertClosed()
+            body.assertClosed(expectedFailure = failure)
+            // An escaping task failure replaces the executor's worker thread.
+            assertSame(body.closedOn.get(), nextBody.closedOn.get())
+            assertNotEquals(Thread.currentThread(), body.closedOn.get())
+            connection.close()
+            assertEquals(1, cancellations.get())
+            assertEquals(1, body.closeCalls.get())
+        }
+    }
+
     private class RecordingBody(
         private val dataSource: BufferedSource,
         private val beforeClose: () -> Unit = {},
@@ -246,9 +285,9 @@ class HolonSseTest {
             }
         }
 
-        fun assertClosed() {
+        fun assertClosed(expectedFailure: Throwable? = null) {
             assertTrue(closed.await(2, TimeUnit.SECONDS))
-            assertNull(closeFailure.get())
+            assertSame(expectedFailure, closeFailure.get())
             assertEquals(1, closeCalls.get())
         }
     }

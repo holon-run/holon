@@ -150,7 +150,13 @@ public class HolonSseConnection internal constructor(
         }
         cancelCall()
         if (previous == State.NEW || previous == State.CLAIMED) {
-            bodyCloser.execute { body.close() }
+            bodyCloser.execute {
+                try {
+                    body.close()
+                } catch (_: Exception) {
+                    // A cancelled body's cleanup must not escape the background task.
+                }
+            }
         }
     }
 
