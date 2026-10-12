@@ -1115,6 +1115,21 @@ class SimulatorAppearanceContracts(unittest.TestCase):
     def result(stdout=""):
         return subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
 
+    def test_slow_case_configuration_remains_verified_and_restorable(self):
+        responses = iter([self.result("light"), self.result(), self.result("dark"),
+                          self.result(), self.result("light")])
+
+        def slow_ui(command, **kwargs):
+            if kwargs["timeout"] < 30:
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            return next(responses)
+
+        with patch("ios_simulator_text_size.subprocess.run", side_effect=slow_ui) as run:
+            with simulator_appearance(UUID, "dark") as appearance:
+                self.assertEqual(appearance, "dark")
+            self.assertEqual([item.kwargs["timeout"] for item in run.call_args_list],
+                             [120] * 5)
+
     def test_readback_and_restore_even_when_xcode_fails(self):
         responses = [self.result("light"), self.result(), self.result("dark"),
                      self.result(), self.result("light")]
@@ -1161,6 +1176,20 @@ class SimulatorTextSizeContracts(unittest.TestCase):
         return [self.result("large\n"), self.result(), self.result(selected + "\n"),
                 self.result(), self.result(restored + "\n")]
 
+    def test_slow_case_configuration_remains_verified_and_restorable(self):
+        responses = iter(self.lifecycle())
+
+        def slow_ui(command, **kwargs):
+            if kwargs["timeout"] < 30:
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            return next(responses)
+
+        with patch("ios_simulator_text_size.subprocess.run", side_effect=slow_ui) as run:
+            with simulator_text_size(UUID, MAXIMUM_TEXT_SIZE) as category:
+                self.assertEqual(category, MAXIMUM_TEXT_SIZE)
+            self.assertEqual([item.kwargs["timeout"] for item in run.call_args_list],
+                             [120] * 5)
+
     def test_initialize_dedicated_baseline_with_readback(self):
         with patch("ios_simulator_text_size.subprocess.run",
                    side_effect=[self.result(), self.result("medium\n"),
@@ -1171,8 +1200,8 @@ class SimulatorTextSizeContracts(unittest.TestCase):
                 call(["xcrun", "simctl", "bootstatus", UUID, "-b"],
                      check=True, timeout=180),
                 call(prefix, check=True, capture_output=True, text=True, timeout=120),
-                call(prefix + ["large"], check=True, capture_output=True, text=True, timeout=15),
-                call(prefix, check=True, capture_output=True, text=True, timeout=15),
+                call(prefix + ["large"], check=True, capture_output=True, text=True, timeout=120),
+                call(prefix, check=True, capture_output=True, text=True, timeout=120),
             ])
 
     def test_failed_boot_prevents_baseline_configuration(self):
@@ -1230,11 +1259,11 @@ class SimulatorTextSizeContracts(unittest.TestCase):
                 self.assertEqual(category, MAXIMUM_TEXT_SIZE)
             prefix = ["xcrun", "simctl", "ui", UUID, "content_size"]
             self.assertEqual(run.call_args_list, [
-                call(prefix, check=True, capture_output=True, text=True, timeout=15),
-                call(prefix + [MAXIMUM_TEXT_SIZE], check=True, capture_output=True, text=True, timeout=15),
-                call(prefix, check=True, capture_output=True, text=True, timeout=15),
-                call(prefix + ["large"], check=True, capture_output=True, text=True, timeout=15),
-                call(prefix, check=True, capture_output=True, text=True, timeout=15),
+                call(prefix, check=True, capture_output=True, text=True, timeout=120),
+                call(prefix + [MAXIMUM_TEXT_SIZE], check=True, capture_output=True, text=True, timeout=120),
+                call(prefix, check=True, capture_output=True, text=True, timeout=120),
+                call(prefix + ["large"], check=True, capture_output=True, text=True, timeout=120),
+                call(prefix, check=True, capture_output=True, text=True, timeout=120),
             ])
 
     def test_restore_preserves_xcode_failure(self):
@@ -1282,12 +1311,15 @@ class SimulatorTextSizeContracts(unittest.TestCase):
                     pass
 
     def test_failed_initial_read_does_not_mutate(self):
-        with patch("ios_simulator_text_size.subprocess.run",
-                   side_effect=subprocess.CalledProcessError(1, ["xcrun"])) as run:
-            with self.assertRaises(subprocess.CalledProcessError):
-                with simulator_text_size(UUID, MAXIMUM_TEXT_SIZE):
-                    self.fail("Failed initial read must not run XCTest")
-            self.assertEqual(run.call_count, 1)
+        for error in (subprocess.CalledProcessError(1, ["xcrun"]),
+                      subprocess.TimeoutExpired(["xcrun"], 120)):
+            with self.subTest(error=type(error).__name__):
+                with patch("ios_simulator_text_size.subprocess.run", side_effect=error) as run:
+                    with self.assertRaises(type(error)):
+                        with simulator_text_size(UUID, MAXIMUM_TEXT_SIZE):
+                            self.fail("Failed initial read must not run XCTest")
+                    self.assertEqual(run.call_count, 1)
+                    self.assertEqual(run.call_args.kwargs["timeout"], 120)
 
     def test_unsupported_category_never_mutates(self):
         with patch("ios_simulator_text_size.subprocess.run") as run:
@@ -1313,6 +1345,8 @@ class SimulatorTextSizeContracts(unittest.TestCase):
                     self.assertEqual(json.load(response), {"category": MAXIMUM_TEXT_SIZE})
                 self.assertEqual(run.call_args_list[0].args[0][-1], MAXIMUM_TEXT_SIZE)
                 self.assertEqual(run.call_args_list[1].args[0][-1], "content_size")
+                self.assertEqual([item.kwargs["timeout"] for item in run.call_args_list],
+                                 [15, 15])
             with self.assertRaises(urllib.error.URLError):
                 self.request_control(control, {"category": "large"})
 
@@ -1362,8 +1396,9 @@ class SimulatorTextSizeContracts(unittest.TestCase):
         started, release, closing, restored = (threading.Event() for _ in range(4))
         failure = []
 
-        def set_size(simulator, category, phase="运行时切换"):
+        def set_size(simulator, category, phase="运行时切换", *, timeout=15):
             self.assertEqual(simulator, UUID)
+            self.assertEqual(timeout, 15 if phase == "运行时切换" else 120)
             if phase == "运行时切换":
                 started.set()
                 if not release.wait(5):
