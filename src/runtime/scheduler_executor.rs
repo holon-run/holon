@@ -71,15 +71,6 @@ pub(super) struct ShutdownPostureOutcome {
     pub(super) aborted_run_id: Option<String>,
 }
 
-pub(super) struct ControlPostureOutcome {
-    pub(super) requested_action: ControlAction,
-    pub(super) action: ControlAction,
-    pub(super) status: AgentStatus,
-    pub(super) current_run_id: Option<String>,
-    pub(super) aborted_run_id: Option<String>,
-    pub(super) occupancy_to_release: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SleepTransitionBoundary {
     LifecycleSleep,
@@ -113,6 +104,8 @@ pub(super) struct ScheduledMessage {
     pub(super) running_state: AgentState,
     pub(super) dispatch_plan: MessageDispatchPlan,
     pub(super) scheduler_decision: scheduler::SchedulerDecision,
+    // Own physical processing completion even if the scheduled value is dropped.
+    _run_completion: super::control_cancellation::ControlRunCompletionGuard,
 }
 
 struct CanonicalClaimPlan {
@@ -361,10 +354,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         Ok(StaleRunProjectionReconciliation::Recovered)
     }
 
-    pub(super) async fn apply_control(
-        &self,
-        requested_action: ControlAction,
-    ) -> Result<ControlPostureOutcome> {
+    #[cfg(test)]
+    pub(super) async fn apply_control(&self, requested_action: ControlAction) -> Result<()> {
         let action = requested_action.canonical();
         let mut guard = self.runtime.begin_mutation().await?;
         let previous_status = guard.state.status.clone();
@@ -426,14 +417,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             guard.persist_state(&self.runtime.inner.storage).await?;
         }
 
-        Ok(ControlPostureOutcome {
-            requested_action,
-            action,
-            status: guard.state.status.clone(),
-            current_run_id: guard.state.current_run_id.clone(),
-            aborted_run_id,
-            occupancy_to_release,
-        })
+        Ok(())
     }
 
     pub(super) async fn request_shutdown(
@@ -875,7 +859,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .apply_claim_work_item_plan_status_before_commit()
             .await?;
 
-        let (message, running_state, transition_commit) = {
+        let (message, running_state, transition_commit, run_completion) = {
             let queue_record = QueueEntryRecord {
                 message_id: candidate.message.id.clone(),
                 agent_id: candidate.message.agent_id.clone(),
@@ -886,6 +870,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             };
             let run_id = crate::ids::run_id();
             let abort_token = CancellationToken::new();
+            let abort_reason = Arc::new(StdMutex::new("operator_aborted".into()));
             let mut claim_audit_events = vec![
                 scheduler_decision_events[0].clone(),
                 scheduler_decision_events[1].clone(),
@@ -1007,8 +992,26 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 guard.current_run_abort = Some(CurrentRunAbortHandle {
                     run_id: run_id.clone(),
                     token: abort_token.clone(),
-                    reason: Arc::new(StdMutex::new("operator_aborted".into())),
+                    reason: abort_reason.clone(),
                 });
+                // Retain the original run before the SQL attempt can ACK and
+                // yield during installation. An error/cancelled claim future
+                // drops this guard: its physical processing never started.
+                self.runtime.inner.control_cancellations.run(
+                    run_id.clone(),
+                    abort_token.clone(),
+                    abort_reason.clone(),
+                    canonical_claim
+                        .as_ref()
+                        .map(|plan| plan.activation_id.clone()),
+                    persisted_message.id.clone(),
+                )?;
+                let run_completion = self
+                    .runtime
+                    .inner
+                    .control_cancellations
+                    .run_completion(&run_id)
+                    .expect("just registered original run");
                 let commit_result = guard
                     .commit_transition(run_id.clone(), || {
                         self.runtime
@@ -1063,7 +1066,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         "interrupted_queue_claim_reentry".into(),
                     );
                 }
-                break (claimed_message, running_state, commit);
+                break (claimed_message, running_state, commit, run_completion);
             }
         };
         self.runtime
@@ -1124,6 +1127,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 running_state,
                 dispatch_plan,
                 scheduler_decision: effective_decision,
+                _run_completion: run_completion,
             },
         )))
     }

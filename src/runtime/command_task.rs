@@ -50,14 +50,26 @@ const PROCESS_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const COLLECT_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub(super) enum ManagedTaskHandle {
-    Async(JoinHandle<()>),
+    Async(super::control_cancellation::SharedControlTaskHandle),
     Command(CommandTaskHandle),
 }
 
 pub(super) struct CommandTaskHandle {
-    pub(super) cancel_tx: Option<oneshot::Sender<()>>,
-    pub(super) force_stop_tx: Option<oneshot::Sender<()>>,
+    pub(super) cancel_tx: Option<super::control_cancellation::SharedControlSignal>,
+    pub(super) force_stop_tx: Option<super::control_cancellation::SharedControlSignal>,
     pub(super) input_tx: mpsc::Sender<CommandTaskInputRequest>,
+    pub(super) control_lease: Option<std::sync::Arc<super::control_cancellation::ControlJoinLease>>,
+}
+
+impl ManagedTaskHandle {
+    pub(super) fn control_lease(
+        &self,
+    ) -> Option<std::sync::Arc<super::control_cancellation::ControlJoinLease>> {
+        match self {
+            Self::Async(handle) => Some(handle.lease()),
+            Self::Command(handle) => handle.control_lease.clone(),
+        }
+    }
 }
 
 pub(super) struct CommandTaskInputRequest {
@@ -991,11 +1003,50 @@ impl RuntimeHandle {
             }))
     }
 
-    async fn register_command_task(
+    // RunningCommand already owns a spawned OS process. Transfer it to a tracked
+    // worker synchronously, before the API caller can drop its first await.
+    fn register_command_task(
+        &self,
+        summary: String,
+        resolved: ResolvedCommandTask,
+        running: RunningCommand,
+        authority_class: AuthorityClass,
+        promoted_from_exec_command: bool,
+        initial_capture: CapturedOutput,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TaskRecord>> + Send>> {
+        let (send, receive) = oneshot::channel();
+        let runtime = self.clone();
+        let worker = tokio::spawn(async move {
+            let mut original_process = Some(running);
+            let result = runtime
+                .register_command_task_inner(
+                    summary,
+                    resolved,
+                    &mut original_process,
+                    authority_class,
+                    promoted_from_exec_command,
+                    initial_capture,
+                )
+                .await;
+            if let Some(running) = original_process {
+                runtime.retain_rejected_running_command(running);
+            }
+            let _ = send.send(result);
+            Ok(())
+        });
+        self.inner.control_cancellations.track_completion(worker);
+        Box::pin(async move {
+            receive
+                .await
+                .map_err(|_| anyhow!("command registration worker ended without an outcome"))?
+        })
+    }
+
+    async fn register_command_task_inner(
         &self,
         summary: String,
         mut resolved: ResolvedCommandTask,
-        running: RunningCommand,
+        original_process: &mut Option<RunningCommand>,
         authority_class: AuthorityClass,
         promoted_from_exec_command: bool,
         mut initial_capture: CapturedOutput,
@@ -1058,20 +1109,35 @@ impl RuntimeHandle {
         ))
         .await?;
 
+        let _registration = self.admit_control_task_handle_registration(&task).await?;
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let (force_stop_tx, force_stop_rx) = oneshot::channel();
-        self.inner.task_handles.lock().await.insert(
+        let cancel_tx = super::control_cancellation::SharedControlSignal::new(cancel_tx);
+        let force_stop_tx = super::control_cancellation::SharedControlSignal::new(force_stop_tx);
+        let control_lease = self.inner.control_cancellations.command(
+            &task,
+            cancel_tx.clone(),
+            force_stop_tx.clone(),
+        );
+        // Hold map lock until the monitor JoinHandle is attached.
+        let mut registered_handles = self.inner.task_handles.lock().await;
+        registered_handles.insert(
             task.id.clone(),
             ManagedTaskHandle::Command(CommandTaskHandle {
                 cancel_tx: Some(cancel_tx),
                 force_stop_tx: Some(force_stop_tx),
                 input_tx,
+                control_lease: Some(control_lease.clone()),
             }),
         );
         let runtime = self.clone();
         let task_record = task.clone();
         let task_record_for_error = task.clone();
         let resolved_for_error = resolved.clone();
+        let control_lease_for_monitor = control_lease.clone();
+        let running = original_process
+            .take()
+            .expect("original command process transferred twice");
         let monitor = tokio::spawn(async move {
             if let Err(err) = runtime
                 .run_command_task(
@@ -1083,6 +1149,7 @@ impl RuntimeHandle {
                     input_rx,
                     promoted_from_exec_command,
                     initial_capture,
+                    control_lease_for_monitor.lease_id(),
                 )
                 .await
             {
@@ -1113,16 +1180,36 @@ impl RuntimeHandle {
                     )
                     .await;
                 runtime
-                    .inner
-                    .task_handles
-                    .lock()
-                    .await
-                    .remove(&task_record_for_error.id);
+                    .release_completed_task_handle_exact(
+                        &task_record_for_error.id,
+                        control_lease_for_monitor.lease_id(),
+                    )
+                    .await;
             }
         });
-        self.track_owned_task(monitor);
+        control_lease.attach(monitor);
+        drop(registered_handles);
 
         Ok(task)
+    }
+
+    fn retain_rejected_running_command(&self, mut running: RunningCommand) {
+        let runtime = self.clone();
+        let handle = tokio::spawn(async move {
+            let _responsible_runtime = runtime;
+            let stopped = running.process.stop(StopSignal::Force).await;
+            let waited = running.process.wait().await;
+            for reader in &running.reader_handles {
+                reader.abort();
+            }
+            for reader in running.reader_handles {
+                let _ = reader.await;
+            }
+            stopped?;
+            waited?;
+            Ok(())
+        });
+        self.inner.control_cancellations.track_completion(handle);
     }
 
     async fn run_command_task(
@@ -1135,6 +1222,7 @@ impl RuntimeHandle {
         mut input_rx: mpsc::Receiver<CommandTaskInputRequest>,
         promoted_from_exec_command: bool,
         initial_capture: CapturedOutput,
+        control_lease_id: &str,
     ) -> Result<()> {
         let mut captured = initial_capture;
         let mut terminal = match self
@@ -1278,7 +1366,8 @@ impl RuntimeHandle {
         )
         .await?;
 
-        self.inner.task_handles.lock().await.remove(&task_record.id);
+        self.release_completed_task_handle_exact(&task_record.id, control_lease_id)
+            .await;
         Ok(())
     }
 
@@ -2338,6 +2427,38 @@ mod tests {
             output_collect.attributes.outcome.as_deref(),
             Some("completed")
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_registration_receiver_keeps_rejected_original_process_cleanup_owned() {
+        let (_home, _workspace, runtime) = test_runtime();
+        let spec = command_spec(false, false);
+        let resolved = resolved_command(&runtime, &spec).await;
+        let process = FakeRunningProcess::pending();
+        let stop_signals = process.stop_signals.clone();
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        mutation.state.status = crate::types::AgentStatus::Stopped;
+        mutation
+            .persist_state(&runtime.inner.storage)
+            .await
+            .unwrap();
+        // The factory owns/registers the worker before its returned future is
+        // ever polled. Owner remains held so registration cannot beat Stop.
+        let receiver = runtime.register_command_task(
+            "rejected original process".into(),
+            resolved,
+            running_command(process, "", ""),
+            AuthorityClass::OperatorInstruction,
+            false,
+            CapturedOutput::default(),
+        );
+        drop(receiver);
+        tokio::task::yield_now().await;
+        assert!(stop_signals.lock().await.is_empty());
+        drop(mutation);
+        runtime.inner.control_cancellations.drain().await.unwrap();
+        assert_eq!(*stop_signals.lock().await, vec![StopSignal::Force]);
+        assert!(runtime.inner.task_handles.lock().await.is_empty());
     }
 
     #[tokio::test]

@@ -39,6 +39,14 @@ struct DeferredRunAbort {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct SavedControlCancellation {
+    pub(super) key: crate::runtime_db::control_transition::ControlKey,
+    pub(super) digest: String,
+    pub(super) owner_epoch: u64,
+    pub(super) facts: Arc<super::control::PreparedControlCancellation>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct RuntimeMutationFacts {
     owner_epoch: u64,
     pub(crate) state: Arc<AgentState>,
@@ -46,7 +54,51 @@ pub(crate) struct RuntimeMutationFacts {
     queue: RuntimeQueue,
     current_run_abort: Option<CurrentRunAbortHandle>,
     deferred_abort: Option<DeferredRunAbort>,
+    control_cancellation: Option<SavedControlCancellation>,
     effects: crate::runtime_db::transitions::PostCommitEffects,
+}
+
+impl RuntimeMutationFacts {
+    pub(super) fn for_control_recovery(
+        owner_epoch: u64,
+        state: Arc<AgentState>,
+        episodes: Arc<super::resident_state::ResidentEpisodes>,
+        facts: crate::runtime_db::control_transition::ControlRecoveryFacts,
+        original_run: Option<CurrentRunAbortHandle>,
+        cancellation: Option<SavedControlCancellation>,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            facts
+                .workspace_occupancy
+                .as_ref()
+                .is_none_or(|occupancy| occupancy.holder_agent_id == state.id),
+            "Control recovery occupancy scope differs"
+        );
+        tracing::debug!(agent_id = %state.id, waits = facts.waits.len(),
+            timer_wakes = facts.timer_wakes.len(),
+            workspace_occupancy = facts.workspace_occupancy.is_some(),
+            "installing coherent Control recovery facts");
+        let mut queue = RuntimeQueue::default();
+        for message in facts.current_queue_messages {
+            anyhow::ensure!(
+                message.agent_id == state.id,
+                "Control recovery queue scope differs"
+            );
+            queue.push(message);
+        }
+        let current_run_abort =
+            original_run.filter(|handle| state.current_run_id.as_ref() == Some(&handle.run_id));
+        Ok(Self {
+            owner_epoch,
+            state,
+            episodes: Some(episodes),
+            queue,
+            current_run_abort,
+            deferred_abort: None,
+            control_cancellation: cancellation,
+            effects: facts.transition.effects,
+        })
+    }
 }
 
 pub(super) struct RuntimeMutation {
@@ -58,6 +110,7 @@ pub(super) struct RuntimeMutation {
     candidate: Box<RuntimeAgent>,
     base: Box<RuntimeAgent>,
     deferred_abort: Option<DeferredRunAbort>,
+    control_cancellation: Option<SavedControlCancellation>,
     measurement_started: Option<std::time::Instant>,
 }
 
@@ -180,6 +233,7 @@ impl RuntimeMutation {
                     MutationReservation::definitely_not_committed_all(&mut self.reservations)?;
                     self.candidate = self.base.clone();
                     self.deferred_abort = None;
+                    self.control_cancellation = None;
                 }
                 return Err(error);
             }
@@ -188,6 +242,7 @@ impl RuntimeMutation {
             MutationReservation::definitely_not_committed_all(&mut self.reservations)?;
             self.candidate = self.base.clone();
             self.deferred_abort = None;
+            self.control_cancellation = None;
             return Ok(committed);
         }
         if let Some(mutation) = committed.effects.agent_state.as_ref() {
@@ -252,6 +307,10 @@ impl RuntimeMutation {
         }
         self.base = self.candidate.clone();
         self.deferred_abort = None;
+        if let Some(cancellation) = self.control_cancellation.take() {
+            self.runtime
+                .resume_saved_control_cancellation(&cancellation)?;
+        }
         strip_authoritative_effects(&mut committed.effects);
         if let Some(started) = self.measurement_started.take() {
             crate::diagnostics::io_probe::record_timing(
@@ -316,6 +375,82 @@ impl RuntimeMutation {
         receipt.ok_or_else(|| anyhow!("episode commit omitted its original result"))
     }
 
+    pub(super) async fn commit_control(
+        &mut self,
+        prepared: &super::control::PreparedRuntimeControl,
+    ) -> Result<crate::runtime_db::control_transition::ControlReceipt> {
+        use crate::runtime_db::control_transition::ControlCommit;
+        let command = &prepared.command;
+        let saved = SavedControlCancellation {
+            key: command.key().clone(),
+            digest: command.command_digest().to_owned(),
+            owner_epoch: self.reservations[self.primary_index].owner_epoch(),
+            facts: prepared.cancellation.clone(),
+        };
+        self.runtime.inner.control_cancellations.retain_prepared(
+            &saved.key,
+            &saved.digest,
+            saved.owner_epoch,
+            saved.facts.clone(),
+        )?;
+        let operation_id = crate::ids::audit_event_id();
+        let witness = super::mutation_witness::MutationWitness::control(
+            operation_id.clone(),
+            command,
+            saved.facts.clone(),
+            saved.owner_epoch,
+        )?;
+        self.control_cancellation = Some(saved.clone());
+        if command.invocation().action == ControlAction::Stop {
+            self.candidate.current_run_abort = None;
+        }
+        let db = self.runtime.inner.runtime_db.clone();
+        let mut receipt = None;
+        let result = self
+            .commit_transition_inner(operation_id, Some(witness), || {
+                match db.commit_control(command)? {
+                    ControlCommit::Applied {
+                        receipt: original,
+                        delta,
+                    } => {
+                        validate_control_publication(&delta, &saved.key.agent_id)?;
+                        receipt = Some(original);
+                        Ok(delta.transition)
+                    }
+                    ControlCommit::Replayed { receipt: original } => {
+                        receipt = Some(original);
+                        Ok(TransitionCommit::default())
+                    }
+                }
+            })
+            .await;
+        match result {
+            Ok(commit) => {
+                if !commit.applied {
+                    self.runtime.inner.control_cancellations.release_prepared(
+                        &saved.key,
+                        &saved.digest,
+                        saved.owner_epoch,
+                    )?;
+                }
+                self.runtime.apply_transition_commit(commit).await;
+                receipt.ok_or_else(|| anyhow!("Control commit omitted its original result"))
+            }
+            Err(error) => {
+                if persistence_certainty(&error)
+                    == Some(PersistenceCertainty::DefinitelyNotCommitted)
+                {
+                    self.runtime.inner.control_cancellations.release_prepared(
+                        &saved.key,
+                        &saved.digest,
+                        saved.owner_epoch,
+                    )?;
+                }
+                Err(error)
+            }
+        }
+    }
+
     pub(super) async fn install_transient(&mut self) -> Result<()> {
         anyhow::ensure!(
             self.candidate.state == self.base.state
@@ -372,6 +507,7 @@ impl RuntimeMutation {
             .and_then(|root| root.episodes.clone());
         self.base = self.candidate.clone();
         self.deferred_abort = None;
+        self.control_cancellation = None;
         Ok(true)
     }
 
@@ -466,6 +602,7 @@ impl RuntimeMutation {
             queue: self.candidate.queue.clone(),
             current_run_abort: self.candidate.current_run_abort.clone(),
             deferred_abort: self.deferred_abort.clone(),
+            control_cancellation: self.control_cancellation.clone(),
             effects,
         }
     }
@@ -485,6 +622,111 @@ fn strip_authoritative_effects(effects: &mut crate::runtime_db::transitions::Pos
 }
 
 impl RuntimeHandle {
+    pub(crate) fn resume_saved_control_cancellation(
+        &self,
+        saved: &SavedControlCancellation,
+    ) -> Result<()> {
+        if let Some(facts) = self.inner.control_cancellations.confirm_prepared(
+            &saved.key,
+            &saved.digest,
+            saved.owner_epoch,
+        )? {
+            anyhow::ensure!(
+                Arc::ptr_eq(&facts, &saved.facts),
+                "Control original targets changed"
+            );
+        } else {
+            self.inner.control_cancellations.retain_prepared(
+                &saved.key,
+                &saved.digest,
+                saved.owner_epoch,
+                saved.facts.clone(),
+            )?;
+            self.inner.control_cancellations.confirm_prepared(
+                &saved.key,
+                &saved.digest,
+                saved.owner_epoch,
+            )?;
+        }
+        saved.facts.signal();
+        saved
+            .facts
+            .start_completion(self, &saved.key, &saved.digest, saved.owner_epoch);
+        Ok(())
+    }
+
+    pub(super) async fn resume_original_control_cancellation(
+        &self,
+        receipt: &crate::runtime_db::control_transition::ControlReceipt,
+    ) -> Result<()> {
+        let mut reservations =
+            mutation_owner::MutationOwner::reserve_all(vec![self.inner.mutation_owner.clone()])
+                .await?;
+        self.reconcile_reserved_mutations(&mut reservations).await?;
+        let original_plan = self
+            .inner
+            .control_cancellations
+            .prepared_for_receipt(&receipt.key, &receipt.command_digest)?;
+        drop(reservations);
+        if let Some((owner_epoch, facts)) = original_plan {
+            self.resume_saved_control_cancellation(&SavedControlCancellation {
+                key: receipt.key.clone(),
+                digest: receipt.command_digest.clone(),
+                owner_epoch,
+                facts,
+            })?;
+        } else {
+            self.reconcile_loaded_control_obligations().await?;
+        }
+        Ok(())
+    }
+
+    // Save the original physical targets before reconcile_all clears its ticket.
+    // The caller may signal this plan only after the complete group publishes.
+    pub(crate) fn control_cancellation_for_known(
+        &self,
+        reservation: &MutationReservation,
+        known: &KnownCommit,
+    ) -> Result<Option<SavedControlCancellation>> {
+        reservation.validate_owner(&self.inner.mutation_owner)?;
+        if let KnownCommit::State {
+            runtime: Some(facts),
+            ..
+        } = known
+        {
+            if facts.owner_epoch == reservation.owner_epoch() {
+                if let Some(saved) = &facts.control_cancellation {
+                    return Ok(Some(saved.clone()));
+                }
+            }
+        }
+        let Some(recovery) = reservation.recovery()? else {
+            return Ok(None);
+        };
+        let Some(witness) = recovery.witness else {
+            return Ok(None);
+        };
+        let super::mutation_witness::MutationWitnessFamily::Control {
+            key,
+            command_digest,
+            ..
+        } = witness.family()
+        else {
+            return Ok(None);
+        };
+        let Some(facts) = witness.control_cancellation() else {
+            return Ok(None);
+        };
+        Ok(Some(SavedControlCancellation {
+            key: key.clone(),
+            digest: command_digest.clone(),
+            owner_epoch: witness
+                .control_owner_epoch()
+                .ok_or_else(|| anyhow!("Control original owner epoch missing"))?,
+            facts,
+        }))
+    }
+
     pub(crate) fn spawn_owned_mutation(
         &self,
         mutation: impl std::future::Future<Output = ()> + Send + 'static,
@@ -544,6 +786,45 @@ impl RuntimeHandle {
         drop(draining);
         let reconciled = self.reconcile_posture_observation().await;
         failure.map_or(reconciled, Err)
+    }
+
+    // Physical retirement preserves durable Task/Timer intent for startup
+    // recovery. It stops and joins only this instance's original producers.
+    pub(crate) async fn join_retiring_resources(&self) -> Result<()> {
+        self.inner.control_cancellations.cancel_local_producers();
+        self.join_owned_mutations().await?;
+        // Accepted registration workers may have reached their original lease
+        // after the first snapshot; local closing also fences later attachment.
+        self.inner.control_cancellations.cancel_local_producers();
+        self.inner.control_cancellations.drain_retiring().await?;
+        let mut draining = self.inner.owned_task_drain.lock().await;
+        loop {
+            draining.extend(std::mem::take(
+                &mut *self
+                    .inner
+                    .owned_task_handles
+                    .lock()
+                    .expect("owned tasks poisoned"),
+            ));
+            let Some(task) = draining.last_mut() else {
+                break;
+            };
+            // These are cancellable sleep/discovery observers. Resource-owning
+            // Task/Command/Timer monitors are joined by the registry above.
+            task.abort();
+            let result = task.await;
+            draining.pop();
+            if let Err(error) = result {
+                if !error.is_cancelled() {
+                    return Err(error.into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn instance_owner_epoch(&self) -> u64 {
+        self.inner.mutation_owner.owner_epoch()
     }
 
     #[inline(never)]
@@ -690,6 +971,7 @@ impl RuntimeHandle {
             base: candidate.clone(),
             candidate,
             deferred_abort: None,
+            control_cancellation: None,
             measurement_started,
         })
     }
@@ -795,6 +1077,15 @@ impl RuntimeHandle {
         &self,
         reservations: &mut [MutationReservation],
     ) -> Result<bool> {
+        super::control_recovery::resolve_control_recovery(
+            &self.inner.runtime_db,
+            reservations,
+            self.current_context_config()
+                .await
+                .recent_episode_candidates,
+            Some(self),
+        )
+        .await?;
         super::episode_recovery::resolve_episode_recovery(
             &self.inner.runtime_db,
             reservations,
@@ -813,6 +1104,7 @@ impl RuntimeHandle {
             return Ok(false);
         }
         let mut notifications = Vec::new();
+        let mut cancellations = Vec::new();
         for (reservation, saved) in reservations.iter().zip(&known) {
             let Some(saved) = saved else {
                 continue;
@@ -846,6 +1138,9 @@ impl RuntimeHandle {
                 }
             };
             if let Some(runtime) = runtime {
+                if let Some(plan) = runtime.control_cancellation_for_known(reservation, saved)? {
+                    cancellations.push((runtime.clone(), plan));
+                }
                 if let Some(effects) = runtime.install_saved_mutation(reservation, saved).await? {
                     notifications.push((runtime, effects));
                 }
@@ -854,6 +1149,9 @@ impl RuntimeHandle {
         let observations = MutationReservation::reconcile_all(reservations, known)?;
         for observation in observations.into_iter().flatten() {
             trace_publication(observation.token);
+        }
+        for (runtime, plan) in cancellations {
+            runtime.resume_saved_control_cancellation(&plan)?;
         }
         for (runtime, effects) in notifications {
             runtime.reissue_mutation_notifications(effects).await;
@@ -1044,6 +1342,62 @@ impl RuntimeHandle {
         agent.last_persisted_state = state.as_ref().clone();
         Ok(())
     }
+}
+
+fn validate_control_publication(
+    delta: &crate::runtime_db::control_transition::ControlCommittedDelta,
+    agent_id: &str,
+) -> Result<()> {
+    let effects = &delta.transition.effects;
+    anyhow::ensure!(
+        delta.state.id == agent_id
+            && effects
+                .agent_state
+                .as_ref()
+                .is_none_or(|change| change.record.as_ref() == &delta.state)
+            && effects.tasks == delta.tasks
+            && effects.timers == delta.timers
+            && effects.external_triggers == delta.external_triggers
+            && effects.messages == delta.result_messages
+            && effects.turns == delta.turns
+            && effects.execution_protocol == delta.execution_protocol,
+        "Control publication differs from its canonical committed facts"
+    );
+    anyhow::ensure!(
+        effects
+            .removed_queue_message_ids
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            == delta
+                .queue_entries
+                .iter()
+                .map(|entry| &entry.message_id)
+                .collect(),
+        "Control publication omitted a canonical queue removal"
+    );
+    anyhow::ensure!(
+        delta
+            .waits
+            .iter()
+            .all(|wait| wait.agent_id == agent_id && wait.status == WaitConditionStatus::Cancelled)
+            && delta
+                .timer_wakes
+                .iter()
+                .all(|wake| wake.status == "cancelled")
+            && delta
+                .workspace_occupancy
+                .as_ref()
+                .is_none_or(|occupancy| occupancy.holder_agent_id == agent_id),
+        "Control publication cancellation scope differs"
+    );
+    tracing::debug!(
+        agent_id,
+        waits = delta.waits.len(),
+        timer_wakes = delta.timer_wakes.len(),
+        workspace_occupancy = delta.workspace_occupancy.is_some(),
+        "validated canonical Control cancellation facts"
+    );
+    Ok(())
 }
 
 fn trace_publication(token: PublicationToken) {

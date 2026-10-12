@@ -89,20 +89,61 @@ impl super::RuntimeHandle {
         tasks.retain(|task| !task.is_finished());
         tasks.push(task);
     }
-    pub(super) async fn release_completed_task_handle(&self, task_id: &str) {
+    pub(super) async fn admit_control_task_handle_registration(
+        &self,
+        task: &crate::types::TaskRecord,
+    ) -> Result<super::state_mutation::RuntimeMutation> {
+        let reservation = self.begin_mutation().await?;
+        anyhow::ensure!(
+            self.accepts_execution_admission(),
+            "cannot register a task handle on a retiring runtime instance"
+        );
+        anyhow::ensure!(
+            reservation.state.status != crate::types::AgentStatus::Stopped,
+            "cannot register a task handle after administrative Stop"
+        );
+        let current = self
+            .inner
+            .runtime_db
+            .tasks()
+            .latest(&task.id)?
+            .ok_or_else(|| anyhow!("task handle registration has no canonical Task"))?;
+        anyhow::ensure!(
+            matches!(
+                current.status,
+                crate::types::TaskStatus::Queued
+                    | crate::types::TaskStatus::Running
+                    | crate::types::TaskStatus::Cancelling
+            ) && current.agent_id == task.agent_id
+                && current.created_at == task.created_at
+                && current.rejoin_fence().ok() == task.rejoin_fence().ok(),
+            "task handle registration belongs to a closed or replaced Task"
+        );
+        Ok(reservation)
+    }
+    pub(super) async fn release_completed_task_handle_exact(&self, task_id: &str, lease_id: &str) {
         let mut active = self.inner.task_handles.lock().await;
-        let handle = active.remove(task_id);
-        if let Some(super::command_task::ManagedTaskHandle::Async(handle)) = handle {
-            let mut owned = self.inner.owned_task_handles.lock().unwrap();
-            owned.retain(|task| !task.is_finished());
-            owned.push(handle);
+        if active
+            .get(task_id)
+            .and_then(super::command_task::ManagedTaskHandle::control_lease)
+            .is_some_and(|lease| lease.lease_id() == lease_id)
+        {
+            active.remove(task_id);
         }
+        // The registry retains the JoinHandle regardless of map removal.
     }
     pub(crate) async fn join_idle_owned_tasks(&self) -> Result<()> {
         self.join_owned_mutations().await?;
-        let tasks = std::mem::take(&mut *self.inner.owned_task_handles.lock().unwrap());
-        for task in tasks {
-            task.await?;
+        self.inner.control_cancellations.cancel_local_timer_loops();
+        self.inner.control_cancellations.drain().await?;
+        let mut tasks = self.inner.owned_task_drain.lock().await;
+        tasks.extend(std::mem::take(
+            &mut *self.inner.owned_task_handles.lock().unwrap(),
+        ));
+        while let Some(task) = tasks.last_mut() {
+            let result = task.await;
+            tasks.pop();
+            result?;
         }
         Ok(())
     }

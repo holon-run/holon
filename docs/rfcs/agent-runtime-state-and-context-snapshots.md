@@ -477,6 +477,18 @@ A healthy Start preserves the current execution, including the interval
 between canonical claim and Turn creation; it requires the original active
 processing lease and canonical source/attempt proof.
 
+A queued reducer-only Control need not create an execution attempt. Protecting
+its consuming run instead requires the same-view canonical Control message,
+Dequeued queue entry, actual input assignment, active Turn and State binding,
+plus the original registered processing lease. An absent attempt alone grants
+no protection. A preallocated Turn ID is a hint until the Turn and assignment
+exist; a missing started Turn remains a consistency error.
+
+When Stop has already settled an executing input, the original run verifies
+that exact Control receipt and canonical terminal facts before completing its
+local exit responsibility. It preserves that result instead of writing a second
+terminal disposition over it, including when provider completion races Stop.
+
 Before an acknowledged claim can yield during installation, the runtime
 retains its original processing completion lease. Stop signals and joins
 these exact run/task/timer generations only after publication. Missing local
@@ -502,6 +514,10 @@ The owner retains commit and publication responsibility after a request is
 cancelled. Dropping a waiting request or reservation cannot reopen a gate after
 SQL may have committed. Shutdown and unload drain owned mutation tasks outside
 the reservation so admitted producers can complete their terminal settlements.
+An already admitted Host startup worker retains its preactivation recovery
+authority during Closing; new startup requests remain fenced. This authority
+does not permit recovery after runtime activation or prove that an OS producer
+has terminated.
 
 The host retains physical exit responsibility for temporary instances from
 creation, atomically ordered with host shutdown admission. Caller cancellation

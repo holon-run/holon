@@ -7,6 +7,11 @@ mod closure;
 mod command_task;
 mod context_capture;
 mod continuation;
+mod control;
+mod control_cancellation;
+mod control_entry;
+pub(crate) mod control_reconcile;
+pub(crate) mod control_recovery;
 pub(crate) mod decision_models;
 pub(crate) mod decision_openai;
 mod delivery;
@@ -450,6 +455,8 @@ struct RuntimeInner {
     host_bridge: Option<RuntimeHostBridge>,
     task_handles: Mutex<HashMap<String, ManagedTaskHandle>>,
     owned_task_handles: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
+    owned_task_drain: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    control_cancellations: control_cancellation::ControlCancellationRegistry,
     mutation_tasks: StdMutex<state_mutation::OwnedMutationTasks>,
     recovered_tasks: Mutex<Option<Vec<TaskRecord>>>,
     recovered_timers: Mutex<Option<Vec<TimerRecord>>>,
@@ -6083,6 +6090,7 @@ impl RuntimeHandle {
         let bootstrap = async {
             // Restore known pilot commits before legacy bootstrap force writes.
             self.reconcile_posture_observation().await?;
+            self.reconcile_loaded_control_obligations().await?;
             self.bootstrap_recovery().await?;
             scheduler_executor::SchedulerDecisionExecutor::new(&self)
                 .bootstrap_recovered()
@@ -6212,6 +6220,11 @@ impl RuntimeHandle {
             };
 
             let message = scheduled.message.clone();
+            let original_run_id = scheduled
+                .running_state
+                .current_run_id
+                .clone()
+                .context("scheduled message has no original run identity")?;
             #[cfg(test)]
             if self
                 .inner
@@ -6260,14 +6273,19 @@ impl RuntimeHandle {
 
             // Cancellation and setup failures can bypass the provider's turn timer.
             let processing_started = std::time::Instant::now();
-            let terminal_transition = match self
+            let processing_result = self
                 .process_message_with_plan_deferred(
                     scheduled.message,
                     scheduled.dispatch_plan,
                     &scheduled.scheduler_decision,
                 )
-                .await
-            {
+                .await;
+            if self.original_run_was_settled_by_control_stop(&message, &original_run_id)? {
+                // Dropping ScheduledMessage's remaining completion guard below
+                // proves physical processing ended for the original Stop lease.
+                continue;
+            }
+            let terminal_transition = match processing_result {
                 Ok(transition) => transition,
                 Err(err) => {
                     let aborted = err.downcast_ref::<CurrentRunAborted>().cloned();
@@ -6419,6 +6437,11 @@ impl RuntimeHandle {
                         )
                         .await;
                     if let Err(error) = settlement {
+                        if self
+                            .original_run_was_settled_by_control_stop(&message, &original_run_id)?
+                        {
+                            continue;
+                        }
                         if execution_settlement_conflict(&error) {
                             crate::diagnostics::record_missing_terminal_turn_detected();
                             if self.recover_scheduler_bootstrap_claims().await? > 0 {
@@ -6504,6 +6527,11 @@ impl RuntimeHandle {
                         continue;
                     }
                     Err(error) => {
+                        if self
+                            .original_run_was_settled_by_control_stop(&message, &original_run_id)?
+                        {
+                            continue;
+                        }
                         if execution_settlement_conflict(&error) {
                             crate::diagnostics::record_missing_terminal_turn_detected();
                             if self.recover_scheduler_bootstrap_claims().await? > 0 {
@@ -6517,6 +6545,44 @@ impl RuntimeHandle {
                     .await?;
             }
         }
+    }
+
+    fn original_run_was_settled_by_control_stop(
+        &self,
+        source: &MessageEnvelope,
+        run_id: &str,
+    ) -> Result<bool> {
+        // The normal running path needs no extra SQLite read. An unresolved
+        // gate may still have an immutable Stop receipt; reading it is not ACK
+        // recovery and must not reopen that gate or install historical State.
+        if self
+            .inner
+            .mutation_owner
+            .capture()
+            .ok()
+            .flatten()
+            .is_some_and(|root| root.state.current_run_id.as_deref() == Some(run_id))
+        {
+            return Ok(false);
+        }
+        let Some(lease) = self.inner.control_cancellations.run_for(run_id) else {
+            return Ok(false);
+        };
+        anyhow::ensure!(
+            lease.source_message_id() == source.id,
+            "original run source lease changed"
+        );
+        self.inner.runtime_db.committed_control_stop_for_run(
+            &crate::runtime_db::control_transition::ControlStoppedRun {
+                agent_id: &source.agent_id,
+                identity_incarnation: self.inner.identity_incarnation,
+                owner_epoch: self.inner.mutation_owner.owner_epoch(),
+                run_id,
+                runtime_lease_id: lease.lease_id(),
+                activation_id: lease.activation_id(),
+                source,
+            },
+        )
     }
 
     pub(crate) async fn record_runtime_loop_failure(&self, error: &anyhow::Error) {
@@ -7329,3 +7395,7 @@ pub(crate) mod tests;
 #[cfg(test)]
 #[path = "runtime/state_mutation_2b_tests.rs"]
 mod state_mutation_2b_tests;
+
+#[cfg(test)]
+#[path = "runtime/tests/control_stop_settlement.rs"]
+mod control_stop_settlement_tests;

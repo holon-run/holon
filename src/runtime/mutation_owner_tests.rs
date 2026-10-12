@@ -874,7 +874,7 @@ async fn unfinished_or_reconstructed_witness_cannot_clear_an_unknown_fence() {
     witness.finish_original_attempt();
     assert_eq!(
         MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, None).unwrap(),
-        EpisodeUnknownResolution::NotCommitted
+        WitnessUnknownResolution::NotCommitted
     );
     assert!(owner.capture().unwrap().is_none());
 }
@@ -899,7 +899,7 @@ async fn completed_absence_preserves_the_exact_old_root_and_generation() {
     let mut permits = vec![owner.reserve().await.unwrap()];
     assert_eq!(
         MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, None).unwrap(),
-        EpisodeUnknownResolution::NotCommitted
+        WitnessUnknownResolution::NotCommitted
     );
     let current = owner.capture().unwrap().unwrap();
     assert!(Arc::ptr_eq(&old, &current));
@@ -936,7 +936,7 @@ async fn receipt_presence_promotes_current_loader_facts_but_does_not_publish() {
             Some(prepared_facts(state(9), episodes.clone()))
         )
         .unwrap(),
-        EpisodeUnknownResolution::Known
+        WitnessUnknownResolution::Known
     );
     assert_needs_reconcile(&owner, &key);
     assert!(permits[0].ticket.is_none());
@@ -991,7 +991,7 @@ async fn witness_survives_epoch_replacement_but_old_owner_access_remains_rejecte
             Some(prepared_facts(state(4), prepared_episodes("default", 7)))
         )
         .unwrap(),
-        EpisodeUnknownResolution::Known
+        WitnessUnknownResolution::Known
     );
     let known = MutationReservation::validate_group_known(&permits).unwrap();
     let root = MutationReservation::reconcile_all(&mut permits, known)
@@ -1175,7 +1175,7 @@ async fn positive_receipt_for_retired_scope_publishes_absence_without_touching_s
         assert_eq!(
             MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, Some(facts))
                 .unwrap(),
-            EpisodeUnknownResolution::Known
+            WitnessUnknownResolution::Known
         );
         assert_needs_reconcile(&owner, &key);
         assert!(matches!(

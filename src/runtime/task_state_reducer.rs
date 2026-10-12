@@ -344,6 +344,17 @@ impl RuntimeHandle {
             })
             .transpose()?
             .flatten();
+        let _control_registration = matches!(
+            persisted_task.status,
+            TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
+        )
+        .then(|| {
+            self.inner.control_cancellations.before_active_task_sql(
+                &persisted_task,
+                self.inner.identity_incarnation,
+                self.inner.mutation_owner.owner_epoch(),
+            )
+        });
         let command = &crate::runtime_db::transitions::TaskTransitionCommand {
             agent_id,
             task: persisted_task,

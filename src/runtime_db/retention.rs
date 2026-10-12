@@ -731,6 +731,9 @@ fn collect_strong_roots(connection: &Connection) -> Result<StrongRoots> {
     collect_brief_roots(connection, &mut roots)?;
     collect_transcript_tool_roots(connection, &mut roots)?;
     collect_outbox_roots(connection, &mut roots)?;
+    for source_ref in super::control_transition::control_cancellation_source_refs_in(connection)? {
+        collect_source_ref(&source_ref, &mut roots);
+    }
     Ok(roots)
 }
 

@@ -3930,6 +3930,11 @@ CREATE INDEX IF NOT EXISTS idx_episode_memory_results_episode_scope
         name: "explicit_episode_continuity",
         sql: super::episode_snapshot::EPISODE_CONTINUITY_SCHEMA,
     },
+    Migration {
+        version: 83,
+        name: "control_command_receipts_and_cancellation_obligations",
+        sql: include_str!("control_transition/schema.sql"),
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

@@ -1620,7 +1620,7 @@ impl RuntimeHandle {
             .storage
             .append_event(&AuditEvent::legacy("timer_created", to_json_value(&timer)));
         // Once creation committed, audit failure must not strand its live timer.
-        self.spawn_timer_loop(timer.clone());
+        self.spawn_timer_loop(timer.clone()).await?;
         audit?;
         Ok(timer)
     }
@@ -1752,8 +1752,36 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    fn spawn_timer_loop(&self, timer: TimerRecord) {
+    async fn spawn_timer_loop(&self, timer: TimerRecord) -> Result<()> {
+        let _registration = self.begin_mutation().await?;
+        let Some(current) = self.inner.runtime_db.timers().latest(&timer.id)? else {
+            return Err(anyhow!("timer loop registration has no canonical Timer"));
+        };
+        anyhow::ensure!(
+            current.agent_id == timer.agent_id && current.created_at == timer.created_at,
+            "timer loop registration belongs to another generation"
+        );
+        if !self.accepts_execution_admission()
+            || current.status != TimerStatus::Active
+            || _registration.state.status == AgentStatus::Stopped
+        {
+            return Ok(());
+        }
+        if !self
+            .inner
+            .control_cancellations
+            .timer_for(&timer.id)
+            .is_empty()
+        {
+            return Ok(());
+        }
+        let timer = current;
         let runtime = self.clone();
+        let token = CancellationToken::new();
+        let control_lease = self
+            .inner
+            .control_cancellations
+            .timer(&timer, token.clone());
         let handle = tokio::spawn(async move {
             let mut timer = timer;
             loop {
@@ -1761,7 +1789,13 @@ impl RuntimeHandle {
                     break;
                 };
                 if next_fire_at > runtime.now() {
-                    runtime.inner.clock.sleep_until(next_fire_at).await;
+                    tokio::select! {
+                        _ = token.cancelled() => break,
+                        _ = runtime.inner.clock.sleep_until(next_fire_at) => {}
+                    }
+                }
+                if token.is_cancelled() {
+                    break;
                 }
                 if let Err(err) = runtime.fire_timer_record(&mut timer).await {
                     let _ = runtime.inner.storage.append_event(&AuditEvent::legacy(
@@ -1778,7 +1812,8 @@ impl RuntimeHandle {
                 }
             }
         });
-        self.track_owned_task(handle);
+        control_lease.attach(handle);
+        Ok(())
     }
 
     async fn recover_timer(&self, timer: TimerRecord) -> Result<()> {
@@ -1791,10 +1826,10 @@ impl RuntimeHandle {
             let mut overdue = timer.clone();
             self.fire_timer_record(&mut overdue).await?;
             if overdue.status == TimerStatus::Active {
-                self.spawn_timer_loop(overdue);
+                self.spawn_timer_loop(overdue).await?;
             }
         } else {
-            self.spawn_timer_loop(timer);
+            self.spawn_timer_loop(timer).await?;
         }
         Ok(())
     }
@@ -2599,6 +2634,55 @@ mod mutation_tests {
             TransitionFaultPoint::BeforeCacheUpdate,
         ))
         .await;
+    }
+
+    #[tokio::test]
+    async fn accepted_timer_blocked_on_owner_remains_active_without_spawning_after_retirement() {
+        let (_home, _workspace, runtime, _) = timer_runtime().await;
+        let owner = runtime.begin_mutation().await.unwrap();
+        let mut caller = Box::pin(runtime.schedule_timer(
+            3_600_000,
+            Some(3_600_000),
+            Some("accepted before retirement".into()),
+        ));
+        assert!(futures_util::poll!(caller.as_mut()).is_pending());
+        runtime.retire_instance_locally("runtime_unloaded").await;
+        runtime.inner.control_cancellations.cancel_local_producers();
+        drop(owner);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            runtime.join_owned_mutations(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        runtime.inner.control_cancellations.cancel_local_producers();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            runtime.inner.control_cancellations.drain_retiring(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let timer = caller.await.unwrap();
+        let saved = runtime
+            .inner
+            .runtime_db
+            .timers()
+            .latest(&timer.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.status, TimerStatus::Active);
+        assert_eq!(saved.fire_count, 0);
+        assert!(runtime
+            .inner
+            .control_cancellations
+            .timer_for(&timer.id)
+            .is_empty());
+        assert_ne!(
+            runtime.agent_state().await.unwrap().status,
+            AgentStatus::Stopped
+        );
     }
 
     #[tokio::test]

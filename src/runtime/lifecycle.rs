@@ -335,20 +335,57 @@ impl RuntimeHandle {
         self.control_admitted(action, admission).await
     }
 
-    /// A host Start may unload the stopped instance after admitting control.
-    /// Complete only that admitted posture change; cloned handles stay closed.
+    /// Trusted in-process callers freeze one new intent. Host/direct transport
+    /// callers freeze earlier, before any unload/activation handoff.
     pub(crate) async fn control_admitted(
         &self,
         action: ControlAction,
-        _admission: super::execution_admission::ExecutionLease,
+        admission: super::execution_admission::ExecutionLease,
     ) -> Result<()> {
-        let outcome = match super::scheduler_executor::SchedulerDecisionExecutor::new(self)
-            .apply_control(action.clone())
+        let (key, invocation) =
+            self.freeze_direct_control(action, AuthorityClass::RuntimeInstruction);
+        self.control_command_admitted(key, invocation, admission)
             .await
+    }
+
+    pub(crate) async fn control_command_admitted(
+        &self,
+        key: crate::runtime_db::control_transition::ControlKey,
+        invocation: crate::runtime_db::control_transition::ControlInvocation,
+        admission: super::execution_admission::ExecutionLease,
+    ) -> Result<()> {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let runtime = self.clone();
+        self.spawn_owned_mutation(async move {
+            // Accepted responsibility survives cancellation of the API receiver.
+            let _admission = admission;
+            let result = runtime.apply_frozen_control_command(key, invocation).await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .map_err(|_| anyhow!("owned Control worker ended without an outcome"))?
+    }
+
+    pub(super) async fn apply_frozen_control_command(
+        &self,
+        key: crate::runtime_db::control_transition::ControlKey,
+        invocation: crate::runtime_db::control_transition::ControlInvocation,
+    ) -> Result<()> {
+        // Historical original outcome lookup precedes current identity/posture
+        // OCC; this lookup cannot provide any historical installation delta.
+        if let Some(receipt) = self
+            .inner
+            .runtime_db
+            .control_receipt(&key, &invocation, None)?
         {
-            Ok(outcome) => outcome,
+            self.resume_original_control_cancellation(&receipt).await?;
+            return Ok(());
+        }
+        let mut mutation = match self.begin_mutation().await {
+            Ok(mutation) => mutation,
             Err(error) => {
-                if action.canonical() == ControlAction::Stop
+                if invocation.action.canonical() == ControlAction::Stop
                     && self
                         .validate_mutation_identity()
                         .is_err_and(|identity_error| {
@@ -362,168 +399,25 @@ impl RuntimeHandle {
                 return Err(error);
             }
         };
-        if let Some(occupancy_id) = outcome.occupancy_to_release.as_deref() {
-            let bridge = self.inner.host_bridge.as_ref().ok_or_else(|| {
-                anyhow!(
-                    "cannot release workspace occupancy {} without host bridge",
-                    occupancy_id
-                )
-            })?;
-            let _ = bridge.release_workspace_occupancy(occupancy_id).await?;
-            {
-                let mut guard = self.begin_mutation().await?;
-                let should_clear = guard
-                    .state
-                    .active_workspace_entry
-                    .as_ref()
-                    .and_then(|entry| entry.occupancy_id.as_deref())
-                    == Some(occupancy_id);
-                if should_clear {
-                    guard.state.active_workspace_entry = None;
-                    guard.persist_state(&self.inner.storage).await?;
-                }
-            }
+        // Another instance of this same original operation may have committed
+        // while we waited for its owner reservation.
+        if let Some(receipt) = self
+            .inner
+            .runtime_db
+            .control_receipt(&key, &invocation, None)?
+        {
+            drop(mutation);
+            self.resume_original_control_cancellation(&receipt).await?;
+            return Ok(());
         }
-        if matches!(outcome.action, ControlAction::Stop) {
-            let agent_id = self.agent_id().await?;
-            let active_tasks = self
-                .inner
-                .storage
-                .latest_active_task_records_for_agent(&agent_id, usize::MAX)?;
-            self.interrupt_active_tasks_for_lifecycle_stop(active_tasks)
-                .await?;
-
-            let (cancelled_waits, cancelled_timers, aborted_queue_entries) = {
-                let mut mutation = self.begin_mutation().await?;
-                if mutation.state.status != AgentStatus::Stopped {
-                    // A later Start wins over this older Stop cleanup window.
-                    (0, 0, 0)
-                } else {
-                    mutation.queue.clear();
-                    mutation.state.pending = 0;
-                    let event = AuditEvent::legacy(
-                        "agent_stop_cleanup_committed",
-                        serde_json::json!({
-                            "agent_id": agent_id,
-                        }),
-                    );
-                    let command = crate::runtime_db::transitions::AgentPostureTransitionCommand {
-                        agent_id: agent_id.clone(),
-                        expected_incarnation: Some(self.inner.identity_incarnation),
-                        agent_state: crate::runtime_db::transitions::AgentStateMutation {
-                            expected: Some(Box::new(mutation.last_persisted_state.clone())),
-                            record: Box::new(mutation.state.clone()),
-                        },
-                        audit_events: vec![event.clone()],
-                        fault: self.take_transition_fault(),
-                    };
-                    let mut counts = None;
-                    let commit = mutation
-                        .commit_transition(event.id, || {
-                            let cancelled_waits = self
-                                .inner
-                                .runtime_db
-                                .wait_conditions()
-                                .cancel_unresolved_for_agent(&agent_id, Utc::now())?;
-                            // The cleanup retains its existing transaction boundaries. Once
-                            // the first transaction succeeds, a later rollback proves nothing
-                            // about the complete cleanup operation.
-                            let tail = (|| {
-                                let cancelled_timers = self
-                                    .inner
-                                    .runtime_db
-                                    .timers()
-                                    .cancel_active_for_agent(&agent_id, Utc::now())?;
-                                let aborted_queue_entries = self
-                                    .inner
-                                    .runtime_db
-                                    .queue_entries()
-                                    .abort_pending_for_agent(&agent_id)?;
-                                let mut commit = self
-                                    .inner
-                                    .runtime_db
-                                    .transitions()
-                                    .commit_agent_posture(&command)?;
-                                commit.applied = true;
-                                commit.effects.agent_state = Some(command.agent_state.clone());
-                                commit.effects.timers =
-                                    self.inner.storage.latest_timer_records()?;
-                                counts = Some((
-                                    cancelled_waits,
-                                    cancelled_timers,
-                                    aborted_queue_entries,
-                                ));
-                                Ok(commit)
-                            })();
-                            tail.map_err(|error| {
-                                crate::runtime_db::persistence::mark_persistence_failure(
-                                    error,
-                                    crate::runtime_db::PersistenceCertainty::Indeterminate,
-                                    crate::runtime_db::PersistenceFailurePhase::Commit,
-                                    None,
-                                )
-                            })
-                        })
-                        .await?;
-                    drop(mutation);
-                    self.apply_transition_commit(commit).await;
-                    counts.expect("successful stop cleanup has transaction results")
-                }
-            };
-            self.inner.storage.append_event(&AuditEvent::legacy(
-                "agent_stop_state_discarded",
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "waits_cancelled": cancelled_waits,
-                    "timers_cancelled": cancelled_timers,
-                    "queue_entries_aborted": aborted_queue_entries,
-                }),
-            ))?;
-
-            // Revoke all active external triggers to prevent capability
-            // secret leakage and unexpected wake after the agent is stopped.
-            let triggers = self.latest_external_triggers().await?;
-            for trigger in triggers
-                .iter()
-                .filter(|t| t.status == ExternalTriggerStatus::Active)
-            {
-                match self
-                    .revoke_external_trigger(&trigger.external_trigger_id)
-                    .await
-                {
-                    Ok(_) => tracing::info!(
-                        external_trigger_id = %trigger.external_trigger_id,
-                        "revoked external trigger during agent stop"
-                    ),
-                    Err(err) => tracing::warn!(
-                        external_trigger_id = %trigger.external_trigger_id,
-                        error = %err,
-                        "failed to revoke external trigger during agent stop"
-                    ),
-                }
-            }
-        }
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "control_applied",
-            serde_json::json!({
-                "requested_action": outcome.requested_action,
-                "action": outcome.action,
-                "status": outcome.status,
-                "current_run_id": outcome.current_run_id,
-                "aborted_run_id": outcome.aborted_run_id,
-            }),
-        ))?;
-        if let Some(run_id) = outcome.aborted_run_id {
-            self.inner.storage.append_event(&AuditEvent::legacy(
-                "current_run_aborted",
-                serde_json::json!({
-                    "agent_id": self.agent_id().await?,
-                    "run_id": run_id,
-                    "mode": "stop",
-                    "reason": "agent_stopped",
-                }),
-            ))?;
-        }
+        let prepared = self
+            .prepare_runtime_control(&mutation, key, invocation)
+            .await?;
+        let receipt = mutation.commit_control(&prepared).await?;
+        drop(mutation);
+        tracing::debug!(agent_id = %receipt.key.agent_id, command_id = %receipt.key.command_id,
+            action = ?receipt.outcome.action, changed = receipt.outcome.changed,
+            "atomic Control original outcome published");
         self.inner.notify.notify_one();
         Ok(())
     }

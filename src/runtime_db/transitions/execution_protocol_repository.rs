@@ -17,7 +17,7 @@ use crate::{
     types::{AgentIdentityRecord, AgentRegistryStatus, AgentStatus},
 };
 
-pub(super) struct PreparedExecutionProtocolCommands {
+pub(crate) struct PreparedExecutionProtocolCommands {
     state: ExecutionProtocolState,
     initialized_partition: bool,
     results: Vec<PreparedCommandResult>,
@@ -42,7 +42,7 @@ struct PreparedCommandResult {
     references: Vec<String>,
 }
 
-pub(super) fn validate_execution_commands_tx(
+pub(crate) fn validate_execution_commands_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
     bootstrap: Option<&ExecutionProtocolState>,
@@ -265,7 +265,7 @@ pub(super) fn synchronize_work_item_revisions_tx(
     Ok(synchronized)
 }
 
-pub(super) fn persist_execution_commands_tx(
+pub(crate) fn persist_execution_commands_tx(
     tx: &Transaction<'_>,
     prepared: Option<PreparedExecutionProtocolCommands>,
 ) -> Result<()> {
@@ -290,6 +290,21 @@ pub(super) fn persist_execution_commands_tx(
         )?;
     }
     Ok(())
+}
+
+/// Returns the canonical aggregate from the same transaction after persistence.
+/// The prepared reducer state is an input, not proof of the rows SQL retained.
+pub(super) fn persist_execution_commands_with_facts_tx(
+    tx: &Transaction<'_>,
+    prepared: Option<PreparedExecutionProtocolCommands>,
+) -> Result<Option<ExecutionProtocolState>> {
+    let agent_id = prepared
+        .as_ref()
+        .map(|prepared| prepared.state.agent_id.clone());
+    persist_execution_commands_tx(tx, prepared)?;
+    agent_id
+        .map(|agent_id| load_state_tx(tx, &agent_id))
+        .transpose()
 }
 
 fn reduce(
@@ -1234,7 +1249,7 @@ pub(crate) fn load_state_unchecked_tx(
     load_state_unchecked_on(tx, agent_id)
 }
 
-pub(super) fn load_state_tx(
+pub(crate) fn load_state_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
 ) -> Result<ExecutionProtocolState> {

@@ -18,6 +18,7 @@ pub mod brief_publication_repair;
 pub mod connection;
 pub mod content_reports;
 pub(crate) mod context_inputs;
+pub(crate) mod control_transition;
 pub mod conversation;
 pub mod destructive_operations;
 pub(crate) mod episode_memory;

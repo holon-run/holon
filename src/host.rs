@@ -332,6 +332,20 @@ pub(crate) struct HostInner {
     bootstrap_handoff_lock: AsyncMutex<()>,
 }
 
+// Minted only inside the Host-owned startup worker after admission. Shutdown
+// drains that worker before releasing its lease; Closing cannot revoke it.
+struct AcceptedStartupRecovery {
+    host: std::sync::Weak<HostInner>,
+}
+
+impl AcceptedStartupRecovery {
+    fn permits_closing(&self, host: &RuntimeHost) -> bool {
+        self.host
+            .upgrade()
+            .is_some_and(|inner| Arc::ptr_eq(&inner, &host.inner))
+    }
+}
+
 const CONFIG_RELOAD_IDLE: u8 = 0;
 const CONFIG_RELOAD_APPLYING: u8 = 1;
 const CONFIG_RELOAD_COMPLETED: u8 = 2;
@@ -411,6 +425,7 @@ enum HostRuntimePhase {
 
 struct HostRuntimeRegistry {
     phase: HostRuntimePhase,
+    ever_activated: bool,
     agents: BTreeMap<String, AgentEntry>,
     // Keep exact installation targets visible until their retirement drain ends.
     unloading_mutations: BTreeMap<u64, RuntimeHandle>,
@@ -846,6 +861,7 @@ impl RuntimeHost {
                 bootstrap_ready_notify: Notify::new(),
                 runtimes: RwLock::new(HostRuntimeRegistry {
                     phase: HostRuntimePhase::Open,
+                    ever_activated: false,
                     agents: BTreeMap::new(),
                     unloading_mutations: BTreeMap::new(),
                     unloading_exits: BTreeMap::new(),
@@ -2289,6 +2305,16 @@ impl RuntimeHost {
         &self,
         reservations: &mut [MutationReservation],
     ) -> Result<()> {
+        for reservation in reservations.iter_mut() {
+            let original_runtime = self.bridge().runtime_for_mutation(reservation).await?;
+            crate::runtime::control_recovery::resolve_control_recovery(
+                &self.inner.runtime_db,
+                std::slice::from_mut(reservation),
+                self.config().recent_episode_candidates,
+                original_runtime.as_ref(),
+            )
+            .await?;
+        }
         crate::runtime::episode_recovery::resolve_episode_recovery(
             &self.inner.runtime_db,
             reservations,
@@ -2296,6 +2322,7 @@ impl RuntimeHost {
         )?;
         let known = MutationReservation::validate_group_known(reservations)?;
         let mut notifications = Vec::new();
+        let mut cancellations = Vec::new();
         for (reservation, saved) in reservations.iter().zip(&known) {
             let Some(saved) = saved else {
                 continue;
@@ -2314,12 +2341,18 @@ impl RuntimeHost {
                 if runtime.instance_incarnation() != reservation.identity_incarnation() {
                     continue;
                 }
+                if let Some(plan) = runtime.control_cancellation_for_known(reservation, saved)? {
+                    cancellations.push((runtime.clone(), plan));
+                }
                 if let Some(effects) = runtime.install_saved_mutation(reservation, saved).await? {
                     notifications.push((runtime, effects));
                 }
             }
         }
         MutationReservation::reconcile_all(reservations, known)?;
+        for (runtime, plan) in cancellations {
+            runtime.resume_saved_control_cancellation(&plan)?;
+        }
         for (runtime, effects) in notifications {
             runtime.reissue_mutation_notifications(effects).await;
         }
@@ -2534,7 +2567,7 @@ impl RuntimeHost {
                     break;
                 }
             }
-            if let Err(error) = runtime.join_owned_mutations().await {
+            if let Err(error) = runtime.join_retiring_resources().await {
                 external_error.get_or_insert(error);
                 continue;
             }
@@ -2563,7 +2596,7 @@ impl RuntimeHost {
         // Accepted Host writers may finish after the first temporary drain.
         // Keep exact targets until their final publication gate is reconciled.
         for (agent_id, runtime, _, _) in &temporary {
-            if let Err(error) = runtime.join_owned_mutations().await {
+            if let Err(error) = runtime.join_retiring_resources().await {
                 retired_temporary.retain(|retired| retired != agent_id);
                 external_error.get_or_insert(error);
             }
@@ -2590,7 +2623,7 @@ impl RuntimeHost {
         }
         let mut mutation_error = external_error;
         for runtime in runtimes {
-            if let Err(error) = runtime.join_owned_mutations().await {
+            if let Err(error) = runtime.join_retiring_resources().await {
                 tracing::warn!(error = %error, "runtime mutation drain failed during host shutdown");
                 if mutation_error.is_none() {
                     mutation_error = Some(error);
@@ -2860,10 +2893,20 @@ impl RuntimeHost {
         agent_id: &str,
         incarnation: Option<u64>,
     ) -> Result<()> {
+        self.drain_runtime_scope(agent_id, incarnation, None).await
+    }
+
+    async fn drain_runtime_scope(
+        &self,
+        agent_id: &str,
+        incarnation: Option<u64>,
+        owner_epoch: Option<u64>,
+    ) -> Result<()> {
         let (entry, draining) = {
             let mut registry = self.inner.runtimes.write().await;
             let matches = |runtime: &RuntimeHandle| {
                 incarnation.is_none_or(|incarnation| runtime.instance_incarnation() == incarnation)
+                    && owner_epoch.is_none_or(|epoch| runtime.instance_owner_epoch() == epoch)
             };
             let entry = if registry.phase == HostRuntimePhase::Open
                 && registry
@@ -2917,7 +2960,7 @@ impl RuntimeHost {
                     .await;
                 entry.task.abort();
                 let _ = entry.task.await;
-                let result = entry.runtime.join_owned_mutations().await;
+                let result = entry.runtime.join_retiring_resources().await;
                 if result.is_ok() {
                     let mut registry = host.inner.runtimes.write().await;
                     if registry.phase == HostRuntimePhase::Open {
@@ -2940,7 +2983,7 @@ impl RuntimeHost {
                         break;
                     }
                 }
-                runtime.join_owned_mutations().await?;
+                runtime.join_retiring_resources().await?;
                 let mut registry = self.inner.runtimes.write().await;
                 if registry.phase == HostRuntimePhase::Open {
                     registry.unloading_mutations.remove(&generation);
@@ -2969,14 +3012,25 @@ impl RuntimeHost {
     pub async fn recover_orphaned_queue_claims_at_startup(&self) -> Result<Vec<String>> {
         let host = self.clone();
         self.run_owned_external_mutation(async move {
-            host.recover_orphaned_queue_claims_at_startup_inner().await
+            let admission = AcceptedStartupRecovery {
+                host: Arc::downgrade(&host.inner),
+            };
+            host.recover_orphaned_queue_claims_at_startup_inner(&admission)
+                .await
         })
         .await
     }
 
-    async fn recover_orphaned_queue_claims_at_startup_inner(&self) -> Result<Vec<String>> {
+    async fn recover_orphaned_queue_claims_at_startup_inner(
+        &self,
+        admission: &AcceptedStartupRecovery,
+    ) -> Result<Vec<String>> {
+        self.reconcile_control_obligations_at_startup_inner(Some(admission))
+            .await?;
         let recovery_report = {
-            let (mut reservations, handoff) = self.reserve_startup_mutations().await?;
+            let (mut reservations, handoff) = self
+                .reserve_startup_mutations_inner(Some(admission))
+                .await?;
             // The original global transaction changes queue/turn/execution,
             // not identity or AgentState. These exact facts remain valid while
             // the owners and preactivation handoff exclude other writers.
@@ -3010,7 +3064,9 @@ impl RuntimeHost {
             }
             acknowledged.expect("startup recovery ACK must retain its report")
         };
-        let stale_waits = self.reconcile_stale_waits_at_startup().await?;
+        let stale_waits = self
+            .reconcile_stale_waits_at_startup_inner(Some(admission))
+            .await?;
         for operation in self
             .runtime_db()
             .destructive_operations()
@@ -3105,6 +3161,74 @@ impl RuntimeHost {
         Ok(recovered_queue_agent_ids)
     }
 
+    #[cfg(test)]
+    async fn reconcile_control_obligations_at_startup(&self) -> Result<usize> {
+        self.reconcile_control_obligations_at_startup_inner(None)
+            .await
+    }
+
+    async fn reconcile_control_obligations_at_startup_inner(
+        &self,
+        admission: Option<&AcceptedStartupRecovery>,
+    ) -> Result<usize> {
+        loop {
+            let scopes = self.runtime_db().pending_control_obligation_scopes()?;
+            if scopes.is_empty() {
+                return Ok(0);
+            }
+            // These may be retired original incarnations. Only their exact
+            // obligation rows change; no successor posture is installed.
+            let reservations = self.reserve_mutation_scopes(&scopes).await?;
+            let handoff = self.inner.bootstrap_handoff_lock.lock().await;
+            let registry = self.inner.runtimes.read().await;
+            anyhow::ensure!(
+                !registry.ever_activated
+                    && (registry.phase == HostRuntimePhase::Open
+                        || (registry.phase == HostRuntimePhase::Closing
+                            && admission.is_some_and(|admission| admission.permits_closing(self))))
+                    && registry.agents.is_empty()
+                    && registry.temporary_runtimes.is_empty()
+                    && registry.unloading_mutations.is_empty(),
+                "Control startup recovery requires a never-activated Host"
+            );
+            drop(registry);
+            if self.runtime_db().pending_control_obligation_scopes()? != scopes {
+                drop(handoff);
+                drop(reservations);
+                continue;
+            }
+            let mut lease = self
+                .inner
+                .runtime_db_maintenance_lock
+                .lock()
+                .expect("maintenance lease poisoned");
+            if lease.is_none() {
+                *lease = Some(crate::runtime_db::RuntimeDbLock::try_lock(
+                    self.config().runtime_db_maintenance_lock_path(),
+                )?);
+            }
+            let proof =
+                crate::runtime::control_reconcile::ControlStartupProof::for_pre_activation_host(
+                    self.runtime_db(),
+                    lease.as_ref().expect("startup lease installed"),
+                    &self.config().runtime_db_maintenance_lock_path(),
+                    &handoff,
+                )?;
+            let mut observed = 0;
+            for (agent_id, incarnation) in &scopes {
+                observed += crate::runtime::control_reconcile::reconcile_control_scope_at_startup(
+                    self.runtime_db(),
+                    agent_id,
+                    *incarnation,
+                    &proof,
+                    Utc::now(),
+                )?
+                .len();
+            }
+            return Ok(observed);
+        }
+    }
+
     fn startup_mutation_scopes(&self) -> Result<Vec<(String, u64)>> {
         self.runtime_db()
             .agent_states()
@@ -3121,14 +3245,26 @@ impl RuntimeHost {
             .collect()
     }
 
+    #[cfg(test)]
     async fn reserve_startup_mutations(
         &self,
+    ) -> Result<(Vec<MutationReservation>, tokio::sync::MutexGuard<'_, ()>)> {
+        self.reserve_startup_mutations_inner(None).await
+    }
+
+    async fn reserve_startup_mutations_inner(
+        &self,
+        admission: Option<&AcceptedStartupRecovery>,
     ) -> Result<(Vec<MutationReservation>, tokio::sync::MutexGuard<'_, ()>)> {
         loop {
             {
                 let registry = self.inner.runtimes.read().await;
                 anyhow::ensure!(
-                    registry.agents.is_empty()
+                    !registry.ever_activated
+                        && (registry.phase == HostRuntimePhase::Open
+                        || (registry.phase == HostRuntimePhase::Closing
+                            && admission.is_some_and(|admission| admission.permits_closing(self))))
+                        && registry.agents.is_empty()
                         && registry.unloading_mutations.is_empty()
                         && registry.temporary_runtimes.is_empty(),
                     "startup recovery requires no loaded, temporary, or draining runtimes before activation"
@@ -3140,7 +3276,11 @@ impl RuntimeHost {
             let handoff = self.inner.bootstrap_handoff_lock.lock().await;
             let registry = self.inner.runtimes.read().await;
             anyhow::ensure!(
-                registry.agents.is_empty()
+                !registry.ever_activated
+                        && (registry.phase == HostRuntimePhase::Open
+                        || (registry.phase == HostRuntimePhase::Closing
+                            && admission.is_some_and(|admission| admission.permits_closing(self))))
+                        && registry.agents.is_empty()
                         && registry.unloading_mutations.is_empty()
                         && registry.temporary_runtimes.is_empty(),
                 "startup recovery requires no loaded, temporary, or draining runtimes before activation"
@@ -3155,8 +3295,16 @@ impl RuntimeHost {
         }
     }
 
+    #[cfg(test)]
     async fn reconcile_stale_waits_at_startup(&self) -> Result<usize> {
-        let (mut reservations, handoff) = self.reserve_startup_mutations().await?;
+        self.reconcile_stale_waits_at_startup_inner(None).await
+    }
+
+    async fn reconcile_stale_waits_at_startup_inner(
+        &self,
+        admission: Option<&AcceptedStartupRecovery>,
+    ) -> Result<usize> {
+        let (mut reservations, handoff) = self.reserve_startup_mutations_inner(admission).await?;
         let mut facts = self.external_identity_facts(&reservations)?;
         let agent_ids = reservations
             .iter()
@@ -4189,6 +4337,10 @@ impl RuntimeHost {
         let admission = runtime
             .execution_admission_lease()
             .map_err(PublicAgentError::Runtime)?;
+        let (control_key, invocation) = runtime.freeze_direct_control(
+            action.clone(),
+            crate::types::AuthorityClass::OperatorInstruction,
+        );
         let was_stopped = matches!(
             runtime
                 .agent_state()
@@ -4198,16 +4350,34 @@ impl RuntimeHost {
             AgentStatus::Stopped
         );
         if action.is_start() && was_stopped {
-            self.unload_runtime(agent_id).await;
+            let host = self.clone();
+            let agent_id = agent_id.to_owned();
+            // Host accepts the entire handoff before retiring the old instance.
+            // Its closed runtime task admission must never be reopened.
+            return self
+                .run_owned_external_mutation(async move {
+                    host.drain_runtime_scope(
+                        &agent_id,
+                        Some(runtime.instance_incarnation()),
+                        Some(runtime.instance_owner_epoch()),
+                    )
+                    .await?;
+                    runtime
+                        .apply_host_admitted_control(control_key, invocation, admission)
+                        .await?;
+                    host.notify_runtime_recovery(&agent_id).await;
+                    host.get_public_agent(&agent_id)
+                        .await
+                        .map_err(|error| anyhow!(error))
+                })
+                .await
+                .map_err(PublicAgentError::Runtime);
         }
         runtime
-            .control_admitted(action.clone(), admission)
+            .control_command_admitted(control_key, invocation, admission)
             .await
             .map_err(PublicAgentError::Runtime)?;
         self.notify_runtime_recovery(agent_id).await;
-        if action.is_start() && was_stopped {
-            return self.get_public_agent(agent_id).await;
-        }
         Ok(runtime)
     }
 
@@ -5217,6 +5387,7 @@ impl RuntimeHost {
                     }
                     continue;
                 }
+                registry.ever_activated = true;
                 let generation = registry.next_generation;
                 let (runtime, runtime_task, phase) =
                     match self.spawn_runtime(agent_id, Some(generation)) {
@@ -5300,6 +5471,7 @@ impl RuntimeHost {
             .agent_identities()
             .create_with_relations(&identity, &relations)?;
         self.cache_agent_identity(&identity)?;
+        registry.ever_activated = true;
         let (runtime, runtime_task, phase) = match self.spawn_runtime(&agent_id, None) {
             Ok(spawned) => spawned,
             Err(error) => {
@@ -5389,7 +5561,7 @@ impl RuntimeHost {
             let _ = runtime.request_service_shutdown().await;
             runtime_task.abort();
             let _ = runtime_task.await;
-            runtime.join_owned_mutations().await?;
+            runtime.join_retiring_resources().await?;
             host.archive_temporary_runtime_identity_owned(&agent_id)
                 .await?;
             let data_dir = host.agent_data_dir(&agent_id);
@@ -8684,6 +8856,13 @@ mod tests {
         );
     }
 
+    async fn restart_fixture_host(host: RuntimeHost) -> RuntimeHost {
+        let config = host.config().as_ref().clone();
+        host.shutdown().await.unwrap();
+        drop(host);
+        RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap()
+    }
+
     fn canonical_test_host() -> (tempfile::TempDir, RuntimeHost) {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
@@ -9361,7 +9540,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_releases_stopped_execution_lane_without_starting_owner() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         let agent_id = "startup-stopped-execution-owner";
         host.create_named_agent(agent_id, None).await.unwrap();
         host.unload_runtime(agent_id).await;
@@ -9371,6 +9550,8 @@ mod tests {
         state.status = AgentStatus::Stopped;
         storage.write_agent_for_fixture(&state).unwrap();
 
+        // Startup recovery runs on a new Host before any runtime activation.
+        host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -9394,7 +9575,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_releases_deleted_execution_lane_without_reviving_identity() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         for (agent_id, status) in [
             ("startup-deleting-execution", AgentRegistryStatus::Deleting),
             ("startup-deleted-execution", AgentRegistryStatus::Deleted),
@@ -9413,6 +9594,8 @@ mod tests {
                 .agent_identities()
                 .upsert(&identity)
                 .unwrap();
+            // Startup recovery runs on a new Host before any runtime activation.
+            host = restart_fixture_host(host).await;
             host.recover_orphaned_queue_claims_at_startup()
                 .await
                 .unwrap();
@@ -18750,7 +18933,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_activates_active_task_owners_and_waits_for_bootstrap() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         let agent_id = "startup-task-owner";
         host.create_named_agent(agent_id, None).await.unwrap();
         host.unload_runtime(agent_id).await;
@@ -18772,6 +18955,8 @@ mod tests {
             .unwrap();
 
         assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        // Startup recovery runs on a new Host before any runtime activation.
+        host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -18894,7 +19079,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_converges_stopped_task_owner_without_reentry() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         let agent_id = "stopped-task-owner";
         host.create_named_agent(agent_id, None).await.unwrap();
         host.unload_runtime(agent_id).await;
@@ -18918,6 +19103,8 @@ mod tests {
             })
             .unwrap();
 
+        // Startup recovery runs on a new Host before any runtime activation.
+        host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -19112,7 +19299,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_discovers_timer_only_owner_without_wait_records() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         let agent_id = "startup-timer-no-wait";
         host.create_named_agent(agent_id, None).await.unwrap();
         host.unload_runtime(agent_id).await;
@@ -19130,6 +19317,8 @@ mod tests {
             .unwrap();
 
         assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        // Startup recovery runs on a new Host before any runtime activation.
+        host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -19146,7 +19335,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_overdue_repeating_timer_fires_once_and_keeps_cadence() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         let agent_id = "startup-timer-repeating";
         host.create_named_agent(agent_id, None).await.unwrap();
         host.unload_runtime(agent_id).await;
@@ -19165,6 +19354,8 @@ mod tests {
             .unwrap();
 
         assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        // Startup recovery runs on a new Host before any runtime activation.
+        host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -19183,7 +19374,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_keeps_terminal_timer_owner_and_unrelated_agents_unloaded() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         let terminal_agent_id = "startup-timer-terminal";
         let unrelated_agent_id = "startup-agent-no-timer";
         for agent_id in [terminal_agent_id, unrelated_agent_id] {
@@ -19213,6 +19404,8 @@ mod tests {
             ))
             .unwrap();
 
+        // Startup recovery runs on a new Host before any runtime activation.
+        host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -19231,7 +19424,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_skips_stopped_timer_only_owner() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         let agent_id = "startup-timer-stopped";
         host.create_named_agent(agent_id, None).await.unwrap();
         host.unload_runtime(agent_id).await;
@@ -19264,6 +19457,8 @@ mod tests {
         state.pending = 1;
         storage.write_agent_for_fixture(&state).unwrap();
 
+        // Startup recovery runs on a new Host before any runtime activation.
+        host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -19292,7 +19487,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_activates_timer_and_task_owner_once() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         let agent_id = "startup-timer-and-task";
         host.create_named_agent(agent_id, None).await.unwrap();
         host.unload_runtime(agent_id).await;
@@ -19325,6 +19520,8 @@ mod tests {
             .unwrap();
 
         assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        // Startup recovery runs on a new Host before any runtime activation.
+        host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -19789,6 +19986,154 @@ mod tests {
             )
             .await
             .unwrap();
+        host.shutdown().await.unwrap();
+    }
+
+    fn commit_cold_control_run_fixture(
+        host: &RuntimeHost,
+        agent_id: &str,
+        command_id: &str,
+    ) -> (
+        crate::runtime_db::control_transition::ControlKey,
+        crate::runtime_db::control_transition::ControlCancellationTarget,
+    ) {
+        use crate::runtime_db::control_transition::*;
+        let identity = host
+            .runtime_db()
+            .agent_identities()
+            .latest(agent_id)
+            .unwrap()
+            .unwrap();
+        let mut state = host
+            .runtime_db()
+            .agent_states()
+            .latest(agent_id)
+            .unwrap()
+            .unwrap_or_else(|| AgentState::new(agent_id));
+        state.status = AgentStatus::AwakeRunning;
+        state.current_run_id = Some(format!("cold-run:{command_id}"));
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&state)
+            .unwrap();
+        let key = ControlKey {
+            agent_id: agent_id.into(),
+            identity_incarnation: identity.incarnation,
+            command_id: command_id.into(),
+        };
+        let target = ControlCancellationTarget {
+            obligation_id: format!("cold-cancel:{command_id}"),
+            target_kind: ControlCancellationKind::Run,
+            target_identity: state.current_run_id.unwrap(),
+            target_generation: serde_json::json!({"activation_id":null,"source_message_id":null,"owner_epoch":1,"runtime_lease_id":null}),
+            target: serde_json::json!({"reason":"agent_stopped"}),
+        };
+        let command = prepare_control(ControlPlanInput {
+            key: key.clone(),
+            invocation: ControlInvocation {
+                action: ControlAction::Stop,
+                source: ControlSource::DirectApi,
+                authority_class: AuthorityClass::OperatorInstruction,
+            },
+            snapshot: host.runtime_db().load_control_snapshot(&key).unwrap(),
+            prepared_at: Utc::now(),
+            task_results: Vec::new(),
+            healthy_running: None,
+            protected_control_attempt: None,
+            protected_control_run_id: None,
+            cancellation_targets: vec![target.clone()],
+            audit_events: Vec::new(),
+            index_changes: Vec::new(),
+        })
+        .unwrap();
+        host.runtime_db().commit_control(&command).unwrap();
+        (key, target)
+    }
+
+    #[tokio::test]
+    async fn control_startup_recovery_uses_the_real_exclusive_lease_before_activation() {
+        use crate::runtime_db::control_transition::ControlObligationState;
+        let (_home, host) = test_host();
+        // Named-agent creation activates its runtime. Seed the configured
+        // default identity directly to model a genuinely cold restart instead.
+        let identity = host.ensure_default_agent_identity().unwrap();
+        let (key, target) = commit_cold_control_run_fixture(&host, &identity.agent_id, "cold-one");
+        let state = host
+            .runtime_db()
+            .agent_states()
+            .latest(&key.agent_id)
+            .unwrap();
+        assert_eq!(
+            host.reconcile_control_obligations_at_startup()
+                .await
+                .unwrap(),
+            1
+        );
+        let obligation = host
+            .runtime_db()
+            .control_obligation(&key, &target)
+            .unwrap()
+            .unwrap();
+        assert_eq!(obligation.state, ControlObligationState::Completed);
+        assert!(host
+            .inner
+            .runtime_db_maintenance_lock
+            .lock()
+            .unwrap()
+            .is_some());
+        assert!(!host.inner.runtimes.read().await.ever_activated);
+        assert!(host.try_get_loaded_runtime(&key.agent_id).await.is_none());
+        assert_eq!(
+            host.runtime_db()
+                .agent_states()
+                .latest(&key.agent_id)
+                .unwrap(),
+            state
+        );
+        assert_eq!(
+            host.reconcile_control_obligations_at_startup()
+                .await
+                .unwrap(),
+            0
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn control_startup_proof_cannot_be_reused_after_activation_and_unload() {
+        use crate::runtime_db::control_transition::ControlObligationState;
+        let (_home, host) = test_host();
+        host.create_named_agent("control-after-activation", None)
+            .await
+            .unwrap();
+        let runtime = host
+            .get_public_agent("control-after-activation")
+            .await
+            .unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        host.unload_runtime("control-after-activation").await;
+        assert!(host
+            .try_get_loaded_runtime("control-after-activation")
+            .await
+            .is_none());
+        let (key, target) =
+            commit_cold_control_run_fixture(&host, "control-after-activation", "cold-two");
+        let error = host
+            .reconcile_control_obligations_at_startup()
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("never-activated Host"),
+            "{error:#}"
+        );
+        assert_eq!(
+            host.runtime_db()
+                .control_obligation(&key, &target)
+                .unwrap()
+                .unwrap()
+                .state,
+            ControlObligationState::Pending
+        );
         host.shutdown().await.unwrap();
     }
 }

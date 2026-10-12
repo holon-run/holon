@@ -376,6 +376,50 @@ fn interrupted_task_result_message(
     message
 }
 
+/// Freeze all nondeterminism before the Control transaction; no cleanup/IO.
+pub(super) fn prepare_lifecycle_stop_task_result(
+    task: &TaskRecord,
+    prepared_at: chrono::DateTime<chrono::Utc>,
+) -> Result<crate::runtime_db::control_transition::ControlTaskResult> {
+    let prior_status = task_status_name(&task.status);
+    let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
+    let detail_map = detail
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("Task detail must be an object for lifecycle Stop"))?;
+    detail_map.insert("status_before_stop".into(), serde_json::json!(prior_status));
+    detail_map.insert("task_status".into(), serde_json::json!("interrupted"));
+    detail_map.insert(
+        "interrupted_reason".into(),
+        serde_json::json!("agent_stopped"),
+    );
+    detail_map.insert("interrupted_at".into(), to_json_value(&prepared_at));
+    let result_turn_id = crate::ids::turn_id();
+    detail_map
+        .entry(PARENT_TURN_ID_DETAIL)
+        .or_insert_with(|| serde_json::json!(result_turn_id));
+    let interrupted = TaskRecord {
+        status: TaskStatus::Interrupted,
+        updated_at: prepared_at,
+        parent_message_id: None,
+        detail: Some(detail),
+        ..task.clone()
+    };
+    let mut message = interrupted_task_result_message(&interrupted, "agent_stopped");
+    message.created_at = prepared_at;
+    message.turn_id = Some(result_turn_id);
+    let mut terminal = task_with_result_message(
+        &interrupted,
+        TaskStatus::Interrupted,
+        interrupted.detail.clone(),
+        &message,
+    );
+    terminal.updated_at = prepared_at;
+    Ok(crate::runtime_db::control_transition::ControlTaskResult {
+        task: terminal,
+        message,
+    })
+}
+
 impl RuntimeHandle {
     pub(super) async fn task_creation_detail(
         &self,
@@ -558,6 +602,11 @@ impl RuntimeHandle {
         let runtime = self.clone();
         let task_record = queued_task.clone();
         let task_id = queued_task.id.clone();
+        let _registration = self
+            .admit_control_task_handle_registration(&task_record)
+            .await?;
+        let control_lease = self.inner.control_cancellations.task(&task_record);
+        let control_lease_for_cleanup = control_lease.clone();
         let mut task_handles = self.inner.task_handles.lock().await;
         let handle = tokio::spawn(async move {
             let _ = runtime
@@ -570,11 +619,16 @@ impl RuntimeHandle {
                     recovered,
                 )
                 .await;
-            runtime.release_completed_task_handle(&task_id).await;
+            runtime
+                .release_completed_task_handle_exact(&task_id, control_lease_for_cleanup.lease_id())
+                .await;
         });
+        control_lease.attach(handle);
         task_handles.insert(
             queued_task.id.clone(),
-            command_task::ManagedTaskHandle::Async(handle),
+            command_task::ManagedTaskHandle::Async(
+                super::control_cancellation::SharedControlTaskHandle(control_lease),
+            ),
         );
         Ok(queued_task)
     }
@@ -620,6 +674,11 @@ impl RuntimeHandle {
             }) => *lifecycle_disposition,
             _ => AgentLifecycleDisposition::Retain,
         };
+        let _registration = self
+            .admit_control_task_handle_registration(&task_record)
+            .await?;
+        let control_lease = self.inner.control_cancellations.task(&task_record);
+        let control_lease_for_cleanup = control_lease.clone();
         let mut task_handles = self.inner.task_handles.lock().await;
         let handle = tokio::spawn(async move {
             let _ = runtime
@@ -635,11 +694,16 @@ impl RuntimeHandle {
                     task_detail,
                 )
                 .await;
-            runtime.release_completed_task_handle(&task_id).await;
+            runtime
+                .release_completed_task_handle_exact(&task_id, control_lease_for_cleanup.lease_id())
+                .await;
         });
+        control_lease.attach(handle);
         task_handles.insert(
             queued_task.id.clone(),
-            command_task::ManagedTaskHandle::Async(handle),
+            command_task::ManagedTaskHandle::Async(
+                super::control_cancellation::SharedControlTaskHandle(control_lease),
+            ),
         );
         Ok(queued_task)
     }
@@ -746,6 +810,11 @@ impl RuntimeHandle {
         let runtime = self.clone();
         let task_record = task.clone();
         let task_id = task.id.clone();
+        let _registration = self
+            .admit_control_task_handle_registration(&task_record)
+            .await?;
+        let control_lease = self.inner.control_cancellations.task(&task_record);
+        let control_lease_for_cleanup = control_lease.clone();
         let mut task_handles = self.inner.task_handles.lock().await;
         let handle = tokio::spawn(async move {
             let running_message = MessageEnvelope {
@@ -833,9 +902,20 @@ impl RuntimeHandle {
                 );
             }
 
-            runtime.release_completed_task_handle(&task_record.id).await;
+            runtime
+                .release_completed_task_handle_exact(
+                    &task_record.id,
+                    control_lease_for_cleanup.lease_id(),
+                )
+                .await;
         });
-        task_handles.insert(task_id, command_task::ManagedTaskHandle::Async(handle));
+        control_lease.attach(handle);
+        task_handles.insert(
+            task_id,
+            command_task::ManagedTaskHandle::Async(
+                super::control_cancellation::SharedControlTaskHandle(control_lease),
+            ),
+        );
         drop(task_handles);
 
         Ok(task)
@@ -1024,6 +1104,11 @@ impl RuntimeHandle {
         let runtime = self.clone();
         let task_record = task.clone();
         let task_id = task.id.clone();
+        let _registration = self
+            .admit_control_task_handle_registration(&task_record)
+            .await?;
+        let control_lease = self.inner.control_cancellations.task(&task_record);
+        let control_lease_for_cleanup = control_lease.clone();
         let mut task_handles = self.inner.task_handles.lock().await;
         let handle = tokio::spawn(async move {
             let subagent_result = runtime
@@ -1138,9 +1223,20 @@ impl RuntimeHandle {
                 );
             }
 
-            runtime.release_completed_task_handle(&task_record.id).await;
+            runtime
+                .release_completed_task_handle_exact(
+                    &task_record.id,
+                    control_lease_for_cleanup.lease_id(),
+                )
+                .await;
         });
-        task_handles.insert(task_id, command_task::ManagedTaskHandle::Async(handle));
+        control_lease.attach(handle);
+        task_handles.insert(
+            task_id,
+            command_task::ManagedTaskHandle::Async(
+                super::control_cancellation::SharedControlTaskHandle(control_lease),
+            ),
+        );
         drop(task_handles);
 
         Ok(task)
@@ -1173,6 +1269,11 @@ impl RuntimeHandle {
         let runtime = self.clone();
         let task_id = task_record.id.clone();
         let task_id_for_cleanup = task_id.clone();
+        let _registration = self
+            .admit_control_task_handle_registration(&task_record)
+            .await?;
+        let control_lease = self.inner.control_cancellations.task(&task_record);
+        let control_lease_for_cleanup = control_lease.clone();
         let mut task_handles = self.inner.task_handles.lock().await;
         let handle = tokio::spawn(async move {
             let spawned = async {
@@ -1325,7 +1426,10 @@ impl RuntimeHandle {
                     }
 
                     runtime
-                        .release_completed_task_handle(&task_id_for_cleanup)
+                        .release_completed_task_handle_exact(
+                            &task_id_for_cleanup,
+                            control_lease_for_cleanup.lease_id(),
+                        )
                         .await;
                     return;
                 }
@@ -1344,10 +1448,19 @@ impl RuntimeHandle {
                 )
                 .await;
             runtime
-                .release_completed_task_handle(&task_id_for_cleanup)
+                .release_completed_task_handle_exact(
+                    &task_id_for_cleanup,
+                    control_lease_for_cleanup.lease_id(),
+                )
                 .await;
         });
-        task_handles.insert(task_id, command_task::ManagedTaskHandle::Async(handle));
+        control_lease.attach(handle);
+        task_handles.insert(
+            task_id,
+            command_task::ManagedTaskHandle::Async(
+                super::control_cancellation::SharedControlTaskHandle(control_lease),
+            ),
+        );
         drop(task_handles);
         Ok(())
     }
@@ -2222,6 +2335,7 @@ impl RuntimeHandle {
             .task_record(task_id)
             .await?
             .ok_or_else(|| task_not_found_error(task_id))?;
+        let task = self.task_with_control_output_evidence(task)?;
         let mut snapshot = TaskStatusSnapshot::from_task_record(&task);
 
         if task.is_child_agent_task()
@@ -2304,7 +2418,19 @@ impl RuntimeHandle {
         }
     }
 
+    fn task_with_control_output_evidence(&self, task: TaskRecord) -> Result<TaskRecord> {
+        if task.agent_id != self.inner.mutation_owner.agent_id() {
+            return Ok(task);
+        }
+        super::control_reconcile::overlay_control_worktree_evidence(
+            &self.inner.runtime_db,
+            &task,
+            self.inner.identity_incarnation,
+        )
+    }
+
     async fn task_output_snapshot(&self, task: TaskRecord) -> Result<TaskOutputSnapshot> {
+        let task = self.task_with_control_output_evidence(task)?;
         let latest_message = self.latest_task_message(&task.id)?;
         let status = effective_task_output_status(&task.status, latest_message.as_ref());
         let summary = task.summary.clone();
@@ -5836,5 +5962,72 @@ fn task_status_from_message(message: &MessageEnvelope, metadata: &serde_json::Va
         "cancelled" => TaskStatus::Cancelled,
         "interrupted" => TaskStatus::Interrupted,
         _ => TaskStatus::Queued,
+    }
+}
+
+#[cfg(test)]
+mod control_task_result_tests {
+    use super::*;
+
+    fn running_task(detail: serde_json::Value) -> TaskRecord {
+        let now = Utc::now();
+        TaskRecord {
+            id: "control-task".into(),
+            agent_id: "control-agent".into(),
+            kind: TaskKind::ActorInvocation,
+            status: TaskStatus::Running,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: None,
+            work_item_id: Some("work-item".into()),
+            summary: Some("original task".into()),
+            detail: Some(detail),
+            recovery: None,
+        }
+    }
+
+    #[test]
+    fn stop_result_preserves_rejoin_generation_and_freezes_consistent_message_detail() {
+        let task = running_task(serde_json::json!({
+            "rejoin_obligation_id": "control-task", "rejoin_generation": 7,
+            "parent_turn_id": "original-turn", "custom": "preserved"
+        }));
+        let prepared_at = task.created_at + chrono::Duration::seconds(1);
+        let result = prepare_lifecycle_stop_task_result(&task, prepared_at).unwrap();
+        assert_eq!(
+            result.task.rejoin_fence().unwrap(),
+            task.rejoin_fence().unwrap()
+        );
+        assert_eq!(result.task.status, TaskStatus::Interrupted);
+        assert_eq!(result.task.updated_at, prepared_at);
+        assert_eq!(result.message.created_at, prepared_at);
+        assert_eq!(
+            result.task.parent_message_id.as_deref(),
+            Some(result.message.id.as_str())
+        );
+        assert_eq!(
+            result.message.metadata.as_ref().unwrap()["task_detail"],
+            result.task.detail.clone().unwrap()
+        );
+        assert_eq!(result.message.task_id.as_deref(), Some(task.id.as_str()));
+        assert_eq!(result.task.detail.as_ref().unwrap()["custom"], "preserved");
+        assert_eq!(task.status, TaskStatus::Running);
+    }
+
+    #[test]
+    fn legacy_missing_parent_fallback_is_present_before_message_metadata_is_frozen() {
+        let task = running_task(serde_json::json!({
+            "rejoin_obligation_id": "control-task", "rejoin_generation": 1
+        }));
+        let result = prepare_lifecycle_stop_task_result(&task, task.created_at).unwrap();
+        assert_eq!(
+            result.task.detail.as_ref().unwrap()["parent_turn_id"],
+            result.message.turn_id.as_deref().unwrap()
+        );
+        assert_eq!(
+            result.message.metadata.as_ref().unwrap()["task_detail"],
+            result.task.detail.clone().unwrap()
+        );
+        assert_eq!(result.task.rejoin_fence().unwrap().generation, 1);
     }
 }

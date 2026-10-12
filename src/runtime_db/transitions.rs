@@ -126,6 +126,15 @@ pub(crate) struct PostCommitEffects {
     pub agent_identities: Vec<crate::types::AgentIdentityRecord>,
     pub context_episodes: Vec<crate::types::ContextEpisodeRecord>,
     pub removed_context_episode_ids: Vec<String>,
+    // Touched canonical facts read back inside the committing transaction,
+    // including allocated sequences and event links. Empty is no delta, not
+    // a claim that the corresponding resident domain is complete.
+    pub messages: Vec<MessageEnvelope>,
+    pub turns: Vec<TurnRecord>,
+    pub tool_executions: Vec<ToolExecutionRecord>,
+    pub briefs: Vec<BriefRecord>,
+    pub transcript_entries: Vec<TranscriptEntry>,
+    pub execution_protocol: Option<crate::domain::execution_protocol::ExecutionProtocolState>,
     pub queued_messages: Vec<MessageEnvelope>,
     pub removed_queue_message_ids: Vec<String>,
     pub timers: Vec<crate::types::TimerRecord>,
@@ -1404,12 +1413,12 @@ impl RuntimeTransitionRepository<'_> {
                 insert_tool_evidence_tx(tx, tool_execution)?;
                 terminal_tool_execution_applied = true;
             }
-            terminal_tool_execution_applied |=
-                interrupt_deferred_tool_executions_for_terminal_turn_tx(
-                    tx,
-                    &command.agent_id,
-                    &command.turn_record,
-                )? > 0;
+            let interrupted_tools = interrupt_deferred_tool_executions_for_terminal_turn_tx(
+                tx,
+                &command.agent_id,
+                &command.turn_record,
+            )?;
+            terminal_tool_execution_applied |= !interrupted_tools.is_empty();
             inject_fault(
                 command.fault,
                 TransitionFaultPoint::AfterTerminalTurnRecordWrite,
@@ -1430,6 +1439,13 @@ impl RuntimeTransitionRepository<'_> {
                 command.fault,
                 PostCommitEffects {
                     agent_state: Some(command.agent_state.clone()),
+                    turns: vec![command.turn_record.clone()],
+                    tool_executions: command
+                        .terminal_tool_executions
+                        .iter()
+                        .cloned()
+                        .chain(interrupted_tools)
+                        .collect(),
                     ..PostCommitEffects::default()
                 },
             )
@@ -1560,7 +1576,11 @@ impl RuntimeTransitionRepository<'_> {
             if !applied {
                 return Ok(TransitionCommit::default());
             }
-            execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
+            let execution_protocol =
+                execution_protocol_repository::persist_execution_commands_with_facts_tx(
+                    tx,
+                    execution_protocol,
+                )?;
             for brief in &command.brief_evidence {
                 insert_brief_evidence_tx(tx, brief)?;
             }
@@ -1576,14 +1596,12 @@ impl RuntimeTransitionRepository<'_> {
                 PostCommitEffects {
                     agent_state: Some(command.agent_state.clone()),
                     work_items,
+                    briefs: command.brief_evidence.clone(),
+                    tool_executions: completion_tool_execution.into_iter().cloned().collect(),
+                    execution_protocol,
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
                 },
-            )?;
-            link_transition_brief_created_events_tx(
-                tx,
-                &command.brief_evidence,
-                &commit.effects.audit_events,
             )?;
             Ok(commit)
         })
@@ -1645,7 +1663,11 @@ impl RuntimeTransitionRepository<'_> {
             if !applied {
                 return Ok(TransitionCommit::default());
             }
-            execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
+            let execution_protocol =
+                execution_protocol_repository::persist_execution_commands_with_facts_tx(
+                    tx,
+                    execution_protocol,
+                )?;
             for brief in &command.brief_evidence {
                 insert_brief_evidence_tx(tx, brief)?;
             }
@@ -1660,14 +1682,11 @@ impl RuntimeTransitionRepository<'_> {
                 PostCommitEffects {
                     agent_state: command.agent_state.clone(),
                     work_items: applied.then_some(record.clone()).into_iter().collect(),
+                    briefs: command.brief_evidence.clone(),
+                    execution_protocol,
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
                 },
-            )?;
-            link_transition_brief_created_events_tx(
-                tx,
-                &command.brief_evidence,
-                &commit.effects.audit_events,
             )?;
             Ok(commit)
         })
@@ -1763,7 +1782,11 @@ impl RuntimeTransitionRepository<'_> {
             if !applied {
                 return Ok(TransitionCommit::default());
             }
-            execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
+            let execution_protocol =
+                execution_protocol_repository::persist_execution_commands_with_facts_tx(
+                    tx,
+                    execution_protocol,
+                )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
 
             finish_transition_tx(
@@ -1776,6 +1799,7 @@ impl RuntimeTransitionRepository<'_> {
                 PostCommitEffects {
                     agent_state: command.agent_state.clone(),
                     work_items,
+                    execution_protocol,
                     queued_messages: command
                         .task_result_admission
                         .iter()
@@ -2400,14 +2424,14 @@ impl RuntimeTransitionRepository<'_> {
                 insert_tool_evidence_tx(tx, tool_execution)?;
                 terminal_tool_execution_applied = true;
             }
-            if let Some(turn_record) = command.turn_record.as_ref() {
-                terminal_tool_execution_applied |=
-                    interrupt_deferred_tool_executions_for_terminal_turn_tx(
-                        tx,
-                        &command.agent_id,
-                        turn_record,
-                    )? > 0;
-            }
+            let interrupted_tools = if let Some(turn_record) = command.turn_record.as_ref() {
+                interrupt_deferred_tool_executions_for_terminal_turn_tx(
+                    tx, &command.agent_id, turn_record,
+                )?
+            } else {
+                Vec::new()
+            };
+            terminal_tool_execution_applied |= !interrupted_tools.is_empty();
             let mut applied = mutation_applied
                 || agent_state_applied
                 || execution_protocol_applied
@@ -2449,7 +2473,10 @@ impl RuntimeTransitionRepository<'_> {
             if !applied {
                 return Ok(TransitionCommit::default());
             }
-            execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
+            let execution_protocol =
+                execution_protocol_repository::persist_execution_commands_with_facts_tx(
+                    tx, execution_protocol,
+                )?;
             for entry in &command.transcript_entries {
                 append_transcript_entry_tx(tx, entry)?;
             }
@@ -2475,6 +2502,14 @@ impl RuntimeTransitionRepository<'_> {
                 command.fault,
                 PostCommitEffects {
                     agent_state: command.agent_state.clone(),
+                    messages: command.message_evidence.clone(),
+                    turns: command.turn_record.iter().cloned().collect(),
+                    tool_executions: terminal_tool_executions.iter().cloned()
+                        .chain(completion.map(|completion| completion.tool_execution.clone()))
+                        .chain(interrupted_tools).collect(),
+                    briefs: command.brief_evidence.clone(),
+                    transcript_entries: command.transcript_entries.clone(),
+                    execution_protocol,
                     work_items: wait_registration_work_items
                         .into_iter()
                         .chain(wait_work_items)
@@ -2492,11 +2527,6 @@ impl RuntimeTransitionRepository<'_> {
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
                 },
-            )?;
-            link_transition_brief_created_events_tx(
-                tx,
-                &command.brief_evidence,
-                &commit.effects.audit_events,
             )?;
             Ok(TransitionCommit {
                 delivery_receipt: delivery.as_ref().map(|decision| decision.receipt()),
@@ -2623,7 +2653,10 @@ impl RuntimeTransitionRepository<'_> {
             if !applied {
                 return Ok(TransitionCommit::default());
             }
-            execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
+            let execution_protocol =
+                execution_protocol_repository::persist_execution_commands_with_facts_tx(
+                    tx, execution_protocol,
+                )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
 
             let mut index_changes = command.index_changes.clone();
@@ -2639,6 +2672,8 @@ impl RuntimeTransitionRepository<'_> {
                     agent_state: command.agent_state.clone(),
                     agent_identities,
                     work_items,
+                    messages: command.message_evidence.clone(),
+                    execution_protocol,
                     queued_messages: command.queue_entry.as_ref()
                         .filter(|entry| entry.status == QueueEntryStatus::Queued)
                         .into_iter()
@@ -2660,6 +2695,24 @@ pub(super) fn trigger_wait_and_enqueue_tx(
     tx: &Transaction<'_>,
     message: &MessageEnvelope,
     queue_entry: &QueueEntryRecord,
+) -> Result<TriggerWaitAndEnqueueResult> {
+    trigger_wait_and_enqueue_with_audit_time_tx(tx, message, queue_entry, None)
+}
+
+pub(super) fn trigger_wait_and_enqueue_at_tx(
+    tx: &Transaction<'_>,
+    message: &MessageEnvelope,
+    queue_entry: &QueueEntryRecord,
+    audit_created_at: chrono::DateTime<Utc>,
+) -> Result<TriggerWaitAndEnqueueResult> {
+    trigger_wait_and_enqueue_with_audit_time_tx(tx, message, queue_entry, Some(audit_created_at))
+}
+
+fn trigger_wait_and_enqueue_with_audit_time_tx(
+    tx: &Transaction<'_>,
+    message: &MessageEnvelope,
+    queue_entry: &QueueEntryRecord,
+    audit_created_at: Option<chrono::DateTime<Utc>>,
 ) -> Result<TriggerWaitAndEnqueueResult> {
     if message.id != queue_entry.message_id
         || message.agent_id != queue_entry.agent_id
@@ -2771,6 +2824,9 @@ pub(super) fn trigger_wait_and_enqueue_tx(
         } else {
             format!("audit:wait-triggered:{}:{}", message.id, triggered.id)
         };
+        if let Some(created_at) = audit_created_at {
+            event.created_at = created_at;
+        }
         append_audit_event_tx(tx, Some(&message.agent_id), &event)?;
         wait_applied = wait_applied || applied;
     }
@@ -2785,6 +2841,9 @@ pub(super) fn trigger_wait_and_enqueue_tx(
             }),
         );
         event.id = format!("audit:wait-trigger-stale:{}", message.id);
+        if let Some(created_at) = audit_created_at {
+            event.created_at = created_at;
+        }
         append_audit_event_tx(tx, Some(&message.agent_id), &event)?;
     }
 
@@ -2959,6 +3018,8 @@ fn finish_transition_tx(
     }
     inject_fault(fault, TransitionFaultPoint::AfterAuditWrites)?;
     insert_runtime_index_changes_tx(tx, index_changes)?;
+    link_transition_brief_created_events_tx(tx, &effects.briefs, &committed_events)?;
+    materialize_committed_input_facts_tx(tx, agent_id, &mut effects)?;
     inject_fault(fault, TransitionFaultPoint::BeforeCommit)?;
 
     effects.audit_events = committed_events;
@@ -2969,6 +3030,109 @@ fn finish_transition_tx(
         effects,
         delivery_receipt: None,
     })
+}
+
+fn committed_input_payload_tx<T: serde::de::DeserializeOwned>(
+    tx: &Transaction<'_>,
+    table: &'static str,
+    id_column: &'static str,
+    id: &str,
+    agent_id: &str,
+) -> Result<T> {
+    let payload: String = tx
+        .query_row(
+            &format!("SELECT payload_json FROM {table} WHERE {id_column} = ?1 AND agent_id = ?2"),
+            params![id, agent_id],
+            |row| row.get(0),
+        )
+        .with_context(|| format!("reading committed {table} fact {id} for agent {agent_id}"))?;
+    serde_json::from_str(&payload).with_context(|| format!("decoding committed {table} fact {id}"))
+}
+
+fn materialize_committed_input_facts_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    effects: &mut PostCommitEffects,
+) -> Result<()> {
+    if let Some(protocol) = effects.execution_protocol.as_ref() {
+        anyhow::ensure!(
+            protocol.agent_id == agent_id,
+            "committed execution protocol does not match transition agent {agent_id}"
+        );
+    }
+    let mut seen = BTreeSet::new();
+    effects.messages = effects
+        .messages
+        .iter()
+        .filter(|record| seen.insert((record.agent_id.clone(), record.id.clone())))
+        .map(|record| {
+            committed_input_payload_tx(tx, "messages", "evidence_id", &record.id, &record.agent_id)
+        })
+        .collect::<Result<_>>()?;
+    seen.clear();
+    effects.turns = effects
+        .turns
+        .iter()
+        .filter(|record| seen.insert((record.agent_id.clone(), record.turn_id.clone())))
+        .map(|record| {
+            committed_input_payload_tx(
+                tx,
+                "turn_records",
+                "turn_id",
+                &record.turn_id,
+                &record.agent_id,
+            )
+        })
+        .collect::<Result<_>>()?;
+    seen.clear();
+    effects.tool_executions = effects
+        .tool_executions
+        .iter()
+        .filter(|record| seen.insert((record.agent_id.clone(), record.id.clone())))
+        .map(|record| {
+            committed_input_payload_tx(
+                tx,
+                "tool_executions",
+                "evidence_id",
+                &record.id,
+                &record.agent_id,
+            )
+        })
+        .collect::<Result<_>>()?;
+    seen.clear();
+    effects.briefs = effects
+        .briefs
+        .iter()
+        .filter(|record| seen.insert((record.agent_id.clone(), record.id.clone())))
+        .map(|record| {
+            committed_input_payload_tx(tx, "briefs", "evidence_id", &record.id, &record.agent_id)
+        })
+        .collect::<Result<_>>()?;
+    seen.clear();
+    effects.transcript_entries = effects
+        .transcript_entries
+        .iter()
+        .filter(|record| seen.insert((record.agent_id.clone(), record.id.clone())))
+        .map(|record| {
+            committed_input_payload_tx(
+                tx,
+                "transcript_entries",
+                "evidence_id",
+                &record.id,
+                &record.agent_id,
+            )
+        })
+        .collect::<Result<_>>()?;
+    seen.clear();
+    effects.queued_messages = effects
+        .queued_messages
+        .iter()
+        .filter(|record| seen.insert((record.agent_id.clone(), record.id.clone())))
+        .map(|record| {
+            committed_input_payload_tx(tx, "messages", "evidence_id", &record.id, &record.agent_id)
+        })
+        .collect::<Result<_>>()?;
+    Ok(())
 }
 
 fn agent_state_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<AgentState>> {
@@ -3307,9 +3471,9 @@ fn interrupt_deferred_tool_executions_for_terminal_turn_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
     turn_record: &TurnRecord,
-) -> Result<usize> {
+) -> Result<Vec<ToolExecutionRecord>> {
     let Some(terminal) = turn_record.terminal.as_ref() else {
-        return Ok(0);
+        return Ok(Vec::new());
     };
     let mut statement = tx.prepare(
         "SELECT payload_json
@@ -3331,7 +3495,7 @@ fn interrupt_deferred_tool_executions_for_terminal_turn_tx(
         .filter(|reason| !reason.trim().is_empty())
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| format!("turn_terminal_{:?}", terminal.kind).to_lowercase());
-    let mut interrupted = 0;
+    let mut interrupted = Vec::new();
     for mut record in deferred
         .into_iter()
         .filter(|record| record.status == crate::types::ToolExecutionStatus::Deferred)
@@ -3355,7 +3519,7 @@ fn interrupt_deferred_tool_executions_for_terminal_turn_tx(
             "completion_request_id": completion_request_id,
         });
         insert_tool_evidence_tx(tx, &record)?;
-        interrupted += 1;
+        interrupted.push(record);
     }
     Ok(interrupted)
 }
@@ -4091,6 +4255,10 @@ mod tests {
     fn queue_transition_indexes_new_message_evidence_once() -> Result<()> {
         let (_dir, db) = runtime_db()?;
         let now = Utc::now();
+        let mut input = message("message-index-queue");
+        input
+            .source_refs
+            .insert("origin".into(), "trusted-origin:fixed".into());
         let command = QueueTransitionCommand {
             agent_id: "agent-a".into(),
             operation: QueueOperation::Admit,
@@ -4104,7 +4272,7 @@ mod tests {
             }),
             scheduler_claim_work_item: None,
             agent_state: None,
-            message_evidence: vec![message("message-index-queue")],
+            message_evidence: vec![input],
             transcript_entries: Vec::new(),
             turn_record: None,
             audit_events: Vec::new(),
@@ -4116,12 +4284,23 @@ mod tests {
         let first = db.transitions().commit_queue(&command)?;
         assert!(first.applied);
         assert!(first.effects.notify_memory_index);
+        let stored = db
+            .messages()
+            .by_id(Some("agent-a"), "message-index-queue")?
+            .unwrap();
+        assert!(command.message_evidence[0].message_seq.is_none());
+        assert_eq!(stored.message_seq, Some(1));
+        assert_eq!(first.effects.messages, vec![stored.clone()]);
+        assert_eq!(first.effects.queued_messages, vec![stored]);
         let rows = db.runtime_index_outbox().read_after("agent-a", 0, 10)?;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].source_ref, "message:message-index-queue");
         assert_eq!(rows[0].reason.as_deref(), Some("message_written"));
 
-        assert!(!db.transitions().commit_queue(&command)?.applied);
+        let replay = db.transitions().commit_queue(&command)?;
+        assert!(!replay.applied);
+        assert!(replay.effects.messages.is_empty());
+        assert!(replay.effects.queued_messages.is_empty());
         assert_eq!(
             db.runtime_index_outbox()
                 .read_after("agent-a", 0, 10)?
@@ -4166,6 +4345,11 @@ mod tests {
                 let commit = db.transitions().commit_task(&command)?;
                 assert!(commit.applied);
                 assert!(commit.effects.notify_memory_index);
+                assert_eq!(
+                    commit.effects.messages,
+                    vec![db.messages().by_id(Some("agent-a"), &message.id)?.unwrap()]
+                );
+                assert_eq!(commit.effects.messages[0].message_seq, Some(1));
                 assert_eq!(
                     db.runtime_index_outbox()
                         .read_after("agent-a", 0, 10)?
@@ -4768,7 +4952,8 @@ mod tests {
         brief.work_item_id = Some(record.id.clone());
         let event = crate::types::brief_created_event_for(&brief)?;
 
-        db.transitions()
+        let commit = db
+            .transitions()
             .commit_work_item(&WorkItemTransitionCommand {
                 agent_id: "agent-a".into(),
                 mutation: WorkItemMutation::Insert {
@@ -4786,6 +4971,8 @@ mod tests {
             .evidence()
             .brief_by_id("agent-a", &brief.id)?
             .expect("brief evidence stored");
+        assert_eq!(commit.effects.briefs, vec![stored.clone()]);
+        assert!(brief.created_event_seq.is_none());
         let linkage = stored.created_event_seq.expect("brief linked to event");
         let events = db.audit_events().recent(Some("agent-a"), 10)?;
         let brief_created: Vec<&crate::types::AuditEvent> = events
@@ -5442,32 +5629,37 @@ mod tests {
             settled_queue.status = queue_status;
             settled_queue.updated_at = terminal.completed_at;
 
-            assert!(
-                db.transitions()
-                    .commit_queue_with_execution_protocol(
-                        &QueueTransitionCommand {
-                            agent_id: "agent-a".into(),
-                            operation: QueueOperation::Settle,
-                            mutation: QueueMutation::Upsert(settled_queue),
-                            scheduler_claim_work_item: None,
-                            agent_state: None,
-                            message_evidence: Vec::new(),
-                            transcript_entries: Vec::new(),
-                            turn_record: Some(turn),
-                            audit_events: Vec::new(),
-                            notify_scheduler: false,
-                            fault: None,
-                            brief_evidence: Vec::new(),
-                        },
-                        &ExecutionProtocolTransition::default(),
-                    )?
-                    .applied
-            );
+            let commit = db.transitions().commit_queue_with_execution_protocol(
+                &QueueTransitionCommand {
+                    agent_id: "agent-a".into(),
+                    operation: QueueOperation::Settle,
+                    mutation: QueueMutation::Upsert(settled_queue),
+                    scheduler_claim_work_item: None,
+                    agent_state: None,
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    turn_record: Some(turn),
+                    audit_events: Vec::new(),
+                    notify_scheduler: false,
+                    fault: None,
+                    brief_evidence: Vec::new(),
+                },
+                &ExecutionProtocolTransition::default(),
+            )?;
+            assert!(commit.applied);
 
             let interrupted = db
                 .evidence()
                 .tool_execution_by_id("agent-a", &deferred.id)?
                 .expect("terminal settlement must retain the tool execution");
+            assert_eq!(commit.effects.tool_executions, vec![interrupted.clone()]);
+            assert_eq!(
+                commit.effects.turns,
+                vec![db
+                    .turn_records()
+                    .by_id(Some("agent-a"), &terminal.turn_id)?
+                    .unwrap()]
+            );
             assert_eq!(interrupted.status, ToolExecutionStatus::Interrupted);
             assert_eq!(interrupted.completed_at, Some(terminal.completed_at));
             assert_eq!(interrupted.output["reason"], reason);
@@ -7309,6 +7501,225 @@ mod tests {
             event.data["reason_class"],
             serde_json::json!("destructive_operation_verify_only")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn compound_input_facts_include_actual_sequences_and_brief_linkage() -> Result<()> {
+        for fault in [
+            Some(TransitionFaultPoint::AfterCanonicalWrites),
+            Some(TransitionFaultPoint::AfterAuditWrites),
+            Some(TransitionFaultPoint::BeforeCommit),
+        ] {
+            let (_dir, db) = runtime_db()?;
+            let message = message("message-compound-facts");
+            let mut turn = TurnRecord::new("agent-a", "turn-compound-facts", 1);
+            turn.created_at = message.created_at;
+            turn.input_message_ids = vec![message.id.clone()];
+            let transcript = TranscriptEntry::new(
+                "agent-a",
+                crate::types::TranscriptEntryKind::AssistantRound,
+                Some(1),
+                Some(message.id.clone()),
+                serde_json::json!({"turn_id": turn.turn_id, "text": "result"}),
+            );
+            let mut brief = BriefRecord::new(
+                "agent-a",
+                BriefKind::Result,
+                "compound result",
+                Some(message.id.clone()),
+                None,
+            );
+            brief.turn_id = Some(turn.turn_id.clone());
+            turn.produced_brief_ids = vec![brief.id.clone()];
+            let mut command = QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(QueueEntryRecord {
+                    message_id: message.id.clone(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: message.created_at,
+                    updated_at: message.created_at,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: vec![message.clone()],
+                transcript_entries: vec![transcript.clone()],
+                turn_record: Some(turn.clone()),
+                audit_events: vec![crate::types::brief_created_event_for(&brief)?],
+                notify_scheduler: false,
+                fault,
+                brief_evidence: vec![brief.clone()],
+            };
+            db.transitions().commit_queue(&command).unwrap_err();
+            assert!(db.messages().by_id(Some("agent-a"), &message.id)?.is_none());
+            assert!(db
+                .transcript_entries()
+                .by_id(Some("agent-a"), &transcript.id)?
+                .is_none());
+            assert!(db
+                .turn_records()
+                .by_id(Some("agent-a"), &turn.turn_id)?
+                .is_none());
+            assert!(db.evidence().brief_by_id("agent-a", &brief.id)?.is_none());
+            assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
+            command.fault = None;
+            let commit = db.transitions().commit_queue(&command)?;
+            let stored_message = db.messages().by_id(Some("agent-a"), &message.id)?.unwrap();
+            let stored_transcript = db
+                .transcript_entries()
+                .by_id(Some("agent-a"), &transcript.id)?
+                .unwrap();
+            let stored_brief = db.evidence().brief_by_id("agent-a", &brief.id)?.unwrap();
+            assert_eq!(stored_message.message_seq, Some(1));
+            assert_eq!(stored_transcript.transcript_seq, Some(1));
+            assert_eq!(commit.effects.messages, vec![stored_message.clone()]);
+            assert_eq!(commit.effects.queued_messages, vec![stored_message]);
+            assert_eq!(commit.effects.transcript_entries, vec![stored_transcript]);
+            assert_eq!(
+                commit.effects.turns,
+                vec![db
+                    .turn_records()
+                    .by_id(Some("agent-a"), &turn.turn_id)?
+                    .unwrap()]
+            );
+            assert_eq!(commit.effects.briefs, vec![stored_brief.clone()]);
+            assert_eq!(
+                stored_brief.created_event_seq,
+                Some(commit.effects.audit_events[0].event_seq)
+            );
+            assert!(message.message_seq.is_none());
+            assert!(transcript.transcript_seq.is_none());
+            assert!(brief.created_event_seq.is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn committed_turn_fact_is_sql_retained_version_not_older_command() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let mut stored_turn = TurnRecord::new("agent-a", "turn-retained-fact", 1);
+        let terminal = TurnTerminalSummary {
+            kind: TurnTerminalKind::Interrupted,
+            reason: Some("newer durable result".into()),
+            no_brief_reason: Some(TurnNoBriefReason::Interrupted),
+            completed_at: stored_turn.created_at + chrono::Duration::seconds(2),
+            duration_ms: 2000,
+        };
+        stored_turn.terminal = Some(terminal.clone());
+        db.turn_records().upsert(&stored_turn)?;
+        let mut older_turn = stored_turn.clone();
+        older_turn.terminal.as_mut().unwrap().completed_at -= chrono::Duration::seconds(1);
+        older_turn.terminal.as_mut().unwrap().reason = Some("older command".into());
+        let now = Utc::now();
+        let commit = db.transitions().commit_queue(&QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Admit,
+            mutation: QueueMutation::Upsert(QueueEntryRecord {
+                message_id: "message-retained-fact".into(),
+                agent_id: "agent-a".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: now,
+                updated_at: now,
+            }),
+            scheduler_claim_work_item: None,
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: Some(older_turn),
+            audit_events: Vec::new(),
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        })?;
+        assert!(commit.applied);
+        assert_eq!(commit.effects.turns, vec![stored_turn]);
+        assert_eq!(commit.effects.turns[0].terminal, Some(terminal));
+        Ok(())
+    }
+
+    #[test]
+    fn protocol_facts_are_read_from_sql_after_persist_and_rollback_with_command() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
+        db.agent_identities().upsert(&active_agent("agent-a"))?;
+        // A real SQL trigger distinguishes readback from returning the prepared
+        // reducer value. The timestamp change preserves aggregate invariants.
+        db.connection()?.execute_batch(
+            "CREATE TRIGGER canonical_protocol_timestamp AFTER INSERT ON execution_protocol_attempts
+             BEGIN
+               UPDATE execution_protocol_attempts
+               SET payload_json = json_set(payload_json, '$.admitted_at', '2026-08-01T00:00:01Z')
+               WHERE agent_id = NEW.agent_id AND attempt_id = NEW.attempt_id;
+             END;",
+        )?;
+        let now = Utc::now();
+        let mut command = QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Admit,
+            mutation: QueueMutation::Upsert(QueueEntryRecord {
+                message_id: "message-protocol-facts".into(),
+                agent_id: "agent-a".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: now,
+                updated_at: now,
+            }),
+            scheduler_claim_work_item: None,
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: Vec::new(),
+            notify_scheduler: false,
+            fault: Some(TransitionFaultPoint::BeforeCommit),
+            brief_evidence: Vec::new(),
+        };
+        let protocol = execution_admission(
+            "message-protocol-facts",
+            "attempt-protocol-facts",
+            "work-protocol-facts",
+        );
+        db.transitions()
+            .commit_queue_with_execution_protocol(&command, &protocol)
+            .unwrap_err();
+        assert!(db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .is_none());
+        assert!(db.queue_entries().latest_all()?.is_empty());
+        let count: i64 = db.connection()?.query_row(
+            "SELECT COUNT(*) FROM execution_protocol_command_results WHERE agent_id = 'agent-a'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 0);
+        command.fault = None;
+        let commit = db
+            .transitions()
+            .commit_queue_with_execution_protocol(&command, &protocol)?;
+        let stored = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .unwrap();
+        assert_eq!(commit.effects.execution_protocol.as_ref(), Some(&stored));
+        assert_eq!(
+            stored.attempts["attempt-protocol-facts"].admitted_at,
+            "2026-08-01T00:00:01Z"
+        );
+        let ExecutionProtocolCommand::Admit(original) = &protocol.commands[0] else {
+            unreachable!()
+        };
+        assert_eq!(original.attempt.admitted_at, "2026-08-01T00:00:00Z");
+        let replay = db
+            .transitions()
+            .commit_queue_with_execution_protocol(&command, &protocol)?;
+        assert!(!replay.applied);
+        assert!(replay.effects.execution_protocol.is_none());
         Ok(())
     }
 }

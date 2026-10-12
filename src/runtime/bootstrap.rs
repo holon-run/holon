@@ -715,6 +715,11 @@ impl RuntimeHandle {
                 (owner, reservation)
             }
         };
+        super::control_recovery::resolve_unloaded_control_recovery(
+            &runtime_db,
+            std::slice::from_mut(&mut bootstrap_reservation),
+            context_config.recent_episode_candidates,
+        )?;
         super::episode_recovery::resolve_episode_recovery(
             &runtime_db,
             std::slice::from_mut(&mut bootstrap_reservation),
@@ -820,6 +825,9 @@ impl RuntimeHandle {
                 host_bridge,
                 task_handles: Mutex::new(HashMap::new()),
                 owned_task_handles: StdMutex::new(Vec::new()),
+                owned_task_drain: Mutex::new(Vec::new()),
+                control_cancellations:
+                    super::control_cancellation::ControlCancellationRegistry::default(),
                 mutation_tasks: StdMutex::new(super::state_mutation::OwnedMutationTasks::default()),
                 recovered_tasks: Mutex::new(Some(active_tasks)),
                 recovered_timers: Mutex::new(Some(active_timers)),

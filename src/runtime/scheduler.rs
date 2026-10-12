@@ -1591,6 +1591,7 @@ pub(crate) fn apply_message_wake_projection(state: &mut AgentState) -> bool {
     false
 }
 
+#[cfg(test)]
 pub(crate) fn apply_start_projection(state: &mut AgentState) {
     state.status = AgentStatus::AwakeIdle;
     state.current_run_id = None;

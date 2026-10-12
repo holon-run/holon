@@ -4655,7 +4655,10 @@ fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord
     Ok(())
 }
 
-fn upsert_external_trigger_tx(tx: &Transaction<'_>, record: &ExternalTriggerRecord) -> Result<()> {
+pub(crate) fn upsert_external_trigger_tx(
+    tx: &Transaction<'_>,
+    record: &ExternalTriggerRecord,
+) -> Result<()> {
     if record.status == ExternalTriggerStatus::Active {
         super::reclamation::ensure_work_admission_tx(tx, &record.target_agent_id)?;
     }
@@ -5813,7 +5816,7 @@ fn timer_tx(tx: &Transaction<'_>, timer_id: &str) -> Result<Option<TimerRecord>>
     .transpose()
 }
 
-fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Result<()> {
+pub(crate) fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Result<()> {
     if record.status == TimerStatus::Active {
         super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
     }

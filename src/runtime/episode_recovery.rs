@@ -54,7 +54,10 @@ fn resolve_single_episode_recovery(
         key,
         invocation,
         command_digest,
-    } = witness.family();
+    } = witness.family()
+    else {
+        return Ok(false);
+    };
     ensure!(
         witness.operation_id() == recovery.key.operation_id
             && witness.owner()

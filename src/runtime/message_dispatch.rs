@@ -358,7 +358,7 @@ impl RuntimeHandle {
                     MessageBody::Text { text } if text == "stop" => ControlAction::Stop,
                     _ => return Err(anyhow!("unknown control action")),
                 };
-                self.control(action).await?;
+                self.control_message(&message, action).await?;
                 reducer_only_reason = Some("reducer_only/control");
             }
             MessageKind::BriefAck | MessageKind::BriefResult => {

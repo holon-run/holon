@@ -10,7 +10,7 @@ use arc_swap::ArcSwapOption;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 use super::{
-    mutation_witness::{MutationWitness, MutationWitnessFamily},
+    mutation_witness::{MutationWitness, MutationWitnessKind},
     resident_state::ResidentEpisodes,
 };
 
@@ -136,7 +136,7 @@ impl RecoveryRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EpisodeUnknownResolution {
+pub(crate) enum WitnessUnknownResolution {
     Known,
     NotCommitted,
 }
@@ -306,6 +306,10 @@ pub(crate) struct MutationOwner {
 }
 
 impl MutationOwner {
+    pub(crate) fn owner_epoch(&self) -> u64 {
+        self.epoch
+    }
+
     // A standalone runtime owns its own slot; it does not coordinate independent
     // handles opened against the same database without a Host.
     pub(crate) fn standalone(agent_id: &str, incarnation: u64) -> Self {
@@ -603,8 +607,8 @@ impl MutationReservation {
         if let Some(witness) = &witness {
             if reservations.len() != 1
                 || !matches!(
-                    witness.family(),
-                    MutationWitnessFamily::EpisodeMemory { .. }
+                    witness.kind(),
+                    MutationWitnessKind::EpisodeMemory | MutationWitnessKind::Control
                 )
                 || witness.operation_id() != operation_id
                 || witness.owner()
@@ -706,7 +710,38 @@ impl MutationReservation {
         key: &RecoveryKey,
         witness: &MutationWitness,
         committed: Option<KnownCommit>,
-    ) -> Result<EpisodeUnknownResolution, MutationOwnerError> {
+    ) -> Result<WitnessUnknownResolution, MutationOwnerError> {
+        Self::resolve_witness_unknown(
+            reservations,
+            key,
+            witness,
+            MutationWitnessKind::EpisodeMemory,
+            committed,
+        )
+    }
+
+    pub(crate) fn resolve_control_unknown(
+        reservations: &mut [Self],
+        key: &RecoveryKey,
+        witness: &MutationWitness,
+        committed: Option<KnownCommit>,
+    ) -> Result<WitnessUnknownResolution, MutationOwnerError> {
+        Self::resolve_witness_unknown(
+            reservations,
+            key,
+            witness,
+            MutationWitnessKind::Control,
+            committed,
+        )
+    }
+
+    fn resolve_witness_unknown(
+        reservations: &mut [Self],
+        key: &RecoveryKey,
+        witness: &MutationWitness,
+        expected_family: MutationWitnessKind,
+        committed: Option<KnownCommit>,
+    ) -> Result<WitnessUnknownResolution, MutationOwnerError> {
         Self::validate_order(reservations)?;
         let mut publications = reservations
             .iter()
@@ -727,10 +762,7 @@ impl MutationReservation {
             .as_ref()
             .ok_or(MutationOwnerError::TicketMismatch)?;
         if &recovery.key != key
-            || !matches!(
-                witness.family(),
-                MutationWitnessFamily::EpisodeMemory { .. }
-            )
+            || witness.kind() != expected_family
             || recovery.group.members.len() != 1
             || recovery.known.is_some()
             || recovery
@@ -755,7 +787,7 @@ impl MutationReservation {
                 let recovery = publications[0].recovery.as_mut().expect("checked recovery");
                 recovery.set_known(known);
                 recovery.phase = RecoveryPhase::NeedsReconcile;
-                Ok(EpisodeUnknownResolution::Known)
+                Ok(WitnessUnknownResolution::Known)
             }
             // Receipt presence can outlive the addressed incarnation. The
             // loader must return only current identity facts, never successor
@@ -766,14 +798,14 @@ impl MutationReservation {
                 let recovery = publications[0].recovery.as_mut().expect("checked recovery");
                 recovery.set_known(known);
                 recovery.phase = RecoveryPhase::NeedsReconcile;
-                Ok(EpisodeUnknownResolution::Known)
+                Ok(WitnessUnknownResolution::Known)
             }
             Some(_) => Err(MutationOwnerError::TicketMismatch),
             None => {
                 publications[0].recovery = None;
                 drop(publications);
                 reservations[0].ticket = None;
-                Ok(EpisodeUnknownResolution::NotCommitted)
+                Ok(WitnessUnknownResolution::NotCommitted)
             }
         }
     }
