@@ -747,8 +747,9 @@ impl RuntimeHandle {
         let runtime = Self {
             inner: Arc::new(RuntimeInner {
                 identity_incarnation,
-                mutation_owner,
+                mutation_owner: mutation_owner.clone(),
                 agent: Mutex::new(RuntimeAgent {
+                    mutation_owner,
                     last_persisted_state: state.clone(),
                     state,
                     queue,

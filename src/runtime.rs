@@ -2873,6 +2873,7 @@ struct BuiltinWebSearchSelection {
 
 #[derive(Debug)]
 struct RuntimeAgent {
+    mutation_owner: mutation_owner::MutationOwner,
     state: AgentState,
     last_persisted_state: AgentState,
     queue: RuntimeQueue,
@@ -2882,6 +2883,14 @@ struct RuntimeAgent {
 impl RuntimeAgent {
     fn persist_state(&mut self, storage: &AppStorage) -> Result<()> {
         let started = std::time::Instant::now();
+        // Fence legacy force writes during pilot recovery. This does not
+        // reserve other legacy writers. The pilot holds this same agent lock
+        // before closing its gate; never acquire a reservation under this lock.
+        if let Err(error) = self.mutation_owner.capture() {
+            self.state = self.last_persisted_state.clone();
+            crate::diagnostics::record_storage_persist_state(started.elapsed());
+            return Err(error.into());
+        }
         // persist_state bypasses OCC (uses upsert, not expected-snapshot
         // validation). This is intentional for control-plane operations
         // (Start/Stop/shutdown) that need to force-write agent state.
@@ -6009,6 +6018,8 @@ impl RuntimeHandle {
             bridge.wait_for_bootstrap_ready().await?;
         }
         let bootstrap = async {
+            // Restore known pilot commits before legacy bootstrap force writes.
+            self.reconcile_posture_observation().await?;
             self.bootstrap_recovery().await?;
             scheduler_executor::SchedulerDecisionExecutor::new(&self)
                 .bootstrap_recovered()

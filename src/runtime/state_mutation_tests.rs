@@ -313,3 +313,106 @@ async fn cancelled_drainer_keeps_pending_handles_for_the_next_drainer() {
     release.send(()).unwrap();
     next.await.unwrap();
 }
+
+#[tokio::test]
+async fn legacy_shutdown_cannot_overwrite_a_committed_unpublished_posture() {
+    let (runtime, _data, _workspace) = stale_runtime().await;
+    runtime.inject_next_transition_fault(TransitionFaultPoint::BeforeCacheUpdate);
+    SchedulerDecisionExecutor::new(&runtime)
+        .reconcile_stale_run_projection(StaleRunProjectionBoundary::RunLoopPoll)
+        .await
+        .unwrap_err();
+    let committed = runtime
+        .inner
+        .runtime_db
+        .agent_states()
+        .latest("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(committed.status, AgentStatus::AwakeIdle);
+    assert!(runtime.request_service_shutdown().await.is_err());
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .agent_states()
+            .latest("default")
+            .unwrap()
+            .unwrap(),
+        committed
+    );
+    assert!(matches!(
+        runtime.inner.mutation_owner.capture(),
+        Err(MutationOwnerError::NeedsReconcile(_))
+    ));
+    runtime.reconcile_posture_observation().await.unwrap();
+    assert_eq!(runtime.inner.agent.lock().await.state, committed);
+}
+
+#[tokio::test]
+async fn legacy_force_write_cannot_bypass_an_unknown_posture_operation() {
+    let (runtime, _data, _workspace) = stale_runtime().await;
+    {
+        let mut reservation = runtime.inner.mutation_owner.reserve().await.unwrap();
+        reservation
+            .begin("unknown-before-legacy-force-write".into())
+            .unwrap();
+    }
+    let before = runtime
+        .inner
+        .runtime_db
+        .agent_states()
+        .latest("default")
+        .unwrap()
+        .unwrap();
+    {
+        let mut agent = runtime.inner.agent.lock().await;
+        agent.state.status = AgentStatus::Stopped;
+        agent.state.pending = 42;
+        let error = agent.persist_state(&runtime.inner.storage).unwrap_err();
+        assert!(error.downcast_ref::<MutationOwnerError>().is_some());
+        assert_eq!(agent.state, agent.last_persisted_state);
+    }
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .agent_states()
+            .latest("default")
+            .unwrap()
+            .unwrap(),
+        before
+    );
+    assert!(matches!(
+        runtime.inner.mutation_owner.capture(),
+        Err(MutationOwnerError::NeedsReconcile(_))
+    ));
+}
+
+#[tokio::test]
+async fn bootstrap_restores_known_posture_before_legacy_force_writes() {
+    let (runtime, _data, _workspace) = stale_runtime().await;
+    runtime.inject_next_transition_fault(TransitionFaultPoint::BeforeCacheUpdate);
+    SchedulerDecisionExecutor::new(&runtime)
+        .reconcile_stale_run_projection(StaleRunProjectionBoundary::RunLoopPoll)
+        .await
+        .unwrap_err();
+    runtime
+        .inner
+        .shutdown_requested
+        .store(true, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(5), runtime.clone().run())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(runtime.inner.mutation_owner.capture().unwrap().is_some());
+    let persisted = runtime
+        .inner
+        .runtime_db
+        .agent_states()
+        .latest("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.status, AgentStatus::AwakeIdle);
+    assert_eq!(runtime.inner.agent.lock().await.state, persisted);
+}
