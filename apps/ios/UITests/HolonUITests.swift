@@ -1357,7 +1357,19 @@ final class HolonUITests: XCTestCase {
         let process = app.buttons.matching(NSPredicate(
             format: "identifier BEGINSWITH %@", "activities." + turn
         )).firstMatch
-        reveal(process, in: app, fullyVisible: true)
+        func revealResultProcess() {
+            // A previous scenario or cold launch can restore a newer window.
+            // Scrolling alone cannot mount the older task-result turn.
+            for _ in 0..<40 {
+                if process.exists { break }
+                let older = app.buttons["conversation.older"]
+                guard older.exists else { break }
+                reveal(older, in: app, fullyVisible: true)
+                older.tap()
+            }
+            reveal(process, in: app, fullyVisible: true)
+        }
+        revealResultProcess()
         // The preceding visible brief replaces its placeholder asynchronously.
         // Wait for real content before locating the disclosure's tap position.
         let read = app.staticTexts.containing(NSPredicate(
@@ -1389,7 +1401,7 @@ final class HolonUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.terminate(); app.launch()
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
-        reveal(process, in: app, fullyVisible: true)
+        revealResultProcess()
         XCTAssertTrue(process.isHittable)
         XCTAssertFalse(app.buttons["taskResult.source." + message].exists, "Cold launch folds completed process again")
     }
