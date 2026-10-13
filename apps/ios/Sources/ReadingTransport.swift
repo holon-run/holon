@@ -183,10 +183,7 @@ actor ReadingClientTransport: ReadingTransport {
                   let timestamp = input["created_at"]?.readingString ?? startedAt,
                   let date = metadataDate(timestamp),
                   let preview = input["preview"]?.readingString else { return }
-            var text = preview
-            if let envelope = try? JSONDecoder().decode(JSONValue.self, from: Data(preview.utf8)),
-               envelope["type"]?.readingString == "text",
-               let value = envelope["text"]?.readingString { text = value }
+            let text = OperatorInputPresentation.text(preview)
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             candidates.append((date, candidates.count, String(text.prefix(240))))
         }

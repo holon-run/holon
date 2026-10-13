@@ -35,6 +35,45 @@ struct ReadingOperatorPreview: Equatable, Sendable {
     let createdAt: Date
 }
 
+enum OperatorInputPresentation {
+    static func text(_ preview: String) -> String {
+        if let envelope = try? JSONDecoder().decode(JSONValue.self, from: Data(preview.utf8)),
+           envelope["type"]?.readingString == "text",
+           let text = envelope["text"]?.readingString { return text }
+
+        let prefix = #"{"type":"text","text":""#
+        guard preview.hasPrefix(prefix) else { return preview }
+        let encoded = preview.dropFirst(prefix.count)
+        // A byte cut can leave a closing quote, an escape, or half a surrogate pair.
+        for trim in 0...min(11, encoded.count) {
+            if trim > 0, !isIncompleteTail(encoded.suffix(trim)) { continue }
+            let candidate = "\"" + encoded.dropLast(trim) + "\""
+            if let text = try? JSONDecoder().decode(String.self, from: Data(candidate.utf8)) {
+                return text + "…"
+            }
+        }
+        return preview
+    }
+
+    private static func isIncompleteTail(_ tail: Substring) -> Bool {
+        if tail == "\"" || tail == "\\" { return true }
+        guard tail.hasPrefix("\\u") else { return false }
+        let units = tail.dropFirst(2)
+        if units.count < 4 { return isHex(units) }
+        guard let high = UInt16(units.prefix(4), radix: 16),
+              (0xD800...0xDBFF).contains(high) else { return false }
+        let rest = units.dropFirst(4)
+        if rest.isEmpty || rest == "\\" { return true }
+        guard rest.hasPrefix("\\u") else { return false }
+        let low = rest.dropFirst(2)
+        return low.count < 4 && isHex(low)
+    }
+
+    private static func isHex(_ text: Substring) -> Bool {
+        text.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }
+    }
+}
+
 enum AgentListFilter: String, CaseIterable { case all, reply, newResults, active }
 
 enum AgentSummaryPresentation {

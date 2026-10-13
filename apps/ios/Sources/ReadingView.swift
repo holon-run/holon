@@ -639,12 +639,7 @@ enum ReadingPresentation {
     }
     /// Extract the text envelope without translating or rewriting agent content.
     static func operatorText(_ input: JSONValue) -> String {
-        let preview = input["preview"].viewString ?? ""
-        guard let data = preview.data(using: .utf8),
-              let envelope = try? JSONDecoder().decode(JSONValue.self, from: data),
-              envelope["type"].viewString == "text",
-              let text = envelope["text"].viewString else { return preview }
-        return text
+        OperatorInputPresentation.text(input["preview"].viewString ?? "")
     }
 }
 

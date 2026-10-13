@@ -48,13 +48,43 @@ final class ReadingPresentationTests: XCTestCase {
         XCTAssertEqual(ReadingPresentation.operatorText(input), "Please inspect the report\n保持原文")
     }
 
-    func testPlainTruncatedAndFuturePreviewRemainVerbatim() {
+    func testPlainMalformedAndFuturePreviewRemainVerbatim() {
         for preview in [
             "plain <script>content</script>",
-            #"{"type":"text","text":"truncated"#,
+            #"{"type":"text","text":"invalid\q"#,
+            #"{"type":"text","text":"invalid\u4G"#,
+            #"{"type":"text","text":"invalid\uDE00"#,
+            #"{"type":"text","text":"closed",unexpected"#,
+            #"{"unknown":"shape""#,
             #"{"type":"future","text":"Do not reinterpret"}"#
         ] {
             XCTAssertEqual(ReadingPresentation.operatorText(.object(["preview": .string(preview)])), preview)
         }
+    }
+
+    func testLongTruncatedTextEnvelopeShowsReadablePrefix() throws {
+        let text = "First line\n\nQuoted \"value\" and a path\\name. 保持原文🙂 "
+            + String(repeating: "More detail. ", count: 300)
+        let encoded = String(decoding: try JSONEncoder().encode(text), as: UTF8.self)
+        let preview = String((#"{"type":"text","text":"# + encoded + "}").prefix(2_048))
+        let shown = ReadingPresentation.operatorText(.object(["preview": .string(preview)]))
+        XCTAssertTrue(shown.hasPrefix("First line\n\nQuoted \"value\" and a path\\name. 保持原文🙂 "))
+        XCTAssertTrue(shown.hasSuffix("…"))
+        XCTAssertFalse(shown.contains(#"{"type":"text""#))
+    }
+
+    func testTruncatedTextEnvelopeDropsOnlyIncompleteEscapeTail() {
+        for tail in ["", "\\", "\\u", "\\u4", "\\u4F", "\\u4F6",
+                     "\\uD83D", "\\uD83D\\", "\\uD83D\\u", "\\uD83D\\uDE0", "\""] {
+            let preview = #"{"type":"text","text":"Readable "# + tail
+            XCTAssertEqual(ReadingPresentation.operatorText(.object(["preview": .string(preview)])),
+                           "Readable …", "tail: \(tail)")
+        }
+        XCTAssertEqual(ReadingPresentation.operatorText(.object([
+            "preview": .string(#"{"type":"text","text":"Readable \u4F60"#)
+        ])), "Readable 你…")
+        XCTAssertEqual(ReadingPresentation.operatorText(.object([
+            "preview": .string(#"{"type":"text","text":"Readable \uD83D\uDE00"#)
+        ])), "Readable 😀…")
     }
 }

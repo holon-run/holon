@@ -127,6 +127,18 @@ final class ReadingMetadataTests: XCTestCase {
         XCTAssertEqual(ReadingClientTransport.operatorPreview(raw), "new")
     }
 
+    func testRosterOperatorPreviewDecodesTruncatedEnvelopeBeforeBounding() {
+        let preview = #"{"type":"text","text":"Long input\n保持原文 "# + String(repeating: "detail ", count: 400)
+        let raw: JSONValue = .object(["pending_inputs": .array([.object([
+            "message_id": .string("long-input"), "presentation_class": .string("operator"),
+            "created_at": .string("2026-01-03T00:00:00Z"), "preview": .string(preview)
+        ])])])
+        let shown = ReadingClientTransport.operatorPreview(raw)
+        XCTAssertTrue(shown?.hasPrefix("Long input\n保持原文 ") == true)
+        XCTAssertEqual(shown?.count, 240)
+        XCTAssertFalse(shown?.contains(#"{"type":"text""#) == true)
+    }
+
     func testMalformedReadMetadataCannotClaimRead() throws {
         for changes: [String: JSONValue] in [
             ["unread_count": .integer(-1)],
