@@ -17,6 +17,49 @@ reset when a pairing destination changes, and review after restoring a session
 with withdrawn consent (`testLoginConsentRestorationAndWithdrawal`).
 Content-report tests open the long-press menu and assert no permanent row button.
 
+### Default offline-reading regressions
+
+`testOfflineReadingCacheColdLaunchAndRetry` and
+`testOfflineReadingCacheSignOutBoundary` are ordinary default cases, not an opt-in
+SDK probe. To run just these cases on a fresh, owned simulator:
+
+```sh
+IOS_UI_CASES=testOfflineReadingCacheColdLaunchAndRetry,testOfflineReadingCacheSignOutBoundary \
+make ios-ui-test
+```
+
+The first case uses shipped pairing/HTTP permission/data-sharing consent (or
+restores a session established by those controls earlier in the same sweep).
+The fixture prepares 25 real completed history turns only when the history or
+offline-reading case needs them. XCUITest opens an older native turn window,
+waits for its actual brief body and records the historical top-turn position.
+The body oracle comes from that real fixture brief; it never populates the app's
+storage. After terminating the app, the runner disables only its isolated node
+proxy, then cold-launches the app and checks cached Agent/brief/position,
+offline chrome, read-only state, no composer, and no uncached-brief load buttons.
+It restores the proxy and presses the shipped conversation retry control,
+requiring the authenticated online composer to return without login.
+
+The second case signs out through connection management and checks that offline
+and subsequently online cold launches cannot expose the old cached reader.
+`testNetworkManagementWorkflow` additionally checks that attempting another
+unreachable profile, and cold launch after deleting the active profile, do not
+expose the previous Agent, reading chrome, body marker or composer. These are UI
+display-boundary regressions, not inspection of private cache files.
+Historical-window positioning is covered here; fetching additional server
+history pages beyond the bounded snapshot is not. Tests do not seed cache files,
+fake a confirmed identity, modify the real daemon, disable host networking, or
+pass fixture controls to the app.
+
+The proxy's fixture-only `/fixture/node-availability` POST accepts a strict
+`{"available":true|false}` body with its runner-only bearer token. Unavailable
+requests return HTTP 503 without reaching the isolated daemon, and established
+connections (including quiet SSE) are disconnected. The control endpoint remains
+reachable for recovery and preserves the existing lost-response/share protocol.
+Real HTTP/SSE, authorization, restoration and default-case/export contracts are
+verified by `python3 scripts/test-ios-build-tools.py`, without starting Xcode.
+Python or Swift syntax checks are not evidence the XCUITest cases passed.
+
 ### Content-report acceptance
 
 After rebasing onto the real content-report API, run on the isolated simulator:
@@ -56,6 +99,10 @@ not the forwarding contract. None are passed to the application environment.
 | `TEST_RUNNER_HOLON_UI_TASK_MARKER` | Literal text in real task output |
 | `TEST_RUNNER_HOLON_UI_FILE_REFERENCE` | Resolvable fixture file reference |
 | `TEST_RUNNER_HOLON_UI_FILE_MARKER` | Literal text in that file's native preview |
+| `TEST_RUNNER_HOLON_UI_NODE_CONTROL_URL` | Loopback fixture proxy `/fixture/node-availability` endpoint; runner only |
+| `TEST_RUNNER_HOLON_UI_NODE_CONTROL_TOKEN` | Fixture control secret; runner only, never app launch arguments/environment or logs |
+| `TEST_RUNNER_HOLON_UI_HISTORY_OLDER_TOP` | Real top turn ID of the older bounded window for history/offline reading |
+| `TEST_RUNNER_HOLON_UI_OFFLINE_BODY_MARKER` | Literal body text from the real historical brief used by the offline case |
 
 Missing authenticated fixture inputs fail the test; they never skip it. The
 fixture must accept the explicit message and return a received outbox receipt.

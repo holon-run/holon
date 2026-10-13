@@ -77,6 +77,7 @@
 "reading.brief.loading" = "Loading brief…";
 "reading.brief.failed" = "Brief unavailable";
 "reading.brief.load" = "Load";
+"reading.brief.uncachedOffline" = "Brief not cached · reconnect to load";
 "reading.activities" = "Turn activity";
 "reading.linkUnavailable" = "This link cannot be opened here. Relative files require a server-provided file location.";
 "reading.selectText" = "Select source text";
@@ -121,7 +122,13 @@
 "reading.status.disconnected" = "Not connected";
 "reading.status.syncing" = "Syncing…";
 "reading.status.live" = "Live";
-"reading.status.offline" = "Offline · cached content is read-only";
+"reading.status.offline" = "Node unavailable · read-only";
+"reading.cache.offline" = "Cached content · offline";
+"reading.cache.refreshing" = "Cached content · refreshing…";
+"reading.cache.saved" = "Showing cached content";
+"reading.cache.noAgents" = "No agents cached for this connection. Reconnect to load them.";
+"reading.cache.noConversation" = "This conversation is not cached. Reconnect to load it.";
+"reading.cache.readOnly" = "Reconnect to send messages or use controls.";
 "reading.status.permissionDenied" = "Permission denied";
 "reading.status.sessionExpired" = "Session expired · sign in again";
 "reading.status.incompatible" = "Unsupported conversation protocol";

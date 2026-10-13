@@ -124,3 +124,58 @@ struct ReadingPartition: Hashable, Codable, Sendable {
         self.visibility = visibility
     }
 }
+
+/// Keep the server's live cursor authoritative while retaining a bounded history window.
+enum ReadingSnapshotWindow {
+    static let maximumTurns = 180
+    static let maximumBytes = 262_144
+
+    static func merging(_ live: HolonConversationSnapshot,
+                        history: HolonConversationSnapshot?) throws -> HolonConversationSnapshot {
+        guard let history, history.eventLogEpoch == live.eventLogEpoch else { return live }
+        guard case .array(let liveTurns) = live.raw["turns"],
+              case .array(let cachedTurns) = history.raw["turns"] else {
+            throw HolonConversationError.malformedProtocol
+        }
+        let liveHistory = liveTurns.filter { $0["execution"]?["kind"] != .string("active") }
+        let cachedHistory = cachedTurns.filter { $0["execution"]?["kind"] != .string("active") }
+        let liveIDs = Set(liveHistory.compactMap { $0["turn_id"]?.readingString })
+        let liveStart = liveHistory.compactMap { $0["key"]?["turn_index"]?.readingInteger }.min()
+        let cachedStart = cachedHistory.compactMap { $0["key"]?["turn_index"]?.readingInteger }.min()
+        let extendsHistory: Bool
+        if let liveStart, let cachedStart {
+            extendsHistory = cachedStart < liveStart
+                && cachedHistory.contains { liveIDs.contains($0["turn_id"]?.readingString ?? "") }
+        } else {
+            extendsHistory = false
+        }
+        guard case .object(var fields) = history.raw else {
+            throw HolonConversationError.malformedProtocol
+        }
+        // Cached executions cannot contribute activity to a confirmed live snapshot.
+        fields["turns"] = .array(cachedHistory)
+        fields["active_turns"] = .array([])
+        if !extendsHistory {
+            // Disjoint/contained cache is readable, but cannot advance the live history frontier.
+            fields["has_more"] = .bool(live.hasMore)
+            fields["next_before_cursor"] = live.nextBeforeCursor.map(JSONValue.string) ?? .null
+        }
+        let page = try HolonConversationSnapshot(raw: .object(fields))
+        let merged = try mergeConversationHistory(live, page: page, maximumTurns: Int.max)
+        guard case .array(let turns) = merged.raw["turns"],
+              turns.filter({ $0["execution"]?["kind"] != .string("active") }).count <= maximumTurns else {
+            // Capacity eviction falls back to a real server window, never an invented page cursor.
+            return live
+        }
+        return merged
+    }
+
+    /// Run on a worker. An oversized history window falls back to the confirmed live tail.
+    static func cacheCandidates(_ displayed: HolonConversationSnapshot,
+                                liveWindow: HolonConversationSnapshot?) -> [JSONValue] {
+        var values = [displayed.raw]
+        if let liveWindow, liveWindow.eventLogEpoch == displayed.eventLogEpoch,
+           liveWindow.raw != displayed.raw { values.append(liveWindow.raw) }
+        return values.filter { ((try? JSONEncoder().encode($0).count) ?? Int.max) <= maximumBytes }
+    }
+}

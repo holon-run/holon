@@ -16,6 +16,7 @@ struct HolonApp: App {
     @State private var previousProfile: ConnectionProfile?
     @State private var returningConnection = false
     @State private var consentRevision = 0
+    @State private var displayedReadingPartition: ReadingPartition?
 
     init() {
         let reading = ReadingCoordinator()
@@ -39,12 +40,23 @@ struct HolonApp: App {
         _sender = State(initialValue: sending)
         do {
             let connection = ConnectionCoordinator(store: try ConnectionStore())
-            connection.onIdentityChange = { [weak reading, weak sending, weak work, weak files, weak imports] in
-                reading?.disconnect()
+            connection.onIdentityChange = { [weak connection, weak reading, weak sending, weak work, weak files, weak imports] in
+                if let context = connection?.readingContext {
+                    reading?.activateOffline(partition: context.partition)
+                } else {
+                    reading?.disconnect()
+                }
                 sending?.disconnect()
                 work?.disconnect()
                 files?.disconnect()
                 imports?.resetDestination()
+            }
+            connection.onReadingInvalidation = { [weak connection, weak reading] partition in
+                reading?.invalidate(partition)
+                if connection?.readingContext == nil { reading?.disconnect() }
+            }
+            reading.onReconnect = { [weak connection] in
+                await connection?.refresh()
             }
             _coordinator = State(initialValue: connection)
         } catch {
@@ -56,14 +68,15 @@ struct HolonApp: App {
         WindowGroup {
             Group {
                 if let coordinator {
+                    let readingActivation = ReadingActivation(coordinator)
                     Group {
-                        if coordinator.launchState == .restoring {
-                            ProgressView("onboarding.restoring")
-                        } else if coordinator.launchState == .connection || addingConnection {
+                        if addingConnection || (coordinator.launchState == .connection && coordinator.readingContext == nil) {
                             ConnectionWelcomeView(coordinator: coordinator, cancel: addingConnection ? {
                                 returnToPreviousConnection(coordinator)
                             } : nil)
-                        } else if let url = coordinator.selectedProfile?.apiBaseURL,
+                        } else if coordinator.launchState == .restoring && coordinator.readingContext == nil {
+                            ProgressView("onboarding.restoring")
+                        } else if let url = coordinator.readingContext?.profile.apiBaseURL ?? coordinator.selectedProfile?.apiBaseURL,
                                   !SharingConsent.shared.approved(url) {
                             ConnectionSharingConsentView(apiBaseURL: url, onApproved: {
                                 consentRevision += 1
@@ -72,6 +85,8 @@ struct HolonApp: App {
                                 addingConnection = true
                             })
                             .id(url)
+                        } else if displayedReadingPartition != coordinator.readingContext?.partition {
+                            ProgressView("onboarding.restoring")
                         } else {
                             NavigationStack(path: $router.path) {
                                 ReadingView(reader: reader, connection: coordinator)
@@ -104,25 +119,26 @@ struct HolonApp: App {
                                     ReadingPartition(apiBaseURL: $0.apiBaseURL, identity: value)
                                 }
                             })
-                            router.activate(identity.flatMap { value in
-                                coordinator.selectedProfile.flatMap {
-                                    ReadingPartition(apiBaseURL: $0.apiBaseURL, identity: value)
-                                }
-                            })
                             if identity != nil {
                                 addingConnection = false
                                 previousProfile = nil
                             }
                         }
                         .id(consentRevision)
-                        .onChange(of: reader.agents) { _, agents in
-                            router.restore(agents: agents, authoritative: reader.status == .live)
+                        .onChange(of: reader.agents) { _, _ in
+                            restoreReadingRoute()
                         }
                         .onChange(of: reader.status) { _, status in
                             if status == .permissionDenied || status == .sessionExpired {
                                 router.withdrawAgent()
                             }
-                            router.restore(agents: reader.agents, authoritative: status == .live)
+                            restoreReadingRoute()
+                        }
+                        .onChange(of: reader.isShowingCachedContent) { _, _ in
+                            restoreReadingRoute()
+                        }
+                        .onChange(of: reader.isRosterCurrent) { _, _ in
+                            restoreReadingRoute()
                         }
                         .onChange(of: router.path) { _, _ in
                             reader.selectAgent(router.agentID)
@@ -131,25 +147,40 @@ struct HolonApp: App {
                                 files.dismissPreview()
                             }
                         }
-                        .task(id: coordinator.identity) { [coordinator] in
-                            guard let identity = coordinator.identity,
-                                  let profile = coordinator.selectedProfile else {
+                        .task(id: readingActivation) { [coordinator] in
+                            guard !Task.isCancelled, ReadingActivation(coordinator) == readingActivation else { return }
+                            let partition = readingActivation.context?.partition
+                            if router.partition != partition { router.activate(partition) }
+                            guard let context = readingActivation.context else {
                                 reader.disconnect()
+                                displayedReadingPartition = nil
+                                return
+                            }
+                            reader.activateOffline(partition: context.partition)
+                            displayedReadingPartition = context.partition
+                            reader.setForeground(scenePhase == .active)
+                            restoreReadingRoute()
+                            guard let identity = readingActivation.identity,
+                                  let profile = readingActivation.profile,
+                                  context.profile == profile,
+                                  ReadingPartition(apiBaseURL: profile.apiBaseURL, identity: identity) == context.partition else {
                                 return
                             }
                             do {
                                 let client = try await coordinator.makeAuthenticatedClient()
-                                guard !Task.isCancelled, coordinator.identity == identity else {
+                                guard !Task.isCancelled, ReadingActivation(coordinator) == readingActivation else {
                                     await client.close()
                                     return
                                 }
                                 reader.onConnectionFailure = { [weak coordinator] failure in
-                                    coordinator?.handleClientFailure(failure, expectedIdentity: identity)
+                                    guard let coordinator, ReadingActivation(coordinator) == readingActivation else { return }
+                                    coordinator.handleClientFailure(failure, expectedIdentity: identity)
                                 }
                                 reader.activate(client: client, identity: identity, apiBaseURL: profile.apiBaseURL)
                                 reader.setForeground(scenePhase == .active)
                             } catch {
-                                if coordinator.identity == identity { reader.disconnect() }
+                                guard !Task.isCancelled, ReadingActivation(coordinator) == readingActivation else { return }
+                                reader.activateOffline(partition: context.partition)
                             }
                         }
                         .task(id: coordinator.identity) { [coordinator] in
@@ -244,11 +275,35 @@ struct HolonApp: App {
                 if phase == .active { imports.reload() }
                 if phase == .active {
                     coordinator?.validatePendingLogin()
+                    if let coordinator, coordinator.identity == nil,
+                       coordinator.readingContext != nil, coordinator.status != .connecting {
+                        Task { await coordinator.refresh() }
+                    }
                 } else {
                     coordinator?.sceneBecameInactive()
                 }
             }
         }
+    }
+
+    private struct ReadingActivation: Equatable {
+        let context: ConfirmedReadingContext?
+        let identity: HolonConnectionIdentity?
+        let profile: ConnectionProfile?
+
+        @MainActor init(_ coordinator: ConnectionCoordinator) {
+            context = coordinator.readingContext
+            identity = coordinator.identity
+            profile = coordinator.selectedProfile
+        }
+    }
+
+    private func restoreReadingRoute() {
+        guard let partition = coordinator?.readingContext?.partition,
+              router.partition == partition, displayedReadingPartition == partition else { return }
+        // A confirmed cached roster permits local navigation, not server mutations.
+        router.restore(agents: reader.agents,
+                       authoritative: reader.isRosterCurrent)
     }
 
     @ViewBuilder

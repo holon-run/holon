@@ -28,7 +28,7 @@ final class AgentNavigationTests: XCTestCase {
         XCTAssertTrue(router.path.isEmpty)
         XCTAssertNil(router.agentID)
     }
-    func testRestorationRequiresExactAuthorityAndRosterMembership() {
+    func testRestorationPermitsCachedRosterButRequiresExactPartitionAndMembership() {
         let suite = "HolonNavigationTests." + UUID().uuidString
         let preferences = UserDefaults(suiteName: suite)!
         defer { preferences.removePersistentDomain(forName: suite) }
@@ -38,18 +38,35 @@ final class AgentNavigationTests: XCTestCase {
         first.remember()
         let restored = AppRouter(preferences: preferences)
         restored.activate(partition())
-        restored.restore(agents: [ReadingAgent(id: "A", name: "A", preview: "")], authoritative: false)
+        restored.restore(agents: [], authoritative: false)
         XCTAssertTrue(restored.path.isEmpty)
-        restored.restore(agents: [ReadingAgent(id: "A", name: "A", preview: "")], authoritative: true)
+        restored.restore(agents: [ReadingAgent(id: "A", name: "A", preview: "")], authoritative: false)
         XCTAssertEqual(restored.path, [.conversation("A")])
         restored.activate(partition("other"))
-        restored.restore(agents: [ReadingAgent(id: "A", name: "A", preview: "")], authoritative: true)
+        restored.restore(agents: [ReadingAgent(id: "A", name: "A", preview: "")], authoritative: false)
         XCTAssertTrue(restored.path.isEmpty)
         restored.activate(partition())
         restored.restore(agents: [], authoritative: true)
         XCTAssertTrue(restored.path.isEmpty)
+        XCTAssertNil(preferences.data(forKey: "navigation.confirmedAgent.v1"))
+        restored.restore(agents: [ReadingAgent(id: "A", name: "A", preview: "")], authoritative: true)
+        XCTAssertTrue(restored.path.isEmpty)
         restored.activate(nil)
         XCTAssertNil(preferences.data(forKey: "navigation.confirmedAgent.v1"))
+    }
+    func testCachedRestorationDoesNotReplaceUserNavigation() {
+        let suite = "HolonNavigationTests." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let first = AppRouter(preferences: preferences)
+        first.activate(partition())
+        first.path = [.conversation("A")]
+        first.remember()
+        let restored = AppRouter(preferences: preferences)
+        restored.activate(partition())
+        restored.path = [.settings]
+        restored.restore(agents: [ReadingAgent(id: "A", name: "A", preview: "")], authoritative: false)
+        XCTAssertEqual(restored.path, [.settings])
     }
     func testPreviewSortAndSearchBeyondFirstWindow() {
         let time = Date(timeIntervalSince1970: 100)

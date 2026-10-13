@@ -8,6 +8,8 @@ import threading
 
 
 MAXIMUM_TEXT_SIZE = "accessibility-extra-extra-extra-large"
+# Case preparation/restoration runs outside XCTest's interactive deadlines.
+_CONFIGURATION_TIMEOUT = 120
 _TEXT_SIZES = {
     "extra-small", "small", "medium", "large", "extra-large",
     "extra-extra-large", "extra-extra-extra-large", "accessibility-medium",
@@ -16,10 +18,10 @@ _TEXT_SIZES = {
 }
 
 
-def _read_appearance(simulator):
+def _read_appearance(simulator, *, timeout=15):
     result = subprocess.run(
         ["xcrun", "simctl", "ui", simulator, "appearance"],
-        check=True, capture_output=True, text=True, timeout=15,
+        check=True, capture_output=True, text=True, timeout=timeout,
     )
     appearance = result.stdout.strip()
     if appearance not in ("light", "dark"):
@@ -27,14 +29,14 @@ def _read_appearance(simulator):
     return appearance
 
 
-def _set_appearance(simulator, appearance):
+def _set_appearance(simulator, appearance, *, timeout=15):
     if appearance not in ("light", "dark"):
         raise ValueError("不支持的系统外观")
     subprocess.run(
         ["xcrun", "simctl", "ui", simulator, "appearance", appearance],
-        check=True, capture_output=True, text=True, timeout=15,
+        check=True, capture_output=True, text=True, timeout=timeout,
     )
-    actual = _read_appearance(simulator)
+    actual = _read_appearance(simulator, timeout=timeout)
     print(f"模拟器 {simulator} 系统外观：{actual}", flush=True)
     if actual != appearance:
         raise RuntimeError(f"系统外观核验失败：期望 {appearance}，实际 {actual}")
@@ -42,12 +44,12 @@ def _set_appearance(simulator, appearance):
 
 @contextmanager
 def simulator_appearance(simulator, appearance):
-    original = _read_appearance(simulator)
+    original = _read_appearance(simulator, timeout=_CONFIGURATION_TIMEOUT)
     try:
-        _set_appearance(simulator, appearance)
+        _set_appearance(simulator, appearance, timeout=_CONFIGURATION_TIMEOUT)
         yield appearance
     finally:
-        _set_appearance(simulator, original)
+        _set_appearance(simulator, original, timeout=_CONFIGURATION_TIMEOUT)
 
 
 def _read_text_size(simulator, *, timeout=15):
@@ -61,14 +63,14 @@ def _read_text_size(simulator, *, timeout=15):
     return category
 
 
-def set_simulator_text_size(simulator, category, phase="运行时切换"):
+def set_simulator_text_size(simulator, category, phase="运行时切换", *, timeout=15):
     if category not in _TEXT_SIZES:
         raise ValueError("不支持的系统字号")
     subprocess.run(
         ["xcrun", "simctl", "ui", simulator, "content_size", category],
-        check=True, capture_output=True, text=True, timeout=15,
+        check=True, capture_output=True, text=True, timeout=timeout,
     )
-    actual = _read_text_size(simulator)
+    actual = _read_text_size(simulator, timeout=timeout)
     print(f"模拟器 {simulator} 系统字号（{phase}）：{actual}", flush=True)
     if actual != category:
         raise RuntimeError(f"系统字号核验失败：期望 {category}，实际 {actual}")
@@ -81,23 +83,24 @@ def initialize_simulator_text_size(simulator):
         ["xcrun", "simctl", "bootstatus", simulator, "-b"],
         check=True, timeout=180,
     )
-    # Boot completion does not establish the first simctl UI service connection.
-    # Give cold startup its own budget; runtime changes keep their 15s deadline.
+    # Boot completion does not establish the simctl UI service connection.
+    # Setup keeps a bounded configuration budget; runtime changes retain 15s.
     print(f"模拟器 {simulator}：等待系统字号服务就绪", flush=True)
-    _read_text_size(simulator, timeout=120)
-    set_simulator_text_size(simulator, "large", "专用测试基线初始化")
+    _read_text_size(simulator, timeout=_CONFIGURATION_TIMEOUT)
+    set_simulator_text_size(simulator, "large", "专用测试基线初始化",
+                            timeout=_CONFIGURATION_TIMEOUT)
 
 
 @contextmanager
 def simulator_text_size(simulator, category):
-    original = _read_text_size(simulator)
+    original = _read_text_size(simulator, timeout=_CONFIGURATION_TIMEOUT)
     print(f"模拟器 {simulator} 原系统字号：{original}", flush=True)
     try:
-        set_simulator_text_size(simulator, category, "设置")
+        set_simulator_text_size(simulator, category, "设置", timeout=_CONFIGURATION_TIMEOUT)
         yield category
     finally:
         # Also restore if configuration, XCTest or its runtime size change fails.
-        set_simulator_text_size(simulator, original, "恢复")
+        set_simulator_text_size(simulator, original, "恢复", timeout=_CONFIGURATION_TIMEOUT)
 
 
 @contextmanager

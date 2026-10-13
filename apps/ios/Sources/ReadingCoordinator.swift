@@ -10,10 +10,21 @@ struct ReadingReadConfirmation: Equatable {
     let through: Int64
 }
 
+private struct ReadingReconnectToken: Sendable {
+    let coordinatorID: UUID
+    let attemptID: UUID
+}
+
+private enum ReadingReconnectContext {
+    @TaskLocal static var token: ReadingReconnectToken? = nil
+}
+
 @Observable @MainActor
 final class ReadingCoordinator {
     private(set) var agents: [ReadingAgent] = []
     private(set) var rosterRevision = 0
+    // Only a successful roster response in the current context authorizes missing-agent decisions.
+    private(set) var isRosterCurrent = false
     private(set) var selectedAgentID: String?
     private(set) var snapshot: HolonConversationSnapshot?
     private(set) var briefs: [String: JSONValue] = [:]
@@ -33,12 +44,19 @@ final class ReadingCoordinator {
     private(set) var isLoadingHistory = false
     private(set) var readStatus: ReadingReadStatus = .idle
     private(set) var readingPosition: String?
+    var isRefreshing: Bool { rosterRefreshing || conversationRefreshing }
+    var isShowingCachedContent: Bool {
+        selectedAgentID == nil ? rosterIsCached : conversationIsCached
+    }
     var onConnectionFailure: ((HolonHTTPFailure) -> Void)?
+    var onReconnect: (@MainActor () async -> Void)?
 
     @ObservationIgnored private let cache: ReadingCache
     @ObservationIgnored private var transport: (any ReadingTransport)?
     @ObservationIgnored private var identity: HolonConnectionIdentity?
     @ObservationIgnored private var partition: ReadingPartition?
+    @ObservationIgnored private let reconnectCoordinatorID = UUID()
+    @ObservationIgnored private var reconnectAttempt: (id: UUID, task: Task<Void, Never>)?
     @ObservationIgnored private var reportSessionID = UUID()
     @ObservationIgnored private var reportDrafts: [ContentReportKey: ContentReportDraft] = [:]
     private var foreground = true
@@ -48,7 +66,19 @@ final class ReadingCoordinator {
     @ObservationIgnored private var reducer: HolonConversationReducer?
     @ObservationIgnored private var before: String?
     @ObservationIgnored private var recoveryAttempts = 0
-    @ObservationIgnored private var rosterRefreshing = false
+    private var rosterRefreshing = false
+    private var conversationRefreshing = false
+    private var rosterIsCached = false
+    private var conversationIsCached = false
+    @ObservationIgnored private var rosterSavedAt: Date?
+    @ObservationIgnored private var conversationSavedAt: Date?
+    @ObservationIgnored private var restoration: Task<Void, Never>?
+    @ObservationIgnored private let prefetchBriefLimit: Int
+    private struct CacheWriteKey: Hashable {
+        let partition: ReadingPartition
+        let agentID: String
+    }
+    @ObservationIgnored private var cacheWrites: [CacheWriteKey: (UUID, Task<Void, Never>)] = [:]
     @ObservationIgnored private var rosterRefreshPending = false
     @ObservationIgnored private var expansionCount = 0
     @ObservationIgnored private var expanding: Set<String> = []
@@ -65,8 +95,11 @@ final class ReadingCoordinator {
     }
     @ObservationIgnored private var detailVersions: [String: DetailVersion] = [:]
 
-    init() { cache = ReadingCache() }
-    init(cache: ReadingCache) { self.cache = cache }
+    init() { cache = ReadingCache(); prefetchBriefLimit = 8 }
+    init(cache: ReadingCache, prefetchBriefLimit: Int = 8) {
+        self.cache = cache
+        self.prefetchBriefLimit = min(8, max(0, prefetchBriefLimit))
+    }
 
     func activate(client: HolonClient, identity: HolonConnectionIdentity, apiBaseURL: URL) {
         activate(transport: ReadingClientTransport(client: client, authority: identity),
@@ -75,25 +108,81 @@ final class ReadingCoordinator {
 
     // Injectable only inside the app module, with identical authority fencing.
     func activate(transport: any ReadingTransport, identity: HolonConnectionIdentity, apiBaseURL: URL) {
+        guard acceptsReconnectMutation else { return }
+        ReadingReconnectContext.$token.withValue(nil) {
+            applyActivation(transport: transport, identity: identity, apiBaseURL: apiBaseURL)
+        }
+    }
+
+    private func applyActivation(transport: any ReadingTransport, identity: HolonConnectionIdentity, apiBaseURL: URL) {
+        let next = ReadingPartition(apiBaseURL: apiBaseURL, identity: identity)
+        if partition != next || next == nil { cancelReconnect() }
         reportSessionID = UUID()
         reportDrafts.removeAll()
         let previous = self.transport
         stop()
         if let previous { Task { await previous.close() } }
-        clearDisplay()
+        if partition != next || next == nil { clearDisplay() }
         self.transport = transport
         self.identity = identity
-        partition = ReadingPartition(apiBaseURL: apiBaseURL, identity: identity)
+        partition = next
         guard partition != nil else {
             status = .incompatible
             return
         }
-        restoreCache()
+        markCached()
+        prepareCache()
         recoveryAttempts = 0
         if foreground { bootstrap() } else { status = .offline }
     }
 
+    /// A confirmed local context grants reading only, never network authority.
+    func activateOffline(partition: ReadingPartition) {
+        guard acceptsReconnectMutation else { return }
+        ReadingReconnectContext.$token.withValue(nil) {
+            applyOfflineActivation(partition: partition)
+        }
+    }
+
+    private func applyOfflineActivation(partition: ReadingPartition) {
+        if self.partition != partition { cancelReconnect() }
+        reportSessionID = UUID()
+        reportDrafts.removeAll()
+        let previous = transport
+        stop()
+        transport = nil
+        identity = nil
+        if self.partition != partition { clearDisplay() }
+        self.partition = partition
+        activities.removeAll()
+        clearActivityDetails()
+        canLoadHistory = false
+        markCached()
+        status = .offline
+        prepareCache()
+        if let previous { Task { await previous.close() } }
+    }
+
+    func invalidate(_ partition: ReadingPartition) {
+        guard acceptsReconnectMutation else { return }
+        for (key, write) in cacheWrites where key.partition == partition {
+            write.1.cancel()
+            cacheWrites.removeValue(forKey: key)
+        }
+        cache.remove(partition)
+        guard self.partition == partition else { return }
+        disconnect()
+    }
+
     func disconnect() {
+        guard acceptsReconnectMutation else { return }
+        ReadingReconnectContext.$token.withValue(nil) {
+            applyDisconnect()
+        }
+    }
+
+    private func applyDisconnect() {
+        cancelReconnect()
         reportSessionID = UUID()
         reportDrafts.removeAll()
         let previous = transport
@@ -110,9 +199,13 @@ final class ReadingCoordinator {
         guard foreground != active else { return }
         foreground = active
         stop()
-        guard transport != nil, partition != nil else { return }
-        if active { recoveryAttempts = 0; bootstrap() }
-        else { status = .offline }
+        guard partition != nil else { return }
+        markCached()
+        if active {
+            prepareCache()
+            recoveryAttempts = 0
+            if transport != nil { bootstrap() } else { status = .offline }
+        } else { status = .offline }
     }
 
     func selectAgent(_ agentID: String?) {
@@ -123,21 +216,46 @@ final class ReadingCoordinator {
         stop()
         selectedAgentID = agentID
         clearConversation()
-        restoreCache()
+        prepareCache()
         recoveryAttempts = 0
         if foreground, transport != nil, partition != nil { bootstrap() }
+        else if partition != nil { status = .offline }
     }
 
     func refresh() async {
-        guard foreground, transport != nil, partition != nil else { return }
+        guard !Task.isCancelled, foreground, let partition else { return }
+        guard transport != nil else {
+            if let reconnectAttempt {
+                await reconnectAttempt.task.value
+                return
+            }
+            guard let onReconnect else { return }
+            let id = UUID()
+            let context = ReadingReconnectToken(coordinatorID: reconnectCoordinatorID, attemptID: id)
+            let task = Task { [weak self] in
+                guard let self, !Task.isCancelled, self.foreground,
+                      self.partition == partition, self.transport == nil,
+                      self.reconnectAttempt?.id == id else { return }
+                await ReadingReconnectContext.$token.withValue(context) {
+                    await onReconnect()
+                }
+            }
+            reconnectAttempt = (id, task)
+            await task.value
+            if reconnectAttempt?.id == id { reconnectAttempt = nil }
+            return
+        }
         stop()
         recoveryAttempts = 0
+        markCached()
+        prepareCache()
         let task = bootstrap()
         await task?.value
     }
 
     var contentReportScope: ContentReportScope? {
-        guard foreground, status == .live, let partition, let selectedAgentID,
+        guard foreground, status == .live, identity != nil, transport != nil,
+              let partition, let selectedAgentID,
               snapshot?.agentID == selectedAgentID, let epoch = snapshot?.eventLogEpoch else { return nil }
         return ContentReportScope(sessionID: reportSessionID, partition: partition,
                                   agentID: selectedAgentID, epoch: epoch)
@@ -162,26 +280,45 @@ final class ReadingCoordinator {
         guard contentReportScope == scope, body.agentID == scope.agentID, let transport else {
             throw CancellationError()
         }
+        let token = revision
         do {
             let response = try await transport.createContentReport(body)
             guard contentReportScope == scope else { throw CancellationError() }
             return response
         } catch {
             guard contentReportScope == scope else { throw CancellationError() }
+            failed(error, token: token, recover: false)
             throw error
         }
     }
 
+    private var acceptsReconnectMutation: Bool {
+        guard let token = ReadingReconnectContext.token,
+              token.coordinatorID == reconnectCoordinatorID else { return true }
+        return reconnectAttempt?.id == token.attemptID
+    }
+
+    // Same-partition activation and Agent selection preserve the callback's identity update.
+    private func cancelReconnect() {
+        let task = reconnectAttempt?.task
+        reconnectAttempt = nil
+        task?.cancel()
+    }
+
     private func stop() {
+        restoration?.cancel()
+        restoration = nil
         previewTask?.cancel()
         previewTask = nil
         previewedAgentIDs = []
         revision += 1
+        isRosterCurrent = false
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
         for stream in streams { stream.close() }
         streams.removeAll()
         rosterRefreshing = false
+        conversationRefreshing = false
         rosterRefreshPending = false
         expansionCount = 0
         expanding.removeAll()
@@ -205,6 +342,8 @@ final class ReadingCoordinator {
         canLoadHistory = false
         readStatus = .idle
         readingPosition = nil
+        conversationSavedAt = nil
+        conversationIsCached = false
     }
 
     private func clearBriefCache() {
@@ -218,6 +357,8 @@ final class ReadingCoordinator {
 
     private func clearDisplay() {
         agents = []
+        rosterSavedAt = nil
+        rosterIsCached = false
         selectedAgentID = nil
         clearConversation()
     }
@@ -242,8 +383,8 @@ final class ReadingCoordinator {
 
     private func validate(_ value: HolonConversationSnapshot) throws {
         guard value.agentID == selectedAgentID,
-              value.runtimeID == identity?.runtimeID,
-              value.visibilityScopeID == identity?.visibilityScopeID else {
+              value.runtimeID == partition?.runtime,
+              value.visibilityScopeID == partition?.visibility else {
             throw HolonConversationError.bootstrapRequired
         }
         guard (try JSONEncoder().encode(value.raw)).count <= 262_144 else {
@@ -297,7 +438,10 @@ final class ReadingCoordinator {
                         }
                     }
                 }
-                if self.current(token), self.rosterRevision == roster { self.persist() }
+                if self.current(token), self.rosterRevision == roster {
+                    self.rosterSavedAt = Date()
+                    self.persistRoster()
+                }
             } catch {
                 if self.current(token), self.rosterRevision == roster { self.failed(error, token: token, recover: true) }
             }
@@ -306,42 +450,93 @@ final class ReadingCoordinator {
         await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
     }
 
+    private enum RefreshResponse: Sendable {
+        case roster(Result<[ReadingAgent], any Error>)
+        case conversation(Result<HolonConversationSnapshot, any Error>)
+    }
+
     @discardableResult
     private func bootstrap() -> Task<Void, Never>? {
-        guard foreground, let transport, partition != nil else { return nil }
+        guard foreground, let transport, identity != nil, partition != nil else { return nil }
+        isRosterCurrent = false
         status = .syncing
+        rosterRefreshing = true
+        conversationRefreshing = selectedAgentID != nil
+        let restoration = restoration
+        let agentID = selectedAgentID
         return launch { [weak self] token in
             guard let self else { return }
-            do {
-                let roster = try await transport.roster()
-                guard self.current(token) else { return }
-                self.agents = self.boundedRoster(roster)
-                self.rosterRevision &+= 1
-                self.previewedAgentIDs = []
-                if let agentID = self.selectedAgentID {
-                    let value = try await transport.conversation(agentID: agentID, before: nil)
-                    guard self.current(token) else { return }
-                    try self.validate(value)
-                    if self.snapshot?.eventLogEpoch != value.eventLogEpoch {
-                        self.clearBriefCache()
+            await restoration?.value
+            guard self.current(token) else { return }
+            var refreshFailure: (any Error)?
+            await withTaskGroup(of: RefreshResponse.self) { group in
+                group.addTask {
+                    do { return .roster(.success(try await transport.roster())) }
+                    catch { return .roster(.failure(error)) }
+                }
+                if let agentID {
+                    group.addTask {
+                        do { return .conversation(.success(try await transport.conversation(agentID: agentID, before: nil))) }
+                        catch { return .conversation(.failure(error)) }
                     }
-                    // Summary revisions cannot prove detail freshness across a stream gap.
-                    self.activities.removeAll()
-                    self.clearActivityDetails()
-                    self.snapshot = value
-                    self.reducer = HolonConversationReducer(snapshot: value, maximumTurns: 180)
-                    self.before = value.nextBeforeCursor
-                    self.canLoadHistory = value.hasMore
                 }
-                self.persist()
-                self.status = .live
-                self.watch(agentID: nil, after: nil)
-                if let agentID = self.selectedAgentID {
-                    self.watch(agentID: agentID, after: self.snapshot?.snapshotCursor)
+                for await response in group {
+                    guard self.current(token) else { group.cancelAll(); return }
+                    do {
+                        switch response {
+                        case .roster(let result):
+                            self.rosterRefreshing = false
+                            self.agents = self.boundedRoster(try result.get())
+                            self.rosterRevision &+= 1
+                            self.isRosterCurrent = true
+                            self.previewedAgentIDs = []
+                            self.rosterSavedAt = Date()
+                            self.rosterIsCached = false
+                            self.persistRoster()
+                            if agentID == nil { self.status = .live }
+                            self.watch(agentID: nil, after: nil)
+                        case .conversation(let result):
+                            self.conversationRefreshing = false
+                            let value = try result.get()
+                            try self.validate(value)
+                            if let old = self.snapshot, old.eventLogEpoch != value.eventLogEpoch {
+                                self.clearBriefCache()
+                                self.readingPosition = nil
+                            }
+                            let displayed = try ReadingSnapshotWindow.merging(value, history: self.snapshot)
+                            // A stream gap invalidates execution detail, not confirmed reading history.
+                            self.activities.removeAll()
+                            self.clearActivityDetails()
+                            self.snapshot = displayed
+                            self.reducer = HolonConversationReducer(snapshot: value, maximumTurns: 180)
+                            self.before = displayed.nextBeforeCursor
+                            self.canLoadHistory = displayed.hasMore
+                            self.conversationSavedAt = Date()
+                            self.conversationIsCached = false
+                            self.status = .live
+                            self.watch(agentID: agentID, after: value.snapshotCursor)
+                            self.prefetchBriefs()
+                            await self.persist()?.value
+                            guard self.current(token) else { group.cancelAll(); return }
+                        }
+                    } catch {
+                        refreshFailure = error
+                        self.failed(error, token: token, recover: false)
+                        guard self.current(token) else { group.cancelAll(); return }
+                        if case .conversation = response {
+                            self.status = .offline
+                            self.conversationIsCached = self.snapshot != nil
+                        } else if agentID == nil {
+                            self.status = .offline
+                            self.rosterIsCached = !self.agents.isEmpty
+                        }
+                    }
                 }
-            } catch {
-                guard self.current(token) else { return }
-                self.failed(error, token: token, recover: true)
+            }
+            guard self.current(token) else { return }
+            // A roster failure cannot cancel a successful conversation refresh (or vice versa).
+            if let refreshFailure, self.status != .live {
+                self.failed(refreshFailure, token: token, recover: true)
             }
         }
     }
@@ -371,11 +566,12 @@ final class ReadingCoordinator {
                             try self.validate(updated)
                             let previous = self.snapshot
                             if let displayed = previous {
-                                self.snapshot = try mergeConversationHistory(updated, page: displayed, maximumTurns: 180)
+                                self.snapshot = try ReadingSnapshotWindow.merging(updated, history: displayed)
                             } else { self.snapshot = updated }
                             if previous?.eventLogEpoch != updated.eventLogEpoch {
                                 self.clearBriefCache()
                                 self.activities.removeAll()
+                                self.readingPosition = nil
                             } else {
                                 self.activities = self.activities.filter { id, _ in
                                     guard case .array(let oldTurns) = previous?.raw["turns"],
@@ -389,6 +585,8 @@ final class ReadingCoordinator {
                                 }
                             }
                             if previousActivities != self.activities { self.clearActivityDetails() }
+                            self.conversationSavedAt = Date()
+                            self.conversationIsCached = false
                             self.persist()
                         }
                     }
@@ -404,6 +602,7 @@ final class ReadingCoordinator {
     private func refreshRoster(token: Int) {
         guard let transport else { return }
         if rosterRefreshing { rosterRefreshPending = true; return }
+        isRosterCurrent = false
         rosterRefreshing = true
         launch { [weak self] captured in
             guard let self else { return }
@@ -421,8 +620,11 @@ final class ReadingCoordinator {
                 guard self.current(token) else { return }
                 self.agents = self.boundedRoster(value)
                 self.rosterRevision &+= 1
+                self.isRosterCurrent = true
                 self.previewedAgentIDs = []
-                self.persist()
+                self.rosterSavedAt = Date()
+                self.rosterIsCached = false
+                self.persistRoster()
             } catch {
                 if self.current(token) { self.failed(error, token: token, recover: true) }
             }
@@ -435,9 +637,7 @@ final class ReadingCoordinator {
             guard failure.identity == identity else { return }
             if failure.statusCode == 401 || failure.statusCode == 403 {
                 let target: ReadingStatus = failure.statusCode == 401 ? .sessionExpired : .permissionDenied
-                stop()
-                if let partition { cache.remove(partition) }
-                clearDisplay()
+                if let partition { invalidate(partition) } else { disconnect() }
                 status = target
                 onConnectionFailure?(failure)
                 return
@@ -445,10 +645,7 @@ final class ReadingCoordinator {
         }
         guard recover else { return }
         stop()
-        if error is HolonConversationError {
-            if let partition { cache.remove(partition) }
-            clearConversation()
-        }
+        markCached()
         status = .offline
         guard recoveryAttempts < 3 else {
             if error as? HolonConversationError == .malformedProtocol ||
@@ -482,7 +679,8 @@ final class ReadingCoordinator {
                 self.snapshot = try mergeConversationHistory(existing, page: page, maximumTurns: 180)
                 self.before = page.nextBeforeCursor
                 self.canLoadHistory = page.hasMore && page.nextBeforeCursor != cursor
-                self.persist()
+                self.conversationSavedAt = Date()
+                await self.persist()?.value
             } catch {
                 if self.current(token) {
                     if error is HolonConversationError { self.canLoadHistory = false }
@@ -495,6 +693,11 @@ final class ReadingCoordinator {
 
     func loadBrief(_ briefID: String) async {
         if briefs[briefID] != nil { touchBrief(briefID); return }
+        guard !briefID.isEmpty, briefID.utf8.count <= 512 else { return }
+        guard foreground, status == .live, identity != nil, transport != nil else {
+            failedBriefs.insert(briefID)
+            return
+        }
         guard !waitingBriefs.contains(briefID), waitingBriefs.count < 16 else { return }
         let captured = revision
         waitingBriefs.insert(briefID)
@@ -517,6 +720,10 @@ final class ReadingCoordinator {
 
     private func queueActivityRead(_ turnID: String, before: String? = nil) async {
         guard !turnID.isEmpty, turnID.utf8.count <= 512 else { return }
+        guard foreground, status == .live, identity != nil, transport != nil else {
+            failedActivities.insert(turnID)
+            return
+        }
         let captured = revision
         // A full-screen reader can take over an inline read during presentation.
         // Wait for that request to settle rather than dropping the new owner.
@@ -545,7 +752,8 @@ final class ReadingCoordinator {
     }
 
     func reloadActivities(_ turnID: String) async {
-        guard !loadingActivities.contains(turnID) else { return }
+        guard status == .live, identity != nil, transport != nil,
+              !loadingActivities.contains(turnID) else { return }
         clearActivityDetails()
         activities.removeValue(forKey: turnID)
         await loadActivities(turnID)
@@ -564,7 +772,7 @@ final class ReadingCoordinator {
 
     func loadActivityDetail(turnID: String, activityID: String) async {
         let key = "detail:" + activityID
-        guard foreground, status == .live, expansionCount < 2, !expanding.contains(key),
+        guard foreground, status == .live, identity != nil, expansionCount < 2, !expanding.contains(key),
               let transport, let agent = selectedAgentID,
               let activity = ActivityPresentation.items(activities[turnID]).first(where: { $0.id == activityID }),
               activity.detailID != nil else { return }
@@ -615,7 +823,7 @@ final class ReadingCoordinator {
 
     private func expand(_ id: String, brief: Bool, before: String? = nil) async {
         let key = (brief ? "brief:" : "turn:") + id
-        guard foreground, status == .live, !id.isEmpty, id.utf8.count <= 512,
+        guard foreground, status == .live, identity != nil, !id.isEmpty, id.utf8.count <= 512,
               brief ? briefs[id] == nil : (before != nil || activities[id] == nil),
               expansionCount < 2, !expanding.contains(key),
               let agentID = selectedAgentID, let transport else { return }
@@ -644,7 +852,14 @@ final class ReadingCoordinator {
                     return
                 }
                 if brief {
+                    guard value["id"]?.readingString == id,
+                          value["agent_id"]?.readingString == agentID,
+                          value["event_log_epoch"] == nil || value["event_log_epoch"]?.readingString == epoch else {
+                        throw HolonConversationError.malformedProtocol
+                    }
                     self.cacheBrief(value, id: id)
+                    self.conversationSavedAt = Date()
+                    await self.persist()?.value
                 } else {
                     guard let snapshot = self.snapshot else { return }
                     try ActivityPresentation.validate(value, snapshot: snapshot, turnID: id)
@@ -705,7 +920,7 @@ final class ReadingCoordinator {
     }
 
     var readThroughForVisibleBriefs: Int64? {
-        guard foreground, status == .live, readStatus != .pending,
+        guard foreground, status == .live, identity != nil, transport != nil, readStatus != .pending,
               let agentID = selectedAgentID,
               let snapshot,
               let through = visibleBriefIDs.compactMap({ id -> Int64? in
@@ -738,6 +953,10 @@ final class ReadingCoordinator {
             do {
                 let value = try await transport.markRead(agentID: agentID, through: through)
                 guard self.current(token) else { return }
+                guard self.snapshot?.eventLogEpoch == snapshot.eventLogEpoch else {
+                    self.readStatus = .idle
+                    return
+                }
                 guard let confirmed = value["applied_read_through_event_seq"]?.readingInteger,
                       confirmed >= through,
                       let state = value["state"],
@@ -761,31 +980,105 @@ final class ReadingCoordinator {
     }
 
     func rememberPosition(turnID: String) {
-        guard selectedAgentID != nil, turnID.utf8.count <= 512, readingPosition != turnID else { return }
+        guard selectedAgentID != nil, !turnID.isEmpty,
+              turnID.utf8.count <= 512, readingPosition != turnID else { return }
         readingPosition = turnID
         persist()
     }
 
     private func restoreCache() {
         guard let partition else { return }
-        if let roster = cache.load(partition, agentID: nil) { agents = boundedRoster(roster.agents) }
+        if rosterSavedAt == nil, let roster = cache.load(partition, agentID: nil) {
+            agents = boundedRoster(roster.agents)
+            rosterRevision &+= 1
+            rosterSavedAt = roster.savedAt
+            rosterIsCached = true
+        }
+        guard let selectedAgentID, snapshot == nil,
+              cacheWrites[CacheWriteKey(partition: partition, agentID: selectedAgentID)] == nil else { return }
         if let entry = cache.load(partition, agentID: selectedAgentID), let raw = entry.snapshot,
            let value = try? HolonConversationSnapshot(raw: raw),
            (try? validate(value)) != nil {
             snapshot = value
             readingPosition = entry.position
+            conversationSavedAt = entry.savedAt
+            conversationIsCached = true
+            briefs = entry.briefs.filter { id, body in
+                body["id"]?.readingString == id && body["agent_id"]?.readingString == selectedAgentID &&
+                (body["event_log_epoch"] == nil || body["event_log_epoch"]?.readingString == value.eventLogEpoch)
+            }
+            briefRecency = entry.briefOrder.filter { briefs[$0] != nil }
+            briefRecency += briefs.keys.filter { !briefRecency.contains($0) }.sorted()
             // Cached history is readable, but pagination and writes require a new bootstrap.
             canLoadHistory = false
         }
     }
 
-    private func persist() {
+    private func markCached() {
+        isRosterCurrent = false
+        rosterIsCached = rosterSavedAt != nil
+        conversationIsCached = snapshot != nil
+        canLoadHistory = false
+    }
+
+    private func prepareCache() {
         guard let partition else { return }
-        cache.save(.init(partition: partition, agentID: nil, agents: agents, snapshot: nil,
-                         position: nil, savedAt: Date()))
-        if let selectedAgentID, let snapshot {
-            cache.save(.init(partition: partition, agentID: selectedAgentID, agents: [],
-                             snapshot: snapshot.raw, position: readingPosition, savedAt: Date()))
+        restoreCache()
+        let token = revision, agentID = selectedAgentID
+        let write = agentID.flatMap { cacheWrites[CacheWriteKey(partition: partition, agentID: $0)]?.1 }
+        restoration = Task { [weak self, cache] in
+            await cache.prepare()
+            await write?.value
+            guard let self, !Task.isCancelled, self.revision == token,
+                  self.partition == partition, self.selectedAgentID == agentID else { return }
+            self.restoreCache()
         }
+    }
+
+    private func prefetchBriefs() {
+        guard prefetchBriefLimit > 0, case .array(let turns) = snapshot?.raw["turns"] else { return }
+        var ids: [String] = []
+        for turn in turns.reversed() {
+            guard case .array(let values) = turn["brief_ids"] else { continue }
+            for id in values.reversed().compactMap(\.readingString)
+                where briefs[id] == nil && !ids.contains(id) && ids.count < prefetchBriefLimit {
+                ids.append(id)
+            }
+            if ids.count == prefetchBriefLimit { break }
+        }
+        for id in ids {
+            launch { [weak self] _ in await self?.loadBrief(id) }
+        }
+    }
+
+    private func persistRoster() {
+        guard let partition, let savedAt = rosterSavedAt else { return }
+        var window = Array(agents.prefix(512))
+        while !cache.save(.init(partition: partition, agentID: nil, agents: window, snapshot: nil,
+                               position: nil, savedAt: savedAt)) {
+            guard !window.isEmpty else { return }
+            window.removeLast(max(1, window.count / 2))
+        }
+    }
+
+    @discardableResult
+    private func persist() -> Task<Void, Never>? {
+        guard let partition, let selectedAgentID, let snapshot, let savedAt = conversationSavedAt else { return nil }
+        let key = CacheWriteKey(partition: partition, agentID: selectedAgentID), id = UUID()
+        cacheWrites[key]?.1.cancel()
+        let position = readingPosition, bodies = briefs, order = briefRecency, liveWindow = reducer?.snapshot
+        let work = Task.detached { ReadingSnapshotWindow.cacheCandidates(snapshot, liveWindow: liveWindow) }
+        let task = Task { [weak self] in
+            let candidates = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+            guard let self, !Task.isCancelled, self.cacheWrites[key]?.0 == id else { return }
+            defer { self.cacheWrites.removeValue(forKey: key) }
+            for raw in candidates {
+                if self.cache.save(.init(partition: partition, agentID: selectedAgentID, agents: [],
+                                         snapshot: raw, position: position, savedAt: savedAt,
+                                         briefs: bodies, briefOrder: order)) { break }
+            }
+        }
+        cacheWrites[key] = (id, task)
+        return task
     }
 }

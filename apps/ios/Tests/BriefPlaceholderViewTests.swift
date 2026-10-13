@@ -23,9 +23,20 @@ final class BriefPlaceholderViewTests: XCTestCase {
         XCTAssertEqual(failed.actionKey, "reading.retry")
     }
 
+    func testOfflineMissingBodyHasNoLoadingOrRetryAction() {
+        for loading in [false, true] {
+            for failed in [false, true] {
+                let state = BriefPlaceholderState(isLoading: loading, hasFailed: failed, canLoad: false)
+                XCTAssertEqual(state, .uncachedOffline)
+                XCTAssertEqual(state.titleKey, "reading.brief.uncachedOffline")
+                XCTAssertNil(state.actionKey)
+            }
+        }
+    }
+
     func testPlaceholderRendersCompactlyAndExpandsForMaximumTextSize() throws {
         for locale in ["en", "zh-Hans"] {
-            for state in [BriefPlaceholderState.unloaded, .failed] {
+            for state in [BriefPlaceholderState.unloaded, .failed, .uncachedOffline] {
                 for scheme in [ColorScheme.light, .dark] {
                     let regular = try render(state, locale: locale, scheme: scheme, size: .large)
                     let maximum = try render(state, locale: locale, scheme: scheme, size: .accessibility5)
@@ -34,7 +45,7 @@ final class BriefPlaceholderViewTests: XCTestCase {
                     XCTAssertGreaterThanOrEqual(regular.size.height, 44)
                     XCTAssertLessThanOrEqual(regular.size.height, 64, "Normal placeholders should remain one compact row")
                     XCTAssertGreaterThan(maximum.size.height, regular.size.height, "Accessibility text must grow without a fixed row height")
-                    if state == .failed {
+                    if state == .failed || state == .uncachedOffline {
                         for (name, image) in [("regular", regular), ("maximum", maximum)] {
                             let attachment = XCTAttachment(image: image)
                             attachment.name = "brief-placeholder-\(locale)-\(scheme)-\(name)"

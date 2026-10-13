@@ -77,6 +77,7 @@
 "reading.brief.loading" = "正在加载 Brief…";
 "reading.brief.failed" = "Brief 暂不可用";
 "reading.brief.load" = "加载";
+"reading.brief.uncachedOffline" = "Brief 未缓存 · 重新连接后加载";
 "reading.activities" = "本轮过程";
 "reading.linkUnavailable" = "这里无法打开此链接。相对路径需要服务端提供的文件位置。";
 "reading.selectText" = "选择原文";
@@ -121,7 +122,13 @@
 "reading.status.disconnected" = "未连接";
 "reading.status.syncing" = "正在同步…";
 "reading.status.live" = "实时连接";
-"reading.status.offline" = "离线 · 缓存内容只读";
+"reading.status.offline" = "节点不可达 · 只读";
+"reading.cache.offline" = "缓存内容 · 离线";
+"reading.cache.refreshing" = "缓存内容 · 正在刷新…";
+"reading.cache.saved" = "正在显示缓存内容";
+"reading.cache.noAgents" = "此连接尚无缓存的 Agent，重新连接后可加载。";
+"reading.cache.noConversation" = "此会话尚未缓存，重新连接后可加载。";
+"reading.cache.readOnly" = "重新连接后可发送消息或使用控制操作。";
 "reading.status.permissionDenied" = "权限不足";
 "reading.status.sessionExpired" = "会话已过期，请重新登录";
 "reading.status.incompatible" = "不支持此会话协议";

@@ -28,6 +28,18 @@ private func readingEvent(_ type: String, raw: JSONValue) throws -> HolonSSEEven
     throw HolonConversationError.malformedProtocol
 }
 
+private func readingTurn(_ id: String, index: Int64, text: String? = nil,
+                         execution: String? = nil) -> JSONValue {
+    var fields: [String: JSONValue] = [
+        "turn_id": .string(id),
+        "key": .object(["turn_id": .string(id), "turn_index": .integer(index)]),
+        "revision": .integer(1), "brief_ids": .array([.string("brief")])
+    ]
+    if let text { fields["summary"] = .string(text) }
+    if let execution { fields["execution"] = .object(["kind": .string(execution)]) }
+    return .object(fields)
+}
+
 /// Closing is synchronous, just like HolonEventStream.close(), even though the fake is an actor.
 private final class ReadingFakeStream: @unchecked Sendable {
     let continuation: AsyncThrowingStream<HolonSSEEvent, any Error>.Continuation
@@ -52,12 +64,19 @@ private actor ReadingFakeTransport: ReadingTransport {
     private var blocked: CheckedContinuation<Void, Never>?
     private var pendingFailure: (any Error)?
     private var rosterFailure = false
+    private var rosterError: (any Error)?
+    private var rosterHeld = false
+    private var rosterWaiters: [CheckedContinuation<Void, Never>] = []
+    private var conversationFailure: (any Error)?
+    private var liveTurns: [JSONValue]?
+    private var historyTurns: [JSONValue] = []
     private var readFailure = false
     private var liveCursor = "live-1"
     private var liveEpoch = "epoch"
     private var currentRunID: String?
     private var agentIDs = ["A", "B"]
     private var briefIDs = ["brief"]
+    private var liveTurnRevision: Int64 = 1
     private var detailRevision: Int64 = 1
     private var pagedActivities = false
     private var activityFailure = false
@@ -72,6 +91,7 @@ private actor ReadingFakeTransport: ReadingTransport {
     private var activeExpansions = 0
     private var connections: [UUID: (String, ReadingFakeStream)] = [:]
     private(set) var rosterCalls = 0
+    private(set) var conversationCalls = 0
     private(set) var historyCursors: [String] = []
     private(set) var openedAfter: [String] = []
     private(set) var maximumDetailStreams = 0
@@ -95,8 +115,21 @@ private actor ReadingFakeTransport: ReadingTransport {
         pendingFailure = failure
     }
     func setOffline(_ offline: Bool) { rosterFailure = offline }
+    func setRosterError(_ error: (any Error)?) { rosterError = error }
+    func setConversationFailure(_ error: (any Error)?) { conversationFailure = error }
+    func setLiveTurns(_ turns: [JSONValue]) { liveTurns = turns }
+    func setHistoryTurns(_ turns: [JSONValue]) { historyTurns = turns }
+    func holdRoster() { rosterHeld = true }
+    func releaseRoster() {
+        rosterHeld = false
+        for waiter in rosterWaiters { waiter.resume() }
+        rosterWaiters.removeAll()
+    }
     func failReads() { readFailure = true }
-    func setBriefIDs(_ ids: [String]) { briefIDs = ids }
+    func setBriefIDs(_ ids: [String]) {
+        if ids != briefIDs { liveTurnRevision += 1 }
+        briefIDs = ids
+    }
     func setRunID(_ id: String?) { currentRunID = id }
     func setAgentIDs(_ ids: [String]) { agentIDs = ids }
     func setDetailRevision(_ revision: Int64) { detailRevision = revision }
@@ -120,6 +153,9 @@ private actor ReadingFakeTransport: ReadingTransport {
     }
     func roster() async throws -> [ReadingAgent] {
         rosterCalls += 1
+        let error = rosterError
+        if rosterHeld { await withCheckedContinuation { rosterWaiters.append($0) } }
+        if let error { throw error }
         if rosterFailure { throw Failure.offline }
         return agentIDs.map {
             ReadingAgent(id: $0, name: $0, preview: "recent", operatorPreview: "operator", unreadCount: 2,
@@ -127,6 +163,7 @@ private actor ReadingFakeTransport: ReadingTransport {
         }
     }
     func conversation(agentID: String, before: String?) async throws -> HolonConversationSnapshot {
+        conversationCalls += 1
         let failure = pendingFailure
         let shouldBlock = (before != nil && gate == .history) || gate == .conversation(agentID)
         if shouldBlock {
@@ -135,14 +172,17 @@ private actor ReadingFakeTransport: ReadingTransport {
             await withCheckedContinuation { blocked = $0 }
             if let failure { throw failure }
         }
+        if rosterFailure { throw Failure.offline }
+        if let conversationFailure { throw conversationFailure }
         if let before {
             historyCursors.append(before)
-            return try readingSnapshot(agent: agentID, cursor: "history-not-live", more: false, before: nil)
+            return try readingSnapshot(agent: agentID, cursor: "history-not-live",
+                                       more: false, before: nil, turns: historyTurns)
         }
-        return try readingSnapshot(agent: agentID, cursor: liveCursor, epoch: liveEpoch, turns: [
+        return try readingSnapshot(agent: agentID, cursor: liveCursor, epoch: liveEpoch, turns: liveTurns ?? [
             .object(["turn_id": .string("turn"),
                      "key": .object(["turn_id": .string("turn"), "turn_index": .integer(1)]),
-                     "revision": .integer(1), "brief_ids": .array(briefIDs.map(JSONValue.string))])
+                     "revision": .integer(liveTurnRevision), "brief_ids": .array(briefIDs.map(JSONValue.string))])
         ])
     }
     private func expansion(_ key: String, id: String) async -> JSONValue {
@@ -250,14 +290,42 @@ final class ReadingCoordinatorTests: XCTestCase {
         }
         XCTFail("Timed out waiting for reading state")
     }
-    private func start(cache: ReadingCache? = nil) async throws
+    private func seed(_ cache: ReadingCache, authority: HolonConnectionIdentity,
+                      body: String = "cached body", agent: String = "A") throws -> ReadingPartition {
+        let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+        let savedAt = Date().addingTimeInterval(-30 * 24 * 60 * 60)
+        let snapshot = try readingSnapshot(agent: agent, more: false, before: nil,
+                                          turns: [readingTurn("old", index: 0), readingTurn("turn", index: 1)])
+        XCTAssertTrue(cache.save(.init(partition: partition, agentID: nil,
+                                      agents: [ReadingAgent(id: agent, name: "cached", preview: "cached preview")],
+                                      snapshot: nil, position: nil, savedAt: savedAt)))
+        XCTAssertTrue(cache.save(.init(partition: partition, agentID: agent, agents: [],
+                                      snapshot: snapshot.raw, position: "old", savedAt: savedAt,
+                                      briefs: ["brief": .object(["id": .string("brief"),
+                                                               "agent_id": .string(agent),
+                                                               "text": .string(body),
+                                                               "created_event_seq": .integer(5)])],
+                                      briefOrder: ["brief"])))
+        return partition
+    }
+    private func turnIDs(_ coordinator: ReadingCoordinator) -> [String] {
+        guard case .array(let turns) = coordinator.snapshot?.raw["turns"] else { return [] }
+        return turns.compactMap { $0["turn_id"]?.readingString }
+    }
+    private func start(cache: ReadingCache? = nil, turns: [JSONValue]? = nil) async throws
         -> (ReadingCoordinator, ReadingFakeTransport, HolonConnectionIdentity) {
         let authority = identity()
         let fake = ReadingFakeTransport(authority: authority)
-        let coordinator = ReadingCoordinator(cache: cache ?? ReadingCache(file: nil))
+        if let turns { await fake.setLiveTurns(turns) }
+        let cache = cache ?? ReadingCache(file: nil)
+        let coordinator = ReadingCoordinator(cache: cache, prefetchBriefLimit: 0)
         coordinator.activate(transport: fake, identity: authority, apiBaseURL: url)
         coordinator.selectAgent("A")
-        try await wait { await fake.counts().1 == 1 && coordinator.status == .live }
+        let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+        try await wait {
+            await fake.counts().1 == 1 && coordinator.status == .live &&
+            cache.load(partition, agentID: "A") != nil
+        }
         return (coordinator, fake, authority)
     }
 
@@ -359,7 +427,7 @@ final class ReadingCoordinatorTests: XCTestCase {
             await fake.setGate(.conversation("A"), failure: statusCode.map {
                 HolonHTTPFailure(statusCode: $0, identity: authority)
             })
-            let coordinator = ReadingCoordinator(cache: ReadingCache(file: nil))
+            let coordinator = ReadingCoordinator(cache: ReadingCache(file: nil), prefetchBriefLimit: 0)
             var failures = 0
             coordinator.onConnectionFailure = { _ in failures += 1 }
             coordinator.activate(transport: fake, identity: authority, apiBaseURL: url)
@@ -394,6 +462,8 @@ final class ReadingCoordinatorTests: XCTestCase {
         let cache = ReadingCache(file: nil)
         let (coordinator, _, authority) = try await start(cache: cache)
         coordinator.rememberPosition(turnID: "turn-7")
+        let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+        try await wait { cache.load(partition, agentID: "A")?.position == "turn-7" }
         coordinator.disconnect()
         let offline = ReadingFakeTransport(authority: authority)
         await offline.setOffline(true)
@@ -502,7 +572,7 @@ final class ReadingCoordinatorTests: XCTestCase {
         let old = identity()
         let fake = ReadingFakeTransport(authority: old)
         await fake.setGate(.conversation("A"), failure: HolonHTTPFailure(statusCode: 401, identity: old))
-        let coordinator = ReadingCoordinator(cache: ReadingCache(file: nil))
+        let coordinator = ReadingCoordinator(cache: ReadingCache(file: nil), prefetchBriefLimit: 0)
         var failures = 0
         coordinator.onConnectionFailure = { _ in failures += 1 }
         coordinator.activate(transport: fake, identity: old, apiBaseURL: url)
@@ -1161,11 +1231,982 @@ final class ReadingCoordinatorTests: XCTestCase {
         XCTAssertEqual(draft.errorKey, "report.contextChanged")
     }
 
+    func testColdOfflineRestoresHistoryBodiesAndPositionAcrossRestart() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("reading.json")
+        let saved = ReadingCache(file: file)
+        let partition = try seed(saved, authority: identity())
+        let flushed = await saved.flush()
+        XCTAssertTrue(flushed)
+
+        let restored = ReadingCache(file: file)
+        let coordinator = ReadingCoordinator(cache: restored, prefetchBriefLimit: 0)
+        coordinator.activateOffline(partition: partition)
+        coordinator.selectAgent("A")
+        try await wait { coordinator.snapshot != nil }
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        XCTAssertEqual(coordinator.agents.first?.name, "cached")
+        XCTAssertEqual(turnIDs(coordinator), ["old", "turn"])
+        XCTAssertEqual(coordinator.briefs["brief"]?["text"], .string("cached body"))
+        XCTAssertEqual(coordinator.readingPosition, "old")
+        XCTAssertTrue(coordinator.isShowingCachedContent)
+        XCTAssertFalse(coordinator.isRefreshing)
+        XCTAssertFalse(coordinator.canLoadHistory)
+        XCTAssertNil(coordinator.contentReportScope)
+        coordinator.setBriefVisible("brief", visible: true)
+        XCTAssertNil(coordinator.readConfirmationForVisibleBriefs)
+
+        let snapshot = coordinator.snapshot
+        coordinator.activateOffline(partition: partition)
+        XCTAssertEqual(coordinator.snapshot, snapshot)
+        coordinator.setForeground(false)
+        coordinator.setForeground(true)
+        try await wait { coordinator.snapshot == snapshot }
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        XCTAssertEqual(coordinator.briefs["brief"]?["text"], .string("cached body"))
+        let savedAt = try XCTUnwrap(restored.load(partition, agentID: "A")?.savedAt)
+        XCTAssertLessThan(savedAt, Date().addingTimeInterval(-29 * 24 * 60 * 60))
+        let restoredFlush = await restored.flush()
+        XCTAssertTrue(restoredFlush)
+        coordinator.disconnect()
+
+        let secondCache = ReadingCache(file: file)
+        let second = ReadingCoordinator(cache: secondCache, prefetchBriefLimit: 0)
+        second.activateOffline(partition: partition)
+        second.selectAgent("A")
+        try await wait { second.briefs["brief"] != nil }
+        XCTAssertEqual(turnIDs(second), ["old", "turn"])
+        XCTAssertEqual(second.readingPosition, "old")
+        second.disconnect()
+        _ = await secondCache.flush()
+    }
+
+    func testOfflineActivationRetainsReadingButDetachesAllNetworkAuthority() async throws {
+        let cache = ReadingCache(file: nil)
+        let (coordinator, fake, authority) = try await start(cache: cache)
+        await coordinator.loadBrief("brief")
+        await coordinator.loadActivities("turn")
+        let scope = try XCTUnwrap(coordinator.contentReportScope)
+        let draft = try reportDraft(coordinator)
+        let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+        let snapshot = coordinator.snapshot
+        let calls = await fake.expansionCalls
+        let conversations = await fake.conversationCalls
+        let rosters = await fake.rosterCalls
+
+        coordinator.activateOffline(partition: partition)
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        XCTAssertEqual(coordinator.snapshot, snapshot)
+        XCTAssertNotNil(coordinator.briefs["brief"])
+        XCTAssertTrue(coordinator.activities.isEmpty)
+        XCTAssertTrue(coordinator.activityDetails.isEmpty)
+        XCTAssertTrue(coordinator.isShowingCachedContent)
+        XCTAssertNil(coordinator.contentReportScope)
+        coordinator.setBriefVisible("brief", visible: true)
+        await coordinator.loadBrief("missing")
+        await coordinator.loadActivities("turn")
+        await coordinator.reloadActivities("turn")
+        await coordinator.loadActivityDetail(turnID: "turn", activityID: "activity")
+        await coordinator.loadHistory()
+        await coordinator.loadVisiblePreviews(agentIDs: ["A"])
+        await coordinator.markRead()
+        draft.category = .privacy
+        await draft.submit { body, _ in try await coordinator.createContentReport(body, scope: scope) }
+        XCTAssertEqual(draft.errorKey, "report.contextChanged")
+        coordinator.setForeground(false)
+        coordinator.setForeground(true)
+        await coordinator.refresh()
+        let finalExpansions = await fake.expansionCalls
+        let finalConversations = await fake.conversationCalls
+        let finalRosters = await fake.rosterCalls
+        let reads = await fake.readCalls
+        let reports = await fake.reportRequests
+        XCTAssertEqual(finalExpansions, calls)
+        XCTAssertEqual(finalConversations, conversations)
+        XCTAssertEqual(finalRosters, rosters)
+        XCTAssertEqual(reads, 0)
+        XCTAssertTrue(reports.isEmpty)
+        XCTAssertTrue(coordinator.loadingBriefs.isEmpty)
+        XCTAssertTrue(coordinator.loadingActivities.isEmpty)
+        XCTAssertEqual(coordinator.status, .offline)
+        coordinator.disconnect()
+    }
+
+    func testOfflineRefreshAwaitsReconnectWithoutGrantingNetworkAuthority() async throws {
+        let cache = ReadingCache(file: nil)
+        let partition = try seed(cache, authority: identity())
+        let coordinator = ReadingCoordinator(cache: cache, prefetchBriefLimit: 0)
+        coordinator.activateOffline(partition: partition)
+        coordinator.selectAgent("A")
+        try await wait { coordinator.snapshot != nil }
+        let snapshot = coordinator.snapshot
+        var attempts = 0
+        var completed = false
+        coordinator.onReconnect = {
+            attempts += 1
+            await Task.yield()
+            completed = true
+        }
+
+        await coordinator.refresh()
+        XCTAssertEqual(attempts, 1)
+        XCTAssertTrue(completed)
+        XCTAssertEqual(coordinator.status, .offline)
+        XCTAssertEqual(coordinator.snapshot, snapshot)
+        XCTAssertNotNil(coordinator.briefs["brief"])
+        XCTAssertTrue(coordinator.isShowingCachedContent)
+        XCTAssertFalse(coordinator.isRefreshing)
+        XCTAssertNil(coordinator.contentReportScope)
+        coordinator.disconnect()
+    }
+
+    func testOfflineRefreshAllowsVerifiedReconnectToActivateOnlineReading() async throws {
+        let authority = identity()
+        let fake = ReadingFakeTransport(authority: authority)
+        let cache = ReadingCache(file: nil)
+        let partition = try seed(cache, authority: authority)
+        let coordinator = ReadingCoordinator(cache: cache, prefetchBriefLimit: 0)
+        coordinator.activateOffline(partition: partition)
+        coordinator.selectAgent("A")
+        var attempts = 0
+        let apiBaseURL = url
+        coordinator.onReconnect = { [weak coordinator] in
+            attempts += 1
+            coordinator?.activateOffline(partition: partition)
+            await Task.yield()
+            XCTAssertFalse(Task.isCancelled)
+            coordinator?.activate(transport: fake, identity: authority, apiBaseURL: apiBaseURL)
+            XCTAssertFalse(Task.isCancelled)
+        }
+
+        await coordinator.refresh()
+        try await wait { await fake.counts().1 == 1 && coordinator.status == .live }
+        XCTAssertEqual(attempts, 1)
+        XCTAssertFalse(coordinator.isShowingCachedContent)
+        XCTAssertNotNil(coordinator.contentReportScope)
+        coordinator.onReconnect = nil
+        coordinator.disconnect()
+    }
+
+    func testReconnectCallbackRequiresForegroundOfflinePartition() async throws {
+        let (coordinator, fake, authority) = try await start()
+        let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+        var attempts = 0
+        coordinator.onReconnect = { attempts += 1 }
+        let rosters = await fake.rosterCalls
+        await coordinator.refresh()
+        let refreshedRosters = await fake.rosterCalls
+        XCTAssertGreaterThan(refreshedRosters, rosters)
+        XCTAssertEqual(coordinator.status, .live)
+        XCTAssertEqual(attempts, 0)
+
+        coordinator.setForeground(false)
+        coordinator.activateOffline(partition: partition)
+        await coordinator.refresh()
+        XCTAssertEqual(attempts, 0)
+        coordinator.setForeground(true)
+        XCTAssertEqual(attempts, 0)
+        await coordinator.refresh()
+        XCTAssertEqual(attempts, 1)
+        XCTAssertEqual(coordinator.status, .offline)
+        coordinator.disconnect()
+        await coordinator.refresh()
+        XCTAssertEqual(attempts, 1)
+    }
+
+    func testSamePartitionOfflineActivationAndAgentSelectionPreserveReconnectToken() async throws {
+        let authority = identity()
+        let fake = ReadingFakeTransport(authority: authority)
+        let cache = ReadingCache(file: nil)
+        let partition = try seed(cache, authority: authority)
+        let coordinator = ReadingCoordinator(cache: cache, prefetchBriefLimit: 0)
+        coordinator.activateOffline(partition: partition)
+        coordinator.selectAgent("A")
+        var gate: CheckedContinuation<Void, Never>?
+        var cancelled = false
+        let apiBaseURL = url
+        coordinator.onReconnect = { [weak coordinator] in
+            await withCheckedContinuation { gate = $0 }
+            cancelled = Task.isCancelled
+            coordinator?.activate(transport: fake, identity: authority, apiBaseURL: apiBaseURL)
+        }
+        let refresh = Task { await coordinator.refresh() }
+        try await wait { gate != nil }
+        coordinator.selectAgent("B")
+        coordinator.activateOffline(partition: partition)
+        gate?.resume()
+        await refresh.value
+        try await wait { coordinator.status == .live && coordinator.snapshot?.agentID == "B" }
+        XCTAssertFalse(cancelled)
+        XCTAssertEqual(coordinator.contentReportScope?.partition, partition)
+        XCTAssertEqual(coordinator.contentReportScope?.agentID, "B")
+        coordinator.onReconnect = nil
+        coordinator.disconnect()
+    }
+
+    func testCommittedReconnectReadingTasksCanStillRevokeAuthorization() async throws {
+        let authority = identity()
+        let fake = ReadingFakeTransport(authority: authority)
+        let cache = ReadingCache(file: nil)
+        let partition = try seed(cache, authority: authority)
+        await fake.setGate(.conversation("A"), failure: HolonHTTPFailure(statusCode: 401, identity: authority))
+        let coordinator = ReadingCoordinator(cache: cache, prefetchBriefLimit: 0)
+        coordinator.activateOffline(partition: partition)
+        coordinator.selectAgent("A")
+        let apiBaseURL = url
+        coordinator.onReconnect = { [weak coordinator] in
+            coordinator?.activate(transport: fake, identity: authority, apiBaseURL: apiBaseURL)
+        }
+        var failures = 0
+        coordinator.onConnectionFailure = { _ in failures += 1 }
+
+        await coordinator.refresh()
+        try await wait { await fake.isBlocked() }
+        await fake.release()
+        try await wait { coordinator.status == .sessionExpired }
+        XCTAssertNil(coordinator.snapshot)
+        XCTAssertNil(coordinator.contentReportScope)
+        XCTAssertNil(cache.load(partition, agentID: "A"))
+        XCTAssertNil(cache.load(partition, agentID: nil))
+        XCTAssertEqual(failures, 1)
+        coordinator.onReconnect = nil
+        coordinator.disconnect()
+    }
+
+    func testConcurrentOfflineRefreshesShareReconnectAttempt() async throws {
+        let cache = ReadingCache(file: nil)
+        let partition = try seed(cache, authority: identity())
+        let coordinator = ReadingCoordinator(cache: cache, prefetchBriefLimit: 0)
+        coordinator.activateOffline(partition: partition)
+        var gates: [CheckedContinuation<Void, Never>] = []
+        coordinator.onReconnect = {
+            await withCheckedContinuation { gates.append($0) }
+        }
+        let first = Task { await coordinator.refresh() }
+        try await wait { gates.count == 1 }
+        var joined = false
+        let second = Task {
+            joined = true
+            await coordinator.refresh()
+        }
+        try await wait { joined }
+        XCTAssertEqual(gates.count, 1)
+        gates[0].resume()
+        await first.value
+        await second.value
+        XCTAssertEqual(coordinator.status, .offline)
+        coordinator.onReconnect = nil
+        coordinator.disconnect()
+    }
+
+    func testOldPartitionReconnectCannotActivateOrClearNewAttempt() async throws {
+        let cache = ReadingCache(file: nil)
+        let authority = identity()
+        let otherAuthority = identity(user: "other")
+        let partition = try seed(cache, authority: authority)
+        let otherPartition = try seed(cache, authority: otherAuthority, body: "other body")
+        let oldTransport = ReadingFakeTransport(authority: authority)
+        let newTransport = ReadingFakeTransport(authority: otherAuthority)
+        let coordinator = ReadingCoordinator(cache: cache, prefetchBriefLimit: 0)
+        coordinator.activateOffline(partition: partition)
+        var gates: [CheckedContinuation<Void, Never>] = []
+        var cancelled: [Bool] = []
+        let apiBaseURL = url
+        coordinator.onReconnect = { [weak coordinator] in
+            let index = cancelled.count
+            cancelled.append(false)
+            await withCheckedContinuation { gates.append($0) }
+            cancelled[index] = Task.isCancelled
+            let update = Task { [weak coordinator] in
+                XCTAssertFalse(Task.isCancelled)
+                if index == 0 {
+                    // An uncancelled child inherits the stale callback token, not mutation authority.
+                    coordinator?.activateOffline(partition: partition)
+                    coordinator?.disconnect()
+                }
+                coordinator?.activate(transport: index == 0 ? oldTransport : newTransport,
+                                      identity: index == 0 ? authority : otherAuthority,
+                                      apiBaseURL: apiBaseURL)
+            }
+            await update.value
+        }
+        let oldRefresh = Task { await coordinator.refresh() }
+        try await wait { gates.count == 1 }
+        coordinator.activateOffline(partition: otherPartition)
+        coordinator.selectAgent("A")
+        let newRefresh = Task { await coordinator.refresh() }
+        try await wait { gates.count == 2 }
+        gates[0].resume()
+        await oldRefresh.value
+        XCTAssertTrue(cancelled[0])
+        XCTAssertEqual(coordinator.status, .offline)
+        XCTAssertNil(coordinator.contentReportScope)
+        var joined = false
+        let joinedRefresh = Task {
+            joined = true
+            await coordinator.refresh()
+        }
+        try await wait { joined }
+        XCTAssertEqual(gates.count, 2, "An old completion must not clear the new attempt")
+        gates[1].resume()
+        await newRefresh.value
+        await joinedRefresh.value
+        try await wait { coordinator.status == .live && coordinator.contentReportScope != nil }
+        XCTAssertFalse(cancelled[1])
+        XCTAssertEqual(coordinator.contentReportScope?.partition, otherPartition)
+        let oldCalls = await oldTransport.counts()
+        XCTAssertEqual(oldCalls.0, 0)
+        XCTAssertEqual(oldCalls.1, 0)
+        coordinator.onReconnect = nil
+        coordinator.disconnect()
+    }
+
+    func testDisconnectCancelsPendingOfflineReconnect() async throws {
+        let cache = ReadingCache(file: nil)
+        let authority = identity()
+        let partition = try seed(cache, authority: authority)
+        let fake = ReadingFakeTransport(authority: authority)
+        let coordinator = ReadingCoordinator(cache: cache, prefetchBriefLimit: 0)
+        coordinator.activateOffline(partition: partition)
+        var gate: CheckedContinuation<Void, Never>?
+        var cancelled = false
+        let apiBaseURL = url
+        coordinator.onReconnect = { [weak coordinator] in
+            await withCheckedContinuation { gate = $0 }
+            cancelled = Task.isCancelled
+            coordinator?.activateOffline(partition: partition)
+            coordinator?.activate(transport: fake, identity: authority, apiBaseURL: apiBaseURL)
+        }
+        let refresh = Task { await coordinator.refresh() }
+        try await wait { gate != nil }
+        coordinator.disconnect()
+        gate?.resume()
+        await refresh.value
+        XCTAssertTrue(cancelled)
+        XCTAssertEqual(coordinator.status, .disconnected)
+        XCTAssertNil(coordinator.snapshot)
+        XCTAssertNil(coordinator.contentReportScope)
+        let calls = await fake.counts()
+        XCTAssertEqual(calls.0, 0)
+        XCTAssertEqual(calls.1, 0)
+        coordinator.onReconnect = nil
+    }
+
+    func testReturningConversationRestoresBodiesWithoutWaitingForRoster() async throws {
+        let cache = ReadingCache(file: nil)
+        let (coordinator, fake, authority) = try await start(cache: cache)
+        await coordinator.loadBrief("brief")
+        coordinator.rememberPosition(turnID: "turn")
+        let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+        try await wait { cache.load(partition, agentID: "A")?.position == "turn" }
+        coordinator.selectAgent("B")
+        try await wait { coordinator.snapshot?.agentID == "B" && !coordinator.isRefreshing }
+        await fake.holdRoster()
+        coordinator.selectAgent("A")
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        XCTAssertEqual(coordinator.snapshot?.agentID, "A")
+        XCTAssertNotNil(coordinator.briefs["brief"])
+        XCTAssertEqual(coordinator.readingPosition, "turn")
+        XCTAssertTrue(coordinator.isShowingCachedContent)
+        XCTAssertTrue(coordinator.isRefreshing)
+        try await wait { coordinator.status == .live }
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        XCTAssertTrue(coordinator.isRefreshing)
+        XCTAssertFalse(coordinator.isShowingCachedContent)
+        XCTAssertNotNil(coordinator.briefs["brief"])
+        await fake.releaseRoster()
+        try await wait { !coordinator.isRefreshing }
+        XCTAssertTrue(coordinator.isRosterCurrent)
+        coordinator.disconnect()
+    }
+
+    func testRosterFailureCannotBlockSuccessfulConversationRefresh() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.setRosterError(ReadingFakeTransport.Failure.offline)
+        await coordinator.refresh()
+        XCTAssertEqual(coordinator.status, .live)
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        XCTAssertNotNil(coordinator.snapshot)
+        XCTAssertFalse(coordinator.isRefreshing)
+        XCTAssertFalse(coordinator.isShowingCachedContent)
+        try await wait { await fake.counts().1 == 1 }
+        coordinator.disconnect()
+    }
+
+    func testFullRefreshInvalidatesRosterUntilCurrentRosterSucceeds() async throws {
+        let (coordinator, fake, _) = try await start()
+        try await wait { coordinator.isRosterCurrent && !coordinator.isRefreshing }
+        let calls = await fake.rosterCalls
+        await fake.holdRoster()
+        let refresh = Task { await coordinator.refresh() }
+        try await wait { await fake.rosterCalls > calls && coordinator.status == .live }
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        XCTAssertEqual(coordinator.agents.map(\.id), ["A", "B"])
+        await fake.releaseRoster()
+        await refresh.value
+        XCTAssertTrue(coordinator.isRosterCurrent)
+        coordinator.setForeground(false)
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        coordinator.disconnect()
+        XCTAssertFalse(coordinator.isRosterCurrent)
+    }
+
+    func testRosterHintRefreshInvalidatesAuthorityWhileConversationRemainsLive() async throws {
+        let (coordinator, fake, _) = try await start()
+        try await wait { await fake.counts().0 == 1 && coordinator.isRosterCurrent && !coordinator.isRefreshing }
+        let calls = await fake.rosterCalls
+        await fake.holdRoster()
+        await fake.send(try readingEvent("agent_roster_hint", raw: .object([:])), to: "roster")
+        try await wait { await fake.rosterCalls > calls }
+        XCTAssertEqual(coordinator.status, .live)
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        XCTAssertTrue(coordinator.isRefreshing)
+        XCTAssertEqual(coordinator.agents.map(\.id), ["A", "B"])
+        await fake.releaseRoster()
+        try await wait { !coordinator.isRefreshing }
+        XCTAssertTrue(coordinator.isRosterCurrent)
+        coordinator.disconnect()
+    }
+
+    func testFailedRosterHintRefreshDoesNotRetainRosterAuthority() async throws {
+        let (coordinator, fake, _) = try await start()
+        try await wait { await fake.counts().0 == 1 && coordinator.isRosterCurrent && !coordinator.isRefreshing }
+        let calls = await fake.rosterCalls
+        await fake.setRosterError(ReadingFakeTransport.Failure.offline)
+        await fake.holdRoster()
+        await fake.send(try readingEvent("agent_roster_hint", raw: .object([:])), to: "roster")
+        try await wait { await fake.rosterCalls > calls }
+        XCTAssertEqual(coordinator.status, .live)
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        await fake.releaseRoster()
+        try await wait { coordinator.status == .offline }
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        XCTAssertEqual(coordinator.agents.map(\.id), ["A", "B"])
+        coordinator.disconnect()
+    }
+
+    func testLateRosterSuccessCannotAuthorizeAnotherOfflinePartition() async throws {
+        let cache = ReadingCache(file: nil)
+        let (coordinator, fake, _) = try await start(cache: cache)
+        try await wait { coordinator.isRosterCurrent && !coordinator.isRefreshing }
+        let other = try seed(cache, authority: identity(user: "other"), agent: "B")
+        let calls = await fake.rosterCalls
+        await fake.holdRoster()
+        let refresh = Task { await coordinator.refresh() }
+        try await wait { await fake.rosterCalls > calls }
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        coordinator.activateOffline(partition: other)
+        XCTAssertEqual(coordinator.agents.map(\.id), ["B"])
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        await fake.releaseRoster()
+        await refresh.value
+        XCTAssertEqual(coordinator.agents.map(\.id), ["B"])
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        XCTAssertEqual(coordinator.status, .offline)
+        coordinator.disconnect()
+    }
+
+    func testLateRosterSuccessCannotAuthorizeNewGenerationInSamePartition() async throws {
+        let (coordinator, fake, authority) = try await start()
+        try await wait { coordinator.isRosterCurrent && !coordinator.isRefreshing }
+        let calls = await fake.rosterCalls
+        await fake.holdRoster()
+        let refresh = Task { await coordinator.refresh() }
+        try await wait { await fake.rosterCalls > calls }
+        XCTAssertFalse(coordinator.isRosterCurrent)
+
+        let replacementAuthority = identity()
+        XCTAssertNotEqual(authority.generation, replacementAuthority.generation)
+        let replacement = ReadingFakeTransport(authority: replacementAuthority)
+        await replacement.setRosterError(ReadingFakeTransport.Failure.offline)
+        coordinator.activate(transport: replacement, identity: replacementAuthority, apiBaseURL: url)
+        try await wait { await replacement.counts().1 == 1 && !coordinator.isRefreshing }
+        XCTAssertEqual(coordinator.status, .live)
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        XCTAssertEqual(coordinator.agents.map(\.id), ["A", "B"])
+
+        await fake.releaseRoster()
+        await refresh.value
+        XCTAssertEqual(coordinator.status, .live)
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        XCTAssertEqual(coordinator.agents.map(\.id), ["A", "B"])
+        coordinator.disconnect()
+    }
+
+    func testRosterStreamFailureClearsAuthorityWithoutDiscardingCachedAgents() async throws {
+        let (coordinator, fake, _) = try await start()
+        try await wait { await fake.counts().0 == 1 && coordinator.isRosterCurrent && !coordinator.isRefreshing }
+        let snapshot = coordinator.snapshot
+        await fake.overflow(agentID: "roster")
+        try await wait { coordinator.status == .offline }
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        coordinator.setForeground(false)
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        XCTAssertEqual(coordinator.agents.map(\.id), ["A", "B"])
+        XCTAssertEqual(coordinator.snapshot, snapshot)
+        XCTAssertTrue(coordinator.isShowingCachedContent)
+        coordinator.disconnect()
+    }
+
+    func testSameEpochRefreshRetainsLoadedHistoryBodiesAndPosition() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.setHistoryTurns([readingTurn("old", index: 0)])
+        await coordinator.loadHistory()
+        await coordinator.loadBrief("brief")
+        coordinator.rememberPosition(turnID: "old")
+        await coordinator.refresh()
+        XCTAssertEqual(turnIDs(coordinator), ["old", "turn"])
+        XCTAssertEqual(coordinator.snapshot?.snapshotCursor, "live-1")
+        XCTAssertFalse(coordinator.canLoadHistory)
+        XCTAssertNotNil(coordinator.briefs["brief"])
+        XCTAssertEqual(coordinator.readingPosition, "old")
+        await fake.replaceEpoch()
+        await coordinator.refresh()
+        XCTAssertEqual(turnIDs(coordinator), ["turn"])
+        XCTAssertEqual(coordinator.snapshot?.eventLogEpoch, "replacement")
+        XCTAssertTrue(coordinator.briefs.isEmpty)
+        XCTAssertNil(coordinator.readingPosition)
+        coordinator.disconnect()
+    }
+
+    func testConversationRefreshFailurePreservesCacheAndStillPublishesRoster() async throws {
+        let failures: [any Error] = [ReadingFakeTransport.Failure.offline, HolonConversationError.malformedProtocol]
+        for error in failures {
+            let cache = ReadingCache(file: nil)
+            let (coordinator, fake, authority) = try await start(cache: cache)
+            await coordinator.loadBrief("brief")
+            let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+            let snapshot = coordinator.snapshot
+            await fake.setAgentIDs(["B"])
+            await fake.setConversationFailure(error)
+            await coordinator.refresh()
+            XCTAssertEqual(coordinator.agents.map(\.id), ["B"])
+            XCTAssertEqual(coordinator.snapshot, snapshot)
+            XCTAssertNotNil(coordinator.briefs["brief"])
+            XCTAssertTrue(coordinator.isShowingCachedContent)
+            XCTAssertFalse(coordinator.isRefreshing)
+            XCTAssertNotNil(cache.load(partition, agentID: "A"))
+            coordinator.setForeground(false)
+            coordinator.disconnect()
+        }
+    }
+
+    func testInvalidateFencesColdRestoreAndPendingPositionPersistence() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("reading.json")
+        let saved = ReadingCache(file: file)
+        let partition = try seed(saved, authority: identity())
+        let flushed = await saved.flush()
+        XCTAssertTrue(flushed)
+        let cache = ReadingCache(file: file)
+        let cold = ReadingCoordinator(cache: cache, prefetchBriefLimit: 0)
+        cold.activateOffline(partition: partition)
+        cold.selectAgent("A")
+        cold.invalidate(partition)
+        await cache.prepare()
+        await Task.yield()
+        XCTAssertNil(cold.snapshot)
+        XCTAssertNil(cache.load(partition, agentID: "A"))
+        XCTAssertEqual(cold.status, .disconnected)
+        _ = await cache.flush()
+
+        let memory = ReadingCache(file: nil)
+        let (coordinator, _, authority) = try await start(cache: memory)
+        let current = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+        let other = try seed(memory, authority: identity(user: "other"))
+        coordinator.rememberPosition(turnID: "pending")
+        coordinator.invalidate(other)
+        XCTAssertNotNil(coordinator.snapshot, "Invalidating another partition must not clear current reading")
+        coordinator.invalidate(current)
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertNil(memory.load(current, agentID: "A"))
+        XCTAssertNil(memory.load(current, agentID: nil))
+        XCTAssertNil(memory.load(other, agentID: "A"))
+        XCTAssertNil(coordinator.snapshot)
+        XCTAssertFalse(coordinator.isRefreshing)
+    }
+
+    func testAuthorizationDenialsInvalidateCacheAndDoNotReconnectOnForeground() async throws {
+        for code in [401, 403] {
+            let cache = ReadingCache(file: nil)
+            let (coordinator, fake, authority) = try await start(cache: cache)
+            await coordinator.loadBrief("brief")
+            let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+            var failures = 0
+            coordinator.onConnectionFailure = { _ in failures += 1 }
+            await fake.setGate(.conversation("A"), failure: HolonHTTPFailure(statusCode: code, identity: authority))
+            let refresh = Task { await coordinator.refresh() }
+            try await wait { await fake.isBlocked() }
+            XCTAssertNotNil(coordinator.snapshot)
+            await fake.release()
+            await refresh.value
+            XCTAssertEqual(coordinator.status, code == 401 ? .sessionExpired : .permissionDenied)
+            XCTAssertNil(coordinator.snapshot)
+            XCTAssertTrue(coordinator.briefs.isEmpty)
+            XCTAssertTrue(coordinator.agents.isEmpty)
+            XCTAssertNil(cache.load(partition, agentID: "A"))
+            XCTAssertNil(cache.load(partition, agentID: nil))
+            XCTAssertNil(coordinator.contentReportScope)
+            XCTAssertEqual(failures, 1)
+            let calls = await fake.conversationCalls
+            coordinator.setForeground(false)
+            coordinator.setForeground(true)
+            await coordinator.refresh()
+            let afterForeground = await fake.conversationCalls
+            XCTAssertEqual(afterForeground, calls)
+            coordinator.disconnect()
+        }
+    }
+
+    func testLateOnlineFailureCannotRevokeAnotherOfflinePartition() async throws {
+        let cache = ReadingCache(file: nil)
+        let authority = identity()
+        let other = try seed(cache, authority: identity(user: "other"), body: "other account")
+        let fake = ReadingFakeTransport(authority: authority)
+        await fake.setGate(.conversation("A"), failure: HolonHTTPFailure(statusCode: 401, identity: authority))
+        let coordinator = ReadingCoordinator(cache: cache, prefetchBriefLimit: 0)
+        var failures = 0
+        coordinator.onConnectionFailure = { _ in failures += 1 }
+        coordinator.activate(transport: fake, identity: authority, apiBaseURL: url)
+        coordinator.selectAgent("A")
+        try await wait { await fake.isBlocked() }
+        coordinator.activateOffline(partition: other)
+        coordinator.selectAgent("A")
+        XCTAssertEqual(coordinator.briefs["brief"]?["text"], .string("other account"))
+        await fake.release()
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(coordinator.status, .offline)
+        XCTAssertEqual(coordinator.briefs["brief"]?["text"], .string("other account"))
+        XCTAssertNotNil(cache.load(other, agentID: "A"))
+        XCTAssertEqual(failures, 0)
+        coordinator.disconnect()
+    }
+
+    func testLateBriefCannotCrossEpochOrOfflinePartition() async throws {
+        for replaceEpoch in [false, true] {
+            let cache = ReadingCache(file: nil)
+            let (coordinator, fake, _) = try await start(cache: cache)
+            let other = try seed(cache, authority: identity(user: "other"), body: "other account")
+            await fake.setGate(.expansions)
+            let brief = Task { await coordinator.loadBrief("brief") }
+            try await wait { await fake.expansionCalls == 1 }
+            if replaceEpoch {
+                await fake.replaceEpoch()
+                await coordinator.refresh()
+            } else {
+                coordinator.activateOffline(partition: other)
+                coordinator.selectAgent("A")
+            }
+            await fake.releaseExpansions()
+            await brief.value
+            if replaceEpoch {
+                XCTAssertEqual(coordinator.snapshot?.eventLogEpoch, "replacement")
+                XCTAssertNil(coordinator.briefs["brief"])
+            } else {
+                XCTAssertEqual(coordinator.briefs["brief"]?["text"], .string("other account"))
+                XCTAssertEqual(coordinator.status, .offline)
+            }
+            XCTAssertTrue(coordinator.loadingBriefs.isEmpty)
+            coordinator.disconnect()
+        }
+    }
+
+    func testBoundedPrefetchSharesExpansionBudgetAndPersistsBodies() async throws {
+        let cache = ReadingCache(file: nil)
+        let authority = identity()
+        let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+        let fake = ReadingFakeTransport(authority: authority)
+        let ids = (0..<10).map { "brief-\($0)" }
+        await fake.setBriefIDs(ids)
+        await fake.setGate(.expansions)
+        let coordinator = ReadingCoordinator(cache: cache)
+        coordinator.activate(transport: fake, identity: authority, apiBaseURL: url)
+        coordinator.selectAgent("A")
+        try await wait { await fake.expansionCalls == 2 && coordinator.status == .live }
+        let visible = Task { await coordinator.loadBrief(ids[0]) }
+        await fake.releaseExpansions()
+        await visible.value
+        try await wait { coordinator.briefs.count == 9 && coordinator.loadingBriefs.isEmpty }
+        let maximum = await fake.maximumExpansions
+        let calls = await fake.expansionCalls
+        XCTAssertEqual(maximum, 2)
+        XCTAssertEqual(calls, 9, "Only eight tail bodies plus the explicit visible-body read are fetched")
+        XCTAssertNotNil(cache.load(partition, agentID: "A")?.briefs[ids[0]])
+        coordinator.disconnect()
+        coordinator.activateOffline(partition: partition)
+        coordinator.selectAgent("A")
+        XCTAssertEqual(coordinator.briefs.count, 9)
+        XCTAssertFalse(coordinator.isRefreshing)
+        coordinator.disconnect()
+    }
+
+    func testOversizedHistoryCacheFallsBackToConfirmedLiveWindow() async throws {
+        let cache = ReadingCache(file: nil)
+        let authority = identity()
+        let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+        let fake = ReadingFakeTransport(authority: authority)
+        await fake.setLiveTurns([readingTurn("turn", index: 1, text: String(repeating: "a", count: 150_000))])
+        await fake.setHistoryTurns([readingTurn("old", index: 0, text: String(repeating: "b", count: 150_000))])
+        let coordinator = ReadingCoordinator(cache: cache, prefetchBriefLimit: 0)
+        coordinator.activate(transport: fake, identity: authority, apiBaseURL: url)
+        coordinator.selectAgent("A")
+        try await wait { coordinator.status == .live }
+        await coordinator.loadHistory()
+        XCTAssertEqual(turnIDs(coordinator), ["old", "turn"])
+        let displayed = try XCTUnwrap(coordinator.snapshot)
+        XCTAssertGreaterThan(try JSONEncoder().encode(displayed.raw).count, ReadingSnapshotWindow.maximumBytes)
+        let entry = try XCTUnwrap(cache.load(partition, agentID: "A"))
+        let persisted = try HolonConversationSnapshot(raw: XCTUnwrap(entry.snapshot))
+        XCTAssertLessThanOrEqual(try JSONEncoder().encode(persisted.raw).count, ReadingSnapshotWindow.maximumBytes)
+        XCTAssertEqual(persisted.snapshotCursor, "live-1")
+        XCTAssertEqual(persisted.nextBeforeCursor, "older-1")
+        coordinator.disconnect()
+        coordinator.activateOffline(partition: partition)
+        coordinator.selectAgent("A")
+        XCTAssertEqual(turnIDs(coordinator), ["turn"])
+        coordinator.disconnect()
+    }
+
+    func testSameEpochDisjointWindowsKeepLiveHistoryBoundary() throws {
+        let oldTurns = (1...20).map { readingTurn("turn-\($0)", index: Int64($0)) }
+        let newTurns = (41...100).map { readingTurn("turn-\($0)", index: Int64($0)) }
+        var active = readingTurn("active", index: 200)
+        if case .object(var fields) = active {
+            fields["execution"] = .object(["kind": .string("active")])
+            active = .object(fields)
+        }
+        // A shared active execution does not bridge disjoint terminal history.
+        for sharedActive in [false, true] {
+            let tail = sharedActive ? [active] : []
+            let history = try readingSnapshot(cursor: "cached", more: false, before: nil,
+                                              turns: oldTurns + tail)
+            let live = try readingSnapshot(cursor: "latest", before: "before-41", turns: newTurns + tail)
+            let merged = try ReadingSnapshotWindow.merging(live, history: history)
+            XCTAssertEqual(merged.raw["turns"], .array(oldTurns + newTurns + tail))
+            XCTAssertEqual(merged.snapshotCursor, "latest")
+            XCTAssertTrue(merged.hasMore)
+            XCTAssertEqual(merged.nextBeforeCursor, "before-41")
+        }
+    }
+
+    func testSameEpochRefreshUsesOnlyLiveActiveTurns() throws {
+        let cachedClosed = (1...20).map { readingTurn("turn-\($0)", index: Int64($0)) }
+        // A long-running execution can finish outside the latest terminal window.
+        let staleActive = readingTurn("stale-active", index: 0, execution: "active")
+        let currentActive = readingTurn("current-active", index: 101, execution: "active")
+        let history = try readingSnapshot(cursor: "cached", more: false, before: nil,
+                                          turns: cachedClosed + [staleActive])
+        XCTAssertEqual(history.raw["active_turns"], .array([staleActive]))
+        for firstIndex in [16, 41] {
+            let liveClosed = (firstIndex...100).map { readingTurn("turn-\($0)", index: Int64($0)) }
+            let live = try readingSnapshot(cursor: "latest", before: "before-\(firstIndex)",
+                                           turns: liveClosed + [currentActive])
+            let merged = try ReadingSnapshotWindow.merging(live, history: history)
+            let expectedIndices = firstIndex == 16 ? Array(1...100) : Array(1...20) + Array(41...100)
+            let expectedClosed = expectedIndices.map { readingTurn("turn-\($0)", index: Int64($0)) }
+            XCTAssertEqual(merged.raw["turns"], .array(expectedClosed + [currentActive]))
+            XCTAssertEqual(merged.raw["active_turns"], .array([currentActive]))
+            XCTAssertEqual(merged.snapshotCursor, "latest")
+        }
+    }
+
+    func testSameEpochRefreshPersistsEndedActiveRemovalAcrossColdRestart() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("reading.json")
+        let cache = ReadingCache(file: file)
+        let closed = (1...20).map { readingTurn("turn-\($0)", index: Int64($0)) }
+        let endedActive = readingTurn("turn-21", index: 21, execution: "active")
+        let (coordinator, fake, authority) = try await start(cache: cache, turns: closed + [endedActive])
+        let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+        XCTAssertEqual(coordinator.snapshot?.raw["active_turns"], .array([endedActive]))
+        await fake.setOffline(true)
+        await coordinator.refresh()
+        XCTAssertEqual(coordinator.status, .offline)
+        XCTAssertEqual(coordinator.snapshot?.raw["active_turns"], .array([endedActive]))
+
+        let latest = (41...100).map { readingTurn("turn-\($0)", index: Int64($0)) }
+        let expected = closed + latest
+        await fake.setLiveTurns(latest)
+        await fake.setOffline(false)
+        await coordinator.refresh()
+        XCTAssertEqual(coordinator.status, .live)
+        XCTAssertEqual(coordinator.snapshot?.raw["turns"], .array(expected))
+        XCTAssertEqual(coordinator.snapshot?.raw["active_turns"], .array([]))
+        let saved = try XCTUnwrap(cache.load(partition, agentID: "A"))
+        let persisted = try HolonConversationSnapshot(raw: XCTUnwrap(saved.snapshot))
+        XCTAssertEqual(persisted.raw["turns"], .array(expected))
+        XCTAssertEqual(persisted.raw["active_turns"], .array([]))
+        let flushed = await cache.flush()
+        XCTAssertTrue(flushed)
+        coordinator.disconnect()
+
+        let restored = ReadingCoordinator(cache: ReadingCache(file: file), prefetchBriefLimit: 0)
+        restored.activateOffline(partition: partition)
+        restored.selectAgent("A")
+        try await wait { restored.snapshot != nil }
+        XCTAssertEqual(restored.status, .offline)
+        XCTAssertTrue(restored.isShowingCachedContent)
+        XCTAssertEqual(restored.snapshot?.raw["turns"], .array(expected))
+        XCTAssertEqual(restored.snapshot?.raw["active_turns"], .array([]))
+        restored.disconnect()
+    }
+
+    func testSameEpochContainedCacheKeepsOlderLiveHistoryBoundary() throws {
+        let live = try readingSnapshot(more: false, before: nil,
+                                       turns: (1...60).map { readingTurn("turn-\($0)", index: Int64($0)) })
+        let history = try readingSnapshot(cursor: "cached", before: "before-41",
+                                          turns: (41...60).map { readingTurn("turn-\($0)", index: Int64($0)) })
+        XCTAssertEqual(try ReadingSnapshotWindow.merging(live, history: history), live)
+    }
+
+    func testSameEpochReconnectLoadsGapBetweenCachedAndLiveWindows() async throws {
+        let (coordinator, fake, _) = try await start(
+            turns: (1...20).map { readingTurn("turn-\($0)", index: Int64($0)) })
+        await fake.setHistoryTurns([])
+        await coordinator.loadHistory()
+        XCTAssertFalse(coordinator.canLoadHistory)
+        await fake.setOffline(true)
+        await coordinator.refresh()
+        XCTAssertEqual(coordinator.status, .offline)
+
+        await fake.setLiveTurns((41...100).map { readingTurn("turn-\($0)", index: Int64($0)) })
+        await fake.setOffline(false)
+        await coordinator.refresh()
+        XCTAssertEqual(turnIDs(coordinator).count, 80)
+        XCTAssertTrue(coordinator.canLoadHistory)
+        await fake.setHistoryTurns((1...40).map { readingTurn("turn-\($0)", index: Int64($0)) })
+        await coordinator.loadHistory()
+        XCTAssertEqual(turnIDs(coordinator), (1...100).map { "turn-\($0)" })
+        XCTAssertEqual(coordinator.snapshot?.snapshotCursor, "live-1")
+        XCTAssertFalse(coordinator.canLoadHistory)
+        let cursors = await fake.historyCursors
+        XCTAssertEqual(cursors, ["older-1", "older-1"])
+        coordinator.disconnect()
+    }
+
+    func testSameEpochHistoryCapacityUsesServerWindowWithoutInventingCursor() throws {
+        let live = try readingSnapshot(turns: (1...180).map { readingTurn("turn-\($0)", index: Int64($0)) })
+        let history = try readingSnapshot(cursor: "old", more: false, before: nil,
+                                          turns: [readingTurn("old", index: 0)])
+        let bounded = try ReadingSnapshotWindow.merging(live, history: history)
+        XCTAssertEqual(bounded, live)
+        XCTAssertEqual(bounded.nextBeforeCursor, "older-1")
+        let replacement = try readingSnapshot(epoch: "other")
+        XCTAssertEqual(try ReadingSnapshotWindow.merging(replacement, history: history), replacement)
+    }
+
+    func testSamePartitionOnlineActivationDoesNotClearReadableProjection() async throws {
+        let cache = ReadingCache(file: nil)
+        let (coordinator, _, authority) = try await start(cache: cache)
+        await coordinator.loadBrief("brief")
+        let snapshot = coordinator.snapshot
+        let renewed = identity()
+        let fake = ReadingFakeTransport(authority: renewed)
+        await fake.holdRoster()
+        await fake.setGate(.conversation("A"))
+        coordinator.activate(transport: fake, identity: renewed, apiBaseURL: url)
+        XCTAssertEqual(coordinator.selectedAgentID, "A")
+        XCTAssertEqual(coordinator.snapshot, snapshot)
+        XCTAssertNotNil(coordinator.briefs["brief"])
+        XCTAssertTrue(coordinator.isShowingCachedContent)
+        XCTAssertTrue(coordinator.isRefreshing)
+        XCTAssertNil(coordinator.contentReportScope)
+        try await wait { await fake.isBlocked() }
+        await fake.release()
+        try await wait { coordinator.status == .live }
+        XCTAssertFalse(coordinator.isShowingCachedContent)
+        XCTAssertTrue(coordinator.isRefreshing)
+        await fake.releaseRoster()
+        try await wait { !coordinator.isRefreshing }
+        XCTAssertNotEqual(renewed.generation, authority.generation)
+        coordinator.disconnect()
+    }
+
+    func testFailedConnectionCanRetryAndRecoverAfterForegroundReentry() async throws {
+        let cache = ReadingCache(file: nil)
+        let authority = identity()
+        let partition = try seed(cache, authority: authority)
+        let fake = ReadingFakeTransport(authority: authority)
+        await fake.setOffline(true)
+        let coordinator = ReadingCoordinator(cache: cache, prefetchBriefLimit: 0)
+        coordinator.activateOffline(partition: partition)
+        coordinator.selectAgent("A")
+        let cached = coordinator.snapshot
+        coordinator.activate(transport: fake, identity: authority, apiBaseURL: url)
+        try await wait { coordinator.status == .offline }
+        XCTAssertEqual(coordinator.snapshot, cached)
+        XCTAssertNotNil(coordinator.briefs["brief"])
+        await fake.setOffline(false)
+        await coordinator.refresh()
+        XCTAssertEqual(coordinator.status, .live)
+        XCTAssertEqual(turnIDs(coordinator), ["old", "turn"])
+        coordinator.setForeground(false)
+        XCTAssertTrue(coordinator.isShowingCachedContent)
+        coordinator.setForeground(true)
+        try await wait { coordinator.status == .live && !coordinator.isRefreshing }
+        XCTAssertNotNil(coordinator.briefs["brief"])
+        coordinator.disconnect()
+    }
+
+    func testColdOnlineActivationShowsDiskCacheDuringIndependentRefreshFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("reading.json")
+        let saved = ReadingCache(file: file)
+        let authority = identity()
+        let partition = try seed(saved, authority: authority)
+        let flushed = await saved.flush()
+        XCTAssertTrue(flushed)
+        let cache = ReadingCache(file: file)
+        let fake = ReadingFakeTransport(authority: authority)
+        await fake.holdRoster()
+        await fake.setGate(.conversation("A"), failure: ReadingFakeTransport.Failure.offline)
+        let coordinator = ReadingCoordinator(cache: cache, prefetchBriefLimit: 0)
+        coordinator.activate(transport: fake, identity: authority, apiBaseURL: url)
+        coordinator.selectAgent("A")
+        try await wait {
+            let blocked = await fake.isBlocked()
+            return coordinator.briefs["brief"] != nil && blocked
+        }
+        XCTAssertEqual(turnIDs(coordinator), ["old", "turn"])
+        XCTAssertEqual(coordinator.readingPosition, "old")
+        XCTAssertTrue(coordinator.isShowingCachedContent)
+        XCTAssertTrue(coordinator.isRefreshing)
+        await fake.release()
+        await fake.releaseRoster()
+        try await wait { coordinator.status == .offline && !coordinator.isRefreshing }
+        XCTAssertEqual(turnIDs(coordinator), ["old", "turn"])
+        XCTAssertEqual(coordinator.briefs["brief"]?["text"], .string("cached body"))
+        XCTAssertNotNil(cache.load(partition, agentID: "A"))
+        coordinator.setForeground(false)
+        coordinator.disconnect()
+        _ = await cache.flush()
+    }
+
+    func testCacheRosterWindowIsBoundedWithoutTruncatingOnlineDisplay() async throws {
+        let cache = ReadingCache(file: nil)
+        let (coordinator, fake, authority) = try await start(cache: cache)
+        await fake.setAgentIDs((0..<700).map { "agent-\($0)" })
+        await coordinator.refresh()
+        let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+        XCTAssertEqual(coordinator.agents.count, 700)
+        let cached = try XCTUnwrap(cache.load(partition, agentID: nil))
+        XCTAssertFalse(cached.agents.isEmpty)
+        XCTAssertLessThanOrEqual(cached.agents.count, 512)
+        coordinator.disconnect()
+        coordinator.activateOffline(partition: partition)
+        XCTAssertEqual(coordinator.agents, cached.agents)
+        coordinator.disconnect()
+    }
+
     func testCurrent401ClearsDisplayAndCallsConnectionOnce() async throws {
         let authority = identity()
         let fake = ReadingFakeTransport(authority: authority)
         await fake.setGate(.conversation("A"), failure: HolonHTTPFailure(statusCode: 401, identity: authority))
-        let coordinator = ReadingCoordinator(cache: ReadingCache(file: nil))
+        let coordinator = ReadingCoordinator(cache: ReadingCache(file: nil), prefetchBriefLimit: 0)
         var failures: [HolonHTTPFailure] = []
         coordinator.onConnectionFailure = { failures.append($0) }
         coordinator.activate(transport: fake, identity: authority, apiBaseURL: url)

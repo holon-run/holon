@@ -222,9 +222,7 @@ actor ReadingClientTransport: ReadingTransport {
     }
 
     func conversation(agentID: String, before: String?) async throws -> HolonConversationSnapshot {
-        let value = try await request { try await $0.conversation(agentID: agentID, before: before, limit: 60) }
-        guard value.eventLogEpoch == rosterEpoch else { throw HolonConversationError.bootstrapRequired }
-        return value
+        try await request { try await $0.conversation(agentID: agentID, before: before, limit: 60) }
     }
     func brief(agentID: String, briefID: String) async throws -> JSONValue {
         try await request { try await $0.briefDetail(agentID: agentID, briefID: briefID) }

@@ -1,10 +1,10 @@
 import SwiftUI
 
 enum BriefPlaceholderState: Equatable {
-    case unloaded, loading, failed
+    case unloaded, loading, failed, uncachedOffline
 
-    init(isLoading: Bool, hasFailed: Bool) {
-        self = isLoading ? .loading : hasFailed ? .failed : .unloaded
+    init(isLoading: Bool, hasFailed: Bool, canLoad: Bool = true) {
+        self = !canLoad ? .uncachedOffline : isLoading ? .loading : hasFailed ? .failed : .unloaded
     }
 
     var titleKey: String {
@@ -12,6 +12,7 @@ enum BriefPlaceholderState: Equatable {
         case .unloaded: "reading.brief.unloaded"
         case .loading: "reading.brief.loading"
         case .failed: "reading.brief.failed"
+        case .uncachedOffline: "reading.brief.uncachedOffline"
         }
     }
 
@@ -20,6 +21,7 @@ enum BriefPlaceholderState: Equatable {
         case .unloaded: "reading.brief.load"
         case .loading: nil
         case .failed: "reading.retry"
+        case .uncachedOffline: nil
         }
     }
 }

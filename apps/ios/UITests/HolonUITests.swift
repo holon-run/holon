@@ -399,6 +399,35 @@ final class HolonUITests: XCTestCase {
         add(attachment)
     }
 
+    private func changeFixtureNodeAvailability(_ available: Bool) async throws {
+        let url = try XCTUnwrap(URL(string: required("NODE_CONTROL_URL")))
+        let endpoint = try XCTUnwrap(URL(string: required("ENDPOINT")))
+        XCTAssertEqual(url.scheme, "http")
+        XCTAssertEqual(url.host, "127.0.0.1")
+        XCTAssertEqual(url.port, endpoint.port, "Only the isolated fixture proxy may be controlled")
+        XCTAssertEqual(url.path, "/fixture/node-availability")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("Bearer " + (try required("NODE_CONTROL_TOKEN")), forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["available": available])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        struct NodeAvailability: Decodable { let available: Bool }
+        XCTAssertEqual(try JSONDecoder().decode(NodeAvailability.self, from: data).available, available)
+    }
+
+    private func assertNoCachedSessionUI(_ app: XCUIApplication) throws {
+        XCTAssertFalse(app.buttons["agent." + (try required("AGENT_ID"))].exists)
+        XCTAssertFalse(app.buttons["conversation.more"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["sending.text"].firstMatch.exists)
+        XCTAssertFalse(app.descendants(matching: .any)["conversation.connectionStatus"].firstMatch.exists)
+        XCTAssertFalse(app.staticTexts["conversation.readOnly"].exists)
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(
+            format: "label CONTAINS %@", try required("READ_MARKER"))).firstMatch.exists)
+    }
+
     private func disconnected(language: String, dark: Bool, large: Bool) throws {
         let app = launch(language: language, dark: dark, large: large)
         defer { app.terminate() }
@@ -1083,8 +1112,14 @@ final class HolonUITests: XCTestCase {
         reveal(permission, in: app); permission.switches.firstMatch.tap()
         let next = app.buttons["onboarding.checkAddress"]
         reveal(next, in: app); next.tap()
-        XCTAssertTrue(manage.waitForExistence(timeout: 30), "The saved session should reconnect without another token")
-        manage.tap()
+        // Same-partition reconnect keeps the current Connections route.
+        let reconnected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let status = app.staticTexts["connection.status"]
+            return app.navigationBars["Connections"].exists && status.exists && status.label == "Connected"
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [reconnected], timeout: 30), .completed,
+                       "The saved session should reconnect without another token")
+        XCTAssertFalse(app.secureTextFields["onboarding.token"].exists)
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(rows.firstMatch.identifier, originalID, "Duplicate additions must keep the original partition")
         capture(app, "network-deduplicated")
@@ -1096,6 +1131,7 @@ final class HolonUITests: XCTestCase {
         reveal(permission, in: app); permission.switches.firstMatch.tap()
         reveal(next, in: app); next.tap()
         XCTAssertTrue(app.staticTexts["connection.status"].waitForExistence(timeout: 10))
+        try assertNoCachedSessionUI(app)
         app.buttons["onboarding.back"].tap()
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 10))
         XCTAssertEqual(rows.count, 2)
@@ -1128,6 +1164,7 @@ final class HolonUITests: XCTestCase {
         app.terminate(); app.launch()
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
         XCTAssertEqual(rows.count, 0, "Deleted networks must not reappear after process restart")
+        try assertNoCachedSessionUI(app)
         capture(app, "network-deletion-restored-empty")
     }
 
@@ -1320,7 +1357,19 @@ final class HolonUITests: XCTestCase {
         let process = app.buttons.matching(NSPredicate(
             format: "identifier BEGINSWITH %@", "activities." + turn
         )).firstMatch
-        reveal(process, in: app, fullyVisible: true)
+        func revealResultProcess() {
+            // A previous scenario or cold launch can restore a newer window.
+            // Scrolling alone cannot mount the older task-result turn.
+            for _ in 0..<40 {
+                if process.exists { break }
+                let older = app.buttons["conversation.older"]
+                guard older.exists else { break }
+                reveal(older, in: app, fullyVisible: true)
+                older.tap()
+            }
+            reveal(process, in: app, fullyVisible: true)
+        }
+        revealResultProcess()
         // The preceding visible brief replaces its placeholder asynchronously.
         // Wait for real content before locating the disclosure's tap position.
         let read = app.staticTexts.containing(NSPredicate(
@@ -1352,9 +1401,120 @@ final class HolonUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.terminate(); app.launch()
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
-        reveal(process, in: app, fullyVisible: true)
+        revealResultProcess()
         XCTAssertTrue(process.isHittable)
         XCTAssertFalse(app.buttons["taskResult.source." + message].exists, "Cold launch folds completed process again")
+    }
+
+    func testOfflineReadingCacheColdLaunchAndRetry() async throws {
+        try connectForSharing()
+        let app = launch(language: "en", dark: false, large: false)
+        defer { app.terminate() }
+        let agentID = try required("AGENT_ID")
+        if app.buttons["conversation.more"].waitForExistence(timeout: 5) {
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+        }
+        let agent = app.buttons["agent." + agentID]
+        reveal(agent, in: app); agent.tap()
+        let editor = app.descendants(matching: .any)["sending.text"].firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 30), "Populate the cache from an authenticated online reader")
+        if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
+        let older = app.buttons["conversation.older"]
+        for _ in 0..<40 {
+            if older.exists { break }
+            app.swipeDown()
+        }
+        reveal(older, in: app); older.tap()
+        let timestamp = app.staticTexts["conversation.time." + (try required("HISTORY_OLDER_TOP"))]
+        let historicalActivities = app.buttons["activities." + (try required("HISTORY_OLDER_TOP"))]
+        let body = app.staticTexts.containing(NSPredicate(
+            format: "label CONTAINS %@", try required("OFFLINE_BODY_MARKER"))).firstMatch
+        func assertRestoredPosition() {
+            let positioned = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                guard timestamp.exists, timestamp.isHittable else { return false }
+                let chrome = app.descendants(matching: .any)["conversation.connectionStatus"].firstMatch
+                let top = max(app.navigationBars.firstMatch.frame.maxY, chrome.exists ? chrome.frame.maxY : 0)
+                return timestamp.frame.minY >= top - 2 && timestamp.frame.minY <= top + 80
+            }, object: nil)
+            let result = XCTWaiter.wait(for: [positioned], timeout: 20)
+            if result != .completed { capture(app, "historical-position-restoration-failure") }
+            XCTAssertEqual(result, .completed,
+                           "The saved historical turn must restore near the reader's unobscured top")
+            XCTAssertTrue(historicalActivities.exists, "The restored historical turn must retain its activity disclosure")
+        }
+        assertRestoredPosition()
+        XCTAssertTrue(body.waitForExistence(timeout: 30), "The real historical brief body must be fetched through UI")
+        capture(app, "online-history-before-cache-cold-launch")
+
+        // Termination precedes the fixture outage: no running app or live stream
+        // can supply the offline reader with an in-memory snapshot.
+        app.terminate()
+        try await changeFixtureNodeAvailability(false)
+        app.launch()
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30),
+                      "A confirmed cached session must not fall back to login when its node is unavailable")
+        XCTAssertTrue(app.staticTexts["Cached content · offline"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.descendants(matching: .any)["conversation.connectionStatus"].firstMatch.exists)
+        XCTAssertTrue(app.staticTexts["conversation.readOnly"].waitForExistence(timeout: 10))
+        assertRestoredPosition()
+        XCTAssertTrue(body.waitForExistence(timeout: 10), "Cold offline launch must retain the fetched brief body")
+        XCTAssertFalse(app.staticTexts["conversation.notCached"].exists)
+        XCTAssertFalse(editor.exists)
+        XCTAssertFalse(app.otherElements["sending.composer"].exists)
+        XCTAssertFalse(app.buttons["sending.enqueue"].exists)
+        XCTAssertEqual(app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "brief.load.")).count, 0,
+                       "Uncached offline briefs must not offer a network load action")
+        capture(app, "offline-cold-launch-cached-body-and-position")
+
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(agent.waitForExistence(timeout: 10), "The cached Agent roster must survive process death")
+        XCTAssertTrue(app.staticTexts["agents.connectionStatus"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["agents.connectionStatus"].label.contains("offline"))
+        XCTAssertTrue(app.buttons["agents.retry"].exists)
+        reveal(agent, in: app); agent.tap()
+        XCTAssertTrue(body.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["conversation.readOnly"].exists)
+        try await changeFixtureNodeAvailability(true)
+        let retry = app.buttons["conversation.retry"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10)); retry.tap()
+        XCTAssertTrue(editor.waitForExistence(timeout: 30), "Explicit UI retry must establish a fresh online bootstrap")
+        let writable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
+                                                 object: app.staticTexts["conversation.readOnly"])
+        XCTAssertEqual(XCTWaiter.wait(for: [writable], timeout: 10), .completed)
+        XCTAssertFalse(app.staticTexts["Cached content · offline"].exists)
+        XCTAssertFalse(app.buttons["onboarding.scan"].exists)
+        XCTAssertTrue(body.waitForExistence(timeout: 10))
+        capture(app, "offline-cache-explicit-ui-retry-live")
+    }
+
+    func testOfflineReadingCacheSignOutBoundary() async throws {
+        try connectForSharing()
+        let app = launch(language: "en", dark: false, large: false)
+        defer { app.terminate() }
+        if app.buttons["conversation.more"].waitForExistence(timeout: 5) {
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+        }
+        let agent = app.buttons["agent." + (try required("AGENT_ID"))]
+        reveal(agent, in: app); agent.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.waitForExistence(timeout: 30))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        let manage = app.buttons["connection.manage"]
+        XCTAssertTrue(manage.waitForExistence(timeout: 10)); manage.tap()
+        let signOut = app.buttons["Sign out"]
+        reveal(signOut, in: app); signOut.tap()
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 20))
+        app.terminate()
+        try await changeFixtureNodeAvailability(false)
+        app.launch()
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 20))
+        try assertNoCachedSessionUI(app)
+        capture(app, "signed-out-offline-cache-inaccessible")
+        try await changeFixtureNodeAvailability(true)
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 20),
+                      "Restoring the node cannot restore an explicitly signed-out reading context")
+        try assertNoCachedSessionUI(app)
     }
 
     func testConversationHistoryWindowPosition() throws {
