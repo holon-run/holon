@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "upstream_revision": "2bdd371fbaa2f7f728bed295bdcec48b770421d77627f9dd7b6e21e80dd1cbcf",
-  "adapter_version": "0.51.0 (faf2fee)",
+  "upstream_revision": "515672f64e5e6c83b715d67f57bedbdd6fe0abd9e3e786176974ef902b8d1219",
+  "adapter_version": "0.52.0 (a41037c)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
@@ -480,6 +480,32 @@
       "auto_compact_token_limit": 996147,
       "default_max_output_tokens": 65536,
       "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "gemini/gemini-4-argon",
+      "display_name": "Gemini 4 Argon",
+      "description": "Google's flagship reasoning model for complex software engineering, deep math and science, and long-horizon autonomous agents",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
