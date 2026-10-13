@@ -345,57 +345,64 @@ jobs:
           # release-prep commit; never reuse the previous version's notes.
           # See docs/release.md ("Release notes").
           cat > release-notes.md <<EOF
-          This release hardens explicit-wait and command-stop semantics, persists provider quota incident circuit breakers and finishes quota recovery rechecks, cuts entry-turn context-build overhead, adds a learning-coach agent template, and rounds out AI content reporting on Android and iOS with report receipts, sign-in consent refinements, and the iOS export-compliance encryption declaration; the models.dev snapshot is refreshed as well.
+          This release ships cache-first rendering and offline reading on iOS and GitHub-release update checks on Android, hardens Android offline-session recovery, staged sign-in, and SSE cleanup, recovers runtime startup wait rechecks, logs projection-gate failures with route metadata, fixes Markdown single-tilde strikethrough plus macOS menu clipping and Tailscale status display, adds a reverse-engineer agent template, moves remote templates and skills to GitHub archives, unifies DeleteAgent with the CLI deletion policy, and refreshes the models.dev snapshot; the website also introduces the Holon Pioneers group.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, macOS arm64, and Android. The macOS app DMG is a universal binary supporting both x86_64 and arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer). The signed Android APK requires Android 8.0 (API 26) or newer; the AAB is for store submission, not direct installation.
 
           ## Summary
 
-          ### Runtime waits and command lifecycle
-          - Valid explicit waits now resume their exact continuation independently instead of collapsing into generic wake handling ([#3496](https://github.com/holon-run/holon/pull/3496)).
-          - Runtime-owned ingress is preserved across exact wait resumes, so external triggers and their ownership survive model re-entry ([#3492](https://github.com/holon-run/holon/pull/3492)).
-          - Graceful and force command stops are distinguished, converging command-task stop semantics without blocking the async worker ([#3487](https://github.com/holon-run/holon/pull/3487), closes [#3464](https://github.com/holon-run/holon/issues/3464)).
+          ### Mobile clients
+          - iOS conversations now render cache-first and remain readable offline ([#3518](https://github.com/holon-run/holon/pull/3518)).
+          - Android checks GitHub releases for in-app update notifications ([#3517](https://github.com/holon-run/holon/pull/3517)).
+          - Android recovers offline sessions and closes lifecycle SSE streams correctly ([#3513](https://github.com/holon-run/holon/pull/3513)).
+          - Android sign-in is now staged according to the server's authentication method ([#3511](https://github.com/holon-run/holon/pull/3511)).
+          - Android validates Play Alpha readback against default-priority semantics ([#3506](https://github.com/holon-run/holon/pull/3506)).
+          - Android contains asynchronous SSE body cleanup failures ([#3520](https://github.com/holon-run/holon/pull/3520)).
 
-          ### Provider reliability
-          - Provider quota incidents now persist a circuit breaker, ending the long-lived 429 turn loop ([#3489](https://github.com/holon-run/holon/pull/3489), closes [#3447](https://github.com/holon-run/holon/issues/3447)).
-          - Provider quota recovery rechecks now finish after an incident instead of stalling ([#3490](https://github.com/holon-run/holon/pull/3490)).
+          ### Runtime
+          - Projection-gate failures are logged with route metadata for diagnosis ([#3521](https://github.com/holon-run/holon/pull/3521)).
+          - Startup wait rechecks are recovered instead of being dropped ([#3510](https://github.com/holon-run/holon/pull/3510)).
+          - The trusted operator anchor now resolves through a targeted read ([#3504](https://github.com/holon-run/holon/pull/3504)).
+          - Markdown single-tilde no longer triggers strikethrough ([#3505](https://github.com/holon-run/holon/pull/3505)).
 
-          ### Performance
-          - Entry-turn context-build overhead is reduced: no provider probe per turn, no full skill rescan, and the serialized agent-summary and agents-list N+1 queries are folded away ([#3486](https://github.com/holon-run/holon/pull/3486), closes [#3466](https://github.com/holon-run/holon/issues/3466)).
+          ### Agents, templates, and CLI
+          - A new reverse-engineer agent template ships in the template catalog ([#3516](https://github.com/holon-run/holon/pull/3516)).
+          - Remote templates and skills are fetched from GitHub archives ([#3514](https://github.com/holon-run/holon/pull/3514)).
+          - DeleteAgent and the CLI now share one deletion policy with resource-safety checks ([#3515](https://github.com/holon-run/holon/pull/3515)).
 
-          ### Agents and templates
-          - A new learning-coach agent template ships in the template catalog ([#3495](https://github.com/holon-run/holon/pull/3495)).
-          - The models.dev snapshot, artifact, and supplemental catalog are refreshed ([#3491](https://github.com/holon-run/holon/pull/3491)).
+          ### macOS
+          - Menu clipping is fixed and the Tailscale status is displayed correctly ([#3512](https://github.com/holon-run/holon/pull/3512)).
 
-          ### Mobile clients and content reporting
-          - Android: content-report panel actions stay reachable ([#3483](https://github.com/holon-run/holon/pull/3483)), and conversation sync recovers after SSE 409 ([#3493](https://github.com/holon-run/holon/pull/3493)).
-          - iOS: report receipts are preserved and App Review acceptance evidence is completed ([#3488](https://github.com/holon-run/holon/pull/3488)), brief status, report menu, and sign-in consent are refined ([#3494](https://github.com/holon-run/holon/pull/3494)), and exempt encryption is declared for export compliance ([bdba9b31](https://github.com/holon-run/holon/commit/bdba9b31a73ebac196f827c8dd32872e19e4ed9f)).
+          ### Automation, data, and docs
+          - Android CI gains an Alpha-only secure API upload flow ([#3501](https://github.com/holon-run/holon/pull/3501)).
+          - The models.dev snapshot, artifact, and supplemental catalog are refreshed ([#3502](https://github.com/holon-run/holon/pull/3502)).
+          - The website adds the Holon Pioneers group and X links across navigation, home CTA, and getting started ([3947ddee](https://github.com/holon-run/holon/commit/3947ddeef395d435dbcc1f55fc4522f9b2e40af2)).
 
           ## Pull requests
 
           Merged pull requests in this release:
 
-          - [#3496](https://github.com/holon-run/holon/pull/3496) fix: 独立恢复有效显式 wait 的精确接续
-          - [#3495](https://github.com/holon-run/holon/pull/3495) feat: add learning coach agent template
-          - [#3494](https://github.com/holon-run/holon/pull/3494) fix(ios): 优化 brief 状态、举报菜单与登录同意
-          - [#3493](https://github.com/holon-run/holon/pull/3493) fix(android): recover conversation sync after SSE 409
-          - [#3492](https://github.com/holon-run/holon/pull/3492) fix: preserve runtime-owned ingress across exact wait resumes
-          - [#3491](https://github.com/holon-run/holon/pull/3491) chore: refresh models.dev snapshot, artifact, and supplement
-          - [#3490](https://github.com/holon-run/holon/pull/3490) fix: finish provider quota recovery recheck
-          - [#3489](https://github.com/holon-run/holon/pull/3489) fix: persist provider quota incident circuit breaker
-          - [#3488](https://github.com/holon-run/holon/pull/3488) fix: 保留举报收据并完善 iOS 审核验收证据
-          - [#3487](https://github.com/holon-run/holon/pull/3487) fix: distinguish graceful and force command stops
-          - [#3486](https://github.com/holon-run/holon/pull/3486) perf(runtime): reduce agent summary and skill scan overhead
-          - [#3483](https://github.com/holon-run/holon/pull/3483) fix(android): 保持举报面板操作按钮可达
-          - [bdba9b31](https://github.com/holon-run/holon/commit/bdba9b31a73ebac196f827c8dd32872e19e4ed9f) fix(ios): declare exempt encryption for export compliance (direct commit)
+          - [#3521](https://github.com/holon-run/holon/pull/3521) fix: log projection gate failures with route metadata
+          - [#3520](https://github.com/holon-run/holon/pull/3520) fix(android): contain asynchronous SSE body cleanup failures
+          - [#3518](https://github.com/holon-run/holon/pull/3518) feat(ios): 缓存优先与离线阅读
+          - [#3517](https://github.com/holon-run/holon/pull/3517) feat: add Android GitHub release update checks
+          - [#3516](https://github.com/holon-run/holon/pull/3516) feat: add reverse engineer agent template
+          - [#3515](https://github.com/holon-run/holon/pull/3515) fix: 统一 DeleteAgent 与 CLI 的删除策略和资源安全检查
+          - [#3514](https://github.com/holon-run/holon/pull/3514) fix: use GitHub archives for remote templates and skills
+          - [#3513](https://github.com/holon-run/holon/pull/3513) fix(android): 修复离线会话恢复和生命周期 SSE 关闭
+          - [#3512](https://github.com/holon-run/holon/pull/3512) fix: 修复 macOS 菜单裁切与 Tailscale 状态展示
+          - [#3511](https://github.com/holon-run/holon/pull/3511) fix: Android 按服务器认证方式分步登录
+          - [#3510](https://github.com/holon-run/holon/pull/3510) fix: recover startup wait rechecks
+          - [#3506](https://github.com/holon-run/holon/pull/3506) fix: 按默认优先级语义校验 Play Alpha 回读
+          - [#3505](https://github.com/holon-run/holon/pull/3505) fix: 修复 Markdown 单波浪号误触发删除线
+          - [#3504](https://github.com/holon-run/holon/pull/3504) fix: resolve trusted operator anchor via targeted read
+          - [#3502](https://github.com/holon-run/holon/pull/3502) chore: refresh models.dev snapshot, artifact, and supplement
+          - [#3501](https://github.com/holon-run/holon/pull/3501) ci(android): 配置仅面向 Alpha 的安全 API 上传流程
+          - [3947ddee](https://github.com/holon-run/holon/commit/3947ddeef395d435dbcc1f55fc4522f9b2e40af2) docs(website): add Holon Pioneers group and X links across nav, home CTA, and getting started (direct commit)
 
           ## Issues
 
-          Issues closed in this release:
-
-          - [#3466](https://github.com/holon-run/holon/issues/3466) perf(runtime): 入口 turn context_build p50 ~8s —— 每轮 provider 探测、skill 全量重扫与 agent_summary/agents_list 串行 N+1 叠加 (closed by [#3486](https://github.com/holon-run/holon/pull/3486))
-          - [#3464](https://github.com/holon-run/holon/issues/3464) refactor(runtime): converge command-task stop semantics and avoid blocking async worker (closed by [#3487](https://github.com/holon-run/holon/pull/3487))
-          - [#3447](https://github.com/holon-run/holon/issues/3447) bug(provider): long-lived 429 quota exhaustion becomes a 5.2s turn loop — one agent produced 5,541 failing turns in 5h (closed by [#3489](https://github.com/holon-run/holon/pull/3489))
+          No issues were closed in this release.
 
 
           ## Install
