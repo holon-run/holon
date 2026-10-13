@@ -140,6 +140,30 @@ final class ReadingTransportTests: XCTestCase {
         await transport.close()
     }
 
+    func testCancelledLatestEntryCannotRevokeNewerBaseline() async throws {
+        let (_, transport, _) = try await fixture()
+        let currentAgentID = "current-cancelled-entry-baseline"
+        let obsoleteAgentID = "obsolete-cancelled-entry-baseline"
+        _ = try await transport.conversation(agentID: currentAgentID, before: nil)
+
+        // Model a cancelled task-group child first entering after the new latest completed.
+        let obsolete = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await transport.conversation(agentID: obsoleteAgentID, before: nil)
+        }
+        do {
+            _ = try await obsolete.value
+            XCTFail("A cancelled conversation must not run a new bootstrap")
+        } catch is CancellationError {}
+
+        XCTAssertEqual(ReadingIdentityProtocol.reads.operations(obsoleteAgentID), [])
+        let receipt = try await transport.markRead(agentID: currentAgentID, through: 5)
+        XCTAssertEqual(receipt["state"]?["unread_count"]?.readingInteger, 1)
+        XCTAssertEqual(ReadingIdentityProtocol.reads.operations(currentAgentID),
+                       ["brief-read-state", "conversation", "brief-read-cursor"])
+        await transport.close()
+    }
+
     func testMissingOrMalformedBaselineAllowsReadingButCannotWriteCursor() async throws {
         for agentID in ["missing-baseline", "malformed-baseline"] {
             let (_, transport, _) = try await fixture()

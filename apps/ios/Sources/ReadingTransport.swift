@@ -229,6 +229,7 @@ actor ReadingClientTransport: ReadingTransport {
     }
 
     func conversation(agentID: String, before: String?) async throws -> HolonConversationSnapshot {
+        try Task.checkCancellation()
         if before == nil {
             conversationGeneration &+= 1
             initializedReadAgentID = nil
