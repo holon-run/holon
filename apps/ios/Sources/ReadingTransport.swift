@@ -7,7 +7,7 @@ struct ReadingStream: Sendable {
 }
 
 protocol ReadingTransport: Sendable {
-    func roster() async throws -> [ReadingAgent]
+    func roster() async throws -> ReadingRoster
     func operatorPreview(agentID: String) async throws -> ReadingOperatorPreview?
     func conversation(agentID: String, before: String?) async throws -> HolonConversationSnapshot
     func brief(agentID: String, briefID: String) async throws -> JSONValue
@@ -42,6 +42,8 @@ actor ReadingClientTransport: ReadingTransport {
     private var rosterEpoch: String?
     private var rosterGeneration: UInt64 = 0
     private var rosterLoading = false
+    private var conversationGeneration: UInt64 = 0
+    private var initializedReadAgentID: String?
 
     init(client: HolonClient, authority: HolonConnectionIdentity) {
         self.client = client
@@ -80,7 +82,7 @@ actor ReadingClientTransport: ReadingTransport {
         }
     }
 
-    func roster() async throws -> [ReadingAgent] {
+    func roster() async throws -> ReadingRoster {
         guard !rosterLoading else { throw CancellationError() }
         rosterLoading = true
         defer { rosterLoading = false }
@@ -109,19 +111,28 @@ actor ReadingClientTransport: ReadingTransport {
                                 effectiveModel: entry["agent"]?["model"]?["effective_model"]?.readingString)
         }
         var counts: [String: Int] = [:]
+        var readStates: [String: ReadingReadState] = [:]
         do {
             let states = try await request { try await $0.getJSON(path: ["agents", "brief-read-states"]) }
             counts = try Self.unreadCounts(states, agentIDs: Set(agents.map(\.id)),
                                            epoch: epoch, visibility: authority.visibilityScopeID!)
+            if case .array(let entries) = states {
+                for entry in entries {
+                    guard let id = entry["agent_id"]?.readingString, counts[id] != nil,
+                          let state = ReadingReadState(entry, agentID: id, epoch: epoch,
+                                                       visibility: authority.visibilityScopeID!) else { continue }
+                    readStates[id] = state
+                }
+            }
         } catch { try Self.requireMetadataRecovery(error) }
         let enriched = agents.map {
                 ReadingAgent(id: $0.id, name: $0.name, preview: $0.preview,
-                             unreadCount: counts[$0.id], currentRunID: $0.currentRunID,
+                             unreadCount: counts[$0.id], readState: readStates[$0.id], currentRunID: $0.currentRunID,
                              posture: $0.posture, briefAt: $0.briefAt, effectiveModel: $0.effectiveModel)
         }
         _ = try await expected()
         guard generation == rosterGeneration else { throw CancellationError() }
-        return enriched
+        return ReadingRoster(eventLogEpoch: epoch, agents: enriched)
     }
 
     private static func requireMetadataRecovery(_ error: any Error) throws {
@@ -167,8 +178,7 @@ actor ReadingClientTransport: ReadingTransport {
             if let failure = error as? HolonClientError, failure == .malformedResponse {
                 throw HolonConversationError.bootstrapRequired
             }
-            try Self.requireMetadataRecovery(error)
-            return nil
+            throw error
         }
     }
 
@@ -183,10 +193,7 @@ actor ReadingClientTransport: ReadingTransport {
                   let timestamp = input["created_at"]?.readingString ?? startedAt,
                   let date = metadataDate(timestamp),
                   let preview = input["preview"]?.readingString else { return }
-            var text = preview
-            if let envelope = try? JSONDecoder().decode(JSONValue.self, from: Data(preview.utf8)),
-               envelope["type"]?.readingString == "text",
-               let value = envelope["text"]?.readingString { text = value }
+            let text = OperatorInputPresentation.text(preview)
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             candidates.append((date, candidates.count, String(text.prefix(240))))
         }
@@ -222,7 +229,34 @@ actor ReadingClientTransport: ReadingTransport {
     }
 
     func conversation(agentID: String, before: String?) async throws -> HolonConversationSnapshot {
-        try await request { try await $0.conversation(agentID: agentID, before: before, limit: 60) }
+        try Task.checkCancellation()
+        if before == nil {
+            conversationGeneration &+= 1
+            initializedReadAgentID = nil
+        }
+        let generation = conversationGeneration
+        var readState: JSONValue?
+        if before == nil {
+            // Batch GETs are ephemeral for a new principal. Establish its joining
+            // baseline before the snapshot, not at a later visible-body POST.
+            do {
+                readState = try await request {
+                    try await $0.getJSON(path: ["agents", agentID, "brief-read-state"])
+                }
+            } catch { try Self.requireMetadataRecovery(error) }
+        }
+        let snapshot = try await request {
+            try await $0.conversation(agentID: agentID, before: before, limit: 60)
+        }
+        guard conversationGeneration == generation else { throw CancellationError() }
+        if before == nil, let readState,
+           let state = ReadingReadState(readState, agentID: agentID, epoch: snapshot.eventLogEpoch,
+                                        visibility: authority.visibilityScopeID!),
+           let head = snapshot.raw["snapshot_through_seq"]?.readingInteger,
+           state.eventHeadSeq <= head {
+            initializedReadAgentID = agentID
+        }
+        return snapshot
     }
     func brief(agentID: String, briefID: String) async throws -> JSONValue {
         try await request { try await $0.briefDetail(agentID: agentID, briefID: briefID) }
@@ -252,7 +286,8 @@ actor ReadingClientTransport: ReadingTransport {
         return raw
     }
     func markRead(agentID: String, through: Int64) async throws -> JSONValue {
-        try await request { try await $0.markBriefRead(agentID: agentID, readThroughEventSeq: through) }
+        guard initializedReadAgentID == agentID else { throw HolonClientError.invalidRequest }
+        return try await request { try await $0.markBriefRead(agentID: agentID, readThroughEventSeq: through) }
     }
 
     func createContentReport(_ body: HolonContentReportRequest) async throws -> HolonContentReportResponse {

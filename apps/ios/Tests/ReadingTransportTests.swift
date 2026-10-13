@@ -3,16 +3,55 @@ import HolonClient
 import XCTest
 @testable import Holon
 
+private final class ReadBaselineMetrics: @unchecked Sendable {
+    private let lock = NSLock()
+    private var baselines: Set<String> = []
+    private var calls: [String: [String]] = [:]
+
+    func record(agentID: String, operation: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        calls[agentID, default: []].append(operation)
+        if operation == "brief-read-state", !agentID.hasPrefix("missing-baseline") {
+            baselines.insert(agentID)
+        }
+        return baselines.contains(agentID)
+    }
+
+    func operations(_ agentID: String) -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        return calls[agentID] ?? []
+    }
+}
+
 private final class ReadingIdentityProtocol: URLProtocol, @unchecked Sendable {
+    static let reads = ReadBaselineMetrics()
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
+        let operation = request.url!.lastPathComponent
+        let agentID = request.url!.deletingLastPathComponent().lastPathComponent
+        let initialized = Self.reads.record(agentID: agentID, operation: operation)
+        if operation == "brief-read-state", agentID.hasPrefix("missing-baseline") {
+            client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+            return
+        }
         let response = HTTPURLResponse(url: request.url!, statusCode: 200,
                                        httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         let body: String
         if request.url!.path.hasSuffix("/agents/snapshot") {
             body = #"{"runtime_id":"runtime","visibility_scope_id":"private","event_log_epoch":"epoch","agents":[{"agent":{"identity":{"agent_id":"A","name":"Agent A"},"current_run_id":"run-A"}}]}"#
+        } else if operation == "brief-read-state" || operation == "brief-read-cursor" {
+            let epoch = agentID == "new-epoch" ? "next-epoch" : "epoch"
+            let invalid = agentID.hasPrefix("malformed-baseline")
+            // A new brief arrives after the snapshot but before the first POST.
+            // Without the earlier joining baseline, the real server absorbs it.
+            let head = operation == "brief-read-cursor" ? 8 : 7
+            let through = operation == "brief-read-cursor" && !initialized ? 8 : 7
+            let unread = head - through
+            let state = #"{"agent_id":"\#(invalid ? "other" : agentID)","event_log_epoch":"\#(epoch)","visibility_scope_id":"private","reset_required":false,"retention_gap":false,"event_head_seq":\#(head),"read_through_event_seq":\#(through),"unread_count":\#(unread),"revision":0}"#
+            body = operation == "brief-read-state" ? state :
+                #"{"state":\#(state),"applied_read_through_event_seq":\#(through)}"#
         } else if request.url!.path.hasSuffix("/conversation") {
             let agentID = request.url!.deletingLastPathComponent().lastPathComponent
             let epoch = agentID == "new-epoch" ? "next-epoch" : "epoch"
@@ -53,7 +92,9 @@ final class ReadingTransportTests: XCTestCase {
         let (client, transport, authority) = try await fixture()
         let sdkIdentity = await client.identity
         XCTAssertNotEqual(sdkIdentity.generation, authority.generation)
-        let agents = try await transport.roster()
+        let roster = try await transport.roster()
+        XCTAssertEqual(roster.eventLogEpoch, "epoch")
+        let agents = roster.agents
         XCTAssertEqual(agents.map(\.id), ["A"])
         XCTAssertEqual(agents.first?.currentRunID, "run-A")
         let snapshot = try await transport.conversation(agentID: "A", before: nil)
@@ -69,6 +110,72 @@ final class ReadingTransportTests: XCTestCase {
         XCTAssertEqual(snapshot.agentID, "A")
         XCTAssertEqual(snapshot.eventLogEpoch, "epoch")
         await transport.close()
+    }
+
+    func testFirstReadInitializesBeforeSnapshotAndPreservesConcurrentNewBrief() async throws {
+        let (_, transport, _) = try await fixture()
+        let agentID = "first-read-race"
+        _ = try await transport.conversation(agentID: agentID, before: nil)
+        let receipt = try await transport.markRead(agentID: agentID, through: 5)
+        XCTAssertEqual(receipt["applied_read_through_event_seq"]?.readingInteger, 7)
+        XCTAssertEqual(receipt["state"]?["unread_count"]?.readingInteger, 1)
+        XCTAssertEqual(ReadingIdentityProtocol.reads.operations(agentID),
+                       ["brief-read-state", "conversation", "brief-read-cursor"])
+        await transport.close()
+    }
+
+    func testHistoryCannotInitializeButRetainsLatestWindowBaseline() async throws {
+        let (_, transport, _) = try await fixture()
+        let agentID = "history-read-baseline"
+        _ = try await transport.conversation(agentID: agentID, before: "older")
+        do {
+            _ = try await transport.markRead(agentID: agentID, through: 5)
+            XCTFail("A history request alone must not initialize the joining baseline")
+        } catch HolonClientError.invalidRequest {}
+        _ = try await transport.conversation(agentID: agentID, before: nil)
+        _ = try await transport.conversation(agentID: agentID, before: "older")
+        _ = try await transport.markRead(agentID: agentID, through: 5)
+        XCTAssertEqual(ReadingIdentityProtocol.reads.operations(agentID),
+                       ["conversation", "brief-read-state", "conversation", "conversation", "brief-read-cursor"])
+        await transport.close()
+    }
+
+    func testCancelledLatestEntryCannotRevokeNewerBaseline() async throws {
+        let (_, transport, _) = try await fixture()
+        let currentAgentID = "current-cancelled-entry-baseline"
+        let obsoleteAgentID = "obsolete-cancelled-entry-baseline"
+        _ = try await transport.conversation(agentID: currentAgentID, before: nil)
+
+        // Model a cancelled task-group child first entering after the new latest completed.
+        let obsolete = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await transport.conversation(agentID: obsoleteAgentID, before: nil)
+        }
+        do {
+            _ = try await obsolete.value
+            XCTFail("A cancelled conversation must not run a new bootstrap")
+        } catch is CancellationError {}
+
+        XCTAssertEqual(ReadingIdentityProtocol.reads.operations(obsoleteAgentID), [])
+        let receipt = try await transport.markRead(agentID: currentAgentID, through: 5)
+        XCTAssertEqual(receipt["state"]?["unread_count"]?.readingInteger, 1)
+        XCTAssertEqual(ReadingIdentityProtocol.reads.operations(currentAgentID),
+                       ["brief-read-state", "conversation", "brief-read-cursor"])
+        await transport.close()
+    }
+
+    func testMissingOrMalformedBaselineAllowsReadingButCannotWriteCursor() async throws {
+        for agentID in ["missing-baseline", "malformed-baseline"] {
+            let (_, transport, _) = try await fixture()
+            let snapshot = try await transport.conversation(agentID: agentID, before: nil)
+            XCTAssertEqual(snapshot.agentID, agentID)
+            do {
+                _ = try await transport.markRead(agentID: agentID, through: 5)
+                XCTFail("An unconfirmed joining baseline must not authorize a receipt")
+            } catch HolonClientError.invalidRequest {}
+            XCTAssertFalse(ReadingIdentityProtocol.reads.operations(agentID).contains("brief-read-cursor"))
+            await transport.close()
+        }
     }
 
     func testConversationEstablishesItsOwnEpochAfterRoster() async throws {

@@ -574,18 +574,26 @@ private struct ReadingBriefView: View {
         // Native accessibility can materialize offscreen lazy rows. Fetch/render only
         // visible results so a long history cannot exhaust the detail queue on arrival.
         .task(id: "\(isVisible)|\(reader.status.rawValue)") {
-            if isVisible { await reader.loadBrief(briefID) }
+            if isVisible {
+                await reader.loadBrief(briefID)
+                guard !Task.isCancelled, isVisible else { return }
+                updateReadVisibility()
+            }
         }
         .onChange(of: reader.briefs[briefID]) { _, _ in updateReadVisibility() }
         .onScrollVisibilityChange(threshold: 0.5) { visible in
             isVisible = visible
             updateReadVisibility()
         }
-        .onDisappear { reader.setBriefVisible(briefID, visible: false) }
+        .onDisappear {
+            isVisible = false
+            reader.setBriefVisible(briefID, visible: false)
+        }
     }
 
     private func updateReadVisibility() {
         reader.setBriefVisible(briefID, visible: isVisible && !(reader.briefs[briefID].map { TaskResultInput.isRuntimeBrief($0, inputs: inputs) } ?? false))
+        if isVisible { reader.markVisibleBriefsReadAutomatically() }
     }
 }
 
@@ -639,12 +647,7 @@ enum ReadingPresentation {
     }
     /// Extract the text envelope without translating or rewriting agent content.
     static func operatorText(_ input: JSONValue) -> String {
-        let preview = input["preview"].viewString ?? ""
-        guard let data = preview.data(using: .utf8),
-              let envelope = try? JSONDecoder().decode(JSONValue.self, from: data),
-              envelope["type"].viewString == "text",
-              let text = envelope["text"].viewString else { return preview }
-        return text
+        OperatorInputPresentation.text(input["preview"].viewString ?? "")
     }
 }
 

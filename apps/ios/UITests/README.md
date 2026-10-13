@@ -19,6 +19,17 @@ Content-report tests open the long-press menu and assert no permanent row button
 
 ### Default offline-reading regressions
 
+`testVisibleBriefAutomaticallyUpdatesHomeUnreadCount` is also a default case.
+Immediately before it runs, the isolated daemon receives a real input and emits
+a unique short brief. The test loads that latest body through the shipped UI,
+keeps it visible, and returns home to require the known unread badge to disappear.
+The fixture then enqueues a unique followup after joining-baseline initialization.
+The test requires a nonzero home badge before opening its body, then requires both
+badge removal and a read-only SQLite oracle proving a persisted cursor revision
+advanced through that followup. A temporary batch head or baseline alone cannot
+pass this oracle.
+It never invokes manual mark-read, seeds cache files, or writes a server cursor.
+
 `testOfflineReadingCacheColdLaunchAndRetry` and
 `testOfflineReadingCacheSignOutBoundary` are ordinary default cases, not an opt-in
 SDK probe. To run just these cases on a fresh, owned simulator:

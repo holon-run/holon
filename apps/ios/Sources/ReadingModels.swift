@@ -1,12 +1,55 @@
 import Foundation
 import HolonClient
 
+struct ReadingRoster: Sendable {
+    let eventLogEpoch: String
+    let agents: [ReadingAgent]
+}
+
+struct ReadingReadState: Equatable, Codable, Sendable {
+    let agentID: String
+    let eventLogEpoch: String
+    let visibilityScopeID: String
+    let unreadCount: Int
+    let eventHeadSeq: Int64
+    let readThroughEventSeq: Int64
+    let revision: Int64
+
+    init?(_ raw: JSONValue, agentID: String, epoch: String, visibility: String) {
+        guard raw["agent_id"]?.readingString == agentID,
+              raw["event_log_epoch"]?.readingString == epoch,
+              raw["visibility_scope_id"]?.readingString == visibility,
+              raw["reset_required"] == .bool(false),
+              raw["retention_gap"] == .bool(false),
+              let count = raw["unread_count"]?.readingInteger, count >= 0,
+              let unread = Int(exactly: count),
+              let head = raw["event_head_seq"]?.readingInteger, head >= 0,
+              let through = raw["read_through_event_seq"]?.readingInteger, through >= 0, through <= head,
+              let revision = raw["revision"]?.readingInteger, revision >= 0 else { return nil }
+        self.agentID = agentID
+        eventLogEpoch = epoch
+        visibilityScopeID = visibility
+        unreadCount = unread
+        eventHeadSeq = head
+        readThroughEventSeq = through
+        self.revision = revision
+    }
+
+    func supersedes(_ previous: Self) -> Bool {
+        agentID == previous.agentID && eventLogEpoch == previous.eventLogEpoch &&
+        visibilityScopeID == previous.visibilityScopeID &&
+        eventHeadSeq >= previous.eventHeadSeq && revision >= previous.revision &&
+        readThroughEventSeq >= previous.readThroughEventSeq
+    }
+}
+
 struct ReadingAgent: Identifiable, Equatable, Codable, Sendable {
     let id: String
     var name: String
     var preview: String
     var operatorPreview: String?
-    let unreadCount: Int?
+    var unreadCount: Int?
+    var readState: ReadingReadState?
     var currentRunID: String?
     var posture: String?
     var briefAt: Date?
@@ -14,14 +57,15 @@ struct ReadingAgent: Identifiable, Equatable, Codable, Sendable {
     var effectiveModel: String?
 
     init(id: String, name: String, preview: String,
-         operatorPreview: String? = nil, unreadCount: Int? = nil,
+         operatorPreview: String? = nil, unreadCount: Int? = nil, readState: ReadingReadState? = nil,
          currentRunID: String? = nil, posture: String? = nil,
          briefAt: Date? = nil, operatorAt: Date? = nil, effectiveModel: String? = nil) {
         self.id = id
         self.name = name
         self.preview = preview
         self.operatorPreview = operatorPreview
-        self.unreadCount = unreadCount
+        self.unreadCount = readState?.unreadCount ?? unreadCount
+        self.readState = readState
         self.currentRunID = currentRunID
         self.posture = posture
         self.briefAt = briefAt
@@ -33,6 +77,52 @@ struct ReadingAgent: Identifiable, Equatable, Codable, Sendable {
 struct ReadingOperatorPreview: Equatable, Sendable {
     let text: String
     let createdAt: Date
+}
+
+enum OperatorInputPresentation {
+    static func text(_ preview: String) -> String {
+        if let envelope = try? JSONDecoder().decode(JSONValue.self, from: Data(preview.utf8)),
+           envelope["type"]?.readingString == "text",
+           let text = envelope["text"]?.readingString { return text }
+
+        let bytes = Array(preview.utf8)
+        let prefix = Array(#"{"type":"text","text":""#.utf8)
+        guard bytes.starts(with: prefix) else { return preview }
+        let encoded = bytes.dropFirst(prefix.count)
+        // A byte cut can leave a closing quote, an escape, or half a surrogate pair.
+        for trim in 0...min(11, encoded.count) {
+            if trim > 0, !isIncompleteTail(encoded.suffix(trim)) { continue }
+            var candidate = Data([0x22])
+            candidate.append(contentsOf: encoded.dropLast(trim))
+            candidate.append(0x22)
+            if let text = try? JSONDecoder().decode(String.self, from: candidate) {
+                return text + "…"
+            }
+        }
+        return preview
+    }
+
+    private static func isIncompleteTail(_ tail: ArraySlice<UInt8>) -> Bool {
+        if tail.elementsEqual([0x22]) || tail.elementsEqual([0x5C]) { return true }
+        guard tail.starts(with: [0x5C, 0x75]) else { return false }
+        let units = tail.dropFirst(2)
+        if units.count < 4 { return isHex(units) }
+        guard let high = UInt16(String(decoding: units.prefix(4), as: UTF8.self), radix: 16),
+              (0xD800...0xDBFF).contains(high) else { return false }
+        let rest = units.dropFirst(4)
+        if rest.isEmpty || rest.elementsEqual([0x5C]) { return true }
+        guard rest.starts(with: [0x5C, 0x75]) else { return false }
+        let low = rest.dropFirst(2)
+        guard low.count < 4, isHex(low) else { return false }
+        let prefix = String(decoding: low, as: UTF8.self)
+        guard let lower = UInt16(prefix + String(repeating: "0", count: 4 - low.count), radix: 16),
+              let upper = UInt16(prefix + String(repeating: "F", count: 4 - low.count), radix: 16) else { return false }
+        return lower <= 0xDFFF && upper >= 0xDC00
+    }
+
+    private static func isHex(_ text: ArraySlice<UInt8>) -> Bool {
+        text.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }
+    }
 }
 
 enum AgentListFilter: String, CaseIterable { case all, reply, newResults, active }

@@ -36,6 +36,52 @@ final class ReadingCacheTests: XCTestCase {
         XCTAssertTrue(succeeded, file: file, line: line)
     }
 
+    func testRosterEpochPersistsAndMissingFieldRemainsCompatible() async throws {
+        let folder = try folder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("reading.json")
+        let partition = try partition()
+        let roster = ReadingCache.Entry(partition: partition, agentID: nil,
+            agents: [ReadingAgent(id: "A", name: "A", preview: "brief", operatorPreview: "input")],
+            snapshot: nil, position: nil, savedAt: Date(), rosterEpoch: "epoch")
+        let cache = ReadingCache(file: file)
+        await cache.prepare()
+        XCTAssertTrue(cache.save(roster))
+        await assertFlushed(cache)
+        let reopened = ReadingCache(file: file)
+        await reopened.prepare()
+        XCTAssertEqual(reopened.load(partition, agentID: nil)?.rosterEpoch, "epoch")
+        XCTAssertEqual(reopened.load(partition, agentID: nil)?.agents.first?.operatorPreview, "input")
+
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(roster)) as? [String: Any])
+        legacy.removeValue(forKey: "rosterEpoch")
+        let decoded = try JSONDecoder().decode(ReadingCache.Entry.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertNil(decoded.rosterEpoch)
+        XCTAssertEqual(decoded.agents, roster.agents)
+    }
+
+    func testReadStateSurvivesDiskRestart() async throws {
+        let folder = try folder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("cache.json")
+        let partition = try partition()
+        let state = try XCTUnwrap(ReadingReadState(.object([
+            "agent_id": .string("A"), "event_log_epoch": .string("epoch"),
+            "visibility_scope_id": .string("private"), "event_head_seq": .integer(7),
+            "read_through_event_seq": .integer(5), "unread_count": .integer(1),
+            "revision": .integer(2), "reset_required": .bool(false), "retention_gap": .bool(false)
+        ]), agentID: "A", epoch: "epoch", visibility: "private"))
+        let cache = ReadingCache(file: file)
+        let agent = ReadingAgent(id: "A", name: "Agent", preview: "recent", readState: state)
+        XCTAssertTrue(cache.save(.init(partition: partition, agentID: nil, agents: [agent],
+                                      snapshot: nil, position: nil, savedAt: Date(), rosterEpoch: "epoch")))
+        await assertFlushed(cache)
+        let reopened = ReadingCache(file: file)
+        await reopened.prepare()
+        XCTAssertEqual(reopened.load(partition, agentID: nil)?.agents.first?.readState, state)
+        XCTAssertEqual(reopened.load(partition, agentID: nil)?.agents.first?.unreadCount, 1)
+    }
+
     func testBoundedCapacityAndPartitionKeys() async throws {
         let partition = try partition()
         let cache = ReadingCache(file: nil)

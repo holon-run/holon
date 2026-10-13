@@ -216,10 +216,20 @@ restored after each case, including failed tests.
 - Briefs are primary content, operator input is preserved, and execution details
   remain expandable rather than becoming another summary. Read-cursor failures
   have their own status; only server confirmation counts as a successful read.
-  The manual read action uses an expanded, loaded brief visible in the viewport
-  and confirms that all earlier results, including unopened history, are covered
-  by the server's cumulative cursor. Agent/generation changes and hiding or
-  collapsing a brief revoke that confirmation, even if the brief is shown again.
+  Loaded brief bodies at least 50% visible in the viewport automatically advance
+  the server's cumulative read cursor, covering earlier results including unopened
+  history, but never clearing later unread results locally. Placeholder/runtime-only
+  rows and offline/background views do not send receipts. Pending visibility changes
+  are coalesced; a failed target is not retried automatically until a newer target
+  is visible. The menu action remains available for manual retry. Agent/generation
+  changes and hiding or collapsing a brief revoke a captured manual confirmation,
+  even if the brief is shown again. Validated read-state versions are cached and
+  prevent stale roster or read responses from rolling back confirmed unread counts.
+  A latest-window bootstrap establishes the server's joining baseline before
+  fetching its snapshot. If that optional request fails, reading stays available
+  but receipts are disabled until a successful bootstrap. Batch GETs and cached
+  heads are not persisted-receipt evidence; automatic deduplication uses validated
+  successful POSTs in the current conversation.
   The 80-entry brief cache evicts least-recently-used hidden content, not visible
   briefs; capacity is not a lifetime loading quota.
   List previews use bounded reads; unknown unread state is never

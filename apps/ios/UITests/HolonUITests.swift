@@ -1406,6 +1406,79 @@ final class HolonUITests: XCTestCase {
         XCTAssertFalse(app.buttons["taskResult.source." + message].exists, "Cold launch folds completed process again")
     }
 
+    func testVisibleBriefAutomaticallyUpdatesHomeUnreadCount() async throws {
+        try connectForSharing()
+        let app = launch(language: "en", dark: false, large: false)
+        defer { app.terminate() }
+        if app.buttons["conversation.more"].waitForExistence(timeout: 5) {
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+        }
+        let agent = app.buttons["agent." + (try required("AGENT_ID"))]
+        reveal(agent, in: app); agent.tap()
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        if app.buttons["conversation.latest"].exists {
+            app.buttons["conversation.latest"].tap()
+        }
+        let body = app.staticTexts.containing(NSPredicate(
+            format: "label CONTAINS %@", "IOS_AUTOMATIC_READ_BRIEF")).firstMatch
+        XCTAssertTrue(body.waitForExistence(timeout: 30), "Load the newest real fixture brief")
+        reveal(body, in: app, fullyVisible: true)
+        XCTAssertTrue(body.isHittable)
+        // Never invoke manual mark-read. The fixture enqueues a later real result
+        // after baseline initialization, then verifies its actual cursor advance.
+        capture(app, "automatic-read-visible-body")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        let read = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            agent.exists && !agent.label.contains(" unread") &&
+                !agent.label.contains("Unread unknown")
+        }, object: nil)
+        let initialRead = await XCTWaiter.fulfillment(of: [read], timeout: 30)
+        XCTAssertEqual(initialRead, .completed,
+                       "Visible loaded body must clear the server-confirmed home badge")
+
+        let control = try XCTUnwrap(URL(string: required("NODE_CONTROL_URL")))
+        let endpoint = try XCTUnwrap(URL(string: required("ENDPOINT")))
+        XCTAssertEqual(control.scheme, "http")
+        XCTAssertEqual(control.host, "127.0.0.1")
+        XCTAssertEqual(control.port, endpoint.port)
+        XCTAssertEqual(control.path, "/fixture/node-availability")
+        let url = control.deletingLastPathComponent().appendingPathComponent("automatic-read-followup")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.setValue("Bearer " + (try required("NODE_CONTROL_TOKEN")), forHTTPHeaderField: "Authorization")
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 204,
+                       "The joining baseline must be persisted before the next brief")
+        let unread = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            agent.exists && agent.label.contains(" unread")
+        }, object: nil)
+        let newUnread = await XCTWaiter.fulfillment(of: [unread], timeout: 30)
+        XCTAssertEqual(newUnread, .completed, "A new unseen result must first have a nonzero badge")
+        capture(app, "automatic-read-new-unread")
+        reveal(agent, in: app); agent.tap()
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
+        let followup = app.staticTexts.containing(NSPredicate(
+            format: "label CONTAINS %@", "IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF")).firstMatch
+        XCTAssertTrue(followup.waitForExistence(timeout: 30))
+        reveal(followup, in: app, fullyVisible: true)
+        XCTAssertTrue(followup.isHittable)
+        capture(app, "automatic-read-followup-visible")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        let cleared = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            agent.exists && !agent.label.contains(" unread") &&
+                !agent.label.contains("Unread unknown")
+        }, object: nil)
+        let finalRead = await XCTWaiter.fulfillment(of: [cleared], timeout: 30)
+        XCTAssertEqual(finalRead, .completed, "Reading the new body must clear its known unread badge")
+        request.url = control.deletingLastPathComponent().appendingPathComponent("automatic-read-confirmed")
+        let (_, confirmedResponse) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((confirmedResponse as? HTTPURLResponse)?.statusCode, 204,
+                       "A real persisted cursor must advance through the followup brief")
+        capture(app, "automatic-read-home-count")
+    }
+
     func testOfflineReadingCacheColdLaunchAndRetry() async throws {
         try connectForSharing()
         let app = launch(language: "en", dark: false, large: false)

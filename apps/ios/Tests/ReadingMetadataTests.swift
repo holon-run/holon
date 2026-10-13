@@ -38,7 +38,7 @@ private final class MetadataProtocol: URLProtocol, @unchecked Sendable {
             if mode == "expired.invalid" { status = 401 }
             if mode == "unavailable.invalid" { status = 503 }
             let epoch = mode == "epoch.invalid" ? "other" : "epoch"
-            body = #"[{"agent_id":"A0","event_log_epoch":"\#(epoch)","visibility_scope_id":"private","unread_count":3,"reset_required":false,"retention_gap":false}]"#
+            body = #"[{"agent_id":"A0","event_log_epoch":"\#(epoch)","visibility_scope_id":"private","unread_count":3,"event_head_seq":7,"read_through_event_seq":1,"revision":2,"reset_required":false,"retention_gap":false}]"#
         } else {
             let id = url.pathComponents[url.pathComponents.count - 2]
             let limit = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "limit" }?.value
@@ -73,14 +73,18 @@ final class ReadingMetadataTests: XCTestCase {
     }
 
     func testHostedMetadataAndUnknownFailures() async throws {
-        for mode in ["real", "unavailable", "preview-unavailable"] {
+        for mode in ["real", "unavailable"] {
             let transport = try await transport(mode)
-            let agents = try await transport.roster()
+            let roster = try await transport.roster()
+            XCTAssertEqual(roster.eventLogEpoch, "epoch")
+            let agents = roster.agents
             XCTAssertEqual(agents.first?.preview, "brief")
             XCTAssertEqual(agents.first?.unreadCount, mode == "unavailable" ? nil : 3)
+            XCTAssertEqual(agents.first?.readState?.eventHeadSeq, mode == "unavailable" ? nil : 7)
+            XCTAssertEqual(agents.first?.readState?.revision, mode == "unavailable" ? nil : 2)
             XCTAssertNil(agents.first?.operatorPreview)
             let preview = try await transport.operatorPreview(agentID: "A0")
-            XCTAssertEqual(preview?.text, mode == "preview-unavailable" ? nil : "real operator")
+            XCTAssertEqual(preview?.text, "real operator")
             await transport.close()
         }
     }
@@ -102,10 +106,22 @@ final class ReadingMetadataTests: XCTestCase {
         }
     }
 
+    func testUnavailableOperatorPreviewThrowsRatherThanReturningEmpty() async throws {
+        let transport = try await transport("preview-unavailable")
+        _ = try await transport.roster()
+        do {
+            _ = try await transport.operatorPreview(agentID: "A0")
+            XCTFail("A failed request must not clear a previously confirmed input")
+        } catch let error as HolonHTTPFailure {
+            XCTAssertEqual(error.statusCode, 503)
+        }
+        await transport.close()
+    }
+
     func testHostedBoundedPreviewReads() async throws {
         let before = MetadataProtocol.metrics.snapshot().1
         let transport = try await transport("bounded")
-        let agents = try await transport.roster()
+        let agents = try await transport.roster().agents
         let metrics = MetadataProtocol.metrics.snapshot()
         XCTAssertEqual(agents.count, 81)
         XCTAssertEqual(metrics.1 - before, 0, "Roster does not wait for per-Agent metadata")
@@ -118,13 +134,72 @@ final class ReadingMetadataTests: XCTestCase {
         let agent = try JSONDecoder().decode(ReadingAgent.self, from: Data(#"{"id":"A","name":"Agent","preview":"brief"}"#.utf8))
         XCTAssertNil(agent.operatorPreview)
         XCTAssertNil(agent.unreadCount)
+        XCTAssertNil(agent.readState)
         let raw = try JSONDecoder().decode(JSONValue.self, from: Data(#"[{"agent_id":"A","event_log_epoch":"epoch","visibility_scope_id":"wrong","unread_count":0,"reset_required":false,"retention_gap":false}]"#.utf8))
         XCTAssertTrue(try ReadingClientTransport.unreadCounts(raw, agentIDs: ["A"], epoch: "epoch", visibility: "private").isEmpty)
+    }
+
+    func testReadStateValidationAndVersionOrdering() throws {
+        let fields: [String: JSONValue] = [
+            "agent_id": .string("A"), "event_log_epoch": .string("epoch"),
+            "visibility_scope_id": .string("private"), "unread_count": .integer(1),
+            "event_head_seq": .integer(7), "read_through_event_seq": .integer(5),
+            "revision": .integer(2), "reset_required": .bool(false), "retention_gap": .bool(false)
+        ]
+        let state = try XCTUnwrap(ReadingReadState(.object(fields), agentID: "A", epoch: "epoch", visibility: "private"))
+        let agent = ReadingAgent(id: "A", name: "A", preview: "", readState: state)
+        XCTAssertEqual(try JSONDecoder().decode(ReadingAgent.self, from: JSONEncoder().encode(agent)), agent)
+        let invalid: [(String, JSONValue)] = [
+            ("agent_id", .string("B")), ("event_log_epoch", .string("other")),
+            ("visibility_scope_id", .string("wrong")), ("unread_count", .integer(-1)),
+            ("event_head_seq", .integer(4)), ("read_through_event_seq", .integer(-1)),
+            ("revision", .integer(-1)), ("revision", .null),
+            ("reset_required", .bool(true)), ("retention_gap", .bool(true))
+        ]
+        for (key, value) in invalid {
+            var raw = fields
+            raw[key] = value
+            XCTAssertNil(ReadingReadState(.object(raw), agentID: "A", epoch: "epoch", visibility: "private"), key)
+        }
+        for key in ["event_head_seq", "read_through_event_seq", "revision"] {
+            var raw = fields
+            if case .integer(let value) = raw[key] { raw[key] = .integer(value - 1) }
+            let old = try XCTUnwrap(ReadingReadState(.object(raw), agentID: "A", epoch: "epoch", visibility: "private"))
+            XCTAssertFalse(old.supersedes(state), key)
+            XCTAssertTrue(state.supersedes(old), key)
+        }
+        var newFields = fields
+        newFields["event_head_seq"] = .integer(8)
+        newFields["unread_count"] = .integer(2)
+        let newUnread = try XCTUnwrap(ReadingReadState(.object(newFields), agentID: "A", epoch: "epoch", visibility: "private"))
+        XCTAssertTrue(newUnread.supersedes(state))
+        XCTAssertFalse(state.supersedes(newUnread))
     }
 
     func testTurnsActiveAndPendingSelectLatestStructuredOperator() throws {
         let raw = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"turns":[{"presentation_class":"operator","started_at":"2026-01-01T00:00:00Z","inputs":[{"preview":"old"}]}],"active_turns":[{"presentation_class":"operator","started_at":"2026-01-02T00:00:00Z","inputs":[{"preview":"active"}]}],"pending_inputs":[{"presentation_class":"operator","created_at":"2026-01-03T00:00:00.123Z","preview":"{\"type\":\"text\",\"text\":\"new\"}"},{"presentation_class":"internal","created_at":"2026-01-04T00:00:00Z","preview":"hidden"}]}"#.utf8))
         XCTAssertEqual(ReadingClientTransport.operatorPreview(raw), "new")
+    }
+
+    func testRosterOperatorPreviewDecodesTruncatedEnvelopeBeforeBounding() {
+        let preview = #"{"type":"text","text":"Long input\n保持原文 "# + String(repeating: "detail ", count: 400)
+        let raw: JSONValue = .object(["pending_inputs": .array([.object([
+            "message_id": .string("long-input"), "presentation_class": .string("operator"),
+            "created_at": .string("2026-01-03T00:00:00Z"), "preview": .string(preview)
+        ])])])
+        let shown = ReadingClientTransport.operatorPreview(raw)
+        XCTAssertTrue(shown?.hasPrefix("Long input\n保持原文 ") == true)
+        XCTAssertEqual(shown?.count, 240)
+        XCTAssertFalse(shown?.contains(#"{"type":"text""#) == true)
+    }
+
+    func testRosterTruncatedEnvelopePreservesLeadingCombiningScalar() {
+        let preview = #"{"type":"text","text":""# + "\u{0301}Readable"
+        let raw: JSONValue = .object(["pending_inputs": .array([.object([
+            "message_id": .string("combining-input"), "presentation_class": .string("operator"),
+            "created_at": .string("2026-01-03T00:00:00Z"), "preview": .string(preview)
+        ])])])
+        XCTAssertEqual(ReadingClientTransport.operatorPreview(raw), "\u{0301}Readable…")
     }
 
     func testMalformedReadMetadataCannotClaimRead() throws {
