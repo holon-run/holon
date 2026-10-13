@@ -266,6 +266,7 @@ impl Fixture {
                 InputEvidenceFamily::Message,
                 MESSAGE,
             )]),
+            selected_completion_brief_ids: Default::default(),
             interrupted_sources: BTreeSet::new(),
             record_limit: 1024,
             byte_limit: 1024 * 1024,

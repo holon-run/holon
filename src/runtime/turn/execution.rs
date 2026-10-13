@@ -1252,98 +1252,211 @@ impl RuntimeHandle {
         effective_prompt: EffectivePrompt,
         loop_control: LoopControlOptions,
     ) -> Result<AgentLoopOutcome> {
-        self.reconfigure_provider_for_turn(None).await?;
-        let result = TurnExecution {
-            runtime: self,
+        // Provider-only fixtures use the real admission and Start writers while
+        // retaining their explicitly supplied prompt and loop controls.
+        let scheduled = if self.agent_state().await?.current_turn_id.is_none() {
+            let mut source = MessageEnvelope::new(
+                agent_id,
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "provider loop fixture".into(),
+                },
+            );
+            source.work_item_id = self.agent_state().await?.current_work_item_id;
+            let source = self.enqueue(source).await?;
+            let crate::runtime::scheduler_executor::RunLoopPoll::Message(scheduled) =
+                crate::runtime::scheduler_executor::SchedulerDecisionExecutor::new(self)
+                    .poll()
+                    .await?
+            else {
+                anyhow::bail!("provider fixture source was not claimed");
+            };
+            anyhow::ensure!(
+                scheduled.message.id == source.id,
+                "unexpected provider fixture claim"
+            );
+            self.begin_dispatch_turn(
+                &scheduled.message,
+                None,
+                None,
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
+                &scheduled.dispatch_plan.prior_closure,
+            )
+            .await?;
+            Some(scheduled)
+        } else {
+            None
+        };
+        self.run_agent_loop_with_fixture_dispatch(
             agent_id,
             authority_class,
             effective_prompt,
-            model_selection: TurnModelSelection::default(),
             loop_control,
-            persist_terminal: false,
-            trace_context: None,
-        }
-        .run()
-        .await;
-        let mut outcome = match result {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                if let Some(aborted) = error.downcast_ref::<CurrentRunAborted>() {
-                    self.persist_turn_aborted_record(
-                        &aborted.run_id,
-                        &aborted.reason,
-                        None,
-                        0,
-                        true,
-                    )
-                    .await?;
-                } else {
-                    self.persist_turn_terminal_record(
-                        TurnTerminalKind::Aborted,
-                        None,
-                        Some(TurnNoBriefReason::Aborted),
-                        0,
-                        None,
-                        true,
-                    )
-                    .await?;
-                }
-                return Err(error);
-            }
-        };
+            scheduled,
+        )
+        .await
+    }
 
-        if outcome.prepared_work_item_completion.is_none()
-            && (outcome.terminal_kind.is_failure() || !outcome.final_text.trim().is_empty())
-        {
-            let kind = if outcome.terminal_kind.is_failure() {
-                BriefKind::Failure
-            } else {
-                BriefKind::Result
+    #[cfg(test)]
+    #[inline(never)]
+    pub(in crate::runtime) fn run_agent_loop_with_fixture_dispatch<'a>(
+        &'a self,
+        agent_id: &'a str,
+        authority_class: AuthorityClass,
+        effective_prompt: EffectivePrompt,
+        loop_control: LoopControlOptions,
+        scheduled: Option<crate::runtime::scheduler_executor::ScheduledMessage>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<AgentLoopOutcome>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            self.reconfigure_provider_for_turn(None).await?;
+            let result = TurnExecution {
+                runtime: self,
+                agent_id,
+                authority_class,
+                effective_prompt,
+                model_selection: TurnModelSelection::default(),
+                loop_control,
+                persist_terminal: false,
+                trace_context: None,
+            }
+            .run()
+            .await;
+            let mut outcome = match result {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    let terminal = if let Some(aborted) = error.downcast_ref::<CurrentRunAborted>()
+                    {
+                        self.persist_turn_aborted_record(
+                            &aborted.run_id,
+                            &aborted.reason,
+                            None,
+                            0,
+                            false,
+                        )
+                        .await?
+                    } else {
+                        self.persist_turn_terminal_record(
+                            TurnTerminalKind::Aborted,
+                            None,
+                            Some(TurnNoBriefReason::Aborted),
+                            0,
+                            None,
+                            false,
+                        )
+                        .await?
+                    };
+                    let transition = super::TurnTerminalTransition {
+                        turn_record: self.build_turn_record(&terminal).await?,
+                        terminal,
+                        prepared_work_item_completion: None,
+                        prepared_wait_for: None,
+                        terminal_tool_executions: Vec::new(),
+                    };
+                    self.persist_provider_fixture_terminal(
+                        scheduled.as_ref(),
+                        &transition,
+                        QueueEntryStatus::Aborted,
+                    )
+                    .await?;
+                    return Err(error);
+                }
             };
-            let mut brief =
-                BriefRecord::new(agent_id, kind, outcome.final_text.clone(), None, None);
-            brief.turn_id = Some(outcome.terminal.turn_id.clone());
-            brief.turn_index = Some(outcome.turn_index);
-            brief.citations =
-                (!outcome.final_citations.is_empty()).then(|| outcome.final_citations.clone());
-            brief.finalizes_assistant_round_id =
-                outcome.final_text_source_assistant_round_id.clone();
-            self.persist_brief(&brief).await?;
-            outcome.terminal.no_brief_reason = None;
-        }
 
-        let mut turn_record = self.build_turn_record(&outcome.terminal).await?;
-        if let Some(prepared) = outcome.prepared_work_item_completion.as_ref() {
-            if !turn_record.produced_brief_ids.contains(&prepared.brief.id) {
-                turn_record
-                    .produced_brief_ids
-                    .push(prepared.brief.id.clone());
-            }
-            if !turn_record
-                .completed_work_item_ids
-                .contains(&prepared.record.id)
+            if outcome.prepared_work_item_completion.is_none()
+                && (outcome.terminal_kind.is_failure() || !outcome.final_text.trim().is_empty())
             {
-                turn_record
-                    .completed_work_item_ids
-                    .push(prepared.record.id.clone());
+                let kind = if outcome.terminal_kind.is_failure() {
+                    BriefKind::Failure
+                } else {
+                    BriefKind::Result
+                };
+                let mut brief =
+                    BriefRecord::new(agent_id, kind, outcome.final_text.clone(), None, None);
+                brief.turn_id = Some(outcome.terminal.turn_id.clone());
+                brief.turn_index = Some(outcome.turn_index);
+                brief.citations =
+                    (!outcome.final_citations.is_empty()).then(|| outcome.final_citations.clone());
+                brief.finalizes_assistant_round_id =
+                    outcome.final_text_source_assistant_round_id.clone();
+                self.persist_brief(&brief).await?;
+                outcome.terminal.no_brief_reason = None;
             }
-            if let Some(tool_execution) = prepared.tool_execution.as_ref() {
-                if !turn_record.tool_execution_ids.contains(&tool_execution.id) {
+
+            let mut turn_record = self.build_turn_record(&outcome.terminal).await?;
+            if let Some(prepared) = outcome.prepared_work_item_completion.as_ref() {
+                if !turn_record.produced_brief_ids.contains(&prepared.brief.id) {
                     turn_record
-                        .tool_execution_ids
-                        .push(tool_execution.id.clone());
+                        .produced_brief_ids
+                        .push(prepared.brief.id.clone());
+                }
+                if !turn_record
+                    .completed_work_item_ids
+                    .contains(&prepared.record.id)
+                {
+                    turn_record
+                        .completed_work_item_ids
+                        .push(prepared.record.id.clone());
+                }
+                if let Some(tool_execution) = prepared.tool_execution.as_ref() {
+                    if !turn_record.tool_execution_ids.contains(&tool_execution.id) {
+                        turn_record
+                            .tool_execution_ids
+                            .push(tool_execution.id.clone());
+                    }
                 }
             }
-        }
-        self.persist_terminal_transition(&super::TurnTerminalTransition {
-            terminal: outcome.terminal.clone(),
-            turn_record,
-            prepared_work_item_completion: outcome.prepared_work_item_completion.clone(),
-            prepared_wait_for: outcome.prepared_wait_for.clone(),
-            terminal_tool_executions: outcome.terminal_tool_executions.clone(),
+            self.persist_provider_fixture_terminal(
+                scheduled.as_ref(),
+                &super::TurnTerminalTransition {
+                    terminal: outcome.terminal.clone(),
+                    turn_record,
+                    prepared_work_item_completion: outcome.prepared_work_item_completion.clone(),
+                    prepared_wait_for: outcome.prepared_wait_for.clone(),
+                    terminal_tool_executions: outcome.terminal_tool_executions.clone(),
+                },
+                QueueEntryStatus::Processed,
+            )
+            .await?;
+            Ok(outcome)
         })
-        .await?;
-        Ok(outcome)
+    }
+
+    #[cfg(test)]
+    async fn persist_provider_fixture_terminal(
+        &self,
+        scheduled: Option<&crate::runtime::scheduler_executor::ScheduledMessage>,
+        transition: &super::TurnTerminalTransition,
+        status: QueueEntryStatus,
+    ) -> Result<()> {
+        if let Some(scheduled) = scheduled {
+            self.commit_queue_terminal_settlement(
+                QueueEntryRecord {
+                    message_id: scheduled.message.id.clone(),
+                    agent_id: scheduled.message.agent_id.clone(),
+                    priority: scheduled.message.priority.clone(),
+                    status,
+                    created_at: scheduled.message.created_at,
+                    updated_at: self.now(),
+                },
+                Vec::new(),
+                true,
+                Some(transition),
+            )
+            .await?;
+            Ok(())
+        } else {
+            self.persist_terminal_transition(transition).await
+        }
     }
 
     pub(crate) fn run_agent_loop_deferred<'a>(
@@ -3453,21 +3566,33 @@ impl<'a> TurnExecution<'a> {
                     // Let the regular tool execution path run the controlled
                     // read-only report tools before asking for the final text.
                 } else {
-                    let state = runtime.agent_state().await?;
-                    let current = runtime.latest_work_item(&pending.work_item_id).await?;
-                    let invalidation_reason = if state.current_execution_binding.as_ref()
-                        != Some(&pending.execution_binding)
-                    {
-                        Some("execution_binding_changed")
-                    } else if current.is_none() {
-                        Some("work_item_missing")
-                    } else if current
-                        .as_ref()
-                        .is_some_and(|current| current.revision != pending.expected_work_revision)
-                    {
-                        Some("work_item_revision_changed")
-                    } else {
-                        None
+                    let (invalidation_reason, current_turn_id) = {
+                        let mut request =
+                            crate::runtime::resident_work::WorkCaptureRequest::current();
+                        request.include_live = false;
+                        request.nonopen_limit = 0;
+                        request.mandatory_roots.insert(
+                            crate::runtime::resident_work::WorkKey::new(
+                                crate::runtime::resident_work::WorkFamily::Work,
+                                &pending.work_item_id,
+                            ),
+                        );
+                        let read = runtime.capture_work_read(&request).await?;
+                        let current = read.work.work_item(&pending.work_item_id)?;
+                        let reason = if read.state.current_execution_binding.as_ref()
+                            != Some(&pending.execution_binding)
+                        {
+                            Some("execution_binding_changed")
+                        } else if current.is_none() {
+                            Some("work_item_missing")
+                        } else if current.is_some_and(|current| {
+                            current.revision != pending.expected_work_revision
+                        }) {
+                            Some("work_item_revision_changed")
+                        } else {
+                            None
+                        };
+                        (reason, read.state.current_turn_id.clone())
                     };
                     if let Some(reason) = invalidation_reason {
                         runtime.inner.storage.append_event(&AuditEvent::legacy(
@@ -3620,9 +3745,7 @@ impl<'a> TurnExecution<'a> {
                     }
                     let final_text = combined_text;
                     let terminal = TurnTerminalRecord {
-                        turn_id: state
-                            .current_turn_id
-                            .clone()
+                        turn_id: current_turn_id
                             .filter(|turn_id| !turn_id.trim().is_empty())
                             .unwrap_or_else(crate::ids::turn_id),
                         turn_index,
@@ -4357,7 +4480,7 @@ impl<'a> TurnExecution<'a> {
                         let stops_tool_batch = result.prepared_work_item_completion.is_some()
                             || result.prepared_wait_for.is_some();
                         let persist_started_at = chrono::Utc::now();
-                        let persist_result: Result<()> = async {
+                        let persist_result: Result<()> = Box::pin(async {
                             if let Some(mut prepared) = result.prepared_work_item_completion.take()
                             {
                                 prepared.tool_execution = Some(record.clone());
@@ -4386,7 +4509,7 @@ impl<'a> TurnExecution<'a> {
                                     .await?;
                             }
                             Ok(())
-                        }
+                        })
                         .await;
                         if let Some(parent) = tool_execution_context.trace_context.as_ref() {
                             let context = parent.child();

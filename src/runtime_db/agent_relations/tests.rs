@@ -644,7 +644,18 @@ fn backfill_report_does_not_migrate_and_apply_can_record_pre_migration_backup() 
             None,
         ))?;
         db.connection()?.execute_batch(
-            "DROP TABLE agent_relation_backfill_outcomes;
+            "DROP TABLE dispatch_memory_retired_handoffs;
+             DROP TABLE dispatch_memory_auto_commands;
+             DROP TABLE dispatch_memory_checkpoints;
+             DROP TABLE dispatch_memory_legacy_dispatches;
+             DROP TABLE work_domain_seed_recovery_current;
+             DROP TABLE work_domain_wait_edges;
+             DROP TABLE work_domain_result_heads;
+             DROP TABLE work_domain_records;
+             DROP TABLE work_domain_current;
+             DROP TABLE work_domain_eligibility;
+             DROP TABLE work_domain_captures;
+             DROP TABLE agent_relation_backfill_outcomes;
              DROP TABLE agent_relation_backfill_runs;
              DROP TABLE agent_message_deliveries;
              DROP INDEX idx_agent_deletion_jobs_status_retry_created;

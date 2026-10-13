@@ -17,6 +17,7 @@ pub(crate) struct InputEvidenceCommit<T> {
     pub record: T,
     pub input_delta: CommittedInputEvidenceDelta,
     pub agent_state: Option<super::transitions::AgentStateMutation>,
+    pub work_delta: Option<crate::runtime::resident_work::CommittedWorkDelta>,
 }
 
 pub(crate) fn validate_input_evidence_scope_tx(
@@ -81,6 +82,7 @@ pub(crate) fn acknowledge_input_evidence_tx<T>(
         None
     };
     Ok(InputEvidenceCommit {
+        work_delta: None,
         record,
         input_delta,
         agent_state,

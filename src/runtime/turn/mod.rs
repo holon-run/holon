@@ -13,6 +13,8 @@ mod reminders;
 mod tool_summary;
 
 #[cfg(test)]
+mod resident_wait_tests;
+#[cfg(test)]
 mod tests;
 
 use anyhow::Result;
@@ -266,16 +268,28 @@ impl RuntimeHandle {
     pub(super) async fn begin_reducer_only_turn(
         &self,
         message: &MessageEnvelope,
+        dispatch_prior_closure: Option<&crate::types::ClosureDecision>,
     ) -> Result<(String, u64)> {
         let (operator_binding_id, operator_reply_route_id) =
             Self::operator_transport_from_message(message);
-        self.begin_interactive_turn_with_provenance(
-            Some(message),
-            operator_binding_id.as_deref(),
-            operator_reply_route_id.as_deref(),
-            None,
-        )
-        .await
+        if let Some(prior_closure) = dispatch_prior_closure {
+            self.begin_dispatch_turn(
+                message,
+                operator_binding_id.as_deref(),
+                operator_reply_route_id.as_deref(),
+                None,
+                prior_closure,
+            )
+            .await
+        } else {
+            self.begin_interactive_turn_with_provenance(
+                Some(message),
+                operator_binding_id.as_deref(),
+                operator_reply_route_id.as_deref(),
+                None,
+            )
+            .await
+        }
     }
 
     pub(super) async fn build_reducer_only_terminal_transition(
@@ -338,22 +352,41 @@ impl RuntimeHandle {
         &self,
         terminal: &TurnTerminalRecord,
     ) -> Result<TurnRecord> {
-        let (agent_id, run_id, current_work_item_id, owner) = {
-            let guard = self.inner.agent.lock().await;
-            let current_work_item_id = guard
-                .state
+        let turn_id = terminal.turn_id.trim();
+        if turn_id.is_empty() {
+            return Err(anyhow::anyhow!(
+                "cannot build turn record for terminal without turn_id"
+            ));
+        }
+        // StartedTurn's named owner preparation guarantees the complete
+        // all-status Wait relation. This assembler never hydrates a miss.
+        let (
+            agent_id,
+            run_id,
+            current_work_item_id,
+            owner,
+            source_message_id,
+            waiting_condition_ids,
+        ) = {
+            let mut request = super::resident_work::WorkCaptureRequest::current();
+            request.include_live = false;
+            request.nonopen_limit = 0;
+            request.required_turn_ids.insert(turn_id.to_owned());
+            let guard = self.begin_mutation().await?;
+            let read = guard.capture_work_read(&request)?;
+            drop(guard);
+            let state = read.state.as_ref();
+            let current_work_item_id = state
                 .current_execution_binding
                 .as_ref()
                 .map(|binding| binding.work_item_id.clone())
                 .unwrap_or_else(|| {
-                    guard
-                        .state
+                    state
                         .current_turn_work_item_id
                         .clone()
-                        .or_else(|| guard.state.current_work_item_id.clone())
+                        .or_else(|| state.current_work_item_id.clone())
                 });
-            let owner = guard
-                .state
+            let owner = state
                 .current_execution_binding
                 .as_ref()
                 .and_then(|binding| binding.owner.clone())
@@ -365,29 +398,26 @@ impl RuntimeHandle {
                     })
                 })
                 .unwrap_or_else(|| crate::types::TurnOwner::AgentLifecycle {
-                    agent_id: guard.state.id.clone(),
+                    agent_id: state.id.clone(),
                 });
-            (
-                guard.state.id.clone(),
-                guard.state.current_run_id.clone(),
-                current_work_item_id,
-                owner,
-            )
-        };
-        let turn_id = terminal.turn_id.trim();
-        if turn_id.is_empty() {
-            return Err(anyhow::anyhow!(
-                "cannot build turn record for terminal without turn_id"
-            ));
-        }
-
-        let source_message_id = {
-            let guard = self.inner.agent.lock().await;
-            guard
-                .state
+            let source_message_id = state
                 .current_execution_binding
                 .as_ref()
-                .map(|binding| binding.source_message_id.clone())
+                .map(|binding| binding.source_message_id.clone());
+            let waiting_condition_ids = read
+                .work
+                .waits_for_turn(turn_id)?
+                .into_iter()
+                .map(|condition| condition.id.clone())
+                .collect::<Vec<_>>();
+            (
+                state.id.clone(),
+                state.current_run_id.clone(),
+                current_work_item_id,
+                owner,
+                source_message_id,
+                waiting_condition_ids,
+            )
         };
         let input_messages = self
             .inner
@@ -395,7 +425,6 @@ impl RuntimeHandle {
             .read_messages_for_turn(turn_id, source_message_id.as_deref())?;
         let briefs = self.inner.storage.read_briefs_for_turn(turn_id)?;
         let tools = self.inner.storage.read_tool_executions_for_turn(turn_id)?;
-        let wait_conditions = self.inner.storage.read_wait_conditions_for_turn(turn_id)?;
 
         let mut record = if let Some(existing) = self.inner.storage.read_turn_by_id(turn_id)? {
             // Admission identity remains fixed even when execution changes focus.
@@ -437,11 +466,7 @@ impl RuntimeHandle {
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
-        record.waiting_condition_ids = wait_conditions
-            .iter()
-            .filter(|condition| turn_optional_id_matches(condition.turn_id.as_deref(), turn_id))
-            .map(|condition| condition.id.clone())
-            .collect();
+        record.waiting_condition_ids = waiting_condition_ids;
         record.terminal = Some(TurnTerminalSummary::from_terminal(terminal));
         record.replay = record.replay.or_else(|| {
             source_message_id

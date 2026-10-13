@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct SchedulingAdvisory {
     pub kind: String,
     pub severity: SchedulingAdvisorySeverity,
@@ -38,7 +38,7 @@ impl SchedulingAdvisory {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub(crate) enum SchedulingAdvisorySeverity {
     Warning,
 }
@@ -64,6 +64,7 @@ pub(crate) fn scheduling_advisories(
     scheduling_advisories_with_queue_len(storage, agent, agent.pending)
 }
 
+#[cfg(test)]
 pub(crate) fn scheduling_advisories_with_queue_len(
     storage: &AppStorage,
     agent: &AgentState,
@@ -187,12 +188,20 @@ pub(crate) fn scheduling_advisory_event(diagnostic: &SchedulingAdvisory) -> Audi
     )
 }
 
+#[cfg(test)]
 pub(crate) fn append_scheduling_advisories(
     storage: &AppStorage,
     agent: &AgentState,
     queue_len: usize,
 ) -> Result<usize> {
     let diagnostics = scheduling_advisories_with_queue_len(storage, agent, queue_len)?;
+    append_prepared_scheduling_advisories(storage, &diagnostics)
+}
+
+pub(crate) fn append_prepared_scheduling_advisories(
+    storage: &AppStorage,
+    diagnostics: &[SchedulingAdvisory],
+) -> Result<usize> {
     let recent_events = storage.read_recent_events(64)?;
     let mut seen_data = Vec::new();
     let mut appended = 0;

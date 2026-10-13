@@ -208,21 +208,81 @@ async fn triggered_wake_hint_records_scheduler_decision_before_tick() {
     );
 }
 
+// Backlog exists before the release cutover, rather than being inserted into
+// a latest-schema Fresh namespace and adopted by a later ordinary read.
+fn write_original_wake_work_fixture(
+    home: &std::path::Path,
+    works: &[WorkItemRecord],
+    state: &AgentState,
+    runnable_execution: bool,
+) {
+    use crate::domain::execution_protocol::{
+        ExecutionProtocolState, WorkItemExecutionRecord, WorkItemExecutionState,
+    };
+    use crate::runtime_db::{
+        evidence::{upsert_agent_identity_tx, upsert_agent_state_tx},
+        migrations::{apply_migration, ensure_migration_table, MIGRATIONS},
+        repositories::timestamp,
+    };
+    let path = home.join(".holon/state/runtime.sqlite");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut connection = rusqlite::Connection::open(path).unwrap();
+    ensure_migration_table(&connection).unwrap();
+    for migration in MIGRATIONS
+        .iter()
+        .filter(|migration| migration.version <= 81)
+    {
+        apply_migration(&mut connection, migration).unwrap();
+    }
+    let tx = connection.transaction().unwrap();
+    let identity = crate::types::AgentIdentityRecord::new(
+        "default",
+        crate::types::AgentKind::Named,
+        crate::types::AgentVisibility::Public,
+        crate::types::AgentOwnership::SelfOwned,
+        crate::types::AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    upsert_agent_identity_tx(&tx, &identity).unwrap();
+    for work in works {
+        tx.execute(
+            "INSERT INTO work_items (work_item_id, agent_id, state, objective, plan_status, revision, current_focus, created_at, updated_at, completed_at, plan_artifact_path, last_turn_id, payload_json) VALUES (?1, ?2, 'open', ?3, ?8, ?4, 0, ?5, ?6, NULL, NULL, NULL, ?7)",
+            rusqlite::params![work.id, work.agent_id, work.objective, work.revision as i64, timestamp(work.created_at), timestamp(work.updated_at), serde_json::to_string(work).unwrap(), crate::runtime_db::repositories::enum_string(&work.plan_status).unwrap()],
+        ).unwrap();
+    }
+    upsert_agent_state_tx(&tx, state).unwrap();
+    if runnable_execution {
+        let mut execution = ExecutionProtocolState::empty("default");
+        for work in works {
+            execution.work_items.insert(
+                work.id.clone(),
+                WorkItemExecutionRecord {
+                    source_revision: work.revision,
+                    state: WorkItemExecutionState::Runnable {
+                        generation: work.revision.max(1),
+                        recovery_ref: None,
+                    },
+                },
+            );
+        }
+        crate::runtime_db::transitions::persist_state_tx(&tx, &execution).unwrap();
+    }
+    tx.commit().unwrap();
+}
+
 #[tokio::test]
 async fn runtime_emits_work_queue_system_tick_for_active_item_on_restart() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let active = WorkItemRecord::new(
         "default",
         "continue active runtime cleanup",
         WorkItemState::Open,
     );
-    storage.append_work_item(&active).unwrap();
-    seed_runnable_work_execution(&storage, &active);
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active.id.clone());
-    storage.write_agent_for_fixture(&agent).unwrap();
+    write_original_wake_work_fixture(dir.path(), std::slice::from_ref(&active), &agent, true);
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -255,20 +315,15 @@ async fn runtime_emits_work_queue_system_tick_for_active_item_on_restart() {
 async fn idle_tick_prefers_current_work_item_over_queued_work_item() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let active = WorkItemRecord::new(
         "default",
         "continue active runtime cleanup",
         WorkItemState::Open,
     );
     let queued = WorkItemRecord::new("default", "queued runtime cleanup", WorkItemState::Open);
-    storage.append_work_item(&active).unwrap();
-    storage.append_work_item(&queued).unwrap();
-    seed_runnable_work_execution(&storage, &active);
-    seed_runnable_work_execution(&storage, &queued);
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active.id.clone());
-    storage.write_agent_for_fixture(&agent).unwrap();
+    write_original_wake_work_fixture(dir.path(), &[active.clone(), queued.clone()], &agent, true);
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -314,20 +369,15 @@ async fn idle_tick_prefers_current_work_item_over_queued_work_item() {
 async fn idle_tick_uses_runtime_autonomous_continuation_hook() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let active = WorkItemRecord::new(
         "default",
         "continue active runtime cleanup",
         WorkItemState::Open,
     );
     let queued = WorkItemRecord::new("default", "queued runtime cleanup", WorkItemState::Open);
-    storage.append_work_item(&active).unwrap();
-    storage.append_work_item(&queued).unwrap();
-    seed_runnable_work_execution(&storage, &active);
-    seed_runnable_work_execution(&storage, &queued);
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active.id.clone());
-    storage.write_agent_for_fixture(&agent).unwrap();
+    write_original_wake_work_fixture(dir.path(), &[active.clone(), queued.clone()], &agent, true);
 
     let mut runtime = RuntimeHandle::new(
         "default",
@@ -369,16 +419,14 @@ async fn idle_tick_uses_runtime_autonomous_continuation_hook() {
 async fn idle_tick_suppresses_continue_active_after_model_reentry_task_result() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let active = WorkItemRecord::new(
         "default",
         "continue active runtime cleanup",
         WorkItemState::Open,
     );
-    storage.append_work_item(&active).unwrap();
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active.id.clone());
-    storage.write_agent_for_fixture(&agent).unwrap();
+    write_original_wake_work_fixture(dir.path(), std::slice::from_ref(&active), &agent, false);
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -485,15 +533,18 @@ async fn idle_tick_prefers_pending_wake_hint_over_work_queue_tick() {
 async fn runtime_surfaces_queued_work_item_with_work_queue_system_tick_on_restart() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let queued = WorkItemRecord::new(
         "default",
         "surface queued runtime cleanup",
         WorkItemState::Open,
     );
     let queued_id = queued.id.clone();
-    storage.append_work_item(&queued).unwrap();
-    seed_runnable_work_execution(&storage, &queued);
+    write_original_wake_work_fixture(
+        dir.path(),
+        std::slice::from_ref(&queued),
+        &AgentState::new("default"),
+        true,
+    );
 
     let runtime = RuntimeHandle::new(
         "default",

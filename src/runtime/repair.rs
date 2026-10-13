@@ -126,12 +126,7 @@ impl RuntimeHandle {
                     let commit = {
                         let mut mutation = self.begin_mutation().await?;
                         mutation
-                            .commit_transition(crate::ids::audit_event_id(), |scope| {
-                                self.inner
-                                    .runtime_db
-                                    .transitions_in_scope(scope)
-                                    .commit_wait(
-                                        &crate::runtime_db::transitions::WaitTransitionCommand {
+                            .commit_wait_transition(crate::ids::audit_event_id(),crate::runtime_db::transitions::WaitTransitionCommand {
                                             task_result_admission: None,
                                             agent_id: agent_id.clone(),
                                             work_items: Vec::new(),
@@ -158,9 +153,7 @@ impl RuntimeHandle {
                                             index_changes: Vec::new(),
                                             notify_scheduler: true,
                                             fault: self.take_transition_fault(),
-                                        },
-                                    )
-                            })
+                                        },crate::runtime_db::transitions::ExecutionProtocolTransition::default(),None)
                             .await
                     }?;
                     self.apply_transition_commit(commit).await;

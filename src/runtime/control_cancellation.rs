@@ -254,6 +254,27 @@ pub(super) struct ControlRunLease {
     completed: Notify,
 }
 impl ControlRunLease {
+    #[cfg(test)]
+    pub(super) fn test_stopped_run(
+        run_id: &str,
+        lease_id: &str,
+        activation_id: Option<String>,
+        source_message_id: &str,
+        completed: bool,
+    ) -> Arc<Self> {
+        let token = CancellationToken::new();
+        token.cancel();
+        Arc::new(Self {
+            lease_id: lease_id.to_owned(),
+            run_id: run_id.to_owned(),
+            activation_id,
+            source_message_id: source_message_id.to_owned(),
+            token,
+            reason: Arc::new(StdMutex::new("agent_stopped".into())),
+            complete: AtomicBool::new(completed),
+            completed: Notify::new(),
+        })
+    }
     pub(super) fn lease_id(&self) -> &str {
         &self.lease_id
     }
@@ -265,6 +286,15 @@ impl ControlRunLease {
     }
     pub(super) fn source_message_id(&self) -> &str {
         &self.source_message_id
+    }
+    pub(super) fn was_stopped(&self) -> bool {
+        self.token.is_cancelled()
+            && self
+                .reason
+                .lock()
+                .expect("run abort reason poisoned")
+                .as_str()
+                == "agent_stopped"
     }
     pub(super) fn is_complete(&self) -> bool {
         self.complete.load(Ordering::Acquire)
@@ -295,6 +325,11 @@ impl ControlRunLease {
 /// One guard lives alongside the actual scheduled processing future. Clearing
 /// administrative current_run fields alone must never mark physical completion.
 pub(super) struct ControlRunCompletionGuard(Arc<ControlRunLease>);
+impl ControlRunCompletionGuard {
+    pub(super) fn lease(&self) -> Arc<ControlRunLease> {
+        self.0.clone()
+    }
+}
 impl Drop for ControlRunCompletionGuard {
     fn drop(&mut self) {
         self.0.finish();

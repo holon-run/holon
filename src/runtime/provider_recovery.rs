@@ -582,6 +582,7 @@ mod context_assignment_tests {
                         identity_incarnation: 1,
                     },
                     &InputEvidenceLoadRequest {
+                        selected_completion_brief_ids: Default::default(),
                         interrupted_sources: Default::default(),
                         windows: Vec::new(),
                         mandatory_roots: BTreeSet::from([

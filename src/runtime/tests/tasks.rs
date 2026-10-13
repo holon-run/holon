@@ -483,6 +483,71 @@ async fn pick_second_runnable_work_item_yields_current() {
     assert_eq!(continuation.active_work_item_id, second.id);
 }
 
+// Pick's execution-bound branch needs the actual admitted source, claim and
+// StartedTurn. Keep physical processing owned across the original assertions.
+fn start_execution_bound_pick_fixture<'a>(
+    runtime: &'a RuntimeHandle,
+    source_id: &'a str,
+    turn_id: &'a str,
+    work_item_id: &'a str,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = scheduler_executor::ScheduledMessage> + Send + 'a>,
+> {
+    Box::pin(async move {
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("test".into()),
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "execute before explicit focus pick".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::HttpControlPrompt,
+            AdmissionContext::ControlAuthenticated,
+        );
+        message.id = source_id.into();
+        message.turn_id = Some(turn_id.into());
+        message.work_item_id = Some(work_item_id.into());
+        let admitted = runtime.enqueue(message).await.unwrap();
+        let scheduler_executor::RunLoopPoll::Message(scheduled) =
+            scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+                .poll()
+                .await
+                .unwrap()
+        else {
+            panic!("execution-bound pick source must be claimed");
+        };
+        assert_eq!(scheduled.message.id, admitted.id);
+        assert!(scheduled.message.message_seq.is_some_and(|seq| seq > 0));
+        runtime
+            .begin_dispatch_turn(
+                &scheduled.message,
+                None,
+                None,
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
+                &scheduled.dispatch_plan.prior_closure,
+            )
+            .await
+            .unwrap();
+        let state = runtime.agent_state().await.unwrap();
+        let binding = state.current_execution_binding.as_ref().unwrap();
+        assert_eq!(binding.source_message_id, source_id);
+        assert_eq!(binding.turn_id, turn_id);
+        assert_eq!(binding.work_item_id.as_deref(), Some(work_item_id));
+        assert!(binding.activation_id.is_some());
+        scheduled
+    })
+}
+
 #[tokio::test]
 async fn execution_bound_pick_keeps_ownership_without_recording_a_return_path() {
     let dir = tempdir().unwrap();
@@ -506,21 +571,9 @@ async fn execution_bound_pick_keeps_ownership_without_recording_a_return_path() 
         .await
         .unwrap();
     runtime.pick_work_item(first.id.clone()).await.unwrap();
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.current_turn_id = Some("turn-yield".into());
-        guard.state.current_turn_work_item_id = Some(first.id.clone());
-        guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
-            activation_id: Some("activation-yield".into()),
-            admission_provenance: None,
-            source_message_id: "message-yield".into(),
-            turn_id: "turn-yield".into(),
-            owner: None,
-            work_item_id: Some(first.id.clone()),
-            claimed_work_revision: Some(first.revision),
-        });
-        guard.persist_state(&runtime.inner.storage).unwrap();
-    }
+    let scheduled =
+        start_execution_bound_pick_fixture(&runtime, "message-yield", "turn-yield", &first.id)
+            .await;
 
     let picked = runtime
         .pick_work_item_with_reason(second.id.clone(), None)
@@ -557,6 +610,7 @@ async fn execution_bound_pick_keeps_ownership_without_recording_a_return_path() 
             .and_then(|binding| binding.work_item_id.as_deref()),
         Some(first.id.as_str())
     );
+    drop(scheduled);
 }
 
 /// Regression for the control-plane flake tracked by #3020. An execution-bound
@@ -587,21 +641,13 @@ async fn execution_bound_pick_then_control_completion_succeeds() {
         .await
         .unwrap();
     runtime.pick_work_item(first.id.clone()).await.unwrap();
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.current_turn_id = Some("turn-terminal-pick".into());
-        guard.state.current_turn_work_item_id = Some(first.id.clone());
-        guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
-            activation_id: Some("activation-terminal-pick".into()),
-            admission_provenance: None,
-            source_message_id: "message-terminal-pick".into(),
-            turn_id: "turn-terminal-pick".into(),
-            owner: None,
-            work_item_id: Some(first.id.clone()),
-            claimed_work_revision: Some(first.revision),
-        });
-        guard.persist_state(&runtime.inner.storage).unwrap();
-    }
+    let scheduled = start_execution_bound_pick_fixture(
+        &runtime,
+        "message-terminal-pick",
+        "turn-terminal-pick",
+        &first.id,
+    )
+    .await;
 
     let picked = runtime
         .pick_work_item_with_reason(second.id.clone(), None)
@@ -626,6 +672,7 @@ async fn execution_bound_pick_then_control_completion_succeeds() {
         .await
         .unwrap();
     assert_eq!(completed.into_record().state, WorkItemState::Completed);
+    drop(scheduled);
 }
 
 #[tokio::test]
@@ -658,10 +705,10 @@ async fn pick_yielded_work_item_without_current_focus_repairs_dangling_chain() {
     runtime.pick_work_item(second.id.clone()).await.unwrap();
     runtime.pick_work_item(third.id.clone()).await.unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.current_work_item_id = None;
         guard.state.current_turn_work_item_id = None;
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(runtime.storage()).await.unwrap();
     }
 
     let picked = runtime
@@ -735,10 +782,10 @@ async fn pick_disconnected_yielded_work_item_reports_locatable_conflict_without_
     runtime.pick_work_item(second.id.clone()).await.unwrap();
     runtime.pick_work_item(missing.id.clone()).await.unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.current_work_item_id = Some(unrelated.id.clone());
         guard.state.current_turn_work_item_id = Some(unrelated.id.clone());
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(runtime.storage()).await.unwrap();
     }
     let before = runtime.storage().latest_work_item_continuations().unwrap();
     let originating = before

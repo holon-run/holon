@@ -692,7 +692,18 @@ mod tests {
     fn downgrade_before_execution_protocol(db_path: &std::path::Path) -> Result<()> {
         let connection = open_connection(db_path)?;
         connection.execute_batch(
-            "DELETE FROM schema_migrations WHERE version >= 41;
+            "DROP TABLE dispatch_memory_retired_handoffs;
+             DROP TABLE dispatch_memory_auto_commands;
+             DROP TABLE dispatch_memory_checkpoints;
+             DROP TABLE dispatch_memory_legacy_dispatches;
+             DROP TABLE work_domain_seed_recovery_current;
+             DROP TABLE work_domain_wait_edges;
+             DROP TABLE work_domain_result_heads;
+             DROP TABLE work_domain_records;
+             DROP TABLE work_domain_current;
+             DROP TABLE work_domain_eligibility;
+             DROP TABLE work_domain_captures;
+             DELETE FROM schema_migrations WHERE version >= 41;
              DROP INDEX idx_agent_deletion_jobs_status_retry_created;
              ALTER TABLE agent_deletion_jobs DROP COLUMN next_attempt_at;
              DROP TABLE execution_protocol_command_results;

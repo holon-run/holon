@@ -199,6 +199,10 @@ pub struct RuntimeDbRetentionCommit {
 pub(crate) struct ScopedRuntimeDbRetentionCommit {
     pub committed: RuntimeDbRetentionCommit,
     pub input_deltas: Vec<(InputEvidenceScope, CommittedInputEvidenceDelta)>,
+    pub work_deltas: Vec<(
+        InputEvidenceScope,
+        crate::runtime::resident_work::CommittedWorkDelta,
+    )>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -310,6 +314,7 @@ impl RuntimeDb {
             return Ok(ScopedRuntimeDbRetentionCommit {
                 committed: self.commit_retention_pass(policy, now)?,
                 input_deltas: Vec::new(),
+                work_deltas: Vec::new(),
             });
         }
         self.transaction_with_context(
@@ -398,6 +403,7 @@ impl RuntimeDb {
         Ok(ScopedRuntimeDbRetentionCommit {
             committed,
             input_deltas,
+            work_deltas: Vec::new(),
         })
     }
 
@@ -1042,6 +1048,26 @@ fn collect_strong_roots(connection: &Connection) -> Result<StrongRoots> {
     collect_brief_roots(connection, &mut roots)?;
     collect_transcript_tool_roots(connection, &mut roots)?;
     collect_outbox_roots(connection, &mut roots)?;
+    for key in super::dispatch_memory::dispatch_memory_retention_roots_in(connection)? {
+        use crate::runtime::resident_input_evidence::InputEvidenceFamily as Family;
+        match key.family {
+            Family::Message => {
+                roots.message_ids.insert(key.id);
+            }
+            Family::Turn => {
+                roots.turn_ids.insert(key.id);
+            }
+            Family::Transcript => {
+                roots.transcript_entry_ids.insert(key.id);
+            }
+            Family::ToolExecution => {
+                roots.tool_execution_ids.insert(key.id);
+            }
+            // Briefs/Episodes are canonical retained records; their concrete
+            // content sources are already followed by their original root readers.
+            Family::Brief | Family::WorkExecution | Family::Attempt | Family::Outcome => {}
+        }
+    }
     for source_ref in super::control_transition::control_cancellation_source_refs_in(connection)? {
         collect_source_ref(&source_ref, &mut roots);
     }

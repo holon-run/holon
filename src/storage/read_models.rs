@@ -98,135 +98,35 @@ impl RuntimeReadModels {
         &self,
         agent: &AgentState,
     ) -> Result<Option<AgentPostureProjection>> {
-        if matches!(agent.status, AgentStatus::Stopped) {
-            return Ok(Some(AgentPostureProjection {
-                posture: AgentSchedulingPosture::Stopped,
-                reason: "agent lifecycle is stopped".into(),
-                work_item_id: None,
-                task_id: None,
-                run_id: None,
-            }));
+        if let Some(posture) = derive_agent_posture_before_work_queue(agent, false) {
+            return Ok(Some(posture));
         }
-
-        if let Some(run_id) = agent.current_run_id.clone() {
-            return Ok(Some(AgentPostureProjection {
-                posture: AgentSchedulingPosture::ActiveTurn,
-                reason: "agent has an active turn".into(),
-                work_item_id: agent.current_turn_work_item_id.clone(),
-                task_id: None,
-                run_id: Some(run_id),
-            }));
-        }
-
-        if self
-            .runtime_db
-            .queue_entries()
-            .has_queued_for_agent(&agent.id)?
-        {
-            return Ok(Some(AgentPostureProjection {
-                posture: AgentSchedulingPosture::HasQueuedInput,
-                reason: "agent has queued input".into(),
-                work_item_id: None,
-                task_id: None,
-                run_id: None,
-            }));
-        }
-
-        Ok(None)
+        Ok(derive_agent_posture_before_work_queue(
+            agent,
+            self.runtime_db
+                .queue_entries()
+                .has_queued_for_agent(&agent.id)?,
+        ))
     }
 
     fn agent_posture_from_work_queue(
         &self,
         work_queue: &WorkQueueReadModel,
     ) -> Result<AgentPostureProjection> {
-        if let Some(item) = work_queue
-            .current_runnable
-            .as_ref()
-            .or_else(|| work_queue.queued_runnable.first())
-        {
-            return Ok(AgentPostureProjection {
-                posture: AgentSchedulingPosture::HasRunnableWork,
-                reason: item.posture_reason(),
-                work_item_id: Some(item.work_item.id.clone()),
-                task_id: None,
-                run_id: None,
+        let needs_task_wait = work_queue.current_runnable.is_none()
+            && work_queue.queued_runnable.is_empty()
+            && work_queue.items.iter().any(|item| {
+                item.is_current && item.scheduling_state == WorkItemSchedulingState::WaitingTask
             });
-        }
-
-        if let Some(item) = work_queue.items.iter().find(|item| {
-            item.is_current && item.scheduling_state == WorkItemSchedulingState::WaitingTask
-        }) {
-            let task_id = self
-                .active_wait_conditions_for_scope()?
-                .into_iter()
-                .find(|condition| {
-                    condition.status == WaitConditionStatus::Active
-                        && condition.kind == WaitConditionKind::Task
-                        && condition.work_item_id.as_deref() == Some(item.work_item.id.as_str())
-                })
-                .and_then(|condition| condition.subject_ref);
-            return Ok(AgentPostureProjection {
-                posture: AgentSchedulingPosture::WaitingForTask,
-                reason: item.posture_reason(),
-                work_item_id: Some(item.work_item.id.clone()),
-                task_id,
-                run_id: None,
-            });
-        }
-
-        if let Some(item) = work_queue.items.iter().find(|item| {
-            item.is_current && item.scheduling_state == WorkItemSchedulingState::WaitingExternal
-        }) {
-            return Ok(AgentPostureProjection {
-                posture: AgentSchedulingPosture::WaitingForExternal,
-                reason: item.posture_reason(),
-                work_item_id: Some(item.work_item.id.clone()),
-                task_id: None,
-                run_id: None,
-            });
-        }
-
-        if let Some(item) = work_queue
-            .waiting_for_operator
-            .iter()
-            .find(|item| item.is_current)
-        {
-            return Ok(AgentPostureProjection {
-                posture: AgentSchedulingPosture::WaitingForOperator,
-                reason: item.posture_reason(),
-                work_item_id: Some(item.work_item.id.clone()),
-                task_id: None,
-                run_id: None,
-            });
-        }
-
-        if let Some(item) = work_queue
-            .blocked
-            .iter()
-            .find(|item| item.is_current)
-            .or_else(|| {
-                work_queue
-                    .triggered_blocked
-                    .iter()
-                    .find(|item| item.is_current)
-            })
-        {
-            return Ok(AgentPostureProjection {
-                posture: AgentSchedulingPosture::Blocked,
-                reason: item.posture_reason(),
-                work_item_id: Some(item.work_item.id.clone()),
-                task_id: None,
-                run_id: None,
-            });
-        }
-
-        Ok(AgentPostureProjection {
-            posture: AgentSchedulingPosture::Idle,
-            reason: "no queued input, active turn, runnable work, or active waits".into(),
-            work_item_id: None,
-            task_id: None,
-            run_id: None,
-        })
+        let active_waits = if needs_task_wait {
+            self.active_wait_conditions_for_scope()?
+        } else {
+            Vec::new()
+        };
+        Ok(derive_agent_posture_from_work_queue(
+            work_queue,
+            &active_waits,
+        ))
     }
 
     pub fn waiting_contract_anchor(&self) -> Result<Option<WorkItemRecord>> {
@@ -548,4 +448,139 @@ pub(crate) fn filter_context_active_waits(
                 .is_none_or(|id| work_item_is_open.get(id).is_some_and(|open| *open))
         })
         .collect()
+}
+
+/// Pure posture projection from one frozen State/queue/Work observation.
+pub(crate) fn derive_agent_posture(
+    agent: &AgentState,
+    has_queued_input: bool,
+    work_queue: &WorkQueueReadModel,
+    active_waits: &[WaitConditionRecord],
+) -> AgentPostureProjection {
+    derive_agent_posture_before_work_queue(agent, has_queued_input)
+        .unwrap_or_else(|| derive_agent_posture_from_work_queue(work_queue, active_waits))
+}
+
+fn derive_agent_posture_before_work_queue(
+    agent: &AgentState,
+    has_queued_input: bool,
+) -> Option<AgentPostureProjection> {
+    if matches!(agent.status, AgentStatus::Stopped) {
+        return Some(AgentPostureProjection {
+            posture: AgentSchedulingPosture::Stopped,
+            reason: "agent lifecycle is stopped".into(),
+            work_item_id: None,
+            task_id: None,
+            run_id: None,
+        });
+    }
+    if let Some(run_id) = agent.current_run_id.clone() {
+        return Some(AgentPostureProjection {
+            posture: AgentSchedulingPosture::ActiveTurn,
+            reason: "agent has an active turn".into(),
+            work_item_id: agent.current_turn_work_item_id.clone(),
+            task_id: None,
+            run_id: Some(run_id),
+        });
+    }
+    has_queued_input.then(|| AgentPostureProjection {
+        posture: AgentSchedulingPosture::HasQueuedInput,
+        reason: "agent has queued input".into(),
+        work_item_id: None,
+        task_id: None,
+        run_id: None,
+    })
+}
+
+fn derive_agent_posture_from_work_queue(
+    work_queue: &WorkQueueReadModel,
+    active_waits: &[WaitConditionRecord],
+) -> AgentPostureProjection {
+    if let Some(item) = work_queue
+        .current_runnable
+        .as_ref()
+        .or_else(|| work_queue.queued_runnable.first())
+    {
+        return AgentPostureProjection {
+            posture: AgentSchedulingPosture::HasRunnableWork,
+            reason: item.posture_reason(),
+            work_item_id: Some(item.work_item.id.clone()),
+            task_id: None,
+            run_id: None,
+        };
+    }
+
+    if let Some(item) = work_queue.items.iter().find(|item| {
+        item.is_current && item.scheduling_state == WorkItemSchedulingState::WaitingTask
+    }) {
+        let task_id = active_waits
+            .iter()
+            .find(|condition| {
+                condition.status == WaitConditionStatus::Active
+                    && condition.kind == WaitConditionKind::Task
+                    && condition.work_item_id.as_deref() == Some(item.work_item.id.as_str())
+            })
+            .and_then(|condition| condition.subject_ref.clone());
+        return AgentPostureProjection {
+            posture: AgentSchedulingPosture::WaitingForTask,
+            reason: item.posture_reason(),
+            work_item_id: Some(item.work_item.id.clone()),
+            task_id,
+            run_id: None,
+        };
+    }
+
+    if let Some(item) = work_queue.items.iter().find(|item| {
+        item.is_current && item.scheduling_state == WorkItemSchedulingState::WaitingExternal
+    }) {
+        return AgentPostureProjection {
+            posture: AgentSchedulingPosture::WaitingForExternal,
+            reason: item.posture_reason(),
+            work_item_id: Some(item.work_item.id.clone()),
+            task_id: None,
+            run_id: None,
+        };
+    }
+
+    if let Some(item) = work_queue
+        .waiting_for_operator
+        .iter()
+        .find(|item| item.is_current)
+    {
+        return AgentPostureProjection {
+            posture: AgentSchedulingPosture::WaitingForOperator,
+            reason: item.posture_reason(),
+            work_item_id: Some(item.work_item.id.clone()),
+            task_id: None,
+            run_id: None,
+        };
+    }
+
+    if let Some(item) = work_queue
+        .blocked
+        .iter()
+        .find(|item| item.is_current)
+        .or_else(|| {
+            work_queue
+                .triggered_blocked
+                .iter()
+                .find(|item| item.is_current)
+        })
+    {
+        return AgentPostureProjection {
+            posture: AgentSchedulingPosture::Blocked,
+            reason: item.posture_reason(),
+            work_item_id: Some(item.work_item.id.clone()),
+            task_id: None,
+            run_id: None,
+        };
+    }
+
+    AgentPostureProjection {
+        posture: AgentSchedulingPosture::Idle,
+        reason: "no queued input, active turn, runnable work, or active waits".into(),
+        work_item_id: None,
+        task_id: None,
+        run_id: None,
+    }
 }

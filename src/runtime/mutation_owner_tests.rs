@@ -495,6 +495,7 @@ fn scoped_state(agent_id: &str, pending: usize) -> Arc<AgentState> {
 
 fn state_facts(state: Arc<AgentState>) -> KnownCommit {
     KnownCommit::State {
+        work: None,
         state,
         episodes: None,
         input_evidence: None,
@@ -757,6 +758,7 @@ fn episode_witness(operation: &str, agent_id: &str, incarnation: u64) -> Mutatio
 
 fn prepared_facts(state: Arc<AgentState>, episodes: Arc<ResidentEpisodes>) -> KnownCommit {
     KnownCommit::State {
+        work: None,
         state,
         episodes: Some(episodes),
         input_evidence: None,
@@ -1235,3 +1237,6 @@ async fn retired_receipt_resolution_rejects_current_active_or_any_successor_stat
 
 #[path = "mutation_owner_tests/input_recovery.rs"]
 mod input_recovery;
+
+#[path = "mutation_owner_tests/work_publication.rs"]
+mod work_publication;

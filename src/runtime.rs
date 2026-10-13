@@ -5,6 +5,7 @@ mod callback;
 mod clock;
 mod closure;
 mod command_task;
+pub(crate) mod completion_sources;
 mod context_capture;
 mod continuation;
 mod control;
@@ -15,6 +16,7 @@ pub(crate) mod control_recovery;
 pub(crate) mod decision_models;
 pub(crate) mod decision_openai;
 mod delivery;
+pub(crate) mod ended_dispatch;
 pub(crate) mod episode_recovery;
 pub(crate) mod execution_admission;
 mod failure;
@@ -33,6 +35,7 @@ mod provider_turn;
 mod repair;
 pub(crate) mod resident_input_evidence;
 pub(crate) mod resident_state;
+pub(crate) mod resident_work;
 mod scheduler;
 mod scheduler_acceptance;
 mod scheduler_continuation;
@@ -50,6 +53,7 @@ mod turn;
 mod unsettled_claim;
 mod waiting;
 mod wake_matching;
+mod work_reads;
 pub(crate) mod workspace;
 pub(crate) mod workspace_control;
 mod worktree;
@@ -62,6 +66,7 @@ pub(crate) use agent_message_delivery::{
     legacy_cross_agent_caller_bindings_match, AgentMessageDeliveryService,
     PreparedAgentMessageDelivery,
 };
+pub(crate) use closure::runtime_error_active;
 pub use first_run_intro::maybe_enqueue_first_run_intro;
 pub(crate) use lifecycle::LightweightAgentStateProjection;
 pub(crate) use repair::is_wake_only_message;
@@ -69,6 +74,7 @@ pub use repair::{
     SchedulerRepairInspection, SchedulerRepairOperation, SchedulerRepairRequest,
     SchedulerRepairResult,
 };
+pub(crate) use scheduler::{SchedulerAgentSnapshot, SchedulerObservations, SchedulerProjection};
 pub use scheduler_acceptance::{
     seed_scheduler_restart_fixture, seed_scheduler_terminal_recovery_fixture,
     SchedulerIngressAdmissionRestartFixture, SchedulerTerminalRecoveryFixture,
@@ -202,10 +208,18 @@ pub(crate) struct PreparedWorkItemCompletion {
     pub(crate) continuation_expectations: Vec<crate::types::WorkItemContinuationFrame>,
     pub(crate) continuations: Vec<crate::types::WorkItemContinuationFrame>,
     pub(crate) continuation_resumed: Option<WorkItemContinuationSummary>,
+    continuation_resumes: std::collections::BTreeMap<
+        String,
+        (
+            crate::domain::execution_protocol::WorkItemContinuationResumeSource,
+            crate::domain::execution_protocol::WorkItemOutcome,
+        ),
+    >,
     pub(crate) audit_events: Vec<crate::types::AuditEvent>,
     pub(crate) index_changes: Vec<crate::runtime_db::RuntimeIndexChange>,
     pub(crate) tool_execution: Option<crate::types::ToolExecutionRecord>,
     pub(crate) transcript_entries: Vec<crate::types::TranscriptEntry>,
+    _work_read_budget: Option<Arc<input_evidence_budget::BudgetViewGuard>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -565,57 +579,6 @@ mod scheduler_acceptance_gate_tests {
     }
 }
 
-fn work_item_continuation_resume_source(
-    storage: &AppStorage,
-    runtime_db: &RuntimeDb,
-    agent_id: &str,
-    parent_work_item_id: &str,
-    projected_parent: Option<&WorkItemRecord>,
-    projected_wait_conditions: &[WaitConditionRecord],
-) -> Result<(
-    crate::domain::execution_protocol::WorkItemContinuationResumeSource,
-    crate::domain::execution_protocol::WorkItemOutcome,
-)> {
-    use crate::domain::execution_protocol::{
-        continuation_resume_outcome, WorkItemContinuationResumeSource,
-    };
-
-    let durable_parent = runtime_db
-        .work_items()
-        .latest(parent_work_item_id)?
-        .ok_or_else(|| anyhow!("continuation parent WorkItem is missing"))?;
-    let parent = projected_parent
-        .filter(|parent| parent.id == parent_work_item_id)
-        .unwrap_or(&durable_parent);
-    anyhow::ensure!(
-        parent.agent_id == agent_id && parent.state == WorkItemState::Open,
-        "continuation parent WorkItem is not open for this agent"
-    );
-    let mut parent_waits = storage
-        .raw_active_wait_conditions_for_agent(agent_id)?
-        .into_iter()
-        .filter(|wait| wait.work_item_id.as_deref() == Some(parent_work_item_id))
-        .map(|wait| (wait.id.clone(), wait))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    for wait in projected_wait_conditions {
-        parent_waits.remove(&wait.id);
-        if wait.agent_id == agent_id
-            && wait.work_item_id.as_deref() == Some(parent_work_item_id)
-            && wait.status == WaitConditionStatus::Active
-        {
-            parent_waits.insert(wait.id.clone(), wait.clone());
-        }
-    }
-    let source = WorkItemContinuationResumeSource {
-        work_item_revision: parent.revision,
-        blocked_by: parent.blocked_by.clone(),
-        active_wait_ids: parent_waits.into_keys().collect(),
-    };
-    let outcome = continuation_resume_outcome(parent_work_item_id, &source)
-        .map_err(|error| anyhow!(error))?;
-    Ok((source, outcome))
-}
-
 fn execution_protocol_completion_transition_from_prepared(
     record: &QueueEntryRecord,
     terminal_turn: &TurnRecord,
@@ -796,8 +759,6 @@ fn execution_protocol_completion_transition_from_prepared(
 }
 
 fn execution_protocol_detached_completion_transition_from_prepared(
-    storage: &AppStorage,
-    runtime_db: &RuntimeDb,
     prepared: &PreparedWorkItemCompletion,
 ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
     use crate::domain::execution_protocol::{
@@ -837,14 +798,11 @@ fn execution_protocol_detached_completion_transition_from_prepared(
             .work_items
             .get(&continuation.suspended_work_item_id)
             .ok_or_else(|| anyhow!("completion parent execution state is missing"))?;
-        let (source, outcome) = work_item_continuation_resume_source(
-            storage,
-            runtime_db,
-            &prepared.record.agent_id,
-            &continuation.suspended_work_item_id,
-            None,
-            &prepared.wait_conditions,
-        )?;
+        let (source, outcome) = prepared
+            .continuation_resumes
+            .get(&continuation.id)
+            .context("prepared completion continuation source missing")?
+            .clone();
         commands.push(ExecutionProtocolCommand::ResumeWorkItemContinuation(
             Box::new(
                 crate::domain::execution_protocol::ResumeWorkItemContinuation {
@@ -1333,155 +1291,6 @@ fn execution_attempt_has_task_result_source(
         &attempt.source.identity,
         crate::domain::execution_protocol::ExecutionSourceIdentity::TaskResult { .. }
     )
-}
-
-fn exact_task_result_wait_with_status(
-    storage: &AppStorage,
-    message: &MessageEnvelope,
-    task_id: &str,
-    work_item_id: &str,
-    status_matches: impl Fn(&WaitConditionStatus) -> bool,
-) -> Result<Option<WaitConditionRecord>> {
-    let matching_waits = storage
-        .latest_wait_conditions_for_agent(&message.agent_id)?
-        .into_iter()
-        .filter(|wait| {
-            wait.work_item_id.as_deref() == Some(work_item_id)
-                && status_matches(&wait.status)
-                && wait.kind == crate::types::WaitConditionKind::Task
-                && wait.trigger_message_id() == Some(message.id.as_str())
-                && wait.wake_sources.iter().any(|source| {
-                    matches!(
-                        source,
-                        crate::types::WakeSource::TaskResult { task_id: expected }
-                            if expected == task_id
-                    )
-                })
-        })
-        .collect::<Vec<_>>();
-    let [wait] = matching_waits.as_slice() else {
-        return Ok(None);
-    };
-    Ok(Some(wait.clone()))
-}
-
-fn exact_triggered_or_resolved_task_result_wait(
-    storage: &AppStorage,
-    message: &MessageEnvelope,
-    task_id: &str,
-    work_item_id: &str,
-) -> Result<Option<WaitConditionRecord>> {
-    exact_task_result_wait_with_status(storage, message, task_id, work_item_id, |status| {
-        matches!(
-            status,
-            WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
-        )
-    })
-}
-
-/// Agent-scope counterpart of [`exact_triggered_or_resolved_task_result_wait`]:
-/// durable evidence that the agent explicitly waited on the exact task whose
-/// result this message carries, without any WorkItem binding.
-fn exact_agent_scope_task_result_wait(
-    storage: &AppStorage,
-    message: &MessageEnvelope,
-    task_id: &str,
-) -> Result<Option<WaitConditionRecord>> {
-    let matching_waits = storage
-        .latest_wait_conditions_for_agent(&message.agent_id)?
-        .into_iter()
-        .filter(|wait| {
-            wait.work_item_id.is_none()
-                && matches!(
-                    wait.status,
-                    WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
-                )
-                && wait.kind == crate::types::WaitConditionKind::Task
-                && wait.trigger_message_id() == Some(message.id.as_str())
-                && wait.wake_sources.iter().any(|source| {
-                    matches!(
-                        source,
-                        crate::types::WakeSource::TaskResult { task_id: expected }
-                            if expected == task_id
-                    )
-                })
-        })
-        .collect::<Vec<_>>();
-    let [wait] = matching_waits.as_slice() else {
-        return Ok(None);
-    };
-    Ok(Some(wait.clone()))
-}
-
-/// Waiter-agnostic task-result wait evidence (#3124): a task result may
-/// satisfy an exact wait held by any owner inside the same agent. The
-/// task's captured owner is irrelevant to the dependency wake.
-fn exact_task_result_wait_for_any_owner(
-    storage: &AppStorage,
-    message: &MessageEnvelope,
-    task_id: &str,
-) -> Result<Option<WaitConditionRecord>> {
-    let mut matching_waits = storage
-        .latest_wait_conditions_for_agent(&message.agent_id)?
-        .into_iter()
-        .filter(|wait| {
-            matches!(
-                wait.status,
-                WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
-            ) && wait.kind == crate::types::WaitConditionKind::Task
-                && wait.trigger_message_id() == Some(message.id.as_str())
-                && wait.wake_sources.iter().any(|source| {
-                    matches!(
-                        source,
-                        crate::types::WakeSource::TaskResult { task_id: expected }
-                            if expected == task_id
-                    )
-                })
-        })
-        .collect::<Vec<_>>();
-    matching_waits.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    Ok(matching_waits.into_iter().next())
-}
-
-fn exact_agent_scope_wait_recheck(
-    storage: &AppStorage,
-    message: &MessageEnvelope,
-) -> Result<Option<WaitConditionRecord>> {
-    let MessageOrigin::System { subsystem } = &message.origin else {
-        return Ok(None);
-    };
-    if message.kind != MessageKind::SystemTick
-        || subsystem != "wait_condition_recheck"
-        || message.authority_class != AuthorityClass::RuntimeInstruction
-        || message.admission_context != Some(AdmissionContext::RuntimeOwned)
-        || message.delivery_surface != Some(MessageDeliverySurface::RuntimeSystem)
-    {
-        return Ok(None);
-    }
-    let Some(wait_id) = message.source_refs.get("wait_id") else {
-        return Ok(None);
-    };
-    let matching_waits = storage
-        .latest_wait_conditions_for_agent(&message.agent_id)?
-        .into_iter()
-        .filter(|wait| {
-            wait.id == *wait_id
-                && wait.work_item_id.is_none()
-                && matches!(
-                    wait.status,
-                    WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
-                )
-                && wait.trigger_message_id() == Some(message.id.as_str())
-        })
-        .collect::<Vec<_>>();
-    let [wait] = matching_waits.as_slice() else {
-        return Ok(None);
-    };
-    Ok(Some(wait.clone()))
 }
 
 pub(crate) enum TaskResultClaimRecovery {
@@ -2719,7 +2528,6 @@ fn runtime_error_queue_settlement(
 struct AgentRuntimeProjectionCache {
     agent_id: String,
     tasks: HashMap<String, TaskRecord>,
-    work_items: HashMap<String, crate::types::WorkItemRecord>,
     timers: HashMap<String, TimerRecord>,
     external_triggers: HashMap<String, ExternalTriggerRecord>,
 }
@@ -2728,13 +2536,11 @@ impl AgentRuntimeProjectionCache {
     fn rebuild(
         agent_id: String,
         tasks: Vec<TaskRecord>,
-        work_items: Vec<crate::types::WorkItemRecord>,
         timers: Vec<TimerRecord>,
         external_triggers: Vec<ExternalTriggerRecord>,
     ) -> Self {
         crate::diagnostics::record_runtime_projection_cache_rebuild();
         let task_agent_id = agent_id.clone();
-        let work_item_agent_id = agent_id.clone();
         let timer_agent_id = agent_id.clone();
         let external_trigger_agent_id = agent_id.clone();
         Self {
@@ -2743,12 +2549,6 @@ impl AgentRuntimeProjectionCache {
                 tasks
                     .into_iter()
                     .filter(|record| record.agent_id == task_agent_id),
-                |record| record.id.clone(),
-            ),
-            work_items: latest_by(
-                work_items
-                    .into_iter()
-                    .filter(|record| record.agent_id == work_item_agent_id),
                 |record| record.id.clone(),
             ),
             timers: latest_by(
@@ -2769,12 +2569,6 @@ impl AgentRuntimeProjectionCache {
     fn upsert_task(&mut self, record: TaskRecord) {
         if record.agent_id == self.agent_id {
             self.tasks.insert(record.id.clone(), record);
-        }
-    }
-
-    fn upsert_work_item(&mut self, record: crate::types::WorkItemRecord) {
-        if record.agent_id == self.agent_id {
-            self.work_items.insert(record.id.clone(), record);
         }
     }
 
@@ -2815,18 +2609,6 @@ impl AgentRuntimeProjectionCache {
 
     fn latest_tasks(&self, limit: usize) -> Vec<TaskRecord> {
         let mut records = self.tasks.values().cloned().collect::<Vec<_>>();
-        records.sort_by(|left, right| {
-            right
-                .updated_at
-                .cmp(&left.updated_at)
-                .then_with(|| right.created_at.cmp(&left.created_at))
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        take_limit(records, limit)
-    }
-
-    fn latest_work_items(&self, limit: usize) -> Vec<crate::types::WorkItemRecord> {
-        let mut records = self.work_items.values().cloned().collect::<Vec<_>>();
         records.sort_by(|left, right| {
             right
                 .updated_at
@@ -3210,9 +2992,9 @@ impl RuntimeHandle {
         let Some(binding) = replacement else {
             return Ok(());
         };
-        let mut guard = self.inner.agent.lock().await;
+        let mut guard = self.begin_mutation().await?;
         guard.state.current_execution_binding = Some(binding);
-        guard.persist_state(&self.inner.storage)
+        guard.persist_state(&self.inner.storage).await
     }
 
     fn inject_next_transition_fault_unchecked(&self, fault: TransitionFaultPoint) -> Result<()> {
@@ -4092,6 +3874,26 @@ impl RuntimeHandle {
             operator_binding_id,
             operator_reply_route_id,
             execution_admission_provenance,
+            None,
+        ))
+    }
+
+    #[inline(never)]
+    fn begin_dispatch_turn<'a>(
+        &'a self,
+        message: &'a MessageEnvelope,
+        operator_binding_id: Option<&'a str>,
+        operator_reply_route_id: Option<&'a str>,
+        execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
+        prior_closure: &'a ClosureDecision,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<(String, u64)>> + Send + 'a>>
+    {
+        Box::pin(self.begin_interactive_turn_with_provenance_inner(
+            Some(message),
+            operator_binding_id,
+            operator_reply_route_id,
+            execution_admission_provenance,
+            Some(prior_closure),
         ))
     }
 
@@ -4101,6 +3903,7 @@ impl RuntimeHandle {
         operator_binding_id: Option<&str>,
         operator_reply_route_id: Option<&str>,
         execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
+        dispatch_prior_closure: Option<&ClosureDecision>,
     ) -> Result<(String, u64)> {
         use self::resident_input_evidence::{
             InputEvidenceFamily as Family, InputEvidenceKey as Key,
@@ -4239,6 +4042,57 @@ impl RuntimeHandle {
                 ))?;
             }
         }
+        let projected_turn_work_item_id = if let Some((_, owner, _)) = &canonical_execution_binding
+        {
+            owner.work_item_id().map(ToString::to_string)
+        } else if let Some((_, source_turn)) = &replay_source {
+            source_turn
+                .as_ref()
+                .and_then(|turn| turn.current_work_item_id.clone())
+        } else {
+            guard
+                .state
+                .current_turn_work_item_id
+                .clone()
+                .or_else(|| guard.state.current_work_item_id.clone())
+        };
+        let binding_work_item_id = message.and_then(|message| {
+            if canonical_execution_binding.is_some() {
+                projected_turn_work_item_id.clone()
+            } else {
+                message
+                    .work_item_id
+                    .clone()
+                    .or_else(|| projected_turn_work_item_id.clone())
+            }
+        });
+        let fallback_work_revision = if canonical_execution_binding
+            .as_ref()
+            .and_then(|(_, _, revision)| *revision)
+            .is_none()
+        {
+            if let Some(work_item_id) = &binding_work_item_id {
+                let key =
+                    resident_work::WorkKey::new(resident_work::WorkFamily::Work, work_item_id);
+                let mut request = resident_work::WorkCaptureRequest::current();
+                request.include_live = false;
+                request.nonopen_limit = 0;
+                request.mandatory_roots.insert(key.clone());
+                guard.prepare_owner_work_request(&request).await?;
+                let work = guard.capture_work(&request)?;
+                match work.lookup(&key)? {
+                    Some(record) => match &record.record {
+                        resident_work::CanonicalWorkRecord::Work(item) => Some(item.revision),
+                        _ => anyhow::bail!("StartedTurn Work revision has a different family"),
+                    },
+                    None => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let state = {
             guard.state.turn_index += 1;
             let turn_id = if replay_source.is_some() || terminal_source_turn.is_some() {
@@ -4274,19 +4128,7 @@ impl RuntimeHandle {
                 let claimed_work_revision = canonical_execution_binding
                     .as_ref()
                     .and_then(|(_, _, claimed_work_revision)| *claimed_work_revision)
-                    .or_else(|| {
-                        work_item_id
-                            .as_deref()
-                            .and_then(|work_item_id| {
-                                self.inner
-                                    .runtime_db
-                                    .work_items()
-                                    .latest(work_item_id)
-                                    .ok()
-                                    .flatten()
-                            })
-                            .map(|work_item| work_item.revision)
-                    });
+                    .or(fallback_work_revision);
                 let activation_id = canonical_execution_binding
                     .as_ref()
                     .map(|(activation_id, _, _)| activation_id.clone());
@@ -4350,9 +4192,49 @@ impl RuntimeHandle {
             }
             // The posture, actual input assignment and started Turn publish as
             // one acknowledged candidate, so no reader sees a dangling binding.
-            guard.persist_state_with_started_turn(started_turn).await?;
+            if let Some(prior_closure) = dispatch_prior_closure {
+                use crate::runtime_db::{
+                    dispatch_memory::DispatchMemoryStart,
+                    episode_memory::{EpisodeMemoryInvocation, EpisodeMemoryKey},
+                };
+                let source = message.context("dispatch memory requires its actual source")?;
+                let start = DispatchMemoryStart::new(
+                    EpisodeMemoryKey {
+                        agent_id: guard.state.id.clone(),
+                        identity_incarnation: self.inner.identity_incarnation,
+                        actual_dispatch_turn_id: started_turn.turn_id.clone(),
+                    },
+                    EpisodeMemoryInvocation {
+                        message_id: source.id.clone(),
+                        turn_index: started_turn.turn_index,
+                    },
+                    source,
+                    prior_closure.clone(),
+                    guard.last_persisted_state.working_memory.clone(),
+                )?;
+                guard.persist_started_dispatch(started_turn, start).await?;
+            } else {
+                guard.persist_state_with_started_turn(started_turn).await?;
+            }
             guard.state.clone()
         };
+        {
+            // StartedTurn initializes its complete Turn/trigger Wait relations,
+            // including standalone execution and reducer-only dispatches.
+            let mut request = resident_work::WorkCaptureRequest::current();
+            request.required_turn_ids.insert(
+                state
+                    .current_turn_id
+                    .clone()
+                    .context("started dispatch Turn missing")?,
+            );
+            if let Some(message) = message {
+                request
+                    .required_trigger_message_ids
+                    .insert(message.id.clone());
+            }
+            guard.prepare_owner_work_request(&request).await?;
+        }
         drop(guard);
         self.append_state_changed_events(&state)?;
         if let Some(message) = message {
@@ -4427,22 +4309,6 @@ impl RuntimeHandle {
             operator_binding_id,
             operator_reply_route_id,
             provenance,
-        )
-        .await
-        .map(|_| ())
-    }
-
-    #[cfg(test)]
-    async fn begin_interactive_turn_for_test(
-        &self,
-        operator_binding_id: Option<&str>,
-        operator_reply_route_id: Option<&str>,
-    ) -> Result<()> {
-        self.begin_interactive_turn_with_provenance(
-            None,
-            operator_binding_id,
-            operator_reply_route_id,
-            None,
         )
         .await
         .map(|_| ())
@@ -5346,14 +5212,11 @@ impl RuntimeHandle {
                     .work_items
                     .get(&continuation.suspended_work_item_id)
                     .ok_or_else(|| anyhow!("completion parent execution state is missing"))?;
-                let (source, outcome) = work_item_continuation_resume_source(
-                    &self.inner.storage,
-                    &self.inner.runtime_db,
-                    &record.agent_id,
-                    &continuation.suspended_work_item_id,
-                    None,
-                    &prepared.wait_conditions,
-                )?;
+                let (source, outcome) = prepared
+                    .continuation_resumes
+                    .get(&continuation.id)
+                    .context("prepared completion continuation source missing")?
+                    .clone();
                 execution_protocol.commands.push(
                         crate::domain::execution_protocol::ExecutionProtocolCommand::ResumeWorkItemContinuation(
                             Box::new(
@@ -5453,6 +5316,21 @@ impl RuntimeHandle {
                     scheduler::apply_message_wake_projection(&mut state);
                 }
                 let agent_state = if let Some(transition) = terminal_transition {
+                    if state.current_run_id.is_some()
+                        && state.current_run_id == transition.turn_record.run_id
+                        && state.current_turn_id.as_deref()
+                            == Some(transition.terminal.turn_id.as_str())
+                        && state.turn_index == transition.terminal.turn_index
+                        && state
+                            .current_execution_binding
+                            .as_ref()
+                            .is_some_and(|binding| {
+                                binding.turn_id == transition.terminal.turn_id
+                                    && binding.source_message_id == record.message_id
+                            })
+                    {
+                        state.current_run_id = None;
+                    }
                     state.current_turn_id = Some(transition.terminal.turn_id.clone());
                     state.last_turn_terminal = Some(transition.terminal.clone());
                     Some(crate::runtime_db::transitions::AgentStateMutation {
@@ -6070,6 +5948,11 @@ impl RuntimeHandle {
         bootstrap?;
 
         loop {
+            // Original processing and terminal ACK finish before this boundary.
+            // A retired instance cannot plan another activation or idle wake.
+            if !self.accepts_execution_admission() {
+                return Ok(());
+            }
             if self.emit_due_task_result_recovery().await? {
                 continue;
             }
@@ -6082,18 +5965,15 @@ impl RuntimeHandle {
 
             let scheduled = match poll {
                 scheduler_executor::RunLoopPoll::Shutdown => return Ok(()),
-                scheduler_executor::RunLoopPoll::Stopped(state, queue_len) => {
-                    let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
-                        &self.inner.storage,
-                        &state,
-                        queue_len,
-                        self.now(),
-                    )?;
-                    let decision = scheduler::decide_next_action(
-                        &projection,
-                        scheduler::SchedulerBoundary::RunLoop,
-                        scheduler::SchedulerInput::Idle,
-                    );
+                scheduler_executor::RunLoopPoll::Stopped(state, _queue_len) => {
+                    // Stop depends only on the observed lifecycle State.
+                    let decision = scheduler::SchedulerDecision::new(
+                        scheduler::SchedulerDecisionKind::Stop,
+                        "stopped",
+                    )
+                    .boundary(scheduler::SchedulerBoundary::RunLoop.as_str())
+                    .liveness_only(true)
+                    .evidence(format!("status={:?}", state.status));
                     scheduler::append_scheduler_decision(
                         &self.inner.storage,
                         &self.inner.default_agent_id,
@@ -6118,18 +5998,9 @@ impl RuntimeHandle {
                     if self.maybe_emit_pending_system_tick(None).await? {
                         continue;
                     }
-                    let idle_snapshot = {
-                        let guard = self.inner.agent.lock().await;
-                        (guard.state.clone(), guard.queue.len())
-                    };
-                    let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
-                        &self.inner.storage,
-                        &idle_snapshot.0,
-                        idle_snapshot.1,
-                        self.now(),
-                    )?;
+                    let idle_read = self.capture_scheduler_projection().await?;
                     let decision = scheduler::decide_next_action(
-                        &projection,
+                        &idle_read.projection,
                         scheduler::SchedulerBoundary::RunLoopIdle,
                         scheduler::SchedulerInput::Idle,
                     );
@@ -6145,10 +6016,10 @@ impl RuntimeHandle {
                         )?;
                     }
                     let next_recheck_at = [
-                        self.next_blocked_work_item_recheck_at().await?,
-                        self.next_agent_wait_recheck_at().await?,
+                        idle_read.work.next_work_recheck_at()?,
+                        idle_read.work.next_agent_wait_recheck_at()?,
                         self.next_queued_available_retry_at(
-                            &projection.queued_runnable_work_items,
+                            &idle_read.projection.queued_runnable_work_items,
                         )?,
                     ]
                     .into_iter()
@@ -6158,11 +6029,13 @@ impl RuntimeHandle {
                         .inner
                         .runtime_db
                         .task_result_settlements()
-                        .next_recheck_at(&idle_snapshot.0.id)?;
+                        .next_recheck_at(&idle_read.state.id)?;
                     let next_recheck_at = match (next_recheck_at, result_recheck_at) {
                         (Some(left), Some(right)) => Some(left.min(right)),
                         (left, right) => left.or(right),
                     };
+                    // A sleeping loop retains deadlines, not owned Work bodies or Pins.
+                    drop(idle_read);
                     let idle_transition = scheduler_executor::SchedulerDecisionExecutor::new(&self)
                         .transition_run_loop_idle_to_sleep(next_recheck_at)
                         .await?;
@@ -6240,6 +6113,7 @@ impl RuntimeHandle {
 
             // Cancellation and setup failures can bypass the provider's turn timer.
             let processing_started = std::time::Instant::now();
+            let original_completion = scheduled.run_completion.lease();
             let processing_result = self
                 .process_message_with_plan_deferred(
                     scheduled.message,
@@ -6247,181 +6121,281 @@ impl RuntimeHandle {
                     &scheduled.scheduler_decision,
                 )
                 .await;
-            if self.original_run_was_settled_by_control_stop(&message, &original_run_id)? {
-                // Dropping ScheduledMessage's remaining completion guard below
-                // proves physical processing ended for the original Stop lease.
-                continue;
-            }
-            let terminal_transition = match processing_result {
-                Ok(transition) => transition,
-                Err(err) => {
-                    let aborted = err.downcast_ref::<CurrentRunAborted>().cloned();
-                    let (terminal, queue_status, mut audit_events, failure_artifacts) =
-                        if let Some(aborted) = aborted.as_ref() {
-                            (
-                                self.build_turn_aborted_record(
-                                    &aborted.reason,
-                                    None,
-                                    u64::try_from(processing_started.elapsed().as_millis())
-                                        .unwrap_or(u64::MAX),
-                                )
-                                .await,
-                                QueueEntryStatus::Interrupted,
-                                vec![AuditEvent::legacy(
-                                    "message_processing_aborted",
-                                    serde_json::json!({
-                                        "message_id": message.id.clone(),
-                                        "message_kind": message.kind.clone(),
-                                        "run_id": aborted.run_id.clone(),
-                                        "reason": aborted.reason.clone(),
-                                    }),
-                                )],
-                                None,
-                            )
-                        } else {
-                            let descriptor = describe_runtime_error(&err);
-                            let terminal = self
-                                .build_turn_aborted_record(
-                                    "runtime_error",
-                                    None,
-                                    u64::try_from(processing_started.elapsed().as_millis())
-                                        .unwrap_or(u64::MAX),
-                                )
-                                .await;
-                            error!(
-                                message_id = %message.id,
-                                turn_id = %terminal.turn_id,
-                                domain = ?descriptor.domain,
-                                code = %descriptor.code,
-                                retryable = descriptor.retryable,
-                                error = %descriptor.operator_message,
-                                "failed to process message"
-                            );
-                            let (queue_status, settlement_reason) =
-                                runtime_error_queue_settlement(&message.kind, &err);
-                            let artifacts = self
-                                .build_runtime_failure_artifacts(&message, &err, &terminal)
-                                .await?;
-                            let terminal_turn_id = terminal.turn_id.clone();
-                            (
-                                terminal,
-                                queue_status.clone(),
-                                vec![
-                                    AuditEvent::legacy(
-                                        "runtime_error",
-                                        serde_json::json!({
-                                            "message_id": message.id.clone(),
-                                            "turn_id": terminal_turn_id,
-                                            "message_kind": message.kind.clone(),
-                                            "domain": descriptor.domain,
-                                            "code": descriptor.code,
-                                            "retryable": descriptor.retryable,
-                                            "error": descriptor.operator_message,
-                                            "recovery_hint": descriptor.recovery_hint,
-                                            "safe_context": descriptor.safe_context,
-                                            "source_chain": descriptor.source_chain,
-                                            "token_usage": provider_attempt_timeline(&err)
-                                                .and_then(|timeline| timeline.aggregated_token_usage.clone()),
-                                            "provider_attempt_timeline": provider_attempt_timeline(&err),
-                                        }),
-                                    ),
-                                    AuditEvent::legacy(
-                                        "queue_entry_settled",
-                                        serde_json::json!({
-                                            "message_id": message.id.clone(),
-                                            "message_kind": message.kind.clone(),
-                                            "status": queue_status,
-                                            "reason": settlement_reason,
-                                        }),
-                                    ),
-                                ],
-                                Some(artifacts),
-                            )
-                        };
-                    if let Some(aborted) = aborted.as_ref() {
-                        audit_events.push(AuditEvent::legacy(
-                            "turn_terminal_aborted",
+            let settlement = self
+                .finish_scheduled_message_processing(
+                    &message,
+                    &original_run_id,
+                    processing_started,
+                    processing_result,
+                )
+                .await;
+            drop(scheduled.run_completion);
+            self.finish_original_stopped_dispatch(original_completion)
+                .await?;
+            settlement?;
+        }
+    }
+
+    #[inline(never)]
+    fn finish_scheduled_message_processing<'a>(
+        &'a self,
+        message: &'a MessageEnvelope,
+        original_run_id: &'a str,
+        processing_started: std::time::Instant,
+        processing_result: Result<turn::TurnTerminalTransition>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(self.finish_scheduled_message_processing_inner(
+            message,
+            original_run_id,
+            processing_started,
+            processing_result,
+        ))
+    }
+
+    async fn finish_scheduled_message_processing_inner(
+        &self,
+        message: &MessageEnvelope,
+        original_run_id: &str,
+        processing_started: std::time::Instant,
+        processing_result: Result<turn::TurnTerminalTransition>,
+    ) -> Result<()> {
+        if self.original_run_was_settled_by_control_stop(message, original_run_id)? {
+            // The caller retains the original completion guard across this
+            // helper, then drops it before attempting ended memory recovery.
+            return Ok(());
+        }
+        let terminal_transition = match processing_result {
+            Ok(transition) => transition,
+            Err(err) => {
+                let aborted = err.downcast_ref::<CurrentRunAborted>().cloned();
+                let (terminal, queue_status, mut audit_events, failure_artifacts) = if let Some(
+                    aborted,
+                ) =
+                    aborted.as_ref()
+                {
+                    (
+                        self.build_turn_aborted_record(
+                            &aborted.reason,
+                            None,
+                            u64::try_from(processing_started.elapsed().as_millis())
+                                .unwrap_or(u64::MAX),
+                        )
+                        .await,
+                        QueueEntryStatus::Interrupted,
+                        vec![AuditEvent::legacy(
+                            "message_processing_aborted",
                             serde_json::json!({
-                                "run_id": aborted.run_id,
-                                "reason": aborted.reason,
-                                "turn_id": terminal.turn_id,
-                                "turn_index": terminal.turn_index,
-                                "kind": terminal.kind,
-                                "completed_at": terminal.completed_at,
-                                "duration_ms": terminal.duration_ms,
+                                "message_id": message.id.clone(),
+                                "message_kind": message.kind.clone(),
+                                "run_id": aborted.run_id.clone(),
+                                "reason": aborted.reason.clone(),
                             }),
-                        ));
-                    }
-                    let mut turn_record = self.build_turn_record(&terminal).await?;
-                    if let Some(artifacts) = failure_artifacts.as_ref() {
-                        if !turn_record.produced_brief_ids.contains(&artifacts.brief.id) {
-                            turn_record
-                                .produced_brief_ids
-                                .push(artifacts.brief.id.clone());
-                        }
-                    }
-                    let mut terminal = terminal;
-                    if failure_artifacts.is_some() {
-                        terminal.no_brief_reason = None;
-                        turn_record.terminal =
-                            Some(crate::types::TurnTerminalSummary::from_terminal(&terminal));
-                    }
-                    let terminal_transition = turn::TurnTerminalTransition {
-                        terminal,
-                        turn_record,
-                        prepared_work_item_completion: None,
-                        prepared_wait_for: None,
-                        terminal_tool_executions: Vec::new(),
-                    };
-                    let committed_state = TerminalAgentStateUpdate {
-                        last_runtime_failure: failure_artifacts
-                            .as_ref()
-                            .map(|artifacts| artifacts.failure_summary.clone()),
-                    };
-                    let settlement = self
-                        .commit_queue_terminal_settlement_resilient(
-                            QueueEntryRecord {
-                                message_id: message.id.clone(),
-                                agent_id: message.agent_id.clone(),
-                                priority: message.priority.clone(),
-                                status: queue_status,
-                                created_at: message.created_at,
-                                updated_at: Utc::now(),
-                            },
-                            audit_events,
-                            &terminal_transition,
-                            Some(committed_state),
-                            failure_artifacts
-                                .as_ref()
-                                .map(|artifacts| vec![artifacts.transcript.clone()])
-                                .unwrap_or_default(),
-                            failure_artifacts
-                                .as_ref()
-                                .map(|artifacts| vec![artifacts.brief.clone()])
-                                .unwrap_or_default(),
+                        )],
+                        None,
+                    )
+                } else {
+                    let descriptor = describe_runtime_error(&err);
+                    let terminal = self
+                        .build_turn_aborted_record(
+                            "runtime_error",
+                            None,
                             u64::try_from(processing_started.elapsed().as_millis())
                                 .unwrap_or(u64::MAX),
                         )
                         .await;
-                    if let Err(error) = settlement {
-                        if self
-                            .original_run_was_settled_by_control_stop(&message, &original_run_id)?
-                        {
-                            continue;
-                        }
-                        if execution_settlement_conflict(&error) {
-                            crate::diagnostics::record_missing_terminal_turn_detected();
-                            if self.recover_scheduler_bootstrap_claims().await? > 0 {
-                                continue;
-                            }
-                        }
-                        return Err(error);
+                    error!(
+                        message_id = %message.id,
+                        turn_id = %terminal.turn_id,
+                        domain = ?descriptor.domain,
+                        code = %descriptor.code,
+                        retryable = descriptor.retryable,
+                        error = %descriptor.operator_message,
+                        "failed to process message"
+                    );
+                    let (queue_status, settlement_reason) =
+                        runtime_error_queue_settlement(&message.kind, &err);
+                    let artifacts = self
+                        .build_runtime_failure_artifacts(&message, &err, &terminal)
+                        .await?;
+                    let terminal_turn_id = terminal.turn_id.clone();
+                    (
+                        terminal,
+                        queue_status.clone(),
+                        vec![
+                            AuditEvent::legacy(
+                                "runtime_error",
+                                serde_json::json!({
+                                    "message_id": message.id.clone(),
+                                    "turn_id": terminal_turn_id,
+                                    "message_kind": message.kind.clone(),
+                                    "domain": descriptor.domain,
+                                    "code": descriptor.code,
+                                    "retryable": descriptor.retryable,
+                                    "error": descriptor.operator_message,
+                                    "recovery_hint": descriptor.recovery_hint,
+                                    "safe_context": descriptor.safe_context,
+                                    "source_chain": descriptor.source_chain,
+                                    "token_usage": provider_attempt_timeline(&err)
+                                        .and_then(|timeline| timeline.aggregated_token_usage.clone()),
+                                    "provider_attempt_timeline": provider_attempt_timeline(&err),
+                                }),
+                            ),
+                            AuditEvent::legacy(
+                                "queue_entry_settled",
+                                serde_json::json!({
+                                    "message_id": message.id.clone(),
+                                    "message_kind": message.kind.clone(),
+                                    "status": queue_status,
+                                    "reason": settlement_reason,
+                                }),
+                            ),
+                        ],
+                        Some(artifacts),
+                    )
+                };
+                if let Some(aborted) = aborted.as_ref() {
+                    audit_events.push(AuditEvent::legacy(
+                        "turn_terminal_aborted",
+                        serde_json::json!({
+                            "run_id": aborted.run_id,
+                            "reason": aborted.reason,
+                            "turn_id": terminal.turn_id,
+                            "turn_index": terminal.turn_index,
+                            "kind": terminal.kind,
+                            "completed_at": terminal.completed_at,
+                            "duration_ms": terminal.duration_ms,
+                        }),
+                    ));
+                }
+                // Setup can fail after Claim and before StartedTurn. This
+                // admitted settlement owns preparation for its fallback Turn.
+                {
+                    let mut request = resident_work::WorkCaptureRequest::current();
+                    request.include_live = false;
+                    request.nonopen_limit = 0;
+                    request.required_turn_ids.insert(terminal.turn_id.clone());
+                    let mut mutation = self.begin_mutation().await?;
+                    mutation.prepare_owner_work_request(&request).await?;
+                }
+                let mut turn_record = self.build_turn_record(&terminal).await?;
+                if let Some(artifacts) = failure_artifacts.as_ref() {
+                    if !turn_record.produced_brief_ids.contains(&artifacts.brief.id) {
+                        turn_record
+                            .produced_brief_ids
+                            .push(artifacts.brief.id.clone());
                     }
+                }
+                let mut terminal = terminal;
+                if failure_artifacts.is_some() {
+                    terminal.no_brief_reason = None;
+                    turn_record.terminal =
+                        Some(crate::types::TurnTerminalSummary::from_terminal(&terminal));
+                }
+                let terminal_transition = turn::TurnTerminalTransition {
+                    terminal,
+                    turn_record,
+                    prepared_work_item_completion: None,
+                    prepared_wait_for: None,
+                    terminal_tool_executions: Vec::new(),
+                };
+                let committed_state = TerminalAgentStateUpdate {
+                    last_runtime_failure: failure_artifacts
+                        .as_ref()
+                        .map(|artifacts| artifacts.failure_summary.clone()),
+                };
+                let settlement = self
+                    .commit_queue_terminal_settlement_resilient(
+                        QueueEntryRecord {
+                            message_id: message.id.clone(),
+                            agent_id: message.agent_id.clone(),
+                            priority: message.priority.clone(),
+                            status: queue_status,
+                            created_at: message.created_at,
+                            updated_at: Utc::now(),
+                        },
+                        audit_events,
+                        &terminal_transition,
+                        Some(committed_state),
+                        failure_artifacts
+                            .as_ref()
+                            .map(|artifacts| vec![artifacts.transcript.clone()])
+                            .unwrap_or_default(),
+                        failure_artifacts
+                            .as_ref()
+                            .map(|artifacts| vec![artifacts.brief.clone()])
+                            .unwrap_or_default(),
+                        u64::try_from(processing_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    )
+                    .await;
+                if let Err(error) = settlement {
+                    if self.original_run_was_settled_by_control_stop(message, original_run_id)? {
+                        return Ok(());
+                    }
+                    if execution_settlement_conflict(&error) {
+                        crate::diagnostics::record_missing_terminal_turn_detected();
+                        if self.recover_scheduler_bootstrap_claims().await? > 0 {
+                            return Ok(());
+                        }
+                    }
+                    return Err(error);
+                }
+                let failed_state = {
+                    let mut guard = self.begin_mutation().await?;
+                    if guard
+                        .current_run_abort
+                        .as_ref()
+                        .is_some_and(|handle| handle.run_id == original_run_id)
+                    {
+                        guard.current_run_abort = None;
+                    }
+                    guard.install_transient().await?;
+                    guard.state.clone()
+                };
+                self.append_state_changed_events(&failed_state)?;
+                if !self.accepts_execution_admission() {
+                    return Ok(());
+                }
+                self.maybe_commit_turn_end_work_item_transition().await?;
+                self.record_closure_decision_event(Some(true)).await?;
+                self.maybe_emit_pending_system_tick(None).await?;
+                return Ok(());
+            }
+        };
+        {
+            let settlement = self
+                .commit_queue_terminal_settlement_resilient(
+                    QueueEntryRecord {
+                        message_id: message.id.clone(),
+                        agent_id: message.agent_id.clone(),
+                        priority: message.priority.clone(),
+                        status: QueueEntryStatus::Processed,
+                        created_at: message.created_at,
+                        updated_at: Utc::now(),
+                    },
+                    vec![AuditEvent::legacy(
+                        "queue_entry_settled",
+                        serde_json::json!({
+                            "message_id": message.id,
+                            "message_kind": message.kind,
+                            "status": QueueEntryStatus::Processed,
+                        }),
+                    )],
+                    &terminal_transition,
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                    u64::try_from(processing_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                )
+                .await;
+            match settlement {
+                Ok(TerminalSettlementDisposition::Intended) => {}
+                Ok(TerminalSettlementDisposition::AbortedFallback) => {
                     let failed_state = {
                         let mut guard = self.begin_mutation().await?;
-                        if guard.current_run_abort.as_ref().is_some_and(|handle| {
-                            Some(&handle.run_id) == guard.state.current_run_id.as_ref()
-                        }) || guard.state.current_run_id.is_none()
+                        if guard
+                            .current_run_abort
+                            .as_ref()
+                            .is_some_and(|handle| handle.run_id == original_run_id)
                         {
                             guard.current_run_abort = None;
                         }
@@ -6429,89 +6403,47 @@ impl RuntimeHandle {
                         guard.state.clone()
                     };
                     self.append_state_changed_events(&failed_state)?;
+                    if !self.accepts_execution_admission() {
+                        return Ok(());
+                    }
                     self.maybe_commit_turn_end_work_item_transition().await?;
                     self.record_closure_decision_event(Some(true)).await?;
                     self.maybe_emit_pending_system_tick(None).await?;
-                    continue;
+                    return Ok(());
                 }
-            };
-            {
-                let processed_state = {
-                    let mut guard = self.begin_mutation().await?;
-                    if guard.current_run_abort.as_ref().is_some_and(|handle| {
-                        Some(&handle.run_id) == guard.state.current_run_id.as_ref()
-                    }) || guard.state.current_run_id.is_none()
-                    {
-                        guard.current_run_abort = None;
+                Err(error) => {
+                    if self.original_run_was_settled_by_control_stop(message, original_run_id)? {
+                        return Ok(());
                     }
-                    guard.install_transient().await?;
-                    guard.state.clone()
-                };
-                self.append_state_changed_events(&processed_state)?;
-                let settlement = self
-                    .commit_queue_terminal_settlement_resilient(
-                        QueueEntryRecord {
-                            message_id: message.id.clone(),
-                            agent_id: message.agent_id.clone(),
-                            priority: message.priority.clone(),
-                            status: QueueEntryStatus::Processed,
-                            created_at: message.created_at,
-                            updated_at: Utc::now(),
-                        },
-                        vec![AuditEvent::legacy(
-                            "queue_entry_settled",
-                            serde_json::json!({
-                                "message_id": message.id,
-                                "message_kind": message.kind,
-                                "status": QueueEntryStatus::Processed,
-                            }),
-                        )],
-                        &terminal_transition,
-                        None,
-                        Vec::new(),
-                        Vec::new(),
-                        u64::try_from(processing_started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                    )
-                    .await;
-                match settlement {
-                    Ok(TerminalSettlementDisposition::Intended) => {}
-                    Ok(TerminalSettlementDisposition::AbortedFallback) => {
-                        let failed_state = {
-                            let mut guard = self.begin_mutation().await?;
-                            if guard.current_run_abort.as_ref().is_some_and(|handle| {
-                                Some(&handle.run_id) == guard.state.current_run_id.as_ref()
-                            }) || guard.state.current_run_id.is_none()
-                            {
-                                guard.current_run_abort = None;
-                            }
-                            guard.install_transient().await?;
-                            guard.state.clone()
-                        };
-                        self.append_state_changed_events(&failed_state)?;
-                        self.maybe_commit_turn_end_work_item_transition().await?;
-                        self.record_closure_decision_event(Some(true)).await?;
-                        self.maybe_emit_pending_system_tick(None).await?;
-                        continue;
-                    }
-                    Err(error) => {
-                        if self
-                            .original_run_was_settled_by_control_stop(&message, &original_run_id)?
-                        {
-                            continue;
+                    if execution_settlement_conflict(&error) {
+                        crate::diagnostics::record_missing_terminal_turn_detected();
+                        if self.recover_scheduler_bootstrap_claims().await? > 0 {
+                            return Ok(());
                         }
-                        if execution_settlement_conflict(&error) {
-                            crate::diagnostics::record_missing_terminal_turn_detected();
-                            if self.recover_scheduler_bootstrap_claims().await? > 0 {
-                                continue;
-                            }
-                        }
-                        return Err(error);
                     }
+                    return Err(error);
                 }
-                self.maybe_supersede_queued_provider_recovery(&message, Some(&terminal_transition))
-                    .await?;
             }
+            let processed_state = {
+                let mut guard = self.begin_mutation().await?;
+                if guard
+                    .current_run_abort
+                    .as_ref()
+                    .is_some_and(|handle| handle.run_id == original_run_id)
+                {
+                    guard.current_run_abort = None;
+                }
+                guard.install_transient().await?;
+                guard.state.clone()
+            };
+            self.append_state_changed_events(&processed_state)?;
+            if !self.accepts_execution_admission() {
+                return Ok(());
+            }
+            self.maybe_supersede_queued_provider_recovery(message, Some(&terminal_transition))
+                .await?;
         }
+        Ok(())
     }
 
     fn original_run_was_settled_by_control_stop(
@@ -7339,3 +7271,7 @@ mod control_stop_settlement_tests;
 #[cfg(test)]
 #[path = "runtime/begin_turn_input_tests.rs"]
 mod begin_turn_input_tests;
+
+#[cfg(test)]
+#[path = "runtime/dispatch_run_projection_tests.rs"]
+mod dispatch_run_projection_tests;

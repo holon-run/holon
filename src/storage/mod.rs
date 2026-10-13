@@ -48,7 +48,8 @@ pub use index_outbox::RuntimeIndexOutbox;
 pub(crate) use legacy::LegacyImporter;
 pub use read_models::RuntimeReadModels;
 pub(crate) use read_models::{
-    derive_context_work_queue, filter_context_active_waits, WORK_QUEUE_NON_OPEN_WINDOW,
+    derive_agent_posture, derive_context_work_queue, filter_context_active_waits,
+    WORK_QUEUE_NON_OPEN_WINDOW,
 };
 pub use recovery::RecoverySnapshot;
 pub use store::RuntimeStore;
@@ -5534,6 +5535,7 @@ impl AppStorage {
     ) -> Result<crate::runtime_db::prepared_input_evidence::PreparedInputEvidence> {
         self.store.prepare_input_evidence(scope, nonce, at, write)
     }
+    #[cfg(test)]
     pub(crate) fn commit_prepared_input_evidence(
         &self,
         prepared: &crate::runtime_db::prepared_input_evidence::PreparedInputEvidence,
@@ -5544,6 +5546,27 @@ impl AppStorage {
             >,
         >,
     > {
-        self.store.commit_prepared_input_evidence(prepared)
+        self.commit_prepared_input_evidence_with_work_request(
+            prepared,
+            &crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+                capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
+                record_limit: 65_536,
+                byte_limit: 64 * 1024 * 1024,
+            },
+        )
+    }
+    pub(crate) fn commit_prepared_input_evidence_with_work_request(
+        &self,
+        prepared: &crate::runtime_db::prepared_input_evidence::PreparedInputEvidence,
+        work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+    ) -> Result<
+        crate::runtime_db::transitions::InputMutationExecution<
+            crate::runtime_db::input_evidence_writes::InputEvidenceCommit<
+                crate::runtime_db::prepared_input_evidence::PreparedEvidenceValue,
+            >,
+        >,
+    > {
+        self.store
+            .commit_prepared_input_evidence_with_work_request(prepared, work_request)
     }
 }

@@ -23,6 +23,7 @@ pub(crate) struct LightweightAgentStateProjection {
     pub(crate) closure: ClosureDecision,
     pub(crate) active_children: Vec<ChildAgentSummary>,
     pub(crate) work_queue: WorkQueueReadModel,
+    pub(crate) _work_budget: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
 }
 
 fn resolve_enter_cwd(execution_root: &Path, cwd: Option<&Path>) -> Result<PathBuf> {
@@ -82,8 +83,23 @@ impl RuntimeHandle {
             return Ok(None);
         };
 
-        let closure = self.current_closure_decision().await?;
-        let Some(latest) = self.inner.runtime_db.work_items().latest(&work_item_id)? else {
+        let mut mutation = self.begin_mutation().await?;
+        let read = mutation
+            .prepare_scheduler_read(
+                None,
+                std::collections::BTreeSet::from([
+                    super::resident_input_evidence::InputEvidenceKey::new(
+                        super::resident_input_evidence::InputEvidenceFamily::WorkExecution,
+                        &work_item_id,
+                    ),
+                ]),
+                Default::default(),
+                self.now(),
+            )
+            .await?;
+        drop(mutation);
+        let closure = Self::closure_decision_from_projection(&read.state, &read.projection, None);
+        let Some(latest) = read.work.work_item(&work_item_id)?.cloned() else {
             self.inner.storage.append_event(&AuditEvent::legacy(
                 "work_item_turn_end_commit_skipped",
                 serde_json::json!({
@@ -97,6 +113,16 @@ impl RuntimeHandle {
             return Ok(None);
         };
 
+        let _planning_owned = self.inner.input_evidence_budget.register_owned_bytes(
+            &read.work.scope,
+            super::input_evidence_budget::InputMemoryCategory::Pins,
+            super::input_evidence_budget::OwnedBytesEstimate {
+                // Latest and refreshed planning copies live beside selected Arcs.
+                payload_bytes: super::input_evidence_budget::serialized_bytes(&latest)?
+                    .saturating_mul(2),
+                metadata_estimate_bytes: 0,
+            },
+        )?;
         let (blocked_by, blocked_by_wait_id) = match closure.waiting_reason {
             Some(waiting_reason) => turn_end_wait_blocker_state(&latest, waiting_reason),
             None if closure.outcome == crate::types::ClosureOutcome::Failed => {
@@ -149,15 +175,12 @@ impl RuntimeHandle {
             };
             let operation_id = command.audit_events[0].id.clone();
             let commit = mutation
-                .commit_transition(operation_id, |scope| {
-                    self.inner
-                        .runtime_db
-                        .transitions_in_scope(scope)
-                        .commit_work_item_with_execution_protocol(
-                            &command,
-                            &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
-                        )
-                })
+                .commit_work_transition(
+                    operation_id,
+                    command,
+                    crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
+                    true,
+                )
                 .await?;
             drop(mutation);
             self.apply_transition_commit(commit).await;
@@ -183,11 +206,16 @@ impl RuntimeHandle {
     }
 
     async fn mark_pending_completion_reports_missing(&self, turn_id: &str) -> Result<()> {
-        let candidates = self
-            .inner
-            .runtime_db
-            .work_items()
-            .latest_for_agent(&self.agent_id().await?, usize::MAX)?
+        let request = super::work_reads::live_work_request();
+        let mut mutation = self.begin_mutation().await?;
+        mutation.prepare_owner_work_request(&request).await?;
+        let read = mutation.capture_work_read(&request)?;
+        drop(mutation);
+        // The completion contract permits Pending only on Completing Work;
+        // complete live coverage includes every such owner, without history scans.
+        let candidate_refs = read
+            .work
+            .live_work_items()?
             .into_iter()
             .filter(|work_item| {
                 work_item.result_brief_id.is_none()
@@ -197,6 +225,15 @@ impl RuntimeHandle {
                     })
             })
             .collect::<Vec<_>>();
+        let _candidates_owned = self.inner.input_evidence_budget.register_owned_bytes(
+            &read.work.scope,
+            super::input_evidence_budget::InputMemoryCategory::Pins,
+            super::input_evidence_budget::OwnedBytesEstimate {
+                payload_bytes: super::input_evidence_budget::serialized_bytes(&candidate_refs)?,
+                metadata_estimate_bytes: 0,
+            },
+        )?;
+        let candidates = candidate_refs.into_iter().cloned().collect::<Vec<_>>();
         for existing in candidates {
             let mut completion_intent = existing
                 .completion_intent
@@ -233,15 +270,12 @@ impl RuntimeHandle {
             };
             let operation_id = command.audit_events[0].id.clone();
             let commit = mutation
-                .commit_transition(operation_id, |scope| {
-                    self.inner
-                        .runtime_db
-                        .transitions_in_scope(scope)
-                        .commit_work_item_with_execution_protocol(
-                            &command,
-                            &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
-                        )
-                })
+                .commit_work_transition(
+                    operation_id,
+                    command,
+                    crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
+                    true,
+                )
                 .await?;
             drop(mutation);
             self.apply_transition_commit(commit).await;
@@ -249,34 +283,13 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub(crate) async fn closure_decision_for_state(
-        &self,
+    pub(crate) fn closure_decision_from_projection(
         state: &AgentState,
+        projection: &scheduler::SchedulerProjection,
         runtime_error_override: Option<bool>,
-    ) -> Result<ClosureDecision> {
-        let work_queue_projection = self.inner.storage.work_queue_prompt_projection()?;
-        self.closure_decision_for_state_with_work_queue(
-            state,
-            runtime_error_override,
-            work_queue_projection,
-        )
-        .await
-    }
-
-    async fn closure_decision_for_state_with_work_queue(
-        &self,
-        state: &AgentState,
-        runtime_error_override: Option<bool>,
-        work_queue_projection: WorkQueueReadModel,
-    ) -> Result<ClosureDecision> {
-        let projection = scheduler::SchedulerProjection::from_state_with_work_queue_at(
-            &self.inner.storage,
-            state,
-            work_queue_projection,
-            self.now(),
-        )?;
+    ) -> ClosureDecision {
         let runtime_error = runtime_error_override.unwrap_or(projection.runtime_error);
-        Ok(derive_closure_decision(&ClosureFacts {
+        derive_closure_decision(&ClosureFacts {
             runtime_error,
             awaiting_operator_input: projection.current_work_item_waits_for_operator(),
             active_blocking_tasks: projection
@@ -301,7 +314,7 @@ impl RuntimeHandle {
             } else {
                 RuntimePosture::Awake
             }),
-        }))
+        })
     }
 
     pub(crate) fn closure_decision_from_storage(
@@ -571,14 +584,22 @@ impl RuntimeHandle {
     }
 
     pub async fn current_closure(&self) -> Result<Option<ClosureDecision>> {
-        let state = self.agent_state().await?;
-        if state.current_run_id.is_some() || state.pending > 0 || state.pending_wake_hint.is_some()
+        let mutation = self.begin_mutation().await?;
+        if mutation.state.current_run_id.is_some()
+            || mutation.state.pending > 0
+            || mutation.state.pending_wake_hint.is_some()
         {
             return Ok(None);
         }
-        self.closure_decision_for_state(&state, None)
-            .await
-            .map(Some)
+        let read = mutation.capture_scheduler_read(
+            &super::resident_work::WorkCaptureRequest::current(),
+            self.now(),
+        )?;
+        Ok(Some(Self::closure_decision_from_projection(
+            &read.state,
+            &read.projection,
+            None,
+        )))
     }
 
     pub async fn wait_for_closure(&self) -> Result<ClosureDecision> {
@@ -597,18 +618,30 @@ impl RuntimeHandle {
         &self,
         runtime_error_override: Option<bool>,
     ) -> Result<ClosureDecision> {
-        let state = self.agent_state().await?;
-        self.closure_decision_for_state(&state, runtime_error_override)
-            .await
+        let read = self.capture_scheduler_projection().await?;
+        Ok(Self::closure_decision_from_projection(
+            &read.state,
+            &read.projection,
+            runtime_error_override,
+        ))
     }
 
     pub(crate) async fn record_closure_decision_event(
         &self,
         runtime_error_override: Option<bool>,
     ) -> Result<ClosureDecision> {
-        let closure = self
-            .current_closure_decision_with_runtime_error(runtime_error_override)
+        // The original QueueTerminal ACK can invalidate Input/Work. This
+        // subsequent planning step prepares under its own owner reservation.
+        let mut mutation = self.begin_mutation().await?;
+        let read = mutation
+            .prepare_scheduler_read(None, Default::default(), Default::default(), self.now())
             .await?;
+        drop(mutation);
+        let closure = Self::closure_decision_from_projection(
+            &read.state,
+            &read.projection,
+            runtime_error_override,
+        );
         self.inner.storage.append_event(&AuditEvent::legacy(
             "closure_decided",
             serde_json::json!({
@@ -627,18 +660,13 @@ impl RuntimeHandle {
     pub(crate) async fn lightweight_agent_state_projection(
         &self,
     ) -> Result<LightweightAgentStateProjection> {
-        let agent = self.agent_state().await?;
-        let work_queue = self.inner.storage.work_queue_read_model()?;
+        let read = self.capture_scheduler_projection().await?;
+        let agent = read.state.as_ref().clone();
         let posture_timer = attribution::POSTURE.start();
-        let scheduling_posture = self
-            .inner
-            .storage
-            .agent_posture_projection_with_work_queue(&agent, &work_queue)?;
+        let scheduling_posture = read.scheduling_posture.clone();
         drop(posture_timer);
         let closure_timer = attribution::CLOSURE.start();
-        let closure = self
-            .closure_decision_for_state_with_work_queue(&agent, None, work_queue.clone())
-            .await?;
+        let closure = Self::closure_decision_from_projection(&agent, &read.projection, None);
         drop(closure_timer);
         let children_timer = attribution::CHILDREN.start();
         let active_children = if let Some(bridge) = self.inner.host_bridge.as_ref() {
@@ -651,7 +679,7 @@ impl RuntimeHandle {
         let identity = self.agent_identity_view().await?;
         drop(identity_timer);
         let tasks_timer = attribution::ACTIVE_TASKS.start();
-        let active_task_count = self.inner.storage.active_task_count_for_agent(&agent.id)?;
+        let active_task_count = read.projection.active_tasks.len();
         drop(tasks_timer);
         Ok(LightweightAgentStateProjection {
             identity,
@@ -665,7 +693,8 @@ impl RuntimeHandle {
             scheduling_posture,
             closure,
             active_children,
-            work_queue,
+            work_queue: read.work_queue,
+            _work_budget: Some(read._owned_budget),
         })
     }
 
@@ -682,14 +711,31 @@ impl RuntimeHandle {
 
     async fn build_agent_summary(&self) -> Result<AgentSummary> {
         let started_at = std::time::Instant::now();
-        let agent = self.agent_state().await?;
-        let active_task_count = self.inner.storage.active_task_count_for_agent(&agent.id)?;
+        let read = self.capture_scheduler_projection().await?;
+        let agent = read.state.as_ref().clone();
+        let active_task_count = read.projection.active_tasks.len();
         let model = self.model_state_for(&agent);
-        let scheduling_posture = self.inner.storage.agent_posture_projection(&agent)?;
-        let (closure, identity) =
-            tokio::join!(self.current_closure_decision(), self.agent_identity_view());
-        let closure = closure?;
-        let identity = identity?;
+        let scheduling_posture = read.scheduling_posture.clone();
+        let closure = Self::closure_decision_from_projection(&agent, &read.projection, None);
+        let identity = self.agent_identity_view().await?;
+        let active_wait_conditions: Vec<crate::types::WaitConditionSummary> = read
+            .active_waits
+            .iter()
+            .cloned()
+            .map(crate::types::WaitConditionSummary::from)
+            .collect();
+        // Internal summaries remain owned across the joins below. The final
+        // public wire DTO starts only at the synchronous return boundary.
+        let _wait_summary_owned = self.inner.input_evidence_budget.register_owned_bytes(
+            &read.work.scope,
+            super::input_evidence_budget::InputMemoryCategory::Pins,
+            super::input_evidence_budget::OwnedBytesEstimate {
+                payload_bytes: super::input_evidence_budget::serialized_bytes(
+                    &active_wait_conditions,
+                )?,
+                metadata_estimate_bytes: 0,
+            },
+        )?;
         let (
             execution,
             loaded_agents_md,
@@ -697,7 +743,6 @@ impl RuntimeHandle {
             active_workspace_occupancy,
             active_children,
             active_external_triggers,
-            active_wait_conditions,
             recent_operator_notifications,
         ) = tokio::join!(
             self.execution_snapshot(),
@@ -725,7 +770,6 @@ impl RuntimeHandle {
                 }
             },
             self.active_external_trigger_summaries(),
-            self.active_wait_condition_summaries(),
             self.recent_operator_notifications(10),
         );
         let execution = execution?;
@@ -734,7 +778,6 @@ impl RuntimeHandle {
         let active_workspace_occupancy = active_workspace_occupancy?;
         let active_children = active_children?;
         let active_external_triggers = active_external_triggers?;
-        let active_wait_conditions = active_wait_conditions?;
         let recent_operator_notifications = recent_operator_notifications?;
         let token_usage = AgentTokenUsageSummary {
             total: TokenUsage::new(agent.total_input_tokens, agent.total_output_tokens),
@@ -769,19 +812,16 @@ impl RuntimeHandle {
     }
 
     pub async fn agent_list_entry(&self) -> Result<AgentListEntry> {
-        let agent = self.agent_state().await?;
-        let model = self.model_state_for(&agent);
-        let scheduling_posture = match self.inner.storage.agent_posture_projection(&agent) {
-            Ok(posture) => posture,
+        let (agent, scheduling_posture) = match self.capture_scheduler_projection().await {
+            Ok(read) => (read.state.as_ref().clone(), read.scheduling_posture.clone()),
             Err(error) => {
-                tracing::warn!(
-                    agent_id = %agent.id,
-                    error = %error,
-                    "failed to read agent posture for /agents/list; using unknown placeholder"
-                );
-                crate::types::AgentPostureProjection::default()
+                let agent = self.agent_state().await?;
+                tracing::warn!(agent_id=%agent.id, error=%error,
+                    "failed to read agent posture for /agents/list; using unknown placeholder");
+                (agent, crate::types::AgentPostureProjection::default())
             }
         };
+        let model = self.model_state_for(&agent);
         let identity = self.agent_identity_view().await?;
         let waiting_reason = super::lightweight_agent_list_waiting_reason(&agent);
         Ok(AgentListEntry {
@@ -826,8 +866,9 @@ impl RuntimeHandle {
     pub(crate) async fn child_agent_observability(
         &self,
     ) -> Result<ChildAgentObservabilitySnapshot> {
-        let agent = self.agent_state().await?;
-        let closure = self.current_closure_decision().await?;
+        let read = self.capture_scheduler_projection().await?;
+        let agent = read.state.as_ref().clone();
+        let closure = Self::closure_decision_from_projection(&agent, &read.projection, None);
         let latest_tasks = self.latest_task_records().await?;
         let briefs = self.recent_briefs(16).await?;
         Ok(build_child_agent_observability(
@@ -884,16 +925,8 @@ impl RuntimeHandle {
         agent_id: &str,
         limit: usize,
     ) -> Result<Vec<crate::types::WorkItemRecord>> {
-        let current_agent_id = self.agent_id().await?;
-        if agent_id == current_agent_id {
-            crate::diagnostics::record_runtime_projection_cache_read();
-            return Ok(self
-                .inner
-                .projection_cache
-                .lock()
-                .await
-                .latest_work_items(limit));
-        }
+        // Explicit durable history API, including arbitrary limits/foreign agents.
+        // Ordinary loaded planning uses selected resident Work reads.
         self.inner
             .runtime_db
             .work_items()
@@ -1965,7 +1998,9 @@ impl RuntimeHandle {
                 + chrono::Duration::milliseconds(i64::try_from(duration_ms).unwrap_or(i64::MAX))
         });
         if sleeping_until.is_none() && allow_runnable_work_override {
-            if let Some((work_item, generation, reason)) = self.indefinite_sleep_runnable_work()? {
+            if let Some((work_item, generation, reason, _owned)) =
+                self.indefinite_sleep_runnable_work().await?
+            {
                 let state = self.inner.agent.lock().await.state.clone();
                 let decision = super::scheduler::SchedulerDecision::new(
                     super::scheduler::SchedulerDecisionKind::EmitSystemTick,
@@ -2012,7 +2047,8 @@ impl RuntimeHandle {
             self.append_state_changed_events(&transition.state)?;
         }
         if sleeping_until.is_none() {
-            self.observe_indefinite_sleep_without_wake_source(&transition.state)?;
+            self.observe_indefinite_sleep_without_wake_source(&transition.state)
+                .await?;
         }
         if let (Some(duration_ms), Some(sleeping_until)) = (duration_ms, sleeping_until) {
             self.spawn_session_sleep_wake(duration_ms, sleeping_until);
@@ -2020,8 +2056,13 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    fn observe_indefinite_sleep_without_wake_source(&self, state: &AgentState) -> Result<()> {
-        let projection = scheduler::SchedulerProjection::from_state(&self.inner.storage, state)?;
+    async fn observe_indefinite_sleep_without_wake_source(&self, state: &AgentState) -> Result<()> {
+        let read = self.capture_scheduler_projection().await?;
+        // This warning describes the committed transition, not a newer posture.
+        if read.state.as_ref() != state {
+            return Ok(());
+        }
+        let projection = &read.projection;
         let has_runnable_work = projection.work_reactivation_signal().is_some();
         let has_queue_entries = projection.queue_len > 0 || projection.queued_work_items > 0;
         let has_pending_task = !projection.active_tasks.is_empty();
@@ -2058,27 +2099,40 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    fn indefinite_sleep_runnable_work(
+    async fn indefinite_sleep_runnable_work(
         &self,
-    ) -> Result<Option<(crate::types::WorkItemRecord, Option<u64>, &'static str)>> {
-        let state = self
-            .inner
-            .storage
-            .read_agent()?
-            .ok_or_else(|| anyhow!("agent state is missing for lifecycle sleep"))?;
-        let projection = scheduler::SchedulerProjection::from_state(&self.inner.storage, &state)?;
-        Ok(projection
+    ) -> Result<
+        Option<(
+            crate::types::WorkItemRecord,
+            Option<u64>,
+            &'static str,
+            Arc<super::input_evidence_budget::BudgetViewGuard>,
+        )>,
+    > {
+        let read = self.capture_scheduler_projection().await?;
+        let Some((work_item, mode, generation)) = read
+            .projection
             .work_reactivation_work_item_with_generation()
-            .map(|(work_item, mode, generation)| {
-                (
-                    work_item.clone(),
-                    generation,
-                    match mode {
-                        crate::types::WorkReactivationMode::ContinueActive => "continue_active",
-                        crate::types::WorkReactivationMode::ActivateQueued => "queued_available",
-                    },
-                )
-            }))
+        else {
+            return Ok(None);
+        };
+        let owned = self.inner.input_evidence_budget.register_owned_bytes(
+            &read.work.scope,
+            super::input_evidence_budget::InputMemoryCategory::Pins,
+            super::input_evidence_budget::OwnedBytesEstimate {
+                payload_bytes: super::input_evidence_budget::serialized_bytes(work_item)?,
+                metadata_estimate_bytes: 0,
+            },
+        )?;
+        Ok(Some((
+            work_item.clone(),
+            generation,
+            match mode {
+                crate::types::WorkReactivationMode::ContinueActive => "continue_active",
+                crate::types::WorkReactivationMode::ActivateQueued => "queued_available",
+            },
+            owned,
+        )))
     }
 
     fn spawn_session_sleep_wake(

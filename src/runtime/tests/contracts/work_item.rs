@@ -56,6 +56,7 @@ async fn work_item_post_commit_fault_recovers_projection_after_restart() {
         let created = harness
             .assert_post_commit_result(result, fault, expected_effect)
             .unwrap_or_else(|| harness.snapshot().work_items[0].clone());
+        let committed = harness.snapshot();
         assert_eq!(
             harness
                 .runtime()
@@ -69,13 +70,26 @@ async fn work_item_post_commit_fault_recovers_projection_after_restart() {
             .latest_work_items_for_agent("default", usize::MAX)
             .await
             .unwrap();
+        assert!(cached_before_restart
+            .iter()
+            .any(|record| record.id == created.id));
+        // Durable history APIs do not reconcile or publish the loaded root.
+        if fault == crate::runtime_db::transitions::TransitionFaultPoint::BeforeCacheUpdate {
+            assert!(harness.runtime().inner.mutation_owner.capture().is_err());
+        }
+        let resident = harness
+            .runtime()
+            .capture_work_read(&crate::runtime::work_reads::live_work_request())
+            .await
+            .unwrap();
         assert_eq!(
-            cached_before_restart
-                .iter()
-                .any(|record| record.id == created.id),
-            fault != crate::runtime_db::transitions::TransitionFaultPoint::BeforeCacheUpdate
+            resident.work.work_item(&created.id).unwrap(),
+            Some(&created)
         );
-        let committed = harness.snapshot();
+        // The ordinary resident reader reconciles the known commit, without
+        // replaying its original business SQL.
+        assert!(harness.runtime().inner.mutation_owner.capture().is_ok());
+        assert_eq!(harness.snapshot(), committed);
         assert_eq!(
             committed
                 .execution_protocol

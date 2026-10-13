@@ -7,7 +7,6 @@ use anyhow::{ensure, Result};
 use super::{
     mutation_owner::{IdentityMutationFacts, KnownCommit, MutationReservation},
     mutation_witness::MutationWitnessFamily,
-    resident_state::ResidentEpisodes,
     state_mutation::{RuntimeMutationFacts, SavedControlCancellation},
     CurrentRunAbortHandle, RuntimeHandle,
 };
@@ -22,6 +21,7 @@ fn resolve_control_recovery_with_run(
     db: &RuntimeDb,
     reservations: &mut [MutationReservation],
     recent_episode_limit: usize,
+    budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
     original_run: Option<CurrentRunAbortHandle>,
 ) -> Result<Option<ControlResolution>> {
     if reservations.len() != 1 {
@@ -69,63 +69,96 @@ fn resolve_control_recovery_with_run(
             owner_epoch,
             facts,
         });
-    // State, qualified Episodes, target records, complete pending payloads and
-    // original receipt are all read from this one fresh transaction.
-    let known =
-        match db.load_control_recovery(key, invocation, command_digest, recent_episode_limit)? {
-            ControlRecoveryObservation::Current {
-                snapshot,
-                episodes,
-                receipt,
-                obligations,
-                facts,
-            } => {
-                validate_obligation_receipt(key, receipt.as_ref(), &obligations)?;
-                if receipt.is_none() {
-                    None
-                } else {
-                    let state = Arc::new(snapshot.state);
-                    ensure!(
-                        episodes.state.as_ref() == Some(state.as_ref()),
-                        "Control recovery State differs from qualified Episodes"
-                    );
-                    let episodes = Arc::new(ResidentEpisodes::bootstrap(
-                        &key.agent_id,
-                        key.identity_incarnation,
-                        recent_episode_limit,
-                        !episodes.has_more,
-                        episodes.episodes,
-                    )?);
-                    let runtime = RuntimeMutationFacts::for_control_recovery(
-                        owner_epoch,
-                        state.clone(),
-                        episodes.clone(),
-                        *facts,
-                        original_run,
-                        cancellation.clone(),
-                    )?;
-                    Some(KnownCommit::State {
-                        state,
-                        episodes: Some(episodes),
-                        input_evidence: None,
-                        runtime: Some(Arc::new(runtime)),
-                    })
-                }
-            }
-            ControlRecoveryObservation::Retired {
-                current_identity,
-                receipt,
-                obligations,
-            } => {
-                validate_obligation_receipt(key, receipt.as_ref(), &obligations)?;
-                receipt.map(|_| {
-                    KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-                        identity: current_identity.map(Arc::new),
-                        state: None,
-                    }))
+    let limits = budget.limits();
+    let input_request = crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest {
+        windows: Vec::new(),
+        mandatory_roots: Default::default(),
+        interrupted_sources: Default::default(),
+        selected_completion_brief_ids: Default::default(),
+        record_limit: usize::try_from(limits.record_limit)?,
+        byte_limit: usize::try_from(
+            limits
+                .history_per_agent_bytes
+                .checked_add(limits.pending_per_agent_bytes)
+                .ok_or_else(|| anyhow::anyhow!("Control recovery byte limit overflow"))?,
+        )?,
+    };
+    // Positive receipts prepare current State and all three domains in one view.
+    let known = match db.load_control_recovery_with_domains(
+        key,
+        invocation,
+        command_digest,
+        recent_episode_limit,
+        &input_request,
+        &super::resident_work::WorkCaptureRequest::current(),
+        budget,
+    )? {
+        ControlRecoveryObservation::Absent { obligations } => {
+            validate_obligation_receipt(key, None, &obligations)?;
+            None
+        }
+        ControlRecoveryObservation::Current {
+            snapshot,
+            episodes,
+            domains,
+            receipt,
+            obligations,
+            facts,
+        } => {
+            validate_obligation_receipt(key, receipt.as_ref(), &obligations)?;
+            if receipt.is_none() {
+                None
+            } else {
+                let state = Arc::new(snapshot.state);
+                ensure!(
+                    episodes.belongs_to(&key.agent_id, key.identity_incarnation),
+                    "Control recovery Episodes differ from original scope"
+                );
+                let domains = domains.ok_or_else(|| {
+                    anyhow::anyhow!("positive Control recovery omitted current domains")
+                })?;
+                let runtime = RuntimeMutationFacts::for_control_recovery(
+                    owner_epoch,
+                    state.clone(),
+                    episodes.clone(),
+                    domains.clone(),
+                    budget,
+                    *facts,
+                    original_run,
+                    cancellation.clone(),
+                )?;
+                Some(KnownCommit::State {
+                    work: Some(domains.work),
+                    state,
+                    episodes: Some(episodes),
+                    input_evidence: Some(domains.inputs),
+                    runtime: Some(Arc::new(runtime)),
                 })
             }
-        };
+        }
+        ControlRecoveryObservation::Retired {
+            current_identity,
+            receipt,
+            obligations,
+        } => {
+            validate_obligation_receipt(key, receipt.as_ref(), &obligations)?;
+            if receipt.is_some() {
+                budget.install_actual_pending(
+                    &super::resident_input_evidence::InputEvidenceScope {
+                        agent_id: key.agent_id.clone(),
+                        identity_incarnation: key.identity_incarnation,
+                    },
+                    &[],
+                )?;
+            }
+            receipt.map(|_| {
+                KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+                    identity: current_identity.map(Arc::new),
+                    state: None,
+                }))
+            })
+        }
+    };
     MutationReservation::resolve_control_unknown(
         reservations,
         &recovery.key,
@@ -168,8 +201,12 @@ pub(crate) fn resolve_unloaded_control_recovery(
     db: &RuntimeDb,
     reservations: &mut [MutationReservation],
     recent_episode_limit: usize,
+    budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
 ) -> Result<bool> {
-    Ok(resolve_control_recovery_with_run(db, reservations, recent_episode_limit, None)?.is_some())
+    Ok(
+        resolve_control_recovery_with_run(db, reservations, recent_episode_limit, budget, None)?
+            .is_some(),
+    )
 }
 
 pub(crate) async fn resolve_control_recovery(
@@ -177,13 +214,19 @@ pub(crate) async fn resolve_control_recovery(
     reservations: &mut [MutationReservation],
     recent_episode_limit: usize,
     runtime: Option<&RuntimeHandle>,
+    budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
 ) -> Result<bool> {
     let original_run = match runtime {
         Some(runtime) => runtime.inner.agent.lock().await.current_run_abort.clone(),
         None => None,
     };
-    let Some(resolution) =
-        resolve_control_recovery_with_run(db, reservations, recent_episode_limit, original_run)?
+    let Some(resolution) = resolve_control_recovery_with_run(
+        db,
+        reservations,
+        recent_episode_limit,
+        budget,
+        original_run,
+    )?
     else {
         return Ok(false);
     };
@@ -497,7 +540,8 @@ mod tests {
             &runtime.inner.runtime_db,
             &mut reservations,
             12,
-            Some(&runtime)
+            Some(&runtime),
+            &runtime.inner.input_evidence_budget
         )
         .await
         .unwrap());
@@ -513,7 +557,8 @@ mod tests {
             &runtime.inner.runtime_db,
             &mut reservations,
             12,
-            Some(&runtime)
+            Some(&runtime),
+            &runtime.inner.input_evidence_budget
         )
         .await
         .unwrap());

@@ -14,6 +14,29 @@ use anyhow::bail;
 use chrono::{DateTime, Utc};
 use std::{collections::HashMap, fmt};
 
+/// The ordinary closure policy has always observed the latest 64 Briefs.
+pub(crate) const SCHEDULER_BRIEF_LIMIT: usize = 64;
+
+/// Initialization/planning only; prompt rendering keeps its frozen own policy.
+pub(crate) fn include_scheduler_brief_window(
+    windows: &mut Vec<crate::runtime_db::input_evidence_snapshot::InputWindowRequest>,
+) {
+    use crate::runtime::resident_input_evidence::InputWindowSelector;
+    if let Some(window) = windows
+        .iter_mut()
+        .find(|window| window.selector == InputWindowSelector::RecentBriefs)
+    {
+        window.limit = window.limit.max(SCHEDULER_BRIEF_LIMIT);
+    } else {
+        windows.push(
+            crate::runtime_db::input_evidence_snapshot::InputWindowRequest {
+                selector: InputWindowSelector::RecentBriefs,
+                limit: SCHEDULER_BRIEF_LIMIT,
+            },
+        );
+    }
+}
+
 #[cfg(test)]
 pub(crate) const REDUCER_ONLY_CANDIDATES_SCENARIO: SchedulerScenarioClass =
     SchedulerScenarioClass::ReducerOnlyCandidates;
@@ -172,18 +195,21 @@ mod diagnostics;
 mod projection;
 mod semantic_selection;
 
-pub(crate) use diagnostics::{append_ambiguous_wait_advisory, append_scheduling_advisories};
+#[cfg(test)]
+pub(crate) use diagnostics::append_scheduling_advisories;
+pub(crate) use diagnostics::{
+    append_ambiguous_wait_advisory, append_prepared_scheduling_advisories,
+    scheduling_advisories_for_facts,
+};
 // Preserve the pre-split scheduler facade even when the current crate has no callers.
 #[cfg(test)]
-pub(crate) use diagnostics::{
-    scheduling_advisories, scheduling_advisories_for_facts, scheduling_advisories_with_queue_len,
-};
+pub(crate) use diagnostics::{scheduling_advisories, scheduling_advisories_with_queue_len};
 #[allow(unused_imports)]
 pub(crate) use diagnostics::{
     scheduling_advisory_event, SchedulingAdvisory, SchedulingAdvisorySeverity,
 };
 use projection::CanonicalWorkExecutionState;
-pub(crate) use projection::{SchedulerAgentSnapshot, SchedulerProjection};
+pub(crate) use projection::{SchedulerAgentSnapshot, SchedulerObservations, SchedulerProjection};
 #[cfg(test)]
 pub(crate) use semantic_selection::AutonomousContinuationSnapshotIdentity;
 pub(crate) use semantic_selection::{

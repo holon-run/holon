@@ -53,8 +53,15 @@ impl RuntimeHandle {
         if scheduled.message.id != persisted_message.id {
             return Err(anyhow!("scheduler claimed an unexpected test message"));
         }
-        let terminal_transition = self
-            .process_interactive_message_deferred_with_cleanup(
+        let original_run_id = scheduled
+            .running_state
+            .current_run_id
+            .as_deref()
+            .context("test dispatch has no original run")?;
+        let started = std::time::Instant::now();
+        let completion = scheduled.run_completion.lease();
+        let result = Box::pin(
+            self.process_interactive_dispatch_with_cleanup(
                 &scheduled.message,
                 scheduled.dispatch_plan.continuation_resolution.as_ref(),
                 scheduled
@@ -67,13 +74,24 @@ impl RuntimeHandle {
                     .trace_context
                     .as_ref()
                     .map(crate::observability::TraceContext::child),
+                Some(&scheduled.dispatch_plan.prior_closure),
+            ),
+        )
+        .await;
+        let settled = self
+            .finish_scheduled_message_processing(
+                &scheduled.message,
+                original_run_id,
+                started,
+                result,
             )
-            .await?;
-        self.persist_terminal_transition(&terminal_transition)
-            .await?;
-        Ok(())
+            .await;
+        drop(scheduled);
+        self.finish_original_stopped_dispatch(completion).await?;
+        settled
     }
 
+    #[cfg(test)]
     pub(super) async fn process_interactive_message_deferred_with_cleanup(
         &self,
         message: &MessageEnvelope,
@@ -82,12 +100,33 @@ impl RuntimeHandle {
         loop_control: LoopControlOptions,
         trace_context: Option<crate::observability::TraceContext>,
     ) -> Result<TurnTerminalTransition> {
+        Box::pin(self.process_interactive_dispatch_with_cleanup(
+            message,
+            continuation_resolution,
+            execution_admission_provenance,
+            loop_control,
+            trace_context,
+            None,
+        ))
+        .await
+    }
+
+    pub(super) async fn process_interactive_dispatch_with_cleanup(
+        &self,
+        message: &MessageEnvelope,
+        continuation_resolution: Option<&ContinuationResolution>,
+        execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
+        loop_control: LoopControlOptions,
+        trace_context: Option<crate::observability::TraceContext>,
+        dispatch_prior_closure: Option<&ClosureDecision>,
+    ) -> Result<TurnTerminalTransition> {
         let result = Box::pin(self.process_interactive_message_deferred(
             message,
             continuation_resolution,
             execution_admission_provenance,
             loop_control,
             trace_context,
+            dispatch_prior_closure,
         ))
         .await;
         let cleanup = self.reconfigure_provider_for_turn(None).await;
@@ -108,6 +147,7 @@ impl RuntimeHandle {
         execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
         loop_control: LoopControlOptions,
         trace_context: Option<crate::observability::TraceContext>,
+        dispatch_prior_closure: Option<&ClosureDecision>,
     ) -> Result<TurnTerminalTransition> {
         if !matches!(
             execution_admission_provenance.as_ref(),
@@ -119,13 +159,24 @@ impl RuntimeHandle {
         }
         let (operator_binding_id, operator_reply_route_id) =
             Self::operator_transport_from_message(message);
-        self.begin_interactive_turn_with_provenance(
-            Some(message),
-            operator_binding_id.as_deref(),
-            operator_reply_route_id.as_deref(),
-            execution_admission_provenance,
-        )
-        .await?;
+        if let Some(prior_closure) = dispatch_prior_closure {
+            self.begin_dispatch_turn(
+                message,
+                operator_binding_id.as_deref(),
+                operator_reply_route_id.as_deref(),
+                execution_admission_provenance,
+                prior_closure,
+            )
+            .await?;
+        } else {
+            self.begin_interactive_turn_with_provenance(
+                Some(message),
+                operator_binding_id.as_deref(),
+                operator_reply_route_id.as_deref(),
+                execution_admission_provenance,
+            )
+            .await?;
+        }
         let model_selection = TurnModelSelection::from_message(message)?;
         self.reconfigure_provider_for_turn(model_selection.fallback_model())
             .await?;

@@ -33,6 +33,12 @@ use std::{
 mod attempt_turn;
 use attempt_turn::AttemptTurnProof;
 
+#[path = "input_evidence_dispatch_briefs.rs"]
+mod dispatch_briefs;
+pub(crate) use dispatch_briefs::{
+    qualified_dispatch_brief_material_tx, qualified_dispatch_briefs_tx,
+};
+
 #[path = "input_evidence_execution.rs"]
 mod execution;
 #[path = "input_evidence_work_observation.rs"]
@@ -150,6 +156,8 @@ pub(crate) struct InputEvidenceLoadRequest {
     pub mandatory_roots: BTreeSet<Key>,
     /// Explicit planner preparation, never an ordinary lookup fallback.
     pub interrupted_sources: BTreeSet<String>,
+    /// Named completion projection heads; owning input paths remain strict.
+    pub selected_completion_brief_ids: BTreeSet<String>,
     pub record_limit: usize,
     pub byte_limit: usize,
 }
@@ -505,6 +513,7 @@ pub(crate) struct ExistingAdmissionInputProof {
     scope: InputEvidenceScope,
     allowed: BTreeSet<Key>,
     derived: BTreeSet<Key>,
+    derived_work_owners: BTreeMap<Key, String>,
 }
 impl ExistingAdmissionInputProof {
     pub(crate) fn prepare_tx(
@@ -542,7 +551,77 @@ impl ExistingAdmissionInputProof {
             scope: scope.clone(),
             allowed: roots.union(&derived).cloned().collect(),
             derived,
+            derived_work_owners: BTreeMap::new(),
         })
+    }
+    /// The same original transaction observed these qualified Work bodies
+    /// before business SQL. This grants only their exact Brief/Tool footprint.
+    pub(crate) fn prepare_from_work_tx(
+        tx: &Transaction<'_>,
+        work: &super::work_snapshot::WorkWriteProof,
+        roots: BTreeSet<Key>,
+        derived: BTreeMap<Key, String>,
+    ) -> Result<Self> {
+        ensure!(
+            !roots.is_empty() || !derived.is_empty(),
+            "cleanup has no existing admission"
+        );
+        ensure!(
+            roots.len().saturating_add(derived.len()) <= MAX_RECORDS,
+            "Work cleanup footprint exceeds record bound"
+        );
+        let metadata_bytes = roots
+            .iter()
+            .map(|key| key.id.len())
+            .chain(
+                derived
+                    .iter()
+                    .map(|(key, owner)| key.id.len().saturating_add(owner.len())),
+            )
+            .try_fold(0usize, usize::checked_add)
+            .context("Work cleanup footprint size overflow")?;
+        ensure!(
+            metadata_bytes <= MAX_METADATA_BYTES,
+            "Work cleanup footprint exceeds byte bound"
+        );
+        let scope = work.scope();
+        let admitted = work.admitted_work_ids();
+        let mut proof = Self::prepare_tx(tx, scope, roots, BTreeSet::new())?;
+        for (key, owner) in &derived {
+            ensure!(
+                matches!(key.family, Family::Brief | Family::ToolExecution)
+                    && !key.id.is_empty()
+                    && admitted.contains(owner),
+                "derived cleanup input is outside the original Work admission"
+            );
+            work.validate_admission_tx(tx, owner)?;
+            validate_existing_input_evidence_inner_tx(tx, scope, key)?;
+            if key.family == Family::ToolExecution {
+                // Retrying an original Work cleanup must not materialize a
+                // Tool's full stdout merely to validate its owner.
+                let existing: Option<(Option<String>, Option<String>)> = tx.query_row(
+                    "SELECT work_item_id,json_extract(payload_json,'$.work_item_id') FROM tool_executions WHERE agent_id=?1 AND evidence_id=?2",
+                    params![scope.agent_id,key.id],
+                    |row| Ok((row.get(0)?,row.get(1)?)),
+                ).optional()?;
+                if let Some((normalized, payload)) = existing {
+                    ensure!(
+                        normalized.as_deref() == Some(owner.as_str()) && payload == normalized,
+                        "existing derived input belongs to another Work"
+                    );
+                }
+            } else if let Some(payload) = payload_on(tx, &scope.agent_id, key)? {
+                let existing = decode_canonical(key, &payload)?;
+                ensure!(
+                    canonical_input_work_id(&existing) == Some(owner.as_str()),
+                    "existing derived input belongs to another Work"
+                );
+            }
+            proof.allowed.insert(key.clone());
+            proof.derived.insert(key.clone());
+        }
+        proof.derived_work_owners = derived;
+        Ok(proof)
     }
     /// Add only the terminal fact of an original admitted execution command,
     /// before that command writes. The initial roots were frozen before cleanup.
@@ -615,6 +694,14 @@ pub(crate) fn register_committed_cleanup_input_evidence_tx(
     register_committed_input_evidence_inner_tx(tx, scope, records, Some(proof))
 }
 
+fn canonical_input_work_id(record: &CanonicalInputEvidence) -> Option<&str> {
+    match record {
+        CanonicalInputEvidence::Brief(brief) => brief.work_item_id.as_deref(),
+        CanonicalInputEvidence::ToolExecution(tool) => tool.work_item_id.as_deref(),
+        _ => None,
+    }
+}
+
 fn register_committed_input_evidence_inner_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
@@ -664,6 +751,12 @@ fn register_committed_input_evidence_inner_tx(
             &actual == supplied,
             "input evidence commit differs from canonical SQL readback"
         );
+        if let Some(owner) = cleanup.and_then(|proof| proof.derived_work_owners.get(&key)) {
+            ensure!(
+                canonical_input_work_id(&actual) == Some(owner.as_str()),
+                "committed derived input differs from its original Work admission"
+            );
+        }
         let fingerprint = fingerprint_on(tx, &scope.agent_id, &key)?
             .context("committed evidence metadata disappeared")?;
         let digest = bytes_digest(payload.as_bytes());
@@ -1003,6 +1096,7 @@ fn snapshot_tx(
     );
     let mut windows = Vec::new();
     let mut mandatory_roots = request.mandatory_roots.clone();
+
     mandatory_roots.extend(qualified_live_protocol_keys(
         tx,
         scope,
@@ -1010,6 +1104,12 @@ fn snapshot_tx(
         request.record_limit.min(MAX_RECORDS),
     )?);
     let mut selected = mandatory_roots.clone();
+    selected.extend(
+        request
+            .selected_completion_brief_ids
+            .iter()
+            .map(|id| Key::new(Family::Brief, id)),
+    );
     for requested in &request.windows {
         if requested.limit > requested.selector.maximum_candidates() {
             return Err(InputEvidenceSnapshotError::PolicyOutsideQualification {
@@ -1076,8 +1176,33 @@ fn snapshot_tx(
     );
     mandatory_roots.extend(execution_bodies.iter().cloned());
     selected.extend(execution_bodies);
-    let mut pending = VecDeque::from_iter(selected.iter().cloned().map(|key| (key, 0usize)));
-    let mut records = BTreeMap::new();
+    use crate::runtime::completion_sources::{completion_references, CompletionInputPath};
+    let mut pending = VecDeque::from_iter(selected.iter().cloned().map(|key| {
+        let path = if key.family == Family::Brief
+            && request.selected_completion_brief_ids.contains(&key.id)
+        {
+            CompletionInputPath::Head(key.id.clone())
+        } else {
+            CompletionInputPath::Strict
+        };
+        (key, 0usize, path)
+    }));
+    // Window membership is an independent strict owning path, even when a
+    // named completion head or Transcript also occurs in that window.
+    pending.extend(
+        mandatory_roots
+            .iter()
+            .cloned()
+            .chain(
+                windows
+                    .iter()
+                    .flat_map(|window| window.keys.iter().cloned()),
+            )
+            .map(|key| (key, 0, CompletionInputPath::Strict)),
+    );
+    let mut expanded_paths = BTreeSet::new();
+    let mut completion_source_observations = Vec::new();
+    let mut records: BTreeMap<Key, Arc<QualifiedInputEvidence>> = BTreeMap::new();
     let mut turn_transcript_keys = BTreeMap::new();
     let mut message_turn_keys = BTreeMap::new();
     let mut unavailable = BTreeSet::new();
@@ -1089,8 +1214,49 @@ fn snapshot_tx(
         BTreeMap::<String, (String, crate::types::TurnTerminalKind, usize)>::new();
     let mut expanded_provider_sources = BTreeSet::new();
     let mut bytes = 0usize;
-    while let Some((key, depth)) = pending.pop_front() {
-        if records.contains_key(&key) || unavailable.contains(&key) {
+    while let Some((key, depth, path)) = pending.pop_front() {
+        if !expanded_paths.insert((key.clone(), path.clone())) {
+            continue;
+        }
+        if expanded_paths.len() > request.record_limit.min(MAX_RECORDS).saturating_mul(3) {
+            return Err(InputEvidenceSnapshotError::ResourceExhausted("reference paths").into());
+        }
+        if depth > MAX_DEPTH {
+            return Err(InputEvidenceSnapshotError::ResourceExhausted("reference depth").into());
+        }
+        if let Some(record) = records.get(&key) {
+            let head = match &path {
+                CompletionInputPath::Strict => None,
+                CompletionInputPath::Head(_) => Some(record.as_ref()),
+                CompletionInputPath::Transcript(id) => {
+                    records.get(&Key::new(Family::Brief, id)).map(Arc::as_ref)
+                }
+            };
+            if !matches!(path, CompletionInputPath::Strict) {
+                for proof in super::work_snapshot::completion_source_observations_tx(
+                    tx,
+                    scope,
+                    &request.selected_completion_brief_ids,
+                    &key,
+                )? {
+                    if !completion_source_observations.contains(&proof) {
+                        completion_source_observations.push(proof);
+                    }
+                }
+            }
+            for (child, child_path) in completion_references(
+                record,
+                &path,
+                head,
+                &completion_source_observations,
+                record.references(),
+            )? {
+                selected.insert(child.clone());
+                pending.push_back((child, depth + 1, child_path));
+            }
+            continue;
+        }
+        if unavailable.contains(&key) {
             continue;
         }
         if depth > MAX_DEPTH
@@ -1280,10 +1446,34 @@ fn snapshot_tx(
             refs.extend(keys.iter().cloned());
             turn_transcript_keys.insert(turn.turn_id.clone(), keys);
         }
-        for child in refs {
-            if selected.insert(child.clone()) {
-                pending.push_back((child, depth + 1))
+        let head = match &path {
+            CompletionInputPath::Strict => None,
+            CompletionInputPath::Head(_) => Some(qualified.as_ref()),
+            CompletionInputPath::Transcript(id) => {
+                records.get(&Key::new(Family::Brief, id)).map(Arc::as_ref)
             }
+        };
+        if !matches!(path, CompletionInputPath::Strict) {
+            for proof in super::work_snapshot::completion_source_observations_tx(
+                tx,
+                scope,
+                &request.selected_completion_brief_ids,
+                &key,
+            )? {
+                if !completion_source_observations.contains(&proof) {
+                    completion_source_observations.push(proof);
+                }
+            }
+        }
+        for (child, child_path) in completion_references(
+            &qualified,
+            &path,
+            head,
+            &completion_source_observations,
+            refs,
+        )? {
+            selected.insert(child.clone());
+            pending.push_back((child, depth + 1, child_path));
         }
         records.insert(key, qualified);
         loop {
@@ -1363,9 +1553,8 @@ fn snapshot_tx(
                     }
                     for child in children {
                         mandatory_roots.insert(child.clone());
-                        if selected.insert(child.clone()) {
-                            pending.push_back((child, source_depth + 1));
-                        }
+                        selected.insert(child.clone());
+                        pending.push_back((child, source_depth + 1, CompletionInputPath::Strict));
                     }
                 }
                 execution_sources.insert(source.clone());
@@ -1391,9 +1580,8 @@ fn snapshot_tx(
                 let candidates = execution_coverage.required_body_keys(&mandatory_roots);
                 for child in candidates {
                     mandatory_roots.insert(child.clone());
-                    if selected.insert(child.clone()) {
-                        pending.push_back((child, source_depth + 1));
-                    }
+                    selected.insert(child.clone());
+                    pending.push_back((child, source_depth + 1, CompletionInputPath::Strict));
                 }
                 expanded_provider_sources.insert(source);
             }
@@ -1403,6 +1591,8 @@ fn snapshot_tx(
         scope.clone(),
         records.into_values().collect(),
         InputEvidenceCoverage {
+            selected_completion_brief_ids: request.selected_completion_brief_ids.clone(),
+            completion_source_observations,
             recovery_source_absences,
             recovery_lineage_messages,
             execution: execution_coverage,

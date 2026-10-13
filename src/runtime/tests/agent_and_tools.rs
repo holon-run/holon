@@ -301,12 +301,12 @@ async fn preview_prompt_uses_codex_apply_patch_surface_even_when_prompt_tools_ar
     )
     .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.model_override = Some(
             crate::config::ModelRouteRef::parse_compatible("openai-codex/gpt-5.3-codex-spark")
                 .unwrap(),
         );
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     let preview = runtime

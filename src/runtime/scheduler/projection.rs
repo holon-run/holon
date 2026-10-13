@@ -50,10 +50,6 @@ pub(crate) struct SchedulerAgentSnapshot {
 }
 
 impl SchedulerAgentSnapshot {
-    pub(crate) fn id(&self) -> &str {
-        &self.id
-    }
-
     pub(crate) fn from_state(state: &AgentState) -> Self {
         Self {
             id: state.id.clone(),
@@ -66,6 +62,17 @@ impl SchedulerAgentSnapshot {
                 .map(|terminal| terminal.kind.clone()),
         }
     }
+}
+
+/// Explicit adapter values not yet resident in D4; no storage handle escapes.
+pub(crate) struct SchedulerObservations {
+    pub active_tasks: Vec<TaskRecord>,
+    pub has_interrupted_replay: bool,
+    pub active_wait_conditions: Vec<WaitConditionRecord>,
+    pub activation_waits: Vec<WaitConditionRecord>,
+    pub execution_snapshot: Option<crate::domain::execution_protocol::ExecutionProtocolState>,
+    pub active_timers: usize,
+    pub runtime_error: bool,
 }
 
 impl SchedulerProjection {
@@ -124,22 +131,6 @@ impl SchedulerProjection {
         )
     }
 
-    pub(crate) fn from_state_with_work_queue_at(
-        storage: &AppStorage,
-        state: &AgentState,
-        work_queue: WorkQueueReadModel,
-        now: DateTime<Utc>,
-    ) -> Result<Self> {
-        let snapshot = SchedulerAgentSnapshot::from_state(state);
-        Self::from_snapshot_with_queue_len_and_work_queue_at(
-            storage,
-            &snapshot,
-            state.pending,
-            work_queue,
-            now,
-        )
-    }
-
     pub(crate) fn from_snapshot_with_queue_len_and_work_queue_at(
         storage: &AppStorage,
         snapshot: &SchedulerAgentSnapshot,
@@ -158,6 +149,69 @@ impl SchedulerProjection {
             })
             .transpose()?
             .unwrap_or(false);
+        let active_wait_conditions = storage.active_wait_conditions_for_agent(&snapshot.id)?;
+        let activation_waits = storage
+            .latest_wait_conditions_for_agent(&snapshot.id)?
+            .into_iter()
+            .filter(|condition| {
+                condition.status == WaitConditionStatus::Active
+                    || condition.status == WaitConditionStatus::Triggered
+                    || (condition.status == WaitConditionStatus::Resolved
+                        && condition.kind == WaitConditionKind::Task)
+            })
+            .collect();
+        let execution_snapshot = storage
+            .runtime_db()?
+            .map(|runtime_db| {
+                runtime_db
+                    .transitions()
+                    .load_execution_protocol_state_if_initialized(&snapshot.id)
+            })
+            .transpose()?
+            .flatten();
+        let active_timers = storage
+            .latest_timer_records()?
+            .into_iter()
+            .filter(|timer| timer.agent_id == snapshot.id && timer.status == TimerStatus::Active)
+            .count();
+        Ok(Self::from_observations(
+            snapshot,
+            queue_len,
+            work_queue,
+            SchedulerObservations {
+                active_tasks,
+                has_interrupted_replay,
+                active_wait_conditions,
+                activation_waits,
+                execution_snapshot,
+                active_timers,
+                runtime_error: runtime_error_active(
+                    &storage.read_recent_events(64)?,
+                    &storage.read_recent_briefs(64)?,
+                ),
+            },
+            now,
+        ))
+    }
+
+    /// Pure scheduler derivation. Loaded callers supply one owner capture and
+    /// explicitly observed D5/D6/D7 adapters; this opens no storage connection.
+    pub(crate) fn from_observations(
+        snapshot: &SchedulerAgentSnapshot,
+        queue_len: usize,
+        work_queue: WorkQueueReadModel,
+        observations: SchedulerObservations,
+        now: DateTime<Utc>,
+    ) -> Self {
+        let SchedulerObservations {
+            active_tasks,
+            has_interrupted_replay,
+            active_wait_conditions,
+            activation_waits,
+            execution_snapshot,
+            active_timers,
+            runtime_error,
+        } = observations;
         let has_blocking_active_tasks = active_tasks.iter().any(TaskRecord::is_blocking);
         let queued_runnable_work_items = work_queue
             .queued_runnable
@@ -183,26 +237,6 @@ impl SchedulerProjection {
         let waiting_work_item = waiting_work_item_projection.map(|item| item.work_item.clone());
         let waiting_work_item_scheduling_state =
             waiting_work_item_projection.map(|item| item.scheduling_state);
-        let active_wait_conditions = storage.active_wait_conditions_for_agent(&snapshot.id)?;
-        let activation_waits = storage
-            .latest_wait_conditions_for_agent(&snapshot.id)?
-            .into_iter()
-            .filter(|condition| {
-                condition.status == WaitConditionStatus::Active
-                    || condition.status == WaitConditionStatus::Triggered
-                    || (condition.status == WaitConditionStatus::Resolved
-                        && condition.kind == WaitConditionKind::Task)
-            })
-            .collect();
-        let execution_snapshot = storage
-            .runtime_db()?
-            .map(|runtime_db| {
-                runtime_db
-                    .transitions()
-                    .load_execution_protocol_state_if_initialized(&snapshot.id)
-            })
-            .transpose()?
-            .flatten();
         let canonical_work_states = Some(
             execution_snapshot
                 .as_ref()
@@ -248,12 +282,7 @@ impl SchedulerProjection {
                 )
             })
             .count();
-        let active_timers = storage
-            .latest_timer_records()?
-            .into_iter()
-            .filter(|timer| timer.agent_id == snapshot.id && timer.status == TimerStatus::Active)
-            .count();
-        Ok(Self {
+        Self {
             now,
             agent_id: snapshot.id.clone(),
             status: snapshot.status.clone(),
@@ -275,13 +304,10 @@ impl SchedulerProjection {
             waiting_work_item_scheduling_state,
             last_turn_terminal: snapshot.last_turn_terminal.clone(),
             turn_in_progress: snapshot.active_run_id.is_some(),
-            runtime_error: runtime_error_active(
-                &storage.read_recent_events(64)?,
-                &storage.read_recent_briefs(64)?,
-            ),
+            runtime_error,
             activation_waits,
             canonical_work_states,
-        })
+        }
     }
 
     pub(crate) fn work_reactivation_signal(&self) -> Option<WorkReactivationSignal> {

@@ -10,8 +10,8 @@ pub(crate) use planner::{ContextPlanDecision, ContextPlanOutcome, ContextPlanRea
 #[cfg(test)]
 pub(crate) use snapshot::prepare_work_item_scoped_history;
 pub(crate) use snapshot::{
-    acquire_durable_context, observe_context_resources, ContextHistoryPreparation,
-    FilesystemContextResources,
+    acquire_durable_context, completion_work_item_ids, observe_context_resources,
+    ContextHistoryPreparation, FilesystemContextResources,
 };
 pub use snapshot::{
     capture_context_from_storage, ContextAcquisitionReport, ContextReadStage, ContextSnapshot,

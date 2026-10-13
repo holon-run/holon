@@ -214,8 +214,32 @@ impl ContextSnapshotData {
                 recovery,
             ))?)
             .ok_or_else(|| anyhow::anyhow!("owned context input byte count overflow"))?;
-        // This is the owned D3 input footprint. Other domains/resources and
-        // provider/tool temporaries remain outside this estimate and are reported separately.
+        let queue = &self.work_queue_projection;
+        let completion_reports = self
+            .completion_reports
+            .iter()
+            .map(|(id, report)| (id, &report.text, &report.brief_id, &report.source_brief))
+            .collect::<Vec<_>>();
+        payload_bytes = payload_bytes
+            .checked_add(serialized_bytes(&(
+                &self.current_work_item,
+                &self.active_wait_conditions,
+                &queue.current,
+                &queue.queued_blocked,
+                &queue.items,
+                &queue.current_runnable,
+                &queue.triggered_blocked,
+                &queue.queued_runnable,
+                &queue.yielded,
+                &queue.waiting_for_operator,
+                &queue.blocked,
+                &queue.completing,
+                &queue.completed_recent,
+                completion_reports,
+            ))?)
+            .ok_or_else(|| anyhow::anyhow!("owned context Work byte count overflow"))?;
+        // Owned D3/D4 values, including their distinct by-value queue copies.
+        // Task/Trigger/resource and provider/tool temporaries remain separate.
         let metadata_estimate_bytes = std::mem::size_of::<Self>() as u64;
         self.input_budget_guard = Some(budget.register_owned_bytes(
             scope,
@@ -660,12 +684,8 @@ fn acquire_durable_context_inputs(
         .into_iter()
         .take(ACTIVE_TASKS_CONTEXT_LIMIT)
         .collect();
-    let completion_work_item_ids = current_work_item
-        .iter()
-        .chain(work_queue_projection.current.iter())
-        .chain(candidate_items(&work_queue_projection))
-        .map(|work| work.id.clone())
-        .collect::<BTreeSet<_>>();
+    let completion_work_item_ids =
+        completion_work_item_ids(current_work_item.as_ref(), &work_queue_projection);
     let completion_reports = read!(
         "completion_reports",
         latest_completion_report_by_work_item(inputs, &agent.id, &completion_work_item_ids),
@@ -813,6 +833,20 @@ pub(crate) fn observe_context_resources(
             digest,
         },
     })
+}
+
+/// Shared with explicit resident preparation, preserving the original bounded
+/// candidate selector rather than loading every non-open Work's result body.
+pub(crate) fn completion_work_item_ids(
+    current_work_item: Option<&WorkItemRecord>,
+    projection: &WorkQueueReadModel,
+) -> BTreeSet<String> {
+    current_work_item
+        .into_iter()
+        .chain(projection.current.iter())
+        .chain(candidate_items(projection))
+        .map(|work| work.id.clone())
+        .collect()
 }
 
 fn candidate_items(projection: &WorkQueueReadModel) -> impl Iterator<Item = &WorkItemRecord> {
@@ -1227,6 +1261,67 @@ mod tests {
     }
 
     #[test]
+    fn copied_work_payload_is_metered_until_the_snapshot_releases_it() {
+        use crate::runtime::{
+            input_evidence_budget::InputEvidenceBudgetLedger,
+            resident_input_evidence::InputEvidenceScope,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let objective = "resident-work-body".repeat(8192);
+        let work = WorkItemRecord::new("default", objective.clone(), WorkItemState::Open);
+        storage.append_work_item(&work).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(work.id.clone());
+        storage.write_agent_for_fixture(&agent).unwrap();
+        let message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "continue".into(),
+            },
+        );
+        let config = ContextConfig::default();
+        let execution = super::super::tests::execution_snapshot_for(&agent);
+        let mut snapshot = capture_context_from_storage(
+            &storage,
+            &agent,
+            &execution,
+            &SkillsRuntimeView::default(),
+            &message,
+            None,
+            &config,
+            dir.path(),
+            None,
+        )
+        .unwrap();
+        let budget =
+            InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits::default()).unwrap();
+        let data = Arc::get_mut(&mut snapshot.data).unwrap();
+        assert_eq!(
+            data.current_work_item.as_ref().unwrap().objective,
+            objective
+        );
+        data.input_budget = Some((
+            budget.clone(),
+            InputEvidenceScope {
+                agent_id: "default".into(),
+                identity_incarnation: 1,
+            },
+        ));
+        data.observe_owned_input_bytes().unwrap();
+        assert!(budget.report().unwrap().owned.payload_bytes >= objective.len() as u64);
+        drop((storage, snapshot));
+        assert_eq!(budget.report().unwrap().observed_bytes, 0);
+    }
+
+    #[test]
     fn descriptors_keep_current_revision_and_completion_sources_outside_history() {
         let dir = tempfile::tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
@@ -1346,6 +1441,7 @@ mod coherent_acquisition_tests {
     fn captured(agent: &AgentState, limit: usize) -> CapturedAgentContext {
         CapturedAgentContext {
             input_evidence: None,
+            work: None,
             token: PublicationToken {
                 identity_incarnation: 1,
                 owner_epoch: 1,

@@ -12,8 +12,8 @@ use crate::{
 use super::{
     serialize_success,
     work_item_query::{
-        latest_delivery_summaries_by_work_item, lifecycle_view, query_context, view_for_record,
-        WorkItemLifecycleView, WorkItemQueryContext, WorkItemView,
+        latest_delivery_summaries_by_work_item, lifecycle_view, query_context_from_work_items,
+        view_for_record, WorkItemLifecycleView, WorkItemQueryContext, WorkItemView,
     },
     BuiltinToolDefinition,
 };
@@ -79,11 +79,9 @@ pub(crate) async fn execute(
     let args: ListWorkItemsArgs = parse_tool_args(NAME, input)?;
     let filter = args.filter.unwrap_or(ListWorkItemsFilter::All);
     let limit = args.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    let context = query_context(runtime).await?;
-    let matching = runtime
-        .storage()
-        .work_queue_read_model()?
-        .items
+    let mut snapshot = runtime.capture_work_query_snapshot().await?;
+    let context = query_context_from_work_items(&snapshot.state, &snapshot.items);
+    let matching = std::mem::take(&mut snapshot.items)
         .into_iter()
         .filter(|projection| matches_filter(projection, &filter))
         .collect::<Vec<_>>();

@@ -152,6 +152,7 @@ pub(crate) enum EpisodeMemoryCommit {
 pub(crate) enum EpisodeMemoryError {
     CommandConflict,
     InvocationConflict,
+    EmbeddedPhaseCollision,
     LegacyEpisodeCollision { episode_id: String },
     ImmutableEpisodeConflict { episode_id: String },
 }
@@ -164,6 +165,9 @@ impl fmt::Display for EpisodeMemoryError {
             }
             Self::InvocationConflict => {
                 f.write_str("episode memory invocation binding does not match")
+            }
+            Self::EmbeddedPhaseCollision => {
+                f.write_str("episode memory phase exists without the enclosing command receipt")
             }
             Self::LegacyEpisodeCollision { episode_id } => write!(
                 f,
@@ -194,130 +198,7 @@ impl RuntimeDb {
         &self,
         command: &EpisodeMemoryTransitionCommand,
     ) -> Result<EpisodeMemoryCommit> {
-        let committed = self.transaction(|tx| {
-            // Replay precedes business OCC and lifecycle validation. The entrypoint
-            // must authenticate and authorize the requested historical scope.
-            if let Some(receipt) = load_receipt(
-                tx,
-                &command.key,
-                Some(&command.command_digest),
-                &command.invocation,
-            )? {
-                return Ok(EpisodeMemoryCommit::Replayed { receipt });
-            }
-            validate_new_command(tx, command)?;
-            #[cfg(test)]
-            inject_fault(command, EpisodeMemoryFaultPoint::AfterValidation)?;
-
-            if let Some(episode) = command.plan.finalized_episode.as_ref() {
-                insert_immutable_episode(tx, episode)?;
-            }
-            #[cfg(test)]
-            inject_fault(command, EpisodeMemoryFaultPoint::AfterEpisodeWrite)?;
-
-            if command.plan.outcome.business_fields_changed {
-                upsert_agent_state_at_tx(tx, &command.plan.candidate, command.committed_at)?;
-                let stored_payload: String = tx.query_row(
-                    "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
-                    [&command.key.agent_id],
-                    |row| row.get(0),
-                )?;
-                let stored: AgentState = serde_json::from_str(&stored_payload)?;
-                ensure!(stored == command.plan.candidate,
-                    "episode memory candidate was not persisted exactly");
-            }
-            #[cfg(test)]
-            inject_fault(command, EpisodeMemoryFaultPoint::AfterStateWrite)?;
-
-            let mut audit_events = Vec::new();
-            let mut audit_bindings = Vec::new();
-            for event in &command.plan.audit_events {
-                let (event, inserted) = append_audit_event_tx(tx, Some(&command.key.agent_id), event)?;
-                audit_bindings.push(EpisodeMemoryAuditBinding {
-                    audit_event_id: event.id.clone(),
-                    event_seq: event.event_seq,
-                    event_log_epoch: event.event_log_epoch.clone(),
-                });
-                if inserted { audit_events.push(event); }
-            }
-            #[cfg(test)]
-            inject_fault(command, EpisodeMemoryFaultPoint::AfterAuditWrites)?;
-
-            let mut index_bindings = Vec::new();
-            if let Some(episode) = command.plan.finalized_episode.as_ref() {
-                let change = RuntimeIndexChange {
-                    agent_id: episode.agent_id.clone(),
-                    source_kind: "context_episode".into(),
-                    source_id: episode.id.clone(),
-                    source_ref: format!("episode:{}", episode.id),
-                    operation: RuntimeIndexOperation::Upsert,
-                    source_updated_at: Some(episode.finalized_at),
-                    reason: "context_episode_written".into(),
-                };
-                insert_runtime_index_changes_at_tx(tx, &[change.clone()], command.committed_at)?;
-                let change_seq = tx.query_row(
-                    "SELECT produced_change_seq FROM runtime_index_outbox_watermarks WHERE agent_id = ?1",
-                    [&command.key.agent_id], |row| row.get::<_, i64>(0),
-                )?;
-                index_bindings.push(EpisodeMemoryIndexBinding { change_seq, source_ref: change.source_ref });
-            }
-            #[cfg(test)]
-            inject_fault(command, EpisodeMemoryFaultPoint::AfterIndexWrites)?;
-
-            let control_revision: i64 = tx.query_row(
-                "SELECT control_revision FROM agent_states WHERE agent_id = ?1",
-                [&command.key.agent_id], |row| row.get(0),
-            )?;
-            let receipt = EpisodeMemoryReceipt {
-                phase: EPISODE_MEMORY_PHASE.into(),
-                key: command.key.clone(),
-                invocation: command.invocation.clone(),
-                command_digest: command.command_digest.clone(),
-                outcome: command.plan.outcome.clone(),
-                agent_control_revision: u64::try_from(control_revision).context("invalid agent control revision")?,
-                audit_bindings,
-                index_bindings,
-                committed_at: command.committed_at,
-            };
-            tx.execute(
-                "INSERT INTO episode_memory_results
-                 (agent_id, identity_incarnation, turn_id, phase_version, command_digest,
-                  invocation_json, finalized_episode_id, result_json, committed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    receipt.key.agent_id,
-                    i64::try_from(receipt.key.identity_incarnation)?,
-                    receipt.key.actual_dispatch_turn_id,
-                    EPISODE_MEMORY_PHASE,
-                    receipt.command_digest,
-                    serde_json::to_string(&receipt.invocation)?,
-                    receipt.outcome.finalized_episode_id,
-                    serde_json::to_string(&receipt)?,
-                    receipt.committed_at.to_rfc3339(),
-                ],
-            )?;
-            #[cfg(test)]
-            inject_fault(command, EpisodeMemoryFaultPoint::AfterReceiptWrite)?;
-
-            Ok(EpisodeMemoryCommit::Applied {
-                receipt,
-                // Even a business no-op has committed a new durable receipt.
-                transition: TransitionCommit {
-                    applied: true,
-                    effects: PostCommitEffects {
-                        agent_state: Some(AgentStateMutation {
-                            expected: Some(command.expected_state.clone()),
-                            record: Box::new(command.plan.candidate.clone()),
-                        }),
-                        audit_events,
-                        notify_memory_index: command.plan.finalized_episode.is_some(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                episode: command.plan.finalized_episode.clone(),
-            })
-        })?;
+        let committed = self.transaction(|tx| commit_episode_memory_tx(tx, command))?;
         #[cfg(test)]
         if command.fault == Some(EpisodeMemoryFaultPoint::AfterCommitBeforeAck)
             && matches!(&committed, EpisodeMemoryCommit::Applied { .. })
@@ -343,6 +224,288 @@ impl RuntimeDb {
         validate_key(key, invocation)?;
         load_receipt(&self.connection()?, key, command_digest, invocation)
     }
+}
+
+/// Apply the original Episode command within the caller's existing transaction.
+/// This does not commit, publish effects, or own the outer commit acknowledgement.
+/// Historical replay and the original lifecycle/State OCC checks remain exact.
+pub(crate) fn commit_episode_memory_tx(
+    tx: &Transaction<'_>,
+    command: &EpisodeMemoryTransitionCommand,
+) -> Result<EpisodeMemoryCommit> {
+    // Replay precedes business OCC and lifecycle validation. The entrypoint
+    // must authenticate and authorize the requested historical scope.
+    if let Some(receipt) = load_receipt(
+        tx,
+        &command.key,
+        Some(&command.command_digest),
+        &command.invocation,
+    )? {
+        return Ok(EpisodeMemoryCommit::Replayed { receipt });
+    }
+    validate_new_command(tx, command)?;
+    #[cfg(test)]
+    inject_fault(command, EpisodeMemoryFaultPoint::AfterValidation)?;
+
+    write_validated_episode_memory_tx(
+        tx,
+        command,
+        &command.plan.candidate,
+        command.plan.outcome.business_fields_changed,
+    )
+}
+
+// Only this module can mint the token. It borrows the original transaction and
+// is consumed once; possession does not prove the enclosing transaction commits.
+pub(crate) struct ValidatedEpisodeMemory<'tx, 'connection> {
+    tx: &'tx Transaction<'connection>,
+    key: &'tx EpisodeMemoryKey,
+    invocation: &'tx EpisodeMemoryInvocation,
+    expected_state: &'tx AgentState,
+    existing_dispatch: bool,
+}
+
+/// Call only after the enclosing command's receipt lookup reports absence.
+/// A pre-existing phase cannot acknowledge or skip the enclosing business work.
+#[cfg(test)]
+pub(crate) fn prepare_embedded_episode_memory_tx<'tx, 'connection>(
+    tx: &'tx Transaction<'connection>,
+    key: &'tx EpisodeMemoryKey,
+    invocation: &'tx EpisodeMemoryInvocation,
+    expected_state: &'tx AgentState,
+) -> Result<ValidatedEpisodeMemory<'tx, 'connection>> {
+    validate_key(key, invocation)?;
+    if load_receipt(tx, key, None, invocation)?.is_some() {
+        return Err(EpisodeMemoryError::EmbeddedPhaseCollision.into());
+    }
+    validate_identity_tx(tx, key)?;
+    ensure!(
+        expected_state.id == key.agent_id,
+        "episode memory state identity mismatch"
+    );
+    validate_expected_state_tx(tx, key, expected_state)?;
+    ensure!(
+        expected_state.turn_index == invocation.turn_index,
+        "episode memory dispatch turn index mismatch"
+    );
+    validate_dispatch_tx(tx, key, invocation)?;
+    validate_unfinalized_builder_tx(tx, expected_state)?;
+    Ok(ValidatedEpisodeMemory {
+        tx,
+        key,
+        invocation,
+        expected_state,
+        existing_dispatch: false,
+    })
+}
+
+/// The original enclosing command validates its State OCC once. This token
+/// can only borrow the pre-business State captured by the dispatch proof in
+/// this same transaction; ordinary D1 callers retain their Active-only OCC.
+pub(crate) fn prepare_existing_dispatch_episode_memory_tx<'tx, 'connection>(
+    proof: &'tx super::dispatch_memory::ValidatedDispatchMemoryFinish<'_, 'connection>,
+) -> Result<ValidatedEpisodeMemory<'tx, 'connection>> {
+    let (tx, key, invocation, expected_state) = proof.embedded_inputs();
+    validate_key(key, invocation)?;
+    if load_receipt(tx, key, None, invocation)?.is_some() {
+        return Err(EpisodeMemoryError::EmbeddedPhaseCollision.into());
+    }
+    super::dispatch_memory::validate_existing_dispatch_identity_tx(tx, key)?;
+    ensure!(
+        expected_state.id == key.agent_id && expected_state.turn_index == invocation.turn_index,
+        "existing dispatch memory pre-state differs"
+    );
+    validate_dispatch_tx(tx, key, invocation)?;
+    validate_unfinalized_builder_tx(tx, expected_state)?;
+    Ok(ValidatedEpisodeMemory {
+        tx,
+        key,
+        invocation,
+        expected_state,
+        existing_dispatch: true,
+    })
+}
+
+/// Finish after business writes and the final count/State epilogue. The caller
+/// must not write State again after this receipt captures its control revision.
+pub(crate) fn write_embedded_episode_memory_tx(
+    validated: ValidatedEpisodeMemory<'_, '_>,
+    command: &EpisodeMemoryTransitionCommand,
+    final_business_state: &AgentState,
+) -> Result<EpisodeMemoryCommit> {
+    ensure!(
+        command.key == *validated.key
+            && command.invocation == *validated.invocation
+            && command.expected_state.as_ref() == validated.expected_state,
+        "embedded episode command differs from its validated pre-state"
+    );
+    let actual = state_tx(validated.tx, &validated.key.agent_id)?
+        .context("embedded episode final business State is missing")?;
+    ensure!(
+        actual == *final_business_state,
+        "embedded episode final business State was not read back exactly"
+    );
+    ensure!(
+        actual.working_memory == validated.expected_state.working_memory,
+        "embedded episode business writes changed the memory baseline"
+    );
+    ensure!(
+        actual.turn_index == validated.invocation.turn_index,
+        "embedded episode business State advanced another dispatch"
+    );
+
+    // Compare every non-memory field, including future AgentState additions.
+    // No stale focus/control/count/workspace field may be copied from the plan.
+    let mut planned_business = command.plan.candidate.clone();
+    planned_business.working_memory = actual.working_memory.clone();
+    ensure!(
+        planned_business == actual,
+        "embedded episode plan changed a non-memory business field"
+    );
+    let mut candidate = actual.clone();
+    candidate.working_memory = command.plan.candidate.working_memory.clone();
+    // Business work may touch the actual Turn; recheck its final ownership and
+    // the original identity without rerunning the old State OCC.
+    if validated.existing_dispatch {
+        super::dispatch_memory::validate_existing_dispatch_identity_tx(
+            validated.tx,
+            validated.key,
+        )?;
+    } else {
+        validate_identity_tx(validated.tx, validated.key)?;
+    }
+    validate_dispatch_tx(validated.tx, validated.key, validated.invocation)?;
+    validate_memory_plan_tx(validated.tx, command)?;
+    #[cfg(test)]
+    inject_fault(command, EpisodeMemoryFaultPoint::AfterValidation)?;
+    let persist_state = candidate != actual;
+    write_validated_episode_memory_tx(validated.tx, command, &candidate, persist_state)
+}
+
+fn write_validated_episode_memory_tx(
+    tx: &Transaction<'_>,
+    command: &EpisodeMemoryTransitionCommand,
+    candidate: &AgentState,
+    persist_state: bool,
+) -> Result<EpisodeMemoryCommit> {
+    if let Some(episode) = command.plan.finalized_episode.as_ref() {
+        insert_immutable_episode(tx, episode)?;
+    }
+    #[cfg(test)]
+    inject_fault(command, EpisodeMemoryFaultPoint::AfterEpisodeWrite)?;
+
+    if persist_state {
+        upsert_agent_state_at_tx(tx, candidate, command.committed_at)?;
+        let stored_payload: String = tx.query_row(
+            "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
+            [&command.key.agent_id],
+            |row| row.get(0),
+        )?;
+        let stored: AgentState = serde_json::from_str(&stored_payload)?;
+        ensure!(
+            stored == *candidate,
+            "episode memory candidate was not persisted exactly"
+        );
+    }
+    #[cfg(test)]
+    inject_fault(command, EpisodeMemoryFaultPoint::AfterStateWrite)?;
+
+    let mut audit_events = Vec::new();
+    let mut audit_bindings = Vec::new();
+    for event in &command.plan.audit_events {
+        let (event, inserted) = append_audit_event_tx(tx, Some(&command.key.agent_id), event)?;
+        audit_bindings.push(EpisodeMemoryAuditBinding {
+            audit_event_id: event.id.clone(),
+            event_seq: event.event_seq,
+            event_log_epoch: event.event_log_epoch.clone(),
+        });
+        if inserted {
+            audit_events.push(event);
+        }
+    }
+    #[cfg(test)]
+    inject_fault(command, EpisodeMemoryFaultPoint::AfterAuditWrites)?;
+
+    let mut index_bindings = Vec::new();
+    if let Some(episode) = command.plan.finalized_episode.as_ref() {
+        let change = RuntimeIndexChange {
+            agent_id: episode.agent_id.clone(),
+            source_kind: "context_episode".into(),
+            source_id: episode.id.clone(),
+            source_ref: format!("episode:{}", episode.id),
+            operation: RuntimeIndexOperation::Upsert,
+            source_updated_at: Some(episode.finalized_at),
+            reason: "context_episode_written".into(),
+        };
+        insert_runtime_index_changes_at_tx(tx, &[change.clone()], command.committed_at)?;
+        let change_seq = tx.query_row(
+            "SELECT produced_change_seq FROM runtime_index_outbox_watermarks WHERE agent_id = ?1",
+            [&command.key.agent_id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        index_bindings.push(EpisodeMemoryIndexBinding {
+            change_seq,
+            source_ref: change.source_ref,
+        });
+    }
+    #[cfg(test)]
+    inject_fault(command, EpisodeMemoryFaultPoint::AfterIndexWrites)?;
+
+    let control_revision: i64 = tx.query_row(
+        "SELECT control_revision FROM agent_states WHERE agent_id = ?1",
+        [&command.key.agent_id],
+        |row| row.get(0),
+    )?;
+    let receipt = EpisodeMemoryReceipt {
+        phase: EPISODE_MEMORY_PHASE.into(),
+        key: command.key.clone(),
+        invocation: command.invocation.clone(),
+        command_digest: command.command_digest.clone(),
+        outcome: command.plan.outcome.clone(),
+        agent_control_revision: u64::try_from(control_revision)
+            .context("invalid agent control revision")?,
+        audit_bindings,
+        index_bindings,
+        committed_at: command.committed_at,
+    };
+    tx.execute(
+        "INSERT INTO episode_memory_results
+         (agent_id, identity_incarnation, turn_id, phase_version, command_digest,
+          invocation_json, finalized_episode_id, result_json, committed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            receipt.key.agent_id,
+            i64::try_from(receipt.key.identity_incarnation)?,
+            receipt.key.actual_dispatch_turn_id,
+            EPISODE_MEMORY_PHASE,
+            receipt.command_digest,
+            serde_json::to_string(&receipt.invocation)?,
+            receipt.outcome.finalized_episode_id,
+            serde_json::to_string(&receipt)?,
+            receipt.committed_at.to_rfc3339(),
+        ],
+    )?;
+    #[cfg(test)]
+    inject_fault(command, EpisodeMemoryFaultPoint::AfterReceiptWrite)?;
+
+    Ok(EpisodeMemoryCommit::Applied {
+        receipt,
+        // Even a business no-op has committed a new durable receipt.
+        transition: TransitionCommit {
+            applied: true,
+            effects: PostCommitEffects {
+                agent_state: Some(AgentStateMutation {
+                    expected: Some(command.expected_state.clone()),
+                    record: Box::new(candidate.clone()),
+                }),
+                audit_events,
+                notify_memory_index: command.plan.finalized_episode.is_some(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        episode: command.plan.finalized_episode.clone(),
+    })
 }
 
 fn validate_key(key: &EpisodeMemoryKey, invocation: &EpisodeMemoryInvocation) -> Result<()> {
@@ -417,6 +580,23 @@ fn validate_new_command(
     command: &EpisodeMemoryTransitionCommand,
 ) -> Result<()> {
     let key = &command.key;
+    validate_identity_tx(tx, key)?;
+    ensure!(
+        command.expected_state.id == key.agent_id && command.plan.candidate.id == key.agent_id,
+        "episode memory state identity mismatch"
+    );
+    validate_expected_state_tx(tx, key, command.expected_state.as_ref())?;
+    ensure!(
+        command.plan.candidate.turn_index == command.invocation.turn_index
+            && command.expected_state.turn_index == command.invocation.turn_index,
+        "episode memory dispatch turn index mismatch"
+    );
+    validate_dispatch_tx(tx, key, &command.invocation)?;
+    validate_unfinalized_builder_tx(tx, command.expected_state.as_ref())?;
+    validate_memory_plan_tx(tx, command)
+}
+
+fn validate_identity_tx(tx: &Transaction<'_>, key: &EpisodeMemoryKey) -> Result<()> {
     let identity = tx
         .query_row(
             "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
@@ -434,51 +614,64 @@ fn validate_new_command(
                 && identity.status == AgentRegistryStatus::Active),
         "episode memory durable identity incarnation is no longer active"
     );
-    ensure!(
-        command.expected_state.id == key.agent_id && command.plan.candidate.id == key.agent_id,
-        "episode memory state identity mismatch"
-    );
-    let actual = tx
-        .query_row(
-            "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
-            [&key.agent_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?
-        .map(|payload| serde_json::from_str::<AgentState>(&payload))
-        .transpose()?;
-    if actual.as_ref() != Some(command.expected_state.as_ref()) {
+    Ok(())
+}
+
+fn state_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<AgentState>> {
+    tx.query_row(
+        "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
+        [agent_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()?
+    .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+    .transpose()
+}
+
+fn validate_expected_state_tx(
+    tx: &Transaction<'_>,
+    key: &EpisodeMemoryKey,
+    expected_state: &AgentState,
+) -> Result<()> {
+    let actual = state_tx(tx, &key.agent_id)?;
+    if actual.as_ref() != Some(expected_state) {
         return Err(RuntimeStateTransitionConflict::concurrent_mutation(
             "agent_state",
             &key.agent_id,
         )
         .into());
     }
-    ensure!(
-        command.plan.candidate.turn_index == command.invocation.turn_index
-            && command.expected_state.turn_index == command.invocation.turn_index,
-        "episode memory dispatch turn index mismatch"
-    );
+    Ok(())
+}
+
+fn validate_dispatch_tx(
+    tx: &Transaction<'_>,
+    key: &EpisodeMemoryKey,
+    invocation: &EpisodeMemoryInvocation,
+) -> Result<()> {
     let dispatch = turn_tx(tx, &key.actual_dispatch_turn_id)?
         .ok_or_else(|| anyhow!("episode memory dispatch turn is missing"))?;
     ensure!(
-        dispatch.agent_id == key.agent_id && dispatch.turn_index == command.invocation.turn_index,
+        dispatch.agent_id == key.agent_id && dispatch.turn_index == invocation.turn_index,
         "episode memory dispatch turn belongs to another scope"
     );
     ensure!(
-        dispatch
-            .input_message_ids
-            .contains(&command.invocation.message_id)
+        dispatch.input_message_ids.contains(&invocation.message_id)
             || dispatch
                 .trigger
                 .as_ref()
                 .and_then(|trigger| trigger.message_id.as_deref())
-                == Some(command.invocation.message_id.as_str()),
+                == Some(invocation.message_id.as_str()),
         "episode memory dispatch does not own its invocation message"
     );
+    Ok(())
+}
 
-    if let Some(builder) = command
-        .expected_state
+fn validate_unfinalized_builder_tx(
+    tx: &Transaction<'_>,
+    expected_state: &AgentState,
+) -> Result<()> {
+    if let Some(builder) = expected_state
         .working_memory
         .active_episode_builder
         .as_ref()
@@ -490,6 +683,14 @@ fn validate_new_command(
             .into());
         }
     }
+    Ok(())
+}
+
+fn validate_memory_plan_tx(
+    tx: &Transaction<'_>,
+    command: &EpisodeMemoryTransitionCommand,
+) -> Result<()> {
+    let key = &command.key;
     if let Some(builder) = command
         .plan
         .candidate
@@ -849,6 +1050,348 @@ mod tests {
             },
             evidence: Vec::new(),
         }
+    }
+
+    fn embedded_business_state_tx(fixture: &Fixture, tx: &Transaction<'_>) -> AgentState {
+        let work = crate::types::WorkItemRecord::new(
+            &fixture.state.id,
+            "actual final business owner",
+            crate::types::WorkItemState::Open,
+        );
+        super::super::repositories::insert_new_work_item_tx(tx, &work).unwrap();
+        let mut state = fixture.state.clone();
+        state.status = AgentStatus::Stopped;
+        state.current_run_id = None;
+        state.current_turn_id = None;
+        state.current_work_item_id = Some(work.id);
+        state.pending = 3;
+        state.total_message_count = 7;
+        state.total_input_tokens = 11;
+        state.total_output_tokens = 13;
+        state.last_wake_reason = Some("actual compound settlement".into());
+        upsert_agent_state_at_tx(tx, &state, fixture.timestamp).unwrap();
+        state
+    }
+
+    fn embedded_command(
+        fixture: &Fixture,
+        final_business_state: &AgentState,
+    ) -> EpisodeMemoryTransitionCommand {
+        let snapshot = WorkingMemorySnapshot {
+            current_work_item_id: final_business_state.current_work_item_id.clone(),
+            objective: Some("actual compound final memory".into()),
+            work_summary: Some("complete original dispatch".into()),
+            ..Default::default()
+        };
+        let mut refreshed = final_business_state.clone();
+        refreshed.working_memory.current_working_memory = snapshot.clone();
+        let frozen = FrozenEpisodeMemoryValues {
+            timestamp: fixture.timestamp,
+            initial_builder_id: "episode-embedded".into(),
+            fallback_builder_id: "episode-embedded-fallback".into(),
+            next_builder_id: "episode-embedded-next".into(),
+            audit_event_id: "episode-embedded-audit".into(),
+        };
+        let plan = plan_episode_memory(
+            EpisodeMemoryPlanInput {
+                agent: &refreshed,
+                actual_dispatch_turn_id: "turn-1",
+                trigger: &fixture.message,
+                prior_closure: &closure(false),
+                current_closure: &closure(true),
+                previous_snapshot: &snapshot,
+                current_snapshot: &snapshot,
+            },
+            &frozen,
+        );
+        fixture.command_from_plan(plan)
+    }
+
+    #[test]
+    fn embedded_memory_preserves_actual_final_business_state_and_final_control_revision() {
+        let fixture = Fixture::new();
+        let template = fixture.command(false);
+        let receipt = fixture
+            .db
+            .transaction(|tx| {
+                let validated = prepare_embedded_episode_memory_tx(
+                    tx,
+                    template.key(),
+                    template.invocation(),
+                    &fixture.state,
+                )?;
+                let final_business = embedded_business_state_tx(&fixture, tx);
+                let command = embedded_command(&fixture, &final_business);
+                let EpisodeMemoryCommit::Applied {
+                    receipt,
+                    transition,
+                    ..
+                } = write_embedded_episode_memory_tx(validated, &command, &final_business)?
+                else {
+                    panic!("a new embedded phase must commit")
+                };
+                let stored = state_tx(tx, &fixture.state.id)?.unwrap();
+                let mut non_memory = stored.clone();
+                non_memory.working_memory = fixture.state.working_memory.clone();
+                assert_eq!(non_memory, final_business);
+                assert_eq!(stored, *command.candidate());
+                assert_eq!(
+                    stored
+                        .working_memory
+                        .active_episode_builder
+                        .as_ref()
+                        .unwrap()
+                        .latest_message_count,
+                    final_business.total_message_count
+                );
+                assert_eq!(
+                    transition.effects.agent_state.unwrap().record.as_ref(),
+                    &stored
+                );
+                let revision: i64 = tx.query_row(
+                    "SELECT control_revision FROM agent_states WHERE agent_id=?1",
+                    [&fixture.state.id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(receipt.agent_control_revision, revision as u64);
+                Ok(receipt)
+            })
+            .unwrap();
+        assert_eq!(fixture.revision() as u64, receipt.agent_control_revision);
+        assert_eq!(fixture.count("episode_memory_results"), 1);
+        assert_eq!(fixture.count("context_episode_anchors"), 1);
+    }
+
+    #[test]
+    fn embedded_memory_rejects_stale_non_memory_plan_and_rolls_back_business_writes() {
+        for stale in ["focus", "count", "posture", "turn"] {
+            let fixture = Fixture::new();
+            let template = fixture.command(false);
+            let error = fixture
+                .db
+                .transaction(|tx| {
+                    let validated = prepare_embedded_episode_memory_tx(
+                        tx,
+                        template.key(),
+                        template.invocation(),
+                        &fixture.state,
+                    )?;
+                    let final_business = embedded_business_state_tx(&fixture, tx);
+                    let mut command = embedded_command(&fixture, &final_business);
+                    match stale {
+                        "focus" => command.plan.candidate.current_work_item_id = None,
+                        "count" => command.plan.candidate.total_message_count = 0,
+                        "posture" => command.plan.candidate.status = AgentStatus::AwakeIdle,
+                        "turn" => command.plan.candidate.turn_index += 1,
+                        _ => unreachable!(),
+                    }
+                    write_embedded_episode_memory_tx(validated, &command, &final_business)
+                })
+                .unwrap_err();
+            assert!(error.to_string().contains("non-memory business field"));
+            assert_eq!(fixture.durable_state(), fixture.state);
+            for table in [
+                "work_items",
+                "context_episode_anchors",
+                "audit_events",
+                "runtime_index_outbox",
+                "episode_memory_results",
+            ] {
+                assert_eq!(fixture.count(table), 0, "{stale}: {table}");
+            }
+        }
+    }
+
+    #[test]
+    fn embedded_memory_rejects_changed_memory_baseline_and_inexact_final_readback() {
+        for invalid in ["baseline", "readback"] {
+            let fixture = Fixture::new();
+            let template = fixture.command(false);
+            let error = fixture
+                .db
+                .transaction(|tx| {
+                    let validated = prepare_embedded_episode_memory_tx(
+                        tx,
+                        template.key(),
+                        template.invocation(),
+                        &fixture.state,
+                    )?;
+                    let mut final_business = embedded_business_state_tx(&fixture, tx);
+                    if invalid == "baseline" {
+                        final_business.working_memory.compression_epoch += 1;
+                        upsert_agent_state_at_tx(tx, &final_business, fixture.timestamp)?;
+                    } else {
+                        final_business.total_message_count += 1;
+                    }
+                    let command = embedded_command(&fixture, &final_business);
+                    write_embedded_episode_memory_tx(validated, &command, &final_business)
+                })
+                .unwrap_err();
+            assert!(error.to_string().contains(if invalid == "baseline" {
+                "changed the memory baseline"
+            } else {
+                "was not read back exactly"
+            }));
+            assert_eq!(fixture.durable_state(), fixture.state);
+            assert_eq!(fixture.count("work_items"), 0);
+            assert_eq!(fixture.count("episode_memory_results"), 0);
+        }
+    }
+
+    #[test]
+    fn embedded_memory_phase_collision_precedes_state_occ_and_never_acknowledges_outer_work() {
+        let fixture = Fixture::new();
+        let command = fixture.command(true);
+        fixture.db.commit_episode_memory(&command).unwrap();
+        let durable = fixture.durable_state();
+        let error = fixture
+            .db
+            .transaction(|tx| {
+                let _validated = prepare_embedded_episode_memory_tx(
+                    tx,
+                    command.key(),
+                    command.invocation(),
+                    &fixture.state,
+                )?;
+                panic!("an existing inner phase cannot skip the outer command receipt");
+                #[allow(unreachable_code)]
+                Ok(())
+            })
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<EpisodeMemoryError>(),
+            Some(&EpisodeMemoryError::EmbeddedPhaseCollision)
+        );
+        assert_eq!(fixture.durable_state(), durable);
+        assert_eq!(fixture.count("episode_memory_results"), 1);
+    }
+
+    #[test]
+    fn embedded_memory_rechecks_final_dispatch_ownership_and_identity() {
+        for changed in ["source", "identity"] {
+            let fixture = Fixture::new();
+            let template = fixture.command(false);
+            let error = fixture
+                .db
+                .transaction(|tx| {
+                    let validated = prepare_embedded_episode_memory_tx(
+                        tx,
+                        template.key(),
+                        template.invocation(),
+                        &fixture.state,
+                    )?;
+                    let final_business = embedded_business_state_tx(&fixture, tx);
+                    if changed == "source" {
+                        let mut turn = turn_tx(tx, "turn-1")?.unwrap();
+                        turn.input_message_ids.clear();
+                        tx.execute(
+                            "UPDATE turn_records SET payload_json=?1 WHERE turn_id='turn-1'",
+                            [serde_json::to_string(&turn)?],
+                        )?;
+                    } else {
+                        let payload: String = tx.query_row(
+                            "SELECT payload_json FROM agent_identities WHERE agent_id=?1",
+                            [&fixture.state.id],
+                            |row| row.get(0),
+                        )?;
+                        let mut identity: AgentIdentityRecord = serde_json::from_str(&payload)?;
+                        identity.status = AgentRegistryStatus::Deleting;
+                        super::super::evidence::upsert_agent_identity_tx(tx, &identity)?;
+                    }
+                    let command = embedded_command(&fixture, &final_business);
+                    write_embedded_episode_memory_tx(validated, &command, &final_business)
+                })
+                .unwrap_err();
+            assert!(error.to_string().contains(if changed == "source" {
+                "does not own its invocation message"
+            } else {
+                "incarnation is no longer active"
+            }));
+            assert_eq!(fixture.durable_state(), fixture.state);
+            assert_eq!(fixture.count("work_items"), 0);
+            assert_eq!(fixture.count("episode_memory_results"), 0);
+        }
+    }
+
+    #[test]
+    fn embedded_memory_fault_rolls_back_outer_work_state_and_every_memory_write() {
+        for point in [
+            EpisodeMemoryFaultPoint::AfterValidation,
+            EpisodeMemoryFaultPoint::AfterEpisodeWrite,
+            EpisodeMemoryFaultPoint::AfterStateWrite,
+            EpisodeMemoryFaultPoint::AfterAuditWrites,
+            EpisodeMemoryFaultPoint::AfterIndexWrites,
+            EpisodeMemoryFaultPoint::AfterReceiptWrite,
+        ] {
+            let fixture = Fixture::new();
+            let template = fixture.command(false);
+            let before_revision = fixture.revision();
+            assert!(fixture
+                .db
+                .transaction(|tx| {
+                    let validated = prepare_embedded_episode_memory_tx(
+                        tx,
+                        template.key(),
+                        template.invocation(),
+                        &fixture.state,
+                    )?;
+                    let final_business = embedded_business_state_tx(&fixture, tx);
+                    let command = embedded_command(&fixture, &final_business).with_fault(point);
+                    write_embedded_episode_memory_tx(validated, &command, &final_business)
+                })
+                .is_err());
+            assert_eq!(fixture.durable_state(), fixture.state);
+            assert_eq!(fixture.revision(), before_revision);
+            for table in [
+                "work_items",
+                "context_episode_anchors",
+                "audit_events",
+                "runtime_index_outbox",
+                "episode_memory_results",
+            ] {
+                assert_eq!(fixture.count(table), 0, "{point:?}: {table}");
+            }
+        }
+    }
+
+    #[test]
+    fn embedded_memory_noop_receipt_uses_final_business_revision_without_rewriting_state() {
+        let fixture = Fixture::new();
+        let template = fixture.command(false);
+        fixture
+            .db
+            .transaction(|tx| {
+                let validated = prepare_embedded_episode_memory_tx(
+                    tx,
+                    template.key(),
+                    template.invocation(),
+                    &fixture.state,
+                )?;
+                let final_business = embedded_business_state_tx(&fixture, tx);
+                let mut plan = template.plan.clone();
+                plan.candidate = final_business.clone();
+                let command = fixture.command_from_plan(plan);
+                let before: i64 = tx.query_row(
+                    "SELECT control_revision FROM agent_states WHERE agent_id=?1",
+                    [&fixture.state.id],
+                    |row| row.get(0),
+                )?;
+                let EpisodeMemoryCommit::Applied { receipt, .. } =
+                    write_embedded_episode_memory_tx(validated, &command, &final_business)?
+                else {
+                    panic!("a new no-op phase still commits a receipt")
+                };
+                assert_eq!(receipt.agent_control_revision, before as u64);
+                let after: i64 = tx.query_row(
+                    "SELECT control_revision FROM agent_states WHERE agent_id=?1",
+                    [&fixture.state.id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(before, after);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(fixture.count("episode_memory_results"), 1);
     }
 
     #[test]

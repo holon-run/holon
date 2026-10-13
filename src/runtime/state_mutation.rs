@@ -9,6 +9,18 @@ use crate::runtime_db::{persistence_certainty, PersistenceCertainty};
 #[path = "state_mutation/prepared_evidence.rs"]
 mod prepared_evidence;
 
+#[path = "state_mutation/work_planning.rs"]
+mod work_planning;
+
+#[path = "state_mutation/work_preparation.rs"]
+mod work_preparation;
+
+#[path = "state_mutation/task_transitions.rs"]
+mod task_transitions;
+
+#[path = "state_mutation/work_transitions.rs"]
+mod work_transitions;
+
 #[derive(Debug, thiserror::Error)]
 #[error("prepared input operation already has its original receipt")]
 struct PreparedInputReplay(crate::runtime_db::input_mutation_receipts::InputMutationReceipt);
@@ -59,6 +71,7 @@ pub(crate) struct RuntimeMutationFacts {
     pub(crate) state: Arc<AgentState>,
     episodes: Option<Arc<super::resident_state::ResidentEpisodes>>,
     input_evidence: Option<Arc<super::resident_input_evidence::ResidentInputEvidence>>,
+    work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
     queue: RuntimeQueue,
     _queue_budget_view: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
     current_run_abort: Option<CurrentRunAbortHandle>,
@@ -81,6 +94,7 @@ impl RuntimeMutationFacts {
             state,
             episodes,
             input_evidence,
+            work: None,
             queue: RuntimeQueue::default(),
             _queue_budget_view: None,
             current_run_abort: None,
@@ -94,6 +108,7 @@ impl RuntimeMutationFacts {
     pub(crate) fn with_external_input_commit(
         mut self,
         input_evidence: Option<Arc<super::resident_input_evidence::ResidentInputEvidence>>,
+        work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
         effects: crate::runtime_db::transitions::PostCommitEffects,
     ) -> Result<Self> {
         if let Some(inputs) = &input_evidence {
@@ -102,7 +117,13 @@ impl RuntimeMutationFacts {
                 "external input commit changed its agent scope"
             );
         }
+        anyhow::ensure!(
+            work.as_ref()
+                .is_none_or(|work| work.scope().agent_id == self.state.id),
+            "external Work commit scope differs"
+        );
         self.input_evidence = input_evidence;
+        self.work = work;
         self.recovered_cache = None;
         self.effects = effects;
         strip_input_evidence_payloads(&mut self.effects);
@@ -117,6 +138,7 @@ impl RuntimeMutationFacts {
         state: Arc<AgentState>,
         episodes: Arc<super::resident_state::ResidentEpisodes>,
         inputs: Arc<super::resident_input_evidence::ResidentInputEvidence>,
+        work: Arc<super::resident_work::ResidentWorkDomain>,
         messages: Vec<MessageEnvelope>,
         budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
         original: Option<&Self>,
@@ -128,6 +150,7 @@ impl RuntimeMutationFacts {
         anyhow::ensure!(
             outcome.scope.agent_id == state.id
                 && inputs.belongs_to(&outcome.scope)
+                && work.scope() == &outcome.scope
                 && cache.scope == outcome.scope
                 && cache.keys == outcome.install_keys,
             "input recovery scope differs"
@@ -151,6 +174,7 @@ impl RuntimeMutationFacts {
             state,
             episodes: Some(episodes),
             input_evidence: Some(inputs),
+            work: Some(work),
             queue,
             _queue_budget_view: Some(queue_view),
             current_run_abort,
@@ -185,10 +209,18 @@ impl RuntimeMutationFacts {
         owner_epoch: u64,
         state: Arc<AgentState>,
         episodes: Arc<super::resident_state::ResidentEpisodes>,
+        domains: crate::runtime_db::control_transition::ControlRecoveryDomains,
+        budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
         facts: crate::runtime_db::control_transition::ControlRecoveryFacts,
         original_run: Option<CurrentRunAbortHandle>,
         cancellation: Option<SavedControlCancellation>,
     ) -> Result<Self> {
+        anyhow::ensure!(
+            domains.work.scope().agent_id == state.id
+                && domains.inputs.belongs_to(domains.work.scope())
+                && episodes.belongs_to(&state.id, domains.work.scope().identity_incarnation),
+            "Control recovery domains changed namespace"
+        );
         anyhow::ensure!(
             facts
                 .workspace_occupancy
@@ -208,6 +240,21 @@ impl RuntimeMutationFacts {
             );
             queue.push(message);
         }
+        let charges = queue
+            .shared_messages()
+            .map(|message| {
+                Ok(super::input_evidence_budget::PendingBodyCharge {
+                    message_id: message.id.clone(),
+                    body_bytes: super::input_evidence_budget::serialized_bytes(&message.body)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        budget.install_actual_pending(domains.work.scope(), &charges)?;
+        let queue_view = budget.register_queue_view(
+            domains.work.scope(),
+            super::input_evidence_budget::InputMemoryCategory::Candidate,
+            queue.shared_messages(),
+        )?;
         let current_run_abort =
             original_run.filter(|handle| state.current_run_id.as_ref() == Some(&handle.run_id));
         let mut effects = facts.transition.effects;
@@ -216,9 +263,10 @@ impl RuntimeMutationFacts {
             owner_epoch,
             state,
             episodes: Some(episodes),
-            input_evidence: None,
+            input_evidence: Some(domains.inputs),
+            work: Some(domains.work),
             queue,
-            _queue_budget_view: None,
+            _queue_budget_view: Some(queue_view),
             current_run_abort,
             deferred_abort: None,
             control_cancellation: cancellation,
@@ -235,6 +283,7 @@ pub(super) struct RuntimeMutation {
     metadata: Vec<Option<Arc<IdentityMutationFacts>>>,
     episodes: Option<Arc<super::resident_state::ResidentEpisodes>>,
     input_evidence: Option<Arc<super::resident_input_evidence::ResidentInputEvidence>>,
+    work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
     candidate: Box<RuntimeAgent>,
     base: Box<RuntimeAgent>,
     deferred_abort: Option<DeferredRunAbort>,
@@ -302,6 +351,7 @@ impl RuntimeMutation {
             byte_limit,
         )?;
         request.interrupted_sources = interrupted_sources;
+        super::scheduler::include_scheduler_brief_window(&mut request.windows);
         self.prepare_owner_input_request(&request, config.recent_episode_candidates)
             .await
     }
@@ -428,6 +478,7 @@ impl RuntimeMutation {
                 state: facts.state.clone(),
                 episodes: facts.episodes.clone(),
                 input_evidence: facts.input_evidence.clone(),
+                work: facts.work.clone(),
                 runtime: Some(facts.clone()),
             }],
         )?;
@@ -471,13 +522,15 @@ impl RuntimeMutation {
         ))
     }
 
+    #[cfg(test)]
     pub(super) fn capture_context_with_inputs(
         &self,
         episode_limit: usize,
         request: &crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest,
     ) -> Result<super::resident_state::CapturedAgentContext> {
-        let mut captured = self.capture_context(episode_limit)?;
-        captured.input_evidence = Some(self.input_evidence.as_ref().ok_or_else(|| {
+        let root = self.capture_published_root()?;
+        let mut captured = root.capture_context(episode_limit)?;
+        captured.input_evidence = Some(root.input_evidence.as_ref().ok_or_else(|| {
             crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::NeedsPreparation(
                 "resident input domain has not been prepared".into())
         })?.capture_for_request(request)?);
@@ -500,14 +553,26 @@ impl RuntimeMutation {
         &'a mut self,
         _storage: &AppStorage,
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.persist_state_inner(None))
+        Box::pin(self.persist_state_inner(None, None))
     }
 
     pub(super) async fn persist_state_with_started_turn(&mut self, turn: TurnRecord) -> Result<()> {
-        self.persist_state_inner(Some(turn)).await
+        self.persist_state_inner(Some(turn), None).await
     }
 
-    async fn persist_state_inner(&mut self, started_turn: Option<TurnRecord>) -> Result<()> {
+    pub(super) async fn persist_started_dispatch(
+        &mut self,
+        turn: TurnRecord,
+        start: crate::runtime_db::dispatch_memory::DispatchMemoryStart,
+    ) -> Result<()> {
+        Box::pin(self.persist_state_inner(Some(turn), Some(start))).await
+    }
+
+    async fn persist_state_inner(
+        &mut self,
+        started_turn: Option<TurnRecord>,
+        dispatch_start: Option<crate::runtime_db::dispatch_memory::DispatchMemoryStart>,
+    ) -> Result<()> {
         self.validate_candidate_identity()?;
         if self.candidate.state == self.base.state && started_turn.is_none() {
             return self.install_transient().await;
@@ -537,6 +602,14 @@ impl RuntimeMutation {
             command,
             started_turn,
         )?;
+        let prepared = match dispatch_start {
+            Some(start) => prepared.with_dispatch_memory(
+                crate::runtime_db::dispatch_memory::DispatchMemoryIntent::Started {
+                    start: Box::new(start),
+                },
+            )?,
+            None => prepared,
+        };
         let result = self.commit_prepared_input_transition(prepared).await;
         crate::diagnostics::record_storage_persist_state(started.elapsed());
         let commit = result?;
@@ -646,9 +719,20 @@ impl RuntimeMutation {
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<TransitionCommit>> + Send + 'a>>
     {
         Box::pin(async move {
-            self.commit_prepared_input_with_result(prepared)
-                .await
-                .map(|(commit, _)| commit)
+            anyhow::ensure!(
+                prepared.descriptor().family()
+                    != crate::runtime_db::input_mutation_receipts::InputMutationFamily::Task,
+                "Task receipt requires its typed runtime adapter"
+            );
+            let (commit, result) = self.commit_prepared_input_with_result(prepared).await?;
+            anyhow::ensure!(
+                matches!(
+                    result,
+                    crate::runtime_db::input_mutation_receipts::InputMutationResult::Transition
+                ),
+                "transition receipt has another result family"
+            );
+            Ok(commit)
         })
     }
 
@@ -693,6 +777,82 @@ impl RuntimeMutation {
         Box::pin(self.commit_prepared_input_transition_inner(prepared))
     }
 
+    fn attach_actual_dispatch_memory(
+        &self,
+        prepared: crate::runtime_db::transitions::PreparedInputTransition,
+    ) -> Result<crate::runtime_db::transitions::PreparedInputTransition> {
+        use crate::runtime_db::dispatch_memory::{
+            load_dispatch_memory_binding_by_turn_tx, load_dispatch_memory_binding_tx,
+            DispatchMemoryCommandPolicy, DispatchMemoryIntent,
+        };
+        if !prepared.dispatch_memory_candidate() {
+            return Ok(prepared);
+        }
+        match self.runtime.inner.runtime_db.transaction(|tx| {
+            crate::runtime_db::dispatch_memory::load_original_auto_memory_tx(
+                tx,
+                prepared.descriptor(),
+            )
+        })? {
+            crate::runtime_db::dispatch_memory::OriginalAutoMemory::Restore(original) => {
+                return prepared.restore_automatic_dispatch_memory(original)
+            }
+            crate::runtime_db::dispatch_memory::OriginalAutoMemory::PlainReceipt => {
+                return Ok(prepared)
+            }
+            crate::runtime_db::dispatch_memory::OriginalAutoMemory::Unseen => {}
+        }
+        let scope = self.input_evidence_scope();
+        let binding = self.runtime.inner.runtime_db.transaction(|tx| {
+            if let Some(turn_id) = prepared.actual_memory_terminal_turn_id() {
+                if let Some(source) = prepared
+                    .claim_only_queue_terminal_source(&self.base.last_persisted_state)
+                {
+                    let state = &self.base.last_persisted_state;
+                    let run_id = state.current_run_id.as_deref().context("claim run missing")?;
+                    let lease = self.runtime.inner.control_cancellations.run_for(run_id)
+                        .context("claim-only terminal has no original processing lease")?;
+                    anyhow::ensure!(lease.source_message_id() == source,
+                        "claim-only terminal differs from its original source");
+                    let actual: bool = tx.query_row(
+                        "SELECT EXISTS (SELECT 1 FROM queue_entries q JOIN messages m ON m.message_id=q.message_id AND m.agent_id=q.agent_id JOIN agent_states s ON s.agent_id=q.agent_id WHERE q.agent_id=?1 AND q.message_id=?2 AND q.status='dequeued' AND json_extract(q.payload_json,'$.status')='dequeued' AND s.current_run_id=?3 AND json_extract(s.payload_json,'$.current_run_id')=?3 AND json_extract(s.payload_json,'$.current_turn_id') IS NULL AND json_extract(s.payload_json,'$.current_execution_binding') IS NULL AND s.turn_index=?4) AND NOT EXISTS (SELECT 1 FROM turn_records WHERE turn_id=?5) AND NOT EXISTS (SELECT 1 FROM dispatch_memory_checkpoints WHERE agent_id=?1 AND identity_incarnation=?6 AND state!='done')",
+                        rusqlite::params![scope.agent_id, source, run_id, state.turn_index, turn_id, scope.identity_incarnation],
+                        |row| row.get(0),
+                    )?;
+                    anyhow::ensure!(actual,"claim-only terminal has an actual Turn or changed canonical claim");
+                    return Ok(None);
+                }
+                load_dispatch_memory_binding_by_turn_tx(tx, &scope, turn_id)
+            } else {
+                // Work and Focus candidates may already change fields. The
+                // original published State, never that candidate, locates the seed.
+                load_dispatch_memory_binding_tx(tx, &scope, &self.base.last_persisted_state)
+            }
+        })?;
+        let Some(binding) = binding else {
+            return Ok(prepared);
+        };
+        let policy = prepared.dispatch_memory_policy(&binding);
+        if policy == DispatchMemoryCommandPolicy::None {
+            return Ok(prepared);
+        }
+        let frozen = crate::memory::episode_transition::FrozenEpisodeMemoryValues {
+            timestamp: self.runtime.now(),
+            initial_builder_id: crate::ids::episode_id(),
+            fallback_builder_id: crate::ids::episode_id(),
+            next_builder_id: crate::ids::episode_id(),
+            audit_event_id: crate::ids::audit_event_id(),
+        };
+        let memory = match policy {
+            DispatchMemoryCommandPolicy::Deferred => {
+                DispatchMemoryIntent::Deferred { binding, frozen }
+            }
+            DispatchMemoryCommandPolicy::Finish => DispatchMemoryIntent::Finish { binding, frozen },
+            DispatchMemoryCommandPolicy::None => unreachable!("checked memory policy"),
+        };
+        prepared.with_automatic_dispatch_memory(memory)
+    }
+
     async fn commit_prepared_input_transition_inner(
         &mut self,
         prepared: crate::runtime_db::transitions::PreparedInputTransition,
@@ -715,6 +875,7 @@ impl RuntimeMutation {
             )
             .collect::<Vec<_>>();
         let prepared = prepared.with_scope_group(scopes)?;
+        let prepared = self.attach_actual_dispatch_memory(prepared)?;
         let _owned = self
             .runtime
             .inner
@@ -751,6 +912,7 @@ impl RuntimeMutation {
                 }
             }
         }
+        let work_request = self.owner_work_load_request()?;
         let ledger = self.runtime.inner.input_evidence_budget.clone();
         let mut pending = Vec::new();
         for message in prepared.pending_messages()? {
@@ -794,8 +956,11 @@ impl RuntimeMutation {
             .commit_transition_inner(operation_id, Some(witness), || {
                 match db
                     .transitions_in_scope(&scope)
-                    .commit_prepared_transition(&prepared)?
-                {
+                    .commit_prepared_transition_with_work_request_and_memory_budget(
+                        &prepared,
+                        &work_request,
+                        &ledger,
+                    )? {
                     InputMutationExecution::Committed { value, receipt } => {
                         original_result = Some(receipt.outcome.result);
                         Ok(value)
@@ -820,7 +985,8 @@ impl RuntimeMutation {
                 self.base = self.candidate.clone();
                 let root = self.runtime.inner.mutation_owner.capture()?;
                 self.episodes = root.as_ref().and_then(|root| root.episodes.clone());
-                self.input_evidence = root.and_then(|root| root.input_evidence.clone());
+                self.input_evidence = root.as_ref().and_then(|root| root.input_evidence.clone());
+                self.work = root.and_then(|root| root.work.clone());
                 self.deferred_abort = None;
                 Ok((
                     TransitionCommit {
@@ -859,6 +1025,8 @@ impl RuntimeMutation {
                     effects: crate::runtime_db::transitions::PostCommitEffects {
                         agent_state: acknowledged.agent_state,
                         input_evidence_delta: acknowledged.input_delta,
+                        work_delta: acknowledged.work_delta,
+                        work_delta_requires_prepared_domain: true,
                         notify_memory_index: true,
                         notify_scheduler: true,
                         ..Default::default()
@@ -1013,6 +1181,18 @@ impl RuntimeMutation {
                 }
             }
         }
+        if let Some(delta) = &committed.effects.work_delta {
+            match self.install_committed_work_delta(
+                delta,
+                committed.effects.work_delta_requires_prepared_domain,
+            ) {
+                Ok(()) => {}
+                Err(error) => {
+                    self.work = None;
+                    projection_error.get_or_insert(error);
+                }
+            }
+        }
         match self
             .runtime
             .inner
@@ -1066,10 +1246,7 @@ impl RuntimeMutation {
         Ok(committed)
     }
 
-    pub(super) fn capture_context(
-        &self,
-        episode_limit: usize,
-    ) -> Result<super::resident_state::CapturedAgentContext> {
+    fn capture_published_root(&self) -> Result<Arc<super::resident_state::AgentSnapshot>> {
         let root = self
             .runtime
             .inner
@@ -1080,7 +1257,70 @@ impl RuntimeMutation {
             root.state.as_ref() == &self.candidate.state,
             "context capture cannot observe a private state candidate"
         );
-        root.capture_context(episode_limit)
+        Ok(root)
+    }
+
+    pub(super) fn capture_context(
+        &self,
+        episode_limit: usize,
+    ) -> Result<super::resident_state::CapturedAgentContext> {
+        self.capture_published_root()?
+            .capture_context(episode_limit)
+    }
+
+    pub(super) fn capture_work(
+        &self,
+        request: &super::resident_work::WorkCaptureRequest,
+    ) -> Result<super::resident_work::CapturedWork> {
+        self.capture_work_with_state(request)
+            .map(|(_, _, work)| work)
+    }
+
+    pub(super) fn capture_work_with_state(
+        &self,
+        request: &super::resident_work::WorkCaptureRequest,
+    ) -> Result<(
+        mutation_owner::PublicationToken,
+        Arc<AgentState>,
+        super::resident_work::CapturedWork,
+    )> {
+        let root = self.capture_published_root()?;
+        let work = root
+            .work
+            .as_ref()
+            .ok_or(super::resident_work::WorkReadError::IncompleteLive)?
+            .capture(request)?;
+        anyhow::ensure!(
+            work.scope == self.input_evidence_scope(),
+            "Work capture scope differs"
+        );
+        Ok((root.token, root.state.clone(), work))
+    }
+
+    pub(super) fn capture_context_with_inputs_and_work(
+        &self,
+        episode_limit: usize,
+        input_request: &crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest,
+        work_request: &super::resident_work::WorkCaptureRequest,
+    ) -> Result<super::resident_state::CapturedAgentContext> {
+        let root = self.capture_published_root()?;
+        let inputs = root.input_evidence.as_ref().ok_or_else(|| {
+            crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::NeedsPreparation(
+                "resident input domain has not been prepared".into(),
+            )
+        })?;
+        let work = root
+            .work
+            .as_ref()
+            .ok_or(super::resident_work::WorkReadError::IncompleteLive)?;
+        anyhow::ensure!(
+            inputs.scope() == work.scope() && work.scope() == &self.input_evidence_scope(),
+            "context domain scope differs"
+        );
+        let mut captured = root.capture_context(episode_limit)?;
+        captured.input_evidence = Some(inputs.capture_for_request(input_request)?);
+        captured.work = Some(work.capture(work_request)?);
+        Ok(captured)
     }
 
     pub(super) async fn commit_episode_memory(
@@ -1148,11 +1388,12 @@ impl RuntimeMutation {
         if command.invocation().action == ControlAction::Stop {
             self.candidate.current_run_abort = None;
         }
+        let work_request = self.owner_work_load_request()?;
         let db = self.runtime.inner.runtime_db.clone();
         let mut receipt = None;
         let result = self
             .commit_transition_inner(operation_id, Some(witness), || {
-                match db.commit_control(command)? {
+                match db.commit_control_with_work_request(command, &work_request)? {
                     ControlCommit::Applied {
                         receipt: original,
                         delta,
@@ -1246,6 +1487,7 @@ impl RuntimeMutation {
         let root = self.runtime.inner.mutation_owner.capture()?;
         self.episodes = root.as_ref().and_then(|root| root.episodes.clone());
         self.input_evidence = root.as_ref().and_then(|root| root.input_evidence.clone());
+        self.work = root.as_ref().and_then(|root| root.work.clone());
         self.base = self.candidate.clone();
         self.deferred_abort = None;
         self.control_cancellation = None;
@@ -1277,6 +1519,7 @@ impl RuntimeMutation {
                         state: facts.state.clone(),
                         episodes: facts.episodes.clone(),
                         input_evidence: facts.input_evidence.clone(),
+                        work: facts.work.clone(),
                         runtime: Some(facts.clone()),
                     });
                 }
@@ -1345,6 +1588,7 @@ impl RuntimeMutation {
             state: Arc::new(self.candidate.state.clone()),
             episodes: self.episodes.clone(),
             input_evidence: self.input_evidence.clone(),
+            work: self.work.clone(),
             queue: self.candidate.queue.clone(),
             _queue_budget_view: self.candidate._queue_budget_view.clone(),
             current_run_abort: self.candidate.current_run_abort.clone(),
@@ -1422,6 +1666,10 @@ fn strip_input_evidence_payloads(effects: &mut crate::runtime_db::transitions::P
     effects.briefs.clear();
     effects.transcript_entries.clear();
     effects.execution_protocol = None;
+    effects.work_items.clear();
+    effects.work_delta = None;
+    effects.work_delta_requires_prepared_domain = false;
+    effects.work_input_preparation = None;
 }
 
 fn strip_authoritative_effects(effects: &mut crate::runtime_db::transitions::PostCommitEffects) {
@@ -1461,6 +1709,7 @@ impl RuntimeHandle {
             state,
             episodes,
             input_evidence,
+            work: reservation.prepared_work_for_state_only_commit()?,
             queue: agent.queue.clone(),
             _queue_budget_view: agent._queue_budget_view.clone(),
             current_run_abort: agent.current_run_abort.clone(),
@@ -1858,13 +2107,21 @@ impl RuntimeHandle {
                 &inputs.budget_records(),
             )?);
         }
+        if let Some(work) = observation.as_ref().and_then(|root| root.work.as_ref()) {
+            if let Some(view) = work.candidate_budget_view()? {
+                candidate_budget_views.push(view);
+            }
+        }
         let mutation = RuntimeMutation {
             runtime: self.clone(),
             reservations,
             primary_index,
             metadata,
             episodes: observation.as_ref().and_then(|root| root.episodes.clone()),
-            input_evidence: observation.and_then(|root| root.input_evidence.clone()),
+            input_evidence: observation
+                .as_ref()
+                .and_then(|root| root.input_evidence.clone()),
+            work: observation.and_then(|root| root.work.clone()),
             base: candidate.clone(),
             candidate,
             deferred_abort: None,
@@ -1909,9 +2166,6 @@ impl RuntimeHandle {
         }
         let mut cache = self.inner.projection_cache.lock().await;
         if let Some(current) = &facts.recovered_cache {
-            for id in &current.keys.work_items {
-                cache.work_items.remove(id);
-            }
             for id in &current.keys.tasks {
                 cache.tasks.remove(id);
             }
@@ -1920,9 +2174,6 @@ impl RuntimeHandle {
             }
             for id in &current.keys.external_triggers {
                 cache.external_triggers.remove(id);
-            }
-            for record in &current.work_items {
-                cache.upsert_work_item(record.clone());
             }
             for record in &current.tasks {
                 cache.upsert_task(record.clone());
@@ -1933,9 +2184,6 @@ impl RuntimeHandle {
             for record in &current.external_triggers {
                 cache.upsert_external_trigger(record.clone());
             }
-        }
-        for record in &facts.effects.work_items {
-            cache.upsert_work_item(record.clone());
         }
         for record in &facts.effects.tasks {
             cache.upsert_task(record.clone());
@@ -2033,6 +2281,7 @@ impl RuntimeHandle {
                 .await
                 .recent_episode_candidates,
             Some(self),
+            &self.inner.input_evidence_budget,
         )
         .await?;
         super::episode_recovery::resolve_episode_recovery(
@@ -2368,3 +2617,7 @@ mod tests;
 #[cfg(test)]
 #[path = "state_mutation/context_preparation_tests.rs"]
 mod context_preparation_tests;
+
+#[cfg(test)]
+#[path = "state_mutation/dispatch_memory_auto_tests.rs"]
+mod dispatch_memory_auto_tests;

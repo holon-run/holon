@@ -68,6 +68,7 @@ impl Fixture {
 
     fn request(&self) -> InputEvidenceLoadRequest {
         InputEvidenceLoadRequest {
+            selected_completion_brief_ids: Default::default(),
             interrupted_sources: Default::default(),
             windows: Vec::new(),
             mandatory_roots: Default::default(),

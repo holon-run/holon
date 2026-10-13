@@ -1,6 +1,7 @@
 //! Host admission charges and observed input/evidence allocations.
 //! Pending tickets retain SQL responsibility; memory guards only observe views.
 use super::resident_input_evidence::{InputEvidenceScope, QualifiedInputEvidence};
+use super::resident_work::QualifiedWorkRecord;
 use crate::config::StateMemoryLimits;
 use serde::Serialize;
 use std::{
@@ -160,12 +161,14 @@ pub(crate) struct InputEvidenceBudgetReport {
 enum AllocationWeak {
     Evidence(Weak<QualifiedInputEvidence>),
     Queue(Weak<crate::types::MessageEnvelope>),
+    Work(Weak<QualifiedWorkRecord>),
 }
 impl AllocationWeak {
     fn strong_count(&self) -> usize {
         match self {
             Self::Evidence(record) => record.strong_count(),
             Self::Queue(message) => message.strong_count(),
+            Self::Work(record) => record.strong_count(),
         }
     }
 }
@@ -809,6 +812,71 @@ impl InputEvidenceBudgetLedger {
                 .entry(*id)
                 .or_insert_with(|| AllocationEntry {
                     weak: AllocationWeak::Queue(Arc::downgrade(message)),
+                    scope: sk.clone(),
+                    bytes: *bytes,
+                    memberships: BTreeMap::new(),
+                });
+            entry.memberships.insert(nonce, category);
+        }
+        state.views.insert(
+            nonce,
+            ViewEntry {
+                scope: sk,
+                category,
+                allocations: unique.into_keys().collect(),
+                owned: OwnedBytesEstimate::default(),
+            },
+        );
+        Ok(Arc::new(BudgetViewGuard {
+            ledger: self.inner.clone(),
+            nonce,
+        }))
+    }
+    /// Work views observe the same immutable record allocations as publication
+    /// and capture. The ledger holds no strong domain/body reference.
+    pub(crate) fn register_work_view<'a>(
+        &self,
+        scope: &InputEvidenceScope,
+        category: InputMemoryCategory,
+        records: impl IntoIterator<Item = &'a Arc<QualifiedWorkRecord>>,
+    ) -> Result<Arc<BudgetViewGuard>> {
+        valid_scope(scope)?;
+        let sk = ScopeKey::from(scope);
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| InputEvidenceBudgetError::Poisoned)?;
+        state.prune_dead();
+        let mut unique = BTreeMap::new();
+        for record in records {
+            if &record.scope != scope || record.record.agent_id() != scope.agent_id {
+                return Err(InputEvidenceBudgetError::InvalidInput(
+                    "Work scope differs from view",
+                ));
+            }
+            let id = Arc::as_ptr(record) as usize;
+            let bytes = u64::try_from(record.resident_bytes)
+                .map_err(|_| InputEvidenceBudgetError::CounterOverflow)?;
+            if let Some(entry) = state.allocations.get(&id) {
+                if entry.scope != sk
+                    || !matches!(&entry.weak, AllocationWeak::Work(_))
+                    || entry.bytes != bytes
+                {
+                    return Err(InputEvidenceBudgetError::InvalidInput(
+                        "Work allocation scope/charge changed",
+                    ));
+                }
+            }
+            unique.insert(id, (record, bytes));
+        }
+        let nonce = state.nonce()?;
+        for (id, (record, bytes)) in &unique {
+            let entry = state
+                .allocations
+                .entry(*id)
+                .or_insert_with(|| AllocationEntry {
+                    weak: AllocationWeak::Work(Arc::downgrade(record)),
                     scope: sk.clone(),
                     bytes: *bytes,
                     memberships: BTreeMap::new(),

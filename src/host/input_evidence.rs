@@ -24,6 +24,7 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ExternalInputEvidenceEffects {
     pub(crate) input_delta: crate::runtime::resident_input_evidence::CommittedInputEvidenceDelta,
+    pub(crate) work_delta: Option<crate::runtime::resident_work::CommittedWorkDelta>,
     pub(crate) briefs: Vec<BriefRecord>,
     pub(crate) audit_events: Vec<AuditEvent>,
     pub(crate) notify_memory_index: bool,
@@ -34,6 +35,8 @@ impl From<ExternalInputEvidenceEffects> for PostCommitEffects {
     fn from(effects: ExternalInputEvidenceEffects) -> Self {
         Self {
             input_evidence_delta: effects.input_delta,
+            work_delta: effects.work_delta,
+            work_delta_requires_prepared_domain: true,
             briefs: effects.briefs,
             audit_events: effects.audit_events,
             notify_memory_index: effects.notify_memory_index,
@@ -48,6 +51,7 @@ struct PreparedExternalInput {
     runtime: Option<RuntimeMutationFacts>,
     episodes: Option<Arc<ResidentEpisodes>>,
     inputs: Option<Arc<ResidentInputEvidence>>,
+    work: Option<Arc<crate::runtime::resident_work::ResidentWorkDomain>>,
 }
 
 impl RuntimeHost {
@@ -95,6 +99,11 @@ impl RuntimeHost {
             );
             let episodes = reservation.prepared_episodes_for_state_only_commit()?;
             let inputs = reservation.prepared_inputs_for_state_only_commit()?;
+            let work = reservation.prepared_work_for_state_only_commit()?;
+            anyhow::ensure!(
+                work.as_ref().is_none_or(|work| work.scope() == scope),
+                "prepared external Work has a different namespace"
+            );
             anyhow::ensure!(
                 inputs
                     .as_ref()
@@ -133,6 +142,7 @@ impl RuntimeHost {
                 runtime,
                 episodes,
                 inputs,
+                work,
             });
         }
         let original_runtime = prepared
@@ -150,6 +160,17 @@ impl RuntimeHost {
             Vec::new(),
         )?
         .with_input_runtime(original_runtime)?;
+        let limits = self.inner.input_evidence_budget.limits();
+        let work_request = crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+            capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
+            record_limit: usize::try_from(limits.record_limit)?,
+            byte_limit: usize::try_from(
+                limits
+                    .history_per_agent_bytes
+                    .checked_add(limits.pending_per_agent_bytes)
+                    .context("external Work byte limit overflow")?,
+            )?,
+        };
         MutationReservation::begin_all_with_witness(
             reservations,
             witness.operation_id().to_owned(),
@@ -157,7 +178,7 @@ impl RuntimeHost {
         )?;
         let committed = self
             .runtime_db()
-            .commit_prepared_external_input_evidence(&command);
+            .commit_prepared_external_input_evidence_with_work_request(&command, &work_request);
         if matches!(&committed, Ok(InputMutationExecution::Replayed { .. })) {
             witness.mark_input_storage_replayed()?;
         }
@@ -188,6 +209,7 @@ impl RuntimeHost {
                             scope,
                             ExternalInputEvidenceEffects {
                                 input_delta: ack.input_delta,
+                                work_delta: ack.work_delta,
                                 briefs: vec![actual.brief],
                                 audit_events: if actual.event_inserted {
                                     vec![actual.event]
@@ -199,21 +221,47 @@ impl RuntimeHost {
                             },
                         )]
                     }
-                    PreparedExternalInputValue::Retention(ack) => ack
-                        .input_deltas
-                        .into_iter()
-                        .map(|(scope, input_delta)| {
-                            (
-                                scope,
-                                ExternalInputEvidenceEffects {
-                                    input_delta,
-                                    notify_memory_index: true,
-                                    notify_scheduler: true,
-                                    ..Default::default()
-                                },
-                            )
-                        })
-                        .collect(),
+                    PreparedExternalInputValue::Retention(ack) => {
+                        let mut effects = std::collections::BTreeMap::new();
+                        for (scope, input_delta) in ack.input_deltas {
+                            let key = (scope.agent_id.clone(), scope.identity_incarnation);
+                            anyhow::ensure!(
+                                effects
+                                    .insert(
+                                        key,
+                                        (
+                                            scope,
+                                            ExternalInputEvidenceEffects {
+                                                input_delta,
+                                                notify_memory_index: true,
+                                                notify_scheduler: true,
+                                                ..Default::default()
+                                            }
+                                        )
+                                    )
+                                    .is_none(),
+                                "retention ACK repeated its Input scope"
+                            );
+                        }
+                        for (scope, work_delta) in ack.work_deltas {
+                            let key = (scope.agent_id.clone(), scope.identity_incarnation);
+                            let (_, effect) = effects.entry(key).or_insert_with(|| {
+                                (
+                                    scope,
+                                    ExternalInputEvidenceEffects {
+                                        notify_memory_index: true,
+                                        notify_scheduler: true,
+                                        ..Default::default()
+                                    },
+                                )
+                            });
+                            anyhow::ensure!(
+                                effect.work_delta.replace(work_delta).is_none(),
+                                "retention ACK repeated its Work scope"
+                            );
+                        }
+                        effects.into_values().collect()
+                    }
                 };
                 (receipt.outcome.result, effects)
             }
@@ -258,7 +306,7 @@ impl RuntimeHost {
                 known.push(KnownCommit::Metadata(Arc::new(prepared.identity)));
                 continue;
             };
-            let inputs = if let Some(inputs) = prepared.inputs {
+            let mut inputs = if let Some(inputs) = prepared.inputs {
                 match inputs.with_committed(
                     &effects.input_evidence_delta,
                     inputs.mandatory_roots().clone(),
@@ -272,20 +320,35 @@ impl RuntimeHost {
             } else {
                 None
             };
+            let mut work = match (prepared.work, effects.work_delta.as_ref()) {
+                (Some(work), Some(delta)) => match work.with_committed(delta) {
+                    Ok(work) => Some(Arc::new(work)),
+                    Err(error) => {
+                        preparation_error = Some(error);
+                        None
+                    }
+                },
+                (work, None) => work,
+                (None, Some(_)) => None,
+            };
             // A failed projection preparation stays explicitly unprepared;
             // it cannot erase our knowledge that SQL returned an exact ACK.
-            let runtime = match runtime
-                .clone()
-                .with_external_input_commit(inputs.clone(), effects.clone())
-            {
+            let runtime = match runtime.clone().with_external_input_commit(
+                inputs.clone(),
+                work.clone(),
+                effects.clone(),
+            ) {
                 Ok(runtime) => runtime,
                 Err(error) => {
                     preparation_error = Some(error);
-                    runtime.with_external_input_commit(None, effects)?
+                    inputs = None;
+                    work = None;
+                    runtime.with_external_input_commit(None, None, effects)?
                 }
             };
             let runtime = Arc::new(runtime);
             known.push(KnownCommit::State {
+                work,
                 state: runtime.state.clone(),
                 episodes: prepared.episodes,
                 input_evidence: inputs,
@@ -490,6 +553,115 @@ mod tests {
             1
         );
         host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn external_result_known_ack_preserves_work_until_original_publication_recovers() {
+        use crate::runtime::resident_work::WorkCaptureRequest;
+        let (_home, host, agent_id) = cold_host();
+        let runtime = Box::pin(host.default_runtime()).await.unwrap();
+        let work = Box::pin(runtime.create_work_item(
+            "external Result owner".into(),
+            None,
+            None,
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+        let identity = host.agent_identity_record(&agent_id).unwrap().unwrap();
+        let owner = host
+            .inner
+            .mutation_owners
+            .current_owner(&agent_id, identity.incarnation)
+            .unwrap();
+        let before = owner.capture().unwrap().unwrap();
+        let mut brief = BriefRecord::new(
+            &agent_id,
+            BriefKind::Result,
+            "external actual result",
+            None,
+            None,
+        );
+        brief.work_item_id = Some(work.id.clone());
+        // Keep the actual reserved group until its Known facts are inspected;
+        // the loaded run loop may otherwise reconcile immediately after return.
+        let mut reservations = Box::pin(host.reserve_agent_mutations(&[agent_id.clone()]))
+            .await
+            .unwrap();
+        let event = crate::types::brief_created_event_for(&brief).unwrap();
+        let scope = InputEvidenceScope {
+            agent_id: agent_id.clone(),
+            identity_incarnation: identity.incarnation,
+        };
+        let command = PreparedExternalInputEvidence::brief_created(
+            runtime
+                .storage()
+                .prepare_input_evidence(
+                    scope,
+                    event.id.clone(),
+                    brief.created_at,
+                    InputEvidenceWrite::BriefCreated {
+                        brief: brief.clone(),
+                        event,
+                    },
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        host.fail_next_external_mutation_publication();
+        let publication_error =
+            Box::pin(host.commit_external_input_evidence(&mut reservations, command))
+                .await
+                .unwrap_err();
+        assert!(
+            owner.capture().is_err(),
+            "external Result error before Known publication: {publication_error:#}"
+        );
+        {
+            let recovery = reservations[0].recovery().unwrap().unwrap();
+            let KnownCommit::State {
+                work: Some(known), ..
+            } = recovery.known.unwrap()
+            else {
+                panic!("known external Result ACK omitted Work");
+            };
+            let captured = known.capture(&WorkCaptureRequest::current()).unwrap();
+            assert_eq!(
+                captured.latest_results[&work.id].as_ref().unwrap().brief_id,
+                brief.id
+            );
+        }
+        Box::pin(host.reconcile_external_mutations(&mut reservations))
+            .await
+            .unwrap();
+        drop(reservations);
+        let after = owner.capture().unwrap().unwrap();
+        let captured = after
+            .work
+            .as_ref()
+            .unwrap()
+            .capture(&WorkCaptureRequest::current())
+            .unwrap();
+        assert_eq!(
+            captured.latest_results[&work.id].as_ref().unwrap().brief_id,
+            brief.id
+        );
+        assert!(before
+            .work
+            .as_ref()
+            .unwrap()
+            .capture(&WorkCaptureRequest::current())
+            .unwrap()
+            .latest_results[&work.id]
+            .is_none());
+        Box::pin(host.persist_cold_brief_evidence(brief))
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime.storage().latest_work_item(&work.id).unwrap(),
+            Some(work)
+        );
+        Box::pin(host.shutdown()).await.unwrap();
     }
 
     #[tokio::test]

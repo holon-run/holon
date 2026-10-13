@@ -29,6 +29,7 @@ pub(crate) struct PreparedInputRead {
     pub episodes: ResidentEpisodes,
     pub inputs: ResidentInputEvidence,
     pub pending: PreparedPendingQueue,
+    pub work: Option<std::sync::Arc<crate::runtime::resident_work::ResidentWorkDomain>>,
 }
 
 /// The caller holds the original Ready owner reservation throughout this
@@ -49,29 +50,11 @@ pub(crate) fn prepare_input_domains_tx(
         recent_episode_limit,
         budget,
         false,
+        None,
+        false,
     )
 }
 
-/// Recovery requires an original positive receipt and all original owner permits.
-/// Normal bootstrap/context preparation continues to require an Active identity.
-pub(crate) fn prepare_original_input_recovery_domains_tx(
-    tx: &Transaction<'_>,
-    scope: &InputEvidenceScope,
-    published_state: &AgentState,
-    request: &InputEvidenceLoadRequest,
-    recent_episode_limit: usize,
-    budget: &InputEvidenceBudgetLedger,
-) -> Result<PreparedInputRead> {
-    prepare_input_domains_inner_tx(
-        tx,
-        scope,
-        published_state,
-        request,
-        recent_episode_limit,
-        budget,
-        true,
-    )
-}
 /// Explicit preparation for an already admitted cleanup, after owner identity
 /// validation. Deleting reads only this scope's fixed/current qualification.
 pub(crate) fn prepare_existing_admission_cleanup_domains_tx(
@@ -90,6 +73,56 @@ pub(crate) fn prepare_existing_admission_cleanup_domains_tx(
         recent_episode_limit,
         budget,
         true,
+        None,
+        false,
+    )
+}
+
+/// Original positive receipt recovery installs current Work and Input from
+/// one view. The receipt supplies finite selectors, never old body authority.
+pub(crate) fn prepare_original_input_recovery_with_work_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    published_state: &AgentState,
+    request: &InputEvidenceLoadRequest,
+    recent_episode_limit: usize,
+    budget: &InputEvidenceBudgetLedger,
+    work_request: &crate::runtime::resident_work::WorkCaptureRequest,
+) -> Result<PreparedInputRead> {
+    prepare_input_domains_inner_tx(
+        tx,
+        scope,
+        published_state,
+        request,
+        recent_episode_limit,
+        budget,
+        true,
+        Some(work_request),
+        false,
+    )
+}
+
+/// Control receipt recovery restores historical target bodies in Work, while
+/// only current live owning roots become mandatory Input dependencies.
+pub(crate) fn prepare_control_recovery_domains_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    published_state: &AgentState,
+    request: &InputEvidenceLoadRequest,
+    recent_episode_limit: usize,
+    budget: &InputEvidenceBudgetLedger,
+    work_request: &crate::runtime::resident_work::WorkCaptureRequest,
+) -> Result<PreparedInputRead> {
+    prepare_input_domains_inner_tx(
+        tx,
+        scope,
+        published_state,
+        request,
+        recent_episode_limit,
+        budget,
+        true,
+        Some(work_request),
+        true,
     )
 }
 
@@ -101,6 +134,8 @@ fn prepare_input_domains_inner_tx(
     recent_episode_limit: usize,
     budget: &InputEvidenceBudgetLedger,
     original_recovery: bool,
+    work_request: Option<&crate::runtime::resident_work::WorkCaptureRequest>,
+    current_work_roots_only: bool,
 ) -> Result<PreparedInputRead> {
     let facts = ContextDurableRead::new(tx, &scope.agent_id).scope_facts()?;
     if !facts.identity.as_ref().is_some_and(|identity| {
@@ -153,6 +188,69 @@ fn prepare_input_domains_inner_tx(
         // Snapshot preparation validates asserted recovery sources on its
         // same read view, including focused canonical absence observations.
     }
+    let work = if let Some(capture) = work_request {
+        let mut capture = capture.clone();
+        for message in &pending.messages {
+            capture
+                .required_trigger_message_ids
+                .insert(message.id.clone());
+            if message.kind == crate::types::MessageKind::TaskResult {
+                if let crate::types::MessageOrigin::Task { task_id } = &message.origin {
+                    ensure!(
+                        message.task_id.as_deref() == Some(task_id.as_str()),
+                        "pending TaskResult source differs"
+                    );
+                    capture.required_task_ids.insert(task_id.clone());
+                }
+            }
+        }
+        capture
+            .latest_result_work_ids
+            .extend(published_state.current_work_item_id.clone());
+        let selected = capture.latest_result_work_ids.clone();
+        let prepared = super::work_snapshot::prepare_original_work_recovery_snapshot_tx(
+            tx,
+            scope,
+            &super::work_snapshot::WorkDomainLoadRequest {
+                capture,
+                record_limit: request.record_limit,
+                byte_limit: request.byte_limit,
+            },
+        )?
+        .require_current()?;
+        ensure!(
+            prepared.facts.identity == facts.identity
+                && prepared.facts.state == facts.state
+                && prepared.facts.control_revision == facts.control_revision,
+            "Work recovery canonical read view differs"
+        );
+        if current_work_roots_only {
+            request.mandatory_roots.extend(
+                super::work_snapshot::current_recovery_owning_input_roots(
+                    &prepared.resident,
+                    published_state,
+                )?,
+            );
+        } else {
+            request.mandatory_roots.extend(prepared.owning_input_roots);
+        }
+        request
+            .selected_completion_brief_ids
+            .extend(selected.iter().filter_map(|id| {
+                prepared
+                    .resident
+                    .coverage()
+                    .latest_results
+                    .get(id)
+                    .and_then(Option::as_ref)
+                    .map(|head| head.brief_id.clone())
+            }));
+        Some(std::sync::Arc::new(
+            prepared.resident.with_budget(budget.clone())?,
+        ))
+    } else {
+        None
+    };
     let prepared = if original_recovery {
         super::input_evidence_snapshot::prepare_original_input_recovery_snapshot_tx(
             tx, scope, &request,
@@ -197,5 +295,6 @@ fn prepare_input_domains_inner_tx(
         )?,
         inputs: input.resident,
         pending,
+        work,
     })
 }

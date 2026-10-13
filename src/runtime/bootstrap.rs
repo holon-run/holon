@@ -729,6 +729,7 @@ impl RuntimeHandle {
             &runtime_db,
             std::slice::from_mut(&mut bootstrap_reservation),
             context_config.recent_episode_candidates,
+            &input_evidence_budget,
         )?;
         super::episode_recovery::resolve_episode_recovery(
             &runtime_db,
@@ -1999,16 +2000,13 @@ fn prepare_runtime_storage_owned(
         state.id.clone(),
         runtime_db.tasks().latest_for_agent(&state.id, usize::MAX)?,
         runtime_db
-            .work_items()
-            .latest_for_agent(&state.id, usize::MAX)?,
-        runtime_db
             .timers()
             .recent_for_agent(&state.id, usize::MAX)?,
         runtime_db.external_triggers().latest_for_agent(&state.id)?,
     );
 
     let recent_episode_candidates = context_config.recent_episode_candidates;
-    let (episodes, inputs, pending) = runtime_db.transaction(|tx| {
+    let (episodes, inputs, work, pending) = runtime_db.transaction(|tx| {
         let current = crate::runtime_db::episode_snapshot::load_episode_memory_snapshot_in(
             tx,
             &crate::runtime_db::episode_snapshot::EpisodeMemoryLoadScope {
@@ -2063,6 +2061,8 @@ fn prepare_runtime_storage_owned(
                     .ok_or_else(|| anyhow!("bootstrap input byte limit overflow"))?,
             )?,
         )?;
+        // Ordinary loaded closure readers do not expand windows on a miss.
+        super::scheduler::include_scheduler_brief_window(&mut request.windows);
         for message in &pending.messages {
             use super::resident_input_evidence::{
                 InputEvidenceFamily as Family, InputEvidenceKey as Key,
@@ -2073,6 +2073,39 @@ fn prepare_runtime_storage_owned(
             // Snapshot preparation validates asserted recovery sources on its
             // same read view, including focused canonical absence observations.
         }
+        let mut work_request = super::resident_work::WorkCaptureRequest::current();
+        for message in &pending.messages {
+            work_request
+                .required_trigger_message_ids
+                .insert(message.id.clone());
+            if message.kind == crate::types::MessageKind::TaskResult {
+                if let crate::types::MessageOrigin::Task { task_id } = &message.origin {
+                    anyhow::ensure!(
+                        message.task_id.as_deref() == Some(task_id.as_str()),
+                        "bootstrap TaskResult source differs"
+                    );
+                    work_request.required_task_ids.insert(task_id.clone());
+                }
+            }
+        }
+        let work = crate::runtime_db::work_snapshot::prepare_work_domain_snapshot_tx(
+            tx,
+            &input_scope,
+            &crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+                capture: work_request,
+                record_limit: request.record_limit,
+                byte_limit: request.byte_limit,
+            },
+        )?
+        .require_current()?;
+        anyhow::ensure!(
+            work.facts.identity.as_ref() == Some(&current.identity)
+                && work.facts.state == current.state
+                && work.facts.control_revision == current.control_revision,
+            "bootstrap Work domain differs from its canonical State ACK"
+        );
+        request.mandatory_roots.extend(work.owning_input_roots);
+        let work = Arc::new(work.resident.with_budget(input_budget.clone())?);
         let crate::runtime_db::input_evidence_snapshot::InputEvidenceBootstrapSnapshot::Current(
             inputs,
         ) = crate::runtime_db::input_evidence_snapshot::prepare_input_evidence_snapshot_tx(
@@ -2100,7 +2133,7 @@ fn prepare_runtime_storage_owned(
         )?);
         let inputs = Arc::new(inputs.resident.with_budget(input_budget.clone())?);
         input_budget.check_history_budget()?;
-        Ok((episodes, inputs, pending))
+        Ok((episodes, inputs, work, pending))
     })?;
     let mut queue = RuntimeQueue::default();
     for message in pending.messages {
@@ -2112,10 +2145,11 @@ fn prepare_runtime_storage_owned(
         // not an in-place rewrite of that already acknowledged commit.
         reservation.publish(Arc::new(state.clone()))?;
         reservation.begin(crate::ids::audit_event_id())?;
-        reservation.committed_prepared_with_inputs(
+        reservation.committed_prepared_with_domains(
             Arc::new(state.clone()),
             Some(episodes),
             Some(inputs),
+            Some(work),
         )?;
     }
 

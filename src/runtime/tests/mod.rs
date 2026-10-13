@@ -14,3 +14,5 @@ mod wake_hints;
 mod work_items;
 mod workspace;
 mod workspace_control;
+
+mod prestart_terminal;

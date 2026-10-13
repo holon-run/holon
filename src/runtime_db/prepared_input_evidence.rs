@@ -259,9 +259,25 @@ pub(crate) enum PreparedEvidenceValue {
 }
 
 impl EvidenceRepository<'_> {
+    #[cfg(test)]
     pub(crate) fn commit_prepared_input_evidence(
         &self,
         prepared: &PreparedInputEvidence,
+    ) -> Result<InputMutationExecution<InputEvidenceCommit<PreparedEvidenceValue>>> {
+        self.commit_prepared_input_evidence_with_work_request(
+            prepared,
+            &super::work_snapshot::WorkDomainLoadRequest {
+                capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
+                record_limit: 65_536,
+                byte_limit: 64 * 1024 * 1024,
+            },
+        )
+    }
+
+    pub(crate) fn commit_prepared_input_evidence_with_work_request(
+        &self,
+        prepared: &PreparedInputEvidence,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
     ) -> Result<InputMutationExecution<InputEvidenceCommit<PreparedEvidenceValue>>> {
         let scope = &prepared.primary_scope;
         let (agent, id, family, result_family) = prepared.command.identity();
@@ -283,6 +299,21 @@ impl EvidenceRepository<'_> {
             if let Some(receipt) = lookup_input_mutation_receipt_tx(tx, &prepared.descriptor)? {
                 return Ok(InputMutationExecution::Replayed { receipt });
             }
+            let completion =
+                if matches!(family, Family::Brief | Family::Transcript | Family::Message) {
+                    let result = match prepared.command.as_ref() {
+                        EvidenceCommand::BriefCreated { record, .. } => Some(record),
+                        _ => None,
+                    };
+                    Some(super::work_snapshot::prepare_work_completion_write_tx(
+                        tx,
+                        scope,
+                        result,
+                        work_request,
+                    )?)
+                } else {
+                    None
+                };
             validate_existing_input_evidence_tx(tx, scope, &InputEvidenceKey::new(family, id))?;
             let before = canonical_marker_tx(tx, agent, id, family)?;
             let before_index = index_frontier_tx(tx, agent)?;
@@ -377,7 +408,27 @@ impl EvidenceRepository<'_> {
                 };
             // Original acknowledgement closes qualification and actual Message
             // count before the receipt. These are never reconstructed late.
-            let value = acknowledge_input_evidence_tx(tx, scope, record, &[fact])?;
+            let mut value = acknowledge_input_evidence_tx(tx, scope, record, &[fact])?;
+            let mut result_work_ids = std::collections::BTreeSet::new();
+            if let Some(completion) = completion {
+                let mut brief_ids = std::collections::BTreeSet::new();
+                if let PreparedEvidenceValue::BriefCreated(actual) = &value.record {
+                    if actual.brief.kind == crate::types::BriefKind::Result
+                        && !actual.brief.text.is_empty()
+                    {
+                        if let Some(work) = &actual.brief.work_item_id {
+                            result_work_ids.insert(work.clone());
+                            brief_ids.insert(actual.brief.id.clone());
+                        }
+                    }
+                }
+                value.work_delta = super::work_snapshot::finish_work_completion_write_tx(
+                    tx,
+                    completion,
+                    &brief_ids,
+                    work_request,
+                )?;
+            }
             let applied = value.agent_state.is_some()
                 || before != canonical_marker_tx(tx, agent, id, family)?
                 || before_index != index_frontier_tx(tx, agent)?
@@ -404,7 +455,14 @@ impl EvidenceRepository<'_> {
                     .map(|reserved_scope| {
                         let primary = reserved_scope == scope;
                         InputMutationScopeOutcome {
-                            install_keys: Default::default(),
+                            install_keys: super::input_recovery_install::InputMutationInstallKeys {
+                                work_items: if primary {
+                                    result_work_ids.clone()
+                                } else {
+                                    Default::default()
+                                },
+                                ..Default::default()
+                            },
                             scope: reserved_scope.clone(),
                             audit_events: if primary {
                                 audit_events.clone()
@@ -522,13 +580,32 @@ pub(crate) enum PreparedExternalInputValue {
     Retention(ScopedRuntimeDbRetentionCommit),
 }
 impl RuntimeDb {
+    #[cfg(test)]
     pub(crate) fn commit_prepared_external_input_evidence(
         &self,
         prepared: &PreparedExternalInputEvidence,
     ) -> Result<InputMutationExecution<PreparedExternalInputValue>> {
+        self.commit_prepared_external_input_evidence_with_work_request(
+            prepared,
+            &super::work_snapshot::WorkDomainLoadRequest {
+                capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
+                record_limit: 65_536,
+                byte_limit: 64 * 1024 * 1024,
+            },
+        )
+    }
+
+    pub(crate) fn commit_prepared_external_input_evidence_with_work_request(
+        &self,
+        prepared: &PreparedExternalInputEvidence,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+    ) -> Result<InputMutationExecution<PreparedExternalInputValue>> {
         match prepared {
             PreparedExternalInputEvidence::BriefCreated(prepared) => Ok(
-                match self.evidence().commit_prepared_input_evidence(prepared)? {
+                match self
+                    .evidence()
+                    .commit_prepared_input_evidence_with_work_request(prepared, work_request)?
+                {
                     InputMutationExecution::Committed { value, receipt } => {
                         InputMutationExecution::Committed {
                             value: PreparedExternalInputValue::BriefCreated(value),
@@ -553,12 +630,35 @@ impl RuntimeDb {
                     }
                     // Recheck actual reservation inventory only for a new command;
                     // previously pruned rows cannot invalidate exact original replay.
-                    let value = self.commit_retention_pass_in_scopes_tx(
+                    let completion = prepared
+                        .descriptor
+                        .scopes()
+                        .iter()
+                        .map(|scope| {
+                            super::work_snapshot::prepare_work_completion_write_tx(
+                                tx,
+                                scope,
+                                None,
+                                work_request,
+                            )
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    let mut value = self.commit_retention_pass_in_scopes_tx(
                         tx,
                         &prepared.policy,
                         prepared.now,
                         prepared.descriptor.scopes(),
                     )?;
+                    for (scope, completion) in prepared.descriptor.scopes().iter().zip(completion) {
+                        if let Some(delta) = super::work_snapshot::finish_work_completion_write_tx(
+                            tx,
+                            completion,
+                            &Default::default(),
+                            work_request,
+                        )? {
+                            value.work_deltas.push((scope.clone(), delta));
+                        }
+                    }
                     let scopes = prepared
                         .descriptor
                         .scopes()

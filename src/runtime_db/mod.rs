@@ -22,6 +22,7 @@ pub(crate) mod context_inputs;
 pub(crate) mod control_transition;
 pub mod conversation;
 pub mod destructive_operations;
+pub(crate) mod dispatch_memory;
 pub(crate) mod episode_memory;
 pub(crate) mod episode_snapshot;
 pub mod evidence;
@@ -39,6 +40,7 @@ pub(crate) mod reclamation_reminders;
 pub mod repositories;
 pub mod retention;
 pub mod retired_scheduler_cleanup;
+pub(crate) mod startup_ended_memory;
 pub mod storage_domain;
 pub(crate) mod task_result_settlement;
 pub(crate) mod transitions;
@@ -48,6 +50,7 @@ pub use input_evidence_snapshot::maintenance::{
 };
 pub mod types;
 pub mod unread;
+pub(crate) mod work_snapshot;
 pub mod write_queue;
 
 pub mod observer_sync;

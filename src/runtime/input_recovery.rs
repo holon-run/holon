@@ -16,7 +16,7 @@ use crate::{
     runtime_db::{
         context_inputs::ContextDurableRead,
         input_mutation_receipts::{with_fresh_input_mutation_resolution, InputMutationResolution},
-        input_preparation::prepare_original_input_recovery_domains_tx,
+        input_preparation::prepare_original_input_recovery_with_work_tx,
         RuntimeDb,
     },
     types::AgentRegistryStatus,
@@ -124,14 +124,47 @@ pub(crate) fn resolve_input_recovery(
                                 .context("input recovery byte limit overflow")?,
                         )?,
                     )?;
-                    let current = prepare_original_input_recovery_domains_tx(
+                    let mut work_request = super::resident_work::WorkCaptureRequest::current();
+                    use super::resident_work::{WorkFamily, WorkKey};
+                    work_request.mandatory_roots.extend(
+                        outcome
+                            .install_keys
+                            .work_items
+                            .iter()
+                            .map(|id| WorkKey::new(WorkFamily::Work, id)),
+                    );
+                    work_request.mandatory_roots.extend(
+                        outcome
+                            .install_keys
+                            .wait_conditions
+                            .iter()
+                            .map(|id| WorkKey::new(WorkFamily::Wait, id)),
+                    );
+                    work_request.mandatory_roots.extend(
+                        outcome
+                            .install_keys
+                            .continuations
+                            .iter()
+                            .map(|id| WorkKey::new(WorkFamily::Frame, id)),
+                    );
+                    work_request
+                        .latest_result_work_ids
+                        .extend(outcome.install_keys.work_items.iter().cloned());
+                    work_request
+                        .required_task_ids
+                        .extend(outcome.install_keys.tasks.iter().cloned());
+                    let current = prepare_original_input_recovery_with_work_tx(
                         tx,
                         scope,
                         state,
                         &request,
                         context.recent_episode_candidates,
                         budget,
+                        &work_request,
                     )?;
+                    let work = current
+                        .work
+                        .context("input recovery omitted current Work domain")?;
                     let charges = current
                         .pending
                         .messages
@@ -158,6 +191,7 @@ pub(crate) fn resolve_input_recovery(
                         state.clone(),
                         episodes.clone(),
                         inputs.clone(),
+                        work.clone(),
                         current.pending.messages,
                         budget,
                         witness.input_runtime(&scope.agent_id).map(Arc::as_ref),
@@ -171,6 +205,7 @@ pub(crate) fn resolve_input_recovery(
                     }
                     let runtime = Arc::new(runtime);
                     known.push(KnownCommit::State {
+                        work: Some(work),
                         state,
                         episodes: Some(episodes),
                         input_evidence: Some(inputs),

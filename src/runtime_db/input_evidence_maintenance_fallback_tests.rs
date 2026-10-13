@@ -300,6 +300,7 @@ fn fixed_unbound_fallback_preserves_seed_and_qualifies_exact_derived_records_aft
         );
         upsert_agent_identity_tx(tx, &identity)?;
         let request = InputEvidenceLoadRequest {
+            selected_completion_brief_ids: Default::default(),
             interrupted_sources: Default::default(),
             windows: vec![],
             mandatory_roots: [
@@ -415,6 +416,7 @@ fn unchanged_legacy_attempt_bytes(typed_interrupt: bool) -> Result<()> {
     let db = RuntimeDb::open_and_migrate(&path, directory.path().join("runtime.lock"))?;
     let key = Key::new(Family::Attempt, "attempt-b-settled");
     let request = InputEvidenceLoadRequest {
+        selected_completion_brief_ids: Default::default(),
         interrupted_sources: Default::default(),
         windows: vec![],
         mandatory_roots: [key.clone()].into_iter().collect(),

@@ -601,6 +601,117 @@ requests preserve their existing attempt/receipt and recovery contracts. An
 unknown non-idempotent external result must not be replayed merely because a
 snapshot is being reconstructed. This RFC adds no blanket exactly-once claim.
 
+### Work, wait, and continuation coverage
+
+The Work domain shares qualified WorkItems, waits, and continuation frames with
+State and input evidence under one publication token. State retains focus and
+the execution protocol retains eligibility. This domain derives their views;
+it does not add a second runnable, focus, or lifecycle authority.
+
+Live coverage includes every Open or Completing WorkItem, Active or Triggered
+wait, active continuation, and the WorkItems at its endpoints. State bindings,
+settlement obligations, and exact resolved-wait generations add mandatory
+owners. The non-open display window is independently bounded to 128 records in
+canonical order. That window cannot truncate live obligations. The existing
+work-queue projection still selects Active waits belonging to Open WorkItems;
+resident coverage and a particular consumer's selection are distinct.
+
+A fixed upgrade or explicit import checkpoint freezes this domain's members,
+canonical digests, and latest completion heads. Its optional historical owners
+do not expand Episode live-owner membership. First import can extend only the
+original import actor's mandatory closure and actual received or changed
+records. A later body, duplicate append, or ordinary acquisition cannot grant
+old records new scope. Fresh durable identities start with empty coverage.
+
+The latest completion head follows the canonical nonempty Result Brief query,
+including its deterministic timestamp and ID ordering. An explicit empty head
+is a proved observation; an absent index entry requires preparation. Head
+source refs follow the actual content-source Transcript and, for an incoming
+Transcript, its related Message. A missing optional completion source can
+retain the existing empty presentation only with an exact same-view proof
+bound to that head version and that source edge. It cannot exempt the same
+record when another owning edge or mandatory root requires it. Foreign,
+unqualified, or pruned records are not global absence. Related writes
+invalidate or refresh this observation in their original transaction.
+
+Canonical writers return finite actual write sets, including older waits
+implicitly cancelled by registration. Several updates to the same key return
+only its final transaction state. Complete continuation-set OCC remains in
+force. Qualification and dependent input facts are registered after business
+writes and final State/count updates, before the original whole-command
+receipt. Queue, Control, TaskResult, Timer, startup, and existing deletion or
+repair transactions obey the same boundary when they touch this domain.
+Uncertain persistence keeps the original receipt and owner gate; positive
+recovery installs current coherent domains while returning the original
+command outcome.
+
+### Dispatch memory and compound Work commands
+
+A prepared wait or completion that ends an actual dispatch commits its business
+facts and the dispatch memory phase in the original Queue transaction. The
+whole Queue receipt is checked before new business OCC. Memory validation
+binds the original pre-State, actual Turn, source, and builder once. After
+business writes, the memory plan is applied to the actual final State by
+replacing only its working-memory fields. It cannot overwrite final focus,
+control, counts, usage, workspace, or execution bindings. No later State write
+may invalidate the memory receipt's recorded revision. Episode, audit, index,
+memory-phase receipt, and whole-command receipt commit or roll back together.
+An isolated memory-phase receipt cannot acknowledge the enclosing command.
+
+Post-dispatch idle or sleep projection retains the original run binding and
+cancellation owner until its Queue terminal and memory transaction is
+acknowledged. A posture change alone does not prove producer exit. The
+completion epilogue releases only that exact original run; if runtime admission
+is closing, it then exits before starting further scheduling or planning.
+
+A detached Work completion during a running dispatch records a focused durable
+memory obligation in its original transaction. The first obligation freezes
+that dispatch's prior closure, memory baseline, source, and operation values;
+subsequent commands deduplicate and append their refs without replacing the
+baseline. Normal dispatch finalization derives the final committed Work view,
+applies the existing memory planner once, and marks the obligation settled in
+the same transaction as the memory receipt. It does not finalize a new Episode
+for each intermediate tool call.
+
+Both the next-dispatch claim and actual Turn creation reject an unresolved
+obligation for the preceding dispatch. Existing terminal settlement and
+preactivation recovery can settle it after proving its original producer
+ended, without a provider call or a new background actor. A lease or cancelled
+handle does not prove physical exit. If State or builder advanced beyond the
+frozen fence, recovery retains a typed repair gate rather than overwriting
+newer memory. An already committed memory receipt may settle the obligation
+without rerunning its plan.
+
+A direct or Control-driven Work change with no actual dispatch keeps the last
+canonical working-memory checkpoint. Current context derives the new Work
+facts from the published domain. It creates no artificial Turn, Episode
+boundary, or second persistent memory baseline. Existing-admission cleanup
+retains its exact incarnation and lifecycle proof; it does not authorize new
+work or installation into a successor identity.
+
+Automatic memory decoration preserves the original typed command descriptor,
+complete owner group, and frozen memory intent. A retry restores that exact
+decoration before checking the whole-command receipt; a command originally
+committed without a dispatch remains undecorated after a later Turn starts.
+Reusing its nonce with changed business input is a conflict. Replayed result
+metadata does not authorize repeating effects or publishing the old State.
+
+A stopped dispatch may finish memory only after its original processing lease
+has physically completed and the same transaction validates its original Stop,
+terminal Turn, source sequence, and Start receipt. This finishes memory without
+rewriting the terminal Turn or interrupting tools again. If its identity has
+retired, the original lease instead records an immutable, bounded handoff of
+these addresses before releasing the physical cancellation obligation. The
+handoff neither completes the memory phase nor writes a successor State.
+
+Preactivation recovery uses a revocable exclusive startup capability together
+with canonical interruption or Stop evidence. Interruption, posture clearing,
+and memory completion retain their separate acknowledged transactions and exact
+recovery gates. Completing memory under this capability does not prove an
+orphan OS process exited. Proof selection, decoded records, and planner output
+share the preparation budget; persisted addresses do not grant authority to
+recreate a process capability.
+
 ### Durability level
 
 Commit means a successful database transaction under the configured durability
@@ -813,6 +924,24 @@ publication. Boundary detection remains deterministic and finalization retries
 preserve the original operation and episode identities. Finalized content is
 immutable; a semantic correction requires an explicit successor operation
 rather than overwriting evidence that an earlier snapshot referenced.
+
+The original StartedTurn transaction freezes the actual dispatch identity,
+source binding, prior closure, and working-memory baseline. An unfinished start
+is a durable memory obligation even before the first detached Work command.
+Detached commands append their original command identities and actual source
+references in their own whole transactions; they preserve the first baseline,
+episode identities, and clock sample. Continuation tools in the same dispatch
+may proceed, while a new dispatch cannot replace an unfinished baseline.
+
+Wait/completion settlement and normal dispatch completion consume that original
+obligation with the final business state in one transaction. The planner may
+overlay only working memory, preserving all other business changes. Its episode,
+phase receipt, obligation completion, and whole-command receipt commit together.
+A completed obligation retains compact receipt bindings instead of old bodies.
+Recovery requires the original producer to have ended and the original state
+fence still to match; otherwise it retains an explicit repair gate. Direct Stop
+keeps its cancellation authority, and same-incarnation Deleting cleanup remains
+limited to the original admitted dispatch.
 
 Addressing, provenance, atomic state changes, and projection are intrinsic to
 this design. An in-memory representation alone does not create model-authored

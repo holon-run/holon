@@ -411,9 +411,10 @@ impl RuntimeStore {
             }
         }
     }
-    pub(crate) fn commit_prepared_input_evidence(
+    pub(crate) fn commit_prepared_input_evidence_with_work_request(
         &self,
         prepared: &crate::runtime_db::prepared_input_evidence::PreparedInputEvidence,
+        work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
     ) -> Result<
         crate::runtime_db::transitions::InputMutationExecution<
             crate::runtime_db::input_evidence_writes::InputEvidenceCommit<
@@ -431,6 +432,6 @@ impl RuntimeStore {
         );
         self.runtime_db
             .evidence()
-            .commit_prepared_input_evidence(prepared)
+            .commit_prepared_input_evidence_with_work_request(prepared, work_request)
     }
 }

@@ -11,7 +11,10 @@ use crate::{
 
 use super::{
     serialize_success,
-    work_item_query::{query_context, view_for_record, WorkItemQueryContext, WorkItemView},
+    work_item_query::{
+        projection_outside_query_window, query_context_from_work_items, view_for_record,
+        WorkItemQueryContext, WorkItemView,
+    },
     BuiltinToolDefinition,
 };
 use crate::tool::helpers::{parse_tool_args, validate_non_empty};
@@ -50,23 +53,40 @@ pub(crate) async fn execute(
 ) -> Result<crate::tool::ToolResult> {
     let args: GetWorkItemArgs = parse_tool_args(NAME, input)?;
     let work_item_id = validate_non_empty(args.work_item_id, NAME, "work_item_id")?;
-    let record = runtime
-        .latest_work_item(&work_item_id)
-        .await?
-        .ok_or_else(|| {
-            crate::tool::ToolError::new(
-                "unknown_work_item",
-                format!("unknown work item {work_item_id}"),
-            )
-        })?;
-    let context = query_context(runtime).await?;
+    let snapshot = runtime.capture_work_query_snapshot().await?;
+    let context = query_context_from_work_items(&snapshot.state, &snapshot.items);
+    let projection = snapshot
+        .items
+        .iter()
+        .find(|item| item.work_item.id == work_item_id)
+        .cloned();
+    let (record, projection, _historical_budget) = match projection {
+        Some(projection) => (projection.work_item.clone(), projection, None),
+        None => {
+            // Get names an explicit historical reference. Preserve the existing
+            // by-ID query (including foreign records), without adopting it or
+            // changing the ordinary scheduling window.
+            let record = runtime
+                .latest_work_item(&work_item_id)
+                .await?
+                .ok_or_else(|| {
+                    crate::tool::ToolError::new(
+                        "unknown_work_item",
+                        format!("unknown work item {work_item_id}"),
+                    )
+                })?;
+            let projection = projection_outside_query_window(&context, &record);
+            let budget = runtime.account_historical_work_query_record(&snapshot, &record)?;
+            (record, projection, Some(budget))
+        }
+    };
     let work_item = view_for_record(
         runtime,
         &context,
         record,
         args.include_todo_list,
         None,
-        None,
+        Some(projection),
     )
     .await?;
     serialize_success(NAME, &GetWorkItemResult { context, work_item })

@@ -443,6 +443,7 @@ impl RuntimeHandle {
             let evidence = match &frozen.lease {
                 OriginalControlLease::Run(lease) => {
                     lease.join().await;
+                    self.finish_original_stopped_dispatch(lease.clone()).await?;
                     serde_json::json!({"runtime_lease_id": lease.lease_id(), "joined": true})
                 }
                 OriginalControlLease::Join(lease) => {

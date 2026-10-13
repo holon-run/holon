@@ -78,12 +78,15 @@ impl RuntimeMutation {
             Vec::new(),
         )?
         .with_input_runtime(saved)?;
+        let work_request = self.owner_work_load_request()?;
         let storage = self.runtime.inner.storage.clone();
         let mut original_result = None;
         let replay_observation = witness.clone();
         let committed = self
             .commit_transition_inner(operation, Some(witness), || {
-                match storage.commit_prepared_input_evidence(&prepared)? {
+                match storage
+                    .commit_prepared_input_evidence_with_work_request(&prepared, &work_request)?
+                {
                     InputMutationExecution::Replayed { receipt } => {
                         replay_observation.mark_input_storage_replayed()?;
                         Err(PreparedInputReplay(receipt).into())
@@ -96,6 +99,8 @@ impl RuntimeMutation {
                         let mut effects = PostCommitEffects {
                             agent_state: ack.agent_state,
                             input_evidence_delta: ack.input_delta,
+                            work_delta: ack.work_delta,
+                            work_delta_requires_prepared_domain: true,
                             notify_memory_index: true,
                             notify_scheduler: true,
                             fault,
@@ -137,7 +142,8 @@ impl RuntimeMutation {
                 self.base = self.candidate.clone();
                 let root = self.runtime.inner.mutation_owner.capture()?;
                 self.episodes = root.as_ref().and_then(|root| root.episodes.clone());
-                self.input_evidence = root.and_then(|root| root.input_evidence.clone());
+                self.input_evidence = root.as_ref().and_then(|root| root.input_evidence.clone());
+                self.work = root.and_then(|root| root.work.clone());
                 self.deferred_abort = None;
                 Ok(receipt.outcome.result)
             }

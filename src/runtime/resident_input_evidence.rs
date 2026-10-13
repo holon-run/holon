@@ -459,6 +459,9 @@ impl RecoverySourceAbsence {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct InputEvidenceCoverage {
+    pub selected_completion_brief_ids: BTreeSet<String>,
+    pub completion_source_observations:
+        Vec<super::completion_sources::CompletionOptionalSourceObservation>,
     pub recovery_source_absences: BTreeMap<String, RecoverySourceAbsence>,
     /// Qualified incoming Messages whose raw recovery lineage was observed.
     pub recovery_lineage_messages: BTreeSet<String>,
@@ -502,6 +505,11 @@ pub(crate) struct ResidentInputEvidence {
 /// This object retains selected allocations, not the domain map or published root.
 #[derive(Debug)]
 pub(crate) struct CapturedInputEvidence {
+    #[cfg(test)]
+    pub selected_completion_brief_ids: BTreeSet<String>,
+    #[cfg(test)]
+    pub completion_source_observations:
+        Vec<super::completion_sources::CompletionOptionalSourceObservation>,
     pub recovery_source_absences: BTreeMap<String, RecoverySourceAbsence>,
     pub execution: ExecutionInputCoverage,
     pub scope: InputEvidenceScope,
@@ -736,7 +744,25 @@ impl ResidentInputEvidence {
         let Some(budget) = &self.budget else {
             return Ok(());
         };
-        let current = self.record_closure(self.coverage.mandatory_roots.clone())?;
+        let mut strict_current = self.coverage.mandatory_roots.clone();
+        strict_current.extend(
+            self.coverage
+                .execution
+                .required_body_keys(&self.coverage.mandatory_roots),
+        );
+        let mut current_roots = strict_current.clone();
+        current_roots.extend(
+            self.coverage
+                .selected_completion_brief_ids
+                .iter()
+                .map(|id| InputEvidenceKey::new(InputEvidenceFamily::Brief, id)),
+        );
+        let current = self.completion_closure(
+            current_roots,
+            strict_current,
+            &self.coverage.selected_completion_brief_ids,
+            self.coverage.record_limit,
+        )?;
         let history = self.record_closure(
             self.coverage
                 .windows
@@ -796,6 +822,10 @@ impl ResidentInputEvidence {
         self.validate()?;
         let selected = self.required_keys()?;
         let mut captured = CapturedInputEvidence {
+            #[cfg(test)]
+            selected_completion_brief_ids: self.coverage.selected_completion_brief_ids.clone(),
+            #[cfg(test)]
+            completion_source_observations: self.coverage.completion_source_observations.clone(),
             recovery_source_absences: self.coverage.recovery_source_absences.clone(),
             execution: self.coverage.execution.clone(),
             scope: self.scope.clone(),
@@ -864,12 +894,24 @@ impl ResidentInputEvidence {
         }
         let mut windows = Vec::new();
         let mut mandatory_roots = request.mandatory_roots.clone();
+        for id in &request.selected_completion_brief_ids {
+            let key = InputEvidenceKey::new(InputEvidenceFamily::Brief, id);
+            if !self.coverage.selected_completion_brief_ids.contains(id) {
+                return Err(InputEvidenceReadError::NeedsPreparation(key).into());
+            }
+        }
         mandatory_roots.extend(
             self.coverage
                 .execution
                 .required_interrupted_body_keys(&request.interrupted_sources)?,
         );
         let mut selected = mandatory_roots.clone();
+        selected.extend(
+            request
+                .selected_completion_brief_ids
+                .iter()
+                .map(|id| InputEvidenceKey::new(InputEvidenceFamily::Brief, id)),
+        );
         selected.extend(
             self.coverage
                 .execution
@@ -907,21 +949,29 @@ impl ResidentInputEvidence {
             selected.len() <= request.record_limit,
             "input request closure record limit exceeded"
         );
-        let mut pending = VecDeque::from_iter(selected.iter().cloned());
-        while let Some(key) = pending.pop_front() {
-            if let Some(record) = self.records.get(&key) {
-                for child in self.references(record)? {
-                    if !selected.contains(&child) {
-                        ensure!(
-                            selected.len() < request.record_limit,
-                            "input request closure record limit exceeded"
-                        );
-                        selected.insert(child.clone());
-                        pending.push_back(child);
-                    }
-                }
-            } else if !self.coverage.unavailable.contains(&key) {
-                return Err(InputEvidenceReadError::NeedsPreparation(key).into());
+        let strict_roots = mandatory_roots
+            .iter()
+            .cloned()
+            .chain(
+                self.coverage
+                    .execution
+                    .required_body_keys(&request.mandatory_roots),
+            )
+            .chain(
+                windows
+                    .iter()
+                    .flat_map(|window| window.keys.iter().cloned()),
+            )
+            .collect();
+        selected = self.completion_closure(
+            selected,
+            strict_roots,
+            &request.selected_completion_brief_ids,
+            request.record_limit,
+        )?;
+        for key in &selected {
+            if !self.records.contains_key(key) && !self.coverage.unavailable.contains(key) {
+                return Err(InputEvidenceReadError::NeedsPreparation(key.clone()).into());
             }
         }
         let turns = self
@@ -949,6 +999,18 @@ impl ResidentInputEvidence {
             .collect::<BTreeSet<_>>();
         source_ids.extend(request.interrupted_sources.iter().cloned());
         let coverage = InputEvidenceCoverage {
+            selected_completion_brief_ids: request.selected_completion_brief_ids.clone(),
+            completion_source_observations: self
+                .coverage
+                .completion_source_observations
+                .iter()
+                .filter(|proof| {
+                    request
+                        .selected_completion_brief_ids
+                        .contains(&proof.head.key.id)
+                })
+                .cloned()
+                .collect(),
             recovery_source_absences: self
                 .coverage
                 .recovery_source_absences
@@ -1034,6 +1096,65 @@ impl ResidentInputEvidence {
             })
             .transpose()?;
         let mut next = self.clone();
+        let changed = delta
+            .records
+            .iter()
+            .map(|record| &record.locator.key)
+            .chain(delta.removals.iter().map(|removal| &removal.key))
+            .collect::<BTreeSet<_>>();
+        next.coverage.selected_completion_brief_ids.retain(|id| {
+            let head_key = InputEvidenceKey::new(InputEvidenceFamily::Brief, id);
+            if changed.contains(&head_key) {
+                return false;
+            }
+            if self
+                .coverage
+                .completion_source_observations
+                .iter()
+                .any(|proof| {
+                    proof.head.key == head_key && changed.iter().any(|key| proof.observes_key(key))
+                })
+            {
+                return false;
+            }
+            let Some(head) = self.records.get(&head_key) else {
+                return false;
+            };
+            let PreparedInputEvidence::Brief(brief) = &head.record else {
+                return false;
+            };
+            if let Some(source) = brief.content_source.transcript_entry_id() {
+                let source_key = InputEvidenceKey::new(InputEvidenceFamily::Transcript, source);
+                if changed.contains(&source_key) {
+                    return false;
+                }
+                if self
+                    .records
+                    .get(&source_key)
+                    .is_some_and(|record| match &record.record {
+                        PreparedInputEvidence::Transcript(entry) => {
+                            entry.related_message_id.as_ref().is_some_and(|id| {
+                                changed.contains(&InputEvidenceKey::new(
+                                    InputEvidenceFamily::Message,
+                                    id,
+                                ))
+                            })
+                        }
+                        _ => false,
+                    })
+                {
+                    return false;
+                }
+            }
+            true
+        });
+        next.coverage
+            .completion_source_observations
+            .retain(|proof| {
+                next.coverage
+                    .selected_completion_brief_ids
+                    .contains(&proof.head.key.id)
+            });
         // An actual source/body write invalidates only related observations.
         // The next explicit owner preparation re-observes absence/presence.
         next.coverage.recovery_source_absences.retain(|_, proof| {
@@ -1252,31 +1373,101 @@ impl ResidentInputEvidence {
         }
         Ok(refs)
     }
+    fn completion_closure(
+        &self,
+        roots: BTreeSet<InputEvidenceKey>,
+        strict_roots: BTreeSet<InputEvidenceKey>,
+        heads: &BTreeSet<String>,
+        record_limit: usize,
+    ) -> Result<BTreeSet<InputEvidenceKey>> {
+        use super::completion_sources::{completion_references, CompletionInputPath};
+        let mut selected = roots.clone();
+        let mut pending = VecDeque::from_iter(roots.into_iter().map(|key| {
+            let path = if key.family == InputEvidenceFamily::Brief && heads.contains(&key.id) {
+                CompletionInputPath::Head(key.id.clone())
+            } else {
+                CompletionInputPath::Strict
+            };
+            (key, path)
+        }));
+        pending.extend(
+            strict_roots
+                .into_iter()
+                .map(|key| (key, CompletionInputPath::Strict)),
+        );
+        let mut expanded = BTreeSet::new();
+        while let Some((key, path)) = pending.pop_front() {
+            selected.insert(key.clone());
+            ensure!(
+                selected.len() <= record_limit,
+                "input evidence closure record limit exceeded"
+            );
+            if !expanded.insert((key.clone(), path.clone())) {
+                continue;
+            }
+            // There are at most the bounded strict graph plus two selected
+            // completion edges per head, never a path cross-product.
+            ensure!(
+                expanded.len() <= record_limit.saturating_mul(3),
+                "input evidence path limit exceeded"
+            );
+            let Some(record) = self.records.get(&key) else {
+                continue;
+            };
+            let head = match &path {
+                CompletionInputPath::Strict => None,
+                CompletionInputPath::Head(id) | CompletionInputPath::Transcript(id) => self
+                    .records
+                    .get(&InputEvidenceKey::new(InputEvidenceFamily::Brief, id))
+                    .map(Arc::as_ref),
+            };
+            pending.extend(completion_references(
+                record,
+                &path,
+                head,
+                &self.coverage.completion_source_observations,
+                self.references(record)?,
+            )?);
+        }
+        Ok(selected)
+    }
     fn required_keys(&self) -> Result<BTreeSet<InputEvidenceKey>> {
-        let mut selected = self.coverage.mandatory_roots.clone();
-        selected.extend(
+        let mut roots = self.coverage.mandatory_roots.clone();
+        roots.extend(
             self.coverage
                 .execution
                 .required_body_keys(&self.coverage.mandatory_roots),
         );
-        for window in &self.coverage.windows {
-            selected.extend(window.keys.iter().cloned());
-        }
-        let mut pending = VecDeque::from_iter(selected.iter().cloned());
-        while let Some(key) = pending.pop_front() {
-            if let Some(record) = self.records.get(&key) {
-                for child in self.references(record)? {
-                    if selected.insert(child.clone()) {
-                        pending.push_back(child)
-                    }
-                }
-            }
-            ensure!(
-                selected.len() <= self.coverage.record_limit,
-                "input evidence closure record limit exceeded"
-            );
-        }
-        Ok(selected)
+        roots.extend(
+            self.coverage
+                .selected_completion_brief_ids
+                .iter()
+                .map(|id| InputEvidenceKey::new(InputEvidenceFamily::Brief, id)),
+        );
+        let strict = self
+            .coverage
+            .mandatory_roots
+            .iter()
+            .cloned()
+            .chain(
+                self.coverage
+                    .execution
+                    .required_body_keys(&self.coverage.mandatory_roots),
+            )
+            .chain(
+                self.coverage
+                    .windows
+                    .iter()
+                    .flat_map(|window| window.keys.iter().cloned()),
+            )
+            .collect::<BTreeSet<_>>();
+        roots.extend(strict.iter().cloned());
+        self.completion_closure(
+            roots,
+            strict,
+            &self.coverage.selected_completion_brief_ids,
+            self.coverage.record_limit,
+        )
     }
     fn validate(&self) -> Result<()> {
         let selected = self.required_keys()?;
@@ -1286,9 +1477,21 @@ impl ResidentInputEvidence {
                 .execution
                 .required_body_keys(&self.coverage.mandatory_roots),
         );
-        let mut pending = VecDeque::from_iter(mandatory.iter().cloned());
-        while let Some(key) = pending.pop_front() {
-            let Some(record) = self.records.get(&key) else {
+        let strict_roots = mandatory.clone();
+        mandatory.extend(
+            self.coverage
+                .selected_completion_brief_ids
+                .iter()
+                .map(|id| InputEvidenceKey::new(InputEvidenceFamily::Brief, id)),
+        );
+        let mandatory = self.completion_closure(
+            mandatory,
+            strict_roots,
+            &self.coverage.selected_completion_brief_ids,
+            self.coverage.record_limit,
+        )?;
+        for key in &mandatory {
+            if !self.records.contains_key(key) {
                 if key.family == InputEvidenceFamily::WorkExecution
                     && self
                         .coverage
@@ -1304,15 +1507,21 @@ impl ResidentInputEvidence {
                     key.family.as_str(),
                     key.id
                 );
-            };
-            for child in self.references(record)? {
-                if mandatory.insert(child.clone()) {
-                    pending.push_back(child)
-                }
             }
+        }
+        for proof in &self.coverage.completion_source_observations {
+            let head = self.records.get(&proof.head.key);
+            let source = self.records.get(&proof.source.key);
             ensure!(
-                mandatory.len() <= self.coverage.record_limit,
-                "mandatory evidence closure exceeds count limit"
+                self.coverage
+                    .selected_completion_brief_ids
+                    .contains(&proof.head.key.id)
+                    && head
+                        .zip(source)
+                        .is_some_and(|(head, source)| proof.matches(head, source))
+                    && !self.records.contains_key(&proof.declared_target)
+                    && !self.coverage.unavailable.contains(&proof.declared_target),
+                "completion optional edge has no exact qualified head/source absence"
             );
         }
         for (id, proof) in &self.coverage.recovery_source_absences {
@@ -1336,6 +1545,8 @@ impl ResidentInputEvidence {
             selected
                 .len()
                 .saturating_add(self.coverage.recovery_source_absences.len())
+                .saturating_add(self.coverage.completion_source_observations.len())
+                .saturating_add(self.coverage.selected_completion_brief_ids.len())
                 .saturating_add(self.coverage.recovery_lineage_messages.len())
                 .saturating_add(self.coverage.execution.metadata_count())
                 <= self.coverage.record_limit,
@@ -1346,6 +1557,10 @@ impl ResidentInputEvidence {
             .saturating_add(serde_json::to_vec(&self.coverage.message_turn_keys)?.len())
             .saturating_add(serde_json::to_vec(&self.coverage.recovery_source_absences)?.len())
             .saturating_add(serde_json::to_vec(&self.coverage.recovery_lineage_messages)?.len())
+            .saturating_add(
+                serde_json::to_vec(&self.coverage.completion_source_observations)?.len(),
+            )
+            .saturating_add(serde_json::to_vec(&self.coverage.selected_completion_brief_ids)?.len())
             .saturating_add(self.coverage.execution.metadata_bytes()?);
         for key in &selected {
             if let Some(record) = self.records.get(key) {
@@ -1407,6 +1622,16 @@ impl ResidentInputEvidence {
         self.validate()?;
         let selected = self.required_keys()?;
         self.records.retain(|key, _| selected.contains(key));
+        self.coverage
+            .selected_completion_brief_ids
+            .retain(|id| selected.contains(&InputEvidenceKey::new(InputEvidenceFamily::Brief, id)));
+        self.coverage
+            .completion_source_observations
+            .retain(|proof| {
+                self.coverage
+                    .selected_completion_brief_ids
+                    .contains(&proof.head.key.id)
+            });
         self.coverage.recovery_lineage_messages.retain(|id| {
             selected.contains(&InputEvidenceKey::new(InputEvidenceFamily::Message, id))
         });
@@ -1551,6 +1776,8 @@ mod tests {
             scope(),
             vec![a.clone(), b.clone()],
             InputEvidenceCoverage {
+                selected_completion_brief_ids: Default::default(),
+                completion_source_observations: Default::default(),
                 recovery_source_absences: Default::default(),
                 recovery_lineage_messages: Default::default(),
                 execution: ExecutionInputCoverage::default(),
@@ -1587,6 +1814,7 @@ mod tests {
                 .unwrap(),
         );
         let request = crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest {
+            selected_completion_brief_ids: Default::default(),
             interrupted_sources: Default::default(),
             windows: vec![
                 crate::runtime_db::input_evidence_snapshot::InputWindowRequest {
@@ -1611,6 +1839,7 @@ mod tests {
     fn request_capture_checks_selected_coverage_and_bounds() {
         let original = resident(true);
         let mut request = crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest {
+            selected_completion_brief_ids: Default::default(),
             interrupted_sources: Default::default(),
             windows: Vec::new(),
             mandatory_roots: BTreeSet::from([InputEvidenceKey::new(
@@ -1825,6 +2054,8 @@ mod tests {
             scope(),
             vec![parent],
             InputEvidenceCoverage {
+                selected_completion_brief_ids: Default::default(),
+                completion_source_observations: Default::default(),
                 recovery_source_absences: Default::default(),
                 recovery_lineage_messages: Default::default(),
                 execution: ExecutionInputCoverage::default(),
@@ -1925,6 +2156,7 @@ mod tests {
         let captured = original
             .capture_for_request(
                 &crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest {
+                    selected_completion_brief_ids: Default::default(),
                     interrupted_sources: Default::default(),
                     windows: vec![
                         crate::runtime_db::input_evidence_snapshot::InputWindowRequest {
@@ -1961,3 +2193,7 @@ mod tests {
         assert_eq!(report.observed_bytes, 0);
     }
 }
+
+#[cfg(test)]
+#[path = "resident_input_completion_tests.rs"]
+mod completion_tests;

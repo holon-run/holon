@@ -17,12 +17,12 @@ use crate::{
     },
     types::{
         AuditEvent, AuthorityClass, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
-        Priority, QueueEntryRecord, QueueEntryStatus, WorkItemRecord, WorkItemState,
+        Priority, QueueEntryRecord, QueueEntryStatus, WorkItemRecord,
     },
 };
 
 #[tokio::test]
-async fn positive_input_receipt_installs_current_touched_work_cache_without_replaying_sql(
+async fn positive_input_receipt_installs_current_touched_work_domain_without_replaying_sql(
 ) -> Result<()> {
     let data = tempfile::tempdir()?;
     let workspace = tempfile::tempdir()?;
@@ -43,26 +43,41 @@ async fn positive_input_receipt_installs_current_touched_work_cache_without_repl
         agent_id: before.id.clone(),
         identity_incarnation: runtime.instance_incarnation(),
     };
-    let mut old = WorkItemRecord::new(
-        &before.id,
-        "cached before original transaction",
-        WorkItemState::Open,
-    );
-    old.id = "work-input-recovery-touched".into();
-    runtime.inner.runtime_db.work_items().insert_new(&old)?;
-    let mut unrelated =
-        WorkItemRecord::new(&before.id, "unrelated cached item", WorkItemState::Open);
-    unrelated.id = "work-input-recovery-unrelated".into();
-    runtime
-        .inner
-        .runtime_db
-        .work_items()
-        .insert_new(&unrelated)?;
-    {
-        let mut cache = runtime.inner.projection_cache.lock().await;
-        cache.upsert_work_item(old.clone());
-        cache.upsert_work_item(unrelated.clone());
-    }
+    // Use the real owner writer: raw current-schema rows cannot be adopted.
+    let old = runtime
+        .create_work_item(
+            "published before original transaction".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await?;
+    let unrelated = runtime
+        .create_work_item("unrelated published item".into(), None, None, Vec::new())
+        .await?;
+    let before_root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let original_work = before_root
+        .work
+        .as_ref()
+        .context("published Work domain missing")?;
+    let original =
+        original_work.capture(&super::super::resident_work::WorkCaptureRequest::current())?;
+    let work_record = |captured: &super::super::resident_work::CapturedWork,
+                       id: &str|
+     -> Result<WorkItemRecord> {
+        let qualified = captured
+            .lookup(&super::super::resident_work::WorkKey::new(
+                super::super::resident_work::WorkFamily::Work,
+                id,
+            ))?
+            .context("qualified Work missing")?;
+        let super::super::resident_work::CanonicalWorkRecord::Work(record) = &qualified.record
+        else {
+            anyhow::bail!("captured Work family mismatch");
+        };
+        Ok(record.clone())
+    };
+    assert_eq!(work_record(&original, &old.id)?, old);
     let mut current = old.clone();
     current.revision += 1;
     current.objective = "actual committed work objective".into();
@@ -163,22 +178,17 @@ async fn positive_input_receipt_installs_current_touched_work_cache_without_repl
         runtime.inner.mutation_owner.capture(),
         Err(MutationOwnerError::NeedsReconcile(_))
     ));
-    assert_eq!(
-        runtime
-            .inner
-            .projection_cache
-            .lock()
-            .await
-            .work_items
-            .get(&old.id),
-        Some(&old)
-    );
+    // The retained published root stays immutable while the owner is unknown.
+    assert_eq!(work_record(&original, &old.id)?, old);
     runtime.reconcile_posture_observation().await?;
-    {
-        let cache = runtime.inner.projection_cache.lock().await;
-        assert_eq!(cache.work_items.get(&old.id), Some(&current));
-        assert_eq!(cache.work_items.get(&unrelated.id), Some(&unrelated));
-    }
+    let recovered_root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let recovered = recovered_root
+        .work
+        .as_ref()
+        .context("recovered Work domain missing")?
+        .capture(&super::super::resident_work::WorkCaptureRequest::current())?;
+    assert_eq!(work_record(&recovered, &old.id)?, current);
+    assert_eq!(work_record(&recovered, &unrelated.id)?, unrelated);
     assert_eq!(
         runtime.agent_state().await?,
         runtime

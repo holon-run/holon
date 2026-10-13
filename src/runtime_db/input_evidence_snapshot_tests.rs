@@ -55,6 +55,7 @@ fn message(id: &str) -> MessageEnvelope {
 }
 fn request(selector: InputWindowSelector, limit: usize) -> InputEvidenceLoadRequest {
     InputEvidenceLoadRequest {
+        selected_completion_brief_ids: Default::default(),
         interrupted_sources: Default::default(),
         windows: vec![InputWindowRequest { selector, limit }],
         mandatory_roots: BTreeSet::new(),
@@ -1050,10 +1051,21 @@ fn successor_cannot_reuse_original_incarnation_claim_only_proof() -> Result<()> 
     let (_dir, db) = fresh()?;
     let attempt = claim_only_attempt(&db)?;
     db.transaction(|tx| {
-        let mut successor = identity();
+        let mut successor = ContextDurableRead::new(tx, "agent-a")
+            .scope_facts()?
+            .identity
+            .context("original fixture identity missing")?;
         successor.incarnation = 2;
-        successor.updated_at = time() + chrono::Duration::days(1);
+        successor.updated_at += chrono::Duration::days(1);
         upsert_agent_identity_tx(tx, &successor)?;
+        assert_eq!(
+            ContextDurableRead::new(tx, "agent-a")
+                .scope_facts()?
+                .identity
+                .unwrap()
+                .incarnation,
+            2
+        );
         let next = InputEvidenceScope {
             agent_id: "agent-a".into(),
             identity_incarnation: 2,
@@ -1173,6 +1185,7 @@ fn explicit_absent_execution_work_survives_snapshot_and_request_capture() -> Res
     // No Message or Work body is selected: only the exact negative root proves
     // that RegisterWorkItem is permitted, so both trim paths must retain it.
     let wanted = InputEvidenceLoadRequest {
+        selected_completion_brief_ids: Default::default(),
         interrupted_sources: Default::default(),
         windows: Vec::new(),
         mandatory_roots: BTreeSet::from([work_key.clone()]),
@@ -1262,6 +1275,7 @@ fn explicit_interrupted_source_request_keeps_all_candidates_and_rejects_missing_
     let wanted = InputEvidenceLoadRequest {
         windows: Vec::new(),
         mandatory_roots: BTreeSet::from([Key::new(Family::Message, "claim-source")]),
+        selected_completion_brief_ids: Default::default(),
         interrupted_sources: BTreeSet::from(["claim-source".into()]),
         record_limit: 32,
         byte_limit: 256 * 1024,
@@ -1293,6 +1307,8 @@ fn explicit_interrupted_source_request_keeps_all_candidates_and_rejects_missing_
             .cloned()
             .collect(),
         InputEvidenceCoverage {
+            selected_completion_brief_ids: Default::default(),
+            completion_source_observations: Default::default(),
             recovery_source_absences: Default::default(),
             recovery_lineage_messages: Default::default(),
             execution: captured.execution.clone(),
@@ -1469,6 +1485,7 @@ fn provider_lineage_request(latest: &MessageEnvelope) -> InputEvidenceLoadReques
     InputEvidenceLoadRequest {
         windows: Vec::new(),
         mandatory_roots: BTreeSet::from([Key::new(Family::Message, &latest.id)]),
+        selected_completion_brief_ids: Default::default(),
         interrupted_sources: BTreeSet::from([latest.id.clone()]),
         record_limit: 64,
         byte_limit: 1024 * 1024,
@@ -1995,6 +2012,8 @@ fn asserted_missing_provider_source_is_focused_authority_evidence_not_lookup_abs
         scope(),
         accepted.records,
         InputEvidenceCoverage {
+            selected_completion_brief_ids: Default::default(),
+            completion_source_observations: Default::default(),
             recovery_source_absences: Default::default(),
             recovery_lineage_messages: Default::default(),
             execution,
@@ -2284,6 +2303,99 @@ fn fixed_upgrade_missing_table_freezes_absence_without_late_input_adoption() -> 
         )?;
         assert_eq!(eligible, 0);
         assert_eq!(aliases, 0);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[path = "input_evidence_work_cleanup_tests.rs"]
+mod work_cleanup_tests;
+
+#[test]
+fn dispatch_briefs_read_fixed_members_without_alias_hydration_or_late_adoption() -> Result<()> {
+    use crate::{runtime_db::evidence::insert_brief_evidence_tx, types::BriefKind};
+    let mut fixed = BriefRecord::new("agent-a", BriefKind::Result, "fixed success", None, None);
+    fixed.id = "fixed-dispatch-success".into();
+    fixed.created_at = time();
+    let (_directory, db) = legacy(|tx| insert_brief_evidence_tx(tx, &fixed))?;
+    db.transaction(|tx| {
+        let mut late = fixed.clone();
+        late.id = "raw-late-dispatch-success".into();
+        late.created_at += chrono::Duration::seconds(1);
+        insert_brief_evidence_tx(tx, &late)?;
+        let before: i64 =
+            tx.query_row("SELECT COUNT(*) FROM input_evidence_current", [], |row| {
+                row.get(0)
+            })?;
+        let briefs = qualified_dispatch_briefs_tx(tx, &scope(), 64, 1024 * 1024)?;
+        assert_eq!(briefs, vec![fixed.clone()]);
+        let after: i64 =
+            tx.query_row("SELECT COUNT(*) FROM input_evidence_current", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(before, after);
+        assert!(qualified_dispatch_briefs_tx(tx, &scope(), 64, 1).is_err());
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn dispatch_briefs_follow_current_digest_and_pruning_and_never_successor_history() -> Result<()> {
+    use crate::{runtime_db::evidence::insert_brief_evidence_tx, types::BriefKind};
+    let (_directory, db) = fresh()?;
+    let mut value = BriefRecord::new("agent-a", BriefKind::Result, "current success", None, None);
+    value.id = "current-dispatch-success".into();
+    value.created_at = time();
+    db.transaction(|tx| {
+        insert_brief_evidence_tx(tx, &value)?;
+        register_committed_input_evidence_tx(
+            tx,
+            &scope(),
+            &[CanonicalInputEvidence::Brief(value.clone())],
+        )?;
+        assert_eq!(
+            qualified_dispatch_briefs_tx(tx, &scope(), 64, 1024 * 1024)?,
+            vec![value.clone()]
+        );
+        let mut wrong = value.clone();
+        wrong.text = "conflicting restore".into();
+        tx.execute(
+            "UPDATE briefs SET payload_json=?2 WHERE evidence_id=?1",
+            params![value.id, serde_json::to_string(&wrong)?],
+        )?;
+        assert!(qualified_dispatch_briefs_tx(tx, &scope(), 64, 1024 * 1024).is_err());
+        tx.execute(
+            "UPDATE briefs SET payload_json=?2 WHERE evidence_id=?1",
+            params![value.id, serde_json::to_string(&value)?],
+        )?;
+        tx.execute("DELETE FROM briefs WHERE evidence_id=?1", [&value.id])?;
+        register_pruned_input_evidence_tx(tx, &scope(), &[Key::new(Family::Brief, &value.id)])?;
+        assert!(qualified_dispatch_briefs_tx(tx, &scope(), 64, 1024 * 1024)?.is_empty());
+        let mut retained = value.clone();
+        retained.id = "retained-prior-inc-success".into();
+        insert_brief_evidence_tx(tx, &retained)?;
+        register_committed_input_evidence_tx(
+            tx,
+            &scope(),
+            &[CanonicalInputEvidence::Brief(retained)],
+        )?;
+        assert_eq!(
+            qualified_dispatch_briefs_tx(tx, &scope(), 64, 1024 * 1024)?.len(),
+            1
+        );
+        Ok(())
+    })?;
+    let mut successor = identity();
+    successor.incarnation = 2;
+    db.transaction(|tx| upsert_agent_identity_tx(tx, &successor))?;
+    db.transaction(|tx| {
+        let successor_scope = InputEvidenceScope {
+            agent_id: "agent-a".into(),
+            identity_incarnation: 2,
+        };
+        assert!(qualified_dispatch_briefs_tx(tx, &successor_scope, 64, 1024 * 1024)?.is_empty());
+        assert!(qualified_dispatch_briefs_tx(tx, &scope(), 64, 1024 * 1024).is_err());
         Ok(())
     })?;
     Ok(())

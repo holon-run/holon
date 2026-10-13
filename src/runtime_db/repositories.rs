@@ -26,7 +26,7 @@ use crate::runtime_db::{
 };
 use crate::types::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) enum AgentDeletionAdmission {
     ExpectedRevision(u64),
     SupervisingParent {
@@ -40,7 +40,7 @@ pub(crate) enum AgentDeletionAdmission {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct AgentDeletionRequest {
     pub agent_id: String,
     pub admission: AgentDeletionAdmission,
@@ -63,7 +63,7 @@ pub(crate) struct TerminalChildDeletionAdmissionRejected {
 }
 
 impl TerminalChildDeletionAdmissionRejected {
-    fn new(agent_id: &str, reason: impl Into<String>) -> Self {
+    pub(crate) fn new(agent_id: &str, reason: impl Into<String>) -> Self {
         Self {
             agent_id: agent_id.to_string(),
             reason: reason.into(),
@@ -95,10 +95,16 @@ impl WorkItemRepository<'_> {
                         latest.insert(record.id.clone(), record);
                     }
                 }
+                let mut work_writes = super::episode_snapshot::work_checkpoint::imports::ImportWrites::default();
                 for record in latest.values() {
-                    import_work_item_tx(tx, record)?;
+                    let origin = match import_work_item_tx(tx, record)? {
+                        WorkImportOutcome::ActualWrite => Some(super::episode_snapshot::work_checkpoint::imports::ImportOrigin::ActualWrite),
+                        WorkImportOutcome::LegacyEqual => Some(super::episode_snapshot::work_checkpoint::imports::ImportOrigin::LegacyImportEqual),
+                        WorkImportOutcome::Ignored => None,
+                    };
+                    if let Some(origin) = origin { work_writes.record("work_item", &record.id, &record.agent_id, origin)?; }
                 }
-                Ok(serde_json::json!({ "imported_records": latest.len() }))
+                Ok(serde_json::json!({ "imported_records": latest.len(), "work_domain_actual_writes": work_writes.finish(tx)? }))
             })
     }
 
@@ -320,11 +326,41 @@ impl AgentStateRepository<'_> {
 
     /// The Host reserves all startup scopes and excludes loaded/draining
     /// runtimes. Stale waits and Stopped timer/queue/state cleanup share one ACK.
+    #[cfg(test)]
     pub(crate) fn reconcile_stale_waits_at_startup(
         &self,
         fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
     ) -> Result<(usize, BTreeMap<String, AgentState>)> {
-        use crate::runtime_db::transitions::TransitionFaultPoint;
+        self.reconcile_stale_waits_at_startup_inner(None, fault)
+    }
+
+    pub(crate) fn reconcile_stale_waits_at_startup_in_scopes(
+        &self,
+        scopes: &[crate::runtime_db::transitions::StartupInputRecoveryScope],
+        admission: &super::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery<
+            '_,
+        >,
+        request: &super::work_snapshot::WorkDomainLoadRequest,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+    ) -> Result<(usize, BTreeMap<String, AgentState>)> {
+        admission.validate_database(self.db)?;
+        self.reconcile_stale_waits_at_startup_inner(Some((scopes, admission, request)), fault)
+    }
+
+    fn reconcile_stale_waits_at_startup_inner(
+        &self,
+        preparation: Option<(
+            &[crate::runtime_db::transitions::StartupInputRecoveryScope],
+            &super::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery<'_>,
+            &super::work_snapshot::WorkDomainLoadRequest,
+        )>,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+    ) -> Result<(usize, BTreeMap<String, AgentState>)> {
+        use super::{
+            input_evidence_snapshot::legacy_recovery::legacy_seed_recovery_scope_tx, work_snapshot,
+        };
+        use crate::runtime::resident_input_evidence::InputEvidenceScope;
+        use crate::runtime_db::transitions::{StartupInputRecoveryScope, TransitionFaultPoint};
 
         self.db.transaction(|tx| {
             let mut states = {
@@ -366,10 +402,8 @@ impl AgentStateRepository<'_> {
                     .map(|row| decode_timer_payload(&row?)).collect::<Result<Vec<_>>>()?;
                 records
             };
-            inject_fault(fault, TransitionFaultPoint::AfterValidation)?;
-            let now = Utc::now();
-            let mut cancelled = 0;
-            for mut wait in waits {
+            let mut stale_waits = Vec::new();
+            for wait in waits {
                 let stopped = states.get(&wait.agent_id)
                     .is_some_and(|state| state.status == AgentStatus::Stopped);
                 let task_stale = wait.wake_sources.iter().any(|source| {
@@ -394,12 +428,60 @@ impl AgentStateRepository<'_> {
                             && timer.agent_id == wait.agent_id && timer.status == TimerStatus::Active)
                     });
                 if stopped || task_stale || external_stale || timer_stale {
-                    wait.status = WaitConditionStatus::Cancelled;
-                    wait.updated_at = now;
-                    wait.cancelled_at = Some(now);
-                    upsert_wait_condition_tx(tx, &wait)?;
-                    cancelled += 1;
+                    stale_waits.push(wait);
                 }
+            }
+            let mut prepared_bound = BTreeMap::new();
+            let mut prepared_unbound = BTreeMap::new();
+            if let Some((scopes, admission, request)) = preparation {
+                let candidate_ids = stale_waits.iter().fold(BTreeMap::<String,BTreeSet<String>>::new(),|mut ids,wait| {
+                    ids.entry(wait.agent_id.clone()).or_default().insert(wait.id.clone());ids
+                });
+                let mut agents=BTreeSet::new();
+                for authority in scopes {
+                    let agent=authority.agent_id();
+                    anyhow::ensure!(agents.insert(agent.to_owned()),"duplicate startup Wait scope");
+                    let ids=candidate_ids.get(agent).cloned().unwrap_or_default();
+                    match authority {
+                        StartupInputRecoveryScope::Current(scope)=>{
+                            super::input_evidence_writes::validate_input_evidence_scope_tx(tx,scope,agent)?;
+                            if !ids.is_empty() {
+                                prepared_bound.insert(agent.to_owned(),work_snapshot::prepare_existing_work_wait_cleanup_tx(tx,scope,&ids,request,false)?);
+                            }
+                        }
+                        StartupInputRecoveryScope::Unbound(scope)=>{
+                            anyhow::ensure!(legacy_seed_recovery_scope_tx(tx,agent)?==*scope,"startup Wait seed proof changed");
+                            if !ids.is_empty() {
+                                prepared_unbound.insert(agent.to_owned(),work_snapshot::prepare_unbound_work_wait_cleanup_tx(tx,scope,&ids,request,admission)?);
+                            }
+                        }
+                        StartupInputRecoveryScope::Retired{identity_incarnation,status,..}=>{
+                            anyhow::ensure!(*identity_incarnation>0 && *status!=crate::types::AgentRegistryStatus::Active,"invalid retired startup Wait scope");
+                            let (normalized,payload):(String,String)=tx.query_row("SELECT status,payload_json FROM agent_identities WHERE agent_id=?1",[agent],|r|Ok((r.get(0)?,r.get(1)?)))?;
+                            let identity=decode_agent_identity_payload(&payload)?;
+                            anyhow::ensure!(identity.agent_id==agent && identity.incarnation==*identity_incarnation && identity.status==*status
+                                && serde_json::to_value(&identity.status)?.as_str()==Some(normalized.as_str()),"retired startup Wait identity changed");
+                            if *status == crate::types::AgentRegistryStatus::Deleting && !ids.is_empty() {
+                                let scope=InputEvidenceScope{agent_id:agent.into(),identity_incarnation:*identity_incarnation};
+                                prepared_bound.insert(agent.to_owned(),work_snapshot::prepare_existing_work_wait_cleanup_tx(tx,&scope,&ids,request,true)?);
+                            }
+                        }
+                    }
+                }
+                anyhow::ensure!(candidate_ids.keys().all(|agent|agents.contains(agent))
+                    && states.values().filter(|state|state.status==AgentStatus::Stopped).all(|state|agents.contains(&state.id)),
+                    "startup Wait cleanup has an unreserved write scope");
+            }
+            inject_fault(fault, TransitionFaultPoint::AfterValidation)?;
+            let now = Utc::now();
+            let cancelled=stale_waits.len();
+            let mut actual=BTreeMap::<String,WaitConditionWrites>::new();
+            for mut wait in stale_waits {
+                wait.status=WaitConditionStatus::Cancelled;
+                wait.updated_at=now;
+                wait.cancelled_at=Some(now);
+                let writes=upsert_wait_condition_with_writes_tx(tx,&wait)?;
+                actual.entry(wait.agent_id.clone()).or_default().extend(writes);
             }
             for state in states.values_mut().filter(|state| state.status == AgentStatus::Stopped) {
                 cancel_active_timers_for_agent_tx(tx, &state.id, now)?;
@@ -422,6 +504,20 @@ impl AgentStateRepository<'_> {
                 }
             }
             inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+            if let Some((_, _, request)) = preparation {
+                for (agent, proof) in &prepared_bound {
+                    if let Some(writes) = actual.get(agent) {
+                        // Host is preactivation. Preserve exact qualification in
+                        // this ACK; its next bootstrap builds the resident root.
+                        work_snapshot::register_existing_work_wait_cleanup_tx(tx,proof,writes,states.get(agent),request)?;
+                    }
+                }
+                for (agent, proof) in &prepared_unbound {
+                    if let Some(writes) = actual.get(agent) {
+                        work_snapshot::register_unbound_work_wait_cleanup_tx(tx,proof,writes)?;
+                    }
+                }
+            }
             inject_fault(fault, TransitionFaultPoint::BeforeCommit)?;
             Ok((cancelled, states))
         })
@@ -1156,6 +1252,29 @@ pub(crate) fn ensure_agent_deletion_tx(
     tx: &Transaction<'_>,
     request: &AgentDeletionRequest,
 ) -> Result<(AgentIdentityRecord, AgentDeletionJob, bool)> {
+    ensure_agent_deletion_inner_tx(tx, request, None)
+}
+
+/// Freeze the original deletion identity and clock in its enclosing receipt.
+/// The original authorization/idempotent branches remain in the same TX.
+pub(crate) fn ensure_agent_deletion_at_tx(
+    tx: &Transaction<'_>,
+    request: &AgentDeletionRequest,
+    deletion_id: &str,
+    prepared_at: DateTime<Utc>,
+) -> Result<(AgentIdentityRecord, AgentDeletionJob, bool)> {
+    anyhow::ensure!(
+        !deletion_id.trim().is_empty(),
+        "empty original deletion identity"
+    );
+    ensure_agent_deletion_inner_tx(tx, request, Some((deletion_id, prepared_at)))
+}
+
+fn ensure_agent_deletion_inner_tx(
+    tx: &Transaction<'_>,
+    request: &AgentDeletionRequest,
+    creation: Option<(&str, DateTime<Utc>)>,
+) -> Result<(AgentIdentityRecord, AgentDeletionJob, bool)> {
     let agent_id = &request.agent_id;
     let payload = tx
         .query_row(
@@ -1366,11 +1485,11 @@ pub(crate) fn ensure_agent_deletion_tx(
     }
 
     let now = std::cmp::max(
-        Utc::now(),
+        creation.map_or_else(Utc::now, |(_, at)| at),
         identity.updated_at + chrono::Duration::nanoseconds(1),
     );
     let job = AgentDeletionJob {
-        deletion_id: crate::ids::agent_deletion_id(),
+        deletion_id: creation.map_or_else(crate::ids::agent_deletion_id, |(id, _)| id.to_owned()),
         agent_id: agent_id.to_string(),
         mode: if identity.status == AgentRegistryStatus::Deleted {
             AgentDeletionMode::CleanupRepair
@@ -2595,11 +2714,14 @@ impl WaitConditionRepository<'_> {
         self.db
             .run_storage_domain_import("wait_conditions", "jsonl", "db", |tx| {
                 let mut imported_ids = BTreeMap::<String, ()>::new();
+                let mut work_writes = super::episode_snapshot::work_checkpoint::imports::ImportWrites::default();
                 for record in records {
                     imported_ids.insert(record.id.clone(), ());
-                    let _ = upsert_wait_condition_tx(tx, &record)?;
+                    let writes = upsert_wait_condition_with_writes_tx(tx, &record)?;
+                    for id in writes.wait_ids { work_writes.record("wait", &id, &record.agent_id,
+                        super::episode_snapshot::work_checkpoint::imports::ImportOrigin::ActualWrite)?; }
                 }
-                Ok(serde_json::json!({ "imported_records": imported_ids.len() }))
+                Ok(serde_json::json!({ "imported_records": imported_ids.len(), "work_domain_actual_writes": work_writes.finish(tx)? }))
             })
     }
 
@@ -3365,19 +3487,25 @@ impl TimerRepository<'_> {
         &self,
         scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
         command: &TimerFire,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
         fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
     ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TimerFireResult>> {
-        self.fire_with_wait_inner(command, fault, Some(scope))
+        self.fire_with_wait_inner(command, fault, Some((scope, work_request, ledger)))
     }
 
     fn fire_with_wait_inner(
         &self,
         command: &TimerFire,
         fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
-        input_scope: Option<&crate::runtime::resident_input_evidence::InputEvidenceScope>,
+        scoped_work: Option<(
+            &crate::runtime::resident_input_evidence::InputEvidenceScope,
+            &super::work_snapshot::WorkDomainLoadRequest,
+            &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        )>,
     ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TimerFireResult>> {
         self.db.transaction(|tx| {
-            if let Some(scope) = input_scope {
+            if let Some((scope, _, _)) = scoped_work {
                 super::input_evidence_writes::validate_input_evidence_scope_tx(
                     tx,
                     scope,
@@ -3388,6 +3516,7 @@ impl TimerRepository<'_> {
                 || command.expected.status != TimerStatus::Active
             {
                 return Ok(super::input_evidence_writes::InputEvidenceCommit {
+                    work_delta: None,
                     record: TimerFireResult {
                         advanced: false,
                         wake_created: false,
@@ -3403,14 +3532,15 @@ impl TimerRepository<'_> {
             {
                 return Err(anyhow!("invalid timer fire transition"));
             }
-            upsert_timer_tx(tx, &command.record)?;
             let pending = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM timer_wakes WHERE timer_id = ?1 AND status = 'pending')",
                 [&command.record.id],
                 |row| row.get::<_, bool>(0),
             )?;
             if pending {
+                upsert_timer_tx(tx, &command.record)?;
                 return Ok(super::input_evidence_writes::InputEvidenceCommit {
+                    work_delta: None,
                     record: TimerFireResult {
                         advanced: true,
                         wake_created: false,
@@ -3441,7 +3571,7 @@ impl TimerRepository<'_> {
             {
                 return Err(anyhow!("invalid timer wake message or queue entry"));
             }
-            if let Some(scope) = input_scope {
+            if let Some((scope, _, _)) = scoped_work {
                 // A retried append cannot grant a same-name historical Message
                 // to a Fresh successor or resurrect a pruned evidence ID.
                 super::input_evidence_snapshot::validate_existing_input_evidence_tx(
@@ -3453,6 +3583,20 @@ impl TimerRepository<'_> {
                     ),
                 )?;
             }
+            // Freeze the original reducer's possible Wait writes before it
+            // changes any qualified body. Existing admission/no-match is empty.
+            let (predicted_wait, projection_guard) = if let Some((scope, request, ledger)) = scoped_work {
+                super::transitions::predicted_trigger_wait_tx(
+                    tx, scope, &command.message, &command.queue_entry, request, ledger, None,
+                )?
+            } else { (None, None) };
+            // A no-match still materializes the original reducer's pool below.
+            let _projection_guard = projection_guard;
+            let work_proof = if let (Some((scope, _, _)), Some(wait)) = (scoped_work, predicted_wait) {
+                let keys = super::work_snapshot::work_wait_write_keys_tx(tx, &[wait])?;
+                Some(super::work_snapshot::prepare_work_write_tx(tx, scope, &keys)?)
+            } else { None };
+            upsert_timer_tx(tx, &command.record)?;
             inject_fault(
                 fault,
                 crate::runtime_db::transitions::TransitionFaultPoint::AfterValidation,
@@ -3473,12 +3617,13 @@ impl TimerRepository<'_> {
                 params![command.record.id, command.message.id, command.record.fire_count as i64, now],
             )?;
             upsert_agent_state_tx(tx, &command.agent_state.1)?;
+            let wait_writes = wake.wait_writes;
             let result = TimerFireResult {
                 advanced: true,
                 wake_created: true,
                 message: Some(wake.message),
             };
-            let acknowledgement = if let Some(scope) = input_scope {
+            let acknowledgement = if let Some((scope, work_request, _)) = scoped_work {
                 let actual = committed_message_tx(tx, &scope.agent_id, &command.message.id)?;
                 let facts = [
                     super::input_evidence_snapshot::CanonicalInputEvidence::Message(actual.clone()),
@@ -3502,6 +3647,32 @@ impl TimerRepository<'_> {
                     actual == expected_ack,
                     "timer fire State ACK differs from the committed wake projection"
                 );
+                if !wait_writes.wait_ids.is_empty() {
+                    let proof = work_proof
+                        .as_ref()
+                        .context("timer Wait writes omitted their original Work proof")?;
+                    let actual_keys = wait_writes
+                        .wait_ids
+                        .iter()
+                        .map(|id| {
+                            crate::runtime::resident_work::WorkKey::new(
+                                crate::runtime::resident_work::WorkFamily::Wait,
+                                id,
+                            )
+                        })
+                        .collect();
+                    acknowledgement.work_delta = Some(
+                        super::work_snapshot::register_work_writes_tx(
+                            tx,
+                            proof,
+                            &actual_keys,
+                            &Default::default(),
+                            &actual,
+                            work_request,
+                        )?
+                        .delta,
+                    );
+                }
                 acknowledgement.agent_state = Some(
                     super::transitions::AgentStateMutation {
                         expected: Some(Box::new(command.agent_state.0.clone())),
@@ -3511,6 +3682,7 @@ impl TimerRepository<'_> {
                 acknowledgement
             } else {
                 super::input_evidence_writes::InputEvidenceCommit {
+                    work_delta: None,
                     record: result,
                     input_delta: Default::default(),
                     agent_state: None,
@@ -3795,10 +3967,13 @@ impl MessageRepository<'_> {
             .run_storage_domain_import("messages", "jsonl", "db", |tx| {
                 let mut imported_messages = 0_u64;
                 let mut dropped_messages = 0_u64;
+                let mut work_writes = super::episode_snapshot::work_checkpoint::imports::ImportWrites::default();
                 for raw_message in messages {
                     match normalize_legacy_message_value(raw_message)? {
                         Some(message) => {
                             upsert_message_tx(tx, &message)?;
+                            work_writes.record("message", &message.id, &message.agent_id,
+                                super::episode_snapshot::work_checkpoint::imports::ImportOrigin::ActualWrite)?;
                             imported_messages += 1;
                         }
                         None => dropped_messages += 1,
@@ -3807,6 +3982,7 @@ impl MessageRepository<'_> {
                 Ok(serde_json::json!({
                     "imported_messages": imported_messages,
                     "dropped_messages": dropped_messages,
+                    "work_domain_actual_writes": work_writes.finish(tx)?,
                 }))
             })
     }
@@ -4058,11 +4234,15 @@ impl TranscriptRepository<'_> {
         }
         self.db
             .run_storage_domain_import("transcript_entries", "jsonl", "db", |tx| {
+                let mut work_writes = super::episode_snapshot::work_checkpoint::imports::ImportWrites::default();
                 for entry in &entries {
                     upsert_transcript_entry_tx(tx, entry)?;
+                    work_writes.record("transcript", &entry.id, &entry.agent_id,
+                        super::episode_snapshot::work_checkpoint::imports::ImportOrigin::ActualWrite)?;
                 }
                 Ok(serde_json::json!({
                     "imported_transcript_entries": entries.len(),
+                    "work_domain_actual_writes": work_writes.finish(tx)?,
                 }))
             })
     }
@@ -4190,10 +4370,13 @@ impl EvidenceRepository<'_> {
             .run_storage_domain_import("evidence", "jsonl", "db", |tx| {
                 let mut imported_messages = 0_u64;
                 let mut dropped_messages = 0_u64;
+                let mut work_writes = super::episode_snapshot::work_checkpoint::imports::ImportWrites::default();
                 for raw_message in messages {
                     match normalize_legacy_message_value(raw_message)? {
                         Some(message) => {
                             insert_message_evidence_tx(tx, &message)?;
+                            work_writes.record("message", &message.id, &message.agent_id,
+                                super::episode_snapshot::work_checkpoint::imports::ImportOrigin::ActualWrite)?;
                             imported_messages += 1;
                         }
                         None => dropped_messages += 1,
@@ -4201,12 +4384,18 @@ impl EvidenceRepository<'_> {
                 }
                 for entry in &transcript_entries {
                     insert_transcript_evidence_tx(tx, entry)?;
+                    work_writes.record("transcript", &entry.id, &entry.agent_id,
+                        super::episode_snapshot::work_checkpoint::imports::ImportOrigin::ActualWrite)?;
                 }
                 for record in &tool_executions {
                     insert_tool_evidence_tx(tx, record)?;
                 }
                 for brief in &briefs {
+                    let existed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM briefs WHERE evidence_id=?1)", [&brief.id], |row| row.get(0))?;
                     insert_brief_evidence_tx(tx, brief)?;
+                    work_writes.record("brief", &brief.id, &brief.agent_id, if existed {
+                        super::episode_snapshot::work_checkpoint::imports::ImportOrigin::LegacyImportEqual
+                    } else { super::episode_snapshot::work_checkpoint::imports::ImportOrigin::ActualWrite })?;
                 }
                 for summary in &delivery_summaries {
                     insert_delivery_summary_evidence_tx(tx, summary)?;
@@ -4218,6 +4407,7 @@ impl EvidenceRepository<'_> {
                     "imported_tool_executions": tool_executions.len(),
                     "imported_briefs": briefs.len(),
                     "imported_delivery_summaries": delivery_summaries.len(),
+                    "work_domain_actual_writes": work_writes.finish(tx)?,
                 }))
             })
     }
@@ -5248,9 +5438,28 @@ fn update_work_item_row_tx(
     Ok(())
 }
 
-fn import_work_item_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<()> {
+enum WorkImportOutcome {
+    ActualWrite,
+    LegacyEqual,
+    Ignored,
+}
+
+fn import_work_item_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<WorkImportOutcome> {
     if record.state != WorkItemState::Completed {
         super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
+    }
+    let existing: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM work_items WHERE work_item_id=?1",
+            [&record.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(payload) = existing {
+        let existing: WorkItemRecord = decode_work_item_payload(&payload)?;
+        if existing == *record && work_import_projection_equal_tx(tx, record)? {
+            return Ok(WorkImportOutcome::LegacyEqual);
+        }
     }
     let payload_json = serde_json::to_string(record)?;
     let state = enum_string(&record.state)?;
@@ -5264,7 +5473,7 @@ fn import_work_item_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<
     let blocked_by = record.blocked_by.clone();
     let recheck_at = record.recheck_at.map(|t| timestamp(t));
     let recheck_consumed_at = record.recheck_consumed_at.map(|t| timestamp(t));
-    tx.execute(
+    let changed = tx.execute(
         "INSERT INTO work_items (
             work_item_id, agent_id, state, objective, plan_status,
             revision, current_focus, created_at, updated_at, completed_at,
@@ -5306,7 +5515,37 @@ fn import_work_item_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<
             recheck_consumed_at,
         ],
     )?;
-    Ok(())
+    Ok(if changed == 1 {
+        WorkImportOutcome::ActualWrite
+    } else {
+        WorkImportOutcome::Ignored
+    })
+}
+
+fn work_import_projection_equal_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<bool> {
+    let actual: String = tx.query_row(
+        "SELECT json_array(agent_id,state,objective,plan_status,revision,created_at,updated_at,completed_at,plan_artifact_path,last_turn_id,blocked_by,recheck_at,recheck_consumed_at) FROM work_items WHERE work_item_id=?1",
+        [&record.id], |row| row.get(0),
+    )?;
+    let expected = serde_json::json!([
+        record.agent_id,
+        record.state,
+        record.objective,
+        record.plan_status,
+        record.revision,
+        timestamp(record.created_at),
+        timestamp(record.updated_at),
+        (record.state == WorkItemState::Completed).then(|| timestamp(record.updated_at)),
+        record
+            .plan_artifact
+            .as_ref()
+            .map(|artifact| artifact.path.display().to_string()),
+        record.turn_id,
+        record.blocked_by,
+        record.recheck_at.map(timestamp),
+        record.recheck_consumed_at.map(timestamp)
+    ]);
+    Ok(serde_json::from_str::<serde_json::Value>(&actual)? == expected)
 }
 
 pub(crate) fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<bool> {
@@ -5418,10 +5657,33 @@ pub(crate) fn task_status_phase(status: &TaskStatus) -> u8 {
     }
 }
 
+/// The primary row's outcome and every row actually changed by this write.
+/// The owner validates this finite set before publishing final transaction facts.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct WaitConditionWrites {
+    pub primary_applied: bool,
+    pub wait_ids: BTreeSet<String>,
+    pub turn_ids: BTreeSet<String>,
+}
+impl WaitConditionWrites {
+    pub(crate) fn extend(&mut self, other: Self) {
+        self.primary_applied |= other.primary_applied;
+        self.wait_ids.extend(other.wait_ids);
+        self.turn_ids.extend(other.turn_ids);
+    }
+}
+
 pub(crate) fn upsert_wait_condition_tx(
     tx: &Transaction<'_>,
     record: &WaitConditionRecord,
 ) -> Result<bool> {
+    Ok(upsert_wait_condition_with_writes_tx(tx, record)?.primary_applied)
+}
+
+pub(crate) fn upsert_wait_condition_with_writes_tx(
+    tx: &Transaction<'_>,
+    record: &WaitConditionRecord,
+) -> Result<WaitConditionWrites> {
     if matches!(
         record.status,
         WaitConditionStatus::Active | WaitConditionStatus::Triggered
@@ -5440,14 +5702,15 @@ pub(crate) fn upsert_wait_condition_tx(
     if let Some(existing) = existing.as_ref() {
         match wait_condition_transition(existing, record)? {
             StateTransitionOutcome::Applied => {}
-            StateTransitionOutcome::Idempotent => return Ok(false),
+            StateTransitionOutcome::Idempotent => return Ok(WaitConditionWrites::default()),
         }
     }
+    let mut writes = WaitConditionWrites::default();
     if matches!(
         record.status,
         crate::types::WaitConditionStatus::Active | crate::types::WaitConditionStatus::Triggered
     ) {
-        cancel_stale_unresolved_wait_owner_rows_tx(tx, record)?;
+        writes.extend(cancel_stale_unresolved_wait_owner_rows_tx(tx, record)?);
     }
 
     let payload_json = serde_json::to_string(record)?;
@@ -5509,6 +5772,9 @@ pub(crate) fn upsert_wait_condition_tx(
         ],
     )?;
     if changed == 1 {
+        writes.primary_applied = true;
+        writes.wait_ids.insert(record.id.clone());
+        writes.turn_ids.extend(record.turn_id.iter().cloned());
         let _ = bump_source_revision_tx(
             tx,
             SOURCE_WAIT,
@@ -5528,7 +5794,7 @@ pub(crate) fn upsert_wait_condition_tx(
             )?;
         }
     }
-    Ok(changed == 1)
+    Ok(writes)
 }
 
 /// Cancel stale unresolved wait rows that own the same key as an incoming
@@ -5542,7 +5808,7 @@ pub(crate) fn upsert_wait_condition_tx(
 fn cancel_stale_unresolved_wait_owner_rows_tx(
     tx: &Transaction<'_>,
     record: &WaitConditionRecord,
-) -> Result<()> {
+) -> Result<WaitConditionWrites> {
     let rows = tx
         .prepare(
             "SELECT wait_condition_id, payload_json FROM wait_conditions
@@ -5557,6 +5823,7 @@ fn cancel_stale_unresolved_wait_owner_rows_tx(
         )?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let mut cancelled = Vec::new();
+    let mut writes = WaitConditionWrites::default();
     for (wait_id, payload_json) in rows {
         let mut stale = decode_wait_condition_payload(&payload_json)?;
         if stale.updated_at > record.updated_at {
@@ -5568,7 +5835,7 @@ fn cancel_stale_unresolved_wait_owner_rows_tx(
         stale.updated_at = record.updated_at;
         stale.resolved_at = None;
         stale.cancelled_at = Some(record.updated_at);
-        tx.execute(
+        let changed = tx.execute(
             "UPDATE wait_conditions
              SET status = 'cancelled',
                  updated_at = ?1,
@@ -5582,6 +5849,10 @@ fn cancel_stale_unresolved_wait_owner_rows_tx(
                 wait_id
             ],
         )?;
+        if changed > 0 {
+            writes.wait_ids.insert(stale.id.clone());
+        }
+        writes.turn_ids.extend(stale.turn_id.iter().cloned());
         // Mirror the revision bookkeeping applied to every other wait
         // mutation: conversation consumers invalidate cached wait state via
         // source/turn revisions, so a cancelled row must not keep its
@@ -5609,7 +5880,7 @@ fn cancel_stale_unresolved_wait_owner_rows_tx(
             "cancelled stale unresolved wait conditions superseded by newer registration"
         );
     }
-    Ok(())
+    Ok(writes)
 }
 
 pub(crate) fn upsert_queue_entry_tx(

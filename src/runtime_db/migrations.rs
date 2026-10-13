@@ -3945,6 +3945,16 @@ CREATE INDEX IF NOT EXISTS idx_episode_memory_results_episode_scope
         name: "original_input_mutation_receipts",
         sql: super::input_mutation_receipts::INPUT_MUTATION_RECEIPT_SCHEMA,
     },
+    Migration {
+        version: 86,
+        name: "qualified_work_wait_continuation",
+        sql: super::work_snapshot::WORK_DOMAIN_SCHEMA,
+    },
+    Migration {
+        version: 87,
+        name: "actual_dispatch_memory_responsibility",
+        sql: super::dispatch_memory::DISPATCH_MEMORY_SCHEMA,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4252,6 +4262,12 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     }
     if migration.name == "qualified_input_evidence" {
         super::input_evidence_snapshot::capture_input_evidence_upgrade_tx(transaction, Utc::now())?;
+    }
+    if migration.name == "qualified_work_wait_continuation" {
+        super::work_snapshot::capture_work_domain_upgrade_tx(transaction)?;
+    }
+    if migration.name == "actual_dispatch_memory_responsibility" {
+        super::dispatch_memory::capture_legacy_dispatches_at_upgrade_tx(transaction)?;
     }
     if migration.name == "execution_protocol_authority" {
         backfill_execution_protocol_authority(transaction)?;

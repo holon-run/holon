@@ -1774,9 +1774,14 @@ async fn terminal_task_replay_repairs_wait_once_across_restart() {
         replayed.queue_entries[0].status,
         repaired.queue_entries[0].status
     );
+    let observed_work = harness
+        .runtime()
+        .capture_work_read(&crate::runtime::work_reads::live_work_request())
+        .await
+        .unwrap();
     let wait_transition = harness
         .runtime()
-        .wait_resolution_transition_for_message(&message)
+        .wait_resolution_transition_for_message(&message, &observed_work.work)
         .unwrap()
         .expect("replayed TaskResult should plan exact wait settlement");
     assert_eq!(wait_transition.record.status, WaitConditionStatus::Resolved);

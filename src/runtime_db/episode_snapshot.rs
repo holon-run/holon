@@ -32,6 +32,9 @@ use super::{
     RuntimeDb,
 };
 
+#[path = "episode_snapshot_work.rs"]
+pub(super) mod work_checkpoint;
+
 pub(crate) const EPISODE_CONTINUITY_POLICY: i64 = 1;
 pub(crate) const LEGACY_EPISODE_RECENT_CANDIDATES: usize = 12;
 // Upgrade is fail-closed rather than silently truncating mandatory lineage.
@@ -547,6 +550,9 @@ struct EpisodeContinuityRoots {
     /// Exact canonical records, not a claim about their original incarnation.
     record_digests: BTreeMap<String, String>,
     unavailable_refs: BTreeSet<String>,
+    /// Frozen by the same explicit legacy actor; absence is not observed None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    work_domain_checkpoint: Option<work_checkpoint::WorkContinuityCheckpoint>,
 }
 
 #[derive(Debug)]
@@ -841,12 +847,25 @@ pub(super) fn seal_imported_episode_continuity_tx(
         } else if has_any_binding(tx, &seed.agent_id)? {
             continue;
         }
-        let mut roots = collect_live_episode_roots(tx, &seed.agent_id)?;
+        // The original seed owns optional history. Import seals only its new
+        // mandatory roots, without rescanning a later non-open Work tail.
         let (frozen_roots, candidates): (String, String) = tx.query_row(
             "SELECT roots_json, candidate_payloads_json FROM episode_continuity_seeds WHERE seed_id = ?1",
             [&seed.id], |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         let frozen_roots: EpisodeContinuityRoots = serde_json::from_str(&frozen_roots)?;
+        let work_import = work_checkpoint::imports::ImportAuthority::load(
+            tx,
+            &seed.agent_id,
+            frozen_roots.clone(),
+        )?;
+        let mut roots = collect_live_episode_roots_with_work_authority(
+            tx,
+            &seed.agent_id,
+            None,
+            false,
+            Some(&work_import),
+        )?;
         roots.work_item_ids.extend(frozen_roots.work_item_ids);
         roots.source_refs.extend(frozen_roots.source_refs);
         roots.unavailable_refs.extend(frozen_roots.unavailable_refs);
@@ -898,6 +917,7 @@ pub(super) fn seal_imported_episode_continuity_tx(
             "first_import",
             false,
         )?;
+        super::work_snapshot::capture_work_domain_seed_if_ready_tx(tx, &seed.id, "first_import")?;
     }
     Ok(())
 }
@@ -1034,6 +1054,7 @@ fn insert_seed_with_candidates_tx(
             "legacy_import",
             true,
         )?;
+        super::work_snapshot::capture_work_domain_seed_if_ready_tx(tx, &seed_id, "legacy_import")?;
     }
     Ok(ContinuitySeed {
         id: seed_id,
@@ -1373,6 +1394,31 @@ fn collect_live_episode_roots_with_schema(
     agent_id: &str,
     tables: Option<&BTreeSet<String>>,
 ) -> Result<EpisodeContinuityRoots> {
+    collect_live_episode_roots_with_work_policy(connection, agent_id, tables, true)
+}
+
+fn collect_live_episode_roots_with_work_policy(
+    connection: &Connection,
+    agent_id: &str,
+    tables: Option<&BTreeSet<String>>,
+    include_nonopen: bool,
+) -> Result<EpisodeContinuityRoots> {
+    collect_live_episode_roots_with_work_authority(
+        connection,
+        agent_id,
+        tables,
+        include_nonopen,
+        None,
+    )
+}
+
+fn collect_live_episode_roots_with_work_authority(
+    connection: &Connection,
+    agent_id: &str,
+    tables: Option<&BTreeSet<String>>,
+    include_nonopen: bool,
+    work_import: Option<&work_checkpoint::imports::ImportAuthority>,
+) -> Result<EpisodeContinuityRoots> {
     let mut collector = RootCollector::default();
     let state = if root_table_available(tables, "agent_states") {
         load_state(connection, agent_id)?.0
@@ -1516,6 +1562,19 @@ fn collect_live_episode_roots_with_schema(
         collector.reference("turn", &record.turn_id);
     }
     expand_episode_root_refs(connection, agent_id, &mut collector, tables)?;
+    let (work, input_digests) = work_checkpoint::capture_with_import(
+        connection,
+        agent_id,
+        tables,
+        &collector.roots,
+        collector.payload_bytes,
+        include_nonopen,
+        work_import,
+    )?;
+    // D4 owning refs qualify D3 bodies, but must not widen D1 Episode ownership
+    // or explicit-live-ref membership through Brief/Turn owner back-edges.
+    collector.roots.record_digests = input_digests;
+    collector.roots.work_domain_checkpoint = Some(work);
     Ok(collector.roots)
 }
 
@@ -2724,6 +2783,671 @@ mod tests {
         assert_eq!(boundary, 0);
         let seeds_table:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='episode_continuity_seeds')",[],|row|row.get(0)).unwrap();
         assert!(!seeds_table);
+    }
+
+    fn work_checkpoint(
+        fixture: &Fixture,
+        phase: &str,
+    ) -> work_checkpoint::WorkContinuityCheckpoint {
+        fixture
+            .db
+            .transaction(|tx| {
+                let seed: String = tx.query_row(
+                    "SELECT seed_id FROM episode_continuity_seeds WHERE agent_id='agent-a'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                work_checkpoint::load(tx, &seed, phase)
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn fixed_work_checkpoint_keeps_latest_nonempty_result_without_expanding_episode_owner() {
+        let fixture = Fixture::legacy(|tx| {
+            upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
+            upsert_agent_state_tx(tx, &state("agent-a")).unwrap();
+            let mut work = WorkItemRecord::new("agent-a", "closed owner", WorkItemState::Completed);
+            work.id = "completed-owner".into();
+            work.created_at = time();
+            work.updated_at = time();
+            insert_work(tx, &work);
+            let mut source = MessageEnvelope::new(
+                "agent-a",
+                crate::types::MessageKind::OperatorPrompt,
+                crate::types::MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                crate::types::AuthorityClass::OperatorInstruction,
+                crate::types::Priority::Normal,
+                crate::types::MessageBody::Text {
+                    text: "completion source".into(),
+                },
+            );
+            source.id = "completion-source".into();
+            source.created_at = time();
+            let source = super::super::evidence::append_message_tx(tx, &source)
+                .unwrap()
+                .0;
+            let mut transcript = crate::types::TranscriptEntry::new(
+                "agent-a",
+                crate::types::TranscriptEntryKind::IncomingMessage,
+                None,
+                Some(source.id),
+                serde_json::json!({"text":"completion source"}),
+            );
+            transcript.id = "completion-transcript".into();
+            transcript.created_at = time();
+            let transcript = super::super::evidence::append_transcript_entry_tx(tx, &transcript)
+                .unwrap()
+                .0;
+            for (id, kind, text, offset) in [
+                ("result-a", crate::types::BriefKind::Result, "older tie", 1),
+                ("result-b", crate::types::BriefKind::Result, "newer tie", 1),
+                ("result-z", crate::types::BriefKind::Result, "", 2),
+                (
+                    "failure-z",
+                    crate::types::BriefKind::Failure,
+                    "later failure",
+                    3,
+                ),
+            ] {
+                let mut brief = BriefRecord::new("agent-a", kind, text, None, None);
+                brief.id = id.into();
+                brief.work_item_id = Some(work.id.clone());
+                brief.created_at = time() + chrono::Duration::seconds(offset);
+                brief.content_source = crate::types::BriefContentSource::TranscriptEntry {
+                    entry_id: transcript.id.clone(),
+                    relation: Default::default(),
+                };
+                super::super::evidence::insert_brief_evidence_tx(tx, &brief).unwrap();
+            }
+            insert_episode(
+                tx,
+                &episode("agent-a", "old-completed-owner-episode", 1, Some(&work.id)),
+            );
+            for index in 2..=20 {
+                insert_episode(
+                    tx,
+                    &episode("agent-a", &format!("recent-{index}"), index, None),
+                );
+            }
+            import_complete(tx);
+        });
+        let checkpoint = work_checkpoint(&fixture, "upgrade");
+        let result = checkpoint
+            .latest_results
+            .get("completed-owner")
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        assert_eq!(result.brief_id, "result-b");
+        assert_eq!(
+            result.transcript_entry_id.as_deref(),
+            Some("completion-transcript")
+        );
+        assert_eq!(
+            result.source_message_id.as_deref(),
+            Some("completion-source")
+        );
+        fixture.db.transaction(|tx| {
+            let payload: String = tx.query_row("SELECT roots_json FROM episode_continuity_seeds WHERE agent_id='agent-a'", [], |row|row.get(0))?;
+            let roots: EpisodeContinuityRoots = serde_json::from_str(&payload)?;
+            assert!(!roots.work_item_ids.contains("completed-owner"));
+            assert!(roots.record_digests.contains_key("brief:result-b"));
+            assert!(roots.record_digests.contains_key("transcript:completion-transcript"));
+            let adopted: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM episode_continuity_members WHERE episode_id='old-completed-owner-episode')", [], |row|row.get(0))?;
+            assert!(!adopted, "D4 optional Work back-edges cannot grant D1 live-owner Episodes");
+            let mut late = BriefRecord::new("agent-a", crate::types::BriefKind::Result, "late unqualified result", None, None);
+            late.id = "late-result".into();
+            late.work_item_id = Some("completed-owner".into());
+            late.created_at = time() + chrono::Duration::days(1);
+            super::super::evidence::insert_brief_evidence_tx(tx, &late)?;
+            capture_episode_continuity_upgrade_tx(tx, time())?;
+            Ok(())
+        }).unwrap();
+        assert_eq!(work_checkpoint(&fixture, "upgrade"), checkpoint);
+    }
+
+    #[test]
+    fn fixed_work_checkpoint_bounds_nonopen_tail_but_keeps_live_and_frame_endpoints() {
+        let fixture = Fixture::legacy(|tx| {
+            upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
+            upsert_agent_state_tx(tx, &state("agent-a")).unwrap();
+            for index in 0..130 {
+                let mut work =
+                    WorkItemRecord::new("agent-a", "closed history", WorkItemState::Completed);
+                work.id = format!("work-{index:03}");
+                work.created_at = time();
+                work.updated_at = time();
+                insert_work(tx, &work);
+            }
+            let mut completing =
+                WorkItemRecord::new("agent-a", "still completing", WorkItemState::Completing);
+            completing.id = "old-completing".into();
+            completing.created_at = time() - chrono::Duration::days(1);
+            completing.updated_at = completing.created_at;
+            insert_work(tx, &completing);
+            let mut frame = WorkItemContinuationFrame::new_on_completed(
+                "agent-a",
+                "work-129",
+                &completing.id,
+                None,
+            );
+            frame.id = "active-frame".into();
+            frame.created_at = time();
+            frame.updated_at = time();
+            super::super::repositories::upsert_work_item_continuation_tx(tx, &frame).unwrap();
+            import_complete(tx);
+        });
+        let checkpoint = work_checkpoint(&fixture, "upgrade");
+        let window = checkpoint.nonopen.as_ref().unwrap();
+        assert_eq!(window.work_item_ids.len(), 128);
+        assert!(!window.is_exhaustive);
+        assert_eq!(
+            window.work_item_ids.first().map(String::as_str),
+            Some("work-000")
+        );
+        assert_eq!(
+            window.work_item_ids.last().map(String::as_str),
+            Some("work-127")
+        );
+        for key in [
+            "work_item:old-completing",
+            "work_item:work-129",
+            "continuation:active-frame",
+        ] {
+            assert!(checkpoint.record_digests.contains_key(key), "{key}");
+        }
+        assert_eq!(checkpoint.latest_results.get("old-completing"), Some(&None));
+        assert_eq!(checkpoint.latest_results.get("work-129"), Some(&None));
+    }
+
+    #[test]
+    fn first_import_work_checkpoint_does_not_rescan_optional_history() {
+        let fixture = Fixture::legacy(|tx| {
+            upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
+            let mut old = WorkItemRecord::new("agent-a", "old optional", WorkItemState::Completed);
+            old.id = "old-optional".into();
+            old.created_at = time();
+            old.updated_at = time();
+            insert_work(tx, &old);
+        });
+        let fixed = work_checkpoint(&fixture, "upgrade");
+        fixture
+            .db
+            .transaction(|tx| {
+                let mut late =
+                    WorkItemRecord::new("agent-a", "late optional", WorkItemState::Completed);
+                late.id = "late-optional".into();
+                late.created_at = time() + chrono::Duration::days(1);
+                late.updated_at = late.created_at;
+                insert_work(tx, &late);
+                let mut current =
+                    WorkItemRecord::new("agent-a", "imported current", WorkItemState::Open);
+                current.id = "imported-current".into();
+                current.created_at = time();
+                current.updated_at = time();
+                insert_work(tx, &current);
+                Ok(())
+            })
+            .unwrap();
+        let mut imported = state("agent-a");
+        imported.current_work_item_id = Some("imported-current".into());
+        fixture
+            .db
+            .agent_states()
+            .import_legacy_many(vec![imported])
+            .unwrap();
+        fixture
+            .db
+            .context_episodes()
+            .import_legacy(Vec::new())
+            .unwrap();
+        let import = work_checkpoint(&fixture, "first_import");
+        assert!(import.nonopen.is_none());
+        assert!(import
+            .record_digests
+            .contains_key("work_item:imported-current"));
+        assert!(!import
+            .record_digests
+            .contains_key("work_item:late-optional"));
+        assert!(!import.latest_results.contains_key("late-optional"));
+        assert_eq!(work_checkpoint(&fixture, "upgrade"), fixed);
+    }
+
+    #[test]
+    fn fixed_work_completion_records_optional_absence_but_never_foreign_or_pruned_none() {
+        let fixture = Fixture::legacy(|tx| {
+            upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
+            upsert_agent_state_tx(tx, &state("agent-a")).unwrap();
+            import_complete(tx);
+        });
+        fixture
+            .db
+            .transaction(|tx| {
+                let mut work = WorkItemRecord::new(
+                    "agent-a",
+                    "dangling optional completion",
+                    WorkItemState::Completed,
+                );
+                work.id = "optional-absent-work".into();
+                work.created_at = time();
+                work.updated_at = time();
+                insert_work(tx, &work);
+                let mut brief = BriefRecord::new(
+                    "agent-a",
+                    crate::types::BriefKind::Result,
+                    "kept completion",
+                    None,
+                    None,
+                );
+                brief.id = "optional-absent-brief".into();
+                brief.work_item_id = Some(work.id.clone());
+                brief.content_source = crate::types::BriefContentSource::TranscriptEntry {
+                    entry_id: "optional-source".into(),
+                    relation: Default::default(),
+                };
+                super::super::evidence::insert_brief_evidence_tx(tx, &brief)?;
+                Ok(())
+            })
+            .unwrap();
+        fixture.db.transaction(|tx| {
+            let (checkpoint, inputs) = work_checkpoint::capture(tx, "agent-a", None, &EpisodeContinuityRoots::default(), 0, true)?;
+            let head = checkpoint.latest_results["optional-absent-work"].as_ref().unwrap();
+            assert_eq!(head.transcript_entry_id, None);
+            let observation = &checkpoint.completion_sources["optional-absent-brief"];
+            assert_eq!(observation.transcript.as_ref().unwrap().availability, work_checkpoint::CompletionSourceAvailability::GlobalAbsent);
+            assert!(checkpoint.unavailable_refs.contains("transcript:optional-source"));
+            assert!(inputs.contains_key("brief:optional-absent-brief"));
+            let mut foreign = crate::types::TranscriptEntry::new("agent-other", crate::types::TranscriptEntryKind::AssistantRound, None, None, serde_json::json!({"text":"foreign"}));
+            foreign.id = "optional-source".into();
+            super::super::evidence::append_transcript_entry_tx(tx, &foreign)?;
+            let error = work_checkpoint::capture(tx, "agent-a", None, &EpisodeContinuityRoots::default(), 0, true).unwrap_err();
+            assert!(format!("{error:#}").contains("scope/key mismatch"));
+            tx.execute("DELETE FROM transcript_entries WHERE evidence_id='optional-source'", [])?;
+            tx.execute("INSERT INTO input_evidence_current(agent_id,identity_incarnation,family,record_id,revision,content_digest,fingerprint_json,availability,qualification) VALUES('agent-other',1,'transcript','optional-source',1,NULL,'{}','pruned','committed_writer')", [])?;
+            let error = work_checkpoint::capture(tx, "agent-a", None, &EpisodeContinuityRoots::default(), 0, true).unwrap_err();
+            assert!(format!("{error:#}").contains("qualified or pruned"));
+            Ok(())
+        }).unwrap();
+    }
+
+    // v81 has not run the current conditional blocker/recheck backfill.
+    fn insert_work_for_import(tx: &Transaction<'_>, work: &WorkItemRecord) {
+        insert_work(tx, work);
+        let stamp = |at: DateTime<Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        tx.execute(
+            "UPDATE work_items SET plan_status=?1,created_at=?2,updated_at=?3,completed_at=?4,plan_artifact_path=?5,last_turn_id=?6 WHERE work_item_id=?7",
+            params![serde_json::to_value(&work.plan_status).unwrap().as_str().unwrap(),
+                stamp(work.created_at),stamp(work.updated_at),
+                (work.state == WorkItemState::Completed).then(||stamp(work.updated_at)),
+                work.plan_artifact.as_ref().map(|artifact|artifact.path.display().to_string()),
+                work.turn_id,work.id],
+        ).unwrap();
+    }
+
+    // These fixtures intentionally stop before the conditional normalized backfill.
+    fn insert_wait_v81(tx: &Transaction<'_>, wait: &WaitConditionRecord) {
+        let stamp = |at: DateTime<Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        tx.execute(
+            "INSERT INTO wait_conditions (
+                wait_condition_id,agent_id,work_item_id,status,kind,source,subject_ref,
+                waiting_for,created_at,updated_at,expires_at,resolved_at,cancelled_at,
+                last_turn_id,trigger_message_id,triggered_at,payload_json
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+            params![
+                wait.id,
+                wait.agent_id,
+                wait.work_item_id,
+                serde_json::to_value(&wait.status)
+                    .unwrap()
+                    .as_str()
+                    .unwrap(),
+                serde_json::to_value(&wait.kind).unwrap().as_str().unwrap(),
+                wait.source,
+                wait.subject_ref,
+                wait.waiting_for,
+                stamp(wait.created_at),
+                stamp(wait.updated_at),
+                wait.expires_at.map(stamp),
+                wait.resolved_at.map(stamp),
+                wait.cancelled_at.map(stamp),
+                wait.turn_id,
+                wait.trigger_message_id(),
+                wait.triggered_at().map(stamp),
+                serde_json::to_string(wait).unwrap()
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn fixed_work_checkpoint_includes_complete_current_turn_wait_relation() {
+        let fixture = Fixture::legacy(|tx| {
+            upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
+            let mut current = state("agent-a");
+            current.current_turn_id = Some("current-wait-turn".into());
+            upsert_agent_state_tx(tx, &current).unwrap();
+            for (id, status, turn) in [
+                ("wait-resolved", "resolved", "current-wait-turn"),
+                ("wait-cancelled", "cancelled", "current-wait-turn"),
+                ("wait-unrelated", "resolved", "other-turn"),
+            ] {
+                let wait: WaitConditionRecord = serde_json::from_value(serde_json::json!({
+                    "id":id,"agent_id":"agent-a","status":status,"kind":"operator",
+                    "waiting_for":"operator","wake_sources":[],"created_at":time(),
+                    "updated_at":time(),"turn_id":turn
+                }))
+                .unwrap();
+                insert_wait_v81(tx, &wait);
+            }
+            import_complete(tx);
+        });
+        let checkpoint = work_checkpoint(&fixture, "upgrade");
+        assert_eq!(
+            checkpoint.turn_wait_keys["current-wait-turn"],
+            BTreeSet::from(["wait-resolved".into(), "wait-cancelled".into()])
+        );
+        assert!(checkpoint.record_digests.contains_key("wait:wait-resolved"));
+        assert!(checkpoint
+            .record_digests
+            .contains_key("wait:wait-cancelled"));
+        assert!(!checkpoint
+            .record_digests
+            .contains_key("wait:wait-unrelated"));
+    }
+
+    #[test]
+    fn first_import_fixed_live_work_never_adopts_a_late_unreceived_result() {
+        let fixture = Fixture::legacy(|tx| {
+            upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
+            let mut current = state("agent-a");
+            current.current_work_item_id = Some("live-fixed".into());
+            let mut work = WorkItemRecord::new("agent-a", "fixed live", WorkItemState::Open);
+            work.id = "live-fixed".into();
+            work.created_at = time();
+            work.updated_at = time();
+            insert_work_for_import(tx, &work);
+            upsert_agent_state_tx(tx, &current).unwrap();
+        });
+        assert_eq!(
+            work_checkpoint(&fixture, "upgrade").latest_results["live-fixed"],
+            None
+        );
+        fixture
+            .db
+            .transaction(|tx| {
+                let mut late = BriefRecord::new(
+                    "agent-a",
+                    crate::types::BriefKind::Result,
+                    "not received by import",
+                    None,
+                    None,
+                );
+                late.id = "raw-late-head".into();
+                late.work_item_id = Some("live-fixed".into());
+                super::super::evidence::insert_brief_evidence_tx(tx, &late)?;
+                Ok(())
+            })
+            .unwrap();
+        fixture
+            .db
+            .evidence()
+            .import_legacy(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
+            .unwrap();
+        fixture
+            .db
+            .context_episodes()
+            .import_legacy(Vec::new())
+            .unwrap();
+        let imported = work_checkpoint(&fixture, "first_import");
+        assert_eq!(imported.latest_results["live-fixed"], None);
+        fixture.db.transaction(|tx| {
+            let eligible: i64 = tx.query_row("SELECT COUNT(*) FROM input_evidence_eligibility WHERE family='brief' AND record_id='raw-late-head'", [], |row|row.get(0))?;
+            assert_eq!(eligible, 0);
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn first_import_legacy_equal_result_preserves_bytes_and_excludes_unreceived_newer_head() {
+        let fixture = Fixture::legacy(|tx| {
+            upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
+            let mut current = state("agent-a");
+            current.current_work_item_id = Some("live-fixed".into());
+            let mut work = WorkItemRecord::new("agent-a", "fixed live", WorkItemState::Open);
+            work.id = "live-fixed".into();
+            work.created_at = time();
+            work.updated_at = time();
+            insert_work_for_import(tx, &work);
+            upsert_agent_state_tx(tx, &current).unwrap();
+        });
+        let mut received = BriefRecord::new(
+            "agent-a",
+            crate::types::BriefKind::Result,
+            "original import equal",
+            None,
+            None,
+        );
+        received.id = "legacy-received-head".into();
+        received.work_item_id = Some("live-fixed".into());
+        received.created_at = time();
+        let pretty = serde_json::to_string_pretty(&received).unwrap();
+        fixture
+            .db
+            .transaction(|tx| {
+                super::super::evidence::insert_brief_evidence_tx(tx, &received)?;
+                tx.execute(
+                    "UPDATE briefs SET payload_json=?1,content_hash=?2 WHERE evidence_id=?3",
+                    params![
+                        pretty,
+                        super::super::evidence::content_hash(&pretty),
+                        received.id
+                    ],
+                )?;
+                let mut late = BriefRecord::new(
+                    "agent-a",
+                    crate::types::BriefKind::Result,
+                    "unreceived later result",
+                    None,
+                    None,
+                );
+                late.id = "late-after-received".into();
+                late.work_item_id = Some("live-fixed".into());
+                late.created_at = time() + chrono::Duration::days(1);
+                super::super::evidence::insert_brief_evidence_tx(tx, &late)?;
+                Ok(())
+            })
+            .unwrap();
+        fixture
+            .db
+            .evidence()
+            .import_legacy(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![received.clone()],
+                Vec::new(),
+            )
+            .unwrap();
+        fixture
+            .db
+            .transaction(|tx| {
+                let actual: String = tx.query_row(
+                    "SELECT payload_json FROM briefs WHERE evidence_id=?1",
+                    [&received.id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(actual, pretty);
+                let checkpoint: String = tx.query_row(
+                    "SELECT source_checkpoint_json FROM storage_domains WHERE domain='evidence'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let checkpoint: serde_json::Value = serde_json::from_str(&checkpoint)?;
+                let observed = &checkpoint["work_domain_actual_writes"]["records"]
+                    ["brief:legacy-received-head"];
+                assert_eq!(observed["origin"], "legacy_import_equal");
+                assert_eq!(observed["raw_digest"], bytes_digest(pretty.as_bytes()));
+                Ok(())
+            })
+            .unwrap();
+        fixture
+            .db
+            .context_episodes()
+            .import_legacy(Vec::new())
+            .unwrap();
+        let imported = work_checkpoint(&fixture, "first_import");
+        assert_eq!(
+            imported.latest_results["live-fixed"]
+                .as_ref()
+                .unwrap()
+                .brief_id,
+            received.id
+        );
+        fixture.db.transaction(|tx| {
+            let eligible:i64=tx.query_row("SELECT COUNT(*) FROM input_evidence_eligibility WHERE family='brief' AND record_id='late-after-received'",[],|row|row.get(0))?;
+            assert_eq!(eligible,0);
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn first_import_advances_only_fixed_work_actual_versions_and_preserves_equal_raw_bytes() {
+        let mut original =
+            WorkItemRecord::new("agent-a", "fixed optional", WorkItemState::Completed);
+        original.id = "fixed-optional".into();
+        original.created_at = time();
+        original.updated_at = time();
+        let pretty = serde_json::to_string_pretty(&original).unwrap();
+        let fixture = Fixture::legacy(|tx| {
+            upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
+            upsert_agent_state_tx(tx, &state("agent-a")).unwrap();
+            insert_work_for_import(tx, &original);
+            tx.execute(
+                "UPDATE work_items SET payload_json=?1 WHERE work_item_id=?2",
+                params![pretty, original.id],
+            )
+            .unwrap();
+        });
+        let fixed = work_checkpoint(&fixture, "upgrade");
+        fixture
+            .db
+            .work_items()
+            .import_legacy(vec![original.clone()])
+            .unwrap();
+        fixture
+            .db
+            .transaction(|tx| {
+                let actual: String = tx.query_row(
+                    "SELECT payload_json FROM work_items WHERE work_item_id=?1",
+                    [&original.id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(actual, pretty);
+                Ok(())
+            })
+            .unwrap();
+        // A new fixture exercises a true newer imported version of the same fixed member.
+        let changed_fixture = Fixture::legacy(|tx| {
+            upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
+            upsert_agent_state_tx(tx, &state("agent-a")).unwrap();
+            insert_work_for_import(tx, &original);
+        });
+        let mut changed = original.clone();
+        changed.revision += 1;
+        changed.objective = "original file newer version".into();
+        changed.updated_at += chrono::Duration::seconds(1);
+        let mut late = WorkItemRecord::new("agent-a", "late nonopen", WorkItemState::Completed);
+        late.id = "late-imported-optional".into();
+        late.created_at = time();
+        late.updated_at = time();
+        changed_fixture
+            .db
+            .work_items()
+            .import_legacy(vec![changed.clone(), late])
+            .unwrap();
+        changed_fixture
+            .db
+            .context_episodes()
+            .import_legacy(Vec::new())
+            .unwrap();
+        let imported = work_checkpoint(&changed_fixture, "first_import");
+        assert!(imported.nonopen.is_none());
+        assert_eq!(
+            imported.record_digests["work_item:fixed-optional"],
+            bytes_digest(serde_json::to_string(&changed).unwrap().as_bytes())
+        );
+        assert!(!imported
+            .record_digests
+            .contains_key("work_item:late-imported-optional"));
+        assert_eq!(work_checkpoint(&fixture, "upgrade"), fixed);
+    }
+
+    #[test]
+    fn first_import_wait_footprint_includes_implicitly_cancelled_fixed_owner() {
+        let old: WaitConditionRecord = serde_json::from_value(serde_json::json!({
+            "id":"old-fixed-wait","agent_id":"agent-a","status":"active","kind":"operator",
+            "waiting_for":"operator","created_at":time(),"updated_at":time()
+        }))
+        .unwrap();
+        let fixture = Fixture::legacy(|tx| {
+            upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
+            upsert_agent_state_tx(tx, &state("agent-a")).unwrap();
+            insert_wait_v81(tx, &old);
+        });
+        let mut newer = old.clone();
+        newer.id = "new-imported-wait".into();
+        newer.updated_at += chrono::Duration::seconds(1);
+        fixture
+            .db
+            .wait_conditions()
+            .import_legacy(vec![newer])
+            .unwrap();
+        let cancelled = fixture.db.transaction(|tx| {
+            let checkpoint: String=tx.query_row("SELECT source_checkpoint_json FROM storage_domains WHERE domain='wait_conditions'",[],|row|row.get(0))?;
+            let checkpoint:serde_json::Value=serde_json::from_str(&checkpoint)?;
+            assert!(checkpoint["work_domain_actual_writes"]["records"].get("wait:old-fixed-wait").is_some());
+            assert!(checkpoint["work_domain_actual_writes"]["records"].get("wait:new-imported-wait").is_some());
+            let payload:String=tx.query_row("SELECT payload_json FROM wait_conditions WHERE wait_condition_id='old-fixed-wait'",[],|row|row.get(0))?;
+            let record:WaitConditionRecord=serde_json::from_str(&payload)?;
+            assert_eq!(record.status,crate::types::WaitConditionStatus::Cancelled);
+            Ok(bytes_digest(payload.as_bytes()))
+        }).unwrap();
+        fixture
+            .db
+            .context_episodes()
+            .import_legacy(Vec::new())
+            .unwrap();
+        let imported = work_checkpoint(&fixture, "first_import");
+        assert_eq!(imported.record_digests["wait:old-fixed-wait"], cancelled);
+    }
+
+    #[test]
+    fn absent_work_manifest_is_not_observed_no_result_and_combined_body_budget_is_strict() {
+        let fixture = Fixture::legacy(|tx| {
+            upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
+            upsert_agent_state_tx(tx, &state("agent-a")).unwrap();
+            let mut work = WorkItemRecord::new("agent-a", "body budget", WorkItemState::Completed);
+            work.id = "budget-work".into();
+            work.created_at = time();
+            work.updated_at = time();
+            insert_work(tx, &work);
+            import_complete(tx);
+        });
+        fixture.db.transaction(|tx| {
+            let error = work_checkpoint::capture(tx, "agent-a", None, &EpisodeContinuityRoots::default(), CONTINUITY_MAX_PAYLOAD_BYTES, true).unwrap_err();
+            assert_eq!(error.downcast_ref::<EpisodeSnapshotError>(), Some(&EpisodeSnapshotError::ClosureResourceExhausted { limit: "payload bytes" }));
+            let (seed, payload): (String, String) = tx.query_row("SELECT seed_id,roots_json FROM episode_continuity_seeds WHERE agent_id='agent-a'", [], |row|Ok((row.get(0)?,row.get(1)?)))?;
+            let mut old: serde_json::Value = serde_json::from_str(&payload)?;
+            old.as_object_mut().unwrap().remove("work_domain_checkpoint");
+            tx.execute("UPDATE episode_continuity_seeds SET roots_json=?1 WHERE seed_id=?2", params![serde_json::to_string(&old)?,seed])?;
+            let error = work_checkpoint::load(tx, &seed, "upgrade").unwrap_err();
+            assert!(matches!(error.downcast_ref::<work_checkpoint::WorkCheckpointReadError>(), Some(work_checkpoint::WorkCheckpointReadError::Missing { .. })));
+            Ok(())
+        }).unwrap();
     }
 }
 

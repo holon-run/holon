@@ -107,9 +107,9 @@ pub(crate) fn continuation_ready_context_config(
 
 pub(crate) async fn finish_claimed_test_run(runtime: &RuntimeHandle) {
     let mut guard = runtime.inner.agent.lock().await;
-    scheduler::apply_idle_projection(&mut guard.state, &runtime.inner.storage).unwrap();
+    // Provider polling has ended; the original queue terminal transaction owns
+    // durable Run/State closure and its dispatch Memory settlement.
     guard.current_run_abort = None;
-    guard.persist_state(&runtime.inner.storage).unwrap();
 }
 
 pub(crate) fn terminal_transition(
@@ -284,7 +284,7 @@ pub(crate) fn closure_decision(
 }
 
 pub(crate) async fn bind_turn_to_work_item(runtime: &RuntimeHandle, work_item_id: &str) {
-    let mut guard = runtime.inner.agent.lock().await;
+    let mut guard = runtime.begin_mutation().await.unwrap();
     guard.state.turn_index = 1;
     guard.state.current_turn_work_item_id = Some(work_item_id.to_string());
     guard.state.last_turn_terminal = Some(TurnTerminalRecord {
@@ -298,7 +298,7 @@ pub(crate) async fn bind_turn_to_work_item(runtime: &RuntimeHandle, work_item_id
         completed_at: Utc::now(),
         duration_ms: 10,
     });
-    guard.persist_state(&runtime.inner.storage).unwrap();
+    guard.persist_state(&runtime.inner.storage).await.unwrap();
 }
 
 pub(crate) fn bind_autonomous_work_queue_tick(

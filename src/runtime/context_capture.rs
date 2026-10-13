@@ -3,8 +3,10 @@
 use super::*;
 use crate::{
     context::{
-        acquire_durable_context,
-        inputs::{ContextInputs, ResidentContextInputs},
+        acquire_durable_context, completion_work_item_ids,
+        inputs::{
+            captured_work_item, selected_completion_brief_ids, ContextInputs, ResidentContextInputs,
+        },
         observe_context_resources, ContextConfig, ContextHistoryPreparation,
         FilesystemContextResources,
     },
@@ -13,11 +15,13 @@ use crate::{
     runtime::resident_input_evidence::{
         InputEvidenceFamily as Family, InputEvidenceKey, InputWindowSelector, LEGACY_INPUT_WINDOW,
     },
+    runtime::resident_work::{CapturedWork, WorkCaptureRequest, WorkFamily, WorkKey},
     runtime_db::{
         context_inputs::ContextDurableRead,
         input_evidence_snapshot::{
             InputEvidenceLoadRequest, InputEvidenceSnapshotError, InputWindowRequest,
         },
+        work_snapshot::{validate_work_domain_observation_tx, WorkSnapshotError},
     },
     types::TurnOwner,
 };
@@ -27,7 +31,11 @@ use crate::{
 struct ContextConfigurationChanged;
 
 #[derive(Debug, thiserror::Error)]
-#[error("context preparation could not capture a stable configuration after three attempts")]
+#[error("context Work or Trigger dependency changed during acquisition")]
+struct ContextDependencyChanged;
+
+#[derive(Debug, thiserror::Error)]
+#[error("context preparation could not capture stable configuration and dependencies after three attempts")]
 pub(super) struct ContextPreparationRetryExhausted;
 
 #[cfg(test)]
@@ -39,7 +47,24 @@ pub(super) struct ContextCaptureCheckpoint {
 }
 
 impl RuntimeHandle {
-    pub(super) async fn build_loaded_context_prompt(
+    #[inline(never)]
+    pub(super) fn build_loaded_context_prompt<'a>(
+        &'a self,
+        message: &'a MessageEnvelope,
+        continuation: Option<&'a ContinuationResolution>,
+        fallback_model: Option<&'a ModelRouteRef>,
+        require_execution: bool,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<EffectivePrompt>> + Send + 'a>>
+    {
+        Box::pin(self.build_loaded_context_prompt_inner(
+            message,
+            continuation,
+            fallback_model,
+            require_execution,
+        ))
+    }
+
+    async fn build_loaded_context_prompt_inner(
         &self,
         message: &MessageEnvelope,
         continuation: Option<&ContinuationResolution>,
@@ -60,10 +85,11 @@ impl RuntimeHandle {
                 Err(error)
                     if error
                         .downcast_ref::<ContextConfigurationChanged>()
-                        .is_some() =>
+                        .is_some()
+                        || error.downcast_ref::<ContextDependencyChanged>().is_some() =>
                 {
                     tracing::debug!(agent_id = %message.agent_id, attempt = attempt + 1,
-                        "retrying context acquisition after configuration publication changed");
+                        "retrying context acquisition after a frozen dependency changed");
                     tokio::task::yield_now().await;
                 }
                 Err(error) => return Err(error),
@@ -74,7 +100,7 @@ impl RuntimeHandle {
                 crate::runtime_error::RuntimeError::new(
                     crate::runtime_error::RuntimeErrorDomain::Conflict,
                     "context_preparation_retry_exhausted",
-                    "Context preparation is waiting for a stable configuration",
+                    "Context preparation is waiting for stable configuration and dependencies",
                 )
                 .with_retryable(true),
             ),
@@ -108,6 +134,8 @@ impl RuntimeHandle {
             .prompt_budget_estimated_tokens
             .checked_sub(crate::prompt::time::RUNTIME_TIME_RESERVED_TOKENS)
             .ok_or_else(|| anyhow!("context budget cannot reserve runtime time"))?;
+        let work_request = context_work_capture_request(&mutation.state);
+        mutation.prepare_owner_work_request(&work_request).await?;
         let state = &mutation.state;
         anyhow::ensure!(state.id == message.agent_id, "context input agent mismatch");
         let identity_record = self
@@ -123,7 +151,45 @@ impl RuntimeHandle {
         let history_policy = turn::context_history_preparation(&state.id, &model.effective_model);
         let (mandatory_roots, record_limit, byte_limit) =
             mutation.context_input_evidence_policy()?;
-        let input_request = context_input_evidence_request(
+        let planned_work = mutation.capture_work(&work_request)?;
+        anyhow::ensure!(
+            planned_work.scope.agent_id == state.id,
+            "context Work scope mismatch"
+        );
+        // The D6 Trigger adapter is explicit. Freeze its existing predicate/order
+        // before selecting the bounded completion heads; revalidate below.
+        let triggers = {
+            let mut connection = self.inner.runtime_db.connection()?;
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+            let durable = ContextDurableRead::new(&transaction, &state.id);
+            let facts = durable.scope_facts()?;
+            anyhow::ensure!(
+                facts.state.as_ref() == Some(state)
+                    && facts.identity.as_ref() == Some(&identity_record)
+                    && identity_record.incarnation == planned_work.scope.identity_incarnation,
+                "context Work differs from the reserved publication"
+            );
+            validate_work_domain_observation_tx(
+                &transaction,
+                &planned_work.scope,
+                planned_work.revision,
+            )
+            .map_err(context_work_observation_error)?;
+            let triggers = durable.external_triggers()?;
+            transaction.commit()?;
+            triggers
+        };
+        let projection = planned_work.work_queue(state, triggers.clone())?;
+        let bound_work = state
+            .current_execution_binding
+            .as_ref()
+            .and_then(|binding| binding.work_item_id.as_deref())
+            .map(|id| captured_work_item(&planned_work, id))
+            .transpose()?
+            .flatten();
+        let completion_work_ids = completion_work_item_ids(bound_work.as_ref(), &projection);
+        let mut input_request = context_input_evidence_request(
             state,
             require_execution.then_some(message),
             &config,
@@ -132,11 +198,27 @@ impl RuntimeHandle {
             record_limit,
             byte_limit,
         )?;
+        // Completion is its own owning path. Ordinary mandatory roots retain
+        // their strict meaning even when they name the same Brief or source.
+        input_request.selected_completion_brief_ids =
+            selected_completion_brief_ids(&planned_work, &completion_work_ids)?;
+        // Acquisition also preserves the independent ordinary closure policy.
+        // Prompt selection still uses its original frozen request below.
+        let mut acquisition_request = input_request.clone();
+        super::scheduler::include_scheduler_brief_window(&mut acquisition_request.windows);
         mutation
-            .prepare_owner_input_request(&input_request, config.recent_episode_candidates)
+            .prepare_owner_input_request(&acquisition_request, config.recent_episode_candidates)
             .await?;
-        let captured = mutation
-            .capture_context_with_inputs(config.recent_episode_candidates, &input_request)?;
+        let captured = mutation.capture_context_with_inputs_and_work(
+            config.recent_episode_candidates,
+            &input_request,
+            &work_request,
+        )?;
+        let work = captured
+            .work
+            .as_ref()
+            .ok_or_else(|| crate::runtime::resident_work::WorkReadError::IncompleteLive)?;
+        validate_work_selection(&planned_work, work)?;
         let state = captured.state.as_ref();
         let resident = captured.input_evidence.as_ref().ok_or_else(|| {
             InputEvidenceSnapshotError::NeedsPreparation(
@@ -156,7 +238,6 @@ impl RuntimeHandle {
             let transaction =
                 connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
             let durable_inputs = ContextDurableRead::new(&transaction, &state.id);
-            let inputs = ResidentContextInputs::new(&durable_inputs, resident)?;
             // The first SELECT fixes the SQLite view. All subsequent durable
             // context and history reads use this same borrowed transaction.
             let scope = durable_inputs.scope_facts()?;
@@ -177,6 +258,11 @@ impl RuntimeHandle {
             let control_revision = scope
                 .control_revision
                 .ok_or_else(|| anyhow!("context control revision missing"))?;
+            validate_work_domain_observation_tx(&transaction, &work.scope, work.revision)
+                .map_err(context_work_observation_error)?;
+            validate_trigger_selection(&triggers, &durable_inputs.external_triggers()?)?;
+            let inputs =
+                ResidentContextInputs::new(&durable_inputs, resident, work, state, &triggers)?;
             if require_execution {
                 validate_context_execution(&inputs, state, message)?;
             }
@@ -287,6 +373,52 @@ impl RuntimeHandle {
     }
 }
 
+/// Shared with bootstrap/writers: State focus and the actual execution owner
+/// are named roots; the full live/128 policy remains explicit in the request.
+pub(super) fn context_work_capture_request(state: &AgentState) -> WorkCaptureRequest {
+    let mut request = WorkCaptureRequest::current();
+    request.mandatory_roots.extend(
+        state
+            .current_work_item_id
+            .iter()
+            .chain(
+                state
+                    .current_execution_binding
+                    .iter()
+                    .filter_map(|binding| binding.work_item_id.as_ref()),
+            )
+            .map(|id| WorkKey::new(WorkFamily::Work, id)),
+    );
+    request
+}
+
+fn context_work_observation_error(error: anyhow::Error) -> anyhow::Error {
+    if matches!(
+        error.downcast_ref::<WorkSnapshotError>(),
+        Some(WorkSnapshotError::RevisionMismatch { .. })
+    ) {
+        ContextDependencyChanged.into()
+    } else {
+        error
+    }
+}
+
+fn validate_work_selection(planned: &CapturedWork, captured: &CapturedWork) -> Result<()> {
+    if planned.scope != captured.scope || planned.revision != captured.revision {
+        return Err(ContextDependencyChanged.into());
+    }
+    Ok(())
+}
+fn validate_trigger_selection(
+    planned: &[ExternalTriggerRecord],
+    current: &[ExternalTriggerRecord],
+) -> Result<()> {
+    if planned != current {
+        return Err(ContextDependencyChanged.into());
+    }
+    Ok(())
+}
+
 /// Shared by explicit preparation actors and loaded capture. It freezes only
 /// policy and typed roots; it never hydrates, adopts hinted Turns or reads SQL.
 pub(super) fn context_input_evidence_request(
@@ -384,6 +516,7 @@ pub(super) fn context_input_evidence_request(
         });
     }
     Ok(InputEvidenceLoadRequest {
+        selected_completion_brief_ids: Default::default(),
         interrupted_sources: Default::default(),
         windows,
         mandatory_roots,
@@ -457,6 +590,7 @@ fn validate_context_execution(
 mod tests {
     use super::*;
     use crate::runtime::tests::support::{context_config, tempdir, StubProvider};
+    use std::collections::BTreeMap;
 
     fn fixture() -> (tempfile::TempDir, RuntimeHandle) {
         let home = tempdir().unwrap();
@@ -471,6 +605,86 @@ mod tests {
         )
         .unwrap();
         (home, runtime)
+    }
+
+    #[test]
+    fn context_work_request_names_focus_and_actual_owner_without_reading_message_hints() {
+        let mut state = AgentState::new("context-capture");
+        state.current_work_item_id = Some("focused-work".into());
+        state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+            source_message_id: "actual-input".into(),
+            turn_id: "actual-turn".into(),
+            work_item_id: Some("actual-owner".into()),
+            activation_id: None,
+            admission_provenance: None,
+            owner: None,
+            claimed_work_revision: None,
+        });
+        let request = context_work_capture_request(&state);
+        assert!(request.include_live);
+        assert_eq!(
+            request.nonopen_limit,
+            crate::runtime::resident_work::WORK_NONOPEN_WINDOW
+        );
+        assert_eq!(
+            request.mandatory_roots,
+            BTreeSet::from([
+                WorkKey::new(WorkFamily::Work, "focused-work"),
+                WorkKey::new(WorkFamily::Work, "actual-owner")
+            ])
+        );
+    }
+
+    #[test]
+    fn frozen_trigger_and_work_changes_require_replanning_instead_of_reusing_old_heads() {
+        let work = |revision| CapturedWork {
+            scope: crate::runtime::resident_input_evidence::InputEvidenceScope {
+                agent_id: "context-capture".into(),
+                identity_incarnation: 1,
+            },
+            revision,
+            live_complete: true,
+            live_work_ids: BTreeSet::new(),
+            unresolved_wait_ids: BTreeSet::new(),
+            active_frame_ids: BTreeSet::new(),
+            turn_wait_keys: BTreeMap::new(),
+            task_wait_keys: BTreeMap::new(),
+            trigger_wait_keys: BTreeMap::new(),
+            nonopen: crate::runtime::resident_work::WorkHistoryCoverage {
+                limit: crate::runtime::resident_work::WORK_NONOPEN_WINDOW,
+                keys: Vec::new(),
+                is_exhaustive: true,
+            },
+            latest_results: BTreeMap::new(),
+            observations: BTreeMap::new(),
+            records: Vec::new(),
+            budget: None,
+            budget_views: Vec::new(),
+        };
+        assert!(validate_work_selection(&work(1), &work(2))
+            .unwrap_err()
+            .downcast_ref::<ContextDependencyChanged>()
+            .is_some());
+        let trigger = ExternalTriggerRecord {
+            external_trigger_id: "trigger".into(),
+            target_agent_id: "context-capture".into(),
+            scope: ExternalTriggerScope::Agent,
+            delivery_mode: CallbackDeliveryMode::EnqueueMessage,
+            token: None,
+            token_hash: "hash".into(),
+            status: ExternalTriggerStatus::Active,
+            created_at: Utc::now(),
+            revoked_at: None,
+            last_delivered_at: None,
+            delivery_count: 0,
+        };
+        let mut changed = trigger.clone();
+        changed.delivery_count = 1;
+        assert!(validate_trigger_selection(&[trigger.clone()], &[changed])
+            .unwrap_err()
+            .downcast_ref::<ContextDependencyChanged>()
+            .is_some());
+        validate_trigger_selection(&[trigger.clone()], &[trigger]).unwrap();
     }
 
     #[test]
@@ -636,6 +850,246 @@ mod tests {
         assert_eq!(
             request.windows[0].limit, 513,
             "one already-qualified current candidate is distinct from policy expansion"
+        );
+    }
+
+    fn publish_prompt_history<'a>(
+        runtime: &'a RuntimeHandle,
+        count: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            use crate::runtime::resident_input_evidence::{
+                InputEvidenceFamily as Family, InputEvidenceKey as Key,
+            };
+            use crate::runtime_db::{
+                evidence::{
+                    append_message_tx, committed_brief_tx, insert_brief_evidence_tx,
+                    upsert_agent_state_tx,
+                },
+                input_evidence_snapshot::{
+                    register_committed_input_evidence_tx, validate_existing_input_evidence_tx,
+                    CanonicalInputEvidence as Fact,
+                },
+                repositories::{committed_turn_record_tx, upsert_turn_record_tx},
+                transitions::{AgentStateMutation, PostCommitEffects, TransitionCommit},
+            };
+            let mut mutation = runtime.begin_mutation().await.unwrap();
+            let expected = mutation.state.clone();
+            let created_at = Utc::now();
+            let committed = mutation
+                .commit_transition(crate::ids::audit_event_id(), |scope| {
+                    runtime.inner.runtime_db.transaction(|tx| {
+                        let mut facts = Vec::new();
+                        let mut messages = Vec::new();
+                        let mut turns = Vec::new();
+                        for index in 0..count {
+                            let turn_id = format!("window-history-turn-{index}");
+                            let mut message = MessageEnvelope::new(
+                                &expected.id,
+                                MessageKind::OperatorPrompt,
+                                MessageOrigin::Operator {
+                                    actor_id: None,
+                                    actor_display_name: None,
+                                },
+                                AuthorityClass::OperatorInstruction,
+                                Priority::Normal,
+                                MessageBody::Text {
+                                    text: format!("history fixture input {index}"),
+                                },
+                            );
+                            message.turn_id = Some(turn_id.clone());
+                            message.created_at =
+                                created_at + chrono::Duration::seconds(index as i64);
+                            let mut brief = BriefRecord::new(
+                                &expected.id,
+                                crate::types::BriefKind::Result,
+                                format!("scheduler-window-sentinel-{index}"),
+                                Some(message.id.clone()),
+                                None,
+                            );
+                            brief.turn_id = Some(turn_id.clone());
+                            brief.turn_index = Some(index as u64 + 1);
+                            brief.created_at = message.created_at;
+                            for key in [
+                                Key::new(Family::Message, &message.id),
+                                Key::new(Family::Brief, &brief.id),
+                                Key::new(Family::Turn, &turn_id),
+                            ] {
+                                validate_existing_input_evidence_tx(tx, scope, &key)?;
+                            }
+                            let actual_message = append_message_tx(tx, &message)?.0;
+                            insert_brief_evidence_tx(tx, &brief)?;
+                            let actual_brief = committed_brief_tx(tx, &expected.id, &brief.id)?;
+                            let mut turn = crate::types::TurnRecord::new(
+                                &expected.id,
+                                &turn_id,
+                                index as u64 + 1,
+                            );
+                            turn.created_at = actual_message.created_at;
+                            turn.input_message_ids = vec![actual_message.id.clone()];
+                            turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+                                &actual_message,
+                            ));
+                            turn.produced_brief_ids = vec![actual_brief.id.clone()];
+                            turn.terminal = Some(crate::types::TurnTerminalSummary {
+                                kind: TurnTerminalKind::Completed,
+                                reason: None,
+                                no_brief_reason: None,
+                                completed_at: turn.created_at,
+                                duration_ms: 0,
+                            });
+                            upsert_turn_record_tx(tx, &turn)?;
+                            let actual_turn =
+                                committed_turn_record_tx(tx, &expected.id, &turn_id)?.record;
+                            facts.extend([
+                                Fact::Message(actual_message.clone()),
+                                Fact::Brief(actual_brief),
+                                Fact::Turn(actual_turn.clone()),
+                            ]);
+                            messages.push(actual_message);
+                            turns.push(actual_turn);
+                        }
+                        let payload: String = tx.query_row(
+                            "SELECT payload_json FROM agent_states WHERE agent_id=?1",
+                            [&expected.id],
+                            |row| row.get(0),
+                        )?;
+                        let mut state: AgentState = serde_json::from_str(&payload)?;
+                        anyhow::ensure!(state == expected, "history fixture State changed");
+                        state.turn_index = state.turn_index.max(count as u64);
+                        let message_count: i64 = tx.query_row(
+                            "SELECT COUNT(*) FROM messages WHERE agent_id=?1",
+                            [&expected.id],
+                            |row| row.get(0),
+                        )?;
+                        state.total_message_count = usize::try_from(message_count)?;
+                        upsert_agent_state_tx(tx, &state)?;
+                        let payload: String = tx.query_row(
+                            "SELECT payload_json FROM agent_states WHERE agent_id=?1",
+                            [&expected.id],
+                            |row| row.get(0),
+                        )?;
+                        let actual_state: AgentState = serde_json::from_str(&payload)?;
+                        let input_evidence_delta =
+                            register_committed_input_evidence_tx(tx, scope, &facts)?;
+                        Ok(TransitionCommit {
+                            applied: true,
+                            effects: PostCommitEffects {
+                                agent_state: Some(AgentStateMutation {
+                                    expected: Some(Box::new(expected.clone())),
+                                    record: Box::new(actual_state),
+                                }),
+                                input_evidence_delta,
+                                messages,
+                                turns,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        })
+                    })
+                })
+                .await
+                .unwrap();
+            drop(mutation);
+            runtime.apply_transition_commit(committed).await;
+        })
+    }
+
+    #[tokio::test]
+    async fn named_preparation_preserves_scheduler_briefs_and_prompt_window() {
+        let (_home, runtime) = fixture();
+        let config = context_config();
+        let brief_count = config.recent_briefs + 1;
+        assert_eq!(config.recent_messages, config.recent_briefs);
+        // Recent Briefs render through their actual Turn; independent Turns
+        // keep the oldest result outside both original prompt windows.
+        publish_prompt_history(&runtime, brief_count).await;
+        let narrow = {
+            let mut mutation = runtime.begin_mutation().await.unwrap();
+            let (_, record_limit, byte_limit) = mutation.context_input_evidence_policy().unwrap();
+            let narrow = InputEvidenceLoadRequest {
+                windows: vec![InputWindowRequest {
+                    selector: InputWindowSelector::RecentBriefs,
+                    limit: 1,
+                }],
+                mandatory_roots: Default::default(),
+                interrupted_sources: Default::default(),
+                selected_completion_brief_ids: Default::default(),
+                record_limit,
+                byte_limit,
+            };
+            // A larger Episode request forces real named sidecar preparation;
+            // the generic actor must continue preserving this exact narrow policy.
+            mutation
+                .prepare_owner_input_request(&narrow, config.recent_episode_candidates + 1)
+                .await
+                .unwrap();
+            let inputs = mutation.capture_input_evidence().unwrap();
+            assert!(matches!(
+                inputs.window(&InputWindowSelector::RecentBriefs, scheduler::SCHEDULER_BRIEF_LIMIT),
+                Err(super::super::resident_input_evidence::InputEvidenceReadError::WindowNotPrepared)
+            ));
+            narrow
+        };
+        let message = MessageEnvelope::new(
+            "context-capture",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "inspect frozen prompt window".into(),
+            },
+        );
+        // The synthetic preview's ordinary closure preflight correctly rejects
+        // our deliberately narrowed domain. Exercise the named acquisition
+        // directly, which is the production boundary being repaired here.
+        let prompt = runtime
+            .build_loaded_context_prompt(&message, None, None, false)
+            .await
+            .unwrap();
+        assert!(!prompt
+            .rendered_context_attachment
+            .contains("scheduler-window-sentinel-0"));
+        assert!(prompt
+            .rendered_context_attachment
+            .contains(&format!("scheduler-window-sentinel-{}", brief_count - 1)));
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let inputs = mutation.capture_input_evidence().unwrap();
+        assert_eq!(
+            inputs
+                .window(
+                    &InputWindowSelector::RecentBriefs,
+                    scheduler::SCHEDULER_BRIEF_LIMIT
+                )
+                .unwrap()
+                .len(),
+            brief_count,
+        );
+        drop(inputs);
+        // The non-context production wrapper has the same independent policy;
+        // it must not shrink the window on a later owner/domain reprepare.
+        mutation
+            .prepare_owner_input_request(&narrow, config.recent_episode_candidates + 2)
+            .await
+            .unwrap();
+        mutation
+            .prepare_owner_inputs(Default::default(), Default::default())
+            .await
+            .unwrap();
+        let inputs = mutation.capture_input_evidence().unwrap();
+        assert_eq!(
+            inputs
+                .window(
+                    &InputWindowSelector::RecentBriefs,
+                    scheduler::SCHEDULER_BRIEF_LIMIT
+                )
+                .unwrap()
+                .len(),
+            brief_count,
         );
     }
 

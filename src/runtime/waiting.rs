@@ -3,8 +3,8 @@ use super::*;
 use crate::ingress::WakeHint;
 use crate::runtime_error::RuntimeError;
 use crate::types::{
-    WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WaitConditionSummary, WakeSource,
-    WorkItemRecord, WorkItemState,
+    WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource, WorkItemRecord,
+    WorkItemState,
 };
 use chrono::{DateTime, Utc};
 
@@ -195,11 +195,13 @@ impl RuntimeHandle {
     pub(super) fn wait_resolution_transition_for_message(
         &self,
         message: &MessageEnvelope,
+        work: &super::resident_work::CapturedWork,
     ) -> Result<Option<crate::runtime_db::transitions::QueueWaitTransition>> {
-        let unresolved = self
-            .inner
-            .storage
-            .raw_unresolved_wait_conditions_for_agent(&message.agent_id)?;
+        anyhow::ensure!(
+            work.scope.agent_id == message.agent_id,
+            "Wait resolution Work scope differs"
+        );
+        let unresolved = work.unresolved_wait_conditions()?;
         let Some(condition) = unresolved.into_iter().find(|condition| {
             condition.status == WaitConditionStatus::Triggered
                 && condition.trigger_message_id() == Some(message.id.as_str())
@@ -207,7 +209,7 @@ impl RuntimeHandle {
             return Ok(None);
         };
         let now = self.now();
-        let mut resolved = condition.clone();
+        let mut resolved = (*condition).clone();
         resolved.status = WaitConditionStatus::Resolved;
         resolved.updated_at = now;
         resolved.resolved_at = Some(now);
@@ -215,7 +217,7 @@ impl RuntimeHandle {
         let mut work_item = None;
         let mut index_changes = Vec::new();
         if let Some(work_item_id) = resolved.work_item_id.as_deref() {
-            if let Some(existing) = self.inner.runtime_db.work_items().latest(work_item_id)? {
+            if let Some(existing) = work.work_item(work_item_id)? {
                 // The blocker is cleared only when this wait derived it
                 // (`blocked_by_wait_id`), never by display-text equality: a
                 // same-text independent blocker stays authoritative together
@@ -347,16 +349,12 @@ impl RuntimeHandle {
                         .map(|event| event.id.clone())
                         .unwrap_or_else(crate::ids::audit_event_id);
                     let commit_result = mutation
-                        .commit_transition(operation_id, |scope| {
-                            self.inner
-                                .runtime_db
-                                .transitions_in_scope(scope)
-                                .commit_wait_with_execution_protocol_and_task_expectation(
-                                    &prepared.command,
-                                    &prepared.execution_protocol,
-                                    prepared.expected_task.as_ref(),
-                                )
-                        })
+                        .commit_wait_transition(
+                            operation_id,
+                            prepared.command.clone(),
+                            prepared.execution_protocol.clone(),
+                            prepared.expected_task.clone(),
+                        )
                         .await;
                     drop(mutation);
                     match commit_result {
@@ -1354,15 +1352,15 @@ impl RuntimeHandle {
         &self,
         agent_id: &str,
         existing: WorkItemRecord,
+        work: &super::resident_work::CapturedWork,
         reason: &str,
     ) -> Result<WorkItemBlockerClearance> {
         let now = Utc::now();
-        let active_waits = self
-            .inner
-            .storage
-            .raw_unresolved_wait_conditions_for_agent(agent_id)?
+        let active_waits = work
+            .unresolved_wait_conditions()?
             .into_iter()
             .filter(|condition| condition.work_item_id.as_deref() == Some(existing.id.as_str()))
+            .cloned()
             .collect::<Vec<_>>();
         let mut wait_conditions = Vec::with_capacity(active_waits.len());
         let mut cancelled_wait_condition_ids = Vec::with_capacity(active_waits.len());
@@ -1918,21 +1916,25 @@ impl RuntimeHandle {
                 },
                 agent_state: (expected_state, committed_state.clone()),
             };
+            let work_request = guard.owner_work_load_request()?;
             let fault = self.take_transition_fault();
             let mut timer_result = None;
             let result = guard
                 .commit_transition(message.id.clone(), |scope| {
-                    let acknowledged = self
-                        .inner
-                        .runtime_db
-                        .timers()
-                        .fire_with_wait_in_scope(scope, &command, fault)?;
+                    let acknowledged = self.inner.runtime_db.timers().fire_with_wait_in_scope(
+                        scope,
+                        &command,
+                        &work_request,
+                        &self.inner.input_evidence_budget,
+                        fault,
+                    )?;
                     let result = acknowledged.record;
                     let mut commit = TransitionCommit {
                         applied: result.advanced,
                         ..TransitionCommit::default()
                     };
                     commit.effects.input_evidence_delta = acknowledged.input_delta;
+                    commit.effects.work_delta = acknowledged.work_delta;
                     commit.effects.agent_state = acknowledged.agent_state;
                     if result.advanced {
                         commit.effects.timers.push(record.clone());
@@ -2060,11 +2062,12 @@ impl RuntimeHandle {
         let Some(external_trigger_id) = external_trigger_id else {
             return Ok(None);
         };
-        let agent_id = self.agent_id().await?;
-        let mut work_item_ids = self
-            .inner
-            .storage
-            .active_wait_conditions_for_agent(&agent_id)?
+        let snapshot = self
+            .capture_work_read(&super::work_reads::live_work_request())
+            .await?;
+        let mut work_item_ids = snapshot
+            .work
+            .context_active_wait_conditions()?
             .into_iter()
             .filter(|condition| {
                 condition.wake_sources.iter().any(|source| match source {
@@ -2077,7 +2080,7 @@ impl RuntimeHandle {
                     _ => false,
                 })
             })
-            .filter_map(|condition| condition.work_item_id)
+            .filter_map(|condition| condition.work_item_id.clone())
             .collect::<Vec<_>>();
         work_item_ids.sort();
         work_item_ids.dedup();
@@ -2091,11 +2094,12 @@ impl RuntimeHandle {
         let Some(external_trigger_id) = external_trigger_id else {
             return Ok(None);
         };
-        let agent_id = self.agent_id().await?;
-        let correlations = self
-            .inner
-            .storage
-            .active_wait_conditions_for_agent(&agent_id)?
+        let snapshot = self
+            .capture_work_read(&super::work_reads::live_work_request())
+            .await?;
+        let correlations = snapshot
+            .work
+            .context_active_wait_conditions()?
             .into_iter()
             .filter(|condition| {
                 condition.wake_sources.iter().any(|source| {
@@ -2107,7 +2111,7 @@ impl RuntimeHandle {
                     )
                 })
             })
-            .map(|condition| condition.id)
+            .map(|condition| condition.id.clone())
             .collect::<Vec<_>>();
         let [correlation] = correlations.as_slice() else {
             return Ok(None);
@@ -2119,11 +2123,12 @@ impl RuntimeHandle {
         &self,
         timer_id: &str,
     ) -> Result<Option<String>> {
-        let agent_id = self.agent_id().await?;
-        let matches = self
-            .inner
-            .storage
-            .active_wait_conditions_for_agent(&agent_id)?
+        let snapshot = self
+            .capture_work_read(&super::work_reads::live_work_request())
+            .await?;
+        let matches = snapshot
+            .work
+            .context_active_wait_conditions()?
             .into_iter()
             .filter(|condition| {
                 condition.kind == WaitConditionKind::Timer
@@ -2133,19 +2138,6 @@ impl RuntimeHandle {
         Ok((matches.len() == 1)
             .then(|| matches[0].work_item_id.clone())
             .flatten())
-    }
-
-    pub(super) async fn active_wait_condition_summaries(
-        &self,
-    ) -> Result<Vec<WaitConditionSummary>> {
-        let agent_id = self.agent_id().await?;
-        Ok(self
-            .inner
-            .storage
-            .active_wait_conditions_for_agent(&agent_id)?
-            .into_iter()
-            .map(WaitConditionSummary::from)
-            .collect())
     }
 
     pub(super) async fn active_external_trigger_summaries(
@@ -2714,6 +2706,24 @@ mod mutation_tests {
     #[tokio::test]
     async fn timer_known_publication_recovery_preserves_compound_queue_and_cancel() {
         let (_home, _workspace, runtime, mut timer) = timer_runtime().await;
+        let work = Box::pin(runtime.create_work_item(
+            "recover triggered timer Wait".into(),
+            None,
+            None,
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+        let registration = Box::pin(runtime.register_wait_for(
+            "default",
+            Some(work.id),
+            WaitForWakeKind::Timer,
+            Some(timer.id.clone()),
+            "timer wake".into(),
+            None,
+        ))
+        .await
+        .unwrap();
         runtime.inject_next_transition_fault(TransitionFaultPoint::BeforeCacheUpdate);
         assert!(runtime.fire_timer_record(&mut timer).await.is_err());
         assert!(runtime.inner.mutation_owner.capture().is_err());
@@ -2742,6 +2752,23 @@ mod mutation_tests {
             .unwrap()
             .is_some());
         drop(inputs);
+        let work = mutation
+            .capture_work(&super::super::resident_work::WorkCaptureRequest::current())
+            .unwrap();
+        let wait = work
+            .lookup(&super::super::resident_work::WorkKey::new(
+                super::super::resident_work::WorkFamily::Wait,
+                &registration.condition.id,
+            ))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            &wait.record,
+            super::super::resident_work::CanonicalWorkRecord::Wait(wait)
+                if wait.status == WaitConditionStatus::Triggered
+                    && wait.trigger_message_id() == Some(message_id.as_str())
+        ));
+        drop(work);
         drop(mutation);
         assert_eq!(
             runtime

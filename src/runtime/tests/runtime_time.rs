@@ -70,8 +70,10 @@ async fn process_time_probe_message(
         panic!("time probe message must be admitted by the scheduler");
     };
     assert_eq!(scheduled.message.id, persisted.id);
-    let terminal = runtime
-        .process_interactive_message_deferred_with_cleanup(
+    let original_run_id = scheduled.running_state.current_run_id.clone().unwrap();
+    let started = std::time::Instant::now();
+    let terminal = Box::pin(
+        runtime.process_interactive_dispatch_with_cleanup(
             &scheduled.message,
             scheduled.dispatch_plan.continuation_resolution.as_ref(),
             scheduled
@@ -82,25 +84,21 @@ async fn process_time_probe_message(
                 max_tool_rounds: Some(max_tool_rounds),
             },
             None,
-        )
-        .await
-        .unwrap();
+            Some(&scheduled.dispatch_plan.prior_closure),
+        ),
+    )
+    .await
+    .unwrap();
     runtime
-        .commit_queue_terminal_settlement(
-            QueueEntryRecord {
-                message_id: persisted.id,
-                agent_id: persisted.agent_id,
-                priority: persisted.priority,
-                status: QueueEntryStatus::Processed,
-                created_at: persisted.created_at,
-                updated_at: Utc::now(),
-            },
-            Vec::new(),
-            true,
-            Some(&terminal),
+        .finish_scheduled_message_processing(
+            &scheduled.message,
+            &original_run_id,
+            started,
+            Ok(terminal),
         )
         .await
         .unwrap();
+    drop(scheduled.run_completion);
 }
 
 #[tokio::test]

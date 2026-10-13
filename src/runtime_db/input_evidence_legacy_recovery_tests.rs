@@ -90,6 +90,7 @@ fn fixed_unbound_member_recovery_survives_later_explicit_identity_binding() -> R
             identity_incarnation: identity.incarnation,
         };
         let request = InputEvidenceLoadRequest {
+            selected_completion_brief_ids: Default::default(),
             interrupted_sources: Default::default(),
             windows: vec![InputWindowRequest {
                 selector: InputWindowSelector::GlobalTurns,

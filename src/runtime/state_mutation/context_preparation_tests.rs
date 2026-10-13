@@ -186,6 +186,7 @@ async fn exact_request_keeps_accepted_and_existing_owner_roots_without_mutating_
             Family::Message,
             &retained.id,
         )]),
+        selected_completion_brief_ids: Default::default(),
         interrupted_sources: Default::default(),
         record_limit,
         byte_limit,

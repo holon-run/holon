@@ -40,6 +40,8 @@ fn inputs(agent_id: &str, incarnation: u64) -> Arc<ResidentInputEvidence> {
             scope(agent_id, incarnation),
             Vec::new(),
             InputEvidenceCoverage {
+                selected_completion_brief_ids: Default::default(),
+                completion_source_observations: Default::default(),
                 recovery_source_absences: Default::default(),
                 recovery_lineage_messages: Default::default(),
                 execution: Default::default(),
@@ -58,6 +60,7 @@ fn inputs(agent_id: &str, incarnation: u64) -> Arc<ResidentInputEvidence> {
 
 fn ready_facts(agent_id: &str, incarnation: u64, pending: usize) -> KnownCommit {
     KnownCommit::State {
+        work: None,
         state: scoped_state(agent_id, pending),
         episodes: Some(prepared_episodes(agent_id, incarnation)),
         input_evidence: Some(inputs(agent_id, incarnation)),
@@ -218,6 +221,7 @@ async fn input_presence_validates_every_domain_before_promoting_any_group_member
     for invalid_b in [
         state_facts(scoped_state("agent-b", 4)),
         KnownCommit::State {
+            work: None,
             state: scoped_state("agent-b", 4),
             episodes: Some(prepared_episodes("agent-b", 8)),
             input_evidence: Some(inputs("agent-b", 9)),

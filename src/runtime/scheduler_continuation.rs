@@ -145,41 +145,30 @@ impl RuntimeHandle {
                 scheduler_executor::StaleRunProjectionBoundary::PendingSystemTick,
             )
             .await?;
-        let (scheduler_snapshot, queue_len, mut pending_wake_hint, eligible, consume_rechecks) =
-            self.read_committed_agent(|guard| {
-                (
-                    scheduler::SchedulerAgentSnapshot::from_state(&guard.state),
-                    guard.queue.len(),
-                    guard.state.pending_wake_hint.clone(),
-                    matches!(
-                        guard.state.status,
-                        AgentStatus::Booting | AgentStatus::AwakeIdle | AgentStatus::Asleep
-                    ) && guard.queue.is_empty(),
-                    guard.state.status == AgentStatus::AwakeRunning || !guard.queue.is_empty(),
-                )
-            })
-            .await?;
+        let mut mutation = self.begin_mutation().await?;
+        let eligible = matches!(
+            mutation.state.status,
+            AgentStatus::Booting | AgentStatus::AwakeIdle | AgentStatus::Asleep
+        ) && mutation.queue.is_empty();
+        let consume_rechecks =
+            mutation.state.status == AgentStatus::AwakeRunning || !mutation.queue.is_empty();
+        let agent_id = mutation.state.id.clone();
         if !eligible {
+            drop(mutation);
             if consume_rechecks {
-                self.consume_due_work_item_rechecks(scheduler_snapshot.id())
-                    .await?;
+                self.consume_due_work_item_rechecks(&agent_id).await?;
             }
             return Ok(false);
         }
-
-        let work_queue_projection = self.inner.storage.work_queue_prompt_projection()?;
-        let due_rechecks = self
-            .inner
-            .storage
-            .due_blocked_work_item_rechecks(scheduler_snapshot.id(), self.now())?;
-        let mut scheduler_projection =
-            scheduler::SchedulerProjection::from_snapshot_with_queue_len_and_work_queue_at(
-                &self.inner.storage,
-                &scheduler_snapshot,
-                queue_len,
-                work_queue_projection.clone(),
-                self.now(),
-            )?;
+        let mut read = mutation
+            .prepare_scheduler_read(None, Default::default(), Default::default(), self.now())
+            .await?;
+        let mut pending_wake_hint = read.state.pending_wake_hint.clone();
+        // The hook can invoke runtime APIs. Only selected owned observations,
+        // never the owner reservation, survive its await.
+        drop(mutation);
+        let mut scheduler_projection = read.projection;
+        let mut due_rechecks = read.due_rechecks;
         let mut queued_retry_statuses =
             self.filter_suppressed_queued_available_work_items(&mut scheduler_projection)?;
         let async_hook = self
@@ -204,25 +193,14 @@ impl RuntimeHandle {
             )
         };
         if used_async_hook {
-            let (fresh_snapshot, fresh_queue_len, fresh_pending_wake_hint) = self
-                .read_committed_agent(|guard| {
-                    (
-                        scheduler::SchedulerAgentSnapshot::from_state(&guard.state),
-                        guard.queue.len(),
-                        guard.state.pending_wake_hint.clone(),
-                    )
-                })
+            let mut mutation = self.begin_mutation().await?;
+            read = mutation
+                .prepare_scheduler_read(None, Default::default(), Default::default(), self.now())
                 .await?;
-            pending_wake_hint = fresh_pending_wake_hint;
-            let fresh_work_queue_projection = self.inner.storage.work_queue_prompt_projection()?;
-            scheduler_projection =
-                scheduler::SchedulerProjection::from_snapshot_with_queue_len_and_work_queue_at(
-                    &self.inner.storage,
-                    &fresh_snapshot,
-                    fresh_queue_len,
-                    fresh_work_queue_projection,
-                    self.now(),
-                )?;
+            drop(mutation);
+            pending_wake_hint = read.state.pending_wake_hint.clone();
+            scheduler_projection = read.projection;
+            due_rechecks = read.due_rechecks;
             queued_retry_statuses =
                 self.filter_suppressed_queued_available_work_items(&mut scheduler_projection)?;
         }
@@ -441,10 +419,21 @@ impl RuntimeHandle {
     }
 
     async fn consume_due_work_item_rechecks(&self, agent_id: &str) -> Result<()> {
-        let due_rechecks = self
-            .inner
-            .storage
-            .due_blocked_work_item_rechecks(agent_id, self.now())?;
+        let due_rechecks = {
+            let observation = self
+                .capture_work_read(&super::work_reads::live_work_request())
+                .await?;
+            anyhow::ensure!(
+                observation.state.id == agent_id,
+                "Work recheck requested for another agent"
+            );
+            observation
+                .work
+                .due_work_rechecks(self.now())?
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
         self.consume_work_item_rechecks(&due_rechecks).await
     }
 
@@ -459,32 +448,6 @@ impl RuntimeHandle {
             let _ = self.consume_work_item_recheck(&item.id).await?;
         }
         Ok(())
-    }
-
-    pub(super) async fn next_blocked_work_item_recheck_at(
-        &self,
-    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
-        let agent_id = self.agent_id().await?;
-        self.inner
-            .storage
-            .next_blocked_work_item_recheck_at(&agent_id)
-    }
-
-    pub(super) async fn next_agent_wait_recheck_at(
-        &self,
-    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
-        let agent_id = self.agent_id().await?;
-        Ok(self
-            .inner
-            .storage
-            .raw_unresolved_wait_conditions_for_agent(&agent_id)?
-            .into_iter()
-            .filter(|condition| {
-                condition.work_item_id.is_none()
-                    && condition.status == crate::types::WaitConditionStatus::Active
-            })
-            .filter_map(|condition| condition.recheck_at())
-            .min())
     }
 
     pub(super) fn next_queued_available_retry_at(
@@ -512,22 +475,16 @@ impl RuntimeHandle {
     }
 
     pub(super) async fn emit_due_agent_wait_recheck(&self) -> Result<bool> {
-        let agent_id = self.agent_id().await?;
         let now = self.now();
-        let Some(condition) = self
-            .inner
-            .storage
-            .raw_unresolved_wait_conditions_for_agent(&agent_id)?
-            .into_iter()
-            .filter(|condition| {
-                condition.work_item_id.is_none()
-                    && condition.status == crate::types::WaitConditionStatus::Active
-                    && condition
-                        .recheck_at()
-                        .is_some_and(|deadline| deadline <= now)
-            })
-            .min_by_key(|condition| condition.recheck_at())
-        else {
+        let (agent_id, due) = {
+            let request = super::work_reads::live_work_request();
+            let mut mutation = self.begin_mutation().await?;
+            mutation.prepare_owner_work_request(&request).await?;
+            let observation = mutation.capture_work_read(&request)?;
+            let due = observation.work.due_agent_wait_recheck(now)?.cloned();
+            (observation.state.id.clone(), due)
+        };
+        let Some(condition) = due else {
             return Ok(false);
         };
         let recheck_at = condition
@@ -873,25 +830,17 @@ impl RuntimeHandle {
         &self,
         pending: &PendingWakeHint,
     ) -> Result<bool> {
-        let (snapshot, queue_len) = self
-            .read_committed_agent(|guard| {
-                (
-                    scheduler::SchedulerAgentSnapshot::from_state(&guard.state),
-                    guard.queue.len(),
-                )
-            })
+        let mut mutation = self.begin_mutation().await?;
+        let read = mutation
+            .prepare_scheduler_read(None, Default::default(), Default::default(), self.now())
             .await?;
-        let projection = scheduler::SchedulerProjection::from_snapshot_with_queue_len_at(
-            &self.inner.storage,
-            &snapshot,
-            queue_len,
-            self.now(),
-        )?;
+        drop(mutation);
+        let projection = &read.projection;
         let duplicate = self
             .duplicate_wake_hint_message_id(pending)?
             .map(scheduler::SchedulerDuplicateEvidence::WakeHintMessage);
         let decision = scheduler::decide_next_action(
-            &projection,
+            projection,
             scheduler::SchedulerBoundary::IdleTick,
             scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::WakeHint {
                 pending,
@@ -1407,6 +1356,7 @@ mod tests {
     use crate::context::ContextConfig;
     use crate::provider::StubProvider;
     use crate::types::{AgentStatus, TodoItem, TodoItemState, WorkItemRecord, WorkItemState};
+    use rusqlite::OptionalExtension;
     use std::sync::Arc;
     use tempfile::{tempdir, TempDir};
 
@@ -1468,8 +1418,11 @@ mod tests {
             mutation.current_run_abort = None;
             mutation.persist_state(runtime.storage()).await.unwrap();
         }
-        add_queued_work_item(&test_runtime, "first", "first candidate");
-        add_queued_work_item(&test_runtime, "second", "second candidate");
+        for (id, target) in [("first", "first candidate"), ("second", "second candidate")] {
+            let mut work = WorkItemRecord::new("default", target, WorkItemState::Open);
+            work.id = id.into();
+            persist_test_work_item_async(&test_runtime, &work).await;
+        }
         let hook = Arc::new(BlockingContinuationHook {
             entered: std::sync::atomic::AtomicBool::new(false),
             release: tokio::sync::Notify::new(),
@@ -1597,40 +1550,98 @@ mod tests {
             .is_some_and(|trigger| trigger.exact_wait_recheck));
     }
 
+    fn fixture_block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Runtime::new().unwrap().block_on(future)
+    }
+
+    fn publish_fixture_state(
+        test_runtime: &TestRuntime,
+        update: impl FnOnce(&mut super::super::state_mutation::RuntimeMutation),
+    ) {
+        fixture_block_on(async {
+            let mut owner = test_runtime.runtime.begin_mutation().await.unwrap();
+            update(&mut owner);
+            owner
+                .persist_state(test_runtime.runtime.storage())
+                .await
+                .unwrap();
+        });
+    }
+
     fn set_agent_idle(test_runtime: &TestRuntime) {
-        let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
-        guard.state.status = AgentStatus::AwakeIdle;
-        // Don't write - just update in-memory state for the test
+        publish_fixture_state(test_runtime, |owner| {
+            owner.state.status = AgentStatus::AwakeIdle
+        });
     }
 
     fn clear_queue(test_runtime: &TestRuntime) {
-        let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
-        while guard.queue.pop().is_some() {
-            // Pop all messages
-        }
-        // Don't write - just update in-memory state for the test
+        // Complete each actual admission; dropping a private queue would leave
+        // its canonical pending responsibility and published root unchanged.
+        fixture_block_on(async {
+            let messages = {
+                let agent = test_runtime.runtime.inner.agent.lock().await;
+                agent
+                    .queue
+                    .shared_messages()
+                    .map(|message| message.as_ref().clone())
+                    .collect::<Vec<_>>()
+            };
+            for message in messages {
+                assert!(test_runtime
+                    .runtime
+                    .commit_queue_settlement(
+                        QueueEntryRecord {
+                            message_id: message.id,
+                            agent_id: message.agent_id,
+                            priority: message.priority,
+                            status: QueueEntryStatus::Dropped,
+                            created_at: message.created_at,
+                            updated_at: Utc::now(),
+                        },
+                        Vec::new(),
+                        false,
+                    )
+                    .await
+                    .unwrap());
+            }
+        });
     }
 
     fn set_agent_status(test_runtime: &TestRuntime, status: AgentStatus) {
-        let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
-        guard.state.status = status;
-        guard
-            .persist_state(&test_runtime.runtime.inner.storage)
-            .unwrap();
+        publish_fixture_state(test_runtime, |owner| owner.state.status = status);
     }
 
     fn set_agent_live_running(test_runtime: &TestRuntime, run_id: &str) {
-        let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
-        guard.state.status = AgentStatus::AwakeRunning;
-        guard.state.current_run_id = Some(run_id.into());
-        guard.current_run_abort = Some(CurrentRunAbortHandle {
-            run_id: run_id.into(),
-            token: CancellationToken::new(),
-            reason: Arc::new(StdMutex::new("operator_aborted".into())),
+        publish_fixture_state(test_runtime, |owner| {
+            owner.state.status = AgentStatus::AwakeRunning;
+            owner.state.current_run_id = Some(run_id.into());
+            owner.current_run_abort = Some(CurrentRunAbortHandle {
+                run_id: run_id.into(),
+                token: CancellationToken::new(),
+                reason: Arc::new(StdMutex::new("operator_aborted".into())),
+            });
         });
-        guard
-            .persist_state(&test_runtime.runtime.inner.storage)
+    }
+
+    fn persist_fixture_message(test_runtime: &TestRuntime, message: &MessageEnvelope) {
+        use crate::runtime_db::{
+            prepared_input_evidence::PreparedInputEvidence, RuntimeIndexChange,
+        };
+        fixture_block_on(async {
+            let mut owner = test_runtime.runtime.begin_mutation().await.unwrap();
+            let prepared = PreparedInputEvidence::message(
+                owner.input_evidence_scope(),
+                crate::ids::audit_event_id(),
+                Utc::now(),
+                message.clone(),
+                vec![RuntimeIndexChange::for_message(message)],
+            )
             .unwrap();
+            owner
+                .commit_prepared_evidence(prepared, None)
+                .await
+                .unwrap();
+        });
     }
 
     fn add_queued_work_item(test_runtime: &TestRuntime, id: &str, target: &str) -> WorkItemRecord {
@@ -1675,12 +1686,7 @@ mod tests {
                 "work_item_generation": generation,
             }
         }));
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_message(&message)
-            .unwrap();
+        persist_fixture_message(&test_runtime, &message);
     }
 
     fn append_task_retry_signal(test_runtime: &TestRuntime, kind: MessageKind, id: &str) {
@@ -1697,108 +1703,131 @@ mod tests {
             },
         );
         message.id = id.into();
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_message(&message)
-            .unwrap();
+        persist_fixture_message(&test_runtime, &message);
     }
 
     fn persist_test_work_item(test_runtime: &TestRuntime, record: &WorkItemRecord) {
-        let repository = test_runtime.runtime.inner.runtime_db.work_items();
-        if let Some(existing) = repository.latest(&record.id).unwrap() {
-            repository
-                .update_expected(record, existing.revision)
-                .unwrap();
-        } else {
-            repository.insert_new(record).unwrap();
-        }
-        persist_test_work_execution(test_runtime, record);
+        fixture_block_on(persist_test_work_item_async(test_runtime, record));
     }
 
-    fn persist_test_work_execution(test_runtime: &TestRuntime, record: &WorkItemRecord) {
-        use crate::domain::execution_protocol::{
-            ExecutionProtocolState, WorkItemExecutionRecord, WorkItemExecutionState,
-        };
-
-        let mut execution = test_runtime
-            .runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(&record.agent_id)
-            .unwrap()
-            .unwrap_or_else(|| ExecutionProtocolState::empty(&record.agent_id));
-        let generation = execution
-            .work_items
-            .get(&record.id)
-            .map_or(record.revision.max(1), WorkItemExecutionRecord::generation);
-        let state = record.blocked_by.as_ref().map_or_else(
-            || WorkItemExecutionState::Runnable {
-                generation,
-                recovery_ref: None,
-            },
-            |reason| WorkItemExecutionState::Paused {
-                generation,
-                reason: reason.clone(),
-            },
-        );
-        execution.work_items.insert(
-            record.id.clone(),
-            WorkItemExecutionRecord {
-                source_revision: record.revision,
-                state,
-            },
-        );
-        test_runtime
-            .runtime
-            .inner
-            .runtime_db
-            .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-            .unwrap();
+    // The fixture chooses exact IDs/readiness but still acknowledges actual
+    // Work and protocol writes in one owner-held transaction before publication.
+    fn persist_test_work_item_async<'a>(
+        test_runtime: &'a TestRuntime,
+        record: &'a WorkItemRecord,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            use crate::domain::execution_protocol::{
+                WorkItemExecutionRecord, WorkItemExecutionState,
+            };
+            use crate::runtime::resident_work::{WorkFamily, WorkKey};
+            use crate::runtime_db::{
+                input_evidence_snapshot::{
+                    register_committed_input_evidence_tx, validate_existing_input_evidence_tx,
+                    CanonicalInputEvidence,
+                },
+                transitions::{PostCommitEffects, TransitionCommit},
+                work_snapshot::{prepare_work_write_tx, register_work_writes_tx},
+            };
+            let runtime = &test_runtime.runtime;
+            let mut owner = runtime.begin_mutation().await.unwrap();
+            let (_, record_limit, byte_limit) = owner.context_input_evidence_policy().unwrap();
+            let request = crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+                capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
+                record_limit,
+                byte_limit,
+            };
+            let final_state = owner.state.clone();
+            let keys =
+                std::collections::BTreeSet::from([WorkKey::new(WorkFamily::Work, &record.id)]);
+            owner.commit_transition(crate::ids::audit_event_id(), |scope| {
+                runtime.inner.runtime_db.transaction(|tx| {
+                    let proof = prepare_work_write_tx(tx, scope, &keys)?;
+                    let initialized: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM execution_protocol_partitions WHERE agent_id=?1)", [&record.agent_id], |row| row.get(0))?;
+                    let mut execution = if initialized {
+                        crate::runtime_db::transitions::execution_protocol_repository::load_state_tx(tx, &record.agent_id)?
+                    } else {
+                        crate::domain::execution_protocol::ExecutionProtocolState::empty(&record.agent_id)
+                    };
+                    let execution_key = super::super::resident_input_evidence::InputEvidenceKey::new(
+                        super::super::resident_input_evidence::InputEvidenceFamily::WorkExecution, &record.id,
+                    );
+                    validate_existing_input_evidence_tx(tx, scope, &execution_key)?;
+                    let generation = execution.work_items.get(&record.id).map_or(record.revision.max(1), WorkItemExecutionRecord::generation);
+                    let state = record.blocked_by.as_ref().map_or_else(
+                        || WorkItemExecutionState::Runnable { generation, recovery_ref: None },
+                        |reason| WorkItemExecutionState::Paused { generation, reason: reason.clone() },
+                    );
+                    let current = tx.query_row("SELECT revision FROM work_items WHERE work_item_id=?1", [&record.id], |row| row.get::<_, u64>(0)).optional()?;
+                    let applied = match current {
+                        Some(revision) => crate::runtime_db::repositories::update_expected_work_item_tx(tx, record, revision)?,
+                        None => crate::runtime_db::repositories::insert_new_work_item_tx(tx, record)?,
+                    };
+                    anyhow::ensure!(applied, "fixture Work write was not applied");
+                    execution.work_items.insert(record.id.clone(), WorkItemExecutionRecord { source_revision: record.revision, state });
+                    crate::runtime_db::transitions::persist_state_tx(tx, &execution)?;
+                    let execution = crate::runtime_db::transitions::execution_protocol_repository::load_state_tx(tx, &record.agent_id)?;
+                    let stored = execution.work_items.get(&record.id).unwrap().clone();
+                    let input_delta = register_committed_input_evidence_tx(tx, scope, &[CanonicalInputEvidence::WorkExecution { work_item_id: record.id.clone(), record: stored }])?;
+                    let work = register_work_writes_tx(tx, &proof, &keys, &Default::default(), &final_state, &request)?;
+                    Ok(TransitionCommit {
+                        applied,
+                        effects: PostCommitEffects {
+                            work_items: vec![record.clone()],
+                            execution_protocol: Some(execution),
+                            input_evidence_delta: input_delta,
+                            work_delta: Some(work.delta),
+                            work_delta_requires_prepared_domain: true,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                })
+            }).await.unwrap();
+        })
     }
 
     fn set_work_item_generation(test_runtime: &TestRuntime, work_item_id: &str, generation: u64) {
-        use crate::domain::execution_protocol::{ExecutionProtocolState, WorkItemExecutionState};
-
-        let mut execution = test_runtime
-            .runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized("default")
-            .unwrap()
-            .unwrap_or_else(|| ExecutionProtocolState::empty("default"));
-        let work_item = execution
-            .work_items
-            .get_mut(work_item_id)
-            .expect("test WorkItem execution exists");
-        let recovery_ref = match &work_item.state {
-            WorkItemExecutionState::Runnable { recovery_ref, .. } => recovery_ref.clone(),
-            state => panic!("expected runnable test WorkItem, got {state:?}"),
+        use crate::domain::execution_protocol::WorkItemExecutionState;
+        use crate::runtime_db::input_evidence_snapshot::{
+            register_committed_input_evidence_tx, validate_existing_input_evidence_tx,
+            CanonicalInputEvidence,
         };
-        work_item.state = WorkItemExecutionState::Runnable {
-            generation,
-            recovery_ref,
-        };
-        test_runtime
-            .runtime
-            .inner
-            .runtime_db
-            .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-            .unwrap();
+        fixture_block_on(async {
+            let runtime = &test_runtime.runtime;
+            let mut owner = runtime.begin_mutation().await.unwrap();
+            owner.commit_transition(crate::ids::audit_event_id(), |scope| {
+                runtime.inner.runtime_db.transaction(|tx| {
+                    let mut execution = crate::runtime_db::transitions::execution_protocol_repository::load_state_tx(tx, "default")?;
+                    let key = super::super::resident_input_evidence::InputEvidenceKey::new(super::super::resident_input_evidence::InputEvidenceFamily::WorkExecution, work_item_id);
+                    validate_existing_input_evidence_tx(tx, scope, &key)?;
+                    let work = execution.work_items.get_mut(work_item_id).expect("test WorkItem execution exists");
+                    let recovery_ref = match &work.state {
+                        WorkItemExecutionState::Runnable { recovery_ref, .. } => recovery_ref.clone(),
+                        state => panic!("expected runnable test WorkItem, got {state:?}"),
+                    };
+                    work.state = WorkItemExecutionState::Runnable { generation, recovery_ref };
+                    crate::runtime_db::transitions::persist_state_tx(tx, &execution)?;
+                    let execution = crate::runtime_db::transitions::execution_protocol_repository::load_state_tx(tx, "default")?;
+                    let stored = execution.work_items.get(work_item_id).unwrap().clone();
+                    let delta = register_committed_input_evidence_tx(tx, scope, &[CanonicalInputEvidence::WorkExecution { work_item_id: work_item_id.to_owned(), record: stored }])?;
+                    Ok(crate::runtime_db::transitions::TransitionCommit {
+                        applied: true,
+                        effects: crate::runtime_db::transitions::PostCommitEffects { execution_protocol: Some(execution), input_evidence_delta: delta, ..Default::default() },
+                        ..Default::default()
+                    })
+                })
+            }).await.unwrap();
+        });
     }
 
     fn add_current_work_item(test_runtime: &TestRuntime, id: &str, target: &str) -> WorkItemRecord {
         let mut record = WorkItemRecord::new("default", target, WorkItemState::Open);
         record.id = id.to_string();
         persist_test_work_item(test_runtime, &record);
-        let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
-        guard.state.current_work_item_id = Some(record.id.clone());
-        guard
-            .persist_state(&test_runtime.runtime.inner.storage)
-            .unwrap();
+        publish_fixture_state(test_runtime, |owner| {
+            owner.state.current_work_item_id = Some(record.id.clone())
+        });
         record
     }
 
@@ -1849,12 +1878,16 @@ mod tests {
         let mut brief = BriefRecord::new("default", BriefKind::Result, text, None, None);
         brief.work_item_id = Some(work_item_id.to_string());
         brief.created_at = chrono::Utc::now();
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_brief(&brief)
-            .unwrap();
+        fixture_block_on(test_runtime.runtime.persist_prepared_evidence(
+            crate::runtime_db::prepared_input_evidence::InputEvidenceWrite::BriefCreated {
+                brief: brief.clone(),
+                event: AuditEvent::legacy(
+                    "brief_created",
+                    serde_json::json!({"brief_id": brief.id}),
+                ),
+            },
+        ))
+        .unwrap();
         brief
     }
 
@@ -1872,9 +1905,9 @@ mod tests {
             causation_id: Some("test-causation".to_string()),
             created_at: chrono::Utc::now(),
         };
-        let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
-        guard.state.pending_wake_hint = Some(hint.clone());
-        // Don't write - just update in-memory state for the test
+        publish_fixture_state(test_runtime, |owner| {
+            owner.state.pending_wake_hint = Some(hint.clone())
+        });
         hint
     }
 
@@ -1904,7 +1937,7 @@ mod tests {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
 
-        // Add a message directly to the in-memory queue
+        // Admit a real pending message before testing queue precedence
         let message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -1919,11 +1952,8 @@ mod tests {
             },
         );
 
-        // Push to the in-memory queue
-        {
-            let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
-            guard.queue.push(message);
-        }
+        // Keep canonical and published pending responsibility together
+        fixture_block_on(test_runtime.runtime.enqueue(message)).unwrap();
 
         // Attempt to emit idle tick - should be suppressed because queue is nonempty
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1982,10 +2012,7 @@ mod tests {
                 text: "queued input".to_string(),
             },
         );
-        {
-            let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
-            guard.queue.push(message);
-        }
+        fixture_block_on(test_runtime.runtime.enqueue(message)).unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let emitted = rt
@@ -2037,11 +2064,10 @@ mod tests {
     #[test]
     fn stale_running_projection_emits_pending_wake_hint_in_same_call() {
         let test_runtime = test_runtime();
-        {
-            let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
-            guard.state.status = AgentStatus::AwakeRunning;
-            guard.state.current_run_id = Some("run-stale".into());
-            guard.state.pending_wake_hint = Some(PendingWakeHint {
+        publish_fixture_state(&test_runtime, |owner| {
+            owner.state.status = AgentStatus::AwakeRunning;
+            owner.state.current_run_id = Some("run-stale".into());
+            owner.state.pending_wake_hint = Some(PendingWakeHint {
                 reason: "stale wake".into(),
                 description: None,
                 scope: None,
@@ -2054,10 +2080,7 @@ mod tests {
                 causation_id: None,
                 created_at: Utc::now(),
             });
-            guard
-                .persist_state(&test_runtime.runtime.inner.storage)
-                .unwrap();
-        }
+        });
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let emitted = rt
@@ -2668,28 +2691,28 @@ mod tests {
         clear_queue(&test_runtime);
         set_work_item_generation(&test_runtime, queued_id, 2);
         let tool_now = chrono::Utc::now();
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_tool_execution(&crate::types::ToolExecutionRecord {
-                id: "no-progress-tool".into(),
-                agent_id: "default".into(),
-                work_item_id: Some(queued_id.into()),
-                turn_index: 1,
-                turn_id: None,
-                tool_name: "ExecCommand".into(),
-                created_at: tool_now,
-                completed_at: Some(tool_now),
-                duration_ms: 1,
-                authority_class: AuthorityClass::RuntimeInstruction,
-                status: crate::types::ToolExecutionStatus::Success,
-                input: serde_json::json!({}),
-                output: serde_json::json!({"ok": true}),
-                summary: "A successful tool call without a WorkItem update.".into(),
-                invocation_surface: None,
-            })
-            .unwrap();
+        fixture_block_on(test_runtime.runtime.persist_prepared_evidence(
+            crate::runtime_db::prepared_input_evidence::InputEvidenceWrite::Tool(
+                crate::types::ToolExecutionRecord {
+                    id: "no-progress-tool".into(),
+                    agent_id: "default".into(),
+                    work_item_id: Some(queued_id.into()),
+                    turn_index: 1,
+                    turn_id: None,
+                    tool_name: "ExecCommand".into(),
+                    created_at: tool_now,
+                    completed_at: Some(tool_now),
+                    duration_ms: 1,
+                    authority_class: AuthorityClass::RuntimeInstruction,
+                    status: crate::types::ToolExecutionStatus::Success,
+                    input: serde_json::json!({}),
+                    output: serde_json::json!({"ok": true}),
+                    summary: "A successful tool call without a WorkItem update.".into(),
+                    invocation_surface: None,
+                },
+            ),
+        ))
+        .unwrap();
 
         let emitted_again = rt
             .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
@@ -2930,12 +2953,7 @@ mod tests {
             },
         );
         operator_signal.created_at = chrono::Utc::now();
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_message(&operator_signal)
-            .unwrap();
+        persist_fixture_message(&test_runtime, &operator_signal);
         assert!(rt
             .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
             .unwrap());
@@ -3008,12 +3026,7 @@ mod tests {
                 "work_item_revision": queued.revision
             }
         }));
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_message(&existing_tick)
-            .unwrap();
+        persist_fixture_message(&test_runtime, &existing_tick);
 
         let mut newer_operator_signal = MessageEnvelope::new(
             "default",
@@ -3029,12 +3042,7 @@ mod tests {
             },
         );
         newer_operator_signal.created_at = chrono::Utc::now();
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_message(&newer_operator_signal)
-            .unwrap();
+        persist_fixture_message(&test_runtime, &newer_operator_signal);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let emitted = rt
@@ -3084,12 +3092,7 @@ mod tests {
                 "work_item_revision": queued.revision
             }
         }));
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_message(&existing_tick)
-            .unwrap();
+        persist_fixture_message(&test_runtime, &existing_tick);
         test_runtime
             .runtime
             .inner
@@ -3182,9 +3185,9 @@ mod tests {
             created_at: chrono::Utc::now(),
         };
 
-        let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
-        guard.state.pending_wake_hint = Some(hint.clone());
-        drop(guard);
+        publish_fixture_state(&test_runtime, |owner| {
+            owner.state.pending_wake_hint = Some(hint.clone())
+        });
 
         // Emit system tick
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -3461,12 +3464,7 @@ mod tests {
                 text: "New follow-up".to_string(),
             },
         );
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_message(&message)
-            .unwrap();
+        persist_fixture_message(&test_runtime, &message);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let emitted = rt
@@ -3517,12 +3515,7 @@ mod tests {
                 "work_item_generation": 1
             }
         }));
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_message(&existing_tick)
-            .unwrap();
+        persist_fixture_message(&test_runtime, &existing_tick);
         append_result_brief_for_work_item(&test_runtime, &active.id, "Failed progress.");
         test_runtime
             .runtime

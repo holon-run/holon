@@ -12,11 +12,42 @@ pub(super) struct MessageDispatchPlan {
 }
 
 impl RuntimeHandle {
+    #[cfg(test)]
     pub(super) fn build_message_dispatch_plan(
         &self,
         message: &MessageEnvelope,
         prior_closure: ClosureDecision,
         scheduler_state: &AgentState,
+    ) -> Result<MessageDispatchPlan> {
+        let waits = self
+            .inner
+            .storage
+            .latest_wait_conditions_for_agent(&message.agent_id)?;
+        let waits = waits.iter().collect::<Vec<_>>();
+        self.build_message_dispatch_plan_with_waits(message, prior_closure, scheduler_state, &waits)
+    }
+
+    pub(super) fn build_message_dispatch_plan_from_work(
+        &self,
+        message: &MessageEnvelope,
+        prior_closure: ClosureDecision,
+        scheduler_state: &AgentState,
+        work: &super::resident_work::CapturedWork,
+    ) -> Result<MessageDispatchPlan> {
+        anyhow::ensure!(
+            work.scope.agent_id == message.agent_id,
+            "dispatch Wait scope differs"
+        );
+        let waits = work.waits_triggered_by(&message.id)?;
+        self.build_message_dispatch_plan_with_waits(message, prior_closure, scheduler_state, &waits)
+    }
+
+    fn build_message_dispatch_plan_with_waits(
+        &self,
+        message: &MessageEnvelope,
+        prior_closure: ClosureDecision,
+        scheduler_state: &AgentState,
+        waits: &[&WaitConditionRecord],
     ) -> Result<MessageDispatchPlan> {
         let task = match message.kind {
             MessageKind::TaskStatus => {
@@ -51,13 +82,13 @@ impl RuntimeHandle {
                         return Err(error);
                     };
                     let wait_authority = if let Some(work_item_id) = task.work_item_id.as_deref() {
-                        exact_triggered_or_resolved_task_result_wait(
-                            &self.inner.storage,
+                        exact_dispatch_task_wait(
+                            waits,
                             message,
                             &task.id,
-                            work_item_id,
-                        )?
-                        .is_some()
+                            Some(Some(work_item_id)),
+                            false,
+                        )
                     } else {
                         false
                     };
@@ -83,8 +114,7 @@ impl RuntimeHandle {
             ContinuationTrigger::from_message(message, task.as_ref().ok().and_then(Option::as_ref));
         if let Some(trigger) = continuation_trigger.as_mut() {
             if trigger.kind == crate::types::ContinuationTriggerKind::SystemTick {
-                trigger.exact_wait_recheck =
-                    exact_agent_scope_wait_recheck(&self.inner.storage, message)?.is_some();
+                trigger.exact_wait_recheck = exact_dispatch_wait_recheck(waits, message);
             }
             // Only an exact durable task wait is correlated as the expected
             // wait. Captured ownership independently authorizes the terminal
@@ -93,31 +123,15 @@ impl RuntimeHandle {
                 && trigger.task_result_outcome.is_some()
             {
                 if let Some(task_id) = message.task_id.as_deref() {
-                    let owner_scoped = match trigger.task_work_item_id.as_deref() {
-                        Some(work_item_id) => exact_triggered_or_resolved_task_result_wait(
-                            &self.inner.storage,
-                            message,
-                            task_id,
-                            work_item_id,
-                        )?
-                        .is_some(),
-                        None => exact_agent_scope_task_result_wait(
-                            &self.inner.storage,
-                            message,
-                            task_id,
-                        )?
-                        .is_some(),
-                    };
-                    // A task result may satisfy an exact wait held by any
-                    // owner inside the same agent (#3124): the waiter, not
-                    // the task owner, holds the dependency.
+                    let owner_scoped = exact_dispatch_task_wait(
+                        waits,
+                        message,
+                        task_id,
+                        Some(trigger.task_work_item_id.as_deref()),
+                        false,
+                    );
                     trigger.exact_task_wait = owner_scoped
-                        || exact_task_result_wait_for_any_owner(
-                            &self.inner.storage,
-                            message,
-                            task_id,
-                        )?
-                        .is_some();
+                        || exact_dispatch_task_wait(waits, message, task_id, None, true);
                 }
             }
         }
@@ -142,16 +156,25 @@ impl RuntimeHandle {
         message: MessageEnvelope,
         prior_closure: ClosureDecision,
     ) -> Result<()> {
-        let scheduler_state = self.agent_state().await?;
-        let plan = self.build_message_dispatch_plan(&message, prior_closure, &scheduler_state)?;
-        let scheduler_projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
-            &self.inner.storage,
-            &scheduler_state,
-            scheduler_state.pending,
-            self.now(),
+        let mut mutation = self.begin_mutation().await?;
+        let read = mutation
+            .prepare_scheduler_read(
+                Some(&message),
+                Default::default(),
+                Default::default(),
+                self.now(),
+            )
+            .await?;
+        let plan = self.build_message_dispatch_plan_from_work(
+            &message,
+            prior_closure,
+            &read.state,
+            &read.work,
         )?;
+        let scheduler_projection = &read.projection;
+        drop(mutation);
         let scheduler_decision = scheduler::decide_next_action(
-            &scheduler_projection,
+            scheduler_projection,
             scheduler::SchedulerBoundary::MessageProcessing,
             scheduler::SchedulerInput::Message {
                 message: &message,
@@ -283,7 +306,10 @@ impl RuntimeHandle {
             MessageKind::TaskResult => false,
         };
         let reducer_dispatch = if reducer_only_dispatch {
-            Some(self.begin_reducer_only_turn(&message).await?)
+            Some(
+                self.begin_reducer_only_turn(&message, Some(&prior_closure))
+                    .await?,
+            )
         } else {
             None
         };
@@ -319,7 +345,7 @@ impl RuntimeHandle {
                         guard.persist_state(&self.inner.storage).await?;
                     }
                     terminal_transition = Some(
-                        self.process_interactive_message_deferred_with_cleanup(
+                        self.process_interactive_dispatch_with_cleanup(
                             &message,
                             continuation_resolution.as_ref(),
                             Some(execution_admission_provenance.clone()),
@@ -327,6 +353,7 @@ impl RuntimeHandle {
                                 max_tool_rounds: None,
                             },
                             turn_trace_context,
+                            Some(&prior_closure),
                         )
                         .await?,
                     );
@@ -342,12 +369,13 @@ impl RuntimeHandle {
             MessageKind::TaskResult => {
                 let task = task.ok_or_else(|| anyhow!("task result message should parse task"))?;
                 terminal_transition = Some(
-                    self.reduce_task_result_message_deferred(
+                    self.reduce_task_result_for_dispatch(
                         &message,
                         task,
                         model_reentry,
                         continuation_resolution.as_ref(),
                         execution_admission_provenance,
+                        Some(&prior_closure),
                     )
                     .await?,
                 );
@@ -401,7 +429,28 @@ impl RuntimeHandle {
                 AgentStatus::Asleep | AgentStatus::Stopped
             );
             if status_mutable {
+                // This producer still owns its original Started dispatch until
+                // QueueTerminal writes Turn, memory Done and posture together.
+                let dispatch_run =
+                    guard.state.current_run_id.clone().filter(|run_id| {
+                        guard
+                            .current_run_abort
+                            .as_ref()
+                            .is_some_and(|handle| &handle.run_id == run_id)
+                            && guard.state.current_turn_id.as_deref()
+                                == Some(actual_dispatch.0.as_str())
+                            && guard.state.turn_index == actual_dispatch.1
+                            && guard.state.current_execution_binding.as_ref().is_some_and(
+                                |binding| {
+                                    binding.turn_id == actual_dispatch.0
+                                        && binding.source_message_id == message.id
+                                },
+                            )
+                    });
                 scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
+                if dispatch_run.is_some() {
+                    guard.state.current_run_id = dispatch_run;
+                }
             }
             if status_mutable || matches!(message.kind, MessageKind::TaskResult) {
                 guard.persist_state(&self.inner.storage).await?;
@@ -436,21 +485,27 @@ impl RuntimeHandle {
                 turn_index: actual_dispatch.1,
             };
             let mut guard = self.begin_mutation().await?;
+            let refs_commit = self
+                .refresh_current_work_item_refs(&mut guard, &message)
+                .await?;
+            let legacy_phase = self.inner.runtime_db.transaction(|tx| {
+                crate::runtime_db::dispatch_memory::is_legacy_dispatch_tx(tx, &key, &invocation)
+            })?;
+            // Only fixed pre-D4 dispatches retain the old standalone phase.
+            // New dispatches finish memory inside their original terminal TX.
             // Original-outcome lookup comes before refresh and ID allocation.
             // Replaying a phase cannot recompute memory or replace current state.
-            if self
-                .inner
-                .runtime_db
-                .episode_memory_receipt(&key, None, &invocation)?
-                .is_none()
+            if legacy_phase
+                && self
+                    .inner
+                    .runtime_db
+                    .episode_memory_receipt(&key, None, &invocation)?
+                    .is_none()
             {
                 anyhow::ensure!(
                     guard.state.turn_index == actual_dispatch.1,
                     "post-dispatch memory cannot advance another Turn"
                 );
-                let refs_commit = self
-                    .refresh_current_work_item_refs(&mut guard, &message)
-                    .await?;
                 let memory_refresh =
                     refresh_working_memory(&self.inner.storage, &mut guard.state, &final_closure)?;
                 let frozen = FrozenEpisodeMemoryValues {
@@ -480,10 +535,10 @@ impl RuntimeHandle {
                     frozen.timestamp,
                 )?;
                 guard.commit_episode_memory(&command).await?;
-                drop(guard);
-                if let Some(commit) = refs_commit {
-                    self.apply_transition_commit(commit).await;
-                }
+            }
+            drop(guard);
+            if let Some(commit) = refs_commit {
+                self.apply_transition_commit(commit).await;
             }
         }
         self.inner.storage.append_event(&AuditEvent::legacy(
@@ -521,9 +576,29 @@ impl RuntimeHandle {
         else {
             return Ok(None);
         };
-        let Some(mut record) = self.inner.storage.latest_work_item(work_item_id)? else {
+        let mut request = super::resident_work::WorkCaptureRequest::current();
+        request.include_live = false;
+        request.nonopen_limit = 0;
+        request
+            .mandatory_roots
+            .insert(super::resident_work::WorkKey::new(
+                super::resident_work::WorkFamily::Work,
+                work_item_id,
+            ));
+        let work = mutation.capture_work(&request)?;
+        let Some(selected) = work.work_item(work_item_id)? else {
             return Ok(None);
         };
+        let _owned = self.inner.input_evidence_budget.register_owned_bytes(
+            &work.scope,
+            super::input_evidence_budget::InputMemoryCategory::Candidate,
+            super::input_evidence_budget::OwnedBytesEstimate {
+                payload_bytes: super::input_evidence_budget::serialized_bytes(selected)?
+                    .saturating_mul(3),
+                metadata_estimate_bytes: 0,
+            },
+        )?;
+        let mut record = selected.clone();
         if record.state != WorkItemState::Open {
             return Ok(None);
         }
@@ -572,15 +647,12 @@ impl RuntimeHandle {
         };
         let operation_id = command.audit_events[0].id.clone();
         let commit = mutation
-            .commit_transition(operation_id, |scope| {
-                self.inner
-                    .runtime_db
-                    .transitions_in_scope(scope)
-                    .commit_work_item_with_execution_protocol(
-                        &command,
-                        &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
-                    )
-            })
+            .commit_work_transition(
+                operation_id,
+                command,
+                crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
+                true,
+            )
             .await?;
         Ok(Some(commit))
     }
@@ -616,4 +688,61 @@ pub(super) fn message_text(body: &MessageBody) -> String {
         MessageBody::Json { value } => value.to_string(),
         MessageBody::Brief { text, .. } => text.clone(),
     }
+}
+
+fn exact_dispatch_task_wait(
+    waits: &[&WaitConditionRecord],
+    message: &MessageEnvelope,
+    task_id: &str,
+    owner: Option<Option<&str>>,
+    any_owner: bool,
+) -> bool {
+    let count = waits
+        .iter()
+        .filter(|wait| {
+            owner.is_none_or(|owner| wait.work_item_id.as_deref() == owner)
+                && matches!(
+                    wait.status,
+                    WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
+                )
+                && wait.kind == crate::types::WaitConditionKind::Task
+                && wait.trigger_message_id() == Some(message.id.as_str())
+                && wait.wake_sources.iter().any(|source| {
+                    matches!(source,
+                crate::types::WakeSource::TaskResult { task_id: expected } if expected == task_id)
+                })
+        })
+        .count();
+    if any_owner {
+        count > 0
+    } else {
+        count == 1
+    }
+}
+
+fn exact_dispatch_wait_recheck(waits: &[&WaitConditionRecord], message: &MessageEnvelope) -> bool {
+    if !matches!(&message.origin, MessageOrigin::System { subsystem } if subsystem == "wait_condition_recheck")
+        || message.kind != MessageKind::SystemTick
+        || message.authority_class != AuthorityClass::RuntimeInstruction
+        || message.admission_context != Some(AdmissionContext::RuntimeOwned)
+        || message.delivery_surface != Some(MessageDeliverySurface::RuntimeSystem)
+    {
+        return false;
+    }
+    let Some(id) = message.source_refs.get("wait_id") else {
+        return false;
+    };
+    waits
+        .iter()
+        .filter(|wait| {
+            wait.id == *id
+                && wait.work_item_id.is_none()
+                && matches!(
+                    wait.status,
+                    WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
+                )
+                && wait.trigger_message_id() == Some(message.id.as_str())
+        })
+        .count()
+        == 1
 }

@@ -144,7 +144,6 @@ impl PreparedInputMutation {
     pub(crate) fn prepared_at(&self) -> DateTime<Utc> {
         self.prepared_at
     }
-    #[cfg(test)]
     pub(crate) fn scope_digest(&self) -> &str {
         &self.scope_digest
     }
@@ -189,6 +188,16 @@ pub(crate) enum InputMutationEvidenceFamily {
     Brief,
 }
 
+/// Exact original child-deletion ACK. This is a return value, never current
+/// identity/State installation authority; recovery reloads the current scope.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InputTaskDeletionResult {
+    pub identity: crate::types::AgentIdentityRecord,
+    pub job: crate::types::AgentDeletionJob,
+    pub created: bool,
+}
+
 /// Minimal original public result. Full mutable evidence belongs only to the
 /// first ACK; current installation facts are separately loaded in a fresh view.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -196,6 +205,10 @@ pub(crate) enum InputMutationEvidenceFamily {
 pub(crate) enum InputMutationResult {
     #[default]
     Transition,
+    Task {
+        task_id: String,
+        deletion: Option<Box<InputTaskDeletionResult>>,
+    },
     Evidence {
         family: InputMutationEvidenceFamily,
         id: String,
@@ -236,9 +249,38 @@ impl InputMutationOutcome {
                     InputMutationFamily::Evidence
                         | InputMutationFamily::Retention
                         | InputMutationFamily::QueueHeadNoProgress
+                        | InputMutationFamily::Task
                 ),
                 ReceiptError::InvalidOutcome("result family mismatch")
             ),
+            InputMutationResult::Task { task_id, deletion } => {
+                ensure!(
+                    prepared.family() == InputMutationFamily::Task && !task_id.trim().is_empty(),
+                    ReceiptError::InvalidOutcome("Task result family or ID mismatch")
+                );
+                if let Some(deletion) = deletion {
+                    let identity = &deletion.identity;
+                    let job = &deletion.job;
+                    ensure!(
+                        identity.agent_id == job.agent_id
+                            && identity.incarnation > 0
+                            && !job.deletion_id.trim().is_empty()
+                            && prepared
+                                .scopes()
+                                .iter()
+                                .any(|scope| scope.agent_id == identity.agent_id
+                                    && scope.identity_incarnation == identity.incarnation)
+                            && matches!(
+                                identity.status,
+                                crate::types::AgentRegistryStatus::Deleting
+                                    | crate::types::AgentRegistryStatus::Deleted
+                            ),
+                        ReceiptError::InvalidOutcome(
+                            "Task deletion result is outside original group"
+                        )
+                    );
+                }
+            }
             InputMutationResult::Evidence {
                 id,
                 actual_seq,
@@ -396,6 +438,13 @@ pub(crate) enum InputMutationResolution {
 /// Identity/authorization remains the entrypoint's responsibility.
 pub(crate) fn lookup_input_mutation_receipt_tx(
     tx: &Transaction<'_>,
+    prepared: &PreparedInputMutation,
+) -> Result<Option<InputMutationReceipt>> {
+    lookup_input_mutation_receipt_in(tx, prepared)
+}
+
+pub(super) fn lookup_input_mutation_receipt_in(
+    tx: &Connection,
     prepared: &PreparedInputMutation,
 ) -> Result<Option<InputMutationReceipt>> {
     prepared.validate()?;

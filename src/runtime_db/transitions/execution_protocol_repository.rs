@@ -1240,6 +1240,7 @@ impl RuntimeTransitionRepository<'_> {
         if commands.is_empty() {
             return Ok(
                 crate::runtime_db::input_evidence_writes::InputEvidenceCommit {
+                    work_delta: None,
                     agent_state: None,
                     record: ExecutionProtocolRecoveryCommitOutcome::Applied(false),
                     input_delta: Default::default(),
@@ -1268,6 +1269,7 @@ impl RuntimeTransitionRepository<'_> {
                     Err(error) => {
                         return Ok(
                             crate::runtime_db::input_evidence_writes::InputEvidenceCommit {
+                    work_delta: None,
                                 agent_state: None,
                                 record: ExecutionProtocolRecoveryCommitOutcome::Rejected {
                                     reason: error.to_string(),
@@ -1296,6 +1298,7 @@ impl RuntimeTransitionRepository<'_> {
             if let Some(input) = input { input.finish_tx(tx)?; }
             Ok(
                 crate::runtime_db::input_evidence_writes::InputEvidenceCommit {
+                    work_delta: None,
                     agent_state: None,
                     record: ExecutionProtocolRecoveryCommitOutcome::Applied(changed),
                     input_delta,

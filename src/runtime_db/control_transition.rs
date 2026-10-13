@@ -3,7 +3,7 @@
 //! Dormant until all lifecycle callers and their exact cancellation leases use
 //! this family. Process/Git cleanup is deliberately outside this SQLite ACK.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 use anyhow::{anyhow, ensure, Context, Result};
 use chrono::{DateTime, Utc};
@@ -26,7 +26,7 @@ use crate::{
             compare_and_set_queue_entry_tx, decode_wait_condition_row,
             slim_task_record_for_payload, task_transition, upsert_external_trigger_tx,
             upsert_queue_entry_tx, upsert_task_tx, upsert_timer_tx, upsert_turn_record_tx,
-            upsert_wait_condition_tx,
+            upsert_wait_condition_with_writes_tx, WaitConditionWrites,
         },
         task_result_settlement::{self, TaskResultSettlementRecord},
         transitions::{
@@ -290,10 +290,20 @@ pub(crate) struct ControlRecoveryFacts {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct ControlRecoveryDomains {
+    pub inputs: Arc<crate::runtime::resident_input_evidence::ResidentInputEvidence>,
+    pub work: Arc<crate::runtime::resident_work::ResidentWorkDomain>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) enum ControlRecoveryObservation {
+    Absent {
+        obligations: Vec<ControlCancellationObligation>,
+    },
     Current {
         snapshot: Box<ControlSnapshot>,
-        episodes: Box<super::episode_snapshot::EpisodeMemoryCurrentSnapshot>,
+        episodes: Arc<crate::runtime::resident_state::ResidentEpisodes>,
+        domains: Option<ControlRecoveryDomains>,
         receipt: Option<ControlReceipt>,
         obligations: Vec<ControlCancellationObligation>,
         facts: Box<ControlRecoveryFacts>,
@@ -854,14 +864,55 @@ impl RuntimeDb {
         Ok(receipt)
     }
 
-    /// Receipt and current/retired scope are observed in the same fresh read tx.
-    /// Absence is not permission to retry until the original attempt has ended.
+    #[cfg(test)]
     pub(crate) fn load_control_recovery(
         &self,
         key: &ControlKey,
         invocation: &ControlInvocation,
         command_digest: &str,
         recent_episode_limit: usize,
+    ) -> Result<ControlRecoveryObservation> {
+        self.load_control_recovery_inner(
+            key,
+            invocation,
+            command_digest,
+            recent_episode_limit,
+            None,
+        )
+    }
+
+    /// The original owner is held. Positive recovery prepares all domains from
+    /// one fresh transaction; receipt absence never starts body preparation.
+    pub(crate) fn load_control_recovery_with_domains(
+        &self,
+        key: &ControlKey,
+        invocation: &ControlInvocation,
+        command_digest: &str,
+        recent_episode_limit: usize,
+        input_request: &super::input_evidence_snapshot::InputEvidenceLoadRequest,
+        work_request: &crate::runtime::resident_work::WorkCaptureRequest,
+        budget: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<ControlRecoveryObservation> {
+        self.load_control_recovery_inner(
+            key,
+            invocation,
+            command_digest,
+            recent_episode_limit,
+            Some((input_request, work_request, budget)),
+        )
+    }
+
+    fn load_control_recovery_inner(
+        &self,
+        key: &ControlKey,
+        invocation: &ControlInvocation,
+        command_digest: &str,
+        recent_episode_limit: usize,
+        preparation: Option<(
+            &super::input_evidence_snapshot::InputEvidenceLoadRequest,
+            &crate::runtime::resident_work::WorkCaptureRequest,
+            &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        )>,
     ) -> Result<ControlRecoveryObservation> {
         validate_key(key)?;
         ensure!(
@@ -876,31 +927,141 @@ impl RuntimeDb {
             &key.agent_id,
         )?;
         let receipt = load_control_receipt_in(&tx, key, invocation, Some(command_digest))?;
-        let observation = if identity.as_ref().is_some_and(|identity| {
-            identity.incarnation == key.identity_incarnation
-                && identity.status == AgentRegistryStatus::Active
-        }) {
-            let snapshot = load_snapshot_in(&tx, key)?;
-            let episodes = super::episode_snapshot::load_episode_memory_snapshot_in(
-                &tx,
-                &super::episode_snapshot::EpisodeMemoryLoadScope {
-                    agent_id: key.agent_id.clone(),
-                    identity_incarnation: key.identity_incarnation,
-                },
-                recent_episode_limit,
-                None,
-            )?
-            .require_current()?;
-            ensure!(
-                episodes.state.as_ref() == Some(&snapshot.state)
-                    && episodes.control_revision == Some(snapshot.control_revision),
-                "Control/Episode recovery observation is incoherent"
-            );
+        if receipt.is_none() && preparation.is_some() {
             let obligations = load_obligations_in(&tx, key)?;
-            let facts = load_recovery_facts_in(&tx, &snapshot, receipt.as_ref())?;
+            ensure!(
+                obligations.is_empty(),
+                "Control obligations exist without their original receipt"
+            );
+            tx.commit()?;
+            return Ok(ControlRecoveryObservation::Absent { obligations });
+        }
+        let observation = if identity.as_ref().is_some_and(|identity| {
+            identity.agent_id == key.agent_id
+                && identity.incarnation == key.identity_incarnation
+                && (identity.status == AgentRegistryStatus::Active
+                    || (receipt.is_some() && identity.status == AgentRegistryStatus::Deleting))
+        }) {
+            let snapshot = load_snapshot_in_with_original_scope(&tx, key, true)?;
+            let (episodes, domains, pending) =
+                if let (Some(receipt), Some((input, capture, budget))) =
+                    (receipt.as_ref(), preparation)
+                {
+                    use crate::runtime::resident_work::{WorkFamily, WorkKey};
+                    let mut capture = capture.clone();
+                    capture.include_live = true;
+                    capture.mandatory_roots.extend(
+                        receipt
+                            .outcome
+                            .cancelled_wait_ids
+                            .iter()
+                            .map(|id| WorkKey::new(WorkFamily::Wait, id)),
+                    );
+                    capture
+                        .required_task_ids
+                        .extend(receipt.outcome.interrupted_task_ids.iter().cloned());
+                    capture
+                        .required_turn_ids
+                        .extend(receipt.outcome.interrupted_turn_ids.iter().cloned());
+                    capture
+                        .required_trigger_message_ids
+                        .extend(receipt.outcome.result_message_ids.iter().cloned());
+                    if let Some(binding) = &snapshot.state.current_execution_binding {
+                        capture.required_turn_ids.insert(binding.turn_id.clone());
+                        capture
+                            .required_trigger_message_ids
+                            .insert(binding.source_message_id.clone());
+                    }
+                    let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+                        agent_id: key.agent_id.clone(),
+                        identity_incarnation: key.identity_incarnation,
+                    };
+                    let mut input = input.clone();
+                    use crate::runtime::resident_input_evidence::{
+                        InputEvidenceFamily as Family, InputEvidenceKey as Key,
+                    };
+                    input.mandatory_roots.extend(
+                        snapshot
+                            .state
+                            .current_turn_id
+                            .iter()
+                            .map(|id| Key::new(Family::Turn, id)),
+                    );
+                    if let Some(binding) = &snapshot.state.current_execution_binding {
+                        input
+                            .mandatory_roots
+                            .insert(Key::new(Family::Turn, &binding.turn_id));
+                        input
+                            .mandatory_roots
+                            .insert(Key::new(Family::Message, &binding.source_message_id));
+                        input.mandatory_roots.extend(
+                            binding
+                                .activation_id
+                                .iter()
+                                .map(|id| Key::new(Family::Attempt, id)),
+                        );
+                    }
+                    let prepared = super::input_preparation::prepare_control_recovery_domains_tx(
+                        &tx,
+                        &scope,
+                        &snapshot.state,
+                        &input,
+                        recent_episode_limit,
+                        budget,
+                        &capture,
+                    )?;
+                    ensure!(
+                        prepared.facts.state.as_ref() == Some(&snapshot.state)
+                            && prepared.facts.control_revision == Some(snapshot.control_revision)
+                            && prepared.facts.identity.as_ref() == Some(&snapshot.identity),
+                        "Control current recovery domains are incoherent"
+                    );
+                    let work = prepared
+                        .work
+                        .context("Control recovery Work domain is absent")?;
+                    (
+                        Arc::new(prepared.episodes),
+                        Some(ControlRecoveryDomains {
+                            inputs: Arc::new(prepared.inputs.with_budget(budget.clone())?),
+                            work,
+                        }),
+                        Some(prepared.pending.messages),
+                    )
+                } else {
+                    let episode_scope = super::episode_snapshot::EpisodeMemoryLoadScope {
+                        agent_id: key.agent_id.clone(),
+                        identity_incarnation: key.identity_incarnation,
+                    };
+                    let episodes =
+                        super::episode_snapshot::load_episode_memory_for_input_recovery_in(
+                            &tx,
+                            &episode_scope,
+                            recent_episode_limit,
+                        )?
+                        .require_current()?;
+                    ensure!(
+                        episodes.state.as_ref() == Some(&snapshot.state)
+                            && episodes.control_revision == Some(snapshot.control_revision),
+                        "Control/Episode recovery observation is incoherent"
+                    );
+                    (
+                        Arc::new(crate::runtime::resident_state::ResidentEpisodes::bootstrap(
+                            &key.agent_id,
+                            key.identity_incarnation,
+                            recent_episode_limit,
+                            !episodes.has_more,
+                            episodes.episodes,
+                        )?),
+                        None,
+                        None,
+                    )
+                };
+            let obligations = load_obligations_in(&tx, key)?;
+            let facts = load_recovery_facts_in(&tx, &snapshot, receipt.as_ref(), pending)?;
             ControlRecoveryObservation::Current {
                 snapshot: Box::new(snapshot),
-                episodes: Box::new(episodes),
+                episodes,
+                domains,
                 receipt,
                 obligations,
                 facts: Box::new(facts),
@@ -916,7 +1077,24 @@ impl RuntimeDb {
         Ok(observation)
     }
 
+    #[cfg(test)]
     pub(crate) fn commit_control(&self, command: &PreparedControl) -> Result<ControlCommit> {
+        self.commit_control_inner(command, None)
+    }
+
+    pub(crate) fn commit_control_with_work_request(
+        &self,
+        command: &PreparedControl,
+        request: &super::work_snapshot::WorkDomainLoadRequest,
+    ) -> Result<ControlCommit> {
+        self.commit_control_inner(command, Some(request))
+    }
+
+    fn commit_control_inner(
+        &self,
+        command: &PreparedControl,
+        work_request: Option<&super::work_snapshot::WorkDomainLoadRequest>,
+    ) -> Result<ControlCommit> {
         let result = self.transaction(|tx| {
             // Authentication of an old namespace is performed by the caller.
             if let Some(receipt) = load_control_receipt_in(tx, &command.key, &command.invocation,
@@ -941,8 +1119,18 @@ impl RuntimeDb {
             let prepared_execution = execution_protocol_repository::validate_execution_commands_tx(
                 tx, &command.key.agent_id, command.expected.execution_protocol.as_ref(),
                 &command.execution_commands, &[], &[], &[])?;
-            #[cfg(test)] inject_fault(command, ControlFaultPoint::AfterValidation)?;
+            let input_scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+                agent_id: command.key.agent_id.clone(), identity_incarnation: command.key.identity_incarnation,
+            };
             let is_stop = command.invocation.action == ControlAction::Stop;
+            let work_proof = if is_stop {
+                work_request.map(|request| {
+                    let ids = command.expected.waits.iter().map(|wait| wait.id.clone()).collect();
+                    super::work_snapshot::prepare_existing_work_wait_cleanup_tx(tx, &input_scope, &ids, request, false)
+                }).transpose()?
+            } else { None };
+            #[cfg(test)] inject_fault(command, ControlFaultPoint::AfterValidation)?;
+            let mut wait_condition_writes = WaitConditionWrites::default();
             let mut result_messages = Vec::new();
             let mut message_index_changes = Vec::new();
             let mut derived_audit_ids = Vec::new();
@@ -964,6 +1152,7 @@ impl RuntimeDb {
                     format!("audit:wait-triggered:{}", result.message.id),
                     format!("audit:wait-trigger-stale:{}", result.message.id),
                 ]);
+                wait_condition_writes.extend(admission.wait_writes);
                 result_messages.push(admission.message);
             }
             #[cfg(test)] inject_fault(command, ControlFaultPoint::AfterTaskResultWrites)?;
@@ -976,7 +1165,8 @@ impl RuntimeDb {
                     "Stop wait target set changed during TaskResult admission");
                 for wait in &mut waits {
                     wait.status = WaitConditionStatus::Cancelled; wait.updated_at = command.prepared_at;
-                    wait.cancelled_at = Some(command.prepared_at); upsert_wait_condition_tx(tx, wait)?;
+                    wait.cancelled_at = Some(command.prepared_at);
+                    wait_condition_writes.extend(upsert_wait_condition_with_writes_tx(tx, wait)?);
                 }
                 for timer in &command.expected.timers {
                     let mut timer = timer.clone(); timer.status = TimerStatus::Cancelled;
@@ -1024,9 +1214,6 @@ impl RuntimeDb {
                     upsert_turn_record_tx(tx, turn)?;
                 }
             }
-            let input_scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
-                agent_id: command.key.agent_id.clone(), identity_incarnation: command.key.identity_incarnation,
-            };
             let (_, mut input_delta) = execution_protocol_repository::persist_execution_commands_with_input_facts_tx(tx, prepared_execution, Some(&input_scope))?;
             #[cfg(test)] inject_fault(command, ControlFaultPoint::AfterExecutionWorkspaceWrites)?;
             if command.candidate.as_ref() != &command.expected.state {
@@ -1036,6 +1223,13 @@ impl RuntimeDb {
                 .context("Control State disappeared")?;
             ensure!(persisted == *command.candidate, "Control candidate was not persisted exactly");
             #[cfg(test)] inject_fault(command, ControlFaultPoint::AfterStateWrite)?;
+            // Trigger admission and Stop cancellation share one final Work
+            // version, after the exact State epilogue and before the receipt.
+            let work = work_proof.as_ref().zip(work_request).map(|(proof, request)| {
+                super::work_snapshot::register_existing_work_wait_cleanup_tx(
+                    tx, proof, &wait_condition_writes, Some(&persisted), request,
+                )
+            }).transpose()?.flatten();
             let mut audit_bindings = Vec::new();
             let mut audit_events = Vec::new();
             for event in &command.audit_events {
@@ -1123,7 +1317,15 @@ impl RuntimeDb {
             input_facts.extend(turns.iter().cloned().map(super::input_evidence_snapshot::CanonicalInputEvidence::Turn));
             let evidence_delta = super::input_evidence_snapshot::register_committed_input_evidence_tx(tx, &input_scope, &input_facts)?;
             super::input_evidence_writes::merge_input_evidence_delta(&mut input_delta,evidence_delta)?;
+            let work_input_preparation = work.as_ref().map(|work| super::transitions::WorkInputPreparation {
+                scope: input_scope.clone(), work_revision: work.delta.revision,
+                owning_roots: work.owning_input_roots.clone(),
+                completion_heads: work.delta.coverage.latest_results.iter()
+                    .filter_map(|(id, head)| head.clone().map(|head| (id.clone(), head))).collect(),
+            });
             let transition = TransitionCommit { applied: true, effects: PostCommitEffects {
+                work_delta_requires_prepared_domain: work.is_some(),
+                work_delta: work.map(|work| work.delta), work_input_preparation, wait_condition_writes,
                 agent_state: (persisted != command.expected.state).then(|| AgentStateMutation { expected: Some(Box::new(command.expected.state.clone())), record: Box::new(persisted.clone()) }),
                 removed_queue_message_ids: final_queue.iter().map(|entry| entry.message_id.clone()).collect(),
                 timers: timers.clone(), tasks: tasks.clone(), external_triggers: external_triggers.clone(),
@@ -1150,6 +1352,13 @@ impl RuntimeDb {
 }
 
 fn load_snapshot_in(connection: &Connection, key: &ControlKey) -> Result<ControlSnapshot> {
+    load_snapshot_in_with_original_scope(connection, key, false)
+}
+fn load_snapshot_in_with_original_scope(
+    connection: &Connection,
+    key: &ControlKey,
+    original_recovery: bool,
+) -> Result<ControlSnapshot> {
     let identity: AgentIdentityRecord = payload_optional(
         connection,
         "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
@@ -1159,7 +1368,8 @@ fn load_snapshot_in(connection: &Connection, key: &ControlKey) -> Result<Control
     ensure!(
         identity.agent_id == key.agent_id
             && identity.incarnation == key.identity_incarnation
-            && identity.status == AgentRegistryStatus::Active,
+            && (identity.status == AgentRegistryStatus::Active
+                || (original_recovery && identity.status == AgentRegistryStatus::Deleting)),
         "Control identity scope is retired"
     );
     let (state_payload, revision): (String, i64) = connection.query_row(
@@ -1441,6 +1651,7 @@ fn load_recovery_facts_in(
     connection: &Connection,
     snapshot: &ControlSnapshot,
     receipt: Option<&ControlReceipt>,
+    prepared_pending: Option<Vec<MessageEnvelope>>,
 ) -> Result<ControlRecoveryFacts> {
     let outcome = receipt.map(|receipt| &receipt.outcome);
     let task_ids = merged_ids(
@@ -1482,27 +1693,51 @@ fn load_recovery_facts_in(
         .map(|id| load_wait_by_id(connection, id))
         .collect::<Result<Vec<_>>>()?;
     let turns = records_by_ids(connection, "turn_records", "turn_id", &turn_ids)?;
-    let mut current_queue_messages = Vec::new();
-    for entry in snapshot.queue_entries.iter().filter(|entry| {
-        matches!(
-            entry.status,
-            QueueEntryStatus::Queued | QueueEntryStatus::Interrupted
-        )
-    }) {
-        let message: MessageEnvelope = payload_optional(
-            connection,
-            "SELECT payload_json FROM messages WHERE evidence_id = ?1",
-            &entry.message_id,
-        )?
-        .context("Control recovery pending queue has no canonical Message")?;
+    let current_queue_messages = if let Some(messages) = prepared_pending {
+        let ids = messages
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let expected = snapshot
+            .queue_entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.status,
+                    QueueEntryStatus::Queued | QueueEntryStatus::Interrupted
+                )
+            })
+            .map(|entry| entry.message_id.as_str())
+            .collect::<BTreeSet<_>>();
         ensure!(
-            message.id == entry.message_id
-                && message.agent_id == entry.agent_id
-                && message.message_seq.is_some(),
-            "Control recovery queue evidence binding is invalid"
+            ids == expected && messages.len() == expected.len(),
+            "Control prepared pending queue differs from current snapshot"
         );
-        current_queue_messages.push(message);
-    }
+        messages
+    } else {
+        let mut current_queue_messages = Vec::new();
+        for entry in snapshot.queue_entries.iter().filter(|entry| {
+            matches!(
+                entry.status,
+                QueueEntryStatus::Queued | QueueEntryStatus::Interrupted
+            )
+        }) {
+            let message: MessageEnvelope = payload_optional(
+                connection,
+                "SELECT payload_json FROM messages WHERE evidence_id = ?1",
+                &entry.message_id,
+            )?
+            .context("Control recovery pending queue has no canonical Message")?;
+            ensure!(
+                message.id == entry.message_id
+                    && message.agent_id == entry.agent_id
+                    && message.message_seq.is_some(),
+                "Control recovery queue evidence binding is invalid"
+            );
+            current_queue_messages.push(message);
+        }
+        current_queue_messages
+    };
     let mut removed = BTreeSet::new();
     if let Some(outcome) = outcome {
         for id in outcome
@@ -2634,214 +2869,27 @@ pub(crate) struct ControlStoppedRun<'a> {
     pub source: &'a MessageEnvelope,
 }
 
+#[path = "control_stopped_run_budget.rs"]
+mod stopped_run_budget;
+pub(crate) use stopped_run_budget::stopped_run_proof_material_tx;
+
+#[path = "control_stopped_run.rs"]
+mod stopped_run;
+pub(crate) use stopped_run::{
+    find_committed_control_stop_for_run_tx, prove_committed_control_stop_for_run_tx,
+};
+
 impl RuntimeDb {
-    /// A Stop can settle the source before its physical processing future ends.
-    /// Only that original receipt and its exact canonical terminal facts allow
-    /// the old run to omit its otherwise competing terminal transaction.
+    /// Preserve the original canonical-settlement check. Physical completion
+    /// remains the responsibility of the actual original run lease.
     pub(crate) fn committed_control_stop_for_run(
         &self,
         original: &ControlStoppedRun<'_>,
     ) -> Result<bool> {
-        ensure!(
-            original.source.agent_id == original.agent_id
-                && original.source.message_seq.is_some()
-                && !original.runtime_lease_id.is_empty(),
-            "original Control run evidence is incomplete"
-        );
         let mut connection = self.connection()?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let command_ids = {
-            let mut query = tx.prepare(
-                "SELECT DISTINCT command_id FROM control_cancellation_obligations
-                WHERE agent_id = ?1 AND identity_incarnation = ?2 AND target_kind = 'run'
-                  AND target_identity = ?3 ORDER BY command_id",
-            )?;
-            let rows = query.query_map(
-                params![
-                    original.agent_id,
-                    i64::try_from(original.identity_incarnation)?,
-                    original.run_id
-                ],
-                |row| row.get::<_, String>(0),
-            )?;
-            rows.collect::<std::result::Result<Vec<_>, _>>()?
-        };
-        for command_id in command_ids {
-            let key = ControlKey {
-                agent_id: original.agent_id.into(),
-                identity_incarnation: original.identity_incarnation,
-                command_id,
-            };
-            let obligations = load_obligations_in(&tx, &key)?;
-            let Some(obligation) = obligations.iter().find(|obligation| {
-                let target = &obligation.target;
-                target.target_kind == ControlCancellationKind::Run
-                    && target.target_identity == original.run_id
-                    && target.target_generation.get("runtime_lease_id")
-                        == Some(&json!(original.runtime_lease_id))
-                    && target.target_generation.get("owner_epoch")
-                        == Some(&json!(original.owner_epoch))
-                    && target.target_generation.get("activation_id")
-                        == Some(&json!(original.activation_id))
-                    && target.target_generation.get("source_message_id")
-                        == Some(&json!(original.source.id))
-                    && target.target.get("reason") == Some(&json!("agent_stopped"))
-            }) else {
-                continue;
-            };
-            let payload: String = tx.query_row(
-                "SELECT receipt_json FROM control_command_receipts
-                WHERE agent_id = ?1 AND identity_incarnation = ?2 AND command_id = ?3",
-                params![
-                    key.agent_id,
-                    i64::try_from(key.identity_incarnation)?,
-                    key.command_id
-                ],
-                |row| row.get(0),
-            )?;
-            let unchecked: ControlReceipt = serde_json::from_str(&payload)?;
-            let receipt = load_control_receipt_in(
-                &tx,
-                &key,
-                &unchecked.invocation,
-                Some(&unchecked.command_digest),
-            )?
-            .context("original Stop receipt is missing")?;
-            ensure!(
-                receipt.invocation.action == ControlAction::Stop
-                    && receipt.outcome.action == ControlAction::Stop
-                    && receipt.outcome.original_current_run_id.as_deref() == Some(original.run_id)
-                    && receipt.outcome.aborted_run_id.as_deref() == Some(original.run_id)
-                    && receipt.outcome.status == AgentStatus::Stopped
-                    && receipt.outcome.current_run_id.is_none()
-                    && receipt
-                        .obligation_ids
-                        .contains(&obligation.target.obligation_id)
-                    && receipt
-                        .outcome
-                        .aborted_queue_message_ids
-                        .contains(&original.source.id),
-                "original Stop receipt does not settle this run source"
-            );
-            let (payload, seq): (String, u64) = tx.query_row(
-                "SELECT payload_json,message_seq FROM messages WHERE agent_id = ?1 AND message_id = ?2",
-                params![original.agent_id, original.source.id], |row| Ok((row.get(0)?, row.get(1)?)))?;
-            let source: MessageEnvelope = serde_json::from_str(&payload)?;
-            ensure!(
-                source == *original.source && Some(seq) == source.message_seq,
-                "original Stop source no longer matches canonical evidence"
-            );
-            let payload: String = tx.query_row(
-                "SELECT payload_json FROM queue_entries WHERE agent_id = ?1 AND message_id = ?2",
-                params![original.agent_id, source.id],
-                |row| row.get(0),
-            )?;
-            let queue: QueueEntryRecord = serde_json::from_str(&payload)?;
-            ensure!(
-                queue.agent_id == original.agent_id
-                    && queue.message_id == source.id
-                    && queue.priority == source.priority
-                    && queue.created_at == source.created_at
-                    && queue.status == QueueEntryStatus::Aborted
-                    && queue.updated_at == receipt.committed_at,
-                "original Stop queue terminal facts disagree"
-            );
-            let protocol = execution_protocol_repository::context_execution_protocol_on(
-                &tx,
-                original.agent_id,
-            )?;
-            let attempt = if let Some(activation_id) = original.activation_id {
-                let protocol = protocol
-                    .as_ref()
-                    .context("original Stop attempt partition is missing")?;
-                let attempt = protocol
-                    .attempts
-                    .get(activation_id)
-                    .context("original Stop attempt is missing")?;
-                let outcome_id = format!(
-                    "control:{}:interrupt:{activation_id}",
-                    digest(&serde_json::to_value(&key)?)?
-                );
-                let outcome = protocol
-                    .outcomes
-                    .get(&outcome_id)
-                    .context("original Stop attempt outcome is missing")?;
-                ensure!(
-                    attempt.agent_id == original.agent_id
-                        && attempt.source_message_id.as_deref() == Some(source.id.as_str())
-                        && attempt
-                            .run_id
-                            .as_deref()
-                            .is_none_or(|run| run == original.run_id)
-                        && attempt.state == ExecutionAttemptState::Interrupted
-                        && attempt.terminal_outcome_id.as_deref() == Some(outcome_id.as_str())
-                        && attempt.terminal_at.as_deref()
-                            == Some(receipt.committed_at.to_rfc3339().as_str())
-                        && outcome.attempt_id == activation_id
-                        && outcome.created_at == receipt.committed_at.to_rfc3339()
-                        && receipt
-                            .outcome
-                            .interrupted_attempt_ids
-                            .iter()
-                            .any(|id| id == activation_id),
-                    "original Stop attempt terminal facts disagree"
-                );
-                Some(attempt)
-            } else {
-                None
-            };
-            // Validate every receipt-declared Turn, including claim-only cases;
-            // a missing declared Turn must not masquerade as an unstarted run.
-            let declared_turns = records_by_ids::<TurnRecord>(
-                &tx,
-                "turn_records",
-                "turn_id",
-                &receipt.outcome.interrupted_turn_ids,
-            )?;
-            let turns = {
-                let mut query = tx.prepare("SELECT payload_json FROM turn_records WHERE agent_id = ?1 AND run_id = ?2 ORDER BY turn_id")?;
-                let rows = query.query_map(params![original.agent_id, original.run_id], |row| {
-                    row.get::<_, String>(0)
-                })?;
-                rows.collect::<std::result::Result<Vec<_>, _>>()?
-                    .into_iter()
-                    .map(|payload| serde_json::from_str::<TurnRecord>(&payload).map_err(Into::into))
-                    .collect::<Result<Vec<_>>>()?
-            };
-            ensure!(
-                turns.len() <= 1,
-                "original Stop run has multiple canonical Turns"
-            );
-            if let Some(turn) = turns.first() {
-                ensure!(
-                    turn.agent_id == original.agent_id
-                        && turn.run_id.as_deref() == Some(original.run_id)
-                        && turn.trigger.as_ref()
-                            == Some(&crate::types::TurnTriggerSummary::from_message(&source))
-                        && turn.input_message_ids.contains(&source.id)
-                        && declared_turns.iter().any(|declared| declared == turn)
-                        && turn
-                            .terminal
-                            .as_ref()
-                            .is_some_and(|terminal| terminal.kind == TurnTerminalKind::Interrupted
-                                && terminal.reason.as_deref() == Some("agent_stopped")
-                                && terminal.completed_at == receipt.committed_at)
-                        && attempt.is_none_or(|attempt| attempt
-                            .turn_id
-                            .as_deref()
-                            .is_none_or(|id| id == turn.turn_id)),
-                    "original Stop Turn terminal facts disagree"
-                );
-            } else {
-                ensure!(
-                    attempt.is_some(),
-                    "reducer-only Stop proof requires its started canonical Turn"
-                );
-            }
-            tx.commit()?;
-            return Ok(true);
-        }
+        let found = stopped_run::find_committed_control_stop_for_run_in(&tx, original)?.is_some();
         tx.commit()?;
-        Ok(false)
+        Ok(found)
     }
 }

@@ -2,6 +2,10 @@
 
 use anyhow::{ensure, Result};
 
+#[path = "inputs/work.rs"]
+mod work;
+pub(crate) use work::{selected_completion_brief_ids, work_item as captured_work_item};
+
 use crate::{
     domain::execution_protocol::ExecutionProtocolState,
     runtime::resident_input_evidence::{
@@ -9,6 +13,7 @@ use crate::{
         InputEvidenceKey as Key, InputWindowSelector, PreparedInputEvidence,
         QualifiedInputEvidence, ToolContextProjection,
     },
+    runtime::resident_work::CapturedWork,
     runtime_db::{
         context_inputs::{
             prepare_admitted_settlement_inputs, AdmittedSettlementInput, CompletionBriefInput,
@@ -18,8 +23,8 @@ use crate::{
     },
     storage::{AppStorage, WorkQueueReadModel},
     types::{
-        BriefRecord, DeliverySummaryRecord, ExternalTriggerRecord, MessageEnvelope, TaskRecord,
-        TranscriptEntry, TurnOwner, TurnRecord, WaitConditionRecord, WorkItemRecord,
+        AgentState, BriefRecord, DeliverySummaryRecord, ExternalTriggerRecord, MessageEnvelope,
+        TaskRecord, TranscriptEntry, TurnOwner, TurnRecord, WaitConditionRecord, WorkItemRecord,
     },
 };
 
@@ -40,7 +45,7 @@ pub(crate) trait ContextInputs {
     fn assigned_turn_for_message(&self, id: &str) -> Result<Option<String>>;
     fn briefs(&self, limit: usize) -> Result<Vec<BriefRecord>>;
     fn brief_by_id(&self, id: &str) -> Result<Option<BriefRecord>>;
-    /// D4 Work aggregate; ordinary Brief/Transcript methods remain resident-only.
+    /// Exact latest-result head and frozen optional sources from the Work domain.
     fn latest_completion_brief_for_work_item(
         &self,
         id: &str,
@@ -336,23 +341,40 @@ impl ContextInputs for ContextDurableRead<'_> {
     }
 }
 
-/// D3's explicit mixed capability: migrated input/evidence reads use only the
-/// captured allocations; the remaining domains borrow the same durable view.
+/// Migrated input/evidence and Work reads use selected resident allocations.
+/// Remaining Task/Timer/Trigger adapters explicitly borrow one durable view.
 pub(crate) struct ResidentContextInputs<'a, 'db> {
     durable: &'a ContextDurableRead<'db>,
     captured: &'a CapturedInputEvidence,
+    work: &'a CapturedWork,
+    state: &'a AgentState,
+    triggers: &'a [ExternalTriggerRecord],
 }
 impl<'a, 'db> ResidentContextInputs<'a, 'db> {
     pub(crate) fn new(
         durable: &'a ContextDurableRead<'db>,
         captured: &'a CapturedInputEvidence,
+        work: &'a CapturedWork,
+        state: &'a AgentState,
+        triggers: &'a [ExternalTriggerRecord],
     ) -> Result<Self> {
         ensure!(
             durable.agent_id() == captured.scope.agent_id
-                && captured.scope.identity_incarnation > 0,
+                && captured.scope.identity_incarnation > 0
+                && work.scope == captured.scope
+                && state.id == captured.scope.agent_id
+                && triggers
+                    .iter()
+                    .all(|trigger| trigger.target_agent_id == state.id),
             "resident context input scope mismatch"
         );
-        Ok(Self { durable, captured })
+        Ok(Self {
+            durable,
+            captured,
+            work,
+            state,
+            triggers,
+        })
     }
     fn check_scope(&self, agent_id: &str) -> Result<()> {
         ensure!(
@@ -467,7 +489,7 @@ impl ContextInputs for ResidentContextInputs<'_, '_> {
         &self,
         id: &str,
     ) -> Result<Option<CompletionBriefInput>> {
-        self.durable.latest_completion_brief_for_work_item(id)
+        work::completion_input(self.work, self.captured, id)
     }
     fn tools(&self, limit: usize) -> Result<Vec<ToolContextProjection>> {
         self.records(
@@ -548,16 +570,18 @@ impl ContextInputs for ResidentContextInputs<'_, '_> {
         Ok(Some(self.captured.protocol_state()?))
     }
     fn active_waits(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
-        self.durable.active_waits(agent_id)
+        self.check_scope(agent_id)?;
+        work::active_waits(self.work)
     }
     fn work_queue(&self) -> Result<WorkQueueReadModel> {
-        self.durable.work_queue()
+        self.work.work_queue(self.state, self.triggers.to_vec())
     }
     fn work_item(&self, id: &str) -> Result<Option<WorkItemRecord>> {
-        self.durable.work_item(id)
+        work::work_item(self.work, id)
     }
     fn external_triggers(&self) -> Result<Vec<ExternalTriggerRecord>> {
-        self.durable.external_triggers()
+        // Frozen by the explicit D6 adapter and revalidated in this read view.
+        Ok(self.triggers.to_vec())
     }
     fn active_tasks(&self, agent_id: &str) -> Result<Vec<TaskRecord>> {
         self.durable.active_tasks(agent_id)
@@ -606,6 +630,9 @@ mod resident_tests {
         sync::Arc,
     };
 
+    fn empty_work() -> CapturedWork {
+        work::tests::capture(Vec::new(), Vec::new(), Vec::new(), BTreeMap::new())
+    }
     fn scope() -> InputEvidenceScope {
         InputEvidenceScope {
             agent_id: "default".into(),
@@ -644,6 +671,8 @@ mod resident_tests {
     }
     fn captured(records: Vec<Arc<QualifiedInputEvidence>>) -> CapturedInputEvidence {
         CapturedInputEvidence {
+            selected_completion_brief_ids: Default::default(),
+            completion_source_observations: Default::default(),
             recovery_source_absences: Default::default(),
             execution: Default::default(),
             budget: None,
@@ -761,7 +790,9 @@ mod resident_tests {
             .unavailable
             .insert(Key::new(Family::Message, "pruned-message"));
         resident.message_turn_keys.insert(anchor.id.clone(), None);
-        let inputs = ResidentContextInputs::new(&durable, &resident).unwrap();
+        let work = empty_work();
+        let state = AgentState::new("default");
+        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[]).unwrap();
         assert_eq!(inputs.assigned_turn_for_message(&anchor.id).unwrap(), None);
         assert_eq!(inputs.anchor_messages().unwrap(), vec![anchor.clone()]);
         assert_eq!(inputs.message_by_id(&anchor.id).unwrap(), Some(anchor));
@@ -816,7 +847,7 @@ mod resident_tests {
             .is_some());
         assert!(
             inputs.work_item("remaining-domain").is_err(),
-            "remaining Work reads are still explicit SQL adapters"
+            "uncaptured Work requires explicit preparation"
         );
     }
 
@@ -876,7 +907,9 @@ mod resident_tests {
         selected
             .message_turn_keys
             .insert(source.id.clone(), Some(turn.turn_id.clone()));
-        let resident = ResidentContextInputs::new(&durable, &selected).unwrap();
+        let work = empty_work();
+        let state = AgentState::new("default");
+        let resident = ResidentContextInputs::new(&durable, &selected, &work, &state, &[]).unwrap();
         assert_eq!(
             resident
                 .assigned_turn_for_message(&source.id)
@@ -945,14 +978,18 @@ mod resident_tests {
         let mut selected = captured(vec![evidence(PreparedInputEvidence::Message(
             source.clone(),
         ))]);
-        let missing = ResidentContextInputs::new(&durable, &selected).unwrap();
+        let work = empty_work();
+        let state = AgentState::new("default");
+        let missing = ResidentContextInputs::new(&durable, &selected, &work, &state, &[]).unwrap();
         assert!(missing
             .assigned_turn_for_message(&source.id)
             .unwrap_err()
             .downcast_ref::<InputEvidenceReadError>()
             .is_some());
         selected.message_turn_keys.insert(source.id.clone(), None);
-        let inputs = ResidentContextInputs::new(&durable, &selected).unwrap();
+        let work = empty_work();
+        let state = AgentState::new("default");
+        let inputs = ResidentContextInputs::new(&durable, &selected, &work, &state, &[]).unwrap();
         assert!(inputs
             .assigned_turn_for_message(&source.id)
             .unwrap()
@@ -1000,7 +1037,9 @@ mod resident_tests {
             relation: BriefContentSourceRelation::Finalizes,
         };
         let resident = captured(vec![evidence(PreparedInputEvidence::Brief(brief.clone()))]);
-        let inputs = ResidentContextInputs::new(&durable, &resident).unwrap();
+        let work = empty_work();
+        let state = AgentState::new("default");
+        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[]).unwrap();
         let error = crate::context::snapshot::HistoryObservations::capture_inputs(
             &inputs,
             &[],
@@ -1012,7 +1051,7 @@ mod resident_tests {
     }
 
     #[test]
-    fn cold_work_completion_aggregate_prepares_exact_source_outside_resident_history() {
+    fn completion_head_prepares_exact_source_outside_recent_history() {
         let directory = tempfile::tempdir().unwrap();
         let storage = AppStorage::new_for_test(directory.path()).unwrap();
         let source = message("exact incoming body for the cold completion report");
@@ -1042,11 +1081,37 @@ mod resident_tests {
         let mut connection = db.connection().unwrap();
         let tx = connection.transaction().unwrap();
         let durable = ContextDurableRead::new(&tx, "default");
-        let resident = captured(Vec::new());
-        let inputs = ResidentContextInputs::new(&durable, &resident).unwrap();
+        let resident = captured(vec![
+            evidence(PreparedInputEvidence::Brief(brief.clone())),
+            evidence(PreparedInputEvidence::Transcript(transcript.clone())),
+            evidence(PreparedInputEvidence::Message(source.clone())),
+        ]);
+        let mut record = crate::types::WorkItemRecord::new(
+            "default",
+            "cold result",
+            crate::types::WorkItemState::Completed,
+        );
+        record.id = "cold-work".into();
+        let work = work::tests::capture(
+            vec![crate::runtime::resident_work::CanonicalWorkRecord::Work(
+                record,
+            )],
+            Vec::new(),
+            Vec::new(),
+            BTreeMap::from([(
+                "cold-work".into(),
+                Some(crate::runtime::resident_work::WorkCompletionRef {
+                    brief_id: brief.id.clone(),
+                    transcript_entry_id: Some(transcript.id.clone()),
+                    source_message_id: Some(source.id.clone()),
+                }),
+            )]),
+        );
+        let state = AgentState::new("default");
+        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[]).unwrap();
         assert!(
-            inputs.brief_by_id(&brief.id).is_err(),
-            "ordinary Brief lookup must remain resident-only"
+            inputs.briefs(1).is_err(),
+            "a focused completion head does not grant a history window"
         );
         let reports = crate::context::latest_completion_report_by_work_item(
             &inputs,
@@ -1142,7 +1207,9 @@ mod resident_tests {
         }
         let durable = ContextDurableRead::new(&tx, "default");
         let resident = captured(Vec::new());
-        let inputs = ResidentContextInputs::new(&durable, &resident).unwrap();
+        let work = empty_work();
+        let state = AgentState::new("default");
+        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[]).unwrap();
         assert!(inputs.message_by_id(&reply.id).is_err());
         let pending = inputs
             .admitted_settlement_inputs("default", "activation", &current.id, 1)

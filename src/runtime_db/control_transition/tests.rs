@@ -1338,6 +1338,7 @@ fn recovery_reads_current_terminal_targets_and_episodes_in_one_scope() {
     let ControlRecoveryObservation::Current {
         snapshot,
         episodes,
+        domains: _,
         receipt,
         facts,
         obligations,
@@ -1354,7 +1355,7 @@ fn recovery_reads_current_terminal_targets_and_episodes_in_one_scope() {
     };
     assert_eq!(snapshot.state.status, AgentStatus::Stopped);
     assert!(snapshot.tasks.is_empty() && snapshot.timers.is_empty());
-    assert_eq!(episodes.state.as_ref(), Some(&snapshot.state));
+    assert!(episodes.belongs_to(&f.key.agent_id, f.key.identity_incarnation));
     assert_eq!(
         facts
             .transition
@@ -1948,4 +1949,240 @@ fn key_only_recovery_rejects_receipt_column_and_embedded_key_corruption() {
         [],
     ).unwrap();
     assert!(f.db.control_receipt_for_recovery(&f.key).is_err());
+}
+
+#[path = "work_maintenance_tests.rs"]
+mod work_maintenance;
+
+fn stop_for_typed_run_proof(f: &Fixture, source: &MessageEnvelope) -> ControlReceipt {
+    let mut input = f.input(ControlAction::Stop);
+    let target = input
+        .cancellation_targets
+        .iter_mut()
+        .find(|target| target.target_kind == ControlCancellationKind::Run)
+        .unwrap();
+    target.target_generation["activation_id"] = json!("attempt-1");
+    target.target_generation["source_message_id"] = json!(source.id);
+    let prepared = prepare_control(input).unwrap();
+    let ControlCommit::Applied { receipt, .. } = f.db.commit_control(&prepared).unwrap() else {
+        panic!("first Stop must apply")
+    };
+    receipt
+}
+
+#[test]
+fn canonical_stop_proof_borrows_original_view_and_matches_only_original_memory_address() {
+    let f = Fixture::new();
+    let source = f.seed_command_claim(true, true);
+    let receipt = stop_for_typed_run_proof(&f, &source);
+    let original = ControlStoppedRun {
+        agent_id: &f.key.agent_id,
+        identity_incarnation: 1,
+        owner_epoch: 1,
+        run_id: "original-run",
+        runtime_lease_id: "original-run-lease",
+        activation_id: Some("attempt-1"),
+        source: &source,
+    };
+    f.db.transaction(|tx| {
+        let proof = prove_committed_control_stop_for_run_tx(tx, &f.key, &original)?.unwrap();
+        assert_eq!(proof.receipt(), &receipt);
+        let located = find_committed_control_stop_for_run_tx(tx, &original)?.unwrap();
+        assert_eq!(located.receipt().key, receipt.key);
+        located.matches_memory_dispatch(
+            &crate::runtime_db::episode_memory::EpisodeMemoryKey {
+                agent_id: f.key.agent_id.clone(),
+                identity_incarnation: 1,
+                actual_dispatch_turn_id: "started-turn".into(),
+            },
+            &crate::runtime_db::episode_memory::EpisodeMemoryInvocation {
+                message_id: source.id.clone(),
+                turn_index: 1,
+            },
+        )?;
+        // Canonical Stop can precede physical cancellation. This proof does not
+        // turn its pending obligation into a claimed physical join.
+        assert_eq!(proof.obligation().state, ControlObligationState::Pending);
+        assert_eq!(proof.source_message_id(), source.id);
+        assert_eq!(proof.source_sequence(), source.message_seq.unwrap());
+        assert_eq!(proof.dispatch().unwrap().turn_id(), "started-turn");
+        assert_eq!(proof.dispatch().unwrap().turn_index(), 1);
+        proof.require_same_transaction(tx)?;
+        let key = crate::runtime_db::episode_memory::EpisodeMemoryKey {
+            agent_id: f.key.agent_id.clone(),
+            identity_incarnation: 1,
+            actual_dispatch_turn_id: "started-turn".into(),
+        };
+        let invocation = crate::runtime_db::episode_memory::EpisodeMemoryInvocation {
+            message_id: source.id.clone(),
+            turn_index: 1,
+        };
+        proof.matches_memory_dispatch(&key, &invocation)?;
+        let mut successor_key = key.clone();
+        successor_key.identity_incarnation = 2;
+        assert!(proof
+            .matches_memory_dispatch(&successor_key, &invocation)
+            .is_err());
+        let mut later = invocation;
+        later.turn_index = 2;
+        assert!(proof.matches_memory_dispatch(&key, &later).is_err());
+        let mut foreign_connection = f.db.connection()?;
+        let foreign_tx = foreign_connection.transaction()?;
+        assert!(proof.require_same_transaction(&foreign_tx).is_err());
+        Ok(())
+    })
+    .unwrap();
+    assert!(f.db.committed_control_stop_for_run(&original).unwrap());
+    f.db.mark_control_obligation_needs_attention(
+        &f.key,
+        &f.db
+            .pending_control_obligations(&f.key.agent_id, 1)
+            .unwrap()[0]
+            .1,
+        f.time + chrono::Duration::seconds(11),
+        json!({"original_join_not_observed":true}),
+    )
+    .unwrap();
+    f.db.transaction(|tx| {
+        let proof = prove_committed_control_stop_for_run_tx(tx, &f.key, &original)?.unwrap();
+        assert_eq!(
+            proof.obligation().state,
+            ControlObligationState::NeedsAttention
+        );
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn canonical_claim_only_stop_cannot_authorize_a_memory_dispatch_and_wrong_lease_is_absent() {
+    let f = Fixture::new();
+    let source = f.seed_command_claim(false, false);
+    stop_for_typed_run_proof(&f, &source);
+    let original = ControlStoppedRun {
+        agent_id: &f.key.agent_id,
+        identity_incarnation: 1,
+        owner_epoch: 1,
+        run_id: "original-run",
+        runtime_lease_id: "original-run-lease",
+        activation_id: Some("attempt-1"),
+        source: &source,
+    };
+    f.db.transaction(|tx| {
+        let proof = prove_committed_control_stop_for_run_tx(tx, &f.key, &original)?.unwrap();
+        assert!(proof.dispatch().is_none());
+        assert!(proof
+            .matches_memory_dispatch(
+                &crate::runtime_db::episode_memory::EpisodeMemoryKey {
+                    agent_id: f.key.agent_id.clone(),
+                    identity_incarnation: 1,
+                    actual_dispatch_turn_id: "unstarted-hint".into(),
+                },
+                &crate::runtime_db::episode_memory::EpisodeMemoryInvocation {
+                    message_id: source.id.clone(),
+                    turn_index: 1,
+                },
+            )
+            .is_err());
+        let wrong = ControlStoppedRun {
+            runtime_lease_id: "successor-lease",
+            ..original
+        };
+        assert!(prove_committed_control_stop_for_run_tx(tx, &f.key, &wrong)?.is_none());
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn canonical_stop_proof_rejects_changed_terminal_outcome_without_repairing_any_evidence() {
+    let f = Fixture::new();
+    let source = f.seed_command_claim(true, true);
+    stop_for_typed_run_proof(&f, &source);
+    let original = ControlStoppedRun {
+        agent_id: &f.key.agent_id,
+        identity_incarnation: 1,
+        owner_epoch: 1,
+        run_id: "original-run",
+        runtime_lease_id: "original-run-lease",
+        activation_id: Some("attempt-1"),
+        source: &source,
+    };
+    let outcome_id = format!(
+        "control:{}:interrupt:attempt-1",
+        digest(&serde_json::to_value(&f.key).unwrap()).unwrap()
+    );
+    f.db.transaction(|tx| {
+        let payload: String = tx.query_row(
+            "SELECT payload_json FROM execution_protocol_outcomes WHERE agent_id=?1 AND outcome_id=?2",
+            params![f.key.agent_id, outcome_id], |row| row.get(0))?;
+        let mut outcome: execution_protocol::ExecutionOutcomeRecord = serde_json::from_str(&payload)?;
+        outcome.outcome = execution_protocol::ExecutionOutcome::Command(
+            execution_protocol::CommandResult::Applied { references: vec!["different-original".into()] });
+        let changed = serde_json::to_string(&outcome)?;
+        tx.execute("UPDATE execution_protocol_outcomes SET payload_json=?3 WHERE agent_id=?1 AND outcome_id=?2",
+            params![f.key.agent_id, outcome_id, changed])?;
+        assert!(prove_committed_control_stop_for_run_tx(tx, &f.key, &original).is_err());
+        let after: String = tx.query_row(
+            "SELECT payload_json FROM execution_protocol_outcomes WHERE agent_id=?1 AND outcome_id=?2",
+            params![f.key.agent_id, outcome_id], |row| row.get(0))?;
+        assert_eq!(after, changed);
+        Ok(())
+    }).unwrap();
+}
+
+#[test]
+fn original_stop_material_counts_all_command_obligations_before_any_proof_decode() {
+    let f = Fixture::new();
+    let source = f.seed_command_claim(true, true);
+    stop_for_typed_run_proof(&f, &source);
+    let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+        agent_id: f.key.agent_id.clone(),
+        identity_incarnation: 1,
+    };
+    f.db.transaction(|tx| {
+        let before = stopped_run_proof_material_tx(tx, &scope, "original-run", Some("attempt-1"))?;
+        assert!(before.0 > 0 && before.1 >= 7); // receipt, obligation, source, queue, Turn, pair
+        // Same-command non-run evidence is decoded by load_obligations_in too.
+        // Deliberately invalid JSON proves this estimator does not deserialize.
+        tx.execute("INSERT INTO control_cancellation_obligations(agent_id,identity_incarnation,command_id,obligation_id,target_kind,target_identity,target_generation_json,created_at,state,updated_at,target_json,completion_evidence_json) SELECT agent_id,identity_incarnation,command_id,'budget-extra','task','budget-task','not-json',created_at,'needs_attention',updated_at,'not-json','not-json' FROM control_cancellation_obligations WHERE agent_id=?1 AND identity_incarnation=1 AND command_id=?2 LIMIT 1",
+            params![scope.agent_id,f.key.command_id])?;
+        let after = stopped_run_proof_material_tx(tx, &scope, "original-run", Some("attempt-1"))?;
+        assert_eq!(after.1, before.1 + 1);
+        assert!(after.0 > before.0);
+        let successor = crate::runtime::resident_input_evidence::InputEvidenceScope {identity_incarnation:2,..scope.clone()};
+        assert_eq!(stopped_run_proof_material_tx(tx, &successor, "original-run", Some("attempt-1"))?, (0,0));
+        Ok(())
+    }).unwrap();
+    let count_before: usize =
+        f.db.transaction(|tx| {
+            Ok(tx.query_row(
+                "SELECT COUNT(*) FROM control_cancellation_obligations",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    let result: Result<()> = f.db.transaction(|tx| {
+        // Cheap SQL-generated metadata crosses the record ceiling without
+        // allocating/decoding a Vec of target payloads in Rust.
+        tx.execute("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<65536) INSERT INTO control_cancellation_obligations(agent_id,identity_incarnation,command_id,obligation_id,target_kind,target_identity,target_generation_json,created_at,state,updated_at,target_json) SELECT ?1,1,?2,'budget-over-'||i,'task','x','{}','x','pending','x','{}' FROM n",
+            params![scope.agent_id,f.key.command_id])?;
+        stopped_run_proof_material_tx(tx, &scope, "original-run", Some("attempt-1"))?;
+        Ok(())
+    });
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("preparation limit"));
+    let count_after: usize =
+        f.db.transaction(|tx| {
+            Ok(tx.query_row(
+                "SELECT COUNT(*) FROM control_cancellation_obligations",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(count_after, count_before);
 }

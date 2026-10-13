@@ -6,6 +6,7 @@ use anyhow::{ensure, Result};
 
 use super::mutation_owner::PublicationToken;
 use super::resident_input_evidence::{CapturedInputEvidence, ResidentInputEvidence};
+use super::resident_work::{CapturedWork, ResidentWorkDomain};
 use crate::types::{AgentState, ContextEpisodeRecord};
 
 #[derive(Debug, Clone)]
@@ -15,6 +16,7 @@ pub(crate) struct AgentSnapshot {
     // None is an unprepared domain, never a ready empty collection.
     pub episodes: Option<Arc<ResidentEpisodes>>,
     pub input_evidence: Option<Arc<ResidentInputEvidence>>,
+    pub work: Option<Arc<ResidentWorkDomain>>,
 }
 
 /// Only the selected immutable records survive request preparation. This value
@@ -26,6 +28,7 @@ pub(crate) struct CapturedAgentContext {
     pub episode_candidate_limit: usize,
     pub episodes: Vec<Arc<ContextEpisodeRecord>>,
     pub input_evidence: Option<CapturedInputEvidence>,
+    pub work: Option<CapturedWork>,
 }
 
 impl AgentSnapshot {
@@ -41,6 +44,7 @@ impl AgentSnapshot {
             episode_candidate_limit: episode_limit,
             episodes,
             input_evidence: None,
+            work: None,
         })
     }
 }
@@ -239,6 +243,7 @@ mod tests {
         let domain = Arc::downgrade(&episodes);
         let root = Arc::new(AgentSnapshot {
             input_evidence: None,
+            work: None,
             token: PublicationToken {
                 identity_incarnation: 2,
                 owner_epoch: 1,

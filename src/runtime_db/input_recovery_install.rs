@@ -1,4 +1,4 @@
-//! Focused legacy cache installation targets of an acknowledged input command.
+//! Focused acknowledged targets and remaining D5/D6 legacy cache installation.
 //! Receipts retain IDs only; recovery reads current rows in its fresh view.
 use std::collections::BTreeSet;
 
@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{repositories, transitions::PostCommitEffects};
 use crate::{
-    runtime::resident_input_evidence::InputEvidenceScope,
-    types::{ExternalTriggerRecord, TaskRecord, TimerRecord, WorkItemRecord},
+    runtime::resident_input_evidence::{InputEvidenceKey, InputEvidenceScope},
+    types::{ExternalTriggerRecord, TaskRecord, TimerRecord},
 };
 
 const MAX_INSTALL_KEYS: usize = 65_536;
@@ -18,6 +18,16 @@ const MAX_INSTALL_KEYS: usize = 65_536;
 #[serde(deny_unknown_fields)]
 pub(crate) struct InputMutationInstallKeys {
     pub work_items: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    /// Original owning selectors, not durable body/absence authority. Fresh
+    /// recovery derives dependencies again from the current Work records.
+    pub input_roots: BTreeSet<InputEvidenceKey>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub completion_brief_ids: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub wait_conditions: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub continuations: BTreeSet<String>,
     pub tasks: BTreeSet<String>,
     pub timers: BTreeSet<String>,
     pub external_triggers: BTreeSet<String>,
@@ -27,6 +37,9 @@ impl InputMutationInstallKeys {
         let mut count = 0usize;
         for keys in [
             &self.work_items,
+            &self.wait_conditions,
+            &self.continuations,
+            &self.completion_brief_ids,
             &self.tasks,
             &self.timers,
             &self.external_triggers,
@@ -39,6 +52,13 @@ impl InputMutationInstallKeys {
                 "input cache target has an empty ID"
             );
         }
+        ensure!(
+            self.input_roots.iter().all(|key| !key.id.trim().is_empty()),
+            "input owning target has an empty ID"
+        );
+        count = count
+            .checked_add(self.input_roots.len())
+            .context("input owning target count overflow")?;
         ensure!(
             count <= MAX_INSTALL_KEYS,
             "input cache targets exceed preparation limit"
@@ -86,12 +106,12 @@ impl InputMutationInstallKeys {
 }
 
 /// Missing current rows deliberately remain in `keys`: installation removes
-/// exactly those old cached IDs, without clearing unrelated cache entries.
+/// exactly those old D5/D6 cached IDs. Work selectors instead feed its qualified domain;
+/// this DTO never retains duplicate Work/Wait/Frame bodies.
 #[derive(Debug, Clone)]
 pub(crate) struct InputRecoveryInstallFacts {
     pub scope: InputEvidenceScope,
     pub keys: InputMutationInstallKeys,
-    pub work_items: Vec<WorkItemRecord>,
     pub tasks: Vec<TaskRecord>,
     pub timers: Vec<TimerRecord>,
     pub external_triggers: Vec<ExternalTriggerRecord>,
@@ -110,23 +130,10 @@ pub(crate) fn load_current_install_facts_tx(
     let mut facts = InputRecoveryInstallFacts {
         scope: scope.clone(),
         keys: keys.clone(),
-        work_items: Vec::new(),
         tasks: Vec::new(),
         timers: Vec::new(),
         external_triggers: Vec::new(),
     };
-    for id in &keys.work_items {
-        if let Some(payload) =
-            current_payload_tx(tx, scope, "work_items", "work_item_id", "agent_id", id)?
-        {
-            let record = repositories::decode_work_item_payload(&payload)?;
-            ensure!(
-                record.id == *id && record.agent_id == scope.agent_id,
-                "WorkItem cache payload differs from normalized scope/ID"
-            );
-            facts.work_items.push(record);
-        }
-    }
     for id in &keys.tasks {
         if let Some(payload) =
             current_payload_tx(tx, scope, "tasks", "task_id", "owner_agent_id", id)?
@@ -179,12 +186,43 @@ pub(crate) fn validate_original_install_keys_tx(
 ) -> Result<()> {
     let facts = load_current_install_facts_tx(tx, scope, keys)?;
     ensure!(
-        facts.work_items.len() == keys.work_items.len()
-            && facts.tasks.len() == keys.tasks.len()
+        facts.tasks.len() == keys.tasks.len()
             && facts.timers.len() == keys.timers.len()
             && facts.external_triggers.len() == keys.external_triggers.len(),
         "input cache installation target is missing from original SQL ACK"
     );
+    // Work bodies belong only to the qualified Work domain. The original
+    // receipt still proves every exact normalized target before SQL ACK.
+    for (table, id_column, keys) in [
+        ("work_items", "work_item_id", &keys.work_items),
+        (
+            "wait_conditions",
+            "wait_condition_id",
+            &keys.wait_conditions,
+        ),
+        (
+            "work_item_continuations",
+            "continuation_id",
+            &keys.continuations,
+        ),
+    ] {
+        for id in keys {
+            let row: Option<(String, String, Option<String>, Option<String>)> = tx.query_row(
+                &format!("SELECT {id_column},agent_id,json_extract(payload_json,'$.id'),json_extract(payload_json,'$.agent_id') FROM {table} WHERE {id_column}=?1"),
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ).optional()?;
+            let (actual_id, agent_id, payload_id, payload_agent) =
+                row.context("original Work installation target is missing from SQL ACK")?;
+            ensure!(
+                actual_id == *id
+                    && agent_id == scope.agent_id
+                    && payload_id.as_deref() == Some(id.as_str())
+                    && payload_agent.as_deref() == Some(scope.agent_id.as_str()),
+                "original Work installation target normalized/payload scope differs"
+            );
+        }
+    }
     Ok(())
 }
 

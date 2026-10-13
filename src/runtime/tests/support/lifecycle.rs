@@ -132,6 +132,12 @@ impl LifecycleHarness {
         );
     }
 
+    // Startup recovery needs to drop the original runtime before minting the
+    // Host's exclusive preactivation capability. Ordinary restart stays intact.
+    pub(crate) fn into_startup_fixture_parts(self) -> (TempDir, TempDir, RuntimeHandle) {
+        (self.data_dir, self.workspace, self.runtime)
+    }
+
     pub(crate) fn now(&self) -> chrono::DateTime<Utc> {
         self.runtime.now()
     }

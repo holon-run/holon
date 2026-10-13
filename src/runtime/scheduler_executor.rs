@@ -1,6 +1,7 @@
 use super::message_dispatch::MessageDispatchPlan;
 use super::*;
 use crate::domain::execution_protocol::ExecutionBinding;
+use crate::storage::WorkQueueReadModel;
 use crate::types::ExecutionAdmissionProvenance;
 
 const QUEUE_HEAD_NO_PROGRESS_MAX_ATTEMPTS: u32 = 3;
@@ -105,7 +106,7 @@ pub(super) struct ScheduledMessage {
     pub(super) dispatch_plan: MessageDispatchPlan,
     pub(super) scheduler_decision: scheduler::SchedulerDecision,
     // Own physical processing completion even if the scheduled value is dropped.
-    _run_completion: super::control_cancellation::ControlRunCompletionGuard,
+    pub(super) run_completion: super::control_cancellation::ControlRunCompletionGuard,
 }
 
 struct CanonicalClaimPlan {
@@ -202,7 +203,6 @@ pub(super) enum StaleRunProjectionReconciliation {
 struct QueueCandidate {
     message: MessageEnvelope,
     prior_state: AgentState,
-    queue_len: usize,
     wait_obligation: bool,
 }
 
@@ -477,7 +477,26 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let previous_status = guard.state.status.clone();
         let previous_run_id = guard.state.current_run_id.clone();
         let previous_sleeping_until = guard.state.sleeping_until;
+        // A sleep decision is posture, not physical completion of the current
+        // dispatch. Its original queue settlement releases the run identity.
+        let dispatch_run = guard.state.current_run_id.clone().filter(|run_id| {
+            guard.state.status != AgentStatus::Stopped
+                && guard
+                    .current_run_abort
+                    .as_ref()
+                    .is_some_and(|handle| &handle.run_id == run_id)
+                && guard
+                    .state
+                    .current_execution_binding
+                    .as_ref()
+                    .is_some_and(|binding| {
+                        guard.state.current_turn_id.as_deref() == Some(binding.turn_id.as_str())
+                    })
+        });
         scheduler::apply_sleep_projection(&mut guard.state, sleeping_until);
+        if dispatch_run.is_some() {
+            guard.state.current_run_id = dispatch_run;
+        }
         let posture_changed = previous_status != guard.state.status;
         if posture_changed {
             self.append_posture_decision(
@@ -559,7 +578,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let mut replans = 0;
         loop {
             let candidate = {
-                let guard = self.runtime.read_committed_agent(Clone::clone).await?;
+                let mut guard = self.runtime.begin_mutation().await?;
                 if self.runtime.inner.shutdown_requested.load(Ordering::SeqCst) {
                     drop(guard);
                     let poll = self.shutdown().await?;
@@ -577,16 +596,16 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     );
                     return Ok(poll);
                 }
-                let wait_trigger_message_ids = self
-                    .runtime
-                    .inner
-                    .storage
-                    .latest_wait_conditions_for_agent(&guard.state.id)?
+                let request = super::work_reads::live_work_request();
+                guard.prepare_owner_work_request(&request).await?;
+                let work = guard.capture_work(&request)?;
+                let wait_trigger_message_ids = work
+                    .unresolved_wait_conditions()?
                     .into_iter()
                     .filter(|condition| {
                         condition.status == crate::types::WaitConditionStatus::Triggered
                     })
-                    .filter_map(|condition| condition.trigger_message_id)
+                    .filter_map(|condition| condition.trigger_message_id.clone())
                     .collect::<std::collections::BTreeSet<_>>();
                 let (message, wait_obligation) =
                     select_queue_message(&guard.queue, &wait_trigger_message_ids);
@@ -602,7 +621,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 QueueCandidate {
                     message,
                     prior_state: guard.state.clone(),
-                    queue_len: guard.queue.len(),
                     wait_obligation,
                 }
             };
@@ -684,9 +702,19 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::AuthorityBlocked))
             }
         }
+        // Reply reconciliation can reenter the owner. From this point onward
+        // all Work/Wait derivation and the claim reuse one reservation.
+        let mut planning_guard = Some(self.runtime.begin_mutation().await?);
         if crate::wake_contract::is_agent_message(&persisted_message)
             && persisted_message.work_item_id.is_none()
         {
+            let request = super::work_reads::live_work_request();
+            let guard = planning_guard.as_mut().expect("planning reservation");
+            guard.prepare_owner_work_request(&request).await?;
+            let work = guard.capture_work(&request)?;
+            let live = work.live_work_items()?;
+            // Task remains a named D5 adapter; all possible Open owners are
+            // proved by the complete live Work set, not a partial-map miss.
             for task in self
                 .runtime
                 .inner
@@ -694,65 +722,50 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 .tasks()
                 .message_waits_for_reply(&persisted_message.agent_id, &persisted_message.id)?
             {
-                let Some(owner_id) = task.work_item_id else {
-                    continue;
-                };
-                if self
-                    .runtime
-                    .inner
-                    .runtime_db
-                    .work_items()
-                    .latest(&owner_id)?
-                    .is_some_and(|owner| {
-                        owner.agent_id == persisted_message.agent_id
-                            && owner.state == crate::types::WorkItemState::Open
-                    })
-                {
-                    persisted_message.work_item_id = Some(owner_id);
-                    break;
+                if let Some(owner_id) = task.work_item_id {
+                    if live
+                        .iter()
+                        .any(|owner| owner.id == owner_id && owner.state == WorkItemState::Open)
+                    {
+                        persisted_message.work_item_id = Some(owner_id);
+                        break;
+                    }
                 }
             }
         }
-        let prior_closure = self
-            .runtime
-            .closure_decision_for_state(&candidate.prior_state, None)
-            .await?;
-        // All reentrant reply/closure work is complete. Keep this reservation
-        // through the synchronous planner and its original claim transaction.
-        let mut planning_guard = Some(self.runtime.begin_mutation().await?);
         let preparation_roots = self.planner_preparation_roots(&persisted_message)?;
-        planning_guard
+        let read = planning_guard
             .as_mut()
             .expect("planning reservation")
-            .prepare_owner_inputs(
+            .prepare_scheduler_read(
+                Some(&persisted_message),
                 preparation_roots,
                 std::collections::BTreeSet::from([persisted_message.id.clone()]),
+                self.runtime.now(),
             )
             .await?;
         let inputs = planning_guard
             .as_ref()
             .expect("planning reservation")
             .capture_input_evidence()?;
-        if planning_guard.as_ref().expect("planning reservation").state != candidate.prior_state
+        if read.state.as_ref() != &candidate.prior_state
             || super::provider_recovery::captured_message(&inputs, &candidate.message.id)?.as_ref()
                 != Some(&candidate.message)
         {
             return Ok(PrepareMessageOutcome::Replan);
         }
         require_interrupted_source_allocations(&inputs, &persisted_message.id)?;
-        let mut dispatch_plan = self.runtime.build_message_dispatch_plan(
+        let projection = &read.projection;
+        let prior_closure =
+            RuntimeHandle::closure_decision_from_projection(&read.state, projection, None);
+        let mut dispatch_plan = self.runtime.build_message_dispatch_plan_from_work(
             &persisted_message,
             prior_closure,
-            &candidate.prior_state,
-        )?;
-        let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
-            &self.runtime.inner.storage,
-            &candidate.prior_state,
-            candidate.queue_len,
-            self.runtime.now(),
+            &read.state,
+            &read.work,
         )?;
         let continuation_decision = scheduler::decide_next_action(
-            &projection,
+            projection,
             scheduler::SchedulerBoundary::RunLoop,
             scheduler::SchedulerInput::Message {
                 message: &persisted_message,
@@ -764,11 +777,13 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .filter(|entry| entry.status == QueueEntryStatus::Interrupted)
             .and_then(|_| persisted_message.turn_id.clone());
         let canonical_claim = match self.canonical_activation_plan(
-            &projection,
+            projection,
             &persisted_message,
             &dispatch_plan,
             continuation_decision.model_reentry,
             &inputs,
+            &read.work,
+            &read.work_queue,
         ) {
             Ok(CanonicalClaimOutcome::ReduceOnly) => None,
             Ok(CanonicalClaimOutcome::Plan(plan)) => Some(plan),
@@ -827,10 +842,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         &persisted_message,
                         &ambiguous.wait_condition_ids,
                     )?;
-                    scheduler::append_scheduling_advisories(
+                    scheduler::append_prepared_scheduling_advisories(
                         &self.runtime.inner.storage,
-                        &candidate.prior_state,
-                        candidate.queue_len,
+                        &read.advisories,
                     )?;
                     return Ok(PrepareMessageOutcome::Poll(
                         self.defer_or_quarantine_queue_head(
@@ -876,10 +890,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         };
         let scheduler_decision_events =
             scheduler::scheduler_decision_events(&persisted_message.agent_id, &effective_decision)?;
-        scheduler::append_scheduling_advisories(
+        scheduler::append_prepared_scheduling_advisories(
             &self.runtime.inner.storage,
-            &candidate.prior_state,
-            candidate.queue_len,
+            &read.advisories,
         )?;
         #[cfg(test)]
         if let Some((work_item_id, plan_status)) = self
@@ -945,16 +958,16 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         guard.queue.len(),
                     )));
                 }
-                let wait_trigger_message_ids = self
-                    .runtime
-                    .inner
-                    .storage
-                    .latest_wait_conditions_for_agent(&guard.state.id)?
+                let request = super::work_reads::live_work_request();
+                guard.prepare_owner_work_request(&request).await?;
+                let work = guard.capture_work(&request)?;
+                let wait_trigger_message_ids = work
+                    .unresolved_wait_conditions()?
                     .into_iter()
                     .filter(|condition| {
                         condition.status == crate::types::WaitConditionStatus::Triggered
                     })
-                    .filter_map(|condition| condition.trigger_message_id)
+                    .filter_map(|condition| condition.trigger_message_id.clone())
                     .collect::<std::collections::BTreeSet<_>>();
                 let (selected_message, selected_wait_obligation) =
                     select_queue_message(&guard.queue, &wait_trigger_message_ids);
@@ -974,7 +987,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 let wait_transition = (canonical_claim.is_some() || settle_reducer_only_wait)
                     .then(|| {
                         self.runtime
-                            .wait_resolution_transition_for_message(&persisted_message)
+                            .wait_resolution_transition_for_message(&persisted_message, &work)
                     })
                     .transpose()?
                     .flatten();
@@ -1155,7 +1168,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 running_state,
                 dispatch_plan,
                 scheduler_decision: effective_decision,
-                _run_completion: run_completion,
+                run_completion,
             },
         )))
     }
@@ -1165,6 +1178,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         candidate: &scheduler::CanonicalActivationCandidate,
         message: &MessageEnvelope,
         inputs: &super::resident_input_evidence::CapturedInputEvidence,
+        work: &super::resident_work::CapturedWork,
     ) -> Result<bool> {
         let scheduler::CanonicalActivationCandidate::ExactWaitResume {
             expected_work_item_id,
@@ -1173,11 +1187,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         else {
             return Ok(false);
         };
-        let durable_wait = self
-            .runtime
-            .inner
-            .storage
-            .latest_wait_conditions_for_agent(&message.agent_id)?
+        let durable_wait = work
+            .unresolved_wait_conditions()?
             .into_iter()
             .find(|condition| {
                 condition.id == *wait_id
@@ -1220,8 +1231,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
     fn provably_stale_task_rejoin(
         &self,
         candidate: &scheduler::CanonicalActivationCandidate,
-        message: &MessageEnvelope,
         inputs: &super::resident_input_evidence::CapturedInputEvidence,
+        captured_work: &super::resident_work::CapturedWork,
     ) -> Result<bool> {
         let scheduler::CanonicalActivationCandidate::ExactTaskRejoin {
             task_id,
@@ -1244,12 +1255,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             // resume an open WorkItem owned by that partition. A completing or
             // completed WorkItem cannot regain execution authority even when a
             // pre-cutover resolved task wait still references it.
-            if self
-                .runtime
-                .inner
-                .runtime_db
-                .work_items()
-                .latest(work_item_id)?
+            if captured_work
+                .work_item(work_item_id)?
                 .is_none_or(|work_item| work_item.state != WorkItemState::Open)
             {
                 return Ok(true);
@@ -1257,30 +1264,20 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             // Open pre-cutover WorkItems may still reference a legacy scheduler
             // Waiting mirror, but they are only provably orphaned when no exact
             // durable task wait remains for the same WorkItem.
-            let exact_wait_exists = self
-                .runtime
-                .inner
-                .storage
-                .latest_wait_conditions_for_agent(&message.agent_id)?
-                .into_iter()
-                .any(|condition| {
-                    condition.work_item_id.as_deref() == Some(work_item_id.as_str())
-                        && matches!(
-                            condition.status,
-                            crate::types::WaitConditionStatus::Active
-                                | crate::types::WaitConditionStatus::Triggered
-                                | crate::types::WaitConditionStatus::Resolved
-                        )
-                        && condition.kind == crate::types::WaitConditionKind::Task
-                        && condition.wake_sources.iter().any(|source| {
-                            matches!(
-                                source,
-                                crate::types::WakeSource::TaskResult {
-                                    task_id: expected_task_id,
-                                } if expected_task_id == task_id
+            let exact_wait_exists =
+                captured_work
+                    .waits_for_task(task_id)?
+                    .into_iter()
+                    .any(|condition| {
+                        condition.work_item_id.as_deref() == Some(work_item_id.as_str())
+                            && matches!(
+                                condition.status,
+                                WaitConditionStatus::Active
+                                    | WaitConditionStatus::Triggered
+                                    | WaitConditionStatus::Resolved
                             )
-                        })
-                });
+                            && condition.kind == crate::types::WaitConditionKind::Task
+                    });
             return Ok(!exact_wait_exists);
         };
         let crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. } =
@@ -1288,11 +1285,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         else {
             return Ok(false);
         };
-        let current_wait = self
-            .runtime
-            .inner
-            .storage
-            .latest_wait_conditions_for_agent(&message.agent_id)?
+        let current_wait = captured_work
+            .waits_for_task(task_id)?
             .into_iter()
             .find(|condition| {
                 condition.id == wait.wait_id
@@ -1316,7 +1310,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         }))
     }
 
-    fn task_result_recovery_is_deliverable(&self, message: &MessageEnvelope) -> Result<bool> {
+    fn task_result_recovery_is_deliverable(
+        &self,
+        message: &MessageEnvelope,
+        work: &super::resident_work::CapturedWork,
+    ) -> Result<bool> {
         if !scheduler::runtime_owned_internal_followup(message)
             || message.authority_class != AuthorityClass::RuntimeInstruction
         {
@@ -1335,7 +1333,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             )?;
             for record in records {
                 if crate::runtime::task_result_recovery::recovery_owner_key(&record) == *owner_key
-                    && self.task_result_record_is_deliverable(&message.agent_id, &record)?
+                    && self.task_result_record_is_deliverable_from_work(
+                        &message.agent_id,
+                        &record,
+                        work,
+                    )?
                 {
                     return Ok(true);
                 }
@@ -1362,14 +1364,54 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         {
             return Ok(false);
         }
-        self.task_result_record_is_deliverable(&message.agent_id, &record)
+        self.task_result_record_is_deliverable_from_work(&message.agent_id, &record, work)
     }
 
+    fn task_result_record_is_deliverable_from_work(
+        &self,
+        agent_id: &str,
+        record: &crate::runtime_db::TaskResultSettlementRecord,
+        work: &super::resident_work::CapturedWork,
+    ) -> Result<bool> {
+        anyhow::ensure!(
+            work.scope.agent_id == agent_id,
+            "TaskResult Work scope differs"
+        );
+        let active = work
+            .unresolved_wait_conditions()?
+            .into_iter()
+            .filter(|wait| wait.status == WaitConditionStatus::Active)
+            .cloned()
+            .collect();
+        let live = work.live_work_items()?.into_iter().cloned().collect();
+        let active = crate::storage::filter_context_active_waits(active, live);
+        self.task_result_record_is_deliverable_with_waits(agent_id, record, &active)
+    }
+
+    #[cfg(test)]
     fn task_result_record_is_deliverable(
         &self,
         agent_id: &str,
         record: &crate::runtime_db::TaskResultSettlementRecord,
     ) -> Result<bool> {
+        let active = self
+            .runtime
+            .inner
+            .storage
+            .active_wait_conditions_for_agent(agent_id)?;
+        self.task_result_record_is_deliverable_with_waits(agent_id, record, &active)
+    }
+
+    fn task_result_record_is_deliverable_with_waits(
+        &self,
+        agent_id: &str,
+        record: &crate::runtime_db::TaskResultSettlementRecord,
+        active_waits: &[WaitConditionRecord],
+    ) -> Result<bool> {
+        anyhow::ensure!(
+            record.agent_id == agent_id,
+            "TaskResult settlement scope differs"
+        );
         if self
             .runtime
             .inner
@@ -1397,11 +1439,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         }) {
             return Ok(false);
         }
-        Ok(!self
-            .runtime
-            .inner
-            .storage
-            .active_wait_conditions_for_agent(agent_id)?
+        Ok(!active_waits
             .iter()
             .any(|wait| wait.work_item_id == record.work_item_id))
     }
@@ -1413,11 +1451,13 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         dispatch_plan: &MessageDispatchPlan,
         model_reentry: bool,
         inputs: &super::resident_input_evidence::CapturedInputEvidence,
+        captured_work: &super::resident_work::CapturedWork,
+        work_queue: &WorkQueueReadModel,
     ) -> Result<CanonicalClaimOutcome> {
         if matches!(
             &message.origin,
             MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"
-        ) && !self.task_result_recovery_is_deliverable(message)?
+        ) && !self.task_result_recovery_is_deliverable(message, captured_work)?
         {
             return Ok(CanonicalClaimOutcome::ReduceOnly);
         }
@@ -1446,8 +1486,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         };
         let scenario_class = candidate.scenario_class();
         let stale_correlated_wait =
-            self.provably_stale_correlated_wait(&candidate, message, inputs)?;
-        let stale_task_rejoin = self.provably_stale_task_rejoin(&candidate, message, inputs)?;
+            self.provably_stale_correlated_wait(&candidate, message, inputs, captured_work)?;
+        let stale_task_rejoin =
+            self.provably_stale_task_rejoin(&candidate, inputs, captured_work)?;
         if let scheduler::CanonicalActivationCandidate::ExactTaskRejoin { task_id, .. } = &candidate
         {
             let durable_task = self.runtime.inner.storage.latest_task_record(task_id)?;
@@ -1562,6 +1603,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 existing_execution,
                 scenario_class,
                 inputs,
+                captured_work,
             );
         }
         if let scheduler::CanonicalActivationScenario::ExactTaskRejoin {
@@ -1571,19 +1613,16 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         } = &mut scenario
         {
             if wait_id.is_none() {
-                let matching_waits = self
-                    .runtime
-                    .inner
-                    .storage
-                    .latest_wait_conditions_for_agent(&message.agent_id)?
+                let matching_waits = captured_work
+                    .waits_triggered_by(&message.id)?
                     .into_iter()
                     .filter(|condition| {
                         condition.work_item_id.as_deref() == Some(work_item_id.as_str())
-                            && condition.status == crate::types::WaitConditionStatus::Resolved
+                            && condition.status == WaitConditionStatus::Resolved
                             && condition.kind == crate::types::WaitConditionKind::Task
                             && scheduler::message_matches_wait_condition(message, condition)
                     })
-                    .map(|condition| condition.id)
+                    .map(|condition| condition.id.clone())
                     .collect::<Vec<_>>();
                 if let [authoritative_wait_id] = matching_waits.as_slice() {
                     *wait_id = Some(authoritative_wait_id.clone());
@@ -1594,7 +1633,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let work_item_id = scenario
             .work_item_id()
             .expect("WorkItem scenario has a WorkItem owner");
-        let Some(work_item) = self.runtime.inner.storage.latest_work_item(work_item_id)? else {
+        let Some(work_item) = captured_work.work_item(work_item_id)?.cloned() else {
             return Ok(
                 if matches!(
                     scenario,
@@ -1666,7 +1705,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 });
             }
         }
-        let work_queue = self.runtime.inner.storage.work_queue_prompt_projection()?;
         let Some(work_projection) = work_queue
             .items
             .iter()
@@ -1965,6 +2003,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         existing_execution: Option<crate::domain::execution_protocol::ExecutionProtocolState>,
         scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
         inputs: &super::resident_input_evidence::CapturedInputEvidence,
+        work: &super::resident_work::CapturedWork,
     ) -> Result<CanonicalClaimOutcome> {
         let wait_id = match &scenario {
             scheduler::CanonicalActivationScenario::ExactWaitResume { owner, wait_id }
@@ -1973,23 +2012,20 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         agent_id: message.agent_id.clone(),
                     }) =>
             {
-                let matching = self
-                    .runtime
-                    .inner
-                    .storage
-                    .latest_wait_conditions_for_agent(&message.agent_id)?
-                    .into_iter()
-                    .find(|condition| {
-                        condition.id == *wait_id
-                            && condition.work_item_id.is_none()
-                            && matches!(
-                                condition.status,
-                                crate::types::WaitConditionStatus::Triggered
-                                    | crate::types::WaitConditionStatus::Resolved
-                            )
-                            && condition.trigger_message_id() == Some(message.id.as_str())
-                            && scheduler::message_matches_wait_condition(message, condition)
-                    });
+                let matching =
+                    work.waits_triggered_by(&message.id)?
+                        .into_iter()
+                        .find(|condition| {
+                            condition.id == *wait_id
+                                && condition.work_item_id.is_none()
+                                && matches!(
+                                    condition.status,
+                                    crate::types::WaitConditionStatus::Triggered
+                                        | crate::types::WaitConditionStatus::Resolved
+                                )
+                                && condition.trigger_message_id() == Some(message.id.as_str())
+                                && scheduler::message_matches_wait_condition(message, condition)
+                        });
                 if matching.is_none() {
                     return Ok(CanonicalClaimOutcome::RejectQueued {
                         scenario_class,
@@ -4372,7 +4408,6 @@ mod tests {
         QueueCandidate {
             message: guard.queue.peek().cloned().expect("queued test message"),
             prior_state: guard.state.clone(),
-            queue_len: guard.queue.len(),
             wait_obligation: false,
         }
     }
@@ -4441,6 +4476,17 @@ mod tests {
             context_config(),
         )
         .unwrap();
+        // This foreign Work must really exist: a missing ID used to hide the
+        // scheduler's attempt to adopt a raw caller hint into the target scope.
+        let mut foreign_work =
+            WorkItemRecord::new("caller-agent", "foreign caller Work", WorkItemState::Open);
+        foreign_work.id = "work-caller".into();
+        assert!(runtime
+            .inner
+            .runtime_db
+            .work_items()
+            .insert_new(&foreign_work)
+            .unwrap());
         let caller = AgentMessageCallerContext {
             caller_principal: "runtime:agent-invocation".into(),
             caller_agent_id: Some("caller-agent".into()),
@@ -4526,6 +4572,25 @@ mod tests {
             .unwrap()
             .expect("delivery provenance remains durable");
         assert_eq!(delivery.caller, caller);
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .work_items()
+                .latest(&foreign_work.id)
+                .unwrap(),
+            Some(foreign_work.clone()),
+        );
+        let mutation = runtime.begin_mutation().await.unwrap();
+        let work = mutation
+            .capture_work(&super::super::work_reads::live_work_request())
+            .unwrap();
+        assert!(work
+            .live_work_items()
+            .unwrap()
+            .iter()
+            .all(|item| item.id != foreign_work.id));
+        drop(mutation);
 
         runtime
             .begin_interactive_turn(Some(&scheduled.message), None, None)
@@ -4821,7 +4886,6 @@ mod tests {
             let candidate = QueueCandidate {
                 message: incoming.clone(),
                 prior_state: runtime.agent_state().await?,
-                queue_len: 1,
                 wait_obligation: false,
             };
             {

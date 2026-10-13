@@ -98,6 +98,7 @@ fn resolve_single_episode_recovery(
                     current.episodes,
                 )?;
                 Some(KnownCommit::State {
+                    work: None,
                     state: Arc::new(state),
                     episodes: Some(Arc::new(episodes)),
                     input_evidence: None,

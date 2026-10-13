@@ -759,13 +759,28 @@ async fn completed_one_shot_wait_binds_existing_pending_wake() {
     bind_autonomous_work_queue_tick(&mut work_message, &work, "continue_active");
     work_message.turn_id = Some("turn-late-one-shot-wait".into());
     let work_message = runtime.enqueue(work_message).await.unwrap();
-    assert!(matches!(
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
         scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
             .poll()
             .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+            .unwrap()
+    else {
+        panic!("initial timer Work dispatch must be claimed");
+    };
+    assert_eq!(scheduled.message.id, work_message.id);
+    runtime
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
+        .await
+        .unwrap();
 
     let mut timer = runtime
         .schedule_timer(10_000, None, Some("one shot".into()))
@@ -800,8 +815,8 @@ async fn completed_one_shot_wait_binds_existing_pending_wake() {
         Some(wake.message_id.as_str())
     );
 
-    finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&work_message, Some(&work.id));
+    let mut terminal = terminal_transition(&work_message, Some(&work.id));
+    terminal.turn_record = runtime.build_turn_record(&terminal.terminal).await.unwrap();
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -818,6 +833,8 @@ async fn completed_one_shot_wait_binds_existing_pending_wake() {
         )
         .await
         .unwrap();
+    finish_claimed_test_run(&runtime).await;
+    drop(scheduled);
     let runtime_task = tokio::spawn(runtime.clone().run());
     wait_for_audit_events(
         &runtime,

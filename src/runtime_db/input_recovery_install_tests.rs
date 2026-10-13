@@ -12,7 +12,7 @@ use crate::{
     types::{
         AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentState,
         AgentVisibility, CallbackDeliveryMode, ExternalTriggerScope, ExternalTriggerStatus,
-        TaskKind, TaskStatus, TimerStatus, WorkItemState,
+        TaskKind, TaskStatus, TimerStatus, WorkItemRecord, WorkItemState,
     },
 };
 
@@ -163,7 +163,16 @@ fn original_receipt_keeps_typed_ids_and_recovery_reads_current_values() -> Resul
         assert_eq!(replay, original);
         let current =
             load_current_install_facts_tx(tx, &f.scope, &replay.outcome.scopes[0].install_keys)?;
-        assert_eq!(current.work_items, vec![current_work.clone()]);
+        assert_eq!(current.keys.work_items, keys.work_items);
+        let payload: String = tx.query_row(
+            "SELECT payload_json FROM work_items WHERE work_item_id=?1",
+            [&current_work.id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            repositories::decode_work_item_payload(&payload)?,
+            current_work
+        );
         assert_eq!(current.tasks.len(), 1);
         assert_eq!(current.timers.len(), 1);
         assert_eq!(current.external_triggers.len(), 1);
@@ -197,7 +206,12 @@ fn missing_current_rows_retain_only_original_keys_for_precise_cache_removal() ->
             [&f.effects.work_items[0].id],
         )?;
         let current = load_current_install_facts_tx(tx, &f.scope, &keys)?;
-        assert!(current.work_items.is_empty());
+        // Only finite selectors remain; no Work body is read into the legacy DTO.
+        assert!(tx.query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM work_items WHERE work_item_id=?1)",
+            [&f.effects.work_items[0].id],
+            |row| row.get::<_, bool>(0)
+        )?);
         assert_eq!(current.keys, keys);
         assert!(!current.keys.work_items.contains(&unrelated.id));
         assert_eq!(
@@ -273,15 +287,15 @@ fn every_family_rejects_foreign_normalized_agent_and_mismatched_payload_id() -> 
         f.db.transaction(|tx| {
             let sql = format!("UPDATE {table} SET {agent_column}='foreign-agent' WHERE {id_column}=?1");
             tx.execute(&sql, [id])?;
-            assert!(load_current_install_facts_tx(tx, &f.scope, &keys).is_err());
+            assert!(validate_original_install_keys_tx(tx, &f.scope, &keys).is_err());
             tx.execute(&format!("UPDATE {table} SET {agent_column}=?2 WHERE {id_column}=?1"), rusqlite::params![id,f.scope.agent_id])?;
             let sql = format!("UPDATE {table} SET payload_json=json_set(payload_json,'$.{payload_id}','foreign-id') WHERE {id_column}=?1");
             tx.execute(&sql, [id])?;
-            assert!(load_current_install_facts_tx(tx, &f.scope, &keys).is_err());
+            assert!(validate_original_install_keys_tx(tx, &f.scope, &keys).is_err());
             tx.execute(&format!("UPDATE {table} SET payload_json=json_set(payload_json,'$.{payload_id}',?2) WHERE {id_column}=?1"), rusqlite::params![id,id])?;
             let payload_agent = if table == "external_triggers" { "target_agent_id" } else { "agent_id" };
             tx.execute(&format!("UPDATE {table} SET payload_json=json_set(payload_json,'$.{payload_agent}','foreign-agent') WHERE {id_column}=?1"), [id])?;
-            assert!(load_current_install_facts_tx(tx, &f.scope, &keys).is_err());
+            assert!(validate_original_install_keys_tx(tx, &f.scope, &keys).is_err());
             tx.execute(&format!("UPDATE {table} SET payload_json=json_set(payload_json,'$.{payload_agent}',?2) WHERE {id_column}=?1"), rusqlite::params![id,f.scope.agent_id])?;
             Ok(())
         })?;

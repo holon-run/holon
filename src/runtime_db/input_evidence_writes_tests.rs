@@ -753,6 +753,8 @@ fn scoped_timer_fire_returns_qualified_actual_wake_and_rolls_back_the_whole_tran
         .fire_with_wait_in_scope(
             &f.scope,
             &command,
+            &timer_work_tests::work_request(),
+            &timer_work_tests::budget_ledger()?,
             Some(TransitionFaultPoint::AfterCanonicalWrites)
         )
         .is_err());
@@ -772,9 +774,14 @@ fn scoped_timer_fire_returns_qualified_actual_wake_and_rolls_back_the_whole_tran
         Some(command.agent_state.0.clone())
     );
     assert_eq!(f.aliases()?, 0);
-    let acknowledgement =
-        f.db.timers()
-            .fire_with_wait_in_scope(&f.scope, &command, None)?;
+    let acknowledgement = f.db.timers().fire_with_wait_in_scope(
+        &f.scope,
+        &command,
+        &timer_work_tests::work_request(),
+        &timer_work_tests::budget_ledger()?,
+        None,
+    )?;
+    assert!(acknowledgement.work_delta.is_none());
     let actual = acknowledgement.record.message.as_ref().unwrap();
     assert!(actual.message_seq.unwrap_or_default() > 0);
     assert_ne!(actual.message_seq, command.message.message_seq);
@@ -798,6 +805,7 @@ fn scoped_timer_fire_returns_qualified_actual_wake_and_rolls_back_the_whole_tran
     let request = InputEvidenceLoadRequest {
         windows: Vec::new(),
         mandatory_roots: [Key::new(Family::Message, &actual.id)].into(),
+        selected_completion_brief_ids: Default::default(),
         interrupted_sources: [actual.id.clone()].into(),
         record_limit: 128,
         byte_limit: 1024 * 1024,
@@ -812,9 +820,13 @@ fn scoped_timer_fire_returns_qualified_actual_wake_and_rolls_back_the_whole_tran
         .capture()?
         .lookup(&Key::new(Family::Message, &actual.id))?
         .is_some());
-    let replay =
-        f.db.timers()
-            .fire_with_wait_in_scope(&f.scope, &command, None)?;
+    let replay = f.db.timers().fire_with_wait_in_scope(
+        &f.scope,
+        &command,
+        &timer_work_tests::work_request(),
+        &timer_work_tests::budget_ledger()?,
+        None,
+    )?;
     assert!(!replay.record.advanced && !replay.record.wake_created);
     assert!(replay.input_delta.records.is_empty());
     assert_eq!(f.aliases()?, 1);
@@ -845,7 +857,13 @@ fn scoped_timer_fire_does_not_adopt_an_unqualified_same_name_message() -> Result
     assert!(f
         .db
         .timers()
-        .fire_with_wait_in_scope(&f.scope, &command, None)
+        .fire_with_wait_in_scope(
+            &f.scope,
+            &command,
+            &timer_work_tests::work_request(),
+            &timer_work_tests::budget_ledger()?,
+            None
+        )
         .is_err());
     assert_eq!(
         f.db.timers().latest(&command.expected.id)?,
@@ -860,3 +878,6 @@ fn scoped_timer_fire_does_not_adopt_an_unqualified_same_name_message() -> Result
     assert_eq!(f.aliases()?, 0);
     Ok(())
 }
+
+#[path = "timer_wait_work_tests.rs"]
+mod timer_work_tests;
