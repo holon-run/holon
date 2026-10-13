@@ -225,6 +225,11 @@ restored after each case, including failed tests.
   changes and hiding or collapsing a brief revoke a captured manual confirmation,
   even if the brief is shown again. Validated read-state versions are cached and
   prevent stale roster or read responses from rolling back confirmed unread counts.
+  A latest-window bootstrap establishes the server's joining baseline before
+  fetching its snapshot. If that optional request fails, reading stays available
+  but receipts are disabled until a successful bootstrap. Batch GETs and cached
+  heads are not persisted-receipt evidence; automatic deduplication uses validated
+  successful POSTs in the current conversation.
   The 80-entry brief cache evicts least-recently-used hidden content, not visible
   briefs; capacity is not a lifetime loading quota.
   List previews use bounded reads; unknown unread state is never

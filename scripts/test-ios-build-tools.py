@@ -1081,12 +1081,13 @@ class UIFixtureProviderContracts(unittest.TestCase):
             worker.start()
             try:
                 for streaming in (False, True):
-                    for seeding in ("normal", "history", "automatic", "normal"):
+                    for seeding in ("normal", "history", "automatic", "followup", "normal"):
                         if seeding != "normal":
                             history_seed_active.set()
                         else:
                             history_seed_active.clear()
-                        if seeding == "automatic":
+                        namespace["FakeProvider"].automatic_read_followup_active = seeding == "followup"
+                        if seeding in ("automatic", "followup"):
                             automatic_read_seed_active.set()
                         else:
                             automatic_read_seed_active.clear()
@@ -1102,8 +1103,10 @@ class UIFixtureProviderContracts(unittest.TestCase):
                         with urllib.request.urlopen(request, timeout=5) as response:
                             body = response.read().decode()
                         with self.subTest(streaming=streaming, seeding=seeding):
-                            if seeding == "automatic":
-                                self.assertIn("IOS_AUTOMATIC_READ_BRIEF", body)
+                            if seeding in ("automatic", "followup"):
+                                marker = ("IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF" if seeding == "followup"
+                                          else "IOS_AUTOMATIC_READ_BRIEF")
+                                self.assertIn(marker, body)
                                 self.assertNotIn("IOS_HISTORY_BRIEF", body)
                                 self.assertNotIn("IOS_POPULATED_BRIEF", body)
                             elif seeding == "history":

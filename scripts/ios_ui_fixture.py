@@ -278,6 +278,7 @@ with fixture_directory(repo) as root:
 
     class FakeProvider(http.server.BaseHTTPRequestHandler):
         image_requests = 0
+        automatic_read_followup_active = False
         rich_batches = 0
 
         def log_message(self, *args):
@@ -319,7 +320,9 @@ with fixture_directory(repo) as root:
                 if report_acceptance:
                     text += "\n\n" + "safe-report-body " * 600 + "\nIOS_CONTENT_REPORT_TAIL"
             elif automatic_read_seed_active.is_set():
-                text = "IOS_AUTOMATIC_READ_BRIEF: Visible body advances the real read cursor."
+                marker = ("IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF" if FakeProvider.automatic_read_followup_active
+                          else "IOS_AUTOMATIC_READ_BRIEF")
+                text = f"{marker}: Visible body advances the real read cursor."
             elif history_seed_active.is_set():
                 text = "IOS_HISTORY_BRIEF: History fixture result."
             finish_reason = "tool_calls" if tool_calls else "stop"
@@ -380,6 +383,47 @@ with fixture_directory(repo) as root:
             self.forward()
 
         def do_POST(self):
+            if self.path in {"/fixture/automatic-read-followup", "/fixture/automatic-read-confirmed"}:
+                if self.headers.get("Authorization") != "Bearer " + proxy_control_token:
+                    self.send_error(403); return
+                if fixture_case != "testVisibleBriefAutomaticallyUpdatesHomeUnreadCount":
+                    self.send_error(409); return
+                # The client establishes its joining baseline before the snapshot.
+                # Only the later followup can prove a visible-body POST advanced it.
+                read_db = root / "holon" / "state" / "runtime.sqlite"
+                for _ in range(100):
+                    with sqlite3.connect(read_db.as_uri() + "?mode=ro", uri=True) as connection:
+                        cursors = connection.execute(
+                            "SELECT COUNT(*) FROM agent_brief_read_cursors WHERE agent_id = ?",
+                            (agent,)).fetchone()[0]
+                        advanced = connection.execute(
+                            """SELECT COUNT(*) FROM agent_brief_read_cursors AS cursor
+                               JOIN briefs AS brief ON brief.agent_id = cursor.agent_id
+                               WHERE cursor.agent_id = ? AND cursor.revision > 0
+                                 AND cursor.event_log_epoch =
+                                     (SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch')
+                                 AND cursor.read_through_event_seq >= brief.created_event_seq
+                                 AND brief.preview LIKE 'IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF%'""",
+                            (agent,)).fetchone()[0]
+                    confirming = self.path == "/fixture/automatic-read-confirmed"
+                    if cursors > 0 and (not confirming or advanced == 1):
+                        break
+                    time.sleep(.1)
+                else:
+                    self.send_error(409, "automatic read cursor was not persisted or advanced"); return
+                if confirming:
+                    self.send_response(204); self.end_headers(); return
+                FakeProvider.automatic_read_followup_active = True
+                automatic_read_seed_active.set()
+                try:
+                    seed_fixture_history(local, agent, history_seed_active,
+                                         count=1, marker_prefix="IOS_AUTOMATIC_READ_FOLLOWUP")
+                except Exception:
+                    self.send_error(500, "automatic read followup did not finish"); return
+                finally:
+                    automatic_read_seed_active.clear()
+                    FakeProvider.automatic_read_followup_active = False
+                self.send_response(204); self.end_headers(); return
             if self.path == "/fixture/node-availability":
                 if self.headers.get("Authorization") != "Bearer " + proxy_control_token:
                     self.send_error(403); return

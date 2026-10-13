@@ -1118,6 +1118,91 @@ final class ReadingCoordinatorTests: XCTestCase {
         coordinator.disconnect()
     }
 
+    func testAutomaticReadPersistsCursorDespiteFreshOrCachedBatchHead() async throws {
+        for cached in [false, true] {
+            let authority = identity()
+            let state = try XCTUnwrap(ReadingReadState(
+                readingReadState(unread: 0, through: 7, revision: 0),
+                agentID: "A", epoch: "epoch", visibility: "private"))
+            let agent = ReadingAgent(id: "A", name: "A", preview: "brief",
+                                     unreadCount: 0, readState: state)
+            let cache = ReadingCache(file: nil)
+            let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+            if cached {
+                XCTAssertTrue(cache.save(.init(partition: partition, agentID: nil,
+                    agents: [agent], snapshot: nil, position: nil, savedAt: Date(), rosterEpoch: "epoch")))
+            }
+            let fake = ReadingFakeTransport(authority: authority)
+            if !cached { await fake.setRosterAgents([agent]) }
+            // The real server initializes a new cursor at head, even when the
+            // first visible body is older. A batch GET alone never persists it.
+            await fake.setReadResponse(.object([
+                "state": readingReadState(unread: 0, through: 7, revision: 0),
+                "applied_read_through_event_seq": .integer(7)
+            ]))
+            let coordinator = ReadingCoordinator(cache: cache, prefetchBriefLimit: 0)
+            coordinator.activate(transport: fake, identity: authority, apiBaseURL: url)
+            coordinator.selectAgent("A")
+            try await wait { coordinator.status == .live && coordinator.agents.first?.readState == state }
+            await coordinator.loadBrief("brief")
+            coordinator.setBriefVisible("brief", visible: true)
+            let request = coordinator.markVisibleBriefsReadAutomatically()
+            XCTAssertNotNil(request, "Batch head is not a persisted receipt; cached=\(cached)")
+            await request?.value
+            XCTAssertEqual(coordinator.readStatus, .confirmed)
+            XCTAssertNil(coordinator.markVisibleBriefsReadAutomatically())
+            let throughs = await fake.readThroughs
+            XCTAssertEqual(throughs, [5])
+            XCTAssertEqual(cache.load(partition, agentID: nil)?.agents.first?.readState, state)
+            coordinator.disconnect()
+        }
+    }
+
+    func testFirstAutomaticReceiptPreservesBriefArrivingWhilePending() async throws {
+        let (coordinator, fake, _) = try await start()
+        let initial = try XCTUnwrap(ReadingReadState(
+            readingReadState(unread: 0, through: 7, revision: 0),
+            agentID: "A", epoch: "epoch", visibility: "private"))
+        await fake.setRosterAgents([ReadingAgent(id: "A", name: "A", preview: "brief", readState: initial)])
+        await coordinator.refresh()
+        await coordinator.loadBrief("brief")
+        coordinator.setBriefVisible("brief", visible: true)
+        await fake.setReadResponse(.object([
+            "state": readingReadState(unread: 0, through: 7, revision: 0),
+            "applied_read_through_event_seq": .integer(7)
+        ]))
+        await fake.holdReads()
+        let request = coordinator.markVisibleBriefsReadAutomatically()
+        try await wait { await fake.readCalls == 1 }
+        let later = try XCTUnwrap(ReadingReadState(
+            readingReadState(unread: 1, head: 8, through: 7, revision: 0),
+            agentID: "A", epoch: "epoch", visibility: "private"))
+        await fake.setRosterAgents([ReadingAgent(id: "A", name: "A", preview: "new", readState: later)])
+        let rosterCalls = await fake.rosterCalls
+        await fake.send(try readingEvent("agent_roster_hint", raw: .object([:])), to: "roster")
+        try await wait { await fake.rosterCalls > rosterCalls && coordinator.agents.first?.readState == later }
+        await fake.releaseReads()
+        await request?.value
+        XCTAssertEqual(coordinator.readStatus, .confirmed)
+        XCTAssertEqual(coordinator.agents.first?.unreadCount, 1)
+        XCTAssertNil(coordinator.markVisibleBriefsReadAutomatically())
+        let throughs = await fake.readThroughs
+        XCTAssertEqual(throughs, [5])
+        coordinator.disconnect()
+    }
+
+    func testAutomaticReadDoesNotRepeatSuccessfulManualReceipt() async throws {
+        let (coordinator, fake, _) = try await start()
+        await coordinator.loadBrief("brief")
+        coordinator.setBriefVisible("brief", visible: true)
+        await coordinator.markRead()
+        XCTAssertEqual(coordinator.readStatus, .confirmed)
+        XCTAssertNil(coordinator.markVisibleBriefsReadAutomatically())
+        let calls = await fake.readCalls
+        XCTAssertEqual(calls, 1)
+        coordinator.disconnect()
+    }
+
     func testAutomaticReadFailureDoesNotClearOrLoopAndAllowsManualRetry() async throws {
         let (coordinator, fake, _) = try await start()
         await fake.failReads()

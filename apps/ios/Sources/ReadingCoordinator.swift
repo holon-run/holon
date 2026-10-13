@@ -89,6 +89,7 @@ final class ReadingCoordinator {
     @ObservationIgnored private var visibilityRevision = 0
     @ObservationIgnored private var automaticReadRequested = false
     @ObservationIgnored private var automaticReadAttempt: (epoch: String, through: Int64)?
+    @ObservationIgnored private var confirmedReadReceipt: (epoch: String, through: Int64)?
     @ObservationIgnored private var previewTask: Task<Void, Never>?
     @ObservationIgnored private var previewedAgentIDs: Set<String> = []
     private struct DetailVersion: Equatable {
@@ -349,6 +350,7 @@ final class ReadingCoordinator {
         canLoadHistory = false
         readStatus = .idle
         automaticReadAttempt = nil
+        confirmedReadReceipt = nil
         automaticReadRequested = false
         readingPosition = nil
         conversationSavedAt = nil
@@ -991,10 +993,10 @@ final class ReadingCoordinator {
         automaticReadRequested = true
         guard let current = readConfirmationForVisibleBriefs else { return nil }
         let attempted = automaticReadAttempt?.epoch == current.epoch ? automaticReadAttempt?.through : nil
-        let confirmed = agents.first(where: { $0.id == current.agentID })?.readState
+        let confirmed = confirmedReadReceipt
         if let attempted, current.through <= attempted { return nil }
-        if confirmed?.eventLogEpoch == current.epoch,
-           let through = confirmed?.readThroughEventSeq, current.through <= through { return nil }
+        if confirmed?.epoch == current.epoch,
+           let through = confirmed?.through, current.through <= through { return nil }
         automaticReadAttempt = (current.epoch, current.through)
         return beginMarkRead(current)
     }
@@ -1034,6 +1036,7 @@ final class ReadingCoordinator {
                     self.rosterSavedAt = Date()
                     self.persistRoster()
                 }
+                self.confirmedReadReceipt = (state.eventLogEpoch, confirmed)
                 self.readStatus = .confirmed
                 // The receipt is authoritative; refresh also discovers later unread results.
                 self.refreshRoster(token: token)

@@ -42,6 +42,8 @@ actor ReadingClientTransport: ReadingTransport {
     private var rosterEpoch: String?
     private var rosterGeneration: UInt64 = 0
     private var rosterLoading = false
+    private var conversationGeneration: UInt64 = 0
+    private var initializedReadAgentID: String?
 
     init(client: HolonClient, authority: HolonConnectionIdentity) {
         self.client = client
@@ -227,7 +229,33 @@ actor ReadingClientTransport: ReadingTransport {
     }
 
     func conversation(agentID: String, before: String?) async throws -> HolonConversationSnapshot {
-        try await request { try await $0.conversation(agentID: agentID, before: before, limit: 60) }
+        if before == nil {
+            conversationGeneration &+= 1
+            initializedReadAgentID = nil
+        }
+        let generation = conversationGeneration
+        var readState: JSONValue?
+        if before == nil {
+            // Batch GETs are ephemeral for a new principal. Establish its joining
+            // baseline before the snapshot, not at a later visible-body POST.
+            do {
+                readState = try await request {
+                    try await $0.getJSON(path: ["agents", agentID, "brief-read-state"])
+                }
+            } catch { try Self.requireMetadataRecovery(error) }
+        }
+        let snapshot = try await request {
+            try await $0.conversation(agentID: agentID, before: before, limit: 60)
+        }
+        guard conversationGeneration == generation else { throw CancellationError() }
+        if before == nil, let readState,
+           let state = ReadingReadState(readState, agentID: agentID, epoch: snapshot.eventLogEpoch,
+                                        visibility: authority.visibilityScopeID!),
+           let head = snapshot.raw["snapshot_through_seq"]?.readingInteger,
+           state.eventHeadSeq <= head {
+            initializedReadAgentID = agentID
+        }
+        return snapshot
     }
     func brief(agentID: String, briefID: String) async throws -> JSONValue {
         try await request { try await $0.briefDetail(agentID: agentID, briefID: briefID) }
@@ -257,7 +285,8 @@ actor ReadingClientTransport: ReadingTransport {
         return raw
     }
     func markRead(agentID: String, through: Int64) async throws -> JSONValue {
-        try await request { try await $0.markBriefRead(agentID: agentID, readThroughEventSeq: through) }
+        guard initializedReadAgentID == agentID else { throw HolonClientError.invalidRequest }
+        return try await request { try await $0.markBriefRead(agentID: agentID, readThroughEventSeq: through) }
     }
 
     func createContentReport(_ body: HolonContentReportRequest) async throws -> HolonContentReportResponse {
