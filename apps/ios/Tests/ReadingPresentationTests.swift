@@ -87,4 +87,25 @@ final class ReadingPresentationTests: XCTestCase {
             "preview": .string(#"{"type":"text","text":"Readable \uD83D\uDE00"#)
         ])), "Readable 😀…")
     }
+
+    func testTruncatedTextEnvelopePreservesLeadingCombiningScalars() {
+        for text in ["\u{0301}Readable", "\u{0301}\u{0327}Readable", "\u{FE0F}Readable", "\u{200D}Readable"] {
+            let preview = #"{"type":"text","text":""# + text
+            XCTAssertEqual(ReadingPresentation.operatorText(.object(["preview": .string(preview)])),
+                           text + "…")
+        }
+    }
+
+    func testTruncatedSurrogateTailRequiresCompletableLowSurrogate() {
+        for low in ["0", "00", "004", "C", "D0", "DB", "DBF", "E", "FF"] {
+            let preview = #"{"type":"text","text":"Readable \uD83D\u"# + low
+            XCTAssertEqual(ReadingPresentation.operatorText(.object(["preview": .string(preview)])),
+                           preview, "invalid low surrogate prefix: \(low)")
+        }
+        for low in ["", "D", "d", "DC", "dc", "DD", "De", "Df", "DFF"] {
+            let preview = #"{"type":"text","text":"Readable \uD83D\u"# + low
+            XCTAssertEqual(ReadingPresentation.operatorText(.object(["preview": .string(preview)])),
+                           "Readable …", "completable low surrogate prefix: \(low)")
+        }
+    }
 }

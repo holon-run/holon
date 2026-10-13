@@ -41,36 +41,43 @@ enum OperatorInputPresentation {
            envelope["type"]?.readingString == "text",
            let text = envelope["text"]?.readingString { return text }
 
-        let prefix = #"{"type":"text","text":""#
-        guard preview.hasPrefix(prefix) else { return preview }
-        let encoded = preview.dropFirst(prefix.count)
+        let bytes = Array(preview.utf8)
+        let prefix = Array(#"{"type":"text","text":""#.utf8)
+        guard bytes.starts(with: prefix) else { return preview }
+        let encoded = bytes.dropFirst(prefix.count)
         // A byte cut can leave a closing quote, an escape, or half a surrogate pair.
         for trim in 0...min(11, encoded.count) {
             if trim > 0, !isIncompleteTail(encoded.suffix(trim)) { continue }
-            let candidate = "\"" + encoded.dropLast(trim) + "\""
-            if let text = try? JSONDecoder().decode(String.self, from: Data(candidate.utf8)) {
+            var candidate = Data([0x22])
+            candidate.append(contentsOf: encoded.dropLast(trim))
+            candidate.append(0x22)
+            if let text = try? JSONDecoder().decode(String.self, from: candidate) {
                 return text + "…"
             }
         }
         return preview
     }
 
-    private static func isIncompleteTail(_ tail: Substring) -> Bool {
-        if tail == "\"" || tail == "\\" { return true }
-        guard tail.hasPrefix("\\u") else { return false }
+    private static func isIncompleteTail(_ tail: ArraySlice<UInt8>) -> Bool {
+        if tail.elementsEqual([0x22]) || tail.elementsEqual([0x5C]) { return true }
+        guard tail.starts(with: [0x5C, 0x75]) else { return false }
         let units = tail.dropFirst(2)
         if units.count < 4 { return isHex(units) }
-        guard let high = UInt16(units.prefix(4), radix: 16),
+        guard let high = UInt16(String(decoding: units.prefix(4), as: UTF8.self), radix: 16),
               (0xD800...0xDBFF).contains(high) else { return false }
         let rest = units.dropFirst(4)
-        if rest.isEmpty || rest == "\\" { return true }
-        guard rest.hasPrefix("\\u") else { return false }
+        if rest.isEmpty || rest.elementsEqual([0x5C]) { return true }
+        guard rest.starts(with: [0x5C, 0x75]) else { return false }
         let low = rest.dropFirst(2)
-        return low.count < 4 && isHex(low)
+        guard low.count < 4, isHex(low) else { return false }
+        let prefix = String(decoding: low, as: UTF8.self)
+        guard let lower = UInt16(prefix + String(repeating: "0", count: 4 - low.count), radix: 16),
+              let upper = UInt16(prefix + String(repeating: "F", count: 4 - low.count), radix: 16) else { return false }
+        return lower <= 0xDFFF && upper >= 0xDC00
     }
 
-    private static func isHex(_ text: Substring) -> Bool {
-        text.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }
+    private static func isHex(_ text: ArraySlice<UInt8>) -> Bool {
+        text.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }
     }
 }
 

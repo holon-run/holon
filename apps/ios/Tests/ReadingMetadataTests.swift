@@ -139,6 +139,15 @@ final class ReadingMetadataTests: XCTestCase {
         XCTAssertFalse(shown?.contains(#"{"type":"text""#) == true)
     }
 
+    func testRosterTruncatedEnvelopePreservesLeadingCombiningScalar() {
+        let preview = #"{"type":"text","text":""# + "\u{0301}Readable"
+        let raw: JSONValue = .object(["pending_inputs": .array([.object([
+            "message_id": .string("combining-input"), "presentation_class": .string("operator"),
+            "created_at": .string("2026-01-03T00:00:00Z"), "preview": .string(preview)
+        ])])])
+        XCTAssertEqual(ReadingClientTransport.operatorPreview(raw), "\u{0301}Readable…")
+    }
+
     func testMalformedReadMetadataCannotClaimRead() throws {
         for changes: [String: JSONValue] in [
             ["unread_count": .integer(-1)],
