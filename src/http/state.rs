@@ -377,7 +377,7 @@ pub async fn agent_state(
         .await;
     match result {
         Ok(bytes) => traced_json_bytes("/agents/{agent_id}/state", started_at, bytes),
-        Err(error) => projection_gate_error_response(error),
+        Err(error) => projection_gate_error_response("/agents/{agent_id}/state", error),
     }
 }
 

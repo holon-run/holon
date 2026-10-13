@@ -429,7 +429,7 @@ pub async fn agent_roster_snapshot(
         }
         Err(error) => {
             diagnostics::record_roster_snapshot_failure();
-            projection_gate_error_response(error)
+            projection_gate_error_response("/agents/snapshot", error)
         }
     }
 }
@@ -653,7 +653,7 @@ pub async fn agent_projection_snapshot(
         ),
         Err(error) => {
             diagnostics::record_projection_snapshot_failure();
-            projection_gate_error_response(error)
+            projection_gate_error_response("/agents/{agent_id}/projection-snapshot", error)
         }
     }
 }

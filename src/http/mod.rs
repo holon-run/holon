@@ -1398,27 +1398,56 @@ pub(crate) fn not_modified_response(etag: String) -> AxumResponse {
     (StatusCode::NOT_MODIFIED, [(ETAG, etag.as_str())]).into_response()
 }
 
-pub(crate) fn projection_gate_error_response(error: ProjectionGateError) -> AxumResponse {
+pub(crate) fn projection_gate_error_response(
+    route: &'static str,
+    error: ProjectionGateError,
+) -> AxumResponse {
     match error {
-        ProjectionGateError::Build(failure) => failure.into_http_error().into_response(),
-        ProjectionGateError::Rejected => (
-            StatusCode::TOO_MANY_REQUESTS,
-            [(axum::http::header::RETRY_AFTER, "1")],
-            Json(
-                HttpErrorEnvelope::new(
-                    "projection_busy",
-                    "projection capacity is busy; retry later",
-                )
-                .hint("keep the current projection and retry on the next scheduled refresh")
-                .retryable(true),
-            ),
-        )
-            .into_response(),
+        ProjectionGateError::Build(failure) => {
+            let code = failure.error_code().unwrap_or("unknown");
+            warn!(
+                route,
+                status = failure.status().as_u16(),
+                code,
+                retryable = ?failure.retryable(),
+                "projection request failed"
+            );
+            failure.into_http_error().into_response()
+        }
+        ProjectionGateError::Rejected => {
+            warn!(
+                route,
+                status = StatusCode::TOO_MANY_REQUESTS.as_u16(),
+                code = "projection_busy",
+                retryable = true,
+                "projection request failed"
+            );
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(axum::http::header::RETRY_AFTER, "1")],
+                Json(
+                    HttpErrorEnvelope::new(
+                        "projection_busy",
+                        "projection capacity is busy; retry later",
+                    )
+                    .hint("keep the current projection and retry on the next scheduled refresh")
+                    .retryable(true),
+                ),
+            )
+                .into_response()
+        }
         ProjectionGateError::StaleServed(_) => {
             // Defensive: stale-served payloads are handled by the caller with
             // the stale marker header. If one reaches here, surface a
             // retryable 503 instead of hiding the assembly failure behind
             // fresh-looking bytes.
+            warn!(
+                route,
+                status = StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+                code = "projection_stale_unhandled",
+                retryable = true,
+                "projection request failed"
+            );
             http_error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 HttpErrorEnvelope::new(
@@ -3252,7 +3281,8 @@ mod tests {
 
     #[tokio::test]
     async fn projection_capacity_response_is_retryable_with_retry_after() {
-        let response = projection_gate_error_response(ProjectionGateError::Rejected);
+        let response =
+            projection_gate_error_response("/agents/list", ProjectionGateError::Rejected);
 
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers()[header::RETRY_AFTER], "1");
