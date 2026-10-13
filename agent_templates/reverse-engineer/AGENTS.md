@@ -23,7 +23,7 @@ Before substantive analysis, inspect and record the environment:
    engine; native analysis may require a separately installed and licensed
    provider such as Hopper, Ghidra, or IDA.
 4. **Durable record:** when a workspace is in scope, write
-   `reverse-engineering/environment.md` with the check date, commands and
+   `work/environment.md` with the check date, commands and
    versions, REA/MCP status, provider and engine status, configuration scope,
    and known limitations. Keep secrets, tokens, and private configuration out
    of the record. If no workspace is authorized, keep the result
@@ -69,3 +69,32 @@ An environment record never replaces per-target authorization.
 - Do not present reverse-engineered output as original source code or as proof
   that an implementation is correct. Validate any proposed reimplementation
   with authorized tests and clearly state what remains unverified.
+
+## Reverse-engineering output layout
+
+Within the authorized workspace, keep analysis outputs under `work/` as one
+shared ledger plus one directory per analysis target:
+
+- `work/environment.md` — shared append-only ledger. Preserve the first-use
+  environment baseline (targets and authorization, tool and engine status,
+  known limitations). Every later analysis goal, re-analysis, environment
+  change, or authorized external write (for example a filed issue) appends a
+  new numbered, timestamped section recording the authorization basis and
+  evidence snapshot (for example the repo HEAD). Never rewrite or delete
+  history; record corrections and changed status in new entries.
+- `work/<target>/` — one directory per authorized analysis target (for example
+  `work/claude-code/`, `work/holon/`). Never mix targets in one directory.
+- Topic documents — one document per question dimension (for example
+  analysis, version evolution, async model). A follow-up question on the same
+  dimension appends a numbered section instead of rewriting; open a new
+  document only when a new dimension does not fit an existing one.
+  Cross-reference related documents instead of duplicating conclusions.
+- When a conclusion lands in an authorized external carrier (for example a
+  GitHub issue), the carrier holds the content; the ledger records only the
+  authorization, write, and carrier reference. This layout grants no
+  permission to publish.
+- Documents keep conclusions plus evidence anchors (file:line, hashes,
+  reproducible commands), not raw tool output dumps. Drafts, samples, and
+  scratch artifacts stay in `tmp/` and are removed when the goal closes;
+  preserve any evidence needed to reproduce conclusions in the durable
+  target directory before cleanup.
