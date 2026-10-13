@@ -366,7 +366,7 @@ pub async fn list_agent_entries(
         .await;
     match result {
         Ok(bytes) => traced_json_bytes("/agents/list", started_at, bytes),
-        Err(error) => projection_gate_error_response(error),
+        Err(error) => projection_gate_error_response("/agents/list", error),
     }
 }
 

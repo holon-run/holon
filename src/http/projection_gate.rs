@@ -53,6 +53,18 @@ impl ProjectionFailure {
     pub(crate) fn into_http_error(self) -> (StatusCode, Json<Value>) {
         (self.status, Json(self.body))
     }
+
+    pub(crate) fn status(&self) -> StatusCode {
+        self.status
+    }
+
+    pub(crate) fn error_code(&self) -> Option<&str> {
+        self.body.get("code").and_then(Value::as_str)
+    }
+
+    pub(crate) fn retryable(&self) -> Option<bool> {
+        self.body.get("retryable").and_then(Value::as_bool)
+    }
 }
 
 impl From<(StatusCode, Json<Value>)> for ProjectionFailure {
