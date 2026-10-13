@@ -574,18 +574,26 @@ private struct ReadingBriefView: View {
         // Native accessibility can materialize offscreen lazy rows. Fetch/render only
         // visible results so a long history cannot exhaust the detail queue on arrival.
         .task(id: "\(isVisible)|\(reader.status.rawValue)") {
-            if isVisible { await reader.loadBrief(briefID) }
+            if isVisible {
+                await reader.loadBrief(briefID)
+                guard !Task.isCancelled, isVisible else { return }
+                updateReadVisibility()
+            }
         }
         .onChange(of: reader.briefs[briefID]) { _, _ in updateReadVisibility() }
         .onScrollVisibilityChange(threshold: 0.5) { visible in
             isVisible = visible
             updateReadVisibility()
         }
-        .onDisappear { reader.setBriefVisible(briefID, visible: false) }
+        .onDisappear {
+            isVisible = false
+            reader.setBriefVisible(briefID, visible: false)
+        }
     }
 
     private func updateReadVisibility() {
         reader.setBriefVisible(briefID, visible: isVisible && !(reader.briefs[briefID].map { TaskResultInput.isRuntimeBrief($0, inputs: inputs) } ?? false))
+        if isVisible { reader.markVisibleBriefsReadAutomatically() }
     }
 }
 

@@ -6,12 +6,50 @@ struct ReadingRoster: Sendable {
     let agents: [ReadingAgent]
 }
 
+struct ReadingReadState: Equatable, Codable, Sendable {
+    let agentID: String
+    let eventLogEpoch: String
+    let visibilityScopeID: String
+    let unreadCount: Int
+    let eventHeadSeq: Int64
+    let readThroughEventSeq: Int64
+    let revision: Int64
+
+    init?(_ raw: JSONValue, agentID: String, epoch: String, visibility: String) {
+        guard raw["agent_id"]?.readingString == agentID,
+              raw["event_log_epoch"]?.readingString == epoch,
+              raw["visibility_scope_id"]?.readingString == visibility,
+              raw["reset_required"] == .bool(false),
+              raw["retention_gap"] == .bool(false),
+              let count = raw["unread_count"]?.readingInteger, count >= 0,
+              let unread = Int(exactly: count),
+              let head = raw["event_head_seq"]?.readingInteger, head >= 0,
+              let through = raw["read_through_event_seq"]?.readingInteger, through >= 0, through <= head,
+              let revision = raw["revision"]?.readingInteger, revision >= 0 else { return nil }
+        self.agentID = agentID
+        eventLogEpoch = epoch
+        visibilityScopeID = visibility
+        unreadCount = unread
+        eventHeadSeq = head
+        readThroughEventSeq = through
+        self.revision = revision
+    }
+
+    func supersedes(_ previous: Self) -> Bool {
+        agentID == previous.agentID && eventLogEpoch == previous.eventLogEpoch &&
+        visibilityScopeID == previous.visibilityScopeID &&
+        eventHeadSeq >= previous.eventHeadSeq && revision >= previous.revision &&
+        readThroughEventSeq >= previous.readThroughEventSeq
+    }
+}
+
 struct ReadingAgent: Identifiable, Equatable, Codable, Sendable {
     let id: String
     var name: String
     var preview: String
     var operatorPreview: String?
-    let unreadCount: Int?
+    var unreadCount: Int?
+    var readState: ReadingReadState?
     var currentRunID: String?
     var posture: String?
     var briefAt: Date?
@@ -19,14 +57,15 @@ struct ReadingAgent: Identifiable, Equatable, Codable, Sendable {
     var effectiveModel: String?
 
     init(id: String, name: String, preview: String,
-         operatorPreview: String? = nil, unreadCount: Int? = nil,
+         operatorPreview: String? = nil, unreadCount: Int? = nil, readState: ReadingReadState? = nil,
          currentRunID: String? = nil, posture: String? = nil,
          briefAt: Date? = nil, operatorAt: Date? = nil, effectiveModel: String? = nil) {
         self.id = id
         self.name = name
         self.preview = preview
         self.operatorPreview = operatorPreview
-        self.unreadCount = unreadCount
+        self.unreadCount = readState?.unreadCount ?? unreadCount
+        self.readState = readState
         self.currentRunID = currentRunID
         self.posture = posture
         self.briefAt = briefAt

@@ -1406,6 +1406,37 @@ final class HolonUITests: XCTestCase {
         XCTAssertFalse(app.buttons["taskResult.source." + message].exists, "Cold launch folds completed process again")
     }
 
+    func testVisibleBriefAutomaticallyUpdatesHomeUnreadCount() throws {
+        try connectForSharing()
+        let app = launch(language: "en", dark: false, large: false)
+        defer { app.terminate() }
+        if app.buttons["conversation.more"].waitForExistence(timeout: 5) {
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+        }
+        let agent = app.buttons["agent." + (try required("AGENT_ID"))]
+        reveal(agent, in: app); agent.tap()
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        if app.buttons["conversation.latest"].exists {
+            app.buttons["conversation.latest"].tap()
+        }
+        let body = app.staticTexts.containing(NSPredicate(
+            format: "label CONTAINS %@", "IOS_AUTOMATIC_READ_BRIEF")).firstMatch
+        XCTAssertTrue(body.waitForExistence(timeout: 30), "Load the newest real fixture brief")
+        reveal(body, in: app, fullyVisible: true)
+        XCTAssertTrue(body.isHittable)
+        // Keep the real body visible through the automatic request. Never invoke
+        // the manual mark-read action or use the fixture's control endpoint.
+        capture(app, "automatic-read-visible-body")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        let read = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            agent.exists && !agent.label.contains(" unread") &&
+                !agent.label.contains("Unread unknown")
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [read], timeout: 30), .completed,
+                       "Visible loaded body must clear the server-confirmed home badge")
+        capture(app, "automatic-read-home-count")
+    }
+
     func testOfflineReadingCacheColdLaunchAndRetry() async throws {
         try connectForSharing()
         let app = launch(language: "en", dark: false, large: false)

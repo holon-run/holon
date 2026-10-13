@@ -109,14 +109,23 @@ actor ReadingClientTransport: ReadingTransport {
                                 effectiveModel: entry["agent"]?["model"]?["effective_model"]?.readingString)
         }
         var counts: [String: Int] = [:]
+        var readStates: [String: ReadingReadState] = [:]
         do {
             let states = try await request { try await $0.getJSON(path: ["agents", "brief-read-states"]) }
             counts = try Self.unreadCounts(states, agentIDs: Set(agents.map(\.id)),
                                            epoch: epoch, visibility: authority.visibilityScopeID!)
+            if case .array(let entries) = states {
+                for entry in entries {
+                    guard let id = entry["agent_id"]?.readingString, counts[id] != nil,
+                          let state = ReadingReadState(entry, agentID: id, epoch: epoch,
+                                                       visibility: authority.visibilityScopeID!) else { continue }
+                    readStates[id] = state
+                }
+            }
         } catch { try Self.requireMetadataRecovery(error) }
         let enriched = agents.map {
                 ReadingAgent(id: $0.id, name: $0.name, preview: $0.preview,
-                             unreadCount: counts[$0.id], currentRunID: $0.currentRunID,
+                             unreadCount: counts[$0.id], readState: readStates[$0.id], currentRunID: $0.currentRunID,
                              posture: $0.posture, briefAt: $0.briefAt, effectiveModel: $0.effectiveModel)
         }
         _ = try await expected()

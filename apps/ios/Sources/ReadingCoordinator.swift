@@ -87,6 +87,8 @@ final class ReadingCoordinator {
     @ObservationIgnored private var waitingActivities: Set<String> = []
     @ObservationIgnored private var briefRecency: [String] = []
     @ObservationIgnored private var visibilityRevision = 0
+    @ObservationIgnored private var automaticReadRequested = false
+    @ObservationIgnored private var automaticReadAttempt: (epoch: String, through: Int64)?
     @ObservationIgnored private var previewTask: Task<Void, Never>?
     @ObservationIgnored private var previewedAgentIDs: Set<String> = []
     private struct DetailVersion: Equatable {
@@ -328,7 +330,11 @@ final class ReadingCoordinator {
         loadingActivities.removeAll()
         loadingBriefs.removeAll()
         isLoadingHistory = false
-        if readStatus == .pending { readStatus = .idle }
+        if readStatus == .pending {
+            readStatus = .idle
+            automaticReadAttempt = nil
+        }
+        automaticReadRequested = false
         reducer = nil
     }
 
@@ -342,6 +348,8 @@ final class ReadingCoordinator {
         before = nil
         canLoadHistory = false
         readStatus = .idle
+        automaticReadAttempt = nil
+        automaticReadRequested = false
         readingPosition = nil
         conversationSavedAt = nil
         conversationIsCached = false
@@ -416,6 +424,11 @@ final class ReadingCoordinator {
             if rosterEpoch == roster.eventLogEpoch, let confirmed = previous[agent.id] {
                 value.operatorPreview = confirmed.operatorPreview
                 value.operatorAt = confirmed.operatorAt
+                if let state = confirmed.readState,
+                   value.readState?.supersedes(state) != true {
+                    value.readState = state
+                    value.unreadCount = state.unreadCount
+                }
             }
             return value
         }
@@ -944,7 +957,7 @@ final class ReadingCoordinator {
     }
 
     var readThroughForVisibleBriefs: Int64? {
-        guard foreground, status == .live, identity != nil, transport != nil, readStatus != .pending,
+        guard !Task.isCancelled, foreground, status == .live, identity != nil, transport != nil, readStatus != .pending,
               let agentID = selectedAgentID,
               let snapshot,
               let through = visibleBriefIDs.compactMap({ id -> Int64? in
@@ -968,12 +981,35 @@ final class ReadingCoordinator {
 
     func markRead(confirmation requested: ReadingReadConfirmation? = nil) async {
         guard let current = readConfirmationForVisibleBriefs,
-              requested == nil || requested == current,
-              let agentID = selectedAgentID, let transport, let snapshot else { return }
+              requested == nil || requested == current else { return }
+        await beginMarkRead(current)?.value
+    }
+
+    /// Visibility is registered by the view only after actual body presentation.
+    @discardableResult
+    func markVisibleBriefsReadAutomatically() -> Task<Void, Never>? {
+        automaticReadRequested = true
+        guard let current = readConfirmationForVisibleBriefs else { return nil }
+        let attempted = automaticReadAttempt?.epoch == current.epoch ? automaticReadAttempt?.through : nil
+        let confirmed = agents.first(where: { $0.id == current.agentID })?.readState
+        if let attempted, current.through <= attempted { return nil }
+        if confirmed?.eventLogEpoch == current.epoch,
+           let through = confirmed?.readThroughEventSeq, current.through <= through { return nil }
+        automaticReadAttempt = (current.epoch, current.through)
+        return beginMarkRead(current)
+    }
+
+    private func beginMarkRead(_ current: ReadingReadConfirmation) -> Task<Void, Never>? {
+        guard let agentID = selectedAgentID, let transport, let snapshot else { return nil }
         let through = current.through
         readStatus = .pending
         let task = launch { [weak self] token in
             guard let self else { return }
+            defer {
+                if self.current(token), self.automaticReadRequested {
+                    self.markVisibleBriefsReadAutomatically()
+                }
+            }
             do {
                 let value = try await transport.markRead(agentID: agentID, through: through)
                 guard self.current(token) else { return }
@@ -983,16 +1019,23 @@ final class ReadingCoordinator {
                 }
                 guard let confirmed = value["applied_read_through_event_seq"]?.readingInteger,
                       confirmed >= through,
-                      let state = value["state"],
-                      state["agent_id"]?.readingString == agentID,
-                      state["event_log_epoch"]?.readingString == snapshot.eventLogEpoch,
-                      state["visibility_scope_id"]?.readingString == snapshot.visibilityScopeID,
-                      state["read_through_event_seq"]?.readingInteger == confirmed else {
+                      let rawState = value["state"],
+                      let state = ReadingReadState(rawState, agentID: agentID, epoch: snapshot.eventLogEpoch,
+                                                   visibility: snapshot.visibilityScopeID),
+                      state.readThroughEventSeq == confirmed else {
                     self.readStatus = .failed
                     return
                 }
+                if self.rosterEpoch == state.eventLogEpoch,
+                   let index = self.agents.firstIndex(where: { $0.id == agentID }),
+                   self.agents[index].readState.map({ state.supersedes($0) }) != false {
+                    self.agents[index].readState = state
+                    self.agents[index].unreadCount = state.unreadCount
+                    self.rosterSavedAt = Date()
+                    self.persistRoster()
+                }
                 self.readStatus = .confirmed
-                // Reload authoritative unread metadata, never optimistically clear it.
+                // The receipt is authoritative; refresh also discovers later unread results.
                 self.refreshRoster(token: token)
             } catch {
                 guard self.current(token) else { return }
@@ -1000,7 +1043,7 @@ final class ReadingCoordinator {
                 self.failed(error, token: token, recover: false)
             }
         }
-        await task.value
+        return task
     }
 
     func rememberPosition(turnID: String) {

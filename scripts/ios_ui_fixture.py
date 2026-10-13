@@ -274,6 +274,7 @@ with fixture_directory(repo) as root:
     held_run_started = root / "held-run-started"
     release_held_run = threading.Event()
     history_seed_active = threading.Event()
+    automatic_read_seed_active = threading.Event()
 
     class FakeProvider(http.server.BaseHTTPRequestHandler):
         image_requests = 0
@@ -317,6 +318,8 @@ with fixture_directory(repo) as root:
                 text = f"IOS_RICH_ASSISTANT: read-only inspection batch {FakeProvider.rich_batches}."
                 if report_acceptance:
                     text += "\n\n" + "safe-report-body " * 600 + "\nIOS_CONTENT_REPORT_TAIL"
+            elif automatic_read_seed_active.is_set():
+                text = "IOS_AUTOMATIC_READ_BRIEF: Visible body advances the real read cursor."
             elif history_seed_active.is_set():
                 text = "IOS_HISTORY_BRIEF: History fixture result."
             finish_reason = "tool_calls" if tool_calls else "stop"
@@ -768,6 +771,7 @@ with fixture_directory(repo) as root:
                          # Authenticate through shipped onboarding before diagnostics.
                          ("testAuthenticatedNativeWorkflow", "large"),
                          ("testOfflineReadingCacheColdLaunchAndRetry", "large"),
+                         ("testVisibleBriefAutomaticallyUpdatesHomeUnreadCount", "large"),
                          ("testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored", "large"),
                          ("testChineseDiagnosticsDarkAccessibilitySize", MAXIMUM_TEXT_SIZE),
                          ("testDiagnosticsControlsRespondToRuntimeTextSize", MAXIMUM_TEXT_SIZE),
@@ -819,6 +823,13 @@ with fixture_directory(repo) as root:
                         # Use fresh markers even if history was seeded at startup.
                         seed_fixture_history(local, agent, history_seed_active,
                                              count=35, marker_prefix="IOS_OFFLINE_HISTORY")
+                    if method == "testVisibleBriefAutomaticallyUpdatesHomeUnreadCount":
+                        automatic_read_seed_active.set()
+                        try:
+                            seed_fixture_history(local, agent, history_seed_active,
+                                                 count=1, marker_prefix="IOS_AUTOMATIC_READ")
+                        finally:
+                            automatic_read_seed_active.clear()
                     loss_case = lost_response_acceptance and method in {
                         "testLostResponseAndProcessRecovery", "testDirectAgentShareWorkflow"}
                     if loss_case:
@@ -847,6 +858,7 @@ with fixture_directory(repo) as root:
                             if method in {"testAuthenticatedNativeWorkflow", "testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored",
                                           "testDirectAgentShareWorkflow", "testNetworkManagementWorkflow",
                                           "testOfflineReadingCacheColdLaunchAndRetry",
+                                          "testVisibleBriefAutomaticallyUpdatesHomeUnreadCount",
                                           "testOfflineReadingCacheSignOutBoundary",
                                           "testTaskResultProcessWorkflow",
                                           "testContentReportFullResponseIncludesTail",

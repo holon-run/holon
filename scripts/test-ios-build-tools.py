@@ -293,8 +293,11 @@ class UIFixtureSetupContracts(unittest.TestCase):
         cases = self.run_setup(Mock(), Mock(), share=False)
         methods = [method for method, _ in cases]
         cold = methods.index("testOfflineReadingCacheColdLaunchAndRetry")
+        automatic = methods.index("testVisibleBriefAutomaticallyUpdatesHomeUnreadCount")
         sign_out = methods.index("testOfflineReadingCacheSignOutBoundary")
         self.assertLess(methods.index("testAuthenticatedNativeWorkflow"), cold)
+        self.assertLess(cold, automatic)
+        self.assertLess(automatic, sign_out)
         self.assertLess(cold, sign_out)
         self.assertLess(sign_out, methods.index("testNetworkManagementWorkflow"))
         self.assertEqual(cases[cold][1], "large")
@@ -1064,10 +1067,12 @@ class UIFixtureProviderContracts(unittest.TestCase):
         provider_class = next(node for node in ast.walk(tree)
                               if isinstance(node, ast.ClassDef) and node.name == "FakeProvider")
         history_seed_active = threading.Event()
+        automatic_read_seed_active = threading.Event()
         with tempfile.TemporaryDirectory(prefix="holon-ios-ui-provider-") as directory:
             namespace = dict(http=http, json=json, root=Path(directory),
                              rich_activity_acceptance=False, report_acceptance=True,
-                             history_acceptance=True, history_seed_active=history_seed_active)
+                             history_acceptance=True, history_seed_active=history_seed_active,
+                             automatic_read_seed_active=automatic_read_seed_active)
             exec(compile(ast.Module(body=[provider_class], type_ignores=[]),
                          str(source), "exec"), namespace)
             server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), namespace["FakeProvider"])
@@ -1076,11 +1081,15 @@ class UIFixtureProviderContracts(unittest.TestCase):
             worker.start()
             try:
                 for streaming in (False, True):
-                    for seeding in (False, True, False):
-                        if seeding:
+                    for seeding in ("normal", "history", "automatic", "normal"):
+                        if seeding != "normal":
                             history_seed_active.set()
                         else:
                             history_seed_active.clear()
+                        if seeding == "automatic":
+                            automatic_read_seed_active.set()
+                        else:
+                            automatic_read_seed_active.clear()
                         request = urllib.request.Request(
                             f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
                             data=json.dumps({"model": "fixture-model", "stream": streaming,
@@ -1093,7 +1102,11 @@ class UIFixtureProviderContracts(unittest.TestCase):
                         with urllib.request.urlopen(request, timeout=5) as response:
                             body = response.read().decode()
                         with self.subTest(streaming=streaming, seeding=seeding):
-                            if seeding:
+                            if seeding == "automatic":
+                                self.assertIn("IOS_AUTOMATIC_READ_BRIEF", body)
+                                self.assertNotIn("IOS_HISTORY_BRIEF", body)
+                                self.assertNotIn("IOS_POPULATED_BRIEF", body)
+                            elif seeding == "history":
                                 self.assertIn("IOS_HISTORY_BRIEF", body)
                                 self.assertNotIn("IOS_POPULATED_BRIEF", body)
                                 self.assertIn("History fixture result.", body)
