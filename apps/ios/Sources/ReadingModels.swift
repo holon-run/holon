@@ -1,6 +1,11 @@
 import Foundation
 import HolonClient
 
+struct ReadingRoster: Sendable {
+    let eventLogEpoch: String
+    let agents: [ReadingAgent]
+}
+
 struct ReadingAgent: Identifiable, Equatable, Codable, Sendable {
     let id: String
     var name: String

@@ -53,7 +53,9 @@ final class ReadingTransportTests: XCTestCase {
         let (client, transport, authority) = try await fixture()
         let sdkIdentity = await client.identity
         XCTAssertNotEqual(sdkIdentity.generation, authority.generation)
-        let agents = try await transport.roster()
+        let roster = try await transport.roster()
+        XCTAssertEqual(roster.eventLogEpoch, "epoch")
+        let agents = roster.agents
         XCTAssertEqual(agents.map(\.id), ["A"])
         XCTAssertEqual(agents.first?.currentRunID, "run-A")
         let snapshot = try await transport.conversation(agentID: "A", before: nil)

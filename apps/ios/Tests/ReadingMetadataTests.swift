@@ -73,14 +73,16 @@ final class ReadingMetadataTests: XCTestCase {
     }
 
     func testHostedMetadataAndUnknownFailures() async throws {
-        for mode in ["real", "unavailable", "preview-unavailable"] {
+        for mode in ["real", "unavailable"] {
             let transport = try await transport(mode)
-            let agents = try await transport.roster()
+            let roster = try await transport.roster()
+            XCTAssertEqual(roster.eventLogEpoch, "epoch")
+            let agents = roster.agents
             XCTAssertEqual(agents.first?.preview, "brief")
             XCTAssertEqual(agents.first?.unreadCount, mode == "unavailable" ? nil : 3)
             XCTAssertNil(agents.first?.operatorPreview)
             let preview = try await transport.operatorPreview(agentID: "A0")
-            XCTAssertEqual(preview?.text, mode == "preview-unavailable" ? nil : "real operator")
+            XCTAssertEqual(preview?.text, "real operator")
             await transport.close()
         }
     }
@@ -102,10 +104,22 @@ final class ReadingMetadataTests: XCTestCase {
         }
     }
 
+    func testUnavailableOperatorPreviewThrowsRatherThanReturningEmpty() async throws {
+        let transport = try await transport("preview-unavailable")
+        _ = try await transport.roster()
+        do {
+            _ = try await transport.operatorPreview(agentID: "A0")
+            XCTFail("A failed request must not clear a previously confirmed input")
+        } catch let error as HolonHTTPFailure {
+            XCTAssertEqual(error.statusCode, 503)
+        }
+        await transport.close()
+    }
+
     func testHostedBoundedPreviewReads() async throws {
         let before = MetadataProtocol.metrics.snapshot().1
         let transport = try await transport("bounded")
-        let agents = try await transport.roster()
+        let agents = try await transport.roster().agents
         let metrics = MetadataProtocol.metrics.snapshot()
         XCTAssertEqual(agents.count, 81)
         XCTAssertEqual(metrics.1 - before, 0, "Roster does not wait for per-Agent metadata")

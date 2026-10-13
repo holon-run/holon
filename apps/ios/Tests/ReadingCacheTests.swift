@@ -36,6 +36,30 @@ final class ReadingCacheTests: XCTestCase {
         XCTAssertTrue(succeeded, file: file, line: line)
     }
 
+    func testRosterEpochPersistsAndMissingFieldRemainsCompatible() async throws {
+        let folder = try folder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("reading.json")
+        let partition = try partition()
+        let roster = ReadingCache.Entry(partition: partition, agentID: nil,
+            agents: [ReadingAgent(id: "A", name: "A", preview: "brief", operatorPreview: "input")],
+            snapshot: nil, position: nil, savedAt: Date(), rosterEpoch: "epoch")
+        let cache = ReadingCache(file: file)
+        await cache.prepare()
+        XCTAssertTrue(cache.save(roster))
+        await assertFlushed(cache)
+        let reopened = ReadingCache(file: file)
+        await reopened.prepare()
+        XCTAssertEqual(reopened.load(partition, agentID: nil)?.rosterEpoch, "epoch")
+        XCTAssertEqual(reopened.load(partition, agentID: nil)?.agents.first?.operatorPreview, "input")
+
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(roster)) as? [String: Any])
+        legacy.removeValue(forKey: "rosterEpoch")
+        let decoded = try JSONDecoder().decode(ReadingCache.Entry.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertNil(decoded.rosterEpoch)
+        XCTAssertEqual(decoded.agents, roster.agents)
+    }
+
     func testBoundedCapacityAndPartitionKeys() async throws {
         let partition = try partition()
         let cache = ReadingCache(file: nil)

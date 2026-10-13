@@ -75,6 +75,9 @@ private actor ReadingFakeTransport: ReadingTransport {
     private var liveEpoch = "epoch"
     private var currentRunID: String?
     private var agentIDs = ["A", "B"]
+    private var rosterAgents: [ReadingAgent]?
+    private var previewResult: Result<ReadingOperatorPreview?, any Error>?
+    private var previewErrors: [String: any Error] = [:]
     private var briefIDs = ["brief"]
     private var liveTurnRevision: Int64 = 1
     private var detailRevision: Int64 = 1
@@ -132,6 +135,10 @@ private actor ReadingFakeTransport: ReadingTransport {
     }
     func setRunID(_ id: String?) { currentRunID = id }
     func setAgentIDs(_ ids: [String]) { agentIDs = ids }
+    func setRosterAgents(_ agents: [ReadingAgent]) { rosterAgents = agents }
+    func setPreviewResult(_ result: Result<ReadingOperatorPreview?, any Error>) { previewResult = result }
+    func setPreviewError(agentID: String, error: any Error) { previewErrors[agentID] = error }
+    func setRosterEpoch(_ epoch: String) { liveEpoch = epoch }
     func setDetailRevision(_ revision: Int64) { detailRevision = revision }
     func enablePagedActivities() { pagedActivities = true }
     func setActivityDetail(revision: Int64, body: String) { activityRevision = revision; activityBody = body }
@@ -151,16 +158,18 @@ private actor ReadingFakeTransport: ReadingTransport {
         (connections.values.filter { $0.0 == "roster" && !$0.1.isClosed }.count,
          connections.values.filter { $0.0 != "roster" && !$0.1.isClosed }.count)
     }
-    func roster() async throws -> [ReadingAgent] {
+    func roster() async throws -> ReadingRoster {
         rosterCalls += 1
+        let epoch = liveEpoch
         let error = rosterError
         if rosterHeld { await withCheckedContinuation { rosterWaiters.append($0) } }
         if let error { throw error }
         if rosterFailure { throw Failure.offline }
-        return agentIDs.map {
+        if let rosterAgents { return ReadingRoster(eventLogEpoch: epoch, agents: rosterAgents) }
+        return ReadingRoster(eventLogEpoch: epoch, agents: agentIDs.map {
             ReadingAgent(id: $0, name: $0, preview: "recent", operatorPreview: "operator", unreadCount: 2,
                          currentRunID: currentRunID)
-        }
+        })
     }
     func conversation(agentID: String, before: String?) async throws -> HolonConversationSnapshot {
         conversationCalls += 1
@@ -228,7 +237,11 @@ private actor ReadingFakeTransport: ReadingTransport {
                         "next_before_cursor": pagedActivities && before == nil ? .string("older") : .null])
     }
     func operatorPreview(agentID: String) async throws -> ReadingOperatorPreview? {
+        let result = previewResult
+        let error = previewErrors[agentID]
         _ = await expansion("id", id: agentID)
+        if let error { throw error }
+        if let result { return try result.get() }
         return ReadingOperatorPreview(text: "new " + agentID, createdAt: Date(timeIntervalSince1970: 10))
     }
     func activityDetail(agentID: String, turnID: String, activity: ReadingActivity) async throws -> JSONValue {
@@ -418,6 +431,162 @@ final class ReadingCoordinatorTests: XCTestCase {
         let unchanged = await fake.expansionCalls
         XCTAssertEqual(unchanged, calls, "A viewport revisit does not refetch confirmed metadata")
         coordinator.disconnect()
+    }
+
+    func testRefreshPreservesConfirmedInputAndOrderUntilSuccessfulReplacement() async throws {
+        let (coordinator, fake, _) = try await start()
+        let older = Date(timeIntervalSince1970: 1), newer = Date(timeIntervalSince1970: 5)
+        await fake.setRosterAgents([
+            ReadingAgent(id: "A", name: "A", preview: "brief A", briefAt: older),
+            ReadingAgent(id: "B", name: "B", preview: "brief B", briefAt: newer)
+        ])
+        coordinator.selectAgent(nil)
+        try await wait { coordinator.status == .live && !coordinator.isRefreshing }
+        await coordinator.loadVisiblePreviews(agentIDs: ["A"])
+        XCTAssertEqual(AgentSummaryPresentation.sorted(coordinator.agents, query: "").map(\.id), ["A", "B"])
+        await fake.setRosterAgents([
+            ReadingAgent(id: "A", name: "renamed", preview: "updated brief", briefAt: older),
+            ReadingAgent(id: "B", name: "B", preview: "brief B", briefAt: newer)
+        ])
+        await coordinator.refresh()
+        XCTAssertEqual(coordinator.agents.first?.name, "renamed")
+        XCTAssertEqual(coordinator.agents.first?.preview, "updated brief", "Roster fields stay authoritative")
+        XCTAssertEqual(AgentSummaryPresentation.preview(coordinator.agents[0]), "new A")
+        XCTAssertEqual(AgentSummaryPresentation.sorted(coordinator.agents, query: "").map(\.id), ["A", "B"])
+        await fake.setPreviewResult(.failure(ReadingFakeTransport.Failure.offline))
+        await coordinator.loadVisiblePreviews(agentIDs: ["A"])
+        XCTAssertEqual(AgentSummaryPresentation.preview(coordinator.agents[0]), "new A")
+        XCTAssertEqual(coordinator.status, .live, "Optional metadata failure does not take the roster offline")
+        await fake.setPreviewResult(.success(nil))
+        await coordinator.loadVisiblePreviews(agentIDs: ["A"])
+        XCTAssertNil(coordinator.agents.first?.operatorPreview, "Successful absence clears confirmed input")
+        XCTAssertNil(coordinator.agents.first?.operatorAt)
+        XCTAssertEqual(AgentSummaryPresentation.sorted(coordinator.agents, query: "").map(\.id), ["B", "A"])
+        coordinator.disconnect()
+    }
+
+    func testRosterHintPreservesConfirmedInputAndOrder() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.setRosterAgents([
+            ReadingAgent(id: "A", name: "A", preview: "brief A", briefAt: Date(timeIntervalSince1970: 1)),
+            ReadingAgent(id: "B", name: "B", preview: "brief B", briefAt: Date(timeIntervalSince1970: 5))
+        ])
+        coordinator.selectAgent(nil)
+        try await wait { coordinator.status == .live && !coordinator.isRefreshing }
+        await coordinator.loadVisiblePreviews(agentIDs: ["A"])
+        let calls = await fake.rosterCalls
+        await fake.send(try readingEvent("agent_roster_hint", raw: .object([:])), to: "roster")
+        try await wait { await fake.rosterCalls > calls && !coordinator.isRefreshing }
+        XCTAssertEqual(AgentSummaryPresentation.preview(coordinator.agents[0]), "new A")
+        XCTAssertEqual(AgentSummaryPresentation.sorted(coordinator.agents, query: "").map(\.id), ["A", "B"])
+        coordinator.disconnect()
+    }
+
+    func testNewEpochAndRemovedAgentDoNotInheritConfirmedInput() async throws {
+        let (coordinator, fake, _) = try await start()
+        let agent = ReadingAgent(id: "A", name: "A", preview: "brief")
+        await fake.setRosterAgents([agent])
+        coordinator.selectAgent(nil)
+        try await wait { coordinator.status == .live && !coordinator.isRefreshing }
+        await coordinator.loadVisiblePreviews(agentIDs: ["A"])
+        XCTAssertEqual(coordinator.agents.first?.operatorPreview, "new A")
+        await fake.setRosterEpoch("replacement")
+        await coordinator.refresh()
+        XCTAssertNil(coordinator.agents.first?.operatorPreview)
+        XCTAssertNil(coordinator.agents.first?.operatorAt)
+        await coordinator.loadVisiblePreviews(agentIDs: ["A"])
+        await fake.setRosterAgents([])
+        await coordinator.refresh()
+        XCTAssertTrue(coordinator.agents.isEmpty)
+        await fake.setRosterAgents([agent])
+        await coordinator.refresh()
+        XCTAssertNil(coordinator.agents.first?.operatorPreview, "A removed identity cannot reuse old metadata")
+        coordinator.disconnect()
+    }
+
+    func testCachedInputOnlySurvivesMatchingConfirmedRosterEpoch() async throws {
+        for cachedEpoch: String? in [nil, "epoch", "old"] {
+            let authority = identity()
+            let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+            let cache = ReadingCache(file: nil)
+            let savedAt = Date(timeIntervalSinceNow: -100)
+            XCTAssertTrue(cache.save(.init(partition: partition, agentID: nil,
+                agents: [ReadingAgent(id: "A", name: "cached", preview: "brief",
+                                      operatorPreview: "confirmed", operatorAt: savedAt)],
+                snapshot: nil, position: nil, savedAt: savedAt, rosterEpoch: cachedEpoch)))
+            let fake = ReadingFakeTransport(authority: authority)
+            await fake.setRosterAgents([ReadingAgent(id: "A", name: "live", preview: "brief")])
+            await fake.holdRoster()
+            let coordinator = ReadingCoordinator(cache: cache, prefetchBriefLimit: 0)
+            coordinator.activate(transport: fake, identity: authority, apiBaseURL: url)
+            try await wait { await fake.rosterCalls > 0 && !coordinator.agents.isEmpty }
+            XCTAssertEqual(coordinator.agents.first?.operatorPreview, "confirmed", "Offline cache stays readable")
+            await fake.releaseRoster()
+            try await wait { coordinator.status == .live && !coordinator.isRefreshing }
+            XCTAssertEqual(coordinator.agents.first?.operatorPreview, cachedEpoch == "epoch" ? "confirmed" : nil)
+            XCTAssertEqual(coordinator.agents.first?.operatorAt, cachedEpoch == "epoch" ? savedAt : nil)
+            XCTAssertEqual(cache.load(partition, agentID: nil)?.rosterEpoch, "epoch")
+            coordinator.disconnect()
+        }
+    }
+
+    func testOnePreviewFailurePreservesInputAndContinuesVisibleWindow() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.setRosterAgents(["A", "B", "C"].map { ReadingAgent(id: $0, name: $0, preview: "brief") })
+        coordinator.selectAgent(nil)
+        try await wait { coordinator.status == .live && !coordinator.isRefreshing }
+        await coordinator.loadVisiblePreviews(agentIDs: ["A"])
+        await fake.setPreviewError(agentID: "A", error: ReadingFakeTransport.Failure.offline)
+        await coordinator.refresh()
+        XCTAssertEqual(coordinator.agents.first?.operatorPreview, "new A", "Refresh preserves confirmed input")
+        await fake.setGate(.expansions)
+        let calls = await fake.expansionCalls
+        let task = Task { await coordinator.loadVisiblePreviews(agentIDs: ["A", "B", "C"]) }
+        try await wait { await fake.expansionCalls == calls + 2 }
+        await fake.releaseExpansions()
+        try await wait { await fake.expansionCalls == calls + 3 }
+        await task.value
+        XCTAssertEqual(coordinator.agents.map(\.operatorPreview), ["new A", "new B", "new C"])
+        XCTAssertEqual(coordinator.status, .live)
+        let maximum = await fake.maximumExpansions
+        XCTAssertEqual(maximum, 2)
+        coordinator.disconnect()
+    }
+
+    func testLatePreviewCannotCrossRosterEpoch() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.setRosterAgents([ReadingAgent(id: "A", name: "A", preview: "brief")])
+        coordinator.selectAgent(nil)
+        try await wait { coordinator.status == .live && !coordinator.isRefreshing }
+        await fake.setGate(.expansions)
+        let calls = await fake.expansionCalls
+        let delayed = Task { await coordinator.loadVisiblePreviews(agentIDs: ["A"]) }
+        try await wait { await fake.expansionCalls > calls }
+        await fake.setRosterEpoch("replacement")
+        await coordinator.refresh()
+        await fake.releaseExpansions()
+        await delayed.value
+        XCTAssertNil(coordinator.agents.first?.operatorPreview)
+        XCTAssertNil(coordinator.agents.first?.operatorAt)
+        await coordinator.loadVisiblePreviews(agentIDs: ["A"])
+        XCTAssertEqual(coordinator.agents.first?.operatorPreview, "new A")
+        coordinator.disconnect()
+    }
+
+    func testPreviewAuthorizationFailureInvalidatesConfirmedRoster() async throws {
+        for code in [401, 403] {
+            let cache = ReadingCache(file: nil)
+            let (coordinator, fake, authority) = try await start(cache: cache)
+            coordinator.selectAgent(nil)
+            try await wait { coordinator.status == .live && !coordinator.isRefreshing }
+            await fake.setPreviewResult(.failure(HolonHTTPFailure(statusCode: code, identity: authority)))
+            await coordinator.loadVisiblePreviews(agentIDs: ["A"])
+            XCTAssertEqual(coordinator.status, code == 401 ? .sessionExpired : .permissionDenied)
+            XCTAssertTrue(coordinator.agents.isEmpty)
+            let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+            XCTAssertNil(cache.load(partition, agentID: nil))
+            coordinator.disconnect()
+        }
     }
 
     func testAgentSwitchFencesLateSuccessAndAuthenticationFailures() async throws {

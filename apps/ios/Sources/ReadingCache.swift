@@ -14,10 +14,11 @@ final class ReadingCache {
         var briefs: [String: JSONValue]
         /// Oldest first. Missing order falls back to stable, lexicographic IDs.
         var briefOrder: [String]
+        var rosterEpoch: String?
 
         init(partition: ReadingPartition, agentID: String?, agents: [ReadingAgent],
              snapshot: JSONValue?, position: String?, savedAt: Date,
-             briefs: [String: JSONValue] = [:], briefOrder: [String] = []) {
+             briefs: [String: JSONValue] = [:], briefOrder: [String] = [], rosterEpoch: String? = nil) {
             self.partition = partition
             self.agentID = agentID
             self.agents = agents
@@ -26,10 +27,11 @@ final class ReadingCache {
             self.savedAt = savedAt
             self.briefs = briefs
             self.briefOrder = briefOrder
+            self.rosterEpoch = rosterEpoch
         }
 
         private enum CodingKeys: String, CodingKey {
-            case partition, agentID, agents, snapshot, position, savedAt, briefs, briefOrder
+            case partition, agentID, agents, snapshot, position, savedAt, briefs, briefOrder, rosterEpoch
         }
 
         init(from decoder: Decoder) throws {
@@ -42,6 +44,7 @@ final class ReadingCache {
             savedAt = try values.decode(Date.self, forKey: .savedAt)
             briefs = try values.decodeIfPresent([String: JSONValue].self, forKey: .briefs) ?? [:]
             briefOrder = try values.decodeIfPresent([String].self, forKey: .briefOrder) ?? []
+            rosterEpoch = try values.decodeIfPresent(String.self, forKey: .rosterEpoch)
         }
     }
 
@@ -280,7 +283,7 @@ private enum ReadingCacheLimits {
         let partition = original.partition
         guard [partition.api, partition.network, partition.runtime, partition.user, partition.visibility]
             .allSatisfy({ charge($0) }),
-              charge(original.agentID), charge(original.position),
+              charge(original.agentID), charge(original.position), charge(original.rosterEpoch),
               original.agents.count <= 512 else { return nil }
         for agent in original.agents {
             guard charge(agent.id), charge(agent.name), charge(agent.preview),

@@ -7,7 +7,7 @@ struct ReadingStream: Sendable {
 }
 
 protocol ReadingTransport: Sendable {
-    func roster() async throws -> [ReadingAgent]
+    func roster() async throws -> ReadingRoster
     func operatorPreview(agentID: String) async throws -> ReadingOperatorPreview?
     func conversation(agentID: String, before: String?) async throws -> HolonConversationSnapshot
     func brief(agentID: String, briefID: String) async throws -> JSONValue
@@ -80,7 +80,7 @@ actor ReadingClientTransport: ReadingTransport {
         }
     }
 
-    func roster() async throws -> [ReadingAgent] {
+    func roster() async throws -> ReadingRoster {
         guard !rosterLoading else { throw CancellationError() }
         rosterLoading = true
         defer { rosterLoading = false }
@@ -121,7 +121,7 @@ actor ReadingClientTransport: ReadingTransport {
         }
         _ = try await expected()
         guard generation == rosterGeneration else { throw CancellationError() }
-        return enriched
+        return ReadingRoster(eventLogEpoch: epoch, agents: enriched)
     }
 
     private static func requireMetadataRecovery(_ error: any Error) throws {
@@ -167,8 +167,7 @@ actor ReadingClientTransport: ReadingTransport {
             if let failure = error as? HolonClientError, failure == .malformedResponse {
                 throw HolonConversationError.bootstrapRequired
             }
-            try Self.requireMetadataRecovery(error)
-            return nil
+            throw error
         }
     }
 

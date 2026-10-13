@@ -23,6 +23,7 @@ private enum ReadingReconnectContext {
 final class ReadingCoordinator {
     private(set) var agents: [ReadingAgent] = []
     private(set) var rosterRevision = 0
+    @ObservationIgnored private var rosterEpoch: String?
     // Only a successful roster response in the current context authorizes missing-agent decisions.
     private(set) var isRosterCurrent = false
     private(set) var selectedAgentID: String?
@@ -357,6 +358,7 @@ final class ReadingCoordinator {
 
     private func clearDisplay() {
         agents = []
+        rosterEpoch = nil
         rosterSavedAt = nil
         rosterIsCached = false
         selectedAgentID = nil
@@ -407,6 +409,26 @@ final class ReadingCoordinator {
             }
     }
 
+    private func applyRoster(_ roster: ReadingRoster) {
+        let previous = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0) })
+        agents = boundedRoster(roster.agents).map { agent in
+            var value = agent
+            if rosterEpoch == roster.eventLogEpoch, let confirmed = previous[agent.id] {
+                value.operatorPreview = confirmed.operatorPreview
+                value.operatorAt = confirmed.operatorAt
+            }
+            return value
+        }
+        rosterEpoch = roster.eventLogEpoch
+        previewTask?.cancel()
+        rosterRevision &+= 1
+        isRosterCurrent = true
+        previewedAgentIDs = []
+        rosterSavedAt = Date()
+        rosterIsCached = false
+        persistRoster()
+    }
+
     /// Metadata never holds up roster publication. Only the displayed window is enriched,
     /// at most two reads concurrently, and every result belongs to this exact snapshot.
     func loadVisiblePreviews(agentIDs: [String]) async {
@@ -419,22 +441,36 @@ final class ReadingCoordinator {
         let task = Task { [weak self] in
             guard let self else { return }
             do {
-                try await withThrowingTaskGroup(of: (String, ReadingOperatorPreview?).self) { group in
+                try await withThrowingTaskGroup(of: (String, Result<ReadingOperatorPreview?, any Error>).self) { group in
                     var remaining = ids.makeIterator()
-                    for _ in 0..<2 {
-                        if let id = remaining.next() {
-                            group.addTask { (id, try await transport.operatorPreview(agentID: id)) }
+                    func enqueue(_ id: String) {
+                        group.addTask {
+                            do { return (id, .success(try await transport.operatorPreview(agentID: id))) }
+                            catch { return (id, .failure(error)) }
                         }
                     }
-                    while let (id, value) = try await group.next() {
+                    for _ in 0..<2 {
+                        if let id = remaining.next() {
+                            enqueue(id)
+                        }
+                    }
+                    while let (id, result) = try await group.next() {
                         guard self.current(token), self.rosterRevision == roster else { group.cancelAll(); return }
-                        if let index = self.agents.firstIndex(where: { $0.id == id }) {
-                            self.agents[index].operatorPreview = value?.text
-                            self.agents[index].operatorAt = value?.createdAt
-                            self.previewedAgentIDs.insert(id)
+                        switch result {
+                        case .success(let value):
+                            if let index = self.agents.firstIndex(where: { $0.id == id }) {
+                                self.agents[index].operatorPreview = value?.text
+                                self.agents[index].operatorAt = value?.createdAt
+                                self.previewedAgentIDs.insert(id)
+                            }
+                        case .failure(let error):
+                            if error is CancellationError { throw error }
+                            if let failure = error as? HolonHTTPFailure,
+                               failure.statusCode == 401 || failure.statusCode == 403 { throw error }
+                            if error as? HolonConversationError == .bootstrapRequired { throw error }
                         }
                         if let id = remaining.next() {
-                            group.addTask { (id, try await transport.operatorPreview(agentID: id)) }
+                            enqueue(id)
                         }
                     }
                 }
@@ -451,7 +487,7 @@ final class ReadingCoordinator {
     }
 
     private enum RefreshResponse: Sendable {
-        case roster(Result<[ReadingAgent], any Error>)
+        case roster(Result<ReadingRoster, any Error>)
         case conversation(Result<HolonConversationSnapshot, any Error>)
     }
 
@@ -486,13 +522,7 @@ final class ReadingCoordinator {
                         switch response {
                         case .roster(let result):
                             self.rosterRefreshing = false
-                            self.agents = self.boundedRoster(try result.get())
-                            self.rosterRevision &+= 1
-                            self.isRosterCurrent = true
-                            self.previewedAgentIDs = []
-                            self.rosterSavedAt = Date()
-                            self.rosterIsCached = false
-                            self.persistRoster()
+                            self.applyRoster(try result.get())
                             if agentID == nil { self.status = .live }
                             self.watch(agentID: nil, after: nil)
                         case .conversation(let result):
@@ -618,13 +648,7 @@ final class ReadingCoordinator {
             do {
                 let value = try await transport.roster()
                 guard self.current(token) else { return }
-                self.agents = self.boundedRoster(value)
-                self.rosterRevision &+= 1
-                self.isRosterCurrent = true
-                self.previewedAgentIDs = []
-                self.rosterSavedAt = Date()
-                self.rosterIsCached = false
-                self.persistRoster()
+                self.applyRoster(value)
             } catch {
                 if self.current(token) { self.failed(error, token: token, recover: true) }
             }
@@ -990,6 +1014,7 @@ final class ReadingCoordinator {
         guard let partition else { return }
         if rosterSavedAt == nil, let roster = cache.load(partition, agentID: nil) {
             agents = boundedRoster(roster.agents)
+            rosterEpoch = roster.rosterEpoch
             rosterRevision &+= 1
             rosterSavedAt = roster.savedAt
             rosterIsCached = true
@@ -1055,7 +1080,7 @@ final class ReadingCoordinator {
         guard let partition, let savedAt = rosterSavedAt else { return }
         var window = Array(agents.prefix(512))
         while !cache.save(.init(partition: partition, agentID: nil, agents: window, snapshot: nil,
-                               position: nil, savedAt: savedAt)) {
+                               position: nil, savedAt: savedAt, rosterEpoch: rosterEpoch)) {
             guard !window.isEmpty else { return }
             window.removeLast(max(1, window.count / 2))
         }
