@@ -88,6 +88,77 @@ test('locate keeps the live tail/checkpoint isolated and exposes both history di
   } finally { f.controller.dispose(); }
 });
 
+for (const legacy of [false, true]) {
+  test(`truncated locate input stays display-only across canonical refreshes (legacy=${legacy})`, async () => {
+    const inputs = Array.from({ length: 128 }, (_, i) => ({
+      message_id: `input-${i}`, preview: `input ${i}`,
+      ...(!legacy ? { activity_key: { event_seq: i + 1, activity_id: `input-${i}` } } : {}),
+    }));
+    const targetInput = {
+      message_id: 'message-5', preview: 'exact omitted input',
+      ...(!legacy ? { activity_key: { event_seq: 140, activity_id: 'input-140' } } : {}),
+    };
+    const canonical = turn('turn-5', 5, 1, { inputs, inputs_truncated: true });
+    const enriched = { ...canonical, inputs: [...inputs, targetInput] };
+    const response = deferred();
+    let latest = canonical;
+    const f = await fixture({
+      locate: () => response.promise,
+      activities: () => detail({ turn: latest }),
+      page: opts => opts.before
+        ? page([2, 3, 4, 5], 'b2', 'a5', { turns: [turn('turn-2', 2), turn('turn-3', 3), turn('turn-4', 4), latest] })
+        : page([6, 7, 8, 9, 10], 'b6', null, { snapshot_through_seq: 12, event_head_seq: 12 }),
+    });
+    const displayed = () => f.controller.displayView().turns.find(t => t.turn_id === 'turn-5');
+    try {
+      // Replay an ordinary same-revision summary after the enriched locate.
+      const request = f.controller.locateSource('message:message-5');
+      await f.push({ type: 'batch', batch: batch({ mutations: [{ type: 'turn_summary_upsert', turn: canonical }] }) });
+      response.resolve(located(page([4, 5], 'b4', 'a5', { turns: [turn('turn-4', 4), enriched] })));
+      await request;
+      await tick();
+      assert.equal(f.controller.browseState().status, 'ready');
+      assert.equal(f.controller.detailState('turn-5').kind, 'idle');
+      assert.deepEqual(displayed().inputs, enriched.inputs);
+      assert.deepEqual(f.controller.view().turns.find(t => t.turn_id === 'turn-5').inputs, inputs);
+      assert.equal((await f.controller.loadOlderHistory()).kind, 'idle');
+      assert.deepEqual(displayed().inputs, enriched.inputs);
+
+      // A newer canonical revision must update the turn, not erase the target.
+      latest = { ...canonical, revision: 2 };
+      await f.push({ type: 'batch', batch: batch({ from: 11, through: 12, mutations: [{ type: 'turn_summary_upsert', turn: latest }] }) });
+      assert.equal(f.controller.browseState().status, 'ready', f.controller.browseState().error?.message);
+      assert.equal(displayed().revision, 2);
+      assert.deepEqual(displayed().inputs, enriched.inputs);
+      assert.equal((await f.controller.loadDetail('turn-5')).kind, 'idle');
+      await f.controller.loadNewerHistory();
+      assert.equal(f.controller.browseState().liveConnected, true);
+      assert.deepEqual(displayed().inputs, enriched.inputs);
+      await f.push({ type: 'batch', batch: batch({ from: 12, through: 13, mutations: [{ type: 'turn_summary_upsert', turn: latest }] }) });
+      assert.equal(f.controller.browseState().status, 'ready');
+      assert.deepEqual(displayed().inputs, enriched.inputs);
+      assert.equal(f.controller.browsingView().checkpoint, null);
+      f.controller.returnToLatest();
+      assert.deepEqual(displayed().inputs, inputs);
+    } finally { f.controller.dispose(); }
+  });
+}
+
+test('ordinary locate inputs retain strict same-revision validation', async () => {
+  const canonical = turn('turn-5', 5, 1, { inputs: [{ message_id: 'message-5', preview: 'canonical' }] });
+  const f = await fixture({
+    locate: () => located(page([5], null, 'a5', { turns: [canonical] })),
+    activities: () => detail({ turn: { ...canonical, inputs: [{ message_id: 'message-5', preview: 'conflict' }] } }),
+  });
+  try {
+    await f.controller.locateSource('message:message-5');
+    await tick();
+    assert.equal(f.controller.detailState('turn-5').kind, 'error');
+    assert.match(f.controller.detailState('turn-5').error.message, /reused revision/);
+    assert.deepEqual(f.controller.displayView().turns[0].inputs, canonical.inputs);
+  } finally { f.controller.dispose(); }
+});
+
 test('location UI adapters distinguish loading, history window, and normal tail', async () => {
   const response = deferred();
   const f = await fixture({ locate: () => response.promise });

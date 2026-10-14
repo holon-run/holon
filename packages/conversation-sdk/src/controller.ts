@@ -434,7 +434,7 @@ export class ConversationController {
   /** Null until a location resolves to an independent history window. */
   browsingView(): ConversationStateView | null {
     if (this.#browseWindow !== null) {
-      const view = this.#browseWindow.state.view();
+      const view = this.#browseWindow.view();
       return {
         ...view,
         next_before_cursor: this.#browseWindow.before,
@@ -500,7 +500,7 @@ export class ConversationController {
         pending_inputs: pendingTargetId !== null
           ? snapshot.pending_inputs.filter((input) => input.message_id === pendingTargetId)
           : [],
-      }));
+      }), response.target);
       this.#browseWindow = window;
       this.#browse = { ...this.#browse!, target: response.target, status: "ready" };
       for (const batch of this.#browseBatches) this.#applyBrowseBatch(batch);
