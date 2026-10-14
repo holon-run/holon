@@ -13,13 +13,11 @@ order: 63
 
 ---
 
-## The Verification Deficit Behind the Velocity Craze
+## The Verification Deficit in Autonomous Delivery
 
-Recent discussions around "fully autonomous AI delivery pipelines" have sparked intense interest across the engineering community. Teams have demonstrated extraordinary throughput: hundreds or thousands of releases written, reviewed, merged, and deployed by AI within a few weeks in a single repository.
+As AI-assisted coding and automated delivery pipelines mature, the core bottleneck of software engineering has shifted: it is no longer about how quickly code can be produced, but about **how to prove that the changes introduce no regressions, and who takes responsibility for final quality**.
 
-While the raw output is impressive, it has also triggered widespread, legitimate anxiety: **the code is produced in minutes, but do we dare deploy it to production?**
-
-When the cost of writing code drops toward zero, software engineering faces an unavoidable shift: **the bottleneck moves from producing code to proving that the code is correct and safe to ship**.
+When raw code output accelerates, engineering teams face a universal, legitimate anxiety: **the code can be generated and committed in minutes, but do we dare deploy it to production?**
 
 If an automated pipeline focuses exclusively on generating diffs while dumping code review, environment staging, end-to-end testing, and defect investigation onto human engineers, any time saved during drafting is immediately erased downstream. Worse, if teams bypass verification and push straight to production, the system quickly degrades under silent regressions and meaningless green tests.
 
