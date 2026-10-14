@@ -63,6 +63,13 @@ order: 4
 <p>Why while(true) loops fail in production engineering. Drawing from OS history, we explore durable wait-wake scheduling and causal context design.</p>
 <span class="blog-read">Read the architecture <span aria-hidden="true">→</span></span></div>
 </a>
+<a class="blog-story" href="/blog/ai-delivery-quality-and-verification">
+<img src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">ENGINEERING PRACTICE</span>
+<h3>Guaranteeing Quality in AI Delivery Pipelines: Our Four-Layer Verification Defense</h3>
+<p>AI generates code at unprecedented speed, but the real crisis is software nobody dares deploy. Drawing from production engineering, we break down a four-layer verification defense.</p>
+<span class="blog-read">Read the defense <span aria-hidden="true">→</span></span></div>
+</a>
 </section>
 
 <footer class="blog-next">
@@ -95,6 +102,10 @@ order: 4
 
 - [From Request-Response to Event-Driven: Designing the Kernel for Long-Lived Agents](./event-driven-kernel.md)
   Why while(true) loops fail in production software engineering. Drawing from OS history—from busy-waiting to hardware interrupts and epoll—we explore durable wait-wake scheduling, decoupled work state, and causal contexts for long-lived autonomous agents.
+  <!-- mdorigin:index kind=article -->
+
+- [Guaranteeing Quality in AI Delivery Pipelines: Our Four-Layer Verification Defense in Real-World Engineering](./ai-delivery-quality-and-verification.md)
+  AI generates code at unprecedented speed, but the real crisis is software nobody dares deploy. Drawing from Holon and a production project spanning Node.js services, cross-platform apps, and audio hardware protocols, we break down how role separation, automated incident investigation, live instance patrols, and agent-guarded E2E testing resolve the verification deficit.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

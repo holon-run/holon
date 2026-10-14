@@ -147,6 +147,13 @@ See how teams share agents, set up continuous code review, and explore the desig
 <p>Why while(true) loops fail in production software engineering. Lessons from OS interrupt history for long-lived autonomous agents.</p>
 <span class="home-reading-card__cta">Explore the kernel design →</span>
 </a>
+<a class="home-reading-card" href="/blog/ai-delivery-quality-and-verification">
+<img class="home-reading-card__cover" src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
+<span class="home-reading-card__category">07 · ENGINEERING PRACTICE</span>
+<h3>Guaranteeing Quality in AI Delivery Pipelines: Our Four-Layer Verification Defense</h3>
+<p>AI generates code at unprecedented speed, but the real crisis is software nobody dares deploy. Drawing from production engineering, we break down a four-layer verification defense.</p>
+<span class="home-reading-card__cta">Read the defense →</span>
+</a>
 </div>
 </section>
 

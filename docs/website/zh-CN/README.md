@@ -147,6 +147,13 @@ order: 1
 <p>为什么死循环无法支撑生产级工作？借鉴操作系统中断演进史，解析长周期 Agent 的持久化等待与事件驱动内核。</p>
 <span class="home-reading-card__cta">探索内核架构 →</span>
 </a>
+<a class="home-reading-card" href="/zh-CN/blog/ai-delivery-quality-and-verification">
+<img class="home-reading-card__cover" src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
+<span class="home-reading-card__category">07 · 工程实践</span>
+<h3>AI 自动交付流如何保证质量：我们在真实工程中的四重验收防御</h3>
+<p>代码生成飞速提升，但无人敢用才是最大的质量危机。结合真实工程实践，拆解四重自动化验收防御体系。</p>
+<span class="home-reading-card__cta">阅读质量防御 →</span>
+</a>
 </div>
 </section>
 
