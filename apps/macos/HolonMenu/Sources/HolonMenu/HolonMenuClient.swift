@@ -278,39 +278,21 @@ final class HolonCLIClient: HolonDesiredStateClient {
         guard mode == "local" else {
             throw HolonCLIError.pairingFailed(L10n.text("Unsupported daemon authentication mode."))
         }
-        var request = URLRequest(url: local.appendingPathComponent("api/auth/pairing/issue"))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        // The long-lived token only travels over the loopback request, not in the QR.
-        let token = try controlToken(homeDir: status.homeDir)
-        if let token, !token.isEmpty {
-            request.setValue("Bearer \(token.trimmingCharacters(in: .whitespacesAndNewlines))",
-                             forHTTPHeaderField: "Authorization")
-        }
-        let data: Data
-        let statusCode: Int
-        if request.value(forHTTPHeaderField: "Authorization") == nil {
-            // The Unix control listener admits local callers without a control token.
-            let result = try await launcher.run(
-                executableURL: URL(fileURLWithPath: "/usr/bin/curl"),
-                arguments: ["--silent", "--show-error", "--fail", "--unix-socket",
-                            status.socketPath, "--request", "POST",
-                            "http://localhost/api/auth/pairing/issue"]
-            )
-            data = result.stdout
-            statusCode = result.terminationStatus == 0 ? 200 : 0
-        } else {
-            let (body, response) = try await networkSession.data(for: request)
-            data = body
-            statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-        }
-        guard statusCode == 200 else {
+        // Local issuance uses the trusted Unix listener, regardless of token files.
+        // A file on disk does not imply the running daemon loaded that credential.
+        let result = try await launcher.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/curl"),
+            arguments: ["--silent", "--show-error", "--fail", "--unix-socket",
+                        status.socketPath, "--request", "POST",
+                        "http://localhost/api/auth/pairing/issue"]
+        )
+        guard result.terminationStatus == 0 else {
             throw HolonCLIError.pairingFailed(
-                L10n.text("Unable to issue a pairing code. Check daemon version and local token configuration.")
+                L10n.text("Unable to issue a pairing code. Check daemon version and local control socket.")
             )
         }
         struct Ticket: Decodable { let ticket: String }
-        let ticket = try JSONDecoder().decode(Ticket.self, from: data).ticket
+        let ticket = try JSONDecoder().decode(Ticket.self, from: result.stdout).ticket
         guard !ticket.isEmpty else { throw HolonCLIError.pairingFailed(L10n.text("Empty pairing code.")) }
         var components = URLComponents(url: destination, resolvingAgainstBaseURL: false)
         components?.path = "/login"

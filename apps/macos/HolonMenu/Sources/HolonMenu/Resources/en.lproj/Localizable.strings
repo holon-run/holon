@@ -83,7 +83,7 @@
 "Unable to determine the Mac's local network address." = "Unable to determine the Mac's local network address.";
 "Unable to determine the daemon authentication mode." = "Unable to determine the daemon authentication mode.";
 "Unable to generate QR code." = "Unable to generate QR code.";
-"Unable to issue a pairing code. Check daemon version and local token configuration." = "Unable to issue a pairing code. Check daemon version and local token configuration.";
+"Unable to issue a pairing code. Check daemon version and local control socket." = "Unable to issue a pairing code. Check daemon version and local control socket.";
 "Unable to locate the Tailscale command-line tool." = "Unable to locate the Tailscale command-line tool.";
 "Unable to locate the bundled holon CLI." = "Unable to locate the bundled holon CLI.";
 "Unable to verify daemon authentication. Configure credentials in its launch settings before enabling LAN: %@" = "Unable to verify daemon authentication. Configure credentials in its launch settings before enabling LAN: %@";
