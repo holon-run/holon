@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, env, fs, io::Cursor};
 
 use flate2::{write::GzEncoder, Compression};
-use tar::{Builder, Header};
+use tar::{Builder, EntryType, Header};
 use tempfile::{tempdir, TempDir};
 
 use super::super::*;
@@ -24,6 +24,14 @@ fn archive_bytes(root: &str, files: &[(&str, &str)]) -> Vec<u8> {
     {
         let encoder = GzEncoder::new(&mut compressed, Compression::default());
         let mut builder = Builder::new(encoder);
+        // GitHub codeload archives include repository metadata before the content root.
+        let metadata = b"52 comment=34b7e2cc93dc428f8c1b4bf696de6dcfe7373436\n";
+        let mut header = Header::new_gnu();
+        header.set_path("pax_global_header").unwrap();
+        header.set_entry_type(EntryType::XGlobalHeader);
+        header.set_size(metadata.len() as u64);
+        header.set_cksum();
+        builder.append(&header, Cursor::new(metadata)).unwrap();
         for (path, contents) in files {
             let full_path = format!("{root}/{path}");
             let mut header = Header::new_gnu();
@@ -214,7 +222,7 @@ async fn resolve_remote_agent_template_detail_reads_archive_tree() {
 }
 
 #[tokio::test]
-async fn sync_remote_source_installs_all_templates_from_one_archive_get() {
+async fn sync_remote_source_with_global_pax_installs_all_templates_from_one_archive_get() {
     let _lock = crate::test_env::lock_env();
     let home = tempdir().unwrap();
     let db = open_db(&home);

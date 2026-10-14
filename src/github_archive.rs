@@ -199,6 +199,12 @@ impl GitHubArchive {
                 "GitHub archive contains too many entries"
             );
 
+            let entry_type = entry.header().entry_type();
+            // Global PAX metadata is not content; raw limits already include it.
+            if entry_type.is_pax_global_extensions() {
+                continue;
+            }
+
             let path = checked_archive_path(&entry.path()?)?;
             anyhow::ensure!(
                 seen.insert(path.clone()),
@@ -224,7 +230,6 @@ impl GitHubArchive {
                 .strip_prefix(Path::new(&current_root))
                 .unwrap_or_else(|_| Path::new(""));
             let target = temp_dir.path().join(&path);
-            let entry_type = entry.header().entry_type();
             let size = entry.header().size()?;
             anyhow::ensure!(
                 extracted_bytes
@@ -520,11 +525,13 @@ mod tests {
         thread,
     };
 
+    const GLOBAL_PAX: &[u8] = b"13 comment=x\n";
+
     fn archive(entries: &[(&str, tar::EntryType, &[u8])]) -> Vec<u8> {
         let mut compressed = Vec::new();
         {
             let encoder =
-                flate2::write::GzEncoder::new(&mut compressed, flate2::Compression::default());
+                flate2::write::GzEncoder::new(&mut compressed, flate2::Compression::fast());
             let mut builder = tar::Builder::new(encoder);
             for (path, kind, contents) in entries {
                 let mut header = tar::Header::new_gnu();
@@ -536,11 +543,12 @@ mod tests {
                     gnu.name[..path.len()].copy_from_slice(path);
                 }
                 header.set_entry_type(*kind);
-                header.set_size(if kind.is_file() {
-                    contents.len() as u64
-                } else {
-                    0
-                });
+                header.set_size(contents.len() as u64);
+                if kind.is_symlink() {
+                    header.set_link_name("ok.txt").unwrap();
+                } else if kind.is_hard_link() {
+                    header.set_link_name("root/ok.txt").unwrap();
+                }
                 header.set_cksum();
                 builder.append(&header, Cursor::new(*contents)).unwrap();
             }
@@ -548,6 +556,24 @@ mod tests {
             encoder.finish().unwrap();
         }
         compressed
+    }
+
+    fn parse_archive(bytes: Vec<u8>) -> anyhow::Result<GitHubArchive> {
+        let file = NamedTempFile::new().unwrap();
+        fs::write(file.path(), bytes).unwrap();
+        GitHubArchive::from_compressed_file(file.path())
+    }
+
+    fn pax_record(key: &str, value: &str) -> Vec<u8> {
+        let record = format!(" {key}={value}\n");
+        let mut length = record.len() + 1;
+        loop {
+            let payload = format!("{length}{record}");
+            if payload.len() == length {
+                return payload.into_bytes();
+            }
+            length = payload.len();
+        }
     }
 
     fn blocking_client(auth: Option<&str>, base: &str) -> crate::github::BlockingClient {
@@ -656,6 +682,259 @@ mod tests {
     }
 
     #[test]
+    fn accepts_global_pax_before_and_between_files() {
+        for position in [0, 1] {
+            let mut entries = vec![
+                ("root/one.txt", tar::EntryType::Regular, b"one".as_slice()),
+                ("root/two.txt", tar::EntryType::Regular, b"two".as_slice()),
+            ];
+            entries.insert(
+                position,
+                (
+                    "pax_global_header",
+                    tar::EntryType::XGlobalHeader,
+                    GLOBAL_PAX,
+                ),
+            );
+            let snapshot = parse_archive(archive(&entries)).unwrap();
+            assert_eq!(snapshot.root().file_name().unwrap(), "root");
+            assert_eq!(fs::read(snapshot.root().join("one.txt")).unwrap(), b"one");
+            assert_eq!(fs::read(snapshot.root().join("two.txt")).unwrap(), b"two");
+            assert_eq!(snapshot.directory("").unwrap(), snapshot.root());
+            assert!(snapshot.rejected_entries.is_empty());
+            assert!(!snapshot.temp_dir.path().join("pax_global_header").exists());
+        }
+    }
+
+    #[test]
+    fn ignores_global_pax_by_type_without_materializing_metadata() {
+        let snapshot = parse_archive(archive(&[
+            (
+                "pax_global_header",
+                tar::EntryType::XGlobalHeader,
+                GLOBAL_PAX,
+            ),
+            (
+                "pax_global_header",
+                tar::EntryType::XGlobalHeader,
+                GLOBAL_PAX,
+            ),
+            ("root/ok.txt", tar::EntryType::XGlobalHeader, GLOBAL_PAX),
+            ("root/ok.txt", tar::EntryType::XGlobalHeader, GLOBAL_PAX),
+            ("../metadata", tar::EntryType::XGlobalHeader, GLOBAL_PAX),
+            ("/metadata", tar::EntryType::XGlobalHeader, GLOBAL_PAX),
+            (
+                "unusual-metadata",
+                tar::EntryType::XGlobalHeader,
+                GLOBAL_PAX,
+            ),
+            (
+                "root/nested/metadata",
+                tar::EntryType::XGlobalHeader,
+                GLOBAL_PAX,
+            ),
+            ("root/ok.txt", tar::EntryType::Regular, b"ok"),
+        ]))
+        .unwrap();
+        assert_eq!(fs::read(snapshot.root().join("ok.txt")).unwrap(), b"ok");
+        assert_eq!(snapshot.root().file_name().unwrap(), "root");
+        assert!(snapshot.rejected_entries.is_empty());
+        assert_eq!(fs::read_dir(snapshot.temp_dir.path()).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(snapshot.root()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn does_not_ignore_regular_files_named_pax_global_header() {
+        let snapshot = parse_archive(archive(&[(
+            "root/pax_global_header",
+            tar::EntryType::Regular,
+            b"ordinary content",
+        )]))
+        .unwrap();
+        assert_eq!(
+            fs::read(snapshot.root().join("pax_global_header")).unwrap(),
+            b"ordinary content"
+        );
+        let error = parse_archive(archive(&[
+            (
+                "pax_global_header",
+                tar::EntryType::Regular,
+                b"ordinary content",
+            ),
+            ("root/file", tar::EntryType::Regular, b"x"),
+        ]))
+        .unwrap_err();
+        assert!(error.to_string().contains("multiple top-level roots"));
+    }
+
+    #[test]
+    fn rejects_metadata_only_archives_as_empty() {
+        for names in [
+            vec!["pax_global_header"],
+            vec!["root/metadata", "root/metadata"],
+        ] {
+            let entries: Vec<_> = names
+                .into_iter()
+                .map(|name| (name, tar::EntryType::XGlobalHeader, GLOBAL_PAX))
+                .collect();
+            let error = parse_archive(archive(&entries)).unwrap_err();
+            assert_eq!(error.to_string(), "GitHub archive is empty");
+        }
+    }
+
+    #[test]
+    fn global_pax_prefix_preserves_content_validation() {
+        for (path, expected) in [
+            ("root/file", "contains a duplicate path: root/file"),
+            ("other/file", "contains multiple top-level roots"),
+            ("root/../escape", "path contains an unsafe component"),
+            ("/absolute", "path is absolute"),
+        ] {
+            let error = parse_archive(archive(&[
+                (
+                    "pax_global_header",
+                    tar::EntryType::XGlobalHeader,
+                    GLOBAL_PAX,
+                ),
+                ("root/file", tar::EntryType::Regular, b"x"),
+                (path, tar::EntryType::Regular, b"y"),
+            ]))
+            .unwrap_err();
+            assert!(error.to_string().contains(expected), "{path}: {error}");
+        }
+    }
+
+    #[test]
+    fn global_pax_does_not_hide_links_or_special_entries() {
+        let snapshot = parse_archive(archive(&[
+            (
+                "pax_global_header",
+                tar::EntryType::XGlobalHeader,
+                GLOBAL_PAX,
+            ),
+            ("root/ok.txt", tar::EntryType::Regular, b"ok"),
+            ("root/link", tar::EntryType::Symlink, &[]),
+            ("root/hardlink", tar::EntryType::Link, &[]),
+            ("root/fifo", tar::EntryType::Fifo, &[]),
+            ("root/char", tar::EntryType::Char, &[]),
+            ("root/block", tar::EntryType::Block, &[]),
+            ("root/other/ok.txt", tar::EntryType::Regular, b"ok"),
+        ]))
+        .unwrap();
+        assert!(snapshot.directory("other").is_ok());
+        assert_eq!(snapshot.rejected_entries.len(), 5);
+        for path in ["", "link", "hardlink", "fifo", "char", "block"] {
+            let error = snapshot.directory(path).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "selected archive directory contains unsupported entries"
+            );
+        }
+        for path in ["link", "hardlink", "fifo", "char", "block"] {
+            assert!(!snapshot.root().join(path).exists());
+        }
+    }
+
+    #[test]
+    fn raw_metadata_counts_toward_entry_limit() {
+        let metadata = [
+            (
+                "pax_global_header",
+                tar::EntryType::XGlobalHeader,
+                GLOBAL_PAX,
+            ),
+            ("PaxHeaders/file", tar::EntryType::XHeader, GLOBAL_PAX),
+            (
+                "././@LongLink",
+                tar::EntryType::GNULongName,
+                b"root/file\0".as_slice(),
+            ),
+        ];
+        let mut entries: Vec<_> = metadata.iter().copied().cycle().take(MAX_ENTRIES).collect();
+        entries.push(("root/file", tar::EntryType::Regular, b"x"));
+        let error = parse_archive(archive(&entries)).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "GitHub archive contains too many entries"
+        );
+    }
+
+    #[test]
+    fn raw_metadata_counts_toward_expansion_limit() {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut builder = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_path("pax_global_header").unwrap();
+        header.set_entry_type(tar::EntryType::XGlobalHeader);
+        header.set_size(GLOBAL_PAX.len() as u64);
+        header.set_cksum();
+        builder.append(&header, Cursor::new(GLOBAL_PAX)).unwrap();
+        header.set_size(MAX_EXTRACTED_BYTES);
+        header.set_cksum();
+        // Preflight must reject the cumulative size before reading this omitted payload.
+        builder.append(&header, io::empty()).unwrap();
+        let bytes = builder.into_inner().unwrap().finish().unwrap();
+        let error = parse_archive(bytes).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "GitHub archive expands beyond the size limit"
+        );
+    }
+
+    #[test]
+    fn accepts_safe_gnu_longname_and_local_pax_content_paths() {
+        let path = format!("root/{}/file", "segment".repeat(20));
+        for kind in [tar::EntryType::GNULongName, tar::EntryType::XHeader] {
+            let payload = if kind.is_gnu_longname() {
+                format!("{path}\0").into_bytes()
+            } else {
+                pax_record("path", &path)
+            };
+            let snapshot = parse_archive(archive(&[
+                (
+                    "pax_global_header",
+                    tar::EntryType::XGlobalHeader,
+                    GLOBAL_PAX,
+                ),
+                ("././@LongLink", kind, &payload),
+                ("root/placeholder", tar::EntryType::Regular, b"content"),
+            ]))
+            .unwrap();
+            assert_eq!(
+                fs::read(snapshot.root().join(path.strip_prefix("root/").unwrap())).unwrap(),
+                b"content"
+            );
+            assert!(!snapshot.root().join("placeholder").exists());
+            assert!(snapshot.rejected_entries.is_empty());
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_gnu_longname_and_local_pax_effective_paths() {
+        for kind in [tar::EntryType::GNULongName, tar::EntryType::XHeader] {
+            for (path, expected) in [
+                ("root/../escape", "path contains an unsafe component"),
+                ("/absolute", "path is absolute"),
+            ] {
+                let payload = if kind.is_gnu_longname() {
+                    format!("{path}\0").into_bytes()
+                } else {
+                    pax_record("path", path)
+                };
+                let error = parse_archive(archive(&[
+                    ("././@LongLink", kind, &payload),
+                    ("root/placeholder", tar::EntryType::Regular, b"content"),
+                ]))
+                .unwrap_err();
+                assert!(
+                    error.to_string().contains(expected),
+                    "{kind:?} {path}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn cleanup_removes_extracted_snapshot() {
         let bytes = archive(&[("root/file", tar::EntryType::Regular, b"content")]);
         let file = NamedTempFile::new().unwrap();
@@ -667,6 +946,31 @@ mod tests {
             root
         };
         assert!(!root.exists());
+    }
+
+    #[test]
+    #[ignore = "requires GitHub network access"]
+    fn fixed_github_revisions_expose_agent_templates() {
+        let client = blocking_client(None, "https://api.github.com");
+        for (repo, revision) in [
+            ("holon-test", "34b7e2cc93dc428f8c1b4bf696de6dcfe7373436"),
+            ("holon", "fd58e2222c5434bc0be5c75e4f24c889b29b2d1c"),
+        ] {
+            let snapshot = GitHubArchive::fetch_blocking(
+                &client,
+                "holon-run",
+                repo,
+                revision,
+                DEFAULT_ARCHIVE_BASE,
+            )
+            .unwrap_or_else(|error| panic!("{repo}@{revision}: {error:#}"));
+            let directory = snapshot.directory("agent_templates").unwrap();
+            let entries = fs::read_dir(directory)
+                .unwrap()
+                .collect::<io::Result<Vec<_>>>()
+                .unwrap();
+            assert!(!entries.is_empty(), "{repo}@{revision}: empty templates");
+        }
     }
 
     #[test]
