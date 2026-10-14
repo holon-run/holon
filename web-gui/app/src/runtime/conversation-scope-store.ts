@@ -306,7 +306,7 @@ function publishScopeSnapshot(
         view,
         displayView,
         navigationActive: previous.navigationActive,
-        browsing: controller.browseState() !== null && controller.browseState()?.liveConnected !== true,
+        browsing: controller.browseState() !== null,
         version: previous.version + 1,
       },
     },

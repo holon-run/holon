@@ -179,6 +179,46 @@ describe("conversation scope store", () => {
     expect(latest.browsing).toBe(false);
   });
 
+  it("keeps a live-connected browse window gated until explicitly returning to latest", async () => {
+    const { client } = fakeClient();
+    const located = summarySnapshot();
+    client.locateSource = async () => ({
+      status: "located",
+      target: { kind: "turn", turn_id: "turn-10" },
+      window: {
+        ...located,
+        next_after_cursor: null,
+        coverage: {
+          has_older: false, has_newer: false,
+          reaches_oldest: true, reaches_latest: true,
+          first_turn_key: { turn_index: 10, turn_id: "turn-10" },
+          last_turn_key: { turn_index: 10, turn_id: "turn-10" },
+          membership_upper_bound: { turn_index: 10, turn_id: "turn-10" },
+        },
+      },
+    }) as never;
+    const key = conversationScopeKey("local", "live-browse");
+    const { controller } = acquireConversationScope({
+      key, agentId: "live-browse", baseUrl: "http://fake.local/api",
+      clientFactory: () => client, controllerOptions: { sleep },
+    });
+    await waitFor(() => controller.status.kind === "ready");
+    await controller.locateSource("turn:turn-10");
+    expect(controller.browseState()?.liveConnected).toBe(true);
+    const mirror = useConversationScopeStore.getState().scopes[key];
+    expect(mirror.navigationActive).toBeFalsy();
+    expect(mirror.browsing).toBe(true);
+    expect(mirror.displayView?.checkpoint).toBeNull();
+    expect(mirror.displayView?.through_seq).toBeNull();
+    expect(mirror.view?.checkpoint).toBe("checkpoint-10");
+
+    controller.returnToLatest();
+    const latest = useConversationScopeStore.getState().scopes[key];
+    expect(latest.browsing).toBe(false);
+    expect(latest.displayView).toBe(latest.view);
+    expect(latest.displayView?.checkpoint).toBe("checkpoint-10");
+  });
+
   it("preserves navigation read gates through controller publishes without repeat updates", async () => {
     const { client } = fakeClient();
     const key = conversationScopeKey("local", "located");

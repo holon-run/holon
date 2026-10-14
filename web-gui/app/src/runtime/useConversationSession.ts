@@ -123,9 +123,9 @@ export function useConversationSession(
   const targetRuntime = navigation?.runtimeId
     ?? (boundNavigationRuntime.current?.requestId === navigation?.requestId ? boundNavigationRuntime.current?.runtimeId : undefined);
   const runtimeMismatch = targetRuntime !== undefined && snapshot.view?.scope != null && targetRuntime !== snapshot.view.scope.runtime_id;
-  const browsing = browse !== null && !browse.liveConnected;
+  const browsing = browse !== null;
   const navigationActive = navigation !== undefined;
-  const conversationReady = bootstrapped && !browsing && (!navigation || browse?.liveConnected === true) && !runtimeMismatch;
+  const conversationReady = bootstrapped && !browsing && !navigation && !runtimeMismatch;
   const lastNavigation = useRef<{ controller: ConversationController; requestId: number } | null>(null);
 
   useLayoutEffect(() => {
