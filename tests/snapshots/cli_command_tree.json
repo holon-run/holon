@@ -2276,9 +2276,57 @@
         "required": false
       },
       {
+        "long": "cursor",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "follow",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "include-progress",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
         "long": "limit",
         "short": null,
         "default_value": "20",
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "max-bytes",
+        "short": null,
+        "default_value": "65536",
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "max-events",
+        "short": null,
+        "default_value": "100",
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "timeout-ms",
+        "short": null,
+        "default_value": "5000",
         "possible_values": null,
         "required": false
       }

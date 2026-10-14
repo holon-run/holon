@@ -1695,8 +1695,13 @@ mod tests {
                 [],
             )
             .unwrap();
-        let (status, _) = post_locate(state, "brief:brief-two", 1).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        let mut unauthenticated = state.clone();
+        unauthenticated.require_control_token = true;
+        let (status, _) = post_locate(unauthenticated, "brief:brief-two", 1).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, located) = post_locate(state, "brief:brief-two", 1).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(located["status"], "located");
     }
 
     async fn get_with_headers(

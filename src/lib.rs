@@ -57,6 +57,7 @@ pub mod skills;
 pub mod solve;
 pub mod storage;
 pub mod system;
+pub mod tail;
 pub(crate) mod token_estimate;
 pub mod tool;
 pub mod tui;

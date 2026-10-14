@@ -866,6 +866,17 @@ pub async fn exec_command_reports_nonzero_exit_and_truncates_output() -> Result<
         assert!(!preview.contains("OUTPUT_END"));
     }
     assert_eq!(value["truncated"], true);
+    for (field, output) in [
+        ("stdout_artifact", &long_stdout),
+        ("stderr_artifact", &long_stderr),
+    ] {
+        let index = value[field].as_u64().expect("stream artifact index") as usize;
+        let path = value["artifacts"][index]["path"]
+            .as_str()
+            .expect("confirmed stream artifact path");
+        assert!(std::path::Path::new(path).is_absolute());
+        assert_eq!(std::fs::read_to_string(path)?, *output);
+    }
     assert!(envelope["summary_text"]
         .as_str()
         .expect("summary text should be present")

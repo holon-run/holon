@@ -2312,7 +2312,7 @@ impl RuntimeHandle {
         let (full_output, output_path, result_summary, exit_status) =
             if task.kind == TaskKind::CommandTask {
                 let output_path = detail_string(&task.detail, "output_path");
-                let output = self
+                let (output, output_path) = self
                     .read_command_task_output(&task, output_path.as_deref())
                     .await?;
                 let result_summary = detail_string(&task.detail, "output_summary")
@@ -2437,7 +2437,7 @@ impl RuntimeHandle {
         &self,
         task: &TaskRecord,
         output_path: Option<&str>,
-    ) -> Result<String> {
+    ) -> Result<(String, Option<String>)> {
         let max_output_tokens = task
             .detail
             .as_ref()
@@ -2447,30 +2447,23 @@ impl RuntimeHandle {
         let fallback = detail_string(&task.detail, "initial_output")
             .or_else(|| detail_string(&task.detail, "output_summary"))
             .unwrap_or_default();
+        let fallback =
+            crate::tool::helpers::truncate_output_for_tokens(&fallback, max_output_tokens);
 
         let Some(path) = output_path else {
-            return Ok(crate::tool::helpers::truncate_output_for_tokens(
-                &fallback,
-                max_output_tokens,
-            ));
+            return Ok((fallback, None));
         };
 
         match tokio::fs::read(path).await {
             Ok(content) if !content.is_empty() || fallback.is_empty() => {
                 let content = String::from_utf8_lossy(&content);
-                Ok(crate::tool::helpers::truncate_output_for_tokens(
-                    &content,
-                    max_output_tokens,
+                Ok((
+                    crate::tool::helpers::truncate_output_for_tokens(&content, max_output_tokens),
+                    Some(path.to_string()),
                 ))
             }
-            Ok(_) => Ok(crate::tool::helpers::truncate_output_for_tokens(
-                &fallback,
-                max_output_tokens,
-            )),
-            Err(_) => Ok(crate::tool::helpers::truncate_output_for_tokens(
-                &fallback,
-                max_output_tokens,
-            )),
+            Ok(_) => Ok((fallback, Some(path.to_string()))),
+            Err(_) => Ok((fallback, None)),
         }
     }
 
@@ -5558,8 +5551,10 @@ fn task_failure_artifact(
     }
     if let Some(path) = output_path {
         metadata.insert("output_path".into(), path.to_string());
-    } else if let Some(path) = detail_string(&task.detail, "output_path") {
-        metadata.insert("output_path".into(), path);
+    } else if task.kind != TaskKind::CommandTask {
+        if let Some(path) = detail_string(&task.detail, "output_path") {
+            metadata.insert("output_path".into(), path);
+        }
     }
     let has_error = detail_string(&task.detail, "error").is_some();
     let source_chain = detail_string(&task.detail, "error")

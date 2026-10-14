@@ -68,11 +68,18 @@ promoting a focus window into a complete history cache. Active turn summaries,
 pending input, and stream checkpoints still come from the same committed view;
 stream event heads always come from the event ledger, never message sequences.
 
-Locate has the same authentication, public-Agent visibility, read transaction,
+Locate has the same authentication, active-Agent identity check, read transaction,
 timeout, count, and serialized-response budgets as summary reads. Activity
 reads remain older-only and reject `after`; their identities and cursors must
 not be substituted for history cursors. Neither navigation API writes Brief
 read markers or changes unread authority.
+
+As of 2026-10-14, conversation summary, activities, locate, shadow and stream
+reads are not restricted to public agents. Like brief and status reads, they
+accept explicitly targeted active private agents under the existing route
+authentication. This does not add private agents to the public roster or expand
+activation/control permissions. Cursor agent/principal/runtime/epoch bindings
+and cross-agent source checks remain unchanged.
 
 ## 1. Summary and status
 

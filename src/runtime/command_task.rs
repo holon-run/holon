@@ -117,6 +117,7 @@ struct CapturedOutput {
     stdout: String,
     stderr: String,
     combined: String,
+    output_file_opened: bool,
     emitted_bytes: u64,
     decoded_bytes: u64,
     retained_bytes: u64,
@@ -1235,7 +1236,7 @@ impl RuntimeHandle {
         }
         let result_text = build_command_task_result_text(
             task_record.summary.as_deref().unwrap_or(&resolved.spec.cmd),
-            &resolved.output_path,
+            captured.output_file_opened.then_some(&resolved.output_path),
             status_label,
             terminal.exit_status,
             captured.summary(resolved.spec.max_output_tokens),
@@ -1302,7 +1303,10 @@ impl RuntimeHandle {
         )
         .await
         {
-            Ok(output) => Some(output),
+            Ok(output) => {
+                captured.output_file_opened = true;
+                Some(output)
+            }
             Err(err) => {
                 output_failure = Some(classify_output_open_error(&err));
                 None
@@ -1877,14 +1881,18 @@ async fn collect_remaining_output_into_file(
 
 fn build_command_task_result_text(
     summary: &str,
-    output_path: &PathBuf,
+    output_path: Option<&PathBuf>,
     status_label: &str,
     exit_status: Option<i32>,
     output_summary: Option<String>,
     error: Option<&str>,
 ) -> String {
     let mut lines = vec![format!("command task {status_label}: {summary}")];
-    lines.push(format!("output_path: {}", output_path.display()));
+    if let Some(output_path) = output_path {
+        lines.push(format!("output_path: {}", output_path.display()));
+    } else {
+        lines.push("output_path: unavailable (output capture file was not opened)".into());
+    }
     if let Some(code) = exit_status {
         lines.push(format!("exit_status: {code}"));
     }
@@ -1926,7 +1934,7 @@ fn command_task_detail(
         } else {
             None::<&str>
         },
-        "output_path": resolved.output_path,
+        "output_path": captured.output_file_opened.then_some(&resolved.output_path),
         "initial_output": captured.initial_output(resolved.spec.max_output_tokens),
         "output_summary": captured.summary(resolved.spec.max_output_tokens),
         "terminal_snapshot_ready": terminal_snapshot_ready,
@@ -2437,6 +2445,15 @@ mod tests {
         assert!(capture.get("failure_code").is_none());
 
         let output_path = detail["output_path"].as_str().expect("output path");
+        assert!(Path::new(output_path).is_absolute());
+        let status = runtime.task_status_snapshot(&task.id).await.unwrap();
+        assert_eq!(
+            status
+                .command
+                .as_ref()
+                .and_then(|command| command.output_path.as_deref()),
+            Some(output_path)
+        );
         let artifact = tokio::fs::read(output_path).await.unwrap();
         assert!(artifact.len() as u64 <= policy.retention_bytes);
         assert!(artifact.starts_with(&"A".repeat(2_816).into_bytes()));
@@ -2641,6 +2658,8 @@ mod tests {
             latest.detail.as_ref().unwrap()["output_capture"]["failure_code"].as_str(),
             Some("output_persistence_failed")
         );
+        assert!(task.detail.as_ref().unwrap()["output_path"].is_null());
+        assert!(latest.detail.as_ref().unwrap()["output_path"].is_null());
         assert_eq!(
             latest.detail.as_ref().unwrap()["output_capture"]["emitted_bytes"].as_u64(),
             Some(35)
@@ -2650,6 +2669,15 @@ mod tests {
             .task
             .output_preview
             .contains("stdout survived persistence failure"));
+        assert!(output.task.artifacts.is_empty());
+        assert_eq!(output.task.output_artifact, None);
+        assert!(!output
+            .task
+            .failure_artifact
+            .as_ref()
+            .unwrap()
+            .metadata
+            .contains_key("output_path"));
         assert_eq!(
             output
                 .task
@@ -2658,6 +2686,55 @@ mod tests {
                 .and_then(|capture| capture.failure_code),
             Some(CommandTaskOutputFailureCode::OutputPersistenceFailed)
         );
+        let status = runtime.task_status_snapshot(&task.id).await.unwrap();
+        assert!(status.command.unwrap().output_path.is_none());
+        let messages = runtime.storage().read_recent_messages(20).unwrap();
+        let message = messages
+            .iter()
+            .find(|message| {
+                message.kind == MessageKind::TaskResult
+                    && message.task_id.as_deref() == Some(task.id.as_str())
+            })
+            .unwrap();
+        assert!(matches!(
+            &message.body,
+            MessageBody::Text { text } if text.contains("output_path: unavailable")
+        ));
+    }
+
+    #[tokio::test]
+    async fn command_task_missing_output_file_keeps_summary_without_artifact() {
+        let (_home, _workspace, runtime) = test_runtime();
+        let spec = command_spec(false, false);
+        let resolved = resolved_command(&runtime, &spec).await;
+        let policy = resolved.output_policy;
+        let task = runtime
+            .register_command_task(
+                "removed output file".into(),
+                resolved,
+                running_command(FakeRunningProcess::completed(7), "summary survives", ""),
+                AuthorityClass::OperatorInstruction,
+                false,
+                CapturedOutput::new(policy),
+            )
+            .await
+            .unwrap();
+        let latest = wait_for_latest_task(&runtime, &task.id, TaskStatus::Failed).await;
+        let path = latest.detail.as_ref().unwrap()["output_path"]
+            .as_str()
+            .unwrap();
+        tokio::fs::remove_file(path).await.unwrap();
+
+        let output = runtime.task_output(&task.id, false, 0).await.unwrap();
+        assert!(output.task.output_preview.contains("summary survives"));
+        assert!(output.task.artifacts.is_empty());
+        assert_eq!(output.task.output_artifact, None);
+        assert!(!output
+            .task
+            .failure_artifact
+            .unwrap()
+            .metadata
+            .contains_key("output_path"));
     }
 
     #[tokio::test]
@@ -2963,7 +3040,7 @@ mod tests {
                 .as_ref()
                 .and_then(|command| command.output_path.as_ref())
                 .map(String::as_str),
-            Some(resolved.output_path.to_string_lossy().as_ref())
+            None
         );
     }
 

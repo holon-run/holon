@@ -239,12 +239,22 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
             let response = client.control_prompt(&agent, text).await?;
             print_json(&serde_json::to_value(response)?)
         }
-        Commands::Tail { limit, agent } => {
+        Commands::Tail { options, agent } => {
             let client = LocalClient::new(config)?;
             let agent = resolve_agent_id(&client, agent).await?;
-            print_json(&serde_json::to_value(
-                client.agent_briefs(&agent, limit).await?,
-            )?)
+            if !options.include_progress && !options.follow {
+                print_json(&serde_json::to_value(
+                    client.agent_briefs(&agent, options.limit).await?,
+                )?)
+            } else {
+                holon::tail::observe(
+                    &client,
+                    &agent,
+                    &options,
+                    &mut holon::tail::stdout::Stdout::new()?,
+                )
+                .await
+            }
         }
         Commands::Transcript { limit, agent } => {
             let client = LocalClient::new(config)?;
