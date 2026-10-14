@@ -64,8 +64,8 @@ describe("SearchPage canonical source navigation", () => {
     }
   });
 
-  it("keeps non-conversation sources viewable without advertising precise location", async () => {
-    const sourceRef = "task:task-1";
+  it.each(["task:task-1", "turn:turn-1", "tool_execution:exec-1:output:batch:0"])(
+    "keeps source-only %s viewable without advertising precise location", async (sourceRef) => {
     const view = await mount([hit(sourceRef, 42)]);
     try {
       expect([...view.container.querySelectorAll("button")].some((button) => button.textContent?.startsWith("Locate"))).toBe(false);

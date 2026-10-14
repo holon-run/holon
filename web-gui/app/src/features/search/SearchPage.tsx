@@ -507,8 +507,6 @@ export function searchLocateLabel(result: SearchResultItem): string | undefined 
   if (!sourceRef) return undefined;
   if (/^message:.+/.test(sourceRef)) return "searchPage.locateMessage";
   if (/^brief:.+/.test(sourceRef)) return "searchPage.locateBrief";
-  if (/^turn:.+/.test(sourceRef)) return "searchPage.locateTurn";
-  if (/^tool_execution:.+/.test(sourceRef)) return "searchPage.locateExecution";
   return undefined;
 }
 

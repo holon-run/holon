@@ -123,13 +123,11 @@ describe("searchLocateLabel", () => {
   it.each([
     ["message:msg-1", "searchPage.locateMessage"],
     ["brief:brief-1", "searchPage.locateBrief"],
-    ["turn:turn-1", "searchPage.locateTurn"],
-    ["tool_execution:exec-1:output:batch:0", "searchPage.locateExecution"],
   ])("offers canonical location for %s without an event sequence", (sourceRef, label) => {
     expect(searchLocateLabel(result(sourceRef))).toBe(label);
   });
 
-  it.each(["task:task-1", "work_item:work-1", "episode:ep-1", "agent_memory:self", "message:", "unknown:record"])(
+  it.each(["turn:turn-1", "tool_execution:exec-1:output:batch:0", "task:task-1", "work_item:work-1", "episode:ep-1", "agent_memory:self", "message:", "unknown:record"])(
     "does not advertise precise conversation location for %s",
     (sourceRef) => expect(searchLocateLabel(result(sourceRef, 42))).toBeUndefined(),
   );
