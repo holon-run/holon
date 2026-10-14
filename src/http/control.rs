@@ -1,9 +1,29 @@
 use super::*;
-use crate::{daemon::RuntimeStatusResponse, runtime_db::RuntimeDbProtectionStatus};
+use crate::{
+    config::ApiPromptConfigFile, daemon::RuntimeStatusResponse,
+    runtime_db::RuntimeDbProtectionStatus,
+};
 use anyhow::Context as _;
 
-pub(crate) const MAX_CONTROL_PROMPT_IMAGE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
-pub(crate) const MAX_CONTROL_PROMPT_FILE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+pub(crate) async fn prompt_body_limit(
+    State(state): State<Arc<AppState>>,
+    mut request: AxumRequest<Body>,
+    next: Next,
+) -> AxumResponse {
+    use tower::{Layer, ServiceExt};
+
+    let limits = state.host.config().stored_config.api.prompt.clone();
+    let body_max_bytes = limits.body_max_bytes();
+    request.extensions_mut().insert(limits);
+    match DefaultBodyLimit::max(body_max_bytes)
+        .layer(next)
+        .oneshot(request)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    }
+}
 const MAX_TRACE_SEARCH_RESULTS: usize = 100;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema, Default)]
@@ -602,6 +622,7 @@ fn is_runtime_mutable_config_key(key: &str) -> bool {
             | "api.cors.allow_credentials"
             | "api.cors.max_age_seconds"
             | "api.csrf.trusted_origins"
+            | "api.prompt.attachment_max_bytes"
             | "model.default"
             | "model.route_options"
             | "model.fallbacks"
@@ -1284,6 +1305,7 @@ pub async fn reset_callback(
 pub async fn control_prompt(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
+    axum::Extension(limits): axum::Extension<ApiPromptConfigFile>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<ControlPromptRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
@@ -1313,8 +1335,12 @@ pub async fn control_prompt(
     let semantic_content = serde_json::to_value(&request)
         .map_err(anyhow::Error::from)
         .map_err(error_response)?;
-    let materialized = control_prompt_text_with_attachments(&runtime.agent_home(), request)
-        .map_err(|err| bad_request(err.to_string()))?;
+    let materialized = control_prompt_text_with_attachments(
+        &runtime.agent_home(),
+        request,
+        limits.attachment_max_bytes(),
+    )
+    .map_err(|err| bad_request(err.to_string()))?;
     let text = materialized.text;
     let created_attachment_paths = materialized.created_paths;
     let admission_context = control_admission_context(&state);
@@ -1443,6 +1469,7 @@ struct MaterializedControlPrompt {
 fn control_prompt_text_with_attachments(
     agent_home: &std::path::Path,
     request: ControlPromptRequest,
+    max_attachment_bytes: u64,
 ) -> Result<MaterializedControlPrompt> {
     if request.attachments.is_empty() {
         return Ok(MaterializedControlPrompt {
@@ -1471,7 +1498,7 @@ fn control_prompt_text_with_attachments(
                         "image",
                         position,
                         &data_base64,
-                        MAX_CONTROL_PROMPT_IMAGE_ATTACHMENT_BYTES,
+                        max_attachment_bytes,
                     )?;
                     let extension = image_extension_for_media_type(&media_type)
                         .ok_or_else(|| anyhow!("unsupported image media type: {media_type}"))?;
@@ -1502,7 +1529,7 @@ fn control_prompt_text_with_attachments(
                         "file",
                         position,
                         &data_base64,
-                        MAX_CONTROL_PROMPT_FILE_ATTACHMENT_BYTES,
+                        max_attachment_bytes,
                     )?;
                     let extension = file_extension_for_attachment(name.as_deref(), &media_type);
                     let written = write_control_prompt_attachment(
@@ -1822,6 +1849,9 @@ mod tests {
         assert!(is_runtime_mutable_config_key("decision.model"));
         assert!(is_runtime_mutable_config_key("decision.local_onnx.preset"));
         assert!(is_runtime_mutable_config_key("api.csrf.trusted_origins"));
+        assert!(is_runtime_mutable_config_key(
+            "api.prompt.attachment_max_bytes"
+        ));
         assert!(!is_runtime_mutable_config_key("runtime.scheduler"));
     }
 
@@ -1869,6 +1899,7 @@ mod tests {
                 )],
                 client_request_id: None,
             },
+            crate::config::DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES,
         )
         .unwrap()
         .text;
@@ -1898,6 +1929,7 @@ mod tests {
                 })],
                 client_request_id: None,
             },
+            crate::config::DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES,
         )
         .unwrap()
         .text;
@@ -1948,10 +1980,72 @@ mod tests {
                 })],
                 client_request_id: None,
             },
+            crate::config::DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES,
         )
         .unwrap_err();
 
         assert!(error.to_string().contains("file attachment 1 is empty"));
+    }
+
+    #[test]
+    fn prompt_attachments_honor_configured_limit_and_cleanup_on_failure() {
+        for kind in ["image", "file"] {
+            let attachment = |bytes: &[u8]| {
+                if kind == "image" {
+                    ControlPromptAttachment::Image(ControlPromptImageAttachment {
+                        name: Some("test.png".into()),
+                        media_type: "image/png".into(),
+                        data_base64: encoded(bytes),
+                    })
+                } else {
+                    ControlPromptAttachment::File(ControlPromptFileAttachment {
+                        name: Some("test.txt".into()),
+                        media_type: "text/plain".into(),
+                        data_base64: encoded(bytes),
+                    })
+                }
+            };
+            let request = |attachments| ControlPromptRequest {
+                text: String::new(),
+                work_item_id: None,
+                attachments,
+                client_request_id: None,
+            };
+            let home = tempfile::tempdir().unwrap();
+            let accepted = control_prompt_text_with_attachments(
+                home.path(),
+                request(vec![attachment(b"abc")]),
+                3,
+            )
+            .unwrap();
+            assert_eq!(std::fs::read(&accepted.created_paths[0]).unwrap(), b"abc");
+            remove_materialized_control_prompt_attachments(&accepted.created_paths);
+
+            let error = control_prompt_text_with_attachments(
+                home.path(),
+                request(vec![attachment(b"abc"), attachment(b"abcd")]),
+                3,
+            )
+            .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains(&format!("{kind} attachment 2 exceeds 3 bytes")));
+            assert!(inbox_files(home.path()).is_empty());
+        }
+    }
+
+    #[test]
+    fn prompt_attachment_default_accepts_64_mib_and_rejects_one_byte_more() {
+        let max_bytes = crate::config::DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES;
+        for size in [max_bytes, max_bytes + 1] {
+            let data = encoded(&vec![b'x'; size as usize]);
+            let result = decode_control_prompt_attachment("file", 1, &data, max_bytes);
+            if size == max_bytes {
+                assert_eq!(result.unwrap().len() as u64, max_bytes);
+            } else {
+                assert!(result.unwrap_err().to_string().contains("exceeds"));
+            }
+        }
     }
 
     #[test]
@@ -1969,6 +2063,7 @@ mod tests {
                 })],
                 client_request_id: None,
             },
+            crate::config::DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES,
         )
         .unwrap();
 

@@ -2737,6 +2737,7 @@ fn schema_contains_expected_keys() {
     assert!(keys.contains(&"model.unknown_fallback"));
     assert!(keys.contains(&"api.projection.max_leaders"));
     assert!(keys.contains(&"api.projection.cache_ttl_ms"));
+    assert!(keys.contains(&"api.prompt.attachment_max_bytes"));
     assert!(keys.contains(&"providers.<id>.endpoints.<endpoint_id>.transport"));
     assert!(keys.contains(&"providers.<id>.endpoints.<endpoint_id>.base_url"));
     assert!(keys.contains(&"providers.<id>.plans.<plan_id>.endpoint"));
@@ -2789,6 +2790,64 @@ fn api_projection_config_round_trips_and_validates() {
     let mut invalid = HolonConfigFile::default();
     assert!(set_config_key(&mut invalid, "api.projection.max_leaders", "0").is_err());
     assert!(set_config_key(&mut invalid, "api.projection.cache_ttl_ms", "0").is_err());
+}
+
+#[test]
+fn api_prompt_config_defaults_and_round_trips() {
+    let mut config = HolonConfigFile::default();
+    assert_eq!(config.api.prompt.attachment_max_bytes(), 64 * 1024 * 1024);
+    assert_eq!(config.api.prompt.body_max_bytes(), 128 * 1024 * 1024);
+    assert_eq!(
+        config_schema()
+            .into_iter()
+            .find(|entry| entry.key == "api.prompt.attachment_max_bytes")
+            .unwrap()
+            .default,
+        json!(64 * 1024 * 1024)
+    );
+    assert!(config.api.is_empty());
+
+    set_config_key(&mut config, "api.prompt.attachment_max_bytes", "134217728").unwrap();
+    assert_eq!(
+        get_config_key(&config, "api.prompt.attachment_max_bytes").unwrap(),
+        json!(128 * 1024 * 1024)
+    );
+    assert_eq!(config.api.prompt.body_max_bytes(), 256 * 1024 * 1024);
+    assert!(!config.api.is_empty());
+    let restored: HolonConfigFile =
+        serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+    assert_eq!(restored.api.prompt, config.api.prompt);
+
+    set_config_key(&mut config, "api.prompt.attachment_max_bytes", "3").unwrap();
+    assert_eq!(config.api.prompt.body_max_bytes(), 32 * 1024 * 1024);
+    unset_config_key(&mut config, "api.prompt.attachment_max_bytes").unwrap();
+    assert_eq!(
+        get_config_key(&config, "api.prompt.attachment_max_bytes").unwrap(),
+        Value::Null
+    );
+    assert_eq!(config.api.prompt.attachment_max_bytes(), 64 * 1024 * 1024);
+    assert!(config.api.is_empty());
+}
+
+#[test]
+fn api_prompt_config_rejects_invalid_and_overflowing_limits() {
+    for value in ["0", "-1", "1.5", "64m", "18446744073709551615"] {
+        let mut config = HolonConfigFile::default();
+        assert!(set_config_key(&mut config, "api.prompt.attachment_max_bytes", value).is_err());
+        assert!(config.api.prompt.is_empty());
+    }
+    for value in [0, u64::MAX] {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("config.json"),
+            json!({"api": {"prompt": {"attachment_max_bytes": value}}}).to_string(),
+        )
+        .unwrap();
+        let error = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("api.prompt.attachment_max_bytes"));
+    }
 }
 
 #[test]

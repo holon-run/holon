@@ -140,6 +140,8 @@ impl XSearchConfigFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct ApiConfigFile {
+    #[serde(default, skip_serializing_if = "ApiPromptConfigFile::is_empty")]
+    pub prompt: ApiPromptConfigFile,
     #[serde(default, skip_serializing_if = "ApiCorsConfigFile::is_empty")]
     pub cors: ApiCorsConfigFile,
     #[serde(default, skip_serializing_if = "ApiCsrfConfigFile::is_empty")]
@@ -150,7 +152,36 @@ pub struct ApiConfigFile {
 
 impl ApiConfigFile {
     pub fn is_empty(&self) -> bool {
-        self.cors.is_empty() && self.csrf.is_empty() && self.projection.is_empty()
+        self.prompt.is_empty()
+            && self.cors.is_empty()
+            && self.csrf.is_empty()
+            && self.projection.is_empty()
+    }
+}
+
+pub const DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ApiPromptConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_max_bytes: Option<u64>,
+}
+
+impl ApiPromptConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.attachment_max_bytes.is_none()
+    }
+
+    pub fn attachment_max_bytes(&self) -> u64 {
+        self.attachment_max_bytes
+            .unwrap_or(DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES)
+    }
+
+    pub fn body_max_bytes(&self) -> usize {
+        // Keep the original text budget and allow room for Base64 and JSON.
+        (self.attachment_max_bytes() as usize)
+            .saturating_mul(2)
+            .max(32 * 1024 * 1024)
     }
 }
 

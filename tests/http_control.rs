@@ -51,6 +51,7 @@ http_async_tests!(
     control_prompt_requires_bearer_token_for_non_loopback_auto,
     control_prompt_records_message_admission_fields,
     control_prompt_is_idempotent_for_native_clients,
+    control_prompt_attachment_limits_apply_after_config_reload,
     control_prompt_attributes_oidc_user_identity,
     control_prompt_local_credentials_keep_control_identity,
     auth_native_session_exchange_returns_reusable_session_and_logout_revokes_it,

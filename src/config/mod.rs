@@ -183,6 +183,7 @@ impl AppConfig {
         validate_api_cors_config(&stored_config.api.cors)?;
         validate_api_csrf_config(&stored_config.api.csrf)?;
         validate_api_projection_config(&stored_config.api.projection)?;
+        validate_api_prompt_config(&stored_config.api.prompt)?;
         let credential_store_path = credential_store_path(&home_dir);
         let credential_store =
             if config_uses_credential_profiles(&stored_config) || credential_store_path.exists() {
