@@ -104,8 +104,8 @@ order: 4
   Why while(true) loops fail in production software engineering. Drawing from OS history—from busy-waiting to hardware interrupts and epoll—we explore durable wait-wake scheduling, decoupled work state, and causal contexts for long-lived autonomous agents.
   <!-- mdorigin:index kind=article -->
 
-- [Guaranteeing Quality in AI Delivery Pipelines: Our Four-Layer Verification Defense in Real-World Engineering](./ai-delivery-quality-and-verification.md)
-  AI generates code at unprecedented speed, but the real crisis is software nobody dares deploy. Drawing from Holon and a production project spanning Node.js services, cross-platform apps, and audio hardware protocols, we break down how role separation, automated incident investigation, live instance patrols, and agent-guarded E2E testing resolve the verification deficit.
+- [How to Guarantee Quality in AI Delivery Pipelines: Four Layers of Verification and Acceptance in Real-World Engineering](./ai-delivery-quality-and-verification.md)
+  Code generation is faster than ever, but software nobody dares deploy remains the real bottleneck. Drawing from an engineering team adopting Holon across cross-platform apps and hardware protocols, this article explores four pragmatic verification layers: role separation, automated incident triage, continuous instance patrols, and self-healing E2E testing.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->
