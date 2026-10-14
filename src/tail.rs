@@ -483,6 +483,7 @@ async fn observe_inner<W: AsyncWrite + Unpin>(
                 page.binding == projection.binding,
                 "conversation detail binding changed"
             );
+            state.snapshot_truncated |= page.has_more || page.coverage != DetailCoverage::Complete;
             if page.coverage != DetailCoverage::Complete {
                 state.activity_coverage = Some(page.coverage);
                 state.reset_reason = Some("activity_coverage_unavailable".into());
@@ -500,7 +501,6 @@ async fn observe_inner<W: AsyncWrite + Unpin>(
                     // watermarks. Resume exposes bounded upserts with explicit
                     // unknown prior coverage, never promises lossless replay.
                     state.resume_coverage_unknown = true;
-                    state.snapshot_truncated = true;
                 }
             }
             if let Some(head) = page.activities.iter().map(activity_seq).max() {

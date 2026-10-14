@@ -3,6 +3,7 @@ mod support;
 use anyhow::Result;
 use holon::{
     client::LocalClient,
+    config::ControlAuthMode,
     tail::{observe, TailOptions},
     types::{
         brief_created_event_for, AuditEvent, AuthorityClass, BriefKind, BriefRecord,
@@ -20,7 +21,12 @@ static REAL_SERVER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn active_private_agent_supports_conversation_brief_and_status_reads() -> Result<()> {
     let _guard = REAL_SERVER.lock().await;
-    let (host, base, server) = support::spawn_server().await?;
+    let test_config = support::TestConfigBuilder::new()
+        .with_control_auth_mode(ControlAuthMode::Required)
+        .with_control_token("private-read-token")
+        .build();
+    let (host, base, server) =
+        support::spawn_server_with_config(test_config.config().clone()).await?;
     seed(&host)?;
     host.runtime_db().transaction(|tx| {
         tx.execute(
@@ -29,7 +35,56 @@ async fn active_private_agent_supports_conversation_brief_and_status_reads() -> 
         )?;
         Ok(())
     })?;
-    let client = LocalClient::remote(host.config().as_ref().clone(), base, "test-token")?;
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()?;
+    for token in [None, Some("wrong-token"), Some("private-read-token")] {
+        let expected = if token == Some("private-read-token") {
+            reqwest::StatusCode::OK
+        } else {
+            reqwest::StatusCode::UNAUTHORIZED
+        };
+        for path in [
+            "/api/agents/default",
+            "/api/agents/default/status",
+            "/api/agents/default/briefs",
+            "/api/agents/default/briefs/legacy-brief",
+            "/api/agents/default/conversation",
+            "/api/agents/default/turns/active/activities",
+            "/api/agents/default/conversation/stream",
+        ] {
+            let mut request = http.get(format!("{base}{path}"));
+            if let Some(token) = token {
+                request = request.bearer_auth(token);
+            }
+            assert_eq!(
+                request.send().await?.status(),
+                expected,
+                "GET {path}, token={token:?}"
+            );
+        }
+        for (path, body) in [
+            (
+                "/api/agents/default/briefs:batchGet",
+                json!({"brief_ids": ["legacy-brief"]}),
+            ),
+            (
+                "/api/agents/default/conversation/locate",
+                json!({"source_ref": "message:input", "limit": 1}),
+            ),
+        ] {
+            let mut request = http.post(format!("{base}{path}")).json(&body);
+            if let Some(token) = token {
+                request = request.bearer_auth(token);
+            }
+            let response = request.send().await?;
+            assert_eq!(response.status(), expected, "POST {path}, token={token:?}");
+            if expected == reqwest::StatusCode::OK && path.ends_with("/locate") {
+                assert_eq!(response.json::<Value>().await?["status"], "located");
+            }
+        }
+    }
+    let client = LocalClient::remote(host.config().as_ref().clone(), base, "private-read-token")?;
     assert_eq!(
         client.get_agent_compact("default").await?.agent.id,
         "default"
@@ -395,6 +450,14 @@ async fn long_turn_resume_exposes_a_bounded_window_not_a_false_gap() -> Result<(
     assert_eq!(end["resume_coverage_unknown"], true);
     assert_eq!(end["snapshot_truncated"], true);
     assert!(end["reset_reason"].is_null());
+    follow.max_events = 1;
+    output.clear();
+    observe(&client, "default", &follow, &mut output).await?;
+    let lines = records(&output);
+    let end = lines.last().unwrap();
+    assert_eq!(end["stop_reason"], "budget");
+    assert_eq!(end["record_count"], 0);
+    assert_eq!(end["cursor"], snapshot["snapshot_cursor"]);
     server.abort();
     host.shutdown().await?;
     Ok(())
@@ -432,7 +495,90 @@ async fn missing_canonical_activity_reports_coverage_and_does_not_advance_follow
     let end = lines.last().unwrap();
     assert_eq!(end["stop_reason"], "reset_required");
     assert_eq!(end["reset_reason"], "activity_coverage_unavailable");
+    assert_eq!(end["snapshot_truncated"], true);
     assert_eq!(end["cursor"], snapshot["snapshot_cursor"]);
+    server.abort();
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn follow_accumulates_truncation_after_an_untruncated_bootstrap() -> Result<()> {
+    use std::{
+        io,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+    use tokio::io::AsyncWrite;
+
+    struct AppendAfterBootstrap<'a> {
+        host: &'a holon::host::RuntimeHost,
+        output: Vec<u8>,
+        appended: bool,
+    }
+
+    impl AsyncWrite for AppendAfterBootstrap<'_> {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            data: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let marker = b"canonical brief body";
+            if !self.appended && data.windows(marker.len()).any(|part| part == marker) {
+                self.appended = true;
+                // Bootstrap has observed the old head. Append before stream
+                // attachment so hydration is truncated but still overlaps it.
+                for index in 0..60 {
+                    if let Err(error) = append_progress(
+                        self.host,
+                        &format!("late-{index}"),
+                        &format!("late progress {index}"),
+                    ) {
+                        return Poll::Ready(Err(io::Error::other(error.to_string())));
+                    }
+                }
+            }
+            self.output.extend_from_slice(data);
+            Poll::Ready(Ok(data.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    let _guard = REAL_SERVER.lock().await;
+    let (host, base, server) = support::spawn_server().await?;
+    seed(&host)?;
+    for index in 0..50 {
+        append_progress(
+            &host,
+            &format!("old-{index}"),
+            &format!("old progress {index}"),
+        )?;
+    }
+    let client = LocalClient::remote(host.config().as_ref().clone(), base, "test-token")?;
+    let mut follow = options();
+    follow.follow = true;
+    follow.max_events = 200;
+    follow.max_bytes = 262144;
+    let mut output = AppendAfterBootstrap {
+        host: &host,
+        output: Vec::new(),
+        appended: false,
+    };
+    observe(&client, "default", &follow, &mut output).await?;
+    let lines = records(&output.output);
+    assert!(lines.iter().any(|line| line["text"] == "late progress 59"));
+    let end = lines.last().unwrap();
+    assert_eq!(end["stop_reason"], "timeout");
+    assert_eq!(end["snapshot_truncated"], true);
+    assert_eq!(end["resume_coverage_unknown"], false);
+    assert!(end["reset_reason"].is_null());
     server.abort();
     host.shutdown().await?;
     Ok(())
