@@ -218,66 +218,82 @@ fn load_reply_routes_tx(
             return Ok(None);
         }
     }
-    let replay_source = if let (Some(replay), Some(prior_id)) =
-        (&turn.replay, &attempt.recovery_of_attempt_id)
-    {
-        let prior = tx
-            .query_row(
-                "SELECT payload_json FROM execution_protocol_attempts
+    let replay_source =
+        if let (Some(replay), Some(prior_id)) = (&turn.replay, &attempt.recovery_of_attempt_id) {
+            let prior = tx
+                .query_row(
+                    "SELECT payload_json FROM execution_protocol_attempts
                  WHERE agent_id = ?1 AND attempt_id = ?2",
-                params![agent_id, prior_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| serde_json::from_str::<ExecutionAttempt>(&payload))
-            .transpose()?;
-        if prior.as_ref().is_some_and(|prior| {
-            prior.state == ExecutionAttemptState::Interrupted
-                && prior.agent_id == agent_id
-                && prior.source_message_id.as_deref() == Some(replay.source_message_id.as_str())
-                && attempt.source_message_id == prior.source_message_id
-                && prior.binding == attempt.binding
-        }) {
-            tx.query_row(
-                "SELECT payload_json FROM turn_records WHERE agent_id = ?1 AND turn_id = ?2",
-                params![agent_id, replay.source_turn_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| serde_json::from_str::<TurnRecord>(&payload))
-            .transpose()?
-            .filter(|source| {
-                source.agent_id == agent_id
-                    && source.turn_id == replay.source_turn_id
-                    && prior
-                        .as_ref()
-                        .is_some_and(|prior| match prior.turn_id.as_deref() {
-                            Some(turn_id) => turn_id == source.turn_id,
-                            None => source.idle_input_batch.as_ref().is_some_and(|batch| {
-                                // Admission can precede the live turn assignment.
-                                // The original snapshot binds that turn to the predecessor.
-                                batch.activation_id.as_deref() == Some(prior.attempt_id.as_str())
-                                    && batch.anchor_message_id == binding.source_message_id
-                                    && batch.items.first().map(|item| item.message_id.as_str())
-                                        == Some(binding.source_message_id.as_str())
-                                    && source
-                                        .trigger
-                                        .as_ref()
-                                        .and_then(|trigger| trigger.message_id.as_deref())
-                                        == Some(binding.source_message_id.as_str())
-                            }),
+                    params![agent_id, prior_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| serde_json::from_str::<ExecutionAttempt>(&payload))
+                .transpose()?;
+            if prior.as_ref().is_some_and(|prior| {
+                prior.state == ExecutionAttemptState::Interrupted
+                    && prior.agent_id == agent_id
+                    && prior.source_message_id.as_deref() == Some(replay.source_message_id.as_str())
+                    && attempt.source_message_id == prior.source_message_id
+                    && prior.binding == attempt.binding
+            }) {
+                let anchor = tx
+                    .query_row(
+                        "SELECT payload_json FROM messages WHERE agent_id = ?1 AND message_id = ?2",
+                        params![agent_id, binding.source_message_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .map(|payload| serde_json::from_str::<MessageEnvelope>(&payload))
+                    .transpose()?;
+                tx.query_row(
+                    "SELECT payload_json FROM turn_records WHERE agent_id = ?1 AND turn_id = ?2",
+                    params![agent_id, replay.source_turn_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| serde_json::from_str::<TurnRecord>(&payload))
+                .transpose()?
+                .filter(|source| {
+                    source.agent_id == agent_id
+                        && source.turn_id == replay.source_turn_id
+                        && prior.as_ref().is_some_and(|prior| {
+                            match source.idle_input_batch.as_ref() {
+                                Some(batch) => {
+                                    // Replays retain the anchor's ingress stamp, not the live turn.
+                                    // Only the predecessor's admitted snapshot proves attachment.
+                                    (prior.turn_id.as_deref() == Some(source.turn_id.as_str())
+                                        || prior.turn_id.is_none()
+                                        || anchor.as_ref().is_some_and(|anchor| {
+                                            anchor.agent_id == agent_id
+                                                && anchor.id == binding.source_message_id
+                                                && anchor.turn_id == prior.turn_id
+                                        }))
+                                        && batch.activation_id.as_deref()
+                                            == Some(prior.attempt_id.as_str())
+                                        && batch.anchor_message_id == binding.source_message_id
+                                        && batch.items.first().map(|item| item.message_id.as_str())
+                                            == Some(binding.source_message_id.as_str())
+                                        && source
+                                            .trigger
+                                            .as_ref()
+                                            .and_then(|trigger| trigger.message_id.as_deref())
+                                            == Some(binding.source_message_id.as_str())
+                                }
+                                None => prior.turn_id.as_deref() == Some(source.turn_id.as_str()),
+                            }
                         })
-                    && source.effective_owner() == turn.effective_owner()
-                    && source
-                        .input_message_ids
-                        .contains(&binding.source_message_id)
-            })
+                        && source.effective_owner() == turn.effective_owner()
+                        && source
+                            .input_message_ids
+                            .contains(&binding.source_message_id)
+                })
+            } else {
+                None
+            }
         } else {
             None
-        }
-    } else {
-        None
-    };
+        };
     let mut routes = Vec::new();
     let mut latest_input_routed = false;
     for message_id in &turn.input_message_ids {
@@ -1383,16 +1399,27 @@ mod tests {
         forward: bool,
         key: &str,
     ) -> Result<crate::runtime::PreparedAgentMessageDelivery> {
+        prepare_reply_in_turn(db, "routing-turn", target, selector, forward, key)
+    }
+
+    fn prepare_reply_in_turn(
+        db: &RuntimeDb,
+        turn_id: &str,
+        target: &str,
+        selector: Option<&str>,
+        forward: bool,
+        key: &str,
+    ) -> Result<crate::runtime::PreparedAgentMessageDelivery> {
         let context = db.agent_message_deliveries().resolve_reply_context(
             "caller-agent",
-            Some("routing-turn"),
+            Some(turn_id),
             selector,
             target,
             forward,
         )?;
         let mut caller = peer_caller();
         caller.route = "agent_message".into();
-        caller.current_turn_id = Some("routing-turn".into());
+        caller.current_turn_id = Some(turn_id.into());
         caller.current_task_id = None;
         caller.current_work_item_id = None;
         caller.inherited_routing_context = context
@@ -1975,6 +2002,306 @@ mod tests {
                 );
             } else {
                 assert!(result.is_err(), "{defect}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reply_selector_retains_ingress_routes_across_two_interrupted_replays() -> Result<()> {
+        use crate::domain::execution_protocol::{
+            admit_execution, interrupt_execution, AdmitExecution, InterruptExecution,
+        };
+        use crate::types::{IdleInputBatchItem, IdleInputBatchRecord, TurnReplayProvenance};
+
+        for defect in [
+            "none",
+            "wrong_prior_turn",
+            "wrong_batch_activation",
+            "wrong_batch_anchor",
+            "wrong_batch_first_item",
+            "wrong_source_trigger",
+            "wrong_source_ref",
+            "missing_source_batch",
+            "no_recovery",
+            "no_replay",
+            "wrong_source_turn",
+            "not_readmitted",
+            "missing_claim",
+            "foreign_bound_turn",
+            "foreign_bound_attempt",
+        ] {
+            let (_dir, db) = runtime_db()?;
+            let (mut source_turn, mut inputs) = seed_reply_turn(&db, &["sender-a"])?;
+            for index in 0..2 {
+                let mut input = request(&format!("replay-input-{index}"), "batched input");
+                input.target_agent_id = "caller-agent".into();
+                input.correlation_id = Some(format!("replay-correlation-{index}"));
+                let mut sender_context = peer_caller();
+                sender_context.caller_principal = "agent:sender-a".into();
+                sender_context.caller_agent_id = Some("sender-a".into());
+                sender_context.origin = inputs[0].origin.clone();
+                let mut prepared = AgentMessageDeliveryService::prepare(input, sender_context)?;
+                prepared.message.turn_id = Some(format!("follower-ingress-{index}"));
+                let admitted = db
+                    .transitions()
+                    .commit_delivery_admission(&admission_command(&prepared), &prepared.record)?;
+                assert_eq!(
+                    admitted.delivery_receipt.unwrap().outcome,
+                    AgentMessageDeliveryOutcome::Accepted
+                );
+                inputs.push(
+                    db.messages()
+                        .by_id(Some("caller-agent"), &prepared.message.id)?
+                        .unwrap(),
+                );
+            }
+            source_turn.input_message_ids = inputs.iter().map(|input| input.id.clone()).collect();
+            source_turn.idle_input_batch = Some(IdleInputBatchRecord {
+                anchor_message_id: inputs[0].id.clone(),
+                activation_id: Some("routing-activation".into()),
+                sender_agent_id: "sender-a".into(),
+                cutoff: Utc::now(),
+                max_items: 8,
+                max_bytes: 24 * 1024,
+                rendered_bytes: 3,
+                items: inputs
+                    .iter()
+                    .map(|input| IdleInputBatchItem {
+                        message_id: input.id.clone(),
+                        source_ref: format!("message:{}", input.id),
+                        rendered: "input".into(),
+                    })
+                    .collect(),
+            });
+            for input in &inputs[1..] {
+                let mut claimed = db.queue_entries().latest(&input.id)?.unwrap();
+                claimed.status = QueueEntryStatus::Interjected;
+                db.transitions().commit_queue(&QueueTransitionCommand {
+                    agent_id: "caller-agent".into(),
+                    operation: QueueOperation::Interject,
+                    mutation: QueueMutation::Consume(claimed),
+                    scheduler_claim_work_item: None,
+                    agent_state: None,
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    turn_record: Some(source_turn.clone()),
+                    audit_events: Vec::new(),
+                    notify_scheduler: false,
+                    fault: None,
+                    brief_evidence: Vec::new(),
+                })?;
+            }
+            let mut execution = db
+                .transitions()
+                .load_execution_protocol_state_if_initialized("caller-agent")?
+                .unwrap();
+            let mut template = execution.attempts.remove("routing-activation").unwrap();
+            // Scheduler admission copies the durable anchor's ingress stamp.
+            template.turn_id = inputs[0].turn_id.clone();
+            execution = admit_execution(
+                &execution,
+                &AdmitExecution {
+                    attempt: template.clone(),
+                },
+            )
+            .map_err(anyhow::Error::msg)?
+            .state;
+            for replay_index in 1..=2 {
+                let prior_id = source_turn
+                    .idle_input_batch
+                    .as_ref()
+                    .unwrap()
+                    .activation_id
+                    .clone()
+                    .unwrap();
+                execution = interrupt_execution(
+                    &execution,
+                    &InterruptExecution {
+                        attempt_id: prior_id.clone(),
+                        outcome_id: format!("interrupted-route-{replay_index}"),
+                        reason: "restart".into(),
+                        interrupted_at: Utc::now().to_rfc3339(),
+                    },
+                )
+                .map_err(anyhow::Error::msg)?
+                .state;
+                // Restart persists interruption before scheduler readmission.
+                db.transaction(|tx| {
+                    crate::runtime_db::transitions::persist_state_tx(tx, &execution)
+                })?;
+                let mut attempt = template.clone();
+                attempt.attempt_id = format!("recovered-activation-{replay_index}");
+                attempt.recovery_of_attempt_id = Some(prior_id.clone());
+                execution = admit_execution(
+                    &execution,
+                    &AdmitExecution {
+                        attempt: attempt.clone(),
+                    },
+                )
+                .map_err(anyhow::Error::msg)?
+                .state;
+                assert_eq!(execution.attempts[&prior_id].turn_id, inputs[0].turn_id);
+                assert_eq!(attempt.turn_id, inputs[0].turn_id);
+                if replay_index == 2 {
+                    assert_ne!(
+                        execution.attempts[&prior_id].turn_id.as_deref(),
+                        Some(source_turn.turn_id.as_str())
+                    );
+                }
+                let mut replay = TurnRecord::new(
+                    "caller-agent",
+                    format!("recovered-turn-{replay_index}"),
+                    replay_index + 1,
+                );
+                replay.trigger = source_turn.trigger.clone();
+                // A turn's trigger is immutable after its first persistence.
+                if replay_index == 1 && defect == "wrong_source_trigger" {
+                    replay.trigger =
+                        Some(crate::types::TurnTriggerSummary::from_message(&inputs[1]));
+                }
+                replay.input_message_ids = source_turn.input_message_ids.clone();
+                replay.idle_input_batch = source_turn.idle_input_batch.clone();
+                replay.idle_input_batch.as_mut().unwrap().activation_id =
+                    Some(attempt.attempt_id.clone());
+                replay.replay = Some(TurnReplayProvenance {
+                    source_message_id: inputs[0].id.clone(),
+                    source_turn_id: source_turn.turn_id.clone(),
+                    reason: "interrupted_queue_claim_reentry".into(),
+                    prior_terminal: None,
+                });
+                if replay_index == 2 {
+                    match defect {
+                        "wrong_prior_turn" => {
+                            execution.attempts.get_mut(&prior_id).unwrap().turn_id =
+                                Some("foreign-turn".into());
+                        }
+                        "wrong_batch_activation" => {
+                            source_turn.idle_input_batch.as_mut().unwrap().activation_id =
+                                Some("foreign-activation".into());
+                        }
+                        "wrong_batch_anchor" => {
+                            source_turn
+                                .idle_input_batch
+                                .as_mut()
+                                .unwrap()
+                                .anchor_message_id = inputs[1].id.clone();
+                        }
+                        "wrong_batch_first_item" => {
+                            source_turn
+                                .idle_input_batch
+                                .as_mut()
+                                .unwrap()
+                                .items
+                                .swap(0, 1);
+                        }
+                        "wrong_source_ref" => {
+                            source_turn.idle_input_batch.as_mut().unwrap().items[2].source_ref =
+                                "message:foreign".into();
+                        }
+                        "missing_source_batch" => source_turn.idle_input_batch = None,
+                        "no_recovery" => {
+                            execution
+                                .attempts
+                                .get_mut(&attempt.attempt_id)
+                                .unwrap()
+                                .recovery_of_attempt_id = None;
+                        }
+                        "no_replay" => replay.replay = None,
+                        "wrong_source_turn" => {
+                            replay.replay.as_mut().unwrap().source_turn_id = "routing-turn".into();
+                        }
+                        "not_readmitted" => {
+                            replay.input_message_ids.pop();
+                        }
+                        "missing_claim" => {
+                            let mut queue = db.queue_entries().latest(&inputs[2].id)?.unwrap();
+                            queue.status = QueueEntryStatus::Queued;
+                            db.queue_entries().upsert(&queue)?;
+                        }
+                        "foreign_bound_turn" => {
+                            db.turn_records().upsert(&TurnRecord::new(
+                                "caller-agent",
+                                inputs[2].turn_id.as_deref().unwrap(),
+                                4,
+                            ))?;
+                        }
+                        "foreign_bound_attempt" => {
+                            let mut foreign = template.clone();
+                            foreign.attempt_id = "foreign-activation".into();
+                            foreign.turn_id = inputs[2].turn_id.clone();
+                            let foreign_state = admit_execution(
+                                &crate::domain::execution_protocol::ExecutionProtocolState::empty(
+                                    "caller-agent",
+                                ),
+                                &AdmitExecution { attempt: foreign },
+                            )
+                            .map_err(anyhow::Error::msg)?
+                            .state;
+                            let foreign_state = interrupt_execution(
+                                &foreign_state,
+                                &InterruptExecution {
+                                    attempt_id: "foreign-activation".into(),
+                                    outcome_id: "foreign-interruption".into(),
+                                    reason: "restart".into(),
+                                    interrupted_at: Utc::now().to_rfc3339(),
+                                },
+                            )
+                            .map_err(anyhow::Error::msg)?
+                            .state;
+                            execution.attempts.extend(foreign_state.attempts);
+                            execution.outcomes.extend(foreign_state.outcomes);
+                        }
+                        _ => {}
+                    }
+                }
+                db.transaction(|tx| {
+                    crate::runtime_db::transitions::persist_state_tx(tx, &execution)
+                })?;
+                db.turn_records().upsert(&source_turn)?;
+                db.turn_records().upsert(&replay)?;
+                seed_reply_binding(&db, &replay.turn_id, &attempt.attempt_id, &inputs[0].id)?;
+                for (index, input) in inputs[1..].iter().enumerate() {
+                    let route = prepare_reply_in_turn(
+                        &db,
+                        &replay.turn_id,
+                        "sender-a",
+                        Some(&input.id),
+                        false,
+                        "recovered-reply",
+                    );
+                    if replay_index == 2 && defect != "none" {
+                        if index == 1 {
+                            let error = route.err().expect(defect);
+                            assert_eq!(
+                                crate::runtime_error::describe_runtime_error(&error).code,
+                                "agent_reply_context_invalid",
+                                "{defect}"
+                            );
+                        }
+                        continue;
+                    }
+                    let prepared = route?;
+                    assert_eq!(
+                        prepared.record.caller.routing_activation_id,
+                        Some(attempt.attempt_id.clone())
+                    );
+                    let route = prepared.message.routing_context.unwrap();
+                    assert_eq!(
+                        route.in_reply_to_message_id.as_deref(),
+                        Some(input.id.as_str())
+                    );
+                    assert_eq!(
+                        route.correlation_id,
+                        Some(format!("replay-correlation-{index}"))
+                    );
+                    assert_eq!(route.reply_to_agent_id.as_deref(), Some("caller-agent"));
+                    assert_eq!(
+                        prepared.message.causation_id.as_deref(),
+                        Some(input.id.as_str())
+                    );
+                }
+                source_turn = replay;
             }
         }
         Ok(())

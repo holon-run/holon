@@ -1,6 +1,7 @@
 mod agent_and_tools;
 mod contracts;
 mod input_consumption_baseline;
+mod input_consumption_budget;
 mod input_consumption_p1;
 mod input_consumption_shared_reply;
 mod message_dispatch;

@@ -380,6 +380,8 @@ impl RuntimeHandle {
             || source.work_item_id != anchor.work_item_id
             || source.created_at != anchor.created_at
             || source.kind != anchor.kind
+            || source.task_id != anchor.task_id
+            || source.priority != anchor.priority
             || source.origin != anchor.origin
             || source.authority_class != anchor.authority_class
             || source.delivery_surface != anchor.delivery_surface
@@ -428,8 +430,12 @@ impl RuntimeHandle {
         {
             return Ok(false);
         }
-        // The owner wake may outlive its original selector result, but its
-        // immutable source evidence must still match the current task fence.
+        // A command/child selector is grounded in its terminal task and result,
+        // not in a consumed agent reply. Neither kind of owner wake grants a
+        // different captured owner or bypasses the current task fence.
+        if repository.non_reply_source_matches_owner(&record)? {
+            return Ok(true);
+        }
         repository.reply_source_is_consumed_for_owner(&record)
     }
 
@@ -489,8 +495,8 @@ impl RuntimeHandle {
             .iter()
             .map(|record| record.message_id.clone())
             .collect();
-        let reply_recovery = self.idle_reply_recovery_source_valid(anchor, binding)?;
-        let scope = if is_reply_anchor || reply_recovery {
+        let result_recovery = self.idle_reply_recovery_source_valid(anchor, binding)?;
+        let scope = if is_reply_anchor || result_recovery {
             match binding.work_item_id.as_deref() {
                 Some(owner) => self.valid_receiver_scope(&anchor.agent_id, owner)?,
                 None => Some(InputScope::AgentLifecycle(anchor.agent_id.clone())),
@@ -637,7 +643,14 @@ impl RuntimeHandle {
                 }
             }
         }
-        candidates.retain(|record| record.created_at <= cutoff && record.message_id != anchor.id);
+        candidates.retain(|record| {
+            record.created_at <= cutoff
+                && (record.message_id != anchor.id
+                    || (recovering.is_some()
+                        && record.state
+                        == crate::runtime_db::task_result_settlement::TaskResultSettlementState::CallerAdmitted
+                        && record.activation_id.as_deref() == recovering))
+        });
         let mut eligible_results = Vec::new();
         let mut reply_sources = std::collections::BTreeMap::new();
         for record in candidates {
@@ -658,7 +671,9 @@ impl RuntimeHandle {
                     reply_sources.insert(record.result_identity.clone(), reply_id.to_owned());
                     eligible_results.push(record);
                 }
-            } else if message.priority == anchor.priority {
+            } else if (!result_recovery && message.priority == anchor.priority)
+                || (result_recovery && repository.non_reply_source_matches_owner(&record)?)
+            {
                 eligible_results.push(record);
             }
         }
@@ -743,10 +758,9 @@ impl RuntimeHandle {
             if admitted.len() >= result_limit || record.created_at > cutoff {
                 break;
             }
-            if record.message_id == anchor.id
-                || admitted
-                    .iter()
-                    .any(|prior| prior.result_identity == record.result_identity)
+            if admitted
+                .iter()
+                .any(|prior| prior.result_identity == record.result_identity)
             {
                 continue;
             }
@@ -789,7 +803,7 @@ impl RuntimeHandle {
             &anchor.agent_id,
             binding.work_item_id.as_deref(),
             activation_id,
-            (!is_reply_anchor).then_some(anchor.id.as_str()),
+            (!is_reply_anchor && !result_recovery).then_some(anchor.id.as_str()),
             Some(&ordinary_selection),
             cutoff,
         )?;
@@ -886,11 +900,11 @@ impl RuntimeHandle {
         // Replay metadata selects evidence, but only the canonical interrupted
         // predecessor authorizes restoring that turn's admitted snapshot.
         if let Some(replay) = &turn.replay {
-            let source = self
-                .inner
-                .storage
-                .read_turn_by_id(&replay.source_turn_id)?
-                .ok_or_else(|| anyhow!("idle input recovery source turn is missing"))?;
+            let Some(source) = self.inner.storage.read_turn_by_id(&replay.source_turn_id)? else {
+                // A claim may be interrupted before its turn is persisted.
+                // Replay alone is not evidence of an admitted input batch.
+                return Ok(false);
+            };
             let Some(mut batch) = source.idle_input_batch.clone() else {
                 return Ok(false);
             };

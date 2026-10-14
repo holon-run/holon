@@ -109,6 +109,11 @@ replacement, completion, and unique-consumption fences. Competing claimants
 cannot both attach one input. Recovery reuses durable identities and effects;
 it must not requeue an entire batch after a provider or tool effect.
 
+Repeated interrupted replay preserves the original ingress turn stamp. Terminal
+queue settlement resolves that stamp through a bounded durable replay chain;
+each intermediate turn must retain the same agent, source message, and owner.
+Missing intermediate turns, foreign bindings, and cyclic lineage fail closed.
+
 ## Replies and forwarding
 
 `SendAgentMessage.reply_context_id` selects a runtime-provided, durably admitted

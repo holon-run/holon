@@ -5,6 +5,22 @@ use crate::runtime::turn::TurnTerminalTransition;
 use crate::tool::{ApplyPatchSurface, ToolSpec};
 use crate::types::ExecutionAdmissionProvenance;
 
+pub(super) fn idle_input_available_bytes(built: &EffectivePrompt) -> usize {
+    let non_input_bytes = built
+        .context_sections
+        .iter()
+        .filter(|section| section.name != "current_input")
+        .map(|section| crate::prompt::render_section(section).len() + 2)
+        .sum::<usize>();
+    // The planner has already reserved request-scoped runtime time.
+    built
+        .context_plan_evidence
+        .total_budget_estimated_tokens
+        .saturating_mul(4)
+        .saturating_sub(non_input_bytes)
+        .saturating_sub("[current_input]\n".len())
+}
+
 fn record_operator_span(
     parent: Option<&crate::observability::TraceContext>,
     name: &'static str,
@@ -223,31 +239,16 @@ impl RuntimeHandle {
             if !idle_results_checked || !idle_batch_checked {
                 // Reserve the already planned non-input context before claiming
                 // followers. Rebuild once from the durable input evidence.
-                let non_input_bytes = built
-                    .context_sections
-                    .iter()
-                    .filter(|section| section.name != "current_input")
-                    .map(|section| crate::prompt::render_section(section).len() + 2)
-                    .sum::<usize>();
-                let available_bytes = context_config
-                    .prompt_budget_estimated_tokens
-                    .saturating_mul(4)
-                    .saturating_sub(non_input_bytes)
-                    .saturating_sub("[current_input]\n".len());
+                let available_bytes = idle_input_available_bytes(&built);
+                // Keep admission state off the already large turn future's stack.
                 if !idle_results_checked {
                     idle_results_checked = true;
-                    if self
-                        .admit_idle_task_results(message, available_bytes)
-                        .await?
-                    {
+                    if Box::pin(self.admit_idle_task_results(message, available_bytes)).await? {
                         continue;
                     }
                 }
                 idle_batch_checked = true;
-                if self
-                    .attach_idle_sender_inputs(message, available_bytes)
-                    .await?
-                {
+                if Box::pin(self.attach_idle_sender_inputs(message, available_bytes)).await? {
                     continue;
                 }
             }

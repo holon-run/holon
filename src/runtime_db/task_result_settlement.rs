@@ -225,10 +225,26 @@ impl TaskResultSettlementRepository<'_> {
     ) -> Result<Vec<TaskResultSettlementRecord>> {
         self.db.transaction(|tx| {
             let already_admitted = admitted_for_activation_tx(tx, agent_id, activation_id)?;
+            let recovering_anchor = if let Some(anchor) = anchor_message_id {
+                match latest_for_message_tx(tx, anchor)? {
+                    Some(record)
+                        if record.agent_id == agent_id
+                            && record.work_item_id.as_deref() == work_item_id
+                            && record.state == TaskResultSettlementState::CallerAdmitted
+                            && selected.is_none_or(|ids| ids.contains(&record.result_identity)) =>
+                    {
+                        interrupted_predecessor_owns_record_tx(tx, &record, activation_id, anchor)?
+                    }
+                    _ => false,
+                }
+            } else {
+                false
+            };
             let anchor_reserved = usize::from(anchor_message_id.is_some_and(|anchor| {
-                !already_admitted
-                    .iter()
-                    .any(|record| record.message_id == anchor)
+                !recovering_anchor
+                    && !already_admitted
+                        .iter()
+                        .any(|record| record.message_id == anchor)
             }));
             let mut remaining = TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT
                 .saturating_sub(already_admitted.len() + anchor_reserved);
@@ -246,8 +262,8 @@ impl TaskResultSettlementRepository<'_> {
                     continue;
                 }
                 // The source reducer admits the anchor independently. Reserve
-                // its slot even if its ledger row has not been created yet.
-                if anchor_message_id == Some(record.message_id.as_str()) {
+                // its slot unless reclaiming that same interrupted admission.
+                if anchor_message_id == Some(record.message_id.as_str()) && !recovering_anchor {
                     continue;
                 }
                 if selected.is_some_and(|ids| !ids.contains(&record.result_identity)) {
@@ -258,7 +274,7 @@ impl TaskResultSettlementRepository<'_> {
                 }
                 record.state = TaskResultSettlementState::CallerAdmitted;
                 record.activation_id = Some(activation_id.to_owned());
-                record.admitted_at = Some(now);
+                record.admitted_at.get_or_insert(now);
                 record.updated_at = now;
                 record.deferred_reason = None;
                 record.deferred_at = None;
@@ -330,6 +346,53 @@ impl TaskResultSettlementRepository<'_> {
             return Ok(false);
         }
         self.reply_source_is_consumed_for_owner(record)
+    }
+
+    pub(crate) fn non_reply_source_matches_owner(
+        &self,
+        record: &TaskResultSettlementRecord,
+    ) -> Result<bool> {
+        self.db.transaction(|tx| {
+            if !record_matches_durable_task_tx(tx, record)? {
+                return Ok(false);
+            }
+            let payload: Option<String> = tx
+                .query_row(
+                    "SELECT payload_json FROM messages WHERE message_id = ?1",
+                    [&record.message_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(payload) = payload else {
+                return Ok(false);
+            };
+            let message: MessageEnvelope = serde_json::from_str(&payload)?;
+            let task_payload: String = tx.query_row(
+                "SELECT payload_json FROM tasks WHERE task_id = ?1",
+                [&record.task_id],
+                |row| row.get(0),
+            )?;
+            let task: TaskRecord = serde_json::from_str(&task_payload)?;
+            Ok(matches!(
+                task.kind,
+                crate::types::TaskKind::CommandTask | crate::types::TaskKind::ChildAgentTask
+            ) && serde_json::to_value(&task.status)?.as_str()
+                == Some(record.task_status.as_str())
+                && task.parent_message_id.as_deref() == Some(record.message_id.as_str())
+                && message.kind == crate::types::MessageKind::TaskResult
+                && message.agent_id == record.agent_id
+                && message.work_item_id == record.work_item_id
+                && message.task_id.as_deref() == Some(record.task_id.as_str())
+                && matches!(
+                    &message.origin,
+                    crate::types::MessageOrigin::Task { task_id } if task_id == &record.task_id
+                )
+                && message.authority_class == crate::types::AuthorityClass::RuntimeInstruction
+                && message.delivery_surface
+                    == Some(crate::types::MessageDeliverySurface::TaskRejoin)
+                && message.admission_context == Some(crate::types::AdmissionContext::RuntimeOwned)
+                && crate::wake_contract::agent_message_reply_reference(&message).is_none())
+        })
     }
 
     /// An owner wake may outlive its selector, but never its consumption grant.
@@ -670,6 +733,22 @@ impl TaskResultSettlementRepository<'_> {
                 TaskResultSettlementState::CallerAdmitted
                     if record.activation_id.as_deref() == Some(activation_id) =>
                 {
+                    Ok(Some(record))
+                }
+                TaskResultSettlementState::CallerAdmitted
+                    if interrupted_predecessor_owns_record_tx(
+                        tx,
+                        &record,
+                        activation_id,
+                        message_id,
+                    )? =>
+                {
+                    // Reclaim the original admission; this is not a second result.
+                    record.activation_id = Some(activation_id.to_owned());
+                    record.updated_at = now;
+                    record.deferred_reason = None;
+                    record.deferred_at = None;
+                    update_tx(tx, &record)?;
                     Ok(Some(record))
                 }
                 TaskResultSettlementState::CallerAdmitted | TaskResultSettlementState::Settled => {
@@ -1131,6 +1210,37 @@ fn existing_for_task_generation_tx(
     .map(|payload| serde_json::from_str(&payload))
     .transpose()
     .map_err(Into::into)
+}
+
+fn interrupted_predecessor_owns_record_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+    activation_id: &str,
+    source_message_id: &str,
+) -> Result<bool> {
+    use crate::domain::execution_protocol::ExecutionAttemptState;
+    let Some(current) = reply_admission_attempt_tx(tx, &record.agent_id, activation_id)? else {
+        return Ok(false);
+    };
+    let Some(prior_id) = record.activation_id.as_deref() else {
+        return Ok(false);
+    };
+    if current.agent_id != record.agent_id
+        || current.state != ExecutionAttemptState::Open
+        || current.recovery_of_attempt_id.as_deref() != Some(prior_id)
+        || current.source_message_id.as_deref() != Some(source_message_id)
+    {
+        return Ok(false);
+    }
+    let Some(prior) = reply_admission_attempt_tx(tx, &record.agent_id, prior_id)? else {
+        return Ok(false);
+    };
+    // The consuming owner is inherited, not replaced by the captured task
+    // owner: a canonical exact waiter may intentionally be a different owner.
+    Ok(prior.state == ExecutionAttemptState::Interrupted
+        && prior.agent_id == current.agent_id
+        && prior.source_message_id == current.source_message_id
+        && prior.binding == current.binding)
 }
 
 fn reply_admission_attempt_tx(

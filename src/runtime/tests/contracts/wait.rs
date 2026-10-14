@@ -1742,6 +1742,16 @@ async fn late_agent_reply_wait_resumes_original_message_with_exact_owner() {
             crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait { .. }
         ));
 
+        // P1 claims the result batch immediately before building model input,
+        // not while the scheduler selects the exact waiter.
+        let _terminal = Box::pin(harness.runtime().process_message_with_plan_deferred(
+            scheduled.message,
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
+        ))
+        .await
+        .unwrap();
+
         let settlement = harness
             .runtime()
             .inner
