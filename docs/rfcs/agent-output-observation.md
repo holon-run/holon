@@ -47,8 +47,11 @@ holon tail --agent child --include-progress --follow --cursor '<checkpoint>'
 
 `--follow` without `--include-progress` follows briefs only. `--cursor` requires
 follow and resumes after an opaque conversation stream checkpoint; it is never
-interpreted as a history/detail cursor. A resumed read does not replay the
-initial text snapshot. Each record declares `scope: agent` and `agent_id`.
+interpreted as a history/detail cursor. A resumed read does not proactively replay
+the bootstrap text snapshot, but its first detail invalidation window may repeat
+identity/revision upserts from before the checkpoint. Consumers must apply these
+as upserts, not concatenate them as append-only text.
+Each record declares `scope: agent` and `agent_id`.
 Progress carries stable activity identity and revision; briefs carry canonical
 brief identity and text. The final `end` record reports cursor, stop reason,
 record count, history truncation and minimal runtime status.

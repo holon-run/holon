@@ -395,6 +395,14 @@ async fn long_turn_resume_exposes_a_bounded_window_not_a_false_gap() -> Result<(
     assert_eq!(end["resume_coverage_unknown"], true);
     assert_eq!(end["snapshot_truncated"], true);
     assert!(end["reset_reason"].is_null());
+    follow.max_events = 1;
+    output.clear();
+    observe(&client, "default", &follow, &mut output).await?;
+    let lines = records(&output);
+    let end = lines.last().unwrap();
+    assert_eq!(end["stop_reason"], "budget");
+    assert_eq!(end["record_count"], 0);
+    assert_eq!(end["cursor"], snapshot["snapshot_cursor"]);
     server.abort();
     host.shutdown().await?;
     Ok(())
@@ -432,7 +440,90 @@ async fn missing_canonical_activity_reports_coverage_and_does_not_advance_follow
     let end = lines.last().unwrap();
     assert_eq!(end["stop_reason"], "reset_required");
     assert_eq!(end["reset_reason"], "activity_coverage_unavailable");
+    assert_eq!(end["snapshot_truncated"], true);
     assert_eq!(end["cursor"], snapshot["snapshot_cursor"]);
+    server.abort();
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn follow_accumulates_truncation_after_an_untruncated_bootstrap() -> Result<()> {
+    use std::{
+        io,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+    use tokio::io::AsyncWrite;
+
+    struct AppendAfterBootstrap<'a> {
+        host: &'a holon::host::RuntimeHost,
+        output: Vec<u8>,
+        appended: bool,
+    }
+
+    impl AsyncWrite for AppendAfterBootstrap<'_> {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            data: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let marker = b"canonical brief body";
+            if !self.appended && data.windows(marker.len()).any(|part| part == marker) {
+                self.appended = true;
+                // Bootstrap has observed the old head. Append before stream
+                // attachment so hydration is truncated but still overlaps it.
+                for index in 0..60 {
+                    if let Err(error) = append_progress(
+                        self.host,
+                        &format!("late-{index}"),
+                        &format!("late progress {index}"),
+                    ) {
+                        return Poll::Ready(Err(io::Error::other(error.to_string())));
+                    }
+                }
+            }
+            self.output.extend_from_slice(data);
+            Poll::Ready(Ok(data.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    let _guard = REAL_SERVER.lock().await;
+    let (host, base, server) = support::spawn_server().await?;
+    seed(&host)?;
+    for index in 0..50 {
+        append_progress(
+            &host,
+            &format!("old-{index}"),
+            &format!("old progress {index}"),
+        )?;
+    }
+    let client = LocalClient::remote(host.config().as_ref().clone(), base, "test-token")?;
+    let mut follow = options();
+    follow.follow = true;
+    follow.max_events = 200;
+    follow.max_bytes = 262144;
+    let mut output = AppendAfterBootstrap {
+        host: &host,
+        output: Vec::new(),
+        appended: false,
+    };
+    observe(&client, "default", &follow, &mut output).await?;
+    let lines = records(&output.output);
+    assert!(lines.iter().any(|line| line["text"] == "late progress 59"));
+    let end = lines.last().unwrap();
+    assert_eq!(end["stop_reason"], "timeout");
+    assert_eq!(end["snapshot_truncated"], true);
+    assert_eq!(end["resume_coverage_unknown"], false);
+    assert!(end["reset_reason"].is_null());
     server.abort();
     host.shutdown().await?;
     Ok(())
