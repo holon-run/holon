@@ -21,11 +21,14 @@ fn select_queue_message<'a>(
         if task_rejoin_barrier_reached {
             return false;
         }
+        if wait_trigger_message_ids.contains(&message.id) {
+            return true;
+        }
         if message.delivery_surface == Some(crate::types::MessageDeliverySurface::TaskRejoin) {
             task_rejoin_barrier_reached = true;
             return false;
         }
-        wait_trigger_message_ids.contains(&message.id)
+        false
     }) {
         return (Some(message), true);
     }
@@ -219,6 +222,29 @@ enum PrepareMessageOutcome {
 }
 
 impl<'a> SchedulerDecisionExecutor<'a> {
+    fn select_runtime_queue_message<'q>(
+        &self,
+        queue: &'q crate::queue::RuntimeQueue,
+        waits: &std::collections::BTreeSet<String>,
+    ) -> Result<(Option<&'q MessageEnvelope>, bool)> {
+        let selected = select_queue_message(queue, waits);
+        if selected.1
+            || selected.0.is_none_or(|message| {
+                !crate::wake_contract::is_agent_message(message)
+                    || message.priority == Priority::Interject
+                    || message.authority_class == AuthorityClass::OperatorInstruction
+            })
+        {
+            return Ok(selected);
+        }
+        // A recovered, already attached snapshot precedes fresh ordinary input.
+        // This is selection only; canonical admission still validates its source.
+        if let Some(id) = self.runtime.idle_batch_recovery_message(queue)? {
+            return Ok((queue.peek_next_matching(|message| message.id == id), true));
+        }
+        Ok(selected)
+    }
+
     pub(super) fn new(runtime: &'a RuntimeHandle) -> Self {
         Self { runtime }
     }
@@ -557,7 +583,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     .filter_map(|condition| condition.trigger_message_id)
                     .collect::<std::collections::BTreeSet<_>>();
                 let (message, wait_obligation) =
-                    select_queue_message(&guard.queue, &wait_trigger_message_ids);
+                    self.select_runtime_queue_message(&guard.queue, &wait_trigger_message_ids)?;
                 let message = message.cloned();
                 let Some(message) = message else {
                     let poll = RunLoopPoll::Idle;
@@ -712,9 +738,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 continuation_resolution: dispatch_plan.continuation_resolution.as_ref(),
             },
         );
-        let replay_source_turn_id = queue_entry
-            .filter(|entry| entry.status == QueueEntryStatus::Interrupted)
-            .and_then(|_| persisted_message.turn_id.clone());
         let canonical_claim = match self.canonical_activation_plan(
             &projection,
             &persisted_message,
@@ -786,6 +809,35 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 return Err(error);
             }
         };
+        let replay_source_turn_id =
+            if queue_entry.is_some_and(|entry| entry.status == QueueEntryStatus::Interrupted) {
+                let prior_id = canonical_claim.as_ref().and_then(|plan| {
+                    plan.execution_protocol.commands.iter().find_map(|command| {
+                        if let crate::domain::execution_protocol::ExecutionProtocolCommand::Admit(
+                            admission,
+                        ) = command
+                        {
+                            admission.attempt.recovery_of_attempt_id.as_deref()
+                        } else {
+                            None
+                        }
+                    })
+                });
+                self.runtime
+                    .idle_batch_source_turn(&persisted_message.agent_id, &persisted_message.id)?
+                    .filter(|turn| {
+                        prior_id.is_some()
+                            && turn
+                                .idle_input_batch
+                                .as_ref()
+                                .and_then(|batch| batch.activation_id.as_deref())
+                                == prior_id
+                    })
+                    .map(|turn| turn.turn_id)
+                    .or_else(|| persisted_message.turn_id.clone())
+            } else {
+                None
+            };
         let settle_reducer_only_wait =
             canonical_claim.is_none() && persisted_message.kind == MessageKind::TaskResult;
         if let Some(plan) = canonical_claim.as_ref() {
@@ -891,7 +943,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     .filter_map(|condition| condition.trigger_message_id)
                     .collect::<std::collections::BTreeSet<_>>();
                 let (selected_message, selected_wait_obligation) =
-                    select_queue_message(&guard.queue, &wait_trigger_message_ids);
+                    self.select_runtime_queue_message(&guard.queue, &wait_trigger_message_ids)?;
                 if !selected_message.is_some_and(|message| message.id == candidate.message.id)
                     || selected_wait_obligation != candidate.wait_obligation
                 {
@@ -1022,54 +1074,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         self.runtime
             .apply_transition_commit(transition_commit)
             .await;
-        if let Some(plan) = canonical_claim.as_ref() {
-            let activation_id = plan.activation_id.as_str();
-            let work_item_id = plan.work_item_id.as_deref();
-            // Admission intentionally follows the canonical claim commit. If the
-            // process stops here, restart recovery closes the open attempt and a
-            // later canonical activation reclaims its unsettled results.
-            if crate::wake_contract::is_agent_message(&message) {
-                self.runtime
-                    .inner
-                    .runtime_db
-                    .task_result_settlements()
-                    .admit_reply_message(
-                        &message.agent_id,
-                        work_item_id,
-                        &message.id,
-                        activation_id,
-                        self.runtime.now(),
-                    )?;
-            }
-            let admitted = self
-                .runtime
-                .inner
-                .runtime_db
-                .task_result_settlements()
-                .admit_unsettled(
-                    &message.agent_id,
-                    work_item_id,
-                    activation_id,
-                    self.runtime.now(),
-                )?;
-            if !admitted.is_empty() {
-                self.runtime
-                    .inner
-                    .storage
-                    .append_event(&AuditEvent::legacy(
-                        "task_result_settlements_admitted",
-                        serde_json::json!({
-                            "agent_id": message.agent_id,
-                            "work_item_id": work_item_id,
-                            "activation_id": activation_id,
-                            "result_identities": admitted
-                                .iter()
-                                .map(|record| record.result_identity.as_str())
-                                .collect::<Vec<_>>(),
-                        }),
-                    ))?;
-            }
-        }
+        // Reply waiters and additional results share the bounded post-start
+        // selection before their source-specific admission commits.
 
         Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Message(
             ScheduledMessage {
@@ -1297,6 +1303,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .as_ref()
             .and_then(crate::wake_contract::agent_message_reply_reference)
             .is_some()
+            && !self
+                .runtime
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .reply_source_is_recoverable(record)?
         {
             return Ok(false);
         }
@@ -1332,6 +1344,26 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         dispatch_plan: &MessageDispatchPlan,
         model_reentry: bool,
     ) -> Result<CanonicalClaimOutcome> {
+        if message.kind == MessageKind::TaskResult
+            && scheduler::matching_wait_conditions(projection, message).is_empty()
+            && self
+                .runtime
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .latest_for_message(&message.id)?
+                .is_some_and(|record| {
+                    record.agent_id == message.agent_id
+                        && record.task_id == message.task_id.as_deref().unwrap_or_default()
+                        && record.state
+                            == crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+                })
+        {
+            // Delivery by an earlier batch does not authorize a second model
+            // execution, but an independent exact waiter keeps its authority.
+            // The queued notification still uses its source reducer.
+            return Ok(CanonicalClaimOutcome::ReduceOnly);
+        }
         if matches!(
             &message.origin,
             MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"
@@ -3498,6 +3530,25 @@ mod tests {
         assert!(!wait_obligation);
     }
 
+    #[test]
+    fn exact_wait_task_result_overtakes_ordinary_backlog_without_crossing_rejoin() {
+        let mut queue = crate::queue::RuntimeQueue::default();
+        queue.push(queued_message(Priority::Normal, "backlog"));
+        let mut task_rejoin = queued_message(Priority::Normal, "wait-trigger");
+        task_rejoin.delivery_surface = Some(crate::types::MessageDeliverySurface::TaskRejoin);
+        queue.push(task_rejoin);
+        let wait_trigger_message_ids =
+            std::collections::BTreeSet::from(["wait-trigger".to_string()]);
+
+        let (selected, wait_obligation) = select_queue_message(&queue, &wait_trigger_message_ids);
+
+        assert_eq!(
+            selected.map(|message| message.id.as_str()),
+            Some("wait-trigger")
+        );
+        assert!(wait_obligation);
+    }
+
     #[tokio::test]
     async fn task_result_recovery_requires_no_active_owner_wait() {
         let dir = tempdir().unwrap();
@@ -3990,6 +4041,7 @@ mod tests {
             current_task_id: Some("task-caller".into()),
             current_work_item_id: Some("work-caller".into()),
             inherited_routing_context: None,
+            routing_activation_id: None,
         };
         let mut prepared = AgentMessageDeliveryService::prepare(
             AgentMessageSendRequest {
@@ -4002,6 +4054,7 @@ mod tests {
                 causation_id: None,
                 requested_priority: None,
                 forward: false,
+                reply_context_id: None,
             },
             caller.clone(),
         )

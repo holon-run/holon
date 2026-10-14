@@ -277,6 +277,13 @@ mod tests {
         assert!(section
             .content
             .contains("use SendAgentMessage for durable asynchronous communication"));
+        assert!(section.content.contains("reply_context_id"));
+        assert!(section
+            .content
+            .contains("multiple eligible routes require a selector"));
+        assert!(section
+            .content
+            .contains("pure task results do not create agent-message routes"));
         assert!(section
             .content
             .contains("concurrent waits may observe the same message"));

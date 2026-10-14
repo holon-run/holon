@@ -2398,6 +2398,9 @@ pub struct TurnRecord {
     pub trigger: Option<TurnTriggerSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_message_ids: Vec<String>,
+    /// Source-neutral, durable evidence for the idle-start input snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_input_batch: Option<IdleInputBatchRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_execution_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2433,6 +2436,7 @@ impl TurnRecord {
             owner: None,
             trigger: None,
             input_message_ids: Vec::new(),
+            idle_input_batch: None,
             tool_execution_ids: Vec::new(),
             produced_brief_ids: Vec::new(),
             delivery_summary_ids: Vec::new(),
@@ -2458,6 +2462,27 @@ impl TurnRecord {
             )
         })
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct IdleInputBatchRecord {
+    pub anchor_message_id: String,
+    /// Canonical admission that persisted this turn's snapshot, not new authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_id: Option<String>,
+    pub sender_agent_id: String,
+    pub cutoff: DateTime<Utc>,
+    pub max_items: usize,
+    pub max_bytes: usize,
+    pub rendered_bytes: usize,
+    pub items: Vec<IdleInputBatchItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct IdleInputBatchItem {
+    pub message_id: String,
+    pub source_ref: String,
+    pub rendered: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

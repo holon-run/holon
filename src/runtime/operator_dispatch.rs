@@ -177,7 +177,9 @@ impl RuntimeHandle {
             .latest(&default_external_ingress.external_trigger_id)?;
         let context_config = self.current_context_config().await;
 
-        let built = {
+        let mut idle_results_checked = false;
+        let mut idle_batch_checked = false;
+        let built = loop {
             let mut guard = self.inner.agent.lock().await;
             let agent_changed = sync_agent_message_count(&self.inner.storage, &mut guard.state)?;
             if agent_changed {
@@ -200,23 +202,56 @@ impl RuntimeHandle {
             let skills = self
                 .skills_runtime_view_for_state(&state, &identity)
                 .await?;
-            build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
-                &self.inner.storage,
-                &state,
-                &execution,
-                message,
-                &context_config,
-                &execution.execution_root,
-                self.agent_home().as_path(),
-                &identity,
-                loaded_agents_md,
-                loaded_agent_memory,
-                &skills,
-                &prompt_tools,
-                apply_patch_surface,
-                continuation_resolution,
-                default_external_ingress.as_ref(),
-            )?
+            let built =
+                build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
+                    &self.inner.storage,
+                    &state,
+                    &execution,
+                    message,
+                    &context_config,
+                    &execution.execution_root,
+                    self.agent_home().as_path(),
+                    &identity,
+                    loaded_agents_md,
+                    loaded_agent_memory,
+                    &skills,
+                    &prompt_tools,
+                    apply_patch_surface,
+                    continuation_resolution,
+                    default_external_ingress.as_ref(),
+                )?;
+            if !idle_results_checked || !idle_batch_checked {
+                // Reserve the already planned non-input context before claiming
+                // followers. Rebuild once from the durable input evidence.
+                let non_input_bytes = built
+                    .context_sections
+                    .iter()
+                    .filter(|section| section.name != "current_input")
+                    .map(|section| crate::prompt::render_section(section).len() + 2)
+                    .sum::<usize>();
+                let available_bytes = context_config
+                    .prompt_budget_estimated_tokens
+                    .saturating_mul(4)
+                    .saturating_sub(non_input_bytes)
+                    .saturating_sub("[current_input]\n".len());
+                if !idle_results_checked {
+                    idle_results_checked = true;
+                    if self
+                        .admit_idle_task_results(message, available_bytes)
+                        .await?
+                    {
+                        continue;
+                    }
+                }
+                idle_batch_checked = true;
+                if self
+                    .attach_idle_sender_inputs(message, available_bytes)
+                    .await?
+                {
+                    continue;
+                }
+            }
+            break built;
         };
         let context_build_ms = context_build_started.elapsed().as_millis() as u64;
         let (turn_index, run_id) = {

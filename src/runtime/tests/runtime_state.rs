@@ -3972,6 +3972,7 @@ async fn enqueue_lifecycle_delivery(
             causation_id: None,
             requested_priority: None,
             forward: false,
+            reply_context_id: None,
         },
         crate::types::AgentMessageCallerContext {
             caller_principal: "runtime:agent-invocation".into(),
@@ -3988,6 +3989,7 @@ async fn enqueue_lifecycle_delivery(
             current_task_id: None,
             current_work_item_id: None,
             inherited_routing_context: None,
+            routing_activation_id: None,
         },
     )
     .unwrap();

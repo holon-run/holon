@@ -1,0 +1,2189 @@
+use super::super::message_dispatch::message_text;
+use super::super::*;
+use super::support::*;
+use crate::types::{
+    AgentMessageCallerContext, AgentMessagePrincipalKind, AgentMessageSendRequest,
+    QueueEntryRecord, TurnOwner, WorkItemPlanStatus,
+};
+
+#[derive(Default)]
+struct BatchProvider {
+    requests: Mutex<Vec<ProviderTurnRequest>>,
+}
+
+async fn start_without_provider(runtime: &RuntimeHandle) -> MessageEnvelope {
+    for _ in 0..72 {
+        let poll = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+            .poll()
+            .await
+            .unwrap();
+        let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+            continue;
+        };
+        if !scheduled.scheduler_decision.model_reentry {
+            process_scheduled(runtime, scheduled).await;
+            continue;
+        }
+        runtime
+            .begin_interactive_turn_with_provenance(
+                Some(&scheduled.message),
+                None,
+                None,
+                scheduled.dispatch_plan.execution_admission_provenance,
+            )
+            .await
+            .unwrap();
+        runtime
+            .record_incoming_transcript_entry(&scheduled.message)
+            .unwrap();
+        return scheduled.message;
+    }
+    panic!(
+        "expected model input; recent events: {:?}",
+        runtime.storage().read_recent_events(8).unwrap()
+    )
+}
+
+#[async_trait]
+impl AgentProvider for BatchProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        self.requests.lock().await.push(request);
+        Ok(ProviderTurnResponse {
+            blocks: vec![ModelBlock::Text {
+                text: "done".into(),
+            }],
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn p1_command_and_child_batches_include_anchor_and_reduce_settled_notifications() {
+    for kind in [TaskKind::CommandTask, TaskKind::ChildAgentTask] {
+        for count in [1usize, 2, 8, 9, 16, 17] {
+            let provider = Arc::new(BatchProvider::default());
+            let harness = LifecycleHarness::with_provider(provider.clone());
+            let runtime = harness.runtime();
+            let owner = runtime
+                .create_work_item(
+                    "bounded terminal results".into(),
+                    Some(WorkItemPlanStatus::Ready),
+                    None,
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+            runtime.pick_work_item(owner.id.clone()).await.unwrap();
+            let mut source_ids = Vec::new();
+            for index in 0..count {
+                let task_id = format!("p1-{}-{index}", kind.as_str());
+                let mut message = MessageEnvelope::new(
+                    "default",
+                    MessageKind::TaskResult,
+                    MessageOrigin::Task {
+                        task_id: task_id.clone(),
+                    },
+                    AuthorityClass::RuntimeInstruction,
+                    Priority::Normal,
+                    MessageBody::Text {
+                        text: format!("bounded-result-body-{index}"),
+                    },
+                )
+                .with_admission(
+                    MessageDeliverySurface::TaskRejoin,
+                    AdmissionContext::RuntimeOwned,
+                );
+                message.work_item_id = Some(owner.id.clone());
+                message.metadata = Some(serde_json::json!({
+                    "task_id": task_id,
+                    "task_kind": kind.as_str(),
+                    "task_status": "completed",
+                    "task_result_id": message.id,
+                    "work_item_id": owner.id,
+                }));
+                let task = TaskRecord {
+                    id: task_id.clone(),
+                    agent_id: "default".into(),
+                    kind,
+                    status: TaskStatus::Completed,
+                    created_at: harness.now(),
+                    updated_at: harness.now(),
+                    parent_message_id: Some(message.id.clone()),
+                    work_item_id: Some(owner.id.clone()),
+                    summary: None,
+                    detail: Some(serde_json::json!({
+                        "rejoin_obligation_id": task_id,
+                        "rejoin_generation": 1,
+                        "parent_turn_id": "p1-result-parent",
+                        "terminal_reentry": true,
+                    })),
+                    recovery: None,
+                };
+                if kind == TaskKind::CommandTask {
+                    runtime
+                        .commit_terminal_task_result(&task, "task_completed", &message)
+                        .await
+                        .unwrap();
+                } else {
+                    runtime
+                        .commit_terminal_child_task_result(&task, "task_completed", &message, None)
+                        .await
+                        .unwrap();
+                }
+                source_ids.push(message.id);
+            }
+            let mut admissions = Vec::new();
+            let mut unique = std::collections::BTreeSet::new();
+            for _ in 0..count * 3 {
+                if runtime.inner.agent.lock().await.queue.is_empty() {
+                    break;
+                }
+                let poll = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+                    .poll()
+                    .await
+                    .unwrap();
+                let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+                    continue;
+                };
+                let activation = scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .as_ref()
+                    .and_then(|provenance| match provenance {
+                        ExecutionAdmissionProvenance::Canonical { activation_id, .. } => {
+                            Some(activation_id.clone())
+                        }
+                        _ => None,
+                    });
+                let transition = runtime
+                    .process_message_with_plan_deferred(
+                        scheduled.message.clone(),
+                        scheduled.dispatch_plan,
+                        &scheduled.scheduler_decision,
+                    )
+                    .await
+                    .unwrap();
+                if let Some(activation) = activation {
+                    let records = runtime
+                        .inner
+                        .runtime_db
+                        .task_result_settlements()
+                        .admitted_for_activation("default", &activation)
+                        .unwrap();
+                    assert!(records.len() <= 8);
+                    admissions.push(records.len());
+                    for record in records {
+                        assert!(unique.insert(record.result_identity));
+                    }
+                }
+                assert!(runtime
+                    .commit_queue_terminal_settlement(
+                        QueueEntryRecord {
+                            message_id: scheduled.message.id,
+                            agent_id: scheduled.message.agent_id,
+                            priority: scheduled.message.priority,
+                            status: QueueEntryStatus::Processed,
+                            created_at: scheduled.message.created_at,
+                            updated_at: Utc::now(),
+                        },
+                        Vec::new(),
+                        true,
+                        Some(&transition),
+                    )
+                    .await
+                    .unwrap());
+            }
+            assert_eq!(unique.len(), count, "{kind:?}/{count}: {admissions:?}");
+            assert_eq!(admissions.len(), count.div_ceil(8), "{kind:?}/{count}");
+            assert_eq!(provider.requests.lock().await.len(), count.div_ceil(8));
+            for id in &source_ids {
+                assert_eq!(
+                    runtime
+                        .inner
+                        .runtime_db
+                        .task_result_settlements()
+                        .latest_for_message(id)
+                        .unwrap()
+                        .unwrap()
+                        .state,
+                    crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+                );
+            }
+        }
+    }
+}
+
+async fn fixture() -> (
+    TempDir,
+    RuntimeHost,
+    RuntimeHandle,
+    RuntimeHandle,
+    Arc<BatchProvider>,
+) {
+    let home = tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )
+    .unwrap();
+    let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    let provider = Arc::new(BatchProvider::default());
+    let host = RuntimeHost::new_with_provider(config, provider.clone()).unwrap();
+    let sender = host.default_runtime().await.unwrap();
+    std::fs::create_dir_all(home.path().join("batch-workspace")).unwrap();
+    // No host background loop may race this deterministic scheduler fixture.
+    let target = RuntimeHandle::new(
+        "batch-target",
+        home.path().join("batch-target-state"),
+        home.path().join("batch-workspace"),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "fixture".into(),
+        context_config(),
+    )
+    .unwrap();
+    (home, host, sender, target, provider)
+}
+
+async fn send(sender: &RuntimeHandle, target: &RuntimeHandle, key: &str, text: &str) -> String {
+    send_with_authority(
+        sender,
+        target,
+        key,
+        text,
+        AuthorityClass::RuntimeInstruction,
+    )
+    .await
+}
+
+async fn send_with_authority(
+    sender: &RuntimeHandle,
+    target: &RuntimeHandle,
+    key: &str,
+    text: &str,
+    authority: AuthorityClass,
+) -> String {
+    send_with_priority_and_authority(sender, target, key, text, Priority::Normal, authority).await
+}
+
+async fn send_with_priority_and_authority(
+    sender: &RuntimeHandle,
+    target: &RuntimeHandle,
+    key: &str,
+    text: &str,
+    priority: Priority,
+    authority: AuthorityClass,
+) -> String {
+    let target_agent_id = target.inner.agent.lock().await.state.id.clone();
+    let sender_id = sender.agent_id().await.unwrap();
+    let prepared = AgentMessageDeliveryService::prepare(
+        AgentMessageSendRequest {
+            target_agent_id,
+            content: MessageBody::Text { text: text.into() },
+            client_idempotency_key: key.into(),
+            correlation_id: None,
+            causation_id: None,
+            requested_priority: Some(priority),
+            forward: false,
+            reply_context_id: None,
+        },
+        crate::types::AgentMessageCallerContext {
+            caller_principal: format!("agent:{sender_id}"),
+            caller_agent_id: Some(sender_id),
+            principal_kind: crate::types::AgentMessagePrincipalKind::PeerAgent,
+            route: "agent_message".into(),
+            origin: MessageOrigin::System {
+                subsystem: "agent_message".into(),
+            },
+            authority_class: authority,
+            delivery_surface: MessageDeliverySurface::RuntimeSystem,
+            admission_context: crate::types::AdmissionContext::RuntimeOwned,
+            current_turn_id: None,
+            current_task_id: None,
+            current_work_item_id: None,
+            inherited_routing_context: None,
+            routing_activation_id: None,
+        },
+    )
+    .unwrap();
+    target
+        .agent_message_delivery_service()
+        .deliver(&prepared)
+        .await
+        .unwrap()
+        .message_id
+        .unwrap()
+}
+
+async fn process_one(runtime: &RuntimeHandle) {
+    for _ in 0..72 {
+        let poll = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+            .poll()
+            .await
+            .unwrap();
+        let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+            continue;
+        };
+        let model_reentry = scheduled.scheduler_decision.model_reentry;
+        process_scheduled(runtime, scheduled).await;
+        if model_reentry {
+            return;
+        }
+    }
+    panic!(
+        "expected model input; recent events: {:?}",
+        runtime.storage().read_recent_events(8).unwrap()
+    )
+}
+
+async fn process_scheduled(
+    runtime: &RuntimeHandle,
+    scheduled: scheduler_executor::ScheduledMessage,
+) {
+    let message = scheduled.message;
+    let terminal = Box::pin(runtime.process_message_with_plan_deferred(
+        message.clone(),
+        scheduled.dispatch_plan,
+        &scheduled.scheduler_decision,
+    ))
+    .await
+    .unwrap();
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: message.id,
+                agent_id: message.agent_id,
+                priority: message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
+}
+
+async fn bind_receiver_owner(runtime: &RuntimeHandle, message_id: &str, owner_id: &str) {
+    let mut guard = runtime.inner.agent.lock().await;
+    guard
+        .queue
+        .pop_next_matching(|message| message.id == message_id)
+        .unwrap();
+    let mut message = runtime
+        .storage()
+        .read_message_by_id(message_id)
+        .unwrap()
+        .unwrap();
+    message.work_item_id = Some(owner_id.to_owned());
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::evidence::insert_message_evidence_tx(tx, &message))
+        .unwrap();
+    guard.queue.push(message);
+}
+
+async fn publish_owner_result(
+    runtime: &RuntimeHandle,
+    owner_id: &str,
+    task_id: String,
+    body: &str,
+) -> String {
+    publish_owner_result_with_priority(runtime, owner_id, task_id, body, Priority::Normal).await
+}
+
+async fn publish_owner_result_with_priority(
+    runtime: &RuntimeHandle,
+    owner_id: &str,
+    task_id: String,
+    body: &str,
+    priority: Priority,
+) -> String {
+    let agent_id = runtime.agent_id().await.unwrap();
+    let mut message = MessageEnvelope::new(
+        &agent_id,
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: task_id.clone(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        priority,
+        MessageBody::Text { text: body.into() },
+    )
+    .with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some(owner_id.to_owned());
+    message.metadata = Some(serde_json::json!({
+        "task_id": task_id,
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": message.id,
+        "work_item_id": owner_id,
+    }));
+    let task = TaskRecord {
+        id: task_id.clone(),
+        agent_id,
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: Some(message.id.clone()),
+        work_item_id: Some(owner_id.to_owned()),
+        summary: None,
+        detail: Some(serde_json::json!({
+            "rejoin_obligation_id": task_id,
+            "rejoin_generation": 1,
+            "parent_turn_id": "p1-mixed-parent",
+            "terminal_reentry": true,
+        })),
+        recovery: None,
+    };
+    runtime
+        .commit_terminal_task_result(&task, "task_completed", &message)
+        .await
+        .unwrap();
+    message.id
+}
+
+async fn publish_shared_reply(
+    runtime: &RuntimeHandle,
+    owners: &[String],
+    body: &str,
+) -> (String, Vec<String>) {
+    let agent_id = runtime.agent_id().await.unwrap();
+    let mut prepared = AgentMessageDeliveryService::prepare(
+        AgentMessageSendRequest {
+            target_agent_id: agent_id.clone(),
+            content: MessageBody::Text { text: body.into() },
+            client_idempotency_key: format!("p1-shared-{}", uuid::Uuid::new_v4()),
+            correlation_id: None,
+            causation_id: None,
+            requested_priority: Some(Priority::Normal),
+            forward: false,
+            reply_context_id: None,
+        },
+        AgentMessageCallerContext {
+            caller_principal: "agent:shared-reply-peer".into(),
+            caller_agent_id: Some("shared-reply-peer".into()),
+            principal_kind: AgentMessagePrincipalKind::PeerAgent,
+            route: "agent_message".into(),
+            origin: MessageOrigin::System {
+                subsystem: "agent_message".into(),
+            },
+            authority_class: AuthorityClass::RuntimeInstruction,
+            delivery_surface: MessageDeliverySurface::RuntimeSystem,
+            admission_context: AdmissionContext::RuntimeOwned,
+            current_turn_id: None,
+            current_task_id: None,
+            current_work_item_id: None,
+            inherited_routing_context: None,
+            routing_activation_id: None,
+        },
+    )
+    .unwrap();
+    prepared.message.work_item_id = owners.first().cloned();
+    prepared.message.created_at = runtime.now();
+    let reply_id = runtime
+        .agent_message_delivery_service()
+        .deliver(&prepared)
+        .await
+        .unwrap()
+        .message_id
+        .unwrap();
+    let reply = runtime
+        .storage()
+        .read_message_by_id(&reply_id)
+        .unwrap()
+        .unwrap();
+    let delivery_id =
+        reply.metadata.as_ref().unwrap()["agent_message_delivery"]["delivery_id"].clone();
+    let mut results = Vec::new();
+    for (index, owner) in owners.iter().enumerate() {
+        let task_id = format!("p1-shared-{}-{index}", reply.id);
+        let running = TaskRecord {
+            id: task_id.clone(),
+            agent_id: agent_id.clone(),
+            kind: TaskKind::AgentMessageWait,
+            status: TaskStatus::Running,
+            created_at: runtime.now(),
+            updated_at: runtime.now(),
+            parent_message_id: None,
+            work_item_id: Some(owner.clone()),
+            summary: None,
+            detail: Some(serde_json::json!({
+                "rejoin_obligation_id": task_id,
+                "rejoin_generation": 1,
+                "parent_turn_id": "p1-shared-parent",
+            })),
+            recovery: None,
+        };
+        runtime
+            .persist_task_transition(&running, "task_created")
+            .await
+            .unwrap();
+        let mut detail = running.detail.clone().unwrap();
+        detail["message_id"] = serde_json::json!(reply.id);
+        detail["response_delivery_id"] = serde_json::json!(delivery_id);
+        runtime
+            .finish_agent_message_wait(&running, TaskStatus::Completed, detail, String::new())
+            .await
+            .unwrap();
+        let terminal = runtime
+            .storage()
+            .latest_task_record(&task_id)
+            .unwrap()
+            .unwrap();
+        results.push(terminal.parent_message_id.unwrap());
+    }
+    (reply.id, results)
+}
+
+#[tokio::test(start_paused = true)]
+async fn p1_shared_reply_counts_each_waiter_with_one_body_per_bounded_batch() {
+    use crate::runtime_db::task_result_settlement::{
+        TaskResultSettlementDisposition, TaskResultSettlementState,
+    };
+
+    for count in [1usize, 2, 8, 9, 16, 17] {
+        let provider = Arc::new(BatchProvider::default());
+        let harness = LifecycleHarness::with_provider(provider.clone());
+        let target = harness.runtime();
+        let agent_id = target.agent_id().await.unwrap();
+        let owner = target
+            .create_work_item(
+                "shared reply bounded waiters".into(),
+                Some(WorkItemPlanStatus::Ready),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        target.pick_work_item(owner.id.clone()).await.unwrap();
+        let marker = "p1-shared-original-body-marker";
+        let (reply, results) =
+            publish_shared_reply(&target, &vec![owner.id.clone(); count], marker).await;
+        let repository = target.inner.runtime_db.task_result_settlements();
+        let mut unique = std::collections::BTreeSet::new();
+        for _ in 0..count * 4 + 4 {
+            if results.iter().all(|id| {
+                repository
+                    .latest_for_message(id)
+                    .unwrap()
+                    .is_some_and(|record| record.state == TaskResultSettlementState::Settled)
+            }) {
+                break;
+            }
+            if target.inner.agent.lock().await.queue.is_empty() {
+                harness.advance(std::time::Duration::from_secs(31)).await;
+                assert!(
+                    target.emit_due_task_result_recovery().await.unwrap(),
+                    "{count}: overflow has no recoverable notification"
+                );
+            }
+            let poll = scheduler_executor::SchedulerDecisionExecutor::new(&target)
+                .poll()
+                .await
+                .unwrap();
+            let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+                continue;
+            };
+            let before = provider.requests.lock().await.len();
+            let activation = scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .as_ref()
+                .and_then(|provenance| match provenance {
+                    ExecutionAdmissionProvenance::Canonical { activation_id, .. } => {
+                        Some(activation_id.clone())
+                    }
+                    _ => None,
+                });
+            let transition = target
+                .process_message_with_plan_deferred(
+                    scheduled.message.clone(),
+                    scheduled.dispatch_plan,
+                    &scheduled.scheduler_decision,
+                )
+                .await
+                .unwrap();
+            if provider.requests.lock().await.len() > before {
+                let admitted = repository
+                    .admitted_for_activation(&agent_id, activation.as_deref().unwrap())
+                    .unwrap();
+                assert!(!admitted.is_empty(), "{count}");
+                assert!(admitted.len() <= 8, "{count}: {}", admitted.len());
+                for record in admitted {
+                    assert!(unique.insert(record.result_identity), "{count}: duplicate");
+                    assert_eq!(record.work_item_id.as_deref(), Some(owner.id.as_str()));
+                }
+                let requests = provider.requests.lock().await;
+                let context = requests
+                    .last()
+                    .unwrap()
+                    .prompt_frame
+                    .context_blocks
+                    .iter()
+                    .flat_map(|block| block.text.split("\n## "))
+                    .filter(|section| {
+                        let section = section.trim_start_matches("## ");
+                        section.starts_with("current_input\n")
+                            || section.starts_with("pending_task_results\n")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert_eq!(context.matches(marker).count(), 1, "{count}: {reply}");
+            }
+            assert!(target
+                .commit_queue_terminal_settlement(
+                    QueueEntryRecord {
+                        message_id: scheduled.message.id,
+                        agent_id: scheduled.message.agent_id,
+                        priority: scheduled.message.priority,
+                        status: QueueEntryStatus::Processed,
+                        created_at: scheduled.message.created_at,
+                        updated_at: Utc::now(),
+                    },
+                    Vec::new(),
+                    true,
+                    Some(&transition),
+                )
+                .await
+                .unwrap());
+        }
+        assert_eq!(unique.len(), count, "shared reply waiter count {count}");
+        assert_eq!(
+            provider.requests.lock().await.len(),
+            1 + count.saturating_sub(7).div_ceil(8)
+        );
+        for id in results {
+            let record = repository.latest_for_message(&id).unwrap().unwrap();
+            assert_eq!(record.state, TaskResultSettlementState::Settled);
+            assert_eq!(
+                record.disposition,
+                Some(TaskResultSettlementDisposition::ModelDelivered)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn p1_shared_reply_does_not_settle_a_different_captured_owner() {
+    use crate::runtime_db::task_result_settlement::TaskResultSettlementState;
+
+    let (_home, _host, _sender, target, provider) = fixture().await;
+    let first = target
+        .create_work_item(
+            "first shared reply owner".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let second = target
+        .create_work_item(
+            "second shared reply owner".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let (_, results) = publish_shared_reply(
+        &target,
+        &[first.id.clone(), second.id.clone()],
+        "shared body must not bridge owners",
+    )
+    .await;
+    target.pick_work_item(first.id.clone()).await.unwrap();
+    process_one(&target).await;
+    let repository = target.inner.runtime_db.task_result_settlements();
+    let delivered = repository.latest_for_message(&results[0]).unwrap().unwrap();
+    let pending = repository.latest_for_message(&results[1]).unwrap().unwrap();
+    assert_eq!(delivered.state, TaskResultSettlementState::Settled);
+    assert_eq!(delivered.work_item_id, Some(first.id));
+    assert_eq!(pending.state, TaskResultSettlementState::PersistedPending);
+    assert_eq!(pending.work_item_id, Some(second.id));
+    assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn p1_shared_reply_recovery_reuses_admitted_waiters_before_overflow() {
+    use crate::runtime_db::task_result_settlement::TaskResultSettlementState;
+
+    let provider = Arc::new(BatchProvider::default());
+    let mut harness = LifecycleHarness::with_provider(provider.clone());
+    let target = harness.runtime();
+    let agent_id = target.agent_id().await.unwrap();
+    let owner = target
+        .create_work_item(
+            "shared reply restart".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    target.pick_work_item(owner.id.clone()).await.unwrap();
+    let (_, results) =
+        publish_shared_reply(&target, &vec![owner.id; 9], "restart shared reply marker").await;
+    let anchor = start_without_provider(&target).await;
+    target
+        .admit_idle_task_results(&anchor, 24 * 1024)
+        .await
+        .unwrap();
+    let activation = target
+        .inner
+        .agent
+        .lock()
+        .await
+        .state
+        .current_execution_binding
+        .as_ref()
+        .unwrap()
+        .activation_id
+        .clone()
+        .unwrap();
+    let before = target
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .admitted_for_activation(&agent_id, &activation)
+        .unwrap();
+    assert!(!before.is_empty());
+    assert!(before.len() <= 8);
+    harness.restart();
+    let target = harness.runtime();
+    target.recover_scheduler_bootstrap_claims().await.unwrap();
+    process_one(&target).await;
+    let repository = target.inner.runtime_db.task_result_settlements();
+    let before_ids: std::collections::BTreeSet<_> =
+        before.iter().map(|record| &record.message_id).collect();
+    for result in &results {
+        let record = repository.latest_for_message(result).unwrap().unwrap();
+        assert_eq!(
+            record.state,
+            if before_ids.contains(result) {
+                TaskResultSettlementState::Settled
+            } else {
+                TaskResultSettlementState::PersistedPending
+            }
+        );
+    }
+    assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn p1_mixed_owner_reserves_two_ordinary_inputs_before_result_admission() {
+    let (_home, _host, sender, target, provider) = fixture().await;
+    let owner = target
+        .create_work_item(
+            "mixed owner".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut ordinary = Vec::new();
+    for index in 0..6 {
+        let id = send(
+            &sender,
+            &target,
+            &format!("peer-{index}"),
+            &format!("ordinary-{index}"),
+        )
+        .await;
+        bind_receiver_owner(&target, &id, &owner.id).await;
+        ordinary.push(id);
+    }
+    let mut results = Vec::new();
+    for index in 0..8 {
+        results.push(
+            publish_owner_result(
+                &target,
+                &owner.id,
+                format!("mixed-result-{index}"),
+                &format!("result-{index}"),
+            )
+            .await,
+        );
+    }
+    process_one(&target).await;
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(turn.input_message_ids, ordinary);
+    let settled = results
+        .iter()
+        .filter(|id| {
+            target
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .latest_for_message(id)
+                .unwrap()
+                .unwrap()
+                .state
+                == crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+        })
+        .count();
+    assert_eq!(settled, 2);
+    assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn p1_result_flood_reserves_two_ordinary_inputs_in_the_same_owner_budget() {
+    let (_home, _host, sender, target, provider) = fixture().await;
+    let owner = target
+        .create_work_item(
+            "result-first mixed owner".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut results = Vec::new();
+    for index in 0..8 {
+        results.push(
+            publish_owner_result(
+                &target,
+                &owner.id,
+                format!("flood-result-{index}"),
+                &format!("flood-body-{index}"),
+            )
+            .await,
+        );
+    }
+    let mut ordinary = Vec::new();
+    for index in 0..6 {
+        let id = send(
+            &sender,
+            &target,
+            &format!("late-peer-{index}"),
+            &format!("late-ordinary-{index}"),
+        )
+        .await;
+        bind_receiver_owner(&target, &id, &owner.id).await;
+        ordinary.push(id);
+    }
+    process_one(&target).await;
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(
+        turn.input_message_ids,
+        [results[0].clone(), ordinary[0].clone(), ordinary[1].clone()]
+    );
+    for (index, id) in results.iter().enumerate() {
+        let record = target
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .latest_for_message(id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            record.state
+                == crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled,
+            index < 6
+        );
+    }
+    for id in &ordinary[2..] {
+        assert_eq!(
+            target
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest(id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Queued
+        );
+    }
+    assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn p1_mixed_budget_reserves_ordinary_bytes_before_result_admission() {
+    let (_home, _host, sender, target, provider) = fixture().await;
+    let owner = target
+        .create_work_item(
+            "mixed byte fairness".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let first = send(&sender, &target, "first", "ordinary anchor").await;
+    bind_receiver_owner(&target, &first, &owner.id).await;
+    let mut results = Vec::new();
+    for index in 0..6 {
+        results.push(
+            publish_owner_result(
+                &target,
+                &owner.id,
+                format!("fair-result-{index}-{}", "x".repeat(1900)),
+                "terminal result",
+            )
+            .await,
+        );
+    }
+    let second = send(&sender, &target, "large-ordinary", &"y".repeat(12000)).await;
+    bind_receiver_owner(&target, &second, &owner.id).await;
+    process_one(&target).await;
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(turn.input_message_ids, [first, second]);
+    let settled = results
+        .iter()
+        .filter(|id| {
+            target
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .latest_for_message(id)
+                .unwrap()
+                .unwrap()
+                .state
+                == crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+        })
+        .count();
+    assert_eq!(settled, 2);
+    let requests = provider.requests.lock().await;
+    let visible = requests[0]
+        .prompt_frame
+        .context_blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(visible.contains(&"y".repeat(12000)));
+}
+
+#[tokio::test]
+async fn p1_result_bytes_are_reserved_before_the_source_ledger_admits() {
+    let (_home, _host, sender, target, provider) = fixture().await;
+    let owner = target
+        .create_work_item(
+            "result byte budget".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let anchor = send(
+        &sender,
+        &target,
+        "budget-anchor",
+        "check pending result budget",
+    )
+    .await;
+    bind_receiver_owner(&target, &anchor, &owner.id).await;
+    let mut results = Vec::new();
+    for index in 0..7 {
+        results.push(
+            publish_owner_result(
+                &target,
+                &owner.id,
+                format!("large-task-{index}-{}", "x".repeat(1900)),
+                "terminal result",
+            )
+            .await,
+        );
+    }
+    let first = results[0].clone();
+    let second = results.last().unwrap().clone();
+    let candidates = target
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .unsettled_for_owner("batch-target", Some(&owner.id), 8)
+        .unwrap();
+    let anchor = target
+        .storage()
+        .read_message_by_id(&anchor)
+        .unwrap()
+        .unwrap();
+    let pending =
+        crate::context::render_pending_task_result_records(&target.storage(), &anchor, &candidates)
+            .unwrap()
+            .unwrap();
+    assert!(pending.len() > input_consumption::INPUT_BATCH_BYTES);
+    process_one(&target).await;
+    let first_record = target
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&first)
+        .unwrap()
+        .unwrap();
+    let second_record = target
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&second)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (first_record.state, first_record.disposition),
+        (
+            crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled,
+            Some(crate::runtime_db::task_result_settlement::TaskResultSettlementDisposition::ModelDelivered)
+        )
+    );
+    assert_eq!(
+        (second_record.state, second_record.disposition),
+        (
+            crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending,
+            None
+        )
+    );
+    assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn p1_exact_waiter_precedes_owner_batch_without_migrating_result_owner() {
+    let (_home, _host, sender, target, provider) = fixture().await;
+    let owner = target
+        .create_work_item(
+            "task producer".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let waiter = target
+        .create_work_item(
+            "independent waiter".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let first = send(
+        &sender,
+        &target,
+        "ordinary-first",
+        "must not absorb exact result",
+    )
+    .await;
+    bind_receiver_owner(&target, &first, &owner.id).await;
+    let second = send(&sender, &target, "ordinary-second", "same producer owner").await;
+    bind_receiver_owner(&target, &second, &owner.id).await;
+    let result = publish_owner_result(
+        &target,
+        &owner.id,
+        "p1-exact-cross-owner".into(),
+        "promised exact result",
+    )
+    .await;
+    let outcome = target
+        .register_wait_for_outcome(
+            "batch-target",
+            Some(waiter.id.clone()),
+            crate::runtime::WaitForWakeKind::TaskResult,
+            Some("p1-exact-cross-owner".into()),
+            "exact dependency must retain its own execution".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let crate::runtime::WaitForRegistrationOutcome::TaskResultQueued {
+        wait_condition_id, ..
+    } = outcome
+    else {
+        panic!("completed dependency must queue the exact result");
+    };
+    // This fixture registers outside an open execution; seed the authority
+    // that a real yielding WaitFor commits with its execution settlement.
+    let waiter = target.latest_work_item(&waiter.id).await.unwrap().unwrap();
+    seed_waiting_work_execution(target.storage(), &waiter, &wait_condition_id);
+    process_one(&target).await;
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(turn.input_message_ids, [result.clone()]);
+    assert_eq!(
+        turn.effective_owner(),
+        TurnOwner::WorkItem {
+            work_item_id: waiter.id
+        }
+    );
+    assert_eq!(
+        target
+            .storage()
+            .latest_task_record("p1-exact-cross-owner")
+            .unwrap()
+            .unwrap()
+            .work_item_id,
+        Some(owner.id.clone())
+    );
+    let record = target
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&result)
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.work_item_id, Some(owner.id));
+    assert_eq!(
+        record.state,
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+    );
+    let queued = target.inner.agent.lock().await.queue.input_snapshot(8);
+    assert_eq!(
+        queued.iter().map(|message| &message.id).collect::<Vec<_>>(),
+        [&first, &second]
+    );
+    assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn p1_receiver_owner_combines_multiple_senders_without_using_current_focus() {
+    let (_home, host, sender, target, provider) = fixture().await;
+    host.create_named_agent("other-sender", None).await.unwrap();
+    let other = host.get_public_agent("other-sender").await.unwrap();
+    let owner = target
+        .create_work_item(
+            "explicit receiver owner".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let focus = target
+        .create_work_item(
+            "unrelated focus".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    target.pick_work_item(focus.id).await.unwrap();
+    let first = send(&sender, &target, "first", "request").await;
+    bind_receiver_owner(&target, &first, &owner.id).await;
+    let second = send(&other, &target, "second", "correction from another sender").await;
+    bind_receiver_owner(&target, &second, &owner.id).await;
+    process_one(&target).await;
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(turn.input_message_ids, [first, second]);
+    assert_eq!(
+        turn.current_work_item_id.as_deref(),
+        Some(owner.id.as_str())
+    );
+    assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn p1_sender_never_bridges_receiver_owners_through_an_unbound_message() {
+    let (_home, _host, sender, target, _) = fixture().await;
+    let owner_a = target
+        .create_work_item(
+            "owner A".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let owner_b = target
+        .create_work_item(
+            "owner B".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let first = send(&sender, &target, "first", "owner A request").await;
+    bind_receiver_owner(&target, &first, &owner_a.id).await;
+    let unbound = send(&sender, &target, "unbound", "unassociated message").await;
+    let other_owner = send(&sender, &target, "other", "owner B request").await;
+    bind_receiver_owner(&target, &other_owner, &owner_b.id).await;
+    let last = send(&sender, &target, "last", "owner A correction").await;
+    bind_receiver_owner(&target, &last, &owner_a.id).await;
+    process_one(&target).await;
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(turn.input_message_ids, [first, last]);
+    let queued = target.inner.agent.lock().await.queue.input_snapshot(64);
+    assert_eq!(
+        queued.iter().map(|message| &message.id).collect::<Vec<_>>(),
+        [&unbound, &other_owner]
+    );
+}
+
+#[tokio::test]
+async fn p1_sender_messages_1_2_8_9_use_bounded_provider_batches() {
+    for count in [1usize, 2, 8, 9] {
+        let (_home, _host, sender, target, provider) = fixture().await;
+        let mut ids = Vec::new();
+        for index in 0..count {
+            ids.push(
+                send(
+                    &sender,
+                    &target,
+                    &format!("message-{index}"),
+                    &format!("input-{index}"),
+                )
+                .await,
+            );
+        }
+        for _ in 0..count.div_ceil(input_consumption::INPUT_BATCH_ITEMS) {
+            process_one(&target).await;
+        }
+        assert_eq!(
+            provider.requests.lock().await.len(),
+            count.div_ceil(8),
+            "{count}"
+        );
+        let turns = target.storage().read_recent_turns(20).unwrap();
+        let mut delivered = Vec::new();
+        for turn in &turns {
+            let batch = turn
+                .idle_input_batch
+                .as_ref()
+                .expect("durable sender batch");
+            assert!(batch.items.len() <= 8);
+            assert!(batch.rendered_bytes <= batch.max_bytes);
+            assert_eq!(
+                input_consumption::render_batch(batch).len(),
+                batch.rendered_bytes
+            );
+            assert_eq!(
+                turn.input_message_ids,
+                batch
+                    .items
+                    .iter()
+                    .map(|item| item.message_id.clone())
+                    .collect::<Vec<_>>()
+            );
+            delivered.extend(turn.input_message_ids.clone());
+        }
+        assert_eq!(delivered, ids);
+        assert!(target.inner.agent.lock().await.queue.is_empty());
+        let requests = provider.requests.lock().await;
+        for (index, request) in requests.iter().enumerate() {
+            let context = request
+                .prompt_frame
+                .context_blocks
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            for input in index * 8..((index + 1) * 8).min(count) {
+                assert!(context.contains(&format!("input-{input}")));
+                assert!(context.contains(&format!("reply_context_id: {}", ids[input])));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn p1_different_runtime_senders_are_not_combined() {
+    let (_home, host, sender, target, provider) = fixture().await;
+    host.create_named_agent("other-sender", None).await.unwrap();
+    let other = host.get_public_agent("other-sender").await.unwrap();
+    let first = send(&sender, &target, "first", "original request").await;
+    let second = send(&other, &target, "second", "unrelated sender").await;
+    process_one(&target).await;
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(turn.input_message_ids, [first]);
+    assert_eq!(
+        target.inner.agent.lock().await.queue.peek().unwrap().id,
+        second
+    );
+    process_one(&target).await;
+    assert_eq!(provider.requests.lock().await.len(), 2);
+}
+
+#[tokio::test]
+async fn p1_oversize_input_preserves_utf8_preview_and_reachable_source() {
+    let (_home, _host, sender, target, provider) = fixture().await;
+    let id = send(&sender, &target, "large", &"更正".repeat(40_000)).await;
+    process_one(&target).await;
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    let batch = turn.idle_input_batch.unwrap();
+    assert!(batch.rendered_bytes <= input_consumption::INPUT_BATCH_BYTES);
+    assert!(batch.items[0].rendered.contains("[bounded preview"));
+    assert_eq!(batch.items[0].source_ref, format!("message:{id}"));
+    let source = target.storage().read_message_by_id(&id).unwrap().unwrap();
+    assert_eq!(message_text(&source.body), "更正".repeat(40_000));
+    assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn p1_turn_start_cutoff_excludes_arrivals_before_later_context_rebuild() {
+    let (_home, _host, sender, target, _) = fixture().await;
+    let first = send(&sender, &target, "first", "already present").await;
+    let anchor = start_without_provider(&target).await;
+    let late = send(&sender, &target, "late", "arrived after turn start").await;
+    assert!(target
+        .attach_idle_sender_inputs(&anchor, 24 * 1024)
+        .await
+        .unwrap());
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(turn.input_message_ids, [first]);
+    assert_eq!(
+        target.inner.agent.lock().await.queue.peek().unwrap().id,
+        late
+    );
+}
+
+#[tokio::test]
+async fn p1_concurrent_attachment_and_fixed_cutoff_do_not_double_consume() {
+    let (_home, _host, sender, target, provider) = fixture().await;
+    let first = send(&sender, &target, "one", "original request").await;
+    let second = send(&sender, &target, "two", "correction: use the second value").await;
+    let anchor = start_without_provider(&target).await;
+    let (left, right) = tokio::join!(
+        target.attach_idle_sender_inputs(&anchor, 24 * 1024),
+        target.attach_idle_sender_inputs(&anchor, 24 * 1024),
+    );
+    assert_ne!(left.unwrap(), right.unwrap());
+    let late = send(&sender, &target, "late", "after fixed cutoff").await;
+    assert!(!target
+        .attach_idle_sender_inputs(&anchor, 24 * 1024)
+        .await
+        .unwrap());
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(turn.input_message_ids, [first, second.clone()]);
+    let batch = turn.idle_input_batch.unwrap();
+    let rendered = input_consumption::render_batch(&batch);
+    assert!(rendered.find("original request").unwrap() < rendered.find("correction:").unwrap());
+    assert_eq!(
+        target
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&second)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Interjected
+    );
+    assert_eq!(
+        target.inner.agent.lock().await.queue.peek().unwrap().id,
+        late
+    );
+    assert!(provider.requests.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn p1_unreconciled_reply_wait_is_not_sender_fallback() {
+    let (_home, _host, sender, target, _) = fixture().await;
+    send(&sender, &target, "one", "anchor").await;
+    let follower = send(&sender, &target, "two", "reply candidate").await;
+    let anchor = start_without_provider(&target).await;
+    target
+        .storage()
+        .append_task(&TaskRecord {
+            id: "unreconciled-reply".into(),
+            agent_id: "batch-target".into(),
+            kind: TaskKind::AgentMessageWait,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: Some(anchor.id.clone()),
+            work_item_id: None,
+            summary: Some("receipt is still being attached".into()),
+            detail: None,
+            recovery: Some(crate::types::TaskRecoverySpec::AgentMessageWait {
+                summary: "pending reply".into(),
+                message: String::new(),
+                target_agent_id: sender.agent_id().await.unwrap(),
+                authority_class: AuthorityClass::RuntimeInstruction,
+                delivery_id: None,
+                after_delivery_rowid: None,
+            }),
+        })
+        .unwrap();
+    assert!(!target
+        .attach_idle_sender_inputs(&anchor, 24 * 1024)
+        .await
+        .unwrap());
+    assert_eq!(
+        target
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&follower)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
+}
+
+#[tokio::test]
+async fn p1_byte_budget_defers_whole_normal_item_without_claiming_it() {
+    let (_home, _host, sender, target, _) = fixture().await;
+    send(&sender, &target, "one", &"a".repeat(1200)).await;
+    let follower = send(&sender, &target, "two", &"b".repeat(1200)).await;
+    let anchor = start_without_provider(&target).await;
+    assert!(target
+        .attach_idle_sender_inputs(&anchor, 2400)
+        .await
+        .unwrap());
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    let batch = turn.idle_input_batch.unwrap();
+    assert_eq!(batch.items.len(), 1);
+    assert!(batch.rendered_bytes <= 2400);
+    assert_eq!(
+        target
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&follower)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
+}
+
+#[tokio::test]
+async fn p1_current_focus_is_not_receiver_ownership() {
+    let (_home, _host, sender, target, _) = fixture().await;
+    let owner = target
+        .create_work_item(
+            "unrelated focus".into(),
+            Some(crate::types::WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    target.pick_work_item(owner.id.clone()).await.unwrap();
+    let first = send(&sender, &target, "one", "unassociated").await;
+    let second = send(&sender, &target, "two", "also unassociated").await;
+    process_one(&target).await;
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(turn.input_message_ids, [first, second]);
+    assert_eq!(turn.current_work_item_id, None);
+    assert!(matches!(
+        turn.effective_owner(),
+        crate::types::TurnOwner::AgentLifecycle { .. }
+    ));
+}
+
+#[tokio::test]
+async fn p1_operator_interject_remains_ahead_of_sender_batch() {
+    let (_home, _host, sender, target, provider) = fixture().await;
+    send(&sender, &target, "one", "peer-one").await;
+    send(&sender, &target, "two", "peer-two").await;
+    let operator = MessageEnvelope::new(
+        "batch-target",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("test".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Interject,
+        MessageBody::Text {
+            text: "operator-priority".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        crate::types::AdmissionContext::LocalProcess,
+    );
+    let id = target.enqueue(operator).await.unwrap().id;
+    process_one(&target).await;
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(turn.input_message_ids, [id]);
+    assert!(turn.idle_input_batch.is_none());
+    assert_eq!(target.inner.agent.lock().await.queue.len(), 2);
+    assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn p1_same_sender_different_authority_is_not_combined() {
+    let (_home, _host, sender, target, _) = fixture().await;
+    let first = send(&sender, &target, "one", "runtime instruction").await;
+    let second = send_with_authority(
+        &sender,
+        &target,
+        "two",
+        "external evidence",
+        AuthorityClass::ExternalEvidence,
+    )
+    .await;
+    process_one(&target).await;
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(turn.input_message_ids, [first]);
+    assert_eq!(
+        target
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&second)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
+}
+
+#[tokio::test]
+async fn p1_scan_stops_at_64_snapshot_candidates() {
+    let (_home, host, sender, target, _) = fixture().await;
+    host.create_named_agent("other-sender", None).await.unwrap();
+    let other = host.get_public_agent("other-sender").await.unwrap();
+    let first = send(&sender, &target, "one", "anchor").await;
+    for index in 0..64 {
+        send(
+            &other,
+            &target,
+            &format!("other-{index}"),
+            "incompatible sender",
+        )
+        .await;
+    }
+    let beyond = send(&sender, &target, "beyond", "outside scan").await;
+    let anchor = start_without_provider(&target).await;
+    assert!(target
+        .attach_idle_sender_inputs(&anchor, 24 * 1024)
+        .await
+        .unwrap());
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(turn.input_message_ids, [first]);
+    assert_eq!(
+        target
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&beyond)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
+}
+
+#[tokio::test]
+async fn p1_precommit_fault_leaves_follower_queued_and_unattached() {
+    let (_home, _host, sender, target, _) = fixture().await;
+    let first = send(&sender, &target, "one", "original").await;
+    let second = send(&sender, &target, "two", "follow-up").await;
+    let anchor = start_without_provider(&target).await;
+    target.inject_next_transition_fault(
+        crate::runtime_db::transitions::TransitionFaultPoint::BeforeCommit,
+    );
+    assert!(target
+        .attach_idle_sender_inputs(&anchor, 24 * 1024)
+        .await
+        .is_err());
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(turn.input_message_ids, [first]);
+    assert_eq!(turn.idle_input_batch.unwrap().items.len(), 1);
+    assert_eq!(
+        target
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&second)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
+}
+
+#[tokio::test]
+async fn p1_restart_presents_attached_inputs_before_claiming_new_arrivals() {
+    let (home, host, sender, target, provider) = fixture().await;
+    let first = send(&sender, &target, "one", "original request").await;
+    let second = send(&sender, &target, "two", "correction before crash").await;
+    let anchor = start_without_provider(&target).await;
+    assert!(target
+        .attach_idle_sender_inputs(&anchor, 24 * 1024)
+        .await
+        .unwrap());
+    let original_batch = target
+        .storage()
+        .read_recent_turns(1)
+        .unwrap()
+        .remove(0)
+        .idle_input_batch
+        .unwrap();
+    let late = send_with_priority_and_authority(
+        &sender,
+        &target,
+        "late",
+        "after original snapshot",
+        Priority::Next,
+        AuthorityClass::RuntimeInstruction,
+    )
+    .await;
+    drop(target);
+    drop(sender);
+    drop(host);
+    let target = RuntimeHandle::new(
+        "batch-target",
+        home.path().join("batch-target-state"),
+        home.path().join("batch-workspace"),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "fixture".into(),
+        context_config(),
+    )
+    .unwrap();
+    target.recover_scheduler_bootstrap_claims().await.unwrap();
+    assert_eq!(
+        target.inner.agent.lock().await.queue.peek().unwrap().id,
+        late
+    );
+    process_one(&target).await;
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(turn.input_message_ids, [first.clone(), second.clone()]);
+    let recovered_batch = turn.idle_input_batch.unwrap();
+    assert_ne!(recovered_batch.activation_id, original_batch.activation_id);
+    assert_eq!(recovered_batch.items, original_batch.items);
+    assert_eq!(recovered_batch.cutoff, original_batch.cutoff);
+    assert_eq!(
+        target.inner.agent.lock().await.queue.peek().unwrap().id,
+        late
+    );
+    let requests = provider.requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    let context = requests[0]
+        .prompt_frame
+        .context_blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(context.contains("correction before crash"));
+    assert!(!context.contains("after original snapshot"));
+    drop(requests);
+    process_one(&target).await;
+    assert_eq!(
+        target.storage().read_recent_turns(1).unwrap()[0].input_message_ids,
+        [late]
+    );
+    assert!(target.inner.agent.lock().await.queue.is_empty());
+    assert_eq!(provider.requests.lock().await.len(), 2);
+    for (id, status) in [
+        (first, QueueEntryStatus::Processed),
+        (second, QueueEntryStatus::Interjected),
+    ] {
+        assert_eq!(
+            target
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest(&id)
+                .unwrap()
+                .unwrap()
+                .status,
+            status
+        );
+    }
+}
+
+// Keep fixture preparation off the subsequent provider execution poll stack.
+fn seed_recovery_priority_barrier<'a>(
+    target: &'a RuntimeHandle,
+    barrier: &'a str,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + 'a>> {
+    Box::pin(async move {
+        if barrier == "operator" {
+            let message = MessageEnvelope::new(
+                "batch-target",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: Some("test".into()),
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Interject,
+                MessageBody::Text {
+                    text: "operator before interrupted batch".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::CliPrompt,
+                AdmissionContext::LocalProcess,
+            );
+            target.enqueue(message).await.unwrap().id
+        } else {
+            let owner = target
+                .create_work_item(
+                    "priority result producer".into(),
+                    Some(WorkItemPlanStatus::Ready),
+                    None,
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+            let task_id = format!("recovery-barrier-{barrier}");
+            let result = publish_owner_result_with_priority(
+                target,
+                &owner.id,
+                task_id.clone(),
+                "priority result before interrupted batch",
+                if barrier == "task-rejoin" {
+                    Priority::Next
+                } else {
+                    Priority::Normal
+                },
+            )
+            .await;
+            if barrier == "exact-waiter" {
+                let waiter = target
+                    .create_work_item(
+                        "independent exact waiter".into(),
+                        Some(WorkItemPlanStatus::Ready),
+                        None,
+                        Vec::new(),
+                    )
+                    .await
+                    .unwrap();
+                let outcome = target
+                    .register_wait_for_outcome(
+                        "batch-target",
+                        Some(waiter.id.clone()),
+                        crate::runtime::WaitForWakeKind::TaskResult,
+                        Some(task_id),
+                        "exact result before interrupted batch".into(),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                let crate::runtime::WaitForRegistrationOutcome::TaskResultQueued {
+                    wait_condition_id,
+                    ..
+                } = outcome
+                else {
+                    panic!("completed dependency must queue the exact result");
+                };
+                let waiter = target.latest_work_item(&waiter.id).await.unwrap().unwrap();
+                seed_waiting_work_execution(target.storage(), &waiter, &wait_condition_id);
+            }
+            result
+        }
+    })
+}
+
+#[tokio::test]
+async fn p1_recovered_batch_never_precedes_operator_task_rejoin_or_exact_waiter() {
+    for barrier in ["operator", "task-rejoin", "exact-waiter"] {
+        let (home, _host, sender, target, provider) = fixture().await;
+        let first = send(&sender, &target, "one", "interrupted original").await;
+        let second = send(&sender, &target, "two", "interrupted follower").await;
+        let anchor = Box::pin(start_without_provider(&target)).await;
+        assert!(target
+            .attach_idle_sender_inputs(&anchor, 24 * 1024)
+            .await
+            .unwrap());
+        drop(target);
+        let target = RuntimeHandle::new(
+            "batch-target",
+            home.path().join("batch-target-state"),
+            home.path().join("batch-workspace"),
+            "http://127.0.0.1:7878".into(),
+            provider.clone(),
+            "fixture".into(),
+            context_config(),
+        )
+        .unwrap();
+        Box::pin(target.recover_scheduler_bootstrap_claims())
+            .await
+            .unwrap();
+        let blocker = seed_recovery_priority_barrier(&target, barrier).await;
+        let late = send_with_priority_and_authority(
+            &sender,
+            &target,
+            "late",
+            "fresh ordinary backlog",
+            Priority::Next,
+            AuthorityClass::RuntimeInstruction,
+        )
+        .await;
+        Box::pin(process_one(&target)).await;
+        let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+        assert_eq!(turn.input_message_ids, [blocker.clone()], "{barrier}");
+        if let Some(batch) = turn.idle_input_batch {
+            assert_eq!(batch.anchor_message_id, blocker, "{barrier}");
+            assert_eq!(batch.items.len(), 1, "{barrier}");
+        }
+        Box::pin(process_one(&target)).await;
+        let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+        assert_eq!(turn.input_message_ids, [first, second], "{barrier}");
+        Box::pin(process_one(&target)).await;
+        assert_eq!(
+            target.storage().read_recent_turns(1).unwrap()[0].input_message_ids,
+            [late],
+            "{barrier}"
+        );
+        for _ in 0..8 {
+            if target
+                .inner
+                .agent
+                .lock()
+                .await
+                .queue
+                .peek()
+                .is_none_or(|message| {
+                    matches!(&message.origin,
+                    MessageOrigin::System { subsystem } if subsystem == "work_queue")
+                })
+            {
+                break;
+            }
+            let poll = scheduler_executor::SchedulerDecisionExecutor::new(&target)
+                .poll()
+                .await
+                .unwrap();
+            if let scheduler_executor::RunLoopPoll::Message(scheduled) = poll {
+                assert!(
+                    !scheduled.scheduler_decision.model_reentry,
+                    "{barrier}: a settled notification must not reenter the model: {:?}",
+                    scheduled.message
+                );
+                process_scheduled(&target, scheduled).await;
+            }
+        }
+        // Ready business objectives are not settled task notifications.
+        assert!(
+            target
+                .inner
+                .agent
+                .lock()
+                .await
+                .queue
+                .peek_next_matching(|message| !matches!(&message.origin,
+                    MessageOrigin::System { subsystem } if subsystem == "work_queue"))
+                .is_none(),
+            "{barrier}"
+        );
+        if barrier != "operator" {
+            let record = target
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .latest_for_message(&blocker)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                record.state,
+                crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+            );
+            assert_eq!(record.disposition,
+                Some(crate::runtime_db::task_result_settlement::TaskResultSettlementDisposition::ModelDelivered));
+        }
+        assert_eq!(provider.requests.lock().await.len(), 3, "{barrier}");
+    }
+}
+
+#[tokio::test]
+async fn p1_null_ingress_turn_recovers_twice_without_rebinding_attempt_turns() {
+    let (home, host, sender, target, provider) = fixture().await;
+    let first = send(&sender, &target, "one", "null ingress original").await;
+    let second = send(&sender, &target, "two", "null ingress follower").await;
+    // A persisted pre-assignment input is admitted as-is, not rewritten into a
+    // fabricated live attempt. New enqueue normally assigns an ingress ID.
+    {
+        let mut guard = target.inner.agent.lock().await;
+        guard
+            .queue
+            .pop_next_matching(|message| message.id == first)
+            .unwrap();
+        let mut message = target
+            .storage()
+            .read_message_by_id(&first)
+            .unwrap()
+            .unwrap();
+        message.turn_id = None;
+        target
+            .inner
+            .runtime_db
+            .transaction(|tx| crate::runtime_db::evidence::insert_message_evidence_tx(tx, &message))
+            .unwrap();
+        guard.queue.push_front(message);
+    }
+    let anchor = start_without_provider(&target).await;
+    assert!(anchor.turn_id.is_none());
+    assert!(target
+        .attach_idle_sender_inputs(&anchor, 24 * 1024)
+        .await
+        .unwrap());
+    let original = target.storage().read_recent_turns(1).unwrap().remove(0);
+    let original_batch = original.idle_input_batch.clone().unwrap();
+    let execution = target
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("batch-target")
+        .unwrap()
+        .unwrap();
+    assert!(
+        execution.attempts[original_batch.activation_id.as_ref().unwrap()]
+            .turn_id
+            .is_none()
+    );
+    drop(target);
+    drop(sender);
+    drop(host);
+    let reopen = || {
+        RuntimeHandle::new(
+            "batch-target",
+            home.path().join("batch-target-state"),
+            home.path().join("batch-workspace"),
+            "http://127.0.0.1:7878".into(),
+            provider.clone(),
+            "fixture".into(),
+            context_config(),
+        )
+        .unwrap()
+    };
+    let target = reopen();
+    target.recover_scheduler_bootstrap_claims().await.unwrap();
+    let anchor = start_without_provider(&target).await;
+    assert!(anchor.turn_id.is_none());
+    assert!(target
+        .attach_idle_sender_inputs(&anchor, 24 * 1024)
+        .await
+        .unwrap());
+    let recovered = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(
+        recovered.replay.as_ref().unwrap().source_turn_id,
+        original.turn_id
+    );
+    assert_eq!(recovered.input_message_ids, [first.clone(), second.clone()]);
+    assert_eq!(
+        recovered.idle_input_batch.as_ref().unwrap().items,
+        original_batch.items
+    );
+    drop(target);
+    let target = reopen();
+    target.recover_scheduler_bootstrap_claims().await.unwrap();
+    process_one(&target).await;
+    let final_turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(
+        final_turn.replay.as_ref().unwrap().source_turn_id,
+        recovered.turn_id
+    );
+    assert_eq!(final_turn.input_message_ids, [first, second]);
+    assert_eq!(
+        final_turn.idle_input_batch.unwrap().items,
+        original_batch.items
+    );
+    assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn p1_recovery_rejects_missing_or_foreign_snapshot_admission() {
+    for invalid_evidence in [
+        "activation",
+        "owner",
+        "input",
+        "prior_id",
+        "prior_state",
+        "prior_agent",
+        "prior_source",
+        "prior_binding",
+        "source_turn",
+    ] {
+        let (home, host, sender, target, provider) = fixture().await;
+        let first = send(&sender, &target, "one", "original request").await;
+        let second = send(&sender, &target, "two", "already attached follower").await;
+        let anchor = start_without_provider(&target).await;
+        assert!(target
+            .attach_idle_sender_inputs(&anchor, 24 * 1024)
+            .await
+            .unwrap());
+        let mut source = target.storage().read_recent_turns(1).unwrap().remove(0);
+        match invalid_evidence {
+            "activation" => {
+                source.idle_input_batch.as_mut().unwrap().activation_id =
+                    Some("foreign-attempt".into());
+            }
+            "owner" => source.owner = Some(TurnOwner::Command),
+            "input" => source.input_message_ids.retain(|id| id != &second),
+            _ => {}
+        }
+        // Inject corrupt evidence directly; normal storage correctly rejects
+        // changes to immutable turn identity.
+        assert_eq!(
+            target
+                .inner
+                .runtime_db
+                .connection()
+                .unwrap()
+                .execute(
+                    "UPDATE turn_records SET payload_json = ?1 WHERE turn_id = ?2",
+                    rusqlite::params![serde_json::to_string(&source).unwrap(), source.turn_id],
+                )
+                .unwrap(),
+            1
+        );
+        drop(target);
+        drop(sender);
+        drop(host);
+        let target = RuntimeHandle::new(
+            "batch-target",
+            home.path().join("batch-target-state"),
+            home.path().join("batch-workspace"),
+            "http://127.0.0.1:7878".into(),
+            provider.clone(),
+            "fixture".into(),
+            context_config(),
+        )
+        .unwrap();
+        target.recover_scheduler_bootstrap_claims().await.unwrap();
+        let anchor = start_without_provider(&target).await;
+        assert_eq!(anchor.id, first);
+        let mut recovered = target.storage().read_recent_turns(1).unwrap().remove(0);
+        if invalid_evidence.starts_with("prior_") {
+            let activation_id = target
+                .inner
+                .agent
+                .lock()
+                .await
+                .state
+                .current_execution_binding
+                .as_ref()
+                .unwrap()
+                .activation_id
+                .clone()
+                .unwrap();
+            let mut execution = target
+                .inner
+                .runtime_db
+                .transitions()
+                .load_execution_protocol_state_if_initialized("batch-target")
+                .unwrap()
+                .unwrap();
+            let prior_id = execution.attempts[&activation_id]
+                .recovery_of_attempt_id
+                .clone()
+                .unwrap();
+            let corrupt = if invalid_evidence == "prior_id" {
+                execution.attempts.get_mut(&activation_id).unwrap()
+            } else {
+                execution.attempts.get_mut(&prior_id).unwrap()
+            };
+            match invalid_evidence {
+                "prior_id" => corrupt.recovery_of_attempt_id = Some("foreign-attempt".into()),
+                "prior_state" => {
+                    corrupt.state =
+                        crate::domain::execution_protocol::ExecutionAttemptState::Settled;
+                }
+                "prior_agent" => corrupt.agent_id = "foreign-agent".into(),
+                "prior_source" => corrupt.source_message_id = Some(second.clone()),
+                "prior_binding" => {
+                    corrupt.binding = crate::domain::execution_protocol::ExecutionBinding::Command;
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                target
+                    .inner
+                    .runtime_db
+                    .connection()
+                    .unwrap()
+                    .execute(
+                        "UPDATE execution_protocol_attempts SET payload_json = ?1
+                         WHERE agent_id = 'batch-target' AND attempt_id = ?2",
+                        rusqlite::params![
+                            serde_json::to_string(corrupt).unwrap(),
+                            corrupt.attempt_id
+                        ],
+                    )
+                    .unwrap(),
+                1
+            );
+        } else if invalid_evidence == "source_turn" {
+            // A same-agent turn carrying the same copied batch is still not
+            // the interrupted attempt's canonical predecessor turn.
+            source.turn_id = format!("{}-foreign", source.turn_id);
+            target.storage().append_turn(&source).unwrap();
+            recovered.replay.as_mut().unwrap().source_turn_id = source.turn_id;
+            assert_eq!(
+                target
+                    .inner
+                    .runtime_db
+                    .connection()
+                    .unwrap()
+                    .execute(
+                        "UPDATE turn_records SET payload_json = ?1 WHERE turn_id = ?2",
+                        rusqlite::params![
+                            serde_json::to_string(&recovered).unwrap(),
+                            recovered.turn_id
+                        ],
+                    )
+                    .unwrap(),
+                1
+            );
+        }
+        assert!(
+            target
+                .attach_idle_sender_inputs(&anchor, 24 * 1024)
+                .await
+                .is_err(),
+            "{invalid_evidence}"
+        );
+        let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+        assert_eq!(turn.input_message_ids, [first]);
+        assert!(turn.idle_input_batch.is_none());
+        assert_eq!(
+            target
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest(&second)
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Interjected
+        );
+        assert!(provider.requests.lock().await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn p1_changed_or_invalid_receiver_binding_never_falls_back_to_sender() {
+    let (_home, _host, sender, target, _) = fixture().await;
+    let first = send(&sender, &target, "one", "ordinary anchor").await;
+    let second = send(&sender, &target, "two", "bound follower").await;
+    let mut message = target
+        .storage()
+        .read_message_by_id(&second)
+        .unwrap()
+        .unwrap();
+    message.work_item_id = Some("invalid-receiver-owner".into());
+    target
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::evidence::insert_message_evidence_tx(tx, &message))
+        .unwrap();
+    process_one(&target).await;
+    let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(turn.input_message_ids, [first]);
+    assert_eq!(
+        target
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&second)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
+}

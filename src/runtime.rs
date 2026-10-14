@@ -12,6 +12,7 @@ mod delivery;
 pub(crate) mod execution_admission;
 mod failure;
 mod first_run_intro;
+pub(crate) mod input_consumption;
 mod lifecycle;
 mod message_dispatch;
 mod operator;
