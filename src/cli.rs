@@ -112,8 +112,8 @@ pub enum Commands {
         agent: Option<String>,
     },
     Tail {
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
+        #[command(flatten)]
+        options: crate::tail::TailOptions,
         #[arg(long)]
         agent: Option<String>,
     },

@@ -1551,7 +1551,7 @@ fn conversation_snapshot_context(
     let visible = connection
         .query_row(
             "SELECT 1 FROM agent_identities
-             WHERE agent_id = ?1 AND status = 'active' AND visibility = 'public'",
+             WHERE agent_id = ?1 AND status = 'active'",
             [agent_id],
             |_| Ok(()),
         )

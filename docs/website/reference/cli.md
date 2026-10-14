@@ -13,6 +13,33 @@ For scripting guidance, stability levels, and support policy, see
 [CLI stability policy](./cli-stability-policy.md) and
 [CLI contract inventory](./cli-contract-inventory.md).
 
+## Agent output observation
+
+`holon tail --agent <id> --limit 20` retains the default JSON brief snapshot.
+Opt in to persisted assistant text progress and bounded observation:
+
+```bash
+holon tail --agent child --include-progress
+holon tail --agent child --include-progress --follow --timeout-ms 5000 \
+  --max-events 100 --max-bytes 65536
+holon tail --agent child --include-progress --follow --cursor '<checkpoint>'
+```
+
+Opt-in output is NDJSON: progress/brief/turn-status records followed by an `end`
+receipt with cursor, stop reason, record count and timestamped runtime status.
+Follow has a whole-operation deadline (default 5 s, maximum 30 s), record budget
+(default 100, maximum 1000, excluding the final receipt), and serialized byte
+budget (default 64 KiB, maximum 1 MiB, including the receipt). `--follow` alone
+follows briefs; `--cursor` resumes after a conversation stream checkpoint without
+replaying the initial text snapshot. Reset/gap requires a fresh snapshot.
+
+Reads select output types, not tasks: one agent's tasks may be mixed. They do not
+expose raw transcript, reasoning or tool trace, but are not an isolation or
+redaction guarantee. Reads never prompt/wake/stop the observed agent or consume
+task results. Use `TaskStatus` and `WaitFor(task_result)` for task completion.
+The runtime must advertise `agents.conversation-read.v1` for opt-in observation;
+the existing default brief snapshot remains available without it.
+
 ## Command Tree
 
 ```text
@@ -50,7 +77,7 @@ holon (v0.50.0)
 │   ├── schema   Show all config keys with types and defaults
 │   └── doctor   Full system health check
 ├── prompt       Send a prompt to an agent (lightweight)
-├── tail         Show recent log tail
+├── tail         Read recent briefs or bounded agent progress
 ├── transcript   Show conversation transcript
 ├── events       Read stable runtime event envelopes
 │   ├── tail     Fetch a bounded page of event envelopes
