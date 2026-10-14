@@ -100,7 +100,8 @@ order: 11
 | 命令 | 参数 | 选项 | 输出 | 初始稳定性 | 备注 |
 |---|---|---|---|---:|---|
 | `holon prompt` | `<TEXT>` | `--agent <AGENT>` | JSON 控制平面 prompt 响应 | `experimental` | 轻量 prompt 路径；响应形态属于控制平面 API 清册。 |
-| `holon tail` | none | `--limit <LIMIT>` 默认 `20`；`--agent <AGENT>` | JSON 近期 brief/日志尾部 | `stable` 候选 | 结果形态应与 brief/输出契约对齐。 |
+| `holon tail`（默认） | none | `--limit <LIMIT>` 默认 `20`；`--agent <AGENT>` | JSON 近期 brief 快照 | `stable` 候选 | 保留现有 brief 快照契约；显式观测属于下列独立的实验性契约。 |
+| `holon tail`（显式观测） | none | `--include-progress`；`--follow`；`--cursor <CURSOR>`；`--timeout-ms <TIMEOUT_MS>` 默认 `5000`；`--max-events <MAX_EVENTS>` 默认 `100`；`--max-bytes <MAX_BYTES>` 默认 `65536`；`--limit <LIMIT>` 默认 `20`；`--agent <AGENT>` | NDJSON 观测记录，最后附带包含游标、停止原因、记录数和运行状态的 `end` 回执 | `experimental` | `--include-progress` 或 `--follow` 选择 NDJSON；仅 `--follow` 时跟踪 brief。游标要求 follow。整个操作的截止时间：1–30000 ms；记录预算：1–1000，不含最终回执；序列化字节预算：4096–1048576，含回执。要求 `agents.conversation-read.v1`；reset/gap 后须重新读取快照。读取不唤醒 agent、不消费任务结果，观测不等同于等待任务完成。 |
 | `holon transcript` | none | `--limit <LIMIT>` 默认 `50`；`--agent <AGENT>` | JSON transcript 条目 | `stable` 候选 | transcript 条目的稳定性需要 API 清册。 |
 | `holon task run` | `<SUMMARY>` | 必填 `--cmd <CMD>`；`--workdir <WORKDIR>`；`--shell <SHELL>`；`--login <true\|false>`；`--tty`；`--yield-time-ms <MS>`；`--max-output-tokens <N>`；`--agent <AGENT>` | 美化 JSON 控制平面响应 | `experimental` | 通过控制平面创建命令任务。 |
 | `holon task status` | `<TASK_ID>` | `--agent <AGENT>` | 美化 JSON `TaskStatusSnapshot` | `experimental` | 通过任务状态 API 读取任务生命周期状态。 |
