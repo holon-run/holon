@@ -241,6 +241,7 @@ pub fn tool_sections_with_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use serde_json::json;
 
     #[test]
@@ -317,6 +318,66 @@ mod tests {
         assert!(section.content.contains("requested agent"));
         assert!(section.content.contains("read-only query"));
         assert!(section.content.contains("does not start"));
+    }
+
+    #[test]
+    fn test_agent_collaboration_guidance_for_each_invocation_tool() {
+        for name in [tn::CREATE_AGENT, tn::INVOKE_AGENT, tn::SEND_AGENT_MESSAGE] {
+            let sections = tool_sections(&[ToolSpec {
+                name: name.into(),
+                description: String::new(),
+                input_schema: json!({}),
+                freeform_grammar: None,
+            }]);
+            let content = &sections
+                .iter()
+                .find(|section| section.name == "tool_agent_invocation")
+                .expect("collaboration guidance")
+                .content;
+            for rule in [
+                "low-noise on both sides",
+                "blockers requiring the recipient's action",
+                "Keep routine progress",
+                "Parents should not acknowledge pure acknowledgments",
+                "relay redundant or superseded updates",
+                "unless an explicit reply obligation remains",
+                "ExecCommand plus the local CLI are available",
+                "holon tail --agent <agent_id> --include-progress --limit 20 --max-events 100 --max-bytes 65536",
+                "Only ask a targeted question when observable records cannot answer it",
+                "does not consume task results, satisfy reply obligations, or prove task completion",
+                "Do not loop or poll merely to wait",
+                "InvokeAgent(existing_agent)",
+                "still requires a durable SendAgentMessage response",
+                "existing task-result channel",
+                "do not also SendAgentMessage the same final result",
+            ] {
+                assert!(content.contains(rule), "{name} missing rule: {rule}");
+            }
+        }
+        assert!(!tool_sections(&[])
+            .iter()
+            .any(|section| section.name == "tool_agent_invocation"));
+    }
+
+    #[test]
+    fn test_parent_progress_example_parses_as_bounded_agent_tail() {
+        let content = include_str!("tool_guidance/tool_agent_invocation.md");
+        let example = content
+            .split('`')
+            .find(|text| text.starts_with("holon tail "))
+            .expect("parent progress CLI example");
+        let cli = crate::cli::Cli::try_parse_from(example.split_whitespace())
+            .expect("progress example must match the public CLI");
+        let crate::cli::Commands::Tail { options, agent } = cli.command else {
+            panic!("progress example must use agent tail");
+        };
+        assert_eq!(agent.as_deref(), Some("<agent_id>"));
+        assert!(options.include_progress);
+        assert!(!options.follow);
+        assert!(options.cursor.is_none());
+        assert_eq!(options.limit, 20);
+        assert_eq!(options.max_events, 100);
+        assert_eq!(options.max_bytes, 65536);
     }
 
     #[test]

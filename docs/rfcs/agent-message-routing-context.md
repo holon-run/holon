@@ -50,3 +50,41 @@ delivery receipts/records. The Web GUI timeline projects sender, recipient,
 reply, correlation, and forwarded-route details when the event includes this
 metadata. Older events without `routing_context` remain renderable without
 inventing route information.
+
+## Low-noise collaboration guidance
+
+Issue #3530 P0 changes runtime-injected collaboration guidance on both sides,
+not delivery admission, queue consumption, routing, trust, or task settlement.
+Routine progress, compile/retry updates, unchanged test status, and self-resolved
+problems stay in observable output or work records. Unsolicited messages are for
+final delivery, blockers requiring the recipient's action, coordination-relevant
+contract changes, or dependencies becoming ready. Parents avoid acknowledging
+pure acknowledgments, repeating status requests, and relaying redundant or
+superseded updates.
+
+For progress already available in records, parents prefer a bounded CLI read
+when the CLI and command tool are available:
+
+```sh
+holon tail --agent child --include-progress --limit 20 \
+  --max-events 100 --max-bytes 65536
+```
+
+Ask a targeted question only when records cannot supply necessary new
+information, decisions, or coordination. Do not poll merely to wait. This is
+agent-scoped observation, not result consumption, proof of task completion, or
+a replacement for `WaitFor(task_result)`; see
+[agent output observation](agent-output-observation.md).
+
+Explicit reply obligations remain authoritative, including the runtime reply
+expectation for `InvokeAgent(existing_agent)`: send a durable reply when an answer
+is available even if a delayed request is otherwise covered by newer evidence.
+Supervised children deliver their concise final report through the existing
+task-result channel without also sending the same result with `SendAgentMessage`.
+Necessary blockers, coordination updates, and verification evidence are not
+discarded. The delegated-task guidance includes this boundary even when the
+child has no invocation or messaging tools.
+
+P0 is a prompt-level reduction in unnecessary messages, not a guarantee of model
+behavior or fewer activations. Bounded batch consumption and turn-local safe
+attachment remain separate, unimplemented P1/P2 stages.
