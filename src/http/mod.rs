@@ -358,7 +358,6 @@ fn json_rejection_response(rejection: JsonRejection) -> (StatusCode, Json<Value>
 }
 
 pub(crate) const CALLBACK_BODY_LIMIT_BYTES: usize = 256 * 1024;
-pub(crate) const CONTROL_PROMPT_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const DEFAULT_EVENT_STREAM_WINDOW: usize = 128;
 pub const MAX_EVENT_STREAM_WINDOW: usize = 512;
 pub(crate) const EVENT_STREAM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
@@ -706,8 +705,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/control/agents/{agent_id}/prompt",
-            post(control::control_prompt)
-                .layer(DefaultBodyLimit::max(CONTROL_PROMPT_BODY_LIMIT_BYTES)),
+            post(control::control_prompt).layer(from_fn_with_state(
+                Arc::new(state.clone()),
+                control::prompt_body_limit,
+            )),
         )
         .route(
             "/control/agents/{agent_id}/operator-bindings",

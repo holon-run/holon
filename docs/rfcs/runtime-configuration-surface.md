@@ -189,6 +189,33 @@ For model-aware runtime configuration, inspectability should include:
 - whether the resolved policy came from a built-in catalog entry, a config
   override, or an explicit unknown-model fallback
 
+## Prompt Attachment Limits
+
+`api.prompt.attachment_max_bytes` is runtime-mutable configuration shared by
+image and file attachments on the operator prompt endpoint. It defaults to
+64 MiB (67,108,864 bytes) per decoded attachment. The value must be positive
+and no greater than half the host's maximum `usize`, so the derived request
+limit fits in the HTTP body's size type.
+
+The total JSON request limit is `max(32 MiB, 2 * attachment_max_bytes)`,
+including prompt text, Base64 data, and attachment metadata. Its default is
+128 MiB. Multiple attachments must still fit within this total request budget;
+the per-attachment limit does not guarantee that an arbitrary number of
+maximum-sized attachments can be sent together.
+
+Configure the limit with, for example:
+
+```sh
+holon config set api.prompt.attachment_max_bytes 67108864
+```
+
+The existing runtime configuration PATCH API also accepts this key and
+schedules a live reload. Once applied, the next prompt request snapshots the
+effective setting for both HTTP body extraction and decoded attachment
+validation. In-flight requests keep their original snapshot. The handshake
+reports the effective image, file, and total body limits from the same setting.
+This does not change the separate `ViewImage` tool's input limit.
+
 ## Non-Goals
 
 - do not define every startup flag in this RFC

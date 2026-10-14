@@ -2418,19 +2418,28 @@ pub async fn control_runtime_readiness_is_open_over_unix_socket_when_auth_requir
 }
 
 pub async fn control_prompt_rejects_oversized_body() -> Result<()> {
-    let (_host, base, server) = spawn_server().await?;
-    let client = reqwest::Client::new();
+    use tower::ServiceExt;
+
+    let mut config = test_config();
+    config.stored_config.api.prompt.attachment_max_bytes = Some(1024 * 1024);
+    let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("ok")))?;
+    let router = http::router(AppState::for_tcp(host));
     let oversized_text = "x".repeat(33 * 1024 * 1024);
-    let response = client
-        .post(format!("{base}/api/control/agents/default/prompt"))
-        .json(&serde_json::json!({ "text": oversized_text }))
-        .send()
+    // Exercise the real router without a TCP upload racing the early 413.
+    let response = router
+        .oneshot(
+            axum::http::Request::post("/api/control/agents/default/prompt")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(
+                    &serde_json::json!({ "text": oversized_text }),
+                )?))?,
+        )
         .await?;
     assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
-    let body: serde_json::Value = response.json().await?;
+    let bytes = axum::body::to_bytes(response.into_body(), 32 * 1024).await?;
+    let body: serde_json::Value = serde_json::from_slice(&bytes)?;
     assert_eq!(body["ok"], false);
     assert_eq!(body["code"], "request_body_rejected");
-    server.abort();
     Ok(())
 }
 
@@ -2755,6 +2764,180 @@ pub async fn control_prompt_is_idempotent_for_native_clients() -> Result<()> {
     let conflict: serde_json::Value = conflict.json().await?;
     assert_eq!(conflict["code"], "idempotency_conflict");
     assert_eq!(std::fs::read_dir(&inbox)?.count(), 1);
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn control_prompt_attachment_limits_apply_after_config_reload() -> Result<()> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let (host, base, server) = spawn_server().await?;
+    let client = Client::new();
+    let addr: SocketAddr = base.strip_prefix("http://").unwrap().parse()?;
+    let handshake = client
+        .get(format!("{base}/api/handshake"))
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+    assert_eq!(
+        handshake["limits"]["prompt_body_max_bytes"],
+        128 * 1024 * 1024
+    );
+    assert_eq!(
+        handshake["limits"]["prompt_image_attachment_max_bytes"],
+        64 * 1024 * 1024
+    );
+    assert_eq!(
+        handshake["limits"]["prompt_file_attachment_max_bytes"],
+        64 * 1024 * 1024
+    );
+
+    // Exceeds both the old decoded attachment and encoded HTTP body limits.
+    let data = STANDARD.encode(vec![b'x'; 25 * 1024 * 1024]);
+    let response = client
+        .post(format!("{base}/api/control/agents/default/prompt"))
+        .json(&serde_json::json!({
+            "text": "large file",
+            "client_request_id": "large-attachment",
+            "attachments": [{
+                "kind": "file",
+                "name": "large.bin",
+                "media_type": "application/octet-stream",
+                "data_base64": data
+            }]
+        }))
+        .send()
+        .await?;
+    assert!(response.status().is_success(), "{}", response.text().await?);
+
+    // Reload rebuilds the runtime provider. Seed idempotent requests while the
+    // stub is active so post-reload validation never calls an external model.
+    for kind in ["image", "file"] {
+        let response = client
+            .post(format!("{base}/api/control/agents/default/prompt"))
+            .json(&serde_json::json!({
+                "text": "configured limit",
+                "client_request_id": format!("attachment-limit-{kind}"),
+                "attachments": [{
+                    "kind": kind,
+                    "media_type": if kind == "image" { "image/png" } else { "text/plain" },
+                    "data_base64": "YWJj"
+                }]
+            }))
+            .send()
+            .await?;
+        assert!(response.status().is_success(), "{}", response.text().await?);
+    }
+    let runtime = host.default_runtime().await?;
+    wait_until(|| {
+        let state = runtime.storage().read_agent()?.expect("agent should exist");
+        Ok(state.pending == 0 && state.status == AgentStatus::Asleep)
+    })
+    .await?;
+
+    for (update, expected_limit) in [
+        (serde_json::json!({"value": 3}), 3),
+        (serde_json::json!({"value": 134217728}), 128 * 1024 * 1024),
+        (serde_json::json!({"unset": true}), 64 * 1024 * 1024),
+    ] {
+        let mut update = update;
+        update["key"] = "api.prompt.attachment_max_bytes".into();
+        let response = client
+            .patch(format!("{base}/api/control/runtime/config"))
+            .bearer_auth("secret")
+            .json(&serde_json::json!({"updates": [update]}))
+            .send()
+            .await?;
+        assert!(response.status().is_success());
+        let payload: serde_json::Value = response.json().await?;
+        assert_eq!(payload["results"][0]["effect"], "accepted_reload_scheduled");
+        wait_for_runtime_config_reload(&client, addr, &payload).await?;
+        assert_eq!(
+            host.config()
+                .stored_config
+                .api
+                .prompt
+                .attachment_max_bytes(),
+            expected_limit
+        );
+        let handshake: serde_json::Value = client
+            .get(format!("{base}/api/handshake"))
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert_eq!(
+            handshake["limits"]["prompt_body_max_bytes"],
+            (expected_limit * 2).max(32 * 1024 * 1024)
+        );
+        assert_eq!(
+            handshake["limits"]["prompt_image_attachment_max_bytes"],
+            expected_limit
+        );
+        assert_eq!(
+            handshake["limits"]["prompt_file_attachment_max_bytes"],
+            expected_limit
+        );
+
+        if expected_limit == 3 {
+            for kind in ["image", "file"] {
+                for (data, expected_status) in [
+                    ("YWJj", reqwest::StatusCode::OK),
+                    ("YWJjZA==", reqwest::StatusCode::BAD_REQUEST),
+                ] {
+                    let response = client
+                        .post(format!("{base}/api/control/agents/default/prompt"))
+                        .json(&serde_json::json!({
+                            "text": "configured limit",
+                            "client_request_id": format!("attachment-limit-{kind}"),
+                            "attachments": [{
+                                "kind": kind,
+                                "media_type": if kind == "image" { "image/png" } else { "text/plain" },
+                                "data_base64": data
+                            }]
+                        }))
+                        .send()
+                        .await?;
+                    assert_eq!(
+                        response.status(),
+                        expected_status,
+                        "{kind}: {}",
+                        response.text().await?
+                    );
+                }
+            }
+        }
+        // The same >32 MiB body is rejected after lowering and accepted again
+        // after raising/unsetting the limit; accepted replays stay model-free.
+        let response = client
+            .post(format!("{base}/api/control/agents/default/prompt"))
+            .json(&serde_json::json!({
+                "text": "large file",
+                "client_request_id": "large-attachment",
+                "attachments": [{
+                    "kind": "file",
+                    "name": "large.bin",
+                    "media_type": "application/octet-stream",
+                    "data_base64": data
+                }]
+            }))
+            .send()
+            .await?;
+        assert_eq!(
+            response.status(),
+            if expected_limit == 3 {
+                reqwest::StatusCode::PAYLOAD_TOO_LARGE
+            } else {
+                reqwest::StatusCode::OK
+            }
+        );
+        if expected_limit != 3 {
+            let payload: serde_json::Value = response.json().await?;
+            assert_eq!(payload["disposition"], "duplicate");
+        }
+    }
 
     server.abort();
     Ok(())
