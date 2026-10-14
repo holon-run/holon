@@ -2773,6 +2773,14 @@ pub async fn control_prompt_attachment_limits_apply_after_config_reload() -> Res
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
     let (host, base, server) = spawn_server().await?;
+    // Reload must resolve a model even without ambient credentials. Replays
+    // below never invoke this local provider.
+    std::fs::write(
+        &host.config().config_file_path,
+        serde_json::to_vec(&serde_json::json!({
+            "model": { "default": "ollama/qwen3:latest" }
+        }))?,
+    )?;
     let client = Client::new();
     let addr: SocketAddr = base.strip_prefix("http://").unwrap().parse()?;
     let handshake = client
