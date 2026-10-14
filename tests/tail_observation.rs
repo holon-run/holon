@@ -3,6 +3,7 @@ mod support;
 use anyhow::Result;
 use holon::{
     client::LocalClient,
+    config::ControlAuthMode,
     tail::{observe, TailOptions},
     types::{
         brief_created_event_for, AuditEvent, AuthorityClass, BriefKind, BriefRecord,
@@ -20,7 +21,12 @@ static REAL_SERVER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn active_private_agent_supports_conversation_brief_and_status_reads() -> Result<()> {
     let _guard = REAL_SERVER.lock().await;
-    let (host, base, server) = support::spawn_server().await?;
+    let test_config = support::TestConfigBuilder::new()
+        .with_control_auth_mode(ControlAuthMode::Required)
+        .with_control_token("private-read-token")
+        .build();
+    let (host, base, server) =
+        support::spawn_server_with_config(test_config.config().clone()).await?;
     seed(&host)?;
     host.runtime_db().transaction(|tx| {
         tx.execute(
@@ -29,7 +35,56 @@ async fn active_private_agent_supports_conversation_brief_and_status_reads() -> 
         )?;
         Ok(())
     })?;
-    let client = LocalClient::remote(host.config().as_ref().clone(), base, "test-token")?;
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()?;
+    for token in [None, Some("wrong-token"), Some("private-read-token")] {
+        let expected = if token == Some("private-read-token") {
+            reqwest::StatusCode::OK
+        } else {
+            reqwest::StatusCode::UNAUTHORIZED
+        };
+        for path in [
+            "/api/agents/default",
+            "/api/agents/default/status",
+            "/api/agents/default/briefs",
+            "/api/agents/default/briefs/legacy-brief",
+            "/api/agents/default/conversation",
+            "/api/agents/default/turns/active/activities",
+            "/api/agents/default/conversation/stream",
+        ] {
+            let mut request = http.get(format!("{base}{path}"));
+            if let Some(token) = token {
+                request = request.bearer_auth(token);
+            }
+            assert_eq!(
+                request.send().await?.status(),
+                expected,
+                "GET {path}, token={token:?}"
+            );
+        }
+        for (path, body) in [
+            (
+                "/api/agents/default/briefs:batchGet",
+                json!({"brief_ids": ["legacy-brief"]}),
+            ),
+            (
+                "/api/agents/default/conversation/locate",
+                json!({"source_ref": "message:input", "limit": 1}),
+            ),
+        ] {
+            let mut request = http.post(format!("{base}{path}")).json(&body);
+            if let Some(token) = token {
+                request = request.bearer_auth(token);
+            }
+            let response = request.send().await?;
+            assert_eq!(response.status(), expected, "POST {path}, token={token:?}");
+            if expected == reqwest::StatusCode::OK && path.ends_with("/locate") {
+                assert_eq!(response.json::<Value>().await?["status"], "located");
+            }
+        }
+    }
+    let client = LocalClient::remote(host.config().as_ref().clone(), base, "private-read-token")?;
     assert_eq!(
         client.get_agent_compact("default").await?.agent.id,
         "default"
