@@ -104,8 +104,8 @@ order: 4
   为什么死循环 while(true) 无法支撑生产级工作？融合操作系统中断演进史与直观工程隐喻，深度解析长周期自主 Agent 的持久化等待、唤醒调度与因果状态内核架构。
   <!-- mdorigin:index kind=article -->
 
-- [AI 自动交付流如何保证质量：我们在真实工程中的四重验收防御](./ai-delivery-quality-and-verification.md)
-  代码生成飞速提升，但无人敢用才是最大的质量危机。结合 Holon 与包含 Node.js 服务端、跨端应用及硬件协议协同的真实项目，拆解如何通过独立角色制衡、客诉自动排查、活跃实例巡检与 Agent 守护的 E2E 破解‘验收赤字’。
+- [AI 自动交付流如何保证质量：真实工程中的四层验证与验收防线](./ai-delivery-quality-and-verification.md)
+  代码生成飞速提升，但无人敢用才是最大的质量危机。来自一个涉及跨端与硬件协议协同的真实工程团队实践，分享如何通过统一标准制衡、客诉自动排查、活跃实例巡检与 Agent 看护的 E2E 破解‘验收赤字’。
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->
