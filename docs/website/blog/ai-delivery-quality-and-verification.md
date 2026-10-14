@@ -17,7 +17,7 @@ order: 63
 
 As AI-assisted coding and automated delivery pipelines mature, the core bottleneck of software engineering has shifted: it is no longer about how quickly code can be produced, but about **how to prove that the changes introduce no regressions, and who takes responsibility for final quality**.
 
-When raw code output accelerates, engineering teams face a universal, legitimate anxiety: **the code can be generated and committed in minutes, but do we dare deploy it to production?**
+When raw code output accelerates, engineering teams face a universal, legitimate anxiety: the code can be generated and committed in minutes, but do we dare deploy it to production?
 
 If an automated pipeline focuses exclusively on generating diffs while dumping code review, environment staging, end-to-end testing, and defect investigation onto human engineers, any time saved during drafting is immediately erased downstream. Worse, if teams bypass verification and push straight to production, the system quickly degrades under silent regressions and meaningless green tests.
 
@@ -50,11 +50,24 @@ A dependable pipeline separates responsibilities across specialized agents, esta
 In production delivery, a typical requirement moves through a standard lifecycle:
 `Requirement/Bug -> Implementation -> PR Review -> Version Build -> Environment Deployment`.
 
+### Prerequisite Principle: Requirements and Bugs Must Not Live in Prompts
+
+Before examining role separation, an essential engineering prerequisite must be made explicit: **a requirement or bug report must be persisted as a durable specification artifact (an issue, ticket, PR contract, or WorkItem), never left as ephemeral text inside a prompt conversation**.
+
+Even within long-lived autonomous agent runtimes (such as our own development of Holon), we never confine a requirement to a one-off prompt. Two practical engineering realities enforce this discipline:
+
+1. **Interrupted or Half-Finished Agent Turns Are Inevitable**: In complex, multi-step engineering tasks, agents frequently encounter context budget pressure, tool timeouts, or execution boundaries, requiring a fresh invocation or a handover to another specialized agent. If requirements exist solely inside prior chat turns, any resuming agent inherits an orphaned, half-finished workspace without authoritative goals or boundary constraints.
+2. **QA Agents Completely Lose Their Verification Anchor**: This is the most catastrophic failure mode. A verification or QA agent must operate independently from the coding agent. If the requirement was never persisted as an objective specification, the QA agent can only trust the developer agent's subjective claims or guess blindly without acceptance criteria—**without an independently persisted requirement, a QA agent has nothing against which to verify**.
+
+Therefore, the first step of an automated pipeline is never to rush into code generation, but to **anchor incoming intent into an immutable, verifiable specification**.
+
+### Independent Role Separation
+
 Across this trunk flow, we separate duties among three autonomous agents:
 
 - **Coding Agent**: Implements changes within an isolated worktree and runs local unit tests.
 - **Reviewer Agent**: Focuses strictly on architecture boundaries, breaking changes, specification compliance, and test gaps. It raises findings backed by diff evidence but does not rewrite the code.
-- **QA Agent**: Reconciles the pull request directly against the original specification rather than trusting the coder's self-assessment.
+- **QA Agent**: Reconciles the pull request directly against the original persisted specification rather than trusting the coder's self-assessment.
 
 ### The Four-Way QA Triage
 
