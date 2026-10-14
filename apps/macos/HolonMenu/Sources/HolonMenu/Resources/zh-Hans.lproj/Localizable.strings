@@ -83,7 +83,7 @@
 "Unable to determine the Mac's local network address." = "无法确定此 Mac 的局域网地址。";
 "Unable to determine the daemon authentication mode." = "无法确定守护进程认证模式。";
 "Unable to generate QR code." = "无法生成二维码。";
-"Unable to issue a pairing code. Check daemon version and local token configuration." = "无法签发配对码。请检查守护进程版本和本地令牌配置。";
+"Unable to issue a pairing code. Check daemon version and local control socket." = "无法签发配对码。请检查守护进程版本和本地控制套接字。";
 "Unable to locate the Tailscale command-line tool." = "无法找到 Tailscale 命令行工具。";
 "Unable to locate the bundled holon CLI." = "无法找到内置 holon CLI。";
 "Unable to verify daemon authentication. Configure credentials in its launch settings before enabling LAN: %@" = "无法验证守护进程认证。启用局域网前请在启动设置中配置凭据：%@";
