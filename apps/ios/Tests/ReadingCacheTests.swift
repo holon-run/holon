@@ -394,6 +394,8 @@ final class ReadingCacheTests: XCTestCase {
         XCTAssertEqual(old.briefs["body"], .string("old body"))
         XCTAssertNil(cache.load(partition, agentID: "future"))
         XCTAssertNotNil(cache.load(partition, agentID: "current"))
+        // Finish queued LRU writes before replacing the file with a corrupt fixture.
+        await assertFlushed(cache)
         try Data(repeating: 32, count: 16 * 1_024 * 1_024 + 1).write(to: file)
         let oversizedFile = ReadingCache(file: file)
         await oversizedFile.prepare()
