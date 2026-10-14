@@ -1,13 +1,13 @@
 ---
 title: "AI 自动交付流如何保证质量：真实工程中的四层验证与验收防线"
 summary: "代码生成速度越来越快，但无人敢把改动推上线才是真正的瓶颈。本文分享一个采用 Holon 的工程团队在涉及跨端与硬件协议项目中，如何通过角色制衡、自动化排查、长周期巡检与自愈 E2E 建立四层务实的验收防线。"
-socialImage: "/assets/workitem-abstract-flow-cover.webp"
+socialImage: "/assets/ai-delivery-verification-cover.webp"
 order: 63
 ---
 
 # AI 自动交付流如何保证质量：真实工程中的四层验证与验收防线
 
-<img src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="AI 自动交付流质量与多层验收防线架构图" decoding="async" fetchpriority="high">
+<img src="/assets/ai-delivery-verification-cover.webp" width="1248" height="832" alt="AI 自动交付流质量与多层验收防线架构图" decoding="async" fetchpriority="high">
 
 > 当代码生成越来越快，软件交付的瓶颈不再是“怎么把代码写出来”，而是“谁来验收，凭什么敢把它推向生产”。本文结合一个使用 Holon 的工程团队实践（涉及跨端应用、硬件协议与服务端协同），探讨如何在不同阶段建立四层实用的验收防线。
 

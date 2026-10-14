@@ -57,18 +57,18 @@ order: 4
 <span class="blog-read">Read the team story <span aria-hidden="true">→</span></span></div>
 </a>
 <a class="blog-story" href="/blog/event-driven-kernel">
-<img src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
+<img src="/assets/event-driven-kernel-cover.webp" width="1248" height="832" alt="" loading="lazy" decoding="async">
 <div><span class="blog-category">ARCHITECTURE</span>
 <h3>From Request-Response to Event-Driven: Designing the Kernel for Long-Lived Agents</h3>
 <p>Why while(true) loops fail in production engineering. Drawing from OS history, we explore durable wait-wake scheduling and causal context design.</p>
 <span class="blog-read">Read the architecture <span aria-hidden="true">→</span></span></div>
 </a>
 <a class="blog-story" href="/blog/ai-delivery-quality-and-verification">
-<img src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
+<img src="/assets/ai-delivery-verification-cover.webp" width="1248" height="832" alt="" loading="lazy" decoding="async">
 <div><span class="blog-category">ENGINEERING PRACTICE</span>
-<h3>Guaranteeing Quality in AI Delivery Pipelines: Our Four-Layer Verification Defense</h3>
-<p>AI generates code at unprecedented speed, but the real crisis is software nobody dares deploy. Drawing from production engineering, we break down a four-layer verification defense.</p>
-<span class="blog-read">Read the defense <span aria-hidden="true">→</span></span></div>
+<h3>How to Guarantee Quality in AI Delivery Pipelines: Four Layers of Verification and Acceptance in Real-World Engineering</h3>
+<p>Code generation is faster than ever, but software nobody dares deploy remains the real bottleneck. Drawing from an engineering team adopting Holon across cross-platform apps and hardware protocols, this article explores four pragmatic verification layers.</p>
+<span class="blog-read">Read the guide <span aria-hidden="true">→</span></span></div>
 </a>
 </section>
 

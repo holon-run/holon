@@ -1,13 +1,13 @@
 ---
 title: "How to Guarantee Quality in AI Delivery Pipelines: Four Layers of Verification and Acceptance in Real-World Engineering"
 summary: "Code generation is faster than ever, but software nobody dares deploy remains the real bottleneck. Drawing from an engineering team adopting Holon across cross-platform apps and hardware protocols, this article explores four pragmatic verification layers: role separation, automated incident triage, continuous instance patrols, and self-healing E2E testing."
-socialImage: "/assets/workitem-abstract-flow-cover.webp"
+socialImage: "/assets/ai-delivery-verification-cover.webp"
 order: 63
 ---
 
 # How to Guarantee Quality in AI Delivery Pipelines: Four Layers of Verification and Acceptance in Real-World Engineering
 
-<img src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="Architecture diagram of multi-layer verification defense in AI delivery pipelines" decoding="async" fetchpriority="high">
+<img src="/assets/ai-delivery-verification-cover.webp" width="1248" height="832" alt="Architecture diagram of multi-layer verification defense in AI delivery pipelines" decoding="async" fetchpriority="high">
 
 > As code generation accelerates, the bottleneck in software delivery is no longer how quickly code can be written, but who verifies it and why anyone should trust it in production. Drawing from the practices of an engineering team adopting Holon (spanning cross-platform apps, hardware protocols, and backend services), this article explores how to establish four pragmatic verification layers across different delivery stages.
 
