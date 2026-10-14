@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-515672f64e5e6c83b715d67f57bedbdd6fe0abd9e3e786176974ef902b8d1219",
+  "revision": "models-dev-165ad5c348ebeb1b3ea86b68012c5fa68a37665f7d7c3fd02860c4a580391a0e",
   "upstream": {
     "source": "models.dev",
-    "revision": "515672f64e5e6c83b715d67f57bedbdd6fe0abd9e3e786176974ef902b8d1219",
-    "fetched_at": "2026-10-13T23:52:05.400343033+00:00",
-    "content_sha256": "515672f64e5e6c83b715d67f57bedbdd6fe0abd9e3e786176974ef902b8d1219",
-    "adapter_version": "0.52.0 (a41037c)"
+    "revision": "165ad5c348ebeb1b3ea86b68012c5fa68a37665f7d7c3fd02860c4a580391a0e",
+    "fetched_at": "2026-10-14T07:32:00.676384183+00:00",
+    "content_sha256": "165ad5c348ebeb1b3ea86b68012c5fa68a37665f7d7c3fd02860c4a580391a0e",
+    "adapter_version": "0.52.0 (a703342c-dirty)"
   },
   "models": [
     {
@@ -14993,8 +14993,8 @@
       "context_window_tokens": 204800,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 194560,
-      "default_max_output_tokens": 176947,
-      "max_output_tokens_upper_limit": 176947,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17441,8 +17441,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
+      "default_max_output_tokens": 117964,
+      "max_output_tokens_upper_limit": 117964,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19667,27 +19667,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/unbiased/pareto",
-      "display_name": "Pareto",
-      "description": "Blended multimodal model that runs multiple language models in parallel and returns a synthesized answer",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/unbiased/pareto-26.10-preview",
       "display_name": "Pareto 26.10 Preview",
       "description": "Preview model for early access evaluation, prototyping, and compatibility testing",
@@ -20336,8 +20315,8 @@
       "context_window_tokens": 204800,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 194560,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -20908,6 +20887,27 @@
         "xhigh",
         "max"
       ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "openrouter/~unbiased/pareto-latest",
+      "display_name": "Pareto Latest",
+      "description": "Multimodal model for analyzing text, images, documents, and rich media",
+      "context_window_tokens": 262144,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 249036,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
       "source": "remote_discovered"
     },
     {

@@ -1,12 +1,12 @@
 # models.dev refresh summary
 
-- Supplement models: 56 (drafted this run: 1, retained: 55, removed: 0)
+- Supplement models: 56 (drafted this run: 0, retained: 56, removed: 0)
 - Deferred candidates: 208 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
 
-- `gemini/gemini-4-argon` — Gemini 4 Argon (context 1048576, reasoning true, image input true)
+(none this run)
 
 ## Deferred (needs human decision or outside policy)
 
