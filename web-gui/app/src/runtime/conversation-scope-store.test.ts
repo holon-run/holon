@@ -15,6 +15,7 @@ import {
   idleConversationScopeCount,
   peekConversationScope,
   releaseConversationScope,
+  setConversationNavigationActive,
   useConversationScopeStore,
 } from "./conversation-scope-store";
 
@@ -139,6 +140,102 @@ afterEach(() => {
 });
 
 describe("conversation scope store", () => {
+  it("publishes the located window for display while preserving live tail authority", async () => {
+    const { client } = fakeClient();
+    const historical = summarySnapshot(5);
+    client.locateSource = async () => ({
+      status: "located",
+      target: { kind: "turn", turn_id: "turn-5" },
+      window: {
+        ...historical,
+        next_after_cursor: "after-5",
+        coverage: {
+          has_older: false, has_newer: true,
+          reaches_oldest: true, reaches_latest: false,
+          first_turn_key: { turn_index: 5, turn_id: "turn-5" },
+          last_turn_key: { turn_index: 5, turn_id: "turn-5" },
+          membership_upper_bound: { turn_index: 10, turn_id: "turn-10" },
+        },
+      },
+    }) as never;
+    const key = conversationScopeKey("local", "history-display");
+    const { controller } = acquireConversationScope({
+      key, agentId: "history-display", baseUrl: "http://fake.local/api",
+      clientFactory: () => client, controllerOptions: { sleep },
+    });
+    await waitFor(() => controller.status.kind === "ready");
+    await controller.locateSource("turn:turn-5");
+    expect(controller.browseState()?.status).toBe("ready");
+    const mirror = useConversationScopeStore.getState().scopes[key];
+    expect(mirror.displayView?.turns[0].turn_id).toBe("turn-5");
+    expect(mirror.displayView?.checkpoint).toBeNull();
+    expect(mirror.view?.turns[0].turn_id).toBe("turn-10");
+    expect(mirror.view?.checkpoint).toBe("checkpoint-10");
+    expect(mirror.browsing).toBe(true);
+
+    controller.returnToLatest();
+    const latest = useConversationScopeStore.getState().scopes[key];
+    expect(latest.displayView).toBe(latest.view);
+    expect(latest.browsing).toBe(false);
+  });
+
+  it("keeps a live-connected browse window gated until explicitly returning to latest", async () => {
+    const { client } = fakeClient();
+    const located = summarySnapshot();
+    client.locateSource = async () => ({
+      status: "located",
+      target: { kind: "turn", turn_id: "turn-10" },
+      window: {
+        ...located,
+        next_after_cursor: null,
+        coverage: {
+          has_older: false, has_newer: false,
+          reaches_oldest: true, reaches_latest: true,
+          first_turn_key: { turn_index: 10, turn_id: "turn-10" },
+          last_turn_key: { turn_index: 10, turn_id: "turn-10" },
+          membership_upper_bound: { turn_index: 10, turn_id: "turn-10" },
+        },
+      },
+    }) as never;
+    const key = conversationScopeKey("local", "live-browse");
+    const { controller } = acquireConversationScope({
+      key, agentId: "live-browse", baseUrl: "http://fake.local/api",
+      clientFactory: () => client, controllerOptions: { sleep },
+    });
+    await waitFor(() => controller.status.kind === "ready");
+    await controller.locateSource("turn:turn-10");
+    expect(controller.browseState()?.liveConnected).toBe(true);
+    const mirror = useConversationScopeStore.getState().scopes[key];
+    expect(mirror.navigationActive).toBeFalsy();
+    expect(mirror.browsing).toBe(true);
+    expect(mirror.displayView?.checkpoint).toBeNull();
+    expect(mirror.displayView?.through_seq).toBeNull();
+    expect(mirror.view?.checkpoint).toBe("checkpoint-10");
+
+    controller.returnToLatest();
+    const latest = useConversationScopeStore.getState().scopes[key];
+    expect(latest.browsing).toBe(false);
+    expect(latest.displayView).toBe(latest.view);
+    expect(latest.displayView?.checkpoint).toBe("checkpoint-10");
+  });
+
+  it("preserves navigation read gates through controller publishes without repeat updates", async () => {
+    const { client } = fakeClient();
+    const key = conversationScopeKey("local", "located");
+    setConversationNavigationActive(key, true);
+    const first = acquireConversationScope({
+      key, agentId: "located", baseUrl: "http://fake.local/api",
+      clientFactory: () => client, controllerOptions: { sleep },
+    });
+    await waitFor(() => first.controller.status.kind === "ready");
+    expect(useConversationScopeStore.getState().scopes[key]?.navigationActive).toBe(true);
+    const version = useConversationScopeStore.getState().scopes[key]?.version;
+    setConversationNavigationActive(key, true);
+    expect(useConversationScopeStore.getState().scopes[key]?.version).toBe(version);
+    setConversationNavigationActive(key, false);
+    expect(useConversationScopeStore.getState().scopes[key]?.navigationActive).toBe(false);
+  });
+
   it("shares one controller per scope key and retains its data after last release", async () => {
     const { client, calls } = fakeClient();
     const key = conversationScopeKey("local", "web");

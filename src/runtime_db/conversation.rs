@@ -22,6 +22,9 @@ use crate::domain::conversation::{
 use crate::runtime_db::types::ConversationRepository;
 use crate::types::{ContinuationTriggerKind, MessageKind, TurnRecord, TurnTerminalKind};
 
+mod locate;
+pub use locate::{ConversationLocateResult, ConversationLocateTarget};
+
 const MAX_CHANGE_ID_JSON_DEPTH: usize = 32;
 
 pub(crate) const SOURCE_OPERATOR: &str = "operator";
@@ -42,6 +45,7 @@ pub struct ConversationSnapshot<T> {
     pub oldest_retained_seq: u64,
     pub snapshot_cursor: String,
     pub next_before_cursor: Option<String>,
+    pub next_after_cursor: Option<String>,
     pub value: T,
 }
 
@@ -66,6 +70,10 @@ pub enum ConversationResetReason {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConversationReadError {
+    #[error("{0}")]
+    InvalidRequest(String),
+    #[error("conversation source not found")]
+    SourceNotFound,
     #[error("{resource} limit must be between {minimum} and {maximum}, got {actual}")]
     InvalidLimit {
         resource: &'static str,
@@ -622,6 +630,7 @@ impl ConversationRepository<'_> {
             oldest_retained_seq: context.oldest_retained_seq,
             snapshot_cursor,
             next_before_cursor,
+            next_after_cursor: None,
             value: page,
         }))
     }
@@ -717,6 +726,7 @@ impl ConversationRepository<'_> {
             oldest_retained_seq: context.oldest_retained_seq,
             snapshot_cursor,
             next_before_cursor,
+            next_after_cursor: None,
             value: page,
         }))
     }
@@ -1603,6 +1613,24 @@ fn summary_page_in(
     before: Option<&TurnKey>,
     membership_upper_bound: Option<&TurnKey>,
 ) -> Result<ConversationSummaryPage> {
+    summary_page_in_with_pending_target(
+        connection,
+        agent_id,
+        limit,
+        before,
+        membership_upper_bound,
+        None,
+    )
+}
+
+fn summary_page_in_with_pending_target(
+    connection: &Connection,
+    agent_id: &str,
+    limit: usize,
+    before: Option<&TurnKey>,
+    membership_upper_bound: Option<&TurnKey>,
+    pending_target: Option<&str>,
+) -> Result<ConversationSummaryPage> {
     let membership_upper_bound = membership_upper_bound
         .cloned()
         .or(latest_turn_key(connection, agent_id)?);
@@ -1626,7 +1654,7 @@ fn summary_page_in(
     Ok(ConversationSummaryPage {
         turns,
         active_turns: active_turn_rows(connection, agent_id)?,
-        pending_inputs: pending_input_rows(connection, agent_id)?,
+        pending_inputs: pending_input_rows_with_target(connection, agent_id, pending_target)?,
         membership_upper_bound,
         next_before,
         has_more,
@@ -1826,6 +1854,14 @@ fn active_turn_rows(
 }
 
 fn pending_input_rows(connection: &Connection, agent_id: &str) -> Result<Vec<PendingInput>> {
+    pending_input_rows_with_target(connection, agent_id, None)
+}
+
+fn pending_input_rows_with_target(
+    connection: &Connection,
+    agent_id: &str,
+    target_message_id: Option<&str>,
+) -> Result<Vec<PendingInput>> {
     let mut statement = connection.prepare(
         "SELECT queue.message_id,
                 COALESCE(revisions.revision, 1),
@@ -1850,12 +1886,18 @@ fn pending_input_rows(connection: &Connection, agent_id: &str) -> Result<Vec<Pen
          WHERE queue.agent_id = ?1
            AND queue.status IN ('queued', 'dequeued')
            AND assignments.message_id IS NULL
-         ORDER BY queue.created_at, queue.message_id
+         ORDER BY CASE WHEN queue.message_id = ?3 THEN 0 ELSE 1 END,
+                  queue.created_at, queue.message_id
          LIMIT ?2",
     )?;
-    let rows = statement
+    let limit = if target_message_id.is_some() {
+        MAX_PENDING_INPUTS
+    } else {
+        MAX_PENDING_INPUTS + 1
+    };
+    let mut rows = statement
         .query_map(
-            params![agent_id, i64::try_from(MAX_PENDING_INPUTS + 1)?],
+            params![agent_id, i64::try_from(limit)?, target_message_id],
             |row| {
                 let status = row.get::<_, String>(2)?;
                 let state = if status == "queued" {
@@ -1897,6 +1939,11 @@ fn pending_input_rows(connection: &Connection, agent_id: &str) -> Result<Vec<Pen
         }
         .into());
     }
+    if target_message_id.is_some() {
+        rows.sort_by(|left, right| {
+            (&left.created_at, &left.message_id).cmp(&(&right.created_at, &right.message_id))
+        });
+    }
     Ok(rows)
 }
 
@@ -1904,6 +1951,15 @@ fn turn_summary_by_id(
     connection: &Connection,
     agent_id: &str,
     turn_id: &str,
+) -> Result<Option<(ConversationTurnSummary, u64)>> {
+    turn_summary_by_id_with_input(connection, agent_id, turn_id, None)
+}
+
+fn turn_summary_by_id_with_input(
+    connection: &Connection,
+    agent_id: &str,
+    turn_id: &str,
+    target_message_id: Option<&str>,
 ) -> Result<Option<(ConversationTurnSummary, u64)>> {
     let row = connection
         .query_row(
@@ -1921,7 +1977,7 @@ fn turn_summary_by_id(
         )
         .optional()?;
     row.map(|mut row| {
-        hydrate_turn_summary(connection, &mut row)?;
+        hydrate_turn_summary_with_input(connection, &mut row, target_message_id)?;
         Ok((row.summary, row.detail_revision))
     })
     .transpose()
@@ -1989,9 +2045,41 @@ fn decode_turn_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TurnSummaryRow> 
 }
 
 fn hydrate_turn_summary(connection: &Connection, row: &mut TurnSummaryRow) -> Result<()> {
+    hydrate_turn_summary_with_input(connection, row, None)
+}
+
+fn hydrate_turn_summary_with_input(
+    connection: &Connection,
+    row: &mut TurnSummaryRow,
+    target_message_id: Option<&str>,
+) -> Result<()> {
     row.summary.brief_ids = brief_ids(connection, &row.record.agent_id, &row.record.turn_id)?;
     row.summary.inputs =
         turn_input_previews(connection, &row.record.agent_id, &row.record.turn_id)?;
+    row.summary.inputs_truncated = row.summary.inputs.len() > MAX_INPUTS_PER_TURN;
+    row.summary.inputs.truncate(MAX_INPUTS_PER_TURN);
+    if let Some(target) = target_message_id.filter(|target| {
+        !row.summary
+            .inputs
+            .iter()
+            .any(|input| input.message_id == *target)
+    }) {
+        // Hydrate only visible identities plus the exact target, retaining the
+        // canonical ordering even when activity keys are absent.
+        let mut ids: Vec<&str> = row
+            .summary
+            .inputs
+            .iter()
+            .map(|input| input.message_id.as_str())
+            .collect();
+        ids.push(target);
+        row.summary.inputs = turn_input_previews_selected(
+            connection,
+            &row.record.agent_id,
+            &row.record.turn_id,
+            Some(&serde_json::to_string(&ids)?),
+        )?;
+    }
     let runtime_only = row.record.terminal.as_ref().is_some_and(|terminal| {
         terminal
             .reason
@@ -2003,8 +2091,6 @@ fn hydrate_turn_summary(connection: &Connection, row: &mut TurnSummaryRow) -> Re
             task_result.runtime_only = Some(runtime_only);
         }
     }
-    row.summary.inputs_truncated = row.summary.inputs.len() > MAX_INPUTS_PER_TURN;
-    row.summary.inputs.truncate(MAX_INPUTS_PER_TURN);
     let (result, settled) = map_result(
         row.summary.brief_ids.len(),
         row.record
@@ -2049,6 +2135,15 @@ fn turn_input_previews(
     agent_id: &str,
     turn_id: &str,
 ) -> Result<Vec<TurnInputSummary>> {
+    turn_input_previews_selected(connection, agent_id, turn_id, None)
+}
+
+fn turn_input_previews_selected(
+    connection: &Connection,
+    agent_id: &str,
+    turn_id: &str,
+    message_ids_json: Option<&str>,
+) -> Result<Vec<TurnInputSummary>> {
     let mut statement = connection.prepare(
         "SELECT assignments.message_id, COALESCE(messages.preview, ''),
                 json_extract(messages.payload_json, '$.kind'),
@@ -2066,12 +2161,18 @@ fn turn_input_previews(
          LEFT JOIN queue_entries AS queue
            ON queue.message_id = assignments.message_id AND queue.agent_id = assignments.agent_id
          WHERE assignments.agent_id = ?1 AND assignments.turn_id = ?2
+           AND (?4 IS NULL OR assignments.message_id IN (SELECT value FROM json_each(?4)))
          ORDER BY sources.activity_seq, assignments.assigned_at, assignments.message_id
          LIMIT ?3",
     )?;
     let rows = statement
         .query_map(
-            params![agent_id, turn_id, i64::try_from(MAX_INPUTS_PER_TURN + 1)?],
+            params![
+                agent_id,
+                turn_id,
+                i64::try_from(MAX_INPUTS_PER_TURN + 1)?,
+                message_ids_json
+            ],
             |row| {
                 let message_id: String = row.get(0)?;
                 let kind = row.get::<_, Option<String>>(2)?.and_then(|value| {

@@ -1160,6 +1160,8 @@ function evaluateReadMarkerGate(
       documentVisible: typeof document !== "undefined" && document.visibilityState === "visible",
       conversationReady:
         scope.status.kind === "ready" &&
+        !scope.navigationActive &&
+        !scope.browsing &&
         scope.view?.scope != null &&
         scope.view.reset_reason === null,
       conversationVisible: !covered,

@@ -12,11 +12,12 @@ use crate::{
         AgentDeletionResponse, AgentDeletionStatusResponse, BatchGetBriefsRequest,
         BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest, CancelTimerRequest,
         CompleteWorkItemRequest, ControlPromptRequest, ConversationActivityResponse,
-        ConversationReadQuery, ConversationShadowQuery, ConversationStreamMessage,
-        ConversationSummaryResponse, CreateContentReportRequest, CreateContentReportResponse,
-        CreateTimerRequest, CurrentUserResponse, DeleteAgentRequest, DesktopCapabilities,
-        EnqueueResponse, HandshakeResponse, HttpErrorEnvelope, MarkBriefReadRequest,
-        MemoryGetRequest, ModelConfigMigrationRequest, NativeSessionResponse, PairingIssueResponse,
+        ConversationLocateRequest, ConversationLocateResponse, ConversationReadQuery,
+        ConversationShadowQuery, ConversationStreamMessage, ConversationSummaryResponse,
+        CreateContentReportRequest, CreateContentReportResponse, CreateTimerRequest,
+        CurrentUserResponse, DeleteAgentRequest, DesktopCapabilities, EnqueueResponse,
+        HandshakeResponse, HttpErrorEnvelope, MarkBriefReadRequest, MemoryGetRequest,
+        ModelConfigMigrationRequest, NativeSessionResponse, PairingIssueResponse,
         PairingRedeemRequest, PickWorkItemRequest, PickWorkItemResponse,
         ResolveFileReferencesRequest, ResolveFileReferencesResponse, RevealFileRequest,
         RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
@@ -92,6 +93,7 @@ const ROUTES: &[RouteSpec] = &[
     route_with_response("get", "/agents/snapshot", "agentsSnapshot", "agents", "Agent roster snapshot", "Authoritative roster snapshot (RFC: observer sync): all-or-nothing membership with per-Agent event windows and latest Brief anchors from one committed read view. Served only while the agents.roster-snapshot.v1 capability is advertised; route registration alone is never sufficient.", None, "AgentRosterSnapshot", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/projection-snapshot", "agentProjectionSnapshot", "agents", "Agent projection snapshot", "Per-Agent canonical projection snapshot (RFC: observer sync): compact current state plus revision anchors at one committed consistency boundary. snapshot_through_seq equals the committed per-Agent event head of the same view; clients replay only event_seq greater than it. Served only while the agents.projection-snapshot.v1 capability is advertised; route registration alone is never sufficient.", None, "AgentProjectionSnapshot", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/conversation", "agentConversation", "agents", "Conversation summary snapshot", "Bounded conversation turn summaries, active turns, pending inputs, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.", None, "ConversationSummaryResponse", AuthKind::RemoteAccess),
+    route_with_response("post", "/agents/{agent_id}/conversation/locate", "agentConversationLocate", "agents", "Locate a canonical conversation source", "Resolve exact message or Brief ownership and a bounded bidirectional history window without mutating read markers. Non-conversation and pending sources are explicit.", Some("ConversationLocateRequest"), "ConversationLocateResponse", AuthKind::RemoteAccess),
     event_stream_route("get", "/agents/{agent_id}/conversation/stream", "agentConversationStream", "agents", "Conversation change stream", "Return bounded, coalesced conversation projection batches over Server-Sent Events. Resume with the opaque after query parameter or Last-Event-ID. Only checkpoint events carry an SSE id; clients persist it only after consuming the complete batch. Retention, epoch, schema, and query-version mismatches require a fresh snapshot. Served only while agents.conversation-read.v1 is advertised.", None, AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/turns/{turn_id}/activities", "agentConversationActivities", "agents", "Conversation turn activity snapshot", "Bounded activity records for one turn, including typed detail coverage, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.", None, "ConversationActivityResponse", AuthKind::RemoteAccess),
     route_with_response("get", "/control/agents/{agent_id}/conversation/shadow-diagnostics", "agentConversationShadowDiagnostics", "runtime", "Conversation shadow diagnostics", "Control-authenticated, metadata-only bounded comparison of canonical turn/source metadata and the conversation projection from one deferred read transaction. It never returns Brief bodies, transcript/tool payloads, or a second event ledger. Query parameter: turn_limit.", None, "ConversationShadowDiagnostics", AuthKind::Control),
@@ -551,6 +553,15 @@ fn operation(spec: &RouteSpec) -> Value {
             "schema": { "type": "string", "minLength": 1 }
         }));
     }
+    if spec.operation_id == "agentConversation" {
+        parameters.push(json!({
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "description": "Opaque forward history cursor. Mutually exclusive with before; not a stream checkpoint.",
+            "schema": { "type": "string", "minLength": 1 }
+        }));
+    }
     if spec.operation_id == "agentConversationStream" {
         parameters.extend([
             json!({
@@ -894,6 +905,14 @@ fn component_schemas() -> Value {
     schemas.insert(
         "ConversationSummaryResponse".into(),
         component_schema::<ConversationSummaryResponse>(),
+    );
+    schemas.insert(
+        "ConversationLocateRequest".into(),
+        component_schema::<ConversationLocateRequest>(),
+    );
+    schemas.insert(
+        "ConversationLocateResponse".into(),
+        component_schema::<ConversationLocateResponse>(),
     );
     schemas.insert(
         "ConversationActivityResponse".into(),
@@ -1604,6 +1623,30 @@ mod tests {
         );
         assert!(paths["/api/events/stream"]["get"].is_object());
         assert!(paths["/api/agents/{agent_id}/events/stream"]["get"].is_object());
+        let locate = &paths["/api/agents/{agent_id}/conversation/locate"]["post"];
+        assert_eq!(locate["operationId"], "agentConversationLocate");
+        assert_eq!(
+            locate["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ConversationLocateRequest"
+        );
+        assert_eq!(
+            locate["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ConversationLocateResponse"
+        );
+        for schema in ["ConversationLocateRequest", "ConversationLocateResponse"] {
+            assert!(api["components"]["schemas"][schema].is_object(), "{schema}");
+        }
+        let history_parameters = paths["/api/agents/{agent_id}/conversation"]["get"]["parameters"]
+            .as_array()
+            .expect("conversation history parameters");
+        for name in ["before", "after"] {
+            assert!(
+                history_parameters
+                    .iter()
+                    .any(|parameter| parameter["name"] == name && parameter["in"] == "query"),
+                "missing history parameter {name}"
+            );
+        }
         let conversation_stream = &paths["/api/agents/{agent_id}/conversation/stream"]["get"];
         assert!(conversation_stream["requestBody"].is_null());
         let stream_parameters = conversation_stream["parameters"]

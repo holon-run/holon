@@ -216,6 +216,57 @@ export class ConversationProtocolState {
     return true;
   }
 
+  /**
+   * Replace a bounded browsing membership without changing stream coverage.
+   * Page cursors belong to the browsing owner, never the live-tail reducer.
+   */
+  replaceWindow(
+    identity: ConversationRequestIdentity,
+    turns: readonly ConversationTurnSummary[],
+    pendingInputs?: readonly PendingInput[],
+  ): void {
+    this.#requireScope(identity);
+    const next = cloneState(this.#state);
+    const retained = new Set(turns.map((turn) => turn.turn_id));
+    next.turns = new Map(
+      [...next.turns].filter(([turnId]) => retained.has(turnId)),
+    );
+    next.loadedTurnIds = retained;
+    next.liveTurnOrder = [];
+    next.details = new Map(
+      [...next.details].filter(([turnId]) => retained.has(turnId)),
+    );
+    next.detailOrder = next.detailOrder.filter((id) => retained.has(id));
+    for (const turn of turns) {
+      mergeTurn(next, turn, true, this.limits);
+    }
+    if (pendingInputs !== undefined) {
+      next.pendingInputs.clear();
+      next.pendingInputTombstones.clear();
+      for (const input of pendingInputs) upsertPendingInput(next, input, this.limits);
+    }
+    ensureTurnLimit(next, this.limits);
+    this.#state = next;
+  }
+
+  /** Refresh already-loaded browsing entities without claiming stream coverage. */
+  refreshWindow(
+    identity: ConversationRequestIdentity,
+    batch: ConversationStreamBatch,
+  ): void {
+    const scope = this.#requireScope(identity);
+    assertBatchScope(scope, batch);
+    assertBatchFraming(batch);
+    const next = cloneState(this.#state);
+    for (const mutation of batch.mutations) {
+      if (mutation.type === "turn_summary_upsert" && next.loadedTurnIds.has(mutation.turn.turn_id)
+        || (mutation.type === "activity_upsert" || mutation.type === "detail_invalidated") && next.loadedTurnIds.has(mutation.turn_id)) {
+        applyMutation(next, mutation, this.limits);
+      }
+    }
+    this.#state = next;
+  }
+
   applyBatch(
     identity: ConversationRequestIdentity,
     batch: ConversationStreamBatch,

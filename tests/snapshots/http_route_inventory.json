@@ -234,6 +234,11 @@
         "required": true
       },
       {
+        "name": "after",
+        "location": "query",
+        "required": false
+      },
+      {
         "name": "before",
         "location": "query",
         "required": false
@@ -1543,6 +1548,28 @@
     ],
     "request_schema": "BatchGetBriefsRequest",
     "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/api/agents/{agent_id}/conversation/locate",
+    "handler": "locate",
+    "operation_id": "agentConversationLocate",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "ConversationLocateRequest",
+    "request_strict": true,
     "response_content_types": [
       "application/json"
     ],

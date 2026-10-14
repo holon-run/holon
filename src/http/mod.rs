@@ -133,8 +133,9 @@ pub(crate) use auth::{
 };
 pub(crate) use content_reports::{CreateContentReportRequest, CreateContentReportResponse};
 pub(crate) use conversation::{
-    ConversationActivityResponse, ConversationReadQuery, ConversationShadowQuery,
-    ConversationStreamMessage, ConversationSummaryResponse, CONVERSATION_SHADOW_DEFAULT_LIMIT,
+    ConversationActivityResponse, ConversationLocateRequest, ConversationLocateResponse,
+    ConversationReadQuery, ConversationShadowQuery, ConversationStreamMessage,
+    ConversationSummaryResponse, CONVERSATION_SHADOW_DEFAULT_LIMIT,
 };
 pub(crate) use observer_sync::{
     advertised_observer_sync_capabilities, ObserverSyncCapabilityVerification,
@@ -522,6 +523,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/agents/{agent_id}/conversation",
             get(conversation::summary),
+        )
+        .route(
+            "/agents/{agent_id}/conversation/locate",
+            post(conversation::locate),
         )
         .route(
             "/content-reports",

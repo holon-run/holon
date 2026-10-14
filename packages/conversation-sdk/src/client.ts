@@ -13,11 +13,14 @@ import {
   decodeConversationHandshake,
   decodeConversationHttpError,
   decodeConversationSummaryResponse,
+  decodeConversationLocateResponse,
   isConversationResetReason,
 } from "./decode.js";
 import { ConversationBatchAssembler, parseSseStream } from "./sse.js";
 import {
   CONVERSATION_CAPABILITY,
+  CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY,
+  CONVERSATION_LOCATE_CAPABILITY,
   HOLON_CONTROL_PROTOCOL_NAME,
   HOLON_CONTROL_PROTOCOL_VERSION,
   type BriefRecord,
@@ -26,6 +29,7 @@ import {
   type ConversationDetailCursor,
   type ConversationHandshake,
   type ConversationHistoryCursor,
+  type ConversationLocateResponse,
   type ConversationStreamItem,
   type ConversationSummaryResult,
   type ConversationSummaryResponse,
@@ -64,6 +68,7 @@ export interface ConversationClientOptions {
 export interface ConversationPageOptions {
   readonly limit?: number;
   readonly before?: ConversationHistoryCursor;
+  readonly after?: ConversationHistoryCursor;
   readonly ifNoneMatch?: string;
   readonly signal?: AbortSignal;
 }
@@ -71,6 +76,11 @@ export interface ConversationPageOptions {
 export interface ConversationActivityOptions {
   readonly limit?: number;
   readonly before?: ConversationDetailCursor;
+  readonly signal?: AbortSignal;
+}
+
+export interface ConversationLocateOptions {
+  readonly contextLimit?: number;
   readonly signal?: AbortSignal;
 }
 
@@ -136,6 +146,15 @@ export class ConversationClient {
     agentId: string,
     options: ConversationPageOptions = {},
   ): Promise<ConversationSummaryResult> {
+    if (options.before !== undefined && options.after !== undefined) {
+      throw new ConversationProtocolError("before and after are mutually exclusive");
+    }
+    if (options.after !== undefined) {
+      const handshake = await this.requireCapability(options.signal);
+      if (!handshake.capabilities.includes(CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY)) {
+        throw new ConversationCapabilityError(CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY);
+      }
+    }
     const query = new URLSearchParams();
     if (options.limit !== undefined) {
       query.set("limit", String(options.limit));
@@ -144,6 +163,7 @@ export class ConversationClient {
       query.set("before", options.before);
     }
     const headers = await this.#requestHeaders();
+    if (options.after !== undefined) query.set("after", options.after);
     headers.set("accept", "application/json");
     if (options.ifNoneMatch !== undefined) {
       headers.set("if-none-match", options.ifNoneMatch);
@@ -174,6 +194,32 @@ export class ConversationClient {
         });
       }
       return { summary: decodeConversationSummaryResponse(value), etag };
+    });
+  }
+
+  async locateSource(
+    agentId: string,
+    sourceRef: string,
+    options: ConversationLocateOptions = {},
+  ): Promise<ConversationLocateResponse> {
+    const handshake = await this.requireCapability(options.signal);
+    if (!handshake.capabilities.includes(CONVERSATION_LOCATE_CAPABILITY)) {
+      throw new ConversationCapabilityError(CONVERSATION_LOCATE_CAPABILITY);
+    }
+    const headers = await this.#requestHeaders();
+    headers.set("accept", "application/json");
+    headers.set("content-type", "application/json");
+    return this.#withRequestTimeout(options.signal, async (signal) => {
+      const response = await this.#fetch(this.#url(this.#agentPath(agentId, "/conversation/locate")), {
+        method: "POST", headers,
+        body: JSON.stringify({ source_ref: sourceRef, ...(options.contextLimit === undefined ? {} : { limit: options.contextLimit }) }),
+        ...(signal === undefined ? {} : { signal }),
+      });
+      if (!response.ok) await this.#throwResponseError(response);
+      let value: unknown;
+      try { value = await response.json(); }
+      catch (error) { throw new ConversationDecodeError("$response", "invalid JSON", { cause: error }); }
+      return decodeConversationLocateResponse(value);
     });
   }
 

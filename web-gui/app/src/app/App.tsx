@@ -31,6 +31,8 @@ import type { ComponentType } from "react";
 
 import holonMarkUrl from "../assets/holon-mark.png";
 import { AgentPage } from "../features/agent/AgentPage";
+import type { ConversationNavigation } from "../features/agent/conversation-location";
+import { setConversationNavigationActive } from "../runtime/conversation-scope-store";
 import { OnboardingModal } from "../features/onboarding/OnboardingModal";
 import { FilePreviewPage } from "../features/right-panel/FilePreviewPage";
 import { LoginPage } from "../features/auth/LoginPage";
@@ -62,7 +64,7 @@ import { useConversationSession } from "../runtime/useConversationSession";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { AgentSummary, RouteKey, RuntimeConnection } from "../runtime/types";
 import { truncateToWidth } from "../lib/utils";
-import { pushBrowserRoute, replaceBrowserRoute, routeFromLocation } from "./routes";
+import { pushBrowserRoute, replaceBrowserRoute, routeFromLocation, searchQueryForLocation } from "./routes";
 
 const globalRoutes: Array<{ key: RouteKey; labelKey: string; icon: LucideIcon }> = [
   { key: "dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard },
@@ -104,6 +106,14 @@ export function App() {
   const [agentFilter, setAgentFilter] = useState("");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const route = useRuntimeStore((state) => state.route);
+  const navigationRequestId = useRef(0);
+  const searchRouteQuery = useRef<Record<string, string | undefined>>({});
+  const [agentNavigation, setAgentNavigation] = useState<{ agentId: string; navigation: ConversationNavigation } | null>(() => {
+    const initial = routeFromLocation(window.location);
+    return initial.agentId && (initial.sourceRef || initial.eventSeq)
+      ? { agentId: initial.agentId, navigation: { requestId: 0, sourceRef: initial.sourceRef, eventSeq: initial.eventSeq, runtimeId: initial.runtimeId } }
+      : null;
+  });
   const selectedAgentId = useRuntimeStore((state) => state.selectedAgentId);
   const selectedSkillId = useRuntimeStore((state) => state.selectedSkillId);
   const selectedSkillAgentId = useRuntimeStore((state) => state.selectedSkillAgentId);
@@ -251,15 +261,21 @@ export function App() {
   } = useAgentDetail(activeAgentId);
   const conversationSession = useConversationSession(
     route === "agent" ? activeAgentId : undefined,
+    route === "agent" && agentNavigation && agentNavigation.agentId === activeAgentId ? agentNavigation.navigation : undefined,
   );
   const markSelectedAgentConversationRead = useCallback(() => {
-    if (!activeAgentId || panelLayout.full) return false;
+    if (!activeAgentId || panelLayout.full || !conversationSession.conversationReady) return false;
+    // Called only by a physically visible latest viewport, never by locating
+    // or completing a page fetch. Joined history can now use the normal gate.
+    if (conversationSession.scopeKey) setConversationNavigationActive(conversationSession.scopeKey, false);
     markAgentConversationRead(activeAgentId);
     return true;
   }, [
     activeAgentId,
     markAgentConversationRead,
     panelLayout.full,
+    conversationSession.conversationReady,
+    conversationSession.scopeKey,
   ]);
   const activeAgent = selectedAgent ?? selectedAgentDetail?.agent;
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
@@ -321,10 +337,18 @@ export function App() {
   useLayoutEffect(() => {
     const applyBrowserRoute = () => {
       const nextRoute = routeFromLocation(window.location);
+      if (nextRoute.route === "search") {
+        searchRouteQuery.current = searchQueryForLocation(window.location);
+      }
       if (nextRoute.route === "agent" && nextRoute.agentId) {
+        setAgentNavigation(nextRoute.sourceRef || nextRoute.eventSeq ? {
+          agentId: nextRoute.agentId,
+          navigation: { requestId: ++navigationRequestId.current, sourceRef: nextRoute.sourceRef, eventSeq: nextRoute.eventSeq, runtimeId: nextRoute.runtimeId },
+        } : null);
         openAgent(nextRoute.agentId);
         return;
       }
+      setAgentNavigation(null);
       if (nextRoute.route === "skillDetail" && nextRoute.skillId) {
         openSkill(nextRoute.skillId, nextRoute.agentId);
         return;
@@ -419,9 +443,11 @@ export function App() {
   }, [route, loading, bootstrap.connection.error, activeAgent, agentDetailLoading, setRoute]);
 
   function navigateRoute(nextRoute: RouteKey) {
+    if (route === "search") searchRouteQuery.current = searchQueryForLocation(window.location);
+    setAgentNavigation(null);
     setMobileNavOpen(false);
     setRoute(nextRoute);
-    pushBrowserRoute(nextRoute, selectedAgentId);
+    pushBrowserRoute(nextRoute, selectedAgentId, undefined, nextRoute === "search" ? searchRouteQuery.current : undefined);
   }
 
   function navigateSkill(skillId: string, agentId?: string) {
@@ -436,10 +462,15 @@ export function App() {
     pushBrowserRoute("templateDetail", undefined, catalogId);
   }
 
-  function navigateAgent(agentId: string, eventSeq?: number) {
+  function navigateAgent(agentId: string, sourceRef?: string) {
+    if (route === "search") searchRouteQuery.current = searchQueryForLocation(window.location);
     setMobileNavOpen(false);
+    setAgentNavigation(sourceRef ? {
+      agentId,
+      navigation: { requestId: ++navigationRequestId.current, sourceRef, runtimeId: discovery.identity?.runtimeId },
+    } : null);
     openAgent(agentId);
-    pushBrowserRoute("agent", agentId, undefined, eventSeq == null ? undefined : { event_seq: eventSeq });
+    pushBrowserRoute("agent", agentId, undefined, sourceRef ? { source_ref: sourceRef, runtime_id: discovery.identity?.runtimeId } : undefined);
   }
 
   async function handleCreateAgentSubmit(): Promise<void> {
@@ -787,6 +818,17 @@ export function App() {
                 ? undefined
                 : {
                     model: conversationSession.model,
+                    location: conversationSession.location,
+                    browsing: conversationSession.browsing,
+                    hasNewerHistory: conversationSession.hasNewerHistory,
+                    newerHistoryState: conversationSession.newerHistoryState,
+                    onLoadNewerHistory: conversationSession.loadNewerHistory,
+                    onRetryLocation: conversationSession.locateSource,
+                    onReturnToLatest: () => {
+                      setAgentNavigation(null);
+                      conversationSession.returnToLatest();
+                      replaceBrowserRoute("agent", activeAgent.id);
+                    },
                     toolDetails: selectedAgentSession?.toolExecutionDetailsById,
                     selectedActivityId: rightPanelOpen && rightPanelView && rightPanelView.agentId === activeAgentId
                       ? rightPanelView.kind === "tool_execution_detail" ? `tool:${rightPanelView.toolExecutionId}`
@@ -829,6 +871,7 @@ export function App() {
             syncRetryAttempt={selectedAgentSession?.syncRetryAttempt}
             historyTruncated={false}
             conversationReady={conversationSession.conversationReady}
+            navigationPending={agentNavigation?.agentId === activeAgent.id && conversationSession.location?.kind !== "ready"}
             onRefreshModels={refreshModelCatalog}
             onSetModel={(model, reasoningEffort, serviceTier) => setAgentModel(activeAgent.id, model, reasoningEffort, serviceTier)}
             onClearModel={() => clearAgentModel(activeAgent.id)}

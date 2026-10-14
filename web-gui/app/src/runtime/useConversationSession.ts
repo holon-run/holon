@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { ConversationCapabilityError } from "@holon/conversation-sdk";
 
 import type {
   BriefRecord,
@@ -15,6 +16,7 @@ import {
   conversationScopeSnapshot,
   peekConversationScope,
   releaseConversationScope,
+  setConversationNavigationActive,
   subscribeConversationScope,
   useConversationScopeStore,
 } from "./conversation-scope-store";
@@ -24,6 +26,7 @@ import {
 } from "./conversation-view-model";
 import { getRuntimeConnectionConfig, retryPendingReadMarker, useRuntimeStore } from "./runtime-store";
 import { currentRemoteKey } from "./session-cache";
+import type { ConversationLocation, ConversationNavigation } from "../features/agent/conversation-location";
 
 const NO_PENDING_OPERATOR_PROMPTS: readonly never[] = [];
 
@@ -32,6 +35,13 @@ export interface UseConversationSessionResult {
   readonly scopeKey: string | null;
   readonly controller: ConversationController | null;
   readonly conversationReady: boolean;
+  readonly location?: ConversationLocation;
+  readonly browsing: boolean;
+  readonly hasNewerHistory: boolean;
+  readonly newerHistoryState: ReturnType<ConversationController["historyState"]>;
+  locateSource: () => void;
+  returnToLatest: () => void;
+  loadNewerHistory: () => void;
   retry: () => void;
   loadOlderHistory: () => void;
   loadDetail: (turnId: string) => void;
@@ -50,6 +60,7 @@ export interface UseConversationSessionResult {
  */
 export function useConversationSession(
   agentId: string | undefined,
+  navigation?: ConversationNavigation,
 ): UseConversationSessionResult {
   const currentUser = useRuntimeStore((state) => state.currentUser);
   const currentUserLoaded = useRuntimeStore((state) => state.currentUserLoaded);
@@ -106,7 +117,61 @@ export function useConversationSession(
   const controller = scopeKey !== null ? peekConversationScope(scopeKey) : null;
   const snapshot = mirror ?? conversationScopeSnapshot(scopeKey ?? "");
   const version = snapshot.version;
-  const conversationReady = snapshot.status.kind === "ready" && snapshot.view?.scope != null && snapshot.view.reset_reason === null;
+  const bootstrapped = snapshot.status.kind === "ready" && snapshot.view?.scope != null && snapshot.view.reset_reason === null;
+  const browse = controller?.browseState() ?? null;
+  const boundNavigationRuntime = useRef<{ requestId: number; runtimeId: string } | null>(null);
+  const targetRuntime = navigation?.runtimeId
+    ?? (boundNavigationRuntime.current?.requestId === navigation?.requestId ? boundNavigationRuntime.current?.runtimeId : undefined);
+  const runtimeMismatch = targetRuntime !== undefined && snapshot.view?.scope != null && targetRuntime !== snapshot.view.scope.runtime_id;
+  const browsing = browse !== null;
+  const navigationActive = navigation !== undefined;
+  const conversationReady = bootstrapped && !browsing && !navigation && !runtimeMismatch;
+  const lastNavigation = useRef<{ controller: ConversationController; requestId: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (scopeKey === null) return;
+    setConversationNavigationActive(scopeKey, navigationActive);
+    return () => { setConversationNavigationActive(scopeKey, false); };
+  }, [scopeKey, navigationActive]);
+
+  // Cancellation belongs to route intent, not transient stream status changes.
+  useEffect(() => () => {
+    controller?.returnToLatest();
+    lastNavigation.current = null;
+  }, [controller, navigation?.requestId]);
+
+  useEffect(() => {
+    if (!controller || !navigation?.sourceRef || !bootstrapped || runtimeMismatch) return;
+    if (lastNavigation.current?.controller === controller && lastNavigation.current.requestId === navigation.requestId) return;
+    boundNavigationRuntime.current = { requestId: navigation.requestId, runtimeId: snapshot.view!.scope!.runtime_id };
+    lastNavigation.current = { controller, requestId: navigation.requestId };
+    void controller.locateSource(navigation.sourceRef);
+  }, [controller, navigation?.requestId, navigation?.sourceRef, bootstrapped, runtimeMismatch, snapshot.view?.scope?.runtime_id]);
+
+  const location = useMemo<ConversationLocation | undefined>(() => {
+    if (!navigation) return undefined;
+    if (runtimeMismatch) return { requestId: navigation.requestId, kind: "error", reason: "runtime" };
+    if (!navigation.sourceRef) return { requestId: navigation.requestId, kind: "error", reason: "legacy" };
+    if (!browse || browse.sourceRef !== navigation.sourceRef || browse.status === "resolving") {
+      return { requestId: navigation.requestId, kind: "loading" };
+    }
+    if (browse.status === "error") return {
+      requestId: navigation.requestId, kind: "error",
+      reason: browse.error instanceof ConversationCapabilityError ? "unsupported" : undefined,
+      error: browse.error instanceof ConversationCapabilityError ? undefined
+        : browse.error instanceof Error ? browse.error.message : undefined,
+    };
+    if (browse.status === "source_only") return { requestId: navigation.requestId, kind: "source_only" };
+    const target = browse.target;
+    if (!target) return { requestId: navigation.requestId, kind: "loading" };
+    return {
+      requestId: navigation.requestId, kind: "ready",
+      anchor: target.kind === "brief" ? `brief:${target.brief_id}`
+        : target.kind === "activity" ? `activity:${target.activity_id}`
+        : target.kind === "turn" ? `turn:${target.turn_id}` : `input:${target.message_id}`,
+      turnId: "turn_id" in target ? target.turn_id : undefined,
+    };
+  }, [navigation, browse, runtimeMismatch]);
 
   // Locally echoed prompts retire once the server view carries their message
   // id (pending input or assigned turn input). Stale entries age out via the
@@ -162,7 +227,8 @@ export function useConversationSession(
     return buildConversationSessionModel({
       status: snapshot.status,
       view,
-      localPendingPrompts: pendingOperatorPrompts,
+      locatedTurnId: location?.turnId,
+      localPendingPrompts: browse && !browse.liveConnected ? [] : pendingOperatorPrompts,
       historyState: controller?.historyState() ?? { kind: "idle" },
       briefs,
       briefLoadStates,
@@ -170,12 +236,18 @@ export function useConversationSession(
     });
     // `version` covers controller-side mutations; `controller` and
     // `snapshot` are stable between version bumps.
-  }, [snapshot, controller, version, pendingOperatorPrompts]);
+  }, [snapshot, controller, version, pendingOperatorPrompts, browse, location?.turnId]);
 
   const loadOlderHistory = useCallback(() => {
     if (controller === null || controller.view().reset_reason !== null) return;
     void controller.loadOlderHistory();
   }, [controller]);
+
+  const loadNewerHistory = useCallback(() => { void controller?.loadNewerHistory(); }, [controller]);
+  const locateSource = useCallback(() => {
+    if (navigation?.sourceRef && controller && !runtimeMismatch) void controller.locateSource(navigation.sourceRef);
+  }, [controller, navigation?.sourceRef, runtimeMismatch]);
+  const returnToLatest = useCallback(() => { controller?.returnToLatest(); }, [controller]);
 
   const loadDetail = useCallback(
     (turnId: string) => {
@@ -231,6 +303,13 @@ export function useConversationSession(
     scopeKey,
     controller,
     conversationReady,
+    location,
+    browsing,
+    hasNewerHistory: browse?.hasNewer ?? false,
+    newerHistoryState: browse?.newer ?? { kind: "idle" },
+    locateSource,
+    returnToLatest,
+    loadNewerHistory,
     retry,
     loadOlderHistory,
     loadDetail,

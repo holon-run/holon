@@ -64,6 +64,8 @@ export interface ConversationSessionModel {
 }
 
 export interface BuildConversationSessionModelInput {
+  /** An explicitly located canonical turn must not be hidden as background-only. */
+  readonly locatedTurnId?: string;
   readonly status: ConversationStatus;
   readonly view: ConversationStateView | null;
   readonly historyState: ConversationHistoryLoadState;
@@ -123,7 +125,7 @@ export function buildConversationSessionModel(
     view,
     // Reducer-only task receipts update runtime state without a model response.
     // Keep them in the canonical view and input deduplication, out of chat history.
-    turns: turns.filter((turn) => !(turn.presentationClass === "task"
+    turns: turns.filter((turn) => turn.turnId === input.locatedTurnId || !(turn.presentationClass === "task"
       && turn.execution.kind === "terminal" && turn.execution.outcome === "completed"
       && turn.settled && !turn.attention && turn.briefIds.length === 0
       && turn.result.kind === "none" && turn.result.reason.kind === "reducer_only"

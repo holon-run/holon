@@ -38,7 +38,7 @@ import { createSessionProjectionState, reduceSessionProjection } from "./session
 import type { AgentSummary } from "./types";
 
 /** Seeds the conversation scope mirror the read-marker gate consumes. */
-function seedReadyConversationScope(agentId: string): void {
+function seedReadyConversationScope(agentId: string, gate: { navigationActive?: boolean; browsing?: boolean } = {}): void {
   useConversationScopeStore.setState({
     scopes: {
       [resolveConversationScopeKey("local", agentId, useRuntimeStore.getState().currentUser)]: {
@@ -46,6 +46,7 @@ function seedReadyConversationScope(agentId: string): void {
         view: { scope: {}, reset_reason: null } as ConversationStateView,
         displayView: null,
         version: 1,
+        ...gate,
       },
     },
   });
@@ -1205,6 +1206,30 @@ describe("server brief read state", () => {
           String(input).includes("/agents/agent-a/brief-read-cursor") && init?.method === "POST",
       ),
     ).toBe(false);
+  });
+
+  it.each([{ navigationActive: true }, { browsing: true }])("does not clear unread or POST read markers during source navigation: %j", async (gate) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => Promise.resolve(new Response(
+      JSON.stringify(String(input).includes("/agents/brief-read-states") ? [state()] : {}), { status: 200 },
+    )));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    await useRuntimeStore.getState().refreshBriefReadStates();
+    useRuntimeStore.setState({
+      route: "agent", selectedAgentId: "agent-a",
+      discovery: { ...useRuntimeStore.getState().discovery, freshness: "fresh" },
+    });
+    vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerReadiness").mockReturnValue({
+      readyThroughSeq: 8, ingestedThroughSeq: 8, observedHeadSeq: 8,
+    });
+    seedReadyConversationScope("agent-a", gate);
+    useRuntimeStore.getState().markAgentConversationRead("agent-a");
+    await Promise.resolve();
+    expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]).toMatchObject({
+      unread_count: 5, read_through_event_seq: 3,
+    });
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/brief-read-cursor"))).toBe(false);
   });
 
   it("does not optimistically clear unread state while hydration blocks the read gate", async () => {

@@ -1,11 +1,21 @@
 import type { RouteKey } from "../runtime/types";
 
-interface BrowserRoute {
+export interface BrowserRoute {
   route: RouteKey;
   agentId?: string;
   skillId?: string;
   templateId?: string;
   eventSeq?: number;
+  sourceRef?: string;
+  runtimeId?: string;
+}
+
+export function searchQueryForLocation(location: Pick<Location, "search">): Record<string, string | undefined> {
+  const params = new URLSearchParams(location.search);
+  return {
+    q: params.get("q") ?? undefined,
+    scope: params.get("scope") === "all" ? "all" : undefined,
+  };
 }
 
 function eventSeqFromSearch(search: string): number | undefined {
@@ -53,6 +63,8 @@ export function routeFromLocation(location: Pick<Location, "pathname" | "search"
       route: "agent",
       agentId: safeDecodeURIComponent(agentMatch[1]),
       eventSeq: eventSeqFromSearch(location.search),
+      sourceRef: new URLSearchParams(location.search).get("source_ref") || undefined,
+      runtimeId: new URLSearchParams(location.search).get("runtime_id") || undefined,
     };
   }
 
@@ -62,7 +74,7 @@ export function routeFromLocation(location: Pick<Location, "pathname" | "search"
 export function pathForRoute(route: RouteKey, agentId?: string, templateId?: string, query?: Record<string, string | number | undefined>, skillAgentId?: string): string {
   const queryString = query ? new URLSearchParams(Object.entries(query).flatMap(([key, value]) => (value == null ? [] : [[key, String(value)]]))).toString() : "";
   if (route === "files") return `/files${queryString ? `?${queryString}` : ""}`;
-  if (route === "search") return "/search";
+  if (route === "search") return `/search${queryString ? `?${queryString}` : ""}`;
   if (route === "skills") return "/skills";
   if (route === "skillDetail" && agentId) {
     return skillAgentId

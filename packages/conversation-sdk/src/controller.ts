@@ -1,4 +1,5 @@
 import type { ConversationClient } from "./client.js";
+import { ConversationBrowseWindow, type BrowsePage } from "./browse.js";
 import {
   ConversationCapabilityError,
   ConversationCompatibilityError,
@@ -29,6 +30,9 @@ import {
   type ConversationStreamItem,
   type ConversationSummaryResult,
   type ConversationSummaryResponse,
+  type ConversationLocateResponse,
+  type ConversationLocateTarget,
+  type ConversationStreamBatch,
 } from "./types.js";
 
 /**
@@ -43,10 +47,16 @@ export interface ConversationClientLike {
     options?: {
       readonly limit?: number;
       readonly before?: ConversationHistoryCursor;
+      readonly after?: ConversationHistoryCursor;
       readonly ifNoneMatch?: string;
       readonly signal?: AbortSignal;
     },
   ): Promise<ConversationSummaryResult>;
+  locateSource?(
+    agentId: string,
+    sourceRef: string,
+    options?: { readonly contextLimit?: number; readonly signal?: AbortSignal },
+  ): Promise<ConversationLocateResponse>;
   activities(
     agentId: string,
     turnId: string,
@@ -93,6 +103,27 @@ export type ConversationHistoryLoadState =
       readonly retryable: boolean;
       readonly error: unknown;
     };
+
+export interface ConversationBrowseState {
+  readonly sourceRef: string;
+  readonly target: ConversationLocateTarget | null;
+  readonly status: "resolving" | "ready" | "source_only" | "error";
+  readonly older: ConversationHistoryLoadState;
+  readonly newer: ConversationHistoryLoadState;
+  readonly hasOlder: boolean;
+  readonly hasNewer: boolean;
+  readonly hasLiveUpdates: boolean;
+  readonly liveConnected: boolean;
+  readonly error?: unknown;
+  readonly reason?: string;
+}
+
+/** UI-facing location lifecycle; pagination remains available through browseState(). */
+export type ConversationLocateState =
+  | { readonly status: "idle" }
+  | (Omit<ConversationBrowseState, "status"> & {
+      readonly status: "loading" | "ready" | "source_only" | "error";
+    });
 
 export type ConversationDetailLoadState =
   | { readonly kind: "idle" }
@@ -219,6 +250,8 @@ export type ConversationControllerEvent =
         | "batch"
         | "older_page"
         | "detail_page"
+        | "locate"
+        | "newer_page"
         | "reset";
     }
   | {
@@ -240,6 +273,22 @@ const DEFAULT_STABLE_UPTIME_MS = 30_000;
 const DEFAULT_HISTORY_PAGE_SIZE = 30;
 const DEFAULT_ACTIVITY_PAGE_SIZE = 50;
 const DEFAULT_MAX_BRIEF_CACHE = 64;
+
+function browsePage(summary: ConversationSummaryResponse): BrowsePage {
+  const window = summary.coverage;
+  if (!window) throw new ConversationProtocolError("server omitted the bidirectional conversation window");
+  if (summary.turns.length > 0 && window.membership_upper_bound == null) {
+    throw new ConversationProtocolError("server omitted the conversation membership upper bound");
+  }
+  if (window.has_older !== (summary.next_before_cursor !== null) || window.has_newer !== (summary.next_after_cursor != null)
+    || window.reaches_oldest === window.has_older || window.reaches_latest === window.has_newer) {
+    throw new ConversationProtocolError("conversation window cursor coverage is inconsistent");
+  }
+  return {
+    summary, before: summary.next_before_cursor, after: summary.next_after_cursor ?? null,
+    hasOlder: window.has_older, hasNewer: window.has_newer,
+  };
+}
 
 function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -326,6 +375,11 @@ export class ConversationController {
   #snapshotWrites: Promise<void> = Promise.resolve();
   #cacheGeneration = 0;
   #capabilityReady = false;
+  #browse: ConversationBrowseState | null = null;
+  #browseWindow: ConversationBrowseWindow | null = null;
+  #browseGeneration = 0;
+  #browseAbort = new AbortController();
+  readonly #browseBatches: ConversationStreamBatch[] = [];
 
   constructor(options: ConversationControllerOptions) {
     if (options.agentId.length === 0) {
@@ -372,8 +426,107 @@ export class ConversationController {
     return this.#state.view();
   }
 
+  /** Selected list data; historical windows never carry read authority. */
+  displayView(): ConversationStateView {
+    return this.browsingView() ?? this.view();
+  }
+
+  /** Null until a location resolves to an independent history window. */
+  browsingView(): ConversationStateView | null {
+    if (this.#browseWindow !== null) {
+      const view = this.#browseWindow.state.view();
+      return {
+        ...view,
+        next_before_cursor: this.#browseWindow.before,
+        has_more: this.#browseWindow.hasOlder,
+        // Browsing never grants authority to advance the read/stream cursor.
+        checkpoint: null,
+        through_seq: null,
+      };
+    }
+    return null;
+  }
+
   historyState(): ConversationHistoryLoadState {
-    return this.#historyState;
+    return this.#browse?.older ?? this.#historyState;
+  }
+
+  browseState(): ConversationBrowseState | null {
+    return this.#browse;
+  }
+
+  locateState(): ConversationLocateState {
+    const browse = this.#browse;
+    if (browse === null) return { status: "idle" };
+    return { ...browse, status: browse.status === "resolving" ? "loading" : browse.status };
+  }
+
+  async locateSource(sourceRef: string): Promise<ConversationBrowseState | null> {
+    if (this.#disposed) throw new ConversationProtocolError("controller is disposed");
+    this.#clearBrowse();
+    const generation = this.#browseGeneration;
+    const scope = this.#state.view().scope;
+    this.#browse = {
+      sourceRef, target: null, status: "resolving",
+      older: { kind: "idle" }, newer: { kind: "idle" },
+      hasOlder: false, hasNewer: false, hasLiveUpdates: false, liveConnected: false,
+    };
+    this.#emitChange();
+    try {
+      if (sourceRef.length === 0) throw new ConversationProtocolError("sourceRef must not be empty");
+      if (!this.#client.locateSource) throw new ConversationCapabilityError("agents.conversation-locate.v1");
+      if (!scope) throw new ConversationProtocolError("locate requires a bootstrapped conversation");
+      const response = await this.#client.locateSource(this.agentId, sourceRef, {
+        contextLimit: Math.min(this.#historyPageSize, this.limits.max_turns),
+        signal: this.#browseAbort.signal,
+      });
+      if (!this.#browseAlive(generation)) return null;
+      if (response.status === "source_only") {
+        const currentScope = this.#state.view().scope;
+        if (!currentScope || response.runtime_id !== currentScope.runtime_id
+          || response.event_log_epoch !== currentScope.event_log_epoch
+          || response.visibility_scope_id !== currentScope.visibility_scope_id) {
+          throw new ConversationStaleResponseError("source-only response belongs to a stale conversation scope");
+        }
+        this.#browse = { ...this.#browse!, status: "source_only", reason: response.reason };
+        this.#emitChange();
+        return this.#browse;
+      }
+      const snapshot = response.window;
+      this.#assertBrowseScope(snapshot);
+      const pendingTargetId = response.target.kind === "pending_input" ? response.target.message_id : null;
+      const window = new ConversationBrowseWindow(this.#identity, this.limits, browsePage({
+        ...snapshot,
+        pending_inputs: pendingTargetId !== null
+          ? snapshot.pending_inputs.filter((input) => input.message_id === pendingTargetId)
+          : [],
+      }));
+      this.#browseWindow = window;
+      this.#browse = { ...this.#browse!, target: response.target, status: "ready" };
+      for (const batch of this.#browseBatches) this.#applyBrowseBatch(batch);
+      this.#tryJoinBrowse();
+      this.#refreshBrowse();
+      this.#emitView("locate");
+      if (response.target.kind === "brief") void this.loadBrief(response.target.brief_id);
+      if (response.target.kind === "activity" || response.target.kind === "input") void this.loadDetail(response.target.turn_id);
+      return this.#browse;
+    } catch (error) {
+      if (!this.#browseAlive(generation)) return null;
+      this.#discardUnauthorizedCache(error);
+      if (!this.#browseAlive(generation)) return null;
+      this.#browse = { ...this.#browse!, status: "error", error };
+      this.#emitChange();
+      return this.#browse;
+    }
+  }
+
+  returnToLatest(): void {
+    this.#clearBrowse();
+    this.#emitChange();
+  }
+
+  async loadNewerHistory(): Promise<ConversationHistoryLoadState> {
+    return this.#loadBrowsePage("newer");
   }
 
   detailState(turnId: string): ConversationDetailLoadState {
@@ -450,11 +603,13 @@ export class ConversationController {
     this.#runToken += 1;
     this.#runAbort?.abort(abortError("controller disposed"));
     this.#requestAbort.abort(abortError("controller disposed"));
+    this.#clearBrowse();
     this.#runAbort = null;
     this.#listeners.clear();
   }
 
   async loadOlderHistory(): Promise<ConversationHistoryLoadState> {
+    if (this.#browse !== null) return this.#loadBrowsePage("older");
     if (this.#disposed) {
       return {
         kind: "error",
@@ -521,7 +676,7 @@ export class ConversationController {
   async loadOlderActivities(
     turnId: string,
   ): Promise<ConversationDetailLoadState> {
-    const view = this.view();
+    const view = this.displayView();
     const detail = view.details.find((entry) => entry.turn_id === turnId);
     if (detail === undefined) {
       return this.#requestDetail(turnId, undefined);
@@ -614,6 +769,116 @@ export class ConversationController {
     }
   }
 
+  #browseAlive(generation: number): boolean {
+    return !this.#disposed && generation === this.#browseGeneration && this.#browse !== null;
+  }
+
+  #clearBrowse(): void {
+    this.#browseGeneration += 1;
+    this.#browseAbort.abort(abortError("conversation navigation superseded"));
+    this.#browseAbort = new AbortController();
+    this.#browseWindow = null;
+    this.#browse = null;
+    this.#browseBatches.length = 0;
+    this.#detailStates.clear();
+  }
+
+  #invalidateBrowse(error: unknown, clearWindow = false): void {
+    if (!this.#browse) return;
+    const previous = this.#browse;
+    const window = this.#browseWindow;
+    this.#clearBrowse();
+    if (!clearWindow) this.#browseWindow = window;
+    this.#browse = { ...previous, status: "error", error, liveConnected: false };
+  }
+
+  #applyBrowseBatch(batch: ConversationStreamBatch): void {
+    const target = this.#browse?.target;
+    this.#browseWindow?.applyBatch(target?.kind === "pending_input" ? {
+      ...batch,
+      // A pending message keeps its identity until canonical assignment is
+      // observable; a transient remove must not make navigation target vanish.
+      mutations: batch.mutations.filter((mutation) => mutation.type !== "operator_remove" || mutation.message_id !== target.message_id),
+    } : batch);
+  }
+
+  #assertBrowseScope(snapshot: ConversationSummaryResponse): void {
+    const scope = this.#state.view().scope;
+    if (!scope || this.#state.view().reset_reason !== null) throw new ConversationStaleResponseError("conversation reset during locate");
+    for (const field of ["runtime_id", "event_log_epoch", "visibility_scope_id", "schema_version", "query_version"] as const) {
+      if (scope[field] !== snapshot[field]) throw new ConversationStaleResponseError(`locate ${field} changed`);
+    }
+  }
+
+  #refreshBrowse(): void {
+    if (!this.#browse || !this.#browseWindow) return;
+    const window = this.#browseWindow;
+    this.#browse = {
+      ...this.#browse,
+      hasOlder: window.hasOlder, hasNewer: window.hasNewer,
+      liveConnected: window.joined && this.#browse.status === "ready",
+      hasLiveUpdates: (this.#state.view().through_seq ?? 0) > window.snapshot.snapshot_through_seq && !window.joined,
+      older: window.hasOlder || this.#browse.older.kind === "error" ? this.#browse.older : { kind: "complete" },
+      newer: window.hasNewer || this.#browse.newer.kind === "error" ? this.#browse.newer : { kind: "complete" },
+    };
+  }
+
+  #tryJoinBrowse(): void {
+    if (!this.#browseWindow || this.#browseWindow.joined || this.#browseWindow.hasNewer) return;
+    const tail = this.#state.view();
+    if (tail.through_seq !== null) this.#browseWindow.join(this.#browseBatches, tail.through_seq, tail.pending_inputs);
+  }
+
+  async #loadBrowsePage(direction: "older" | "newer"): Promise<ConversationHistoryLoadState> {
+    const browse = this.#browse;
+    const window = this.#browseWindow;
+    if (!browse || !window || browse.status !== "ready") return { kind: "idle" };
+    if (browse[direction].kind === "loading") return browse[direction];
+    const cursor = direction === "older" ? window.before : window.after;
+    const hasMore = direction === "older" ? window.hasOlder : window.hasNewer;
+    if (!cursor || !hasMore) return { kind: "complete" };
+    const generation = this.#browseGeneration;
+    this.#browse = { ...browse, [direction]: { kind: "loading" } };
+    this.#emitChange();
+    try {
+      const result = await this.#client.summary(this.agentId, {
+        limit: Math.min(this.#historyPageSize, this.limits.max_turns),
+        ...(direction === "older" ? { before: cursor } : { after: cursor }),
+        signal: this.#browseAbort.signal,
+      });
+      if (!this.#browseAlive(generation)) return { kind: "idle" };
+      if (!result.summary) throw new ConversationProtocolError("browse page returned 304");
+      this.#assertBrowseScope(result.summary);
+      if (cursor !== (direction === "older" ? window.before : window.after)) {
+        this.#browse = { ...this.#browse!, [direction]: { kind: "idle" } };
+        this.#emitChange();
+        return { kind: "idle" };
+      }
+      window.append(browsePage(result.summary), direction);
+      for (const batch of this.#browseBatches) {
+        if (batch.begin.through_seq > result.summary.snapshot_through_seq) window.state.refreshWindow(this.#identity, batch);
+      }
+      this.#tryJoinBrowse();
+      this.#browse = { ...this.#browse!, [direction]: { kind: "idle" } };
+      this.#refreshBrowse();
+      this.#emitView(direction === "older" ? "older_page" : "newer_page");
+      return this.#browse![direction];
+    } catch (error) {
+      if (!this.#browseAlive(generation)) return { kind: "idle" };
+      this.#discardUnauthorizedCache(error);
+      if (!this.#browseAlive(generation)) return { kind: "idle" };
+      const kind = classifyConversationError(error);
+      const next: ConversationHistoryLoadState = { kind: "error", retryable: kind === "retryable" || kind === "recoverable", error };
+      if (error instanceof ConversationStaleResponseError || error instanceof ConversationResetError) {
+        this.#invalidateBrowse(error);
+      }
+      this.#browse = { ...this.#browse!, [direction]: next };
+      this.#refreshBrowse();
+      this.#emitChange();
+      return next;
+    }
+  }
+
   #absorbHistoryError(error: unknown): ConversationHistoryLoadState {
     this.#discardUnauthorizedCache(error);
     if (this.#disposed) {
@@ -659,7 +924,9 @@ export class ConversationController {
       };
     }
     const generation = this.#cacheGeneration;
-    const view = this.view();
+    const navigation = this.#browseGeneration;
+    const state = this.#browseWindow?.state ?? this.#state;
+    const view = state.view();
     if (view.scope === null || view.reset_reason !== null) {
       return {
         kind: "error",
@@ -679,16 +946,18 @@ export class ConversationController {
       const page = await this.#client.activities(this.agentId, turnId, {
         limit: this.#activityPageSize,
         ...(before === undefined ? {} : { before }),
-        signal: this.#requestSignal(),
+        signal: this.#browseWindow ? this.#browseAbort.signal : this.#requestSignal(),
       });
       if (this.#disposed || generation !== this.#cacheGeneration) {
         return { kind: "idle" };
       }
-      this.#state.applyDetailPage(this.#identity, turnId, before, page);
+      if (navigation !== this.#browseGeneration) return { kind: "idle" };
+      state.applyDetailPage(this.#identity, turnId, before, page);
       this.#detailStates.set(turnId, { kind: "idle" });
       this.#emitView("detail_page");
       return { kind: "idle" };
     } catch (error) {
+      if (navigation !== this.#browseGeneration) return { kind: "idle" };
       if (this.#disposed || generation !== this.#cacheGeneration) {
         return { kind: "idle" };
       }
@@ -970,6 +1239,22 @@ export class ConversationController {
       }
       try {
         if (this.#state.applyBatch(this.#identity, item.batch)) {
+          if (this.#browse !== null && this.#browse.status !== "error" && this.#browse.status !== "source_only") {
+            this.#browseBatches.push(item.batch);
+            if (this.#browseBatches.length > 256) this.#browseBatches.shift();
+            try {
+              this.#applyBrowseBatch(item.batch);
+              this.#tryJoinBrowse();
+              this.#refreshBrowse();
+              const target = this.#browse.target;
+              if (target?.kind === "pending_input" && item.batch.mutations.some((mutation) =>
+                mutation.type === "turn_summary_upsert" && mutation.turn.inputs.some((input) => input.message_id === target.message_id))) {
+                void this.locateSource(this.#browse.sourceRef);
+              }
+            } catch (error) {
+              this.#invalidateBrowse(error);
+            }
+          }
           this.#emitView("batch");
           if (item.batch.mutations.some((mutation) => mutation.type === "turn_summary_upsert" && mutation.turn.execution.kind === "terminal")) {
             this.#flushSnapshot();
@@ -988,6 +1273,7 @@ export class ConversationController {
   }
 
   #applyStreamReset(reason: ConversationResetReason): void {
+    this.#invalidateBrowse(new ConversationResetError(reason), true);
     this.#cancelSnapshotTimer();
     this.#snapshotBase = undefined;
     this.#pendingRevalidate = undefined;
@@ -1027,6 +1313,7 @@ export class ConversationController {
     this.#handshakePromise = null;
     this.#capabilityReady = false;
     this.#cacheGeneration += 1;
+    this.#clearBrowse();
     this.#snapshotBase = undefined;
     this.#pendingRevalidate = undefined;
     this.#state.reset("stream_recovery_failed");
@@ -1099,6 +1386,8 @@ export class ConversationController {
       | "batch"
       | "older_page"
       | "detail_page"
+      | "locate"
+      | "newer_page"
       | "reset",
   ): void {
     if (["batch", "older_page", "detail_page"].includes(reason) && this.#pendingRevalidate === undefined

@@ -2,8 +2,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import i18next from "i18next";
 import en from "../../i18n/resources/en";
 
-import { canSearchSelection, defaultSearchAgentId, formatSearchPreview, searchIndexWarningKey, searchOptionsForSelection } from "./SearchPage";
-import type { AgentSummary, SearchResponse } from "../../runtime/types";
+import { canSearchSelection, defaultSearchAgentId, formatSearchPreview, searchIndexWarningKey, searchLocateLabel, searchOptionsForSelection } from "./SearchPage";
+import type { AgentSummary, SearchResponse, SearchResultItem } from "../../runtime/types";
 
 beforeAll(() => {
   if (!i18next.isInitialized) {
@@ -90,6 +90,7 @@ describe("searchOptionsForSelection", () => {
       agentIds: ["holon-pm", "worker"],
       includeAllWorkspaces: true,
       limit: 25,
+      types: ["message", "brief"],
     });
   });
 
@@ -98,7 +99,43 @@ describe("searchOptionsForSelection", () => {
       agentIds: ["worker"],
       includeAllWorkspaces: false,
       limit: 20,
+      types: ["message", "brief"],
     });
+  });
+});
+
+describe("all runtime records search scope", () => {
+  it("requests all runtime kinds from the server without changing cross-agent scope", () => {
+    expect(searchOptionsForSelection("all", [agent("alpha"), agent("beta")], "2", "all")).toEqual({
+      agentIds: ["alpha", "beta"],
+      includeAllWorkspaces: true,
+      limit: 2,
+      types: [],
+    });
+  });
+});
+
+describe("searchLocateLabel", () => {
+  function result(sourceRef?: string, eventSeq?: number): SearchResultItem {
+    return { agentId: "alpha", resultType: "message", kind: "message", preview: "", locator: { sourceRef, eventSeq } };
+  }
+
+  it.each([
+    ["message:msg-1", "searchPage.locateMessage"],
+    ["brief:brief-1", "searchPage.locateBrief"],
+  ])("offers canonical location for %s without an event sequence", (sourceRef, label) => {
+    expect(searchLocateLabel(result(sourceRef))).toBe(label);
+  });
+
+  it.each(["turn:turn-1", "tool_execution:exec-1:output:batch:0", "task:task-1", "work_item:work-1", "episode:ep-1", "agent_memory:self", "message:", "unknown:record"])(
+    "does not advertise precise conversation location for %s",
+    (sourceRef) => expect(searchLocateLabel(result(sourceRef, 42))).toBeUndefined(),
+  );
+
+  it("does not treat evidence IDs or event sequences as source references", () => {
+    const hit = result(undefined, 42);
+    hit.locator.evidenceId = "message:msg-1";
+    expect(searchLocateLabel(hit)).toBeUndefined();
   });
 });
 

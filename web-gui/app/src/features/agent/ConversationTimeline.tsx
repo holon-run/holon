@@ -47,6 +47,9 @@ import {
 } from "../../runtime/conversation-view-model";
 
 export interface ConversationTimelineActions {
+  locatedAnchor?: string;
+  /** Expand the precise target before the parent attempts DOM positioning. */
+  revealTarget?: { readonly anchor: string; readonly turnId?: string };
   onOpenWorkItemId?: (workItemId: string) => void;
   onLoadBrief: (briefId: string) => void;
   onLoadDetail: (turnId: string) => void;
@@ -312,7 +315,11 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
       ? "loadingResult" : execution;
   // Transport freshness must not collapse a still-active execution.
   const autoExpanded = execution === "running" || (wasActive.current && awaitingResult);
-  const expanded = manualExpanded ?? (autoExpanded || readingDetail);
+  const revealTarget = actions.revealTarget?.turnId === turn.turnId
+    && (actions.revealTarget.anchor.startsWith("activity:")
+      || turn.inputs.some((input) => `input:${input.message_id}` === actions.revealTarget?.anchor
+        && (input.interjected || input.task_result)));
+  const expanded = revealTarget || (manualExpanded ?? (autoExpanded || readingDetail));
   const [mounted, setMounted] = useState(expanded);
   const initialInputs = turn.inputs.filter((input) => !input.interjected);
   const interjections = turn.inputs.filter((input) => input.interjected);
@@ -327,13 +334,16 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
       || (input.task_result.runtime_only === true && brief.related_message_id === input.message_id)
     ));
   };
-  const responseBriefIds = turn.briefIds.filter((id) => !isRuntimeTaskBrief(id));
+  const responseBriefIds = turn.briefIds.filter((id) => actions.locatedAnchor === `brief:${id}` || !isRuntimeTaskBrief(id));
   const taskHeader = turn.inputs.find((input) => input.task_result && ["failed", "interrupted"].includes(input.task_result.status))
     ?? turn.inputs.find((input) => input.task_result);
 
   useEffect(() => {
     if (turn.execution.kind === "active") wasActive.current = true;
   }, [turn.execution.kind]);
+  useEffect(() => {
+    if (revealTarget) setManualExpanded(true);
+  }, [revealTarget]);
   useEffect(() => {
     if (expanded) {
       setMounted(true);
@@ -371,6 +381,7 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
 
   return (
     <section className={`conversation-turn is-${execution}`} data-turn-id={turn.turnId}
+      data-conversation-anchor={`turn:${turn.turnId}`}
       aria-label={t("agentPage.turnAria", { index: turn.turnIndex })}>
       {initialInputs.filter((input) => !input.task_result).map((input) => (input.presentation_class ?? turn.presentationClass) === "operator" ? (
         <ConversationInputLine key={input.message_id} input={input} />
@@ -612,10 +623,13 @@ function ConversationDetailPanel({
   const { t } = useTranslation();
   const detail = turn.detail;
   const [showEarlier, setShowEarlier] = useState(false);
+  useEffect(() => {
+    if (actions.revealTarget?.turnId === turn.turnId) setShowEarlier(true);
+  }, [actions.revealTarget?.turnId, actions.revealTarget?.anchor, turn.turnId]);
   const inputRow = (input: TurnInputSummary) => {
     const source = input.presentation_class ?? "operator";
     return (
-      <li className="conversation-interjection" key={input.message_id}>
+      <li className="conversation-interjection" key={input.message_id} data-conversation-anchor={`input:${input.message_id}`}>
         {input.task_result ? <TaskResultRow input={input} onInspectActivity={actions.onInspectActivity} /> : source === "operator"
           ? <ConversationInputLine input={input} />
           : <ConversationEventInput input={input} source={source} onInspectActivity={actions.onInspectActivity} />}
@@ -683,7 +697,8 @@ function ConversationDetailPanel({
       <ol className="conversation-activities">
         {taskRows}
         {conversationTimelineEntries(inputs.filter((input) => expanded || !input.task_result), expanded ? activities.filter((activity, index) =>
-          showEarlier || index >= activities.length - 8 || activity.kind === "error" || activity.kind === "wait"
+          showEarlier || actions.revealTarget?.anchor === `activity:${activity.id}`
+            || index >= activities.length - 8 || activity.kind === "error" || activity.kind === "wait"
         ) : []).map((entry) => entry.kind === "input" ? inputRow(entry.input) : (
           <ConversationActivityRow activity={entry.activity} key={entry.id}
             onInspectActivity={actions.onInspectActivity} onLoadToolDetail={actions.onLoadToolDetail}

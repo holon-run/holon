@@ -9,6 +9,8 @@ export type ConversationDetailCursor = OpaqueToken<"conversation-detail-cursor">
 export type ConversationCheckpoint = OpaqueToken<"conversation-checkpoint">;
 
 export const CONVERSATION_CAPABILITY = "agents.conversation-read.v1";
+export const CONVERSATION_LOCATE_CAPABILITY = "agents.conversation-locate.v1";
+export const CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY = "agents.conversation-history-bidirectional.v1";
 export const CONVERSATION_SCHEMA_VERSION = 2;
 export const CONVERSATION_QUERY_VERSION = 2;
 export const HOLON_CONTROL_PROTOCOL_NAME = "holon-control";
@@ -229,7 +231,48 @@ export interface ConversationSummaryResponse extends ConversationBoundary {
   readonly pending_inputs: readonly PendingInput[];
   readonly next_before_cursor: ConversationHistoryCursor | null;
   readonly has_more: boolean;
+  readonly next_after_cursor?: ConversationHistoryCursor | null;
+  readonly coverage?: ConversationHistoryCoverage;
 }
+
+export interface ConversationHistoryCoverage {
+  readonly first_turn_key?: TurnKey | null;
+  readonly last_turn_key?: TurnKey | null;
+  readonly membership_upper_bound?: TurnKey | null;
+  readonly has_older: boolean;
+  readonly has_newer: boolean;
+  readonly reaches_oldest: boolean;
+  readonly reaches_latest: boolean;
+}
+
+export type ConversationLocateTarget =
+  | { readonly kind: "input"; readonly message_id: string; readonly turn_id: string }
+  | { readonly kind: "brief"; readonly brief_id: string; readonly turn_id: string }
+  | { readonly kind: "activity"; readonly activity_id: string; readonly turn_id: string; readonly activity_key: ActivityKey; readonly output_selector?: string }
+  | { readonly kind: "turn"; readonly turn_id: string; readonly turn_key: TurnKey }
+  | { readonly kind: "pending_input"; readonly message_id: string };
+
+export type ConversationLocateResponse =
+  | {
+      readonly status: "located" | "pending";
+      readonly source_ref: string;
+      readonly target: ConversationLocateTarget;
+      readonly window: ConversationSummaryResponse;
+      readonly runtime_id: string;
+      readonly event_log_epoch: string;
+      readonly visibility_scope_id: string;
+      readonly reason: null;
+    }
+  | {
+      readonly status: "source_only";
+      readonly source_ref: string;
+      readonly reason: string;
+      readonly target: ConversationLocateTarget | null;
+      readonly window: null;
+      readonly runtime_id: string;
+      readonly event_log_epoch: string;
+      readonly visibility_scope_id: string;
+    };
 
 /** A cached bootstrap snapshot plus the ETag that conditional
  * revalidation can present back to the server. */

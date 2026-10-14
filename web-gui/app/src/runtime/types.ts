@@ -613,7 +613,7 @@ export interface SearchResultLocator {
 }
 
 export interface SearchResultItem {
-  resultType: "message";
+  resultType: string;
   agentId: string;
   locator: SearchResultLocator;
   createdAt?: string;
@@ -653,6 +653,8 @@ export interface RuntimeSearchOptions {
   agentIds?: string[];
   includeAllWorkspaces?: boolean;
   limit?: number;
+  /** Source kinds filtered by the server before applying the result limit. Empty means all kinds. */
+  types?: string[];
 }
 
 export interface RuntimeMessageEnvelope {
