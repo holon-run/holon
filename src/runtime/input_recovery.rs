@@ -269,7 +269,9 @@ pub(crate) fn resolve_input_recovery_with_queries(
                 };
                 if !matches!(
                     prepared.family(),
-                    InputMutationFamily::Task | InputMutationFamily::TaskResult
+                    InputMutationFamily::Task
+                        | InputMutationFamily::TaskResult
+                        | InputMutationFamily::Timer
                 ) {
                     return Ok(None);
                 }
@@ -474,6 +476,7 @@ pub(crate) fn resolve_input_recovery_with_queries(
                         inputs.clone(),
                         work.clone(),
                         Some(tasks.clone()),
+                        current.scheduling.clone(),
                         current.pending.messages,
                         budget,
                         witness.input_runtime(&scope.agent_id).map(Arc::as_ref),
@@ -490,6 +493,7 @@ pub(crate) fn resolve_input_recovery_with_queries(
                         work: Some(work),
 
                         tasks: Some(tasks),
+                        scheduling: Some(current.scheduling),
                         state,
                         episodes: Some(episodes),
                         input_evidence: Some(inputs),

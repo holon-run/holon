@@ -84,6 +84,7 @@ pub(super) fn prepare_known_tx(
                 input_evidence,
                 work,
                 tasks,
+                scheduling,
                 runtime,
             }) => {
                 let tasks = if let Some(tasks) = tasks {
@@ -116,6 +117,7 @@ pub(super) fn prepare_known_tx(
                         input_evidence,
                         work,
                         tasks,
+                        scheduling,
                         runtime: None,
                     }
                 }

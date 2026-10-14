@@ -997,6 +997,15 @@ impl AppStorage {
         self.read_models().work_queue()
     }
 
+    pub(crate) fn work_queue_with_observed_scheduling(
+        &self,
+        state: &AgentState,
+        triggers: Vec<ExternalTriggerRecord>,
+    ) -> Result<WorkQueueReadModel> {
+        self.read_models()
+            .work_queue_with_observed_scheduling(state, triggers)
+    }
+
     pub fn work_queue_prompt_projection(&self) -> Result<WorkQueueReadModel> {
         self.read_models().work_queue()
     }

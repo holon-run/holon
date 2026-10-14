@@ -44,6 +44,7 @@ mod control_cancellation;
 mod control_task_generation_tests;
 pub(crate) mod task_generation;
 pub(crate) use control_cancellation::RetiredProducerExit;
+mod agent_summary_read;
 mod control_entry;
 pub(crate) mod control_reconcile;
 pub(crate) mod control_recovery;
@@ -59,6 +60,8 @@ pub(crate) mod input_evidence_budget;
 mod input_preparation;
 pub(crate) mod input_recovery;
 mod lifecycle;
+pub(crate) use agent_summary_read::active_trigger_summaries;
+pub use agent_summary_read::OwnedAgentSummaryRead;
 mod message_dispatch;
 pub(crate) mod mutation_owner;
 pub(crate) mod mutation_witness;
@@ -68,6 +71,15 @@ pub(crate) mod provider_recovery;
 mod provider_turn;
 mod repair;
 pub(crate) mod resident_input_evidence;
+pub(crate) mod resident_scheduling;
+mod scheduling_output;
+mod scheduling_reads;
+mod timer_mutation_reads;
+mod timer_producer_reads;
+mod trigger_decision_reads;
+#[cfg(test)]
+pub(crate) use scheduling_output::project_selected_scheduling_records;
+pub(crate) use scheduling_output::{project_cold_scheduling_records, SchedulingReadMaterial};
 pub(crate) mod resident_state;
 pub(crate) mod resident_task;
 pub(crate) mod resident_work;
@@ -517,7 +529,9 @@ struct RuntimeInner {
     input_evidence_budget: input_evidence_budget::InputEvidenceBudgetLedger,
     standalone_related_mutation_owners: mutation_owner::MutationOwnerRegistry,
     agent: Mutex<RuntimeAgent>,
-    projection_cache: Mutex<AgentRuntimeProjectionCache>,
+    // Fault/cancellation fixtures block the original post-SQL install seam.
+    #[cfg(test)]
+    installation_barrier: Mutex<()>,
     object_query_cache: Arc<crate::object_query_cache::ObjectQueryCache>,
     notify: Notify,
     storage: AppStorage,
@@ -551,7 +565,7 @@ struct RuntimeInner {
     mutation_tasks: StdMutex<state_mutation::OwnedMutationTasks>,
     task_queries: task_queries::TaskQueryRegistry,
     recovered_tasks: Mutex<Option<bootstrap::BootstrapTaskRecovery>>,
-    recovered_timers: Mutex<Option<Vec<TimerRecord>>>,
+    recovered_timers: Mutex<Option<resident_scheduling::CapturedScheduling>>,
     bootstrap_result: StdMutex<Option<std::result::Result<(), String>>>,
     bootstrap_notify: Notify,
     autonomous_continuation_hook: Arc<dyn scheduler::SemanticCandidateSelectionHook>,
@@ -2595,88 +2609,6 @@ fn runtime_error_queue_settlement(
     }
 }
 
-#[derive(Debug, Clone)]
-struct AgentRuntimeProjectionCache {
-    agent_id: String,
-    timers: HashMap<String, TimerRecord>,
-    external_triggers: HashMap<String, ExternalTriggerRecord>,
-}
-
-impl AgentRuntimeProjectionCache {
-    fn rebuild(
-        agent_id: String,
-        timers: Vec<TimerRecord>,
-        external_triggers: Vec<ExternalTriggerRecord>,
-    ) -> Self {
-        crate::diagnostics::record_runtime_projection_cache_rebuild();
-        let timer_agent_id = agent_id.clone();
-        let external_trigger_agent_id = agent_id.clone();
-        Self {
-            agent_id,
-            timers: latest_by(
-                timers
-                    .into_iter()
-                    .filter(|record| record.agent_id == timer_agent_id),
-                |record| record.id.clone(),
-            ),
-            external_triggers: latest_by(
-                external_triggers
-                    .into_iter()
-                    .filter(|record| record.target_agent_id == external_trigger_agent_id),
-                |record| record.external_trigger_id.clone(),
-            ),
-        }
-    }
-
-    fn upsert_timer(&mut self, record: TimerRecord) {
-        if record.agent_id == self.agent_id {
-            self.timers.insert(record.id.clone(), record);
-        }
-    }
-
-    fn upsert_external_trigger(&mut self, record: ExternalTriggerRecord) {
-        if record.target_agent_id == self.agent_id {
-            self.external_triggers
-                .insert(record.external_trigger_id.clone(), record);
-        }
-    }
-
-    fn recent_timers(&self, limit: usize) -> Vec<TimerRecord> {
-        let mut records = self.timers.values().cloned().collect::<Vec<_>>();
-        records.sort_by(|left, right| {
-            right
-                .created_at
-                .cmp(&left.created_at)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        take_limit(records, limit)
-    }
-
-    fn latest_external_triggers(&self) -> Vec<ExternalTriggerRecord> {
-        let mut records = self.external_triggers.values().cloned().collect::<Vec<_>>();
-        records.sort_by(|left, right| right.created_at.cmp(&left.created_at));
-        records
-    }
-}
-
-fn latest_by<T, F>(records: impl IntoIterator<Item = T>, key: F) -> HashMap<String, T>
-where
-    F: Fn(&T) -> String,
-{
-    let mut latest = HashMap::new();
-    for record in records {
-        latest.insert(key(&record), record);
-    }
-    latest
-}
-
-fn take_limit<T>(mut records: Vec<T>, limit: usize) -> Vec<T> {
-    if records.len() > limit {
-        records.truncate(limit);
-    }
-    records
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ViewImageObservationCacheKey {
     pub(crate) visual_reference_id: String,
@@ -3176,19 +3108,20 @@ impl RuntimeHandle {
     #[cfg(test)]
     pub(crate) async fn record_timer_projection(&self, record: &TimerRecord) -> Result<()> {
         let mut mutation = self.begin_mutation().await?;
-        let commit = mutation
-            .commit_transition(crate::ids::audit_event_id(), |_scope| {
-                self.inner.storage.append_timer(record)?;
-                Ok(TransitionCommit {
-                    applied: true,
-                    effects: Box::new(crate::runtime_db::transitions::PostCommitEffects {
-                        timers: vec![record.clone()],
-                        ..Default::default()
-                    }),
-                    delivery_receipt: None,
-                })
-            })
-            .await?;
+        let prepared = crate::runtime_db::transitions::PreparedInputTransition::timer(
+            mutation.input_evidence_scope(),
+            crate::ids::audit_event_id(),
+            record.created_at,
+            crate::runtime_db::transitions::PreparedTimerTransition::create(record.clone(), None),
+        )?;
+        let (commit, outcome) = mutation.commit_prepared_timer_transition(prepared).await?;
+        anyhow::ensure!(
+            matches!(
+                outcome,
+                crate::runtime_db::transitions::TimerMutationOutcome::Created { .. }
+            ),
+            "fixture Timer creation ACK differs"
+        );
         drop(mutation);
         self.apply_transition_commit(commit).await;
         Ok(())

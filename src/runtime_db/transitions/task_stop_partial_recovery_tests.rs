@@ -78,12 +78,34 @@ async fn incomplete_delivered_lost_ack_installs_actual_queue_work_input_but_no_t
         input_evidence: Some(inputs),
         work: Some(work),
         tasks: None,
+        scheduling: Some(scheduling),
         runtime: Some(runtime),
     } = known[0].as_ref().unwrap()
     else {
         panic!("partial ACK lost ordinary domains")
     };
     assert_eq!(state.pending, 1);
+    assert_eq!(scheduling.scope(), &f.scope);
+    let coverage = scheduling.coverage();
+    assert!(
+        coverage.active_timers_complete
+            && coverage.pending_wakes_complete
+            && coverage.active_triggers_complete,
+        "partial recovery must retain the same-view complete Scheduling domain"
+    );
+    let (revision, stored_coverage): (u64, String) = f.db.connection()?.query_row(
+        "SELECT revision,coverage_json FROM scheduling_domain_current WHERE agent_id=?1 AND identity_incarnation=?2",
+        params![f.scope.agent_id, f.scope.identity_incarnation],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    assert_eq!(coverage.revision, revision);
+    assert_eq!(
+        coverage,
+        &serde_json::from_str::<crate::runtime::resident_scheduling::SchedulingCoverage>(
+            &stored_coverage,
+        )?,
+        "Known Scheduling must be the current SQL coverage, not a previous publication"
+    );
     let queue_guard = runtime
         .task_stop_queue_metadata_test_weak()
         .context("new Queue container guard missing")?;
@@ -117,7 +139,16 @@ async fn incomplete_delivered_lost_ack_installs_actual_queue_work_input_but_no_t
     };
     assert_eq!(wait.status, crate::types::WaitConditionStatus::Triggered);
     MutationReservation::publish_all_known(&mut reservations)?;
-    assert!(owner.capture()?.unwrap().tasks.is_none());
+    let published = owner.capture()?.unwrap();
+    assert!(published.tasks.is_none());
+    assert!(Arc::ptr_eq(
+        published
+            .scheduling
+            .as_ref()
+            .context("published Scheduling missing")?,
+        scheduling,
+    ));
+    drop(published);
     assert!(
         queue_guard.upgrade().is_some(),
         "saved facts must retain Queue metadata after publication"

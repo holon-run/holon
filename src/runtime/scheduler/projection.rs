@@ -138,6 +138,35 @@ impl SchedulerProjection {
         work_queue: WorkQueueReadModel,
         now: DateTime<Utc>,
     ) -> Result<Self> {
+        Self::from_snapshot_with_timer_observation(
+            storage, snapshot, queue_len, work_queue, now, None,
+        )
+    }
+    /// Cold named query keeps the original remaining adapters but supplies its
+    /// qualified Scheduling count, never another Timer body read.
+    pub(crate) fn from_state_with_scheduling_observation(
+        storage: &AppStorage,
+        state: &AgentState,
+        work_queue: WorkQueueReadModel,
+        active_timers: usize,
+    ) -> Result<Self> {
+        Self::from_snapshot_with_timer_observation(
+            storage,
+            &SchedulerAgentSnapshot::from_state(state),
+            state.pending,
+            work_queue,
+            Utc::now(),
+            Some(active_timers),
+        )
+    }
+    fn from_snapshot_with_timer_observation(
+        storage: &AppStorage,
+        snapshot: &SchedulerAgentSnapshot,
+        queue_len: usize,
+        work_queue: WorkQueueReadModel,
+        now: DateTime<Utc>,
+        observed_timers: Option<usize>,
+    ) -> Result<Self> {
         let active_tasks =
             storage.latest_active_task_records_for_agent(&snapshot.id, usize::MAX)?;
         let has_interrupted_replay = storage
@@ -169,11 +198,16 @@ impl SchedulerProjection {
             })
             .transpose()?
             .flatten();
-        let active_timers = storage
-            .latest_timer_records()?
-            .into_iter()
-            .filter(|timer| timer.agent_id == snapshot.id && timer.status == TimerStatus::Active)
-            .count();
+        let active_timers = match observed_timers {
+            Some(count) => count,
+            None => storage
+                .latest_timer_records()?
+                .into_iter()
+                .filter(|timer| {
+                    timer.agent_id == snapshot.id && timer.status == TimerStatus::Active
+                })
+                .count(),
+        };
         Ok(Self::from_observations(
             snapshot,
             queue_len,

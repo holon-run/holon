@@ -1,4 +1,4 @@
-//! Focused acknowledged selectors and remaining D6 legacy cache installation.
+//! Focused acknowledged selectors; canonical bodies belong to resident domains.
 //! Receipts retain IDs only; recovery reads current rows in its fresh view.
 use std::collections::BTreeSet;
 
@@ -7,10 +7,7 @@ use rusqlite::{OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
 use super::{repositories, transitions::PostCommitEffects};
-use crate::{
-    runtime::resident_input_evidence::{InputEvidenceKey, InputEvidenceScope},
-    types::{ExternalTriggerRecord, TimerRecord},
-};
+use crate::runtime::resident_input_evidence::{InputEvidenceKey, InputEvidenceScope};
 
 const MAX_INSTALL_KEYS: usize = 65_536;
 
@@ -32,6 +29,8 @@ pub(crate) struct InputMutationInstallKeys {
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub task_result_settlements: BTreeSet<String>,
     pub timers: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub scheduling: BTreeSet<crate::runtime::resident_scheduling::SchedulingKey>,
     pub external_triggers: BTreeSet<String>,
 }
 impl InputMutationInstallKeys {
@@ -55,6 +54,13 @@ impl InputMutationInstallKeys {
                 "input cache target has an empty ID"
             );
         }
+        count = count
+            .checked_add(self.scheduling.len())
+            .context("Scheduling install count overflow")?;
+        ensure!(
+            self.scheduling.iter().all(|key| !key.id.is_empty()),
+            "empty Scheduling install key"
+        );
         ensure!(
             self.input_roots.iter().all(|key| !key.id.trim().is_empty()),
             "input owning target has an empty ID"
@@ -122,20 +128,20 @@ impl InputMutationInstallKeys {
             keys.external_triggers
                 .insert(record.external_trigger_id.clone());
         }
+        keys.scheduling
+            .extend(effects.scheduling_write_keys.iter().cloned());
         keys.validate()?;
         Ok(keys)
     }
 }
 
 /// Missing current rows deliberately remain in `keys` as finite selectors.
-/// Task and Work bodies belong only to their qualified domains; this DTO keeps
-/// only the remaining D6 Timer/Trigger cache bodies.
+/// Every body belongs only to its fresh qualified domain. This metadata is
+/// neither a historical body authority nor a second installation cache.
 #[derive(Debug, Clone)]
 pub(crate) struct InputRecoveryInstallFacts {
     pub scope: InputEvidenceScope,
     pub keys: InputMutationInstallKeys,
-    pub timers: Vec<TimerRecord>,
-    pub external_triggers: Vec<ExternalTriggerRecord>,
 }
 
 pub(crate) fn load_current_install_facts_tx(
@@ -148,40 +154,31 @@ pub(crate) fn load_current_install_facts_tx(
         "invalid input cache scope"
     );
     keys.validate()?;
-    let mut facts = InputRecoveryInstallFacts {
-        scope: scope.clone(),
-        keys: keys.clone(),
-        timers: Vec::new(),
-        external_triggers: Vec::new(),
-    };
-    for id in &keys.timers {
-        if let Some(payload) = current_payload_tx(tx, scope, "timers", "timer_id", "agent_id", id)?
-        {
-            let record = repositories::decode_timer_payload(&payload)?;
-            ensure!(
-                record.id == *id && record.agent_id == scope.agent_id,
-                "Timer cache payload differs from normalized scope/ID"
-            );
-            facts.timers.push(record);
-        }
-    }
-    for id in &keys.external_triggers {
-        if let Some(payload) = current_payload_tx(
-            tx,
-            scope,
+    for (table, id_column, owner_column, ids) in [
+        ("timers", "timer_id", "agent_id", &keys.timers),
+        (
             "external_triggers",
             "external_trigger_id",
             "target_agent_id",
-            id,
-        )? {
-            let record = repositories::decode_external_trigger_payload(&payload)?;
+            &keys.external_triggers,
+        ),
+    ] {
+        for id in ids {
+            // No body or address String is loaded. A missing current row keeps
+            // its original selector; an existing foreign normalized row rejects.
+            let exact: Option<bool> = tx.query_row(
+                &format!("SELECT {id_column}=?1 AND {owner_column}=?2 FROM {table} WHERE {id_column}=?1"),
+                rusqlite::params![id,scope.agent_id],|row|row.get(0)).optional()?;
             ensure!(
-                record.external_trigger_id == *id && record.target_agent_id == scope.agent_id,
-                "ExternalTrigger cache payload differs from normalized scope/ID"
+                exact != Some(false),
+                "input install target normalized ID/agent differs from original scope"
             );
-            facts.external_triggers.push(record);
         }
     }
+    let facts = InputRecoveryInstallFacts {
+        scope: scope.clone(),
+        keys: keys.clone(),
+    };
     Ok(facts)
 }
 
@@ -192,12 +189,38 @@ pub(crate) fn validate_original_install_keys_tx(
     scope: &InputEvidenceScope,
     keys: &InputMutationInstallKeys,
 ) -> Result<()> {
-    let facts = load_current_install_facts_tx(tx, scope, keys)?;
     ensure!(
-        facts.timers.len() == keys.timers.len()
-            && facts.external_triggers.len() == keys.external_triggers.len(),
-        "input cache installation target is missing from original SQL ACK"
+        !scope.agent_id.trim().is_empty() && scope.identity_incarnation > 0,
+        "invalid original install scope"
     );
+    keys.validate()?;
+    // Initial ACK still proves full typed bodies and exact normalized scope.
+    // Fresh recovery never reuses these bodies; its qualified domain is separate.
+    for id in &keys.timers {
+        let payload = current_payload_tx(tx, scope, "timers", "timer_id", "agent_id", id)?
+            .context("Timer installation target is missing from original SQL ACK")?;
+        let record = repositories::decode_timer_payload(&payload)?;
+        ensure!(
+            record.id == *id && record.agent_id == scope.agent_id,
+            "Timer original payload differs from normalized scope/ID"
+        );
+    }
+    for id in &keys.external_triggers {
+        let payload = current_payload_tx(
+            tx,
+            scope,
+            "external_triggers",
+            "external_trigger_id",
+            "target_agent_id",
+            id,
+        )?
+        .context("ExternalTrigger installation target is missing from original SQL ACK")?;
+        let record = repositories::decode_external_trigger_payload(&payload)?;
+        ensure!(
+            record.external_trigger_id == *id && record.target_agent_id == scope.agent_id,
+            "ExternalTrigger original payload differs from normalized scope/ID"
+        );
+    }
     // Qualification and canonical body/fence checks remain in the original
     // Task finalizer. The receipt proves these exact targets before its ACK,
     // without retaining a second Task body for later cache installation.
@@ -224,6 +247,18 @@ pub(crate) fn validate_original_install_keys_tx(
                 && payload_id.as_deref() == Some(id.as_str())
                 && payload_agent.as_deref() == Some(scope.agent_id.as_str()),
             "original Task result installation target normalized/payload scope differs"
+        );
+    }
+    for key in &keys.scheduling {
+        let qualified:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM scheduling_domain_records WHERE agent_id=?1 AND identity_incarnation=?2 AND family=?3 AND record_id=?4 AND availability='present')",
+            rusqlite::params![scope.agent_id,scope.identity_incarnation,match key.family {
+                crate::runtime::resident_scheduling::SchedulingFamily::Timer=>"timer",
+                crate::runtime::resident_scheduling::SchedulingFamily::TimerWake=>"timer_wake",
+                crate::runtime::resident_scheduling::SchedulingFamily::ExternalTrigger=>"external_trigger",
+            },key.id],|r|r.get(0))?;
+        ensure!(
+            qualified,
+            "original Scheduling install target lacks actual qualification ACK"
         );
     }
     // Work bodies belong only to the qualified Work domain. The original

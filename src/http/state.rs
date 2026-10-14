@@ -336,11 +336,13 @@ async fn agent_summary(
             .local_agent_lightweight_projection(&agent_id)
             .await
             .map_err(agent_access_error)?;
-        return traced_json(
+        let response = traced_json(
             route,
             started_at,
             crate::http_dto::SlimAgentDto::from(&projection),
         );
+        drop(projection);
+        return response;
     }
     let agent = state
         .host
@@ -391,6 +393,8 @@ async fn build_agent_state_projection(
         .await
         .map_err(agent_access_error)
         .map_err(ProjectionFailure::from)?;
+    // Keep selected Scheduling/owned DTO material through final synchronous JSON.
+    let _scheduling_material = projection.scheduling_material;
     let waits = projection
         .waits
         .into_iter()

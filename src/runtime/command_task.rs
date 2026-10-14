@@ -24,12 +24,11 @@ use crate::{
         AuthorityClass, CommandCostDiagnostics, CommandTaskOutputCaptureSnapshot,
         CommandTaskOutputFailureCode, CommandTaskOutputPolicy, CommandTaskSpec,
         CommandTaskStatusSnapshot, ExecCommandDuplicatePolicy, ExecCommandOutcome,
-        ExecCommandResult, ExternalTriggerScope, ExternalTriggerStatus, MessageBody,
-        MessageEnvelope, MessageKind, MessageOrigin, Priority, TaskHandle, TaskKind, TaskRecord,
-        TaskRecoverySpec, TaskStatus, ToolArtifactRef, HOLON_CALLER_AGENT_ID_ENV,
-        HOLON_CALLER_AUTHORITY_CLASS_ENV, HOLON_CALLER_SOURCE_ACTIVATION_ID_ENV,
-        HOLON_CALLER_SOURCE_TASK_ID_ENV, HOLON_CALLER_SOURCE_TURN_ID_ENV,
-        HOLON_CALLER_SOURCE_WORK_ITEM_ID_ENV,
+        ExecCommandResult, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+        TaskHandle, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, ToolArtifactRef,
+        HOLON_CALLER_AGENT_ID_ENV, HOLON_CALLER_AUTHORITY_CLASS_ENV,
+        HOLON_CALLER_SOURCE_ACTIVATION_ID_ENV, HOLON_CALLER_SOURCE_TASK_ID_ENV,
+        HOLON_CALLER_SOURCE_TURN_ID_ENV, HOLON_CALLER_SOURCE_WORK_ITEM_ID_ENV,
     },
     utf8::IncrementalUtf8LossyDecoder,
 };
@@ -96,6 +95,7 @@ pub(super) struct ResolvedCommandTask {
     execution: ExecutionSnapshot,
     env: Vec<(String, String)>,
     output_policy: CommandTaskOutputPolicy,
+    _trigger_material: Option<std::sync::Arc<super::input_evidence_budget::BudgetViewGuard>>,
 }
 
 pub(super) struct RunningCommand {
@@ -960,7 +960,7 @@ impl RuntimeHandle {
                 self.agent_home().to_string_lossy().into_owned(),
             ),
         ];
-        let state = self.agent_state().await?;
+        let (state, trigger) = self.capture_command_trigger_read(&agent_id).await?;
         if let Some(binding) = state.current_execution_binding.as_ref() {
             env.push((HOLON_CALLER_AGENT_ID_ENV.to_string(), agent_id.clone()));
             env.push((
@@ -994,7 +994,7 @@ impl RuntimeHandle {
                 ));
             }
         }
-        if let Some(trigger_url) = self.command_external_trigger_url(&agent_id).await? {
+        if let Some(trigger_url) = trigger.url {
             env.push(("HOLON_EXTERNAL_TRIGGER_URL".to_string(), trigger_url));
         }
 
@@ -1005,29 +1005,8 @@ impl RuntimeHandle {
             execution: execution_snapshot,
             env,
             output_policy: self.inner.config_snapshot.load().command_task_output_policy,
+            _trigger_material: trigger.material,
         })
-    }
-
-    async fn command_external_trigger_url(&self, agent_id: &str) -> Result<Option<String>> {
-        Ok(self
-            .latest_external_triggers()
-            .await?
-            .into_iter()
-            .find_map(|trigger| {
-                (trigger.target_agent_id == agent_id
-                    && trigger.scope == ExternalTriggerScope::Agent
-                    && trigger.status == ExternalTriggerStatus::Active)
-                    .then_some(())
-                    .and_then(|_| {
-                        trigger.token.as_ref().map(|token| {
-                            crate::callbacks::build_callback_url(
-                                &self.inner.callback_base_url,
-                                &trigger.delivery_mode,
-                                token,
-                            )
-                        })
-                    })
-            }))
     }
 
     // RunningCommand already owns a spawned OS process. Transfer it to a tracked
@@ -2192,10 +2171,7 @@ mod tests {
         context::ContextConfig,
         provider::StubProvider,
         system::{process::ProcessOutput, RunningProcess, RunningProcessExitStatus, StopSignal},
-        types::{
-            CallbackDeliveryMode, ExternalTriggerRecord, ExternalTriggerScope,
-            ExternalTriggerStatus,
-        },
+        types::CallbackDeliveryMode,
     };
 
     use super::*;
@@ -2908,23 +2884,9 @@ mod tests {
             .await
             .unwrap();
         runtime.pick_work_item(work.id.clone()).await.unwrap();
-        runtime
-            .inner
-            .runtime_db
-            .external_triggers()
-            .upsert(&ExternalTriggerRecord {
-                external_trigger_id: "legacy-work-item-trigger".into(),
-                target_agent_id: "default".into(),
-                scope: ExternalTriggerScope::Agent,
-                delivery_mode: CallbackDeliveryMode::WakeHint,
-                token: Some("token".into()),
-                token_hash: "token-hash".into(),
-                status: ExternalTriggerStatus::Active,
-                created_at: Utc::now(),
-                revoked_at: None,
-                last_delivered_at: None,
-                delivery_count: 0,
-            })
+        let capability = runtime
+            .default_external_trigger(CallbackDeliveryMode::WakeHint)
+            .await
             .unwrap();
 
         let spec = command_spec(false, false);
@@ -2933,7 +2895,7 @@ mod tests {
 
         assert_eq!(
             env.get("HOLON_EXTERNAL_TRIGGER_URL").map(String::as_str),
-            Some("http://127.0.0.1:7878/api/callbacks/wake/token")
+            Some(capability.trigger_url.as_str())
         );
     }
 
@@ -3216,5 +3178,55 @@ mod tests {
             workspace.path(),
             "workdir should not fall back to workspace root"
         );
+    }
+
+    #[tokio::test]
+    async fn command_trigger_projection_uses_prepared_root_and_retains_url_material() {
+        let (_home, _workspace, runtime) = test_runtime();
+        let capability = runtime
+            .default_external_trigger(CallbackDeliveryMode::EnqueueMessage)
+            .await
+            .unwrap();
+        let before = runtime
+            .inner
+            .input_evidence_budget
+            .report()
+            .unwrap()
+            .observed_bytes;
+        runtime.runtime_db().transaction(|tx| {
+            tx.execute_batch("ALTER TABLE external_triggers RENAME TO command_trigger_forbidden; ALTER TABLE timers RENAME TO command_timers_forbidden; ALTER TABLE timer_wakes RENAME TO command_wakes_forbidden")?;
+            Ok(())
+        }).unwrap();
+        let resolved = resolved_command(&runtime, &command_spec(false, false)).await;
+        assert_eq!(
+            resolved_env(&resolved).get("HOLON_EXTERNAL_TRIGGER_URL"),
+            Some(&capability.trigger_url)
+        );
+        let guard = std::sync::Arc::downgrade(resolved._trigger_material.as_ref().unwrap());
+        assert!(
+            runtime
+                .inner
+                .input_evidence_budget
+                .report()
+                .unwrap()
+                .observed_bytes
+                > before
+        );
+        assert!(guard.upgrade().is_some());
+        drop(resolved);
+        assert!(guard.upgrade().is_none());
+        assert_eq!(
+            runtime
+                .inner
+                .input_evidence_budget
+                .report()
+                .unwrap()
+                .observed_bytes,
+            before
+        );
+        runtime.runtime_db().transaction(|tx| {
+            tx.execute_batch("ALTER TABLE command_wakes_forbidden RENAME TO timer_wakes; ALTER TABLE command_timers_forbidden RENAME TO timers; ALTER TABLE command_trigger_forbidden RENAME TO external_triggers")?;
+            Ok(())
+        }).unwrap();
     }
 }

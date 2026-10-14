@@ -13,8 +13,9 @@ pub(super) use prepared_input::predicted_trigger_wait_tx;
 pub(crate) use prepared_input::worktree_receipt_exists_tx as task_stop_worktree_receipt_exists_tx;
 pub(in crate::runtime_db) use prepared_input::ExistingOriginalChildBindingWriteProof;
 pub(crate) use prepared_input::{
-    InputMutationExecution, OriginalChildStatusSelection, OriginalTaskCleanupView,
-    PreparedInputTransition, PreparedQueueTransition, PreparedTaskTransition,
+    ExternalTriggerMutationOutcome, InputMutationExecution, OriginalChildStatusSelection,
+    OriginalTaskCleanupView, PreparedExternalTriggerTransition, PreparedInputTransition,
+    PreparedQueueTransition, PreparedTaskTransition, PreparedTimerTransition, TimerMutationOutcome,
 };
 pub(in crate::runtime_db) use prepared_task_result::receipt_budget_with_material_tx as task_status_receipt_budget_with_material_tx;
 pub(crate) use prepared_task_result::{
@@ -142,6 +143,12 @@ pub(crate) enum QueueOperation {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PostCommitEffects {
+    pub scheduling_delta:
+        Option<Box<crate::runtime::resident_scheduling::CommittedSchedulingDelta>>,
+    pub scheduling_delta_requires_prepared_domain: bool,
+    pub scheduling_write_keys: BTreeSet<crate::runtime::resident_scheduling::SchedulingKey>,
+    pub scheduling_material_budget_views:
+        Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
     pub task_material_budget_views:
         Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
     pub task_delta: Option<crate::runtime::resident_task::CommittedTaskDelta>,
@@ -2761,6 +2768,7 @@ impl RuntimeTransitionRepository<'_> {
         }
         validate_queue_operation(command)?;
         validate_queue_mutation_tx(tx, &command.mutation)?;
+        let mut scheduling_write_keys = BTreeSet::new();
         if let Some(timer_wake_claim) = timer_wake_claim {
             let valid = tx.query_row(
                 "SELECT EXISTS(
@@ -2977,6 +2985,10 @@ impl RuntimeTransitionRepository<'_> {
             if changed != 1 {
                 return Err(anyhow!("timer wake changed during queue claim"));
             }
+            scheduling_write_keys.insert(crate::runtime::resident_scheduling::SchedulingKey::wake(
+                &timer_wake_claim.timer_id,
+                &timer_wake_claim.message_id,
+            ));
         }
         if synchronize_delivery {
             advance_delivery_for_queue_transition_tx(tx, command, execution_protocol_transition)?;
@@ -3200,6 +3212,7 @@ impl RuntimeTransitionRepository<'_> {
             &index_changes,
             command.fault,
             PostCommitEffects {
+                scheduling_write_keys,
                 task_write_keys,
                 agent_state: command.agent_state.clone(),
                 wait_condition_writes,

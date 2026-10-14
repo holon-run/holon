@@ -498,6 +498,7 @@ fn state_facts(state: Arc<AgentState>) -> KnownCommit {
         work: None,
 
         tasks: None,
+        scheduling: None,
         state,
         episodes: None,
         input_evidence: None,
@@ -763,6 +764,7 @@ fn prepared_facts(state: Arc<AgentState>, episodes: Arc<ResidentEpisodes>) -> Kn
         work: None,
 
         tasks: None,
+        scheduling: None,
         state,
         episodes: Some(episodes),
         input_evidence: None,

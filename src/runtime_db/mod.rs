@@ -50,6 +50,7 @@ pub use input_evidence_snapshot::maintenance::{
 };
 pub(crate) mod child_task_terminal;
 pub(crate) mod command_task_terminal;
+pub(crate) mod scheduling_snapshot;
 pub(crate) mod task_recovery;
 pub(crate) mod task_snapshot;
 pub(crate) mod task_status_metadata;

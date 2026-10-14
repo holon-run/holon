@@ -23,6 +23,7 @@ use tracing::{debug, info, warn};
 use crate::host::RuntimeHost;
 use crate::types::*;
 
+mod scheduling_maintenance;
 mod task_maintenance;
 
 /// Interval between periodic deletion coordinator safety/observation sweeps.
@@ -936,7 +937,7 @@ impl RuntimeHost {
             }
             AgentDeletionPhase::Fence => self.deletion_phase_fence(agent_id).await,
             AgentDeletionPhase::Quiesce => self.deletion_phase_quiesce(agent_id, job).await,
-            AgentDeletionPhase::Ingress => self.deletion_phase_ingress(agent_id).await,
+            AgentDeletionPhase::Ingress => self.deletion_phase_ingress(agent_id, job).await,
             AgentDeletionPhase::Scheduler => self.deletion_phase_scheduler(agent_id).await,
             AgentDeletionPhase::Workspace if job.mode == AgentDeletionMode::ParentCleanup => {
                 self.deletion_phase_parent_workspace(agent_id).await
@@ -991,9 +992,8 @@ impl RuntimeHost {
             // ParentCleanup phase; cancel active timers and their pending
             // wakes so they cannot outlive the deleted identity.
             let cancelled_timers = self
-                .runtime_db()
-                .timers()
-                .cancel_active_for_agent(agent_id, Utc::now())?;
+                .cancel_deletion_timers(agent_id, job, Utc::now())
+                .await?;
             if cancelled_timers > 0 {
                 debug!(
                     agent_id,
@@ -1044,18 +1044,9 @@ impl RuntimeHost {
             );
         }
 
-        // Cancel active timers.
-        let timers = self
-            .runtime_db()
-            .timers()
-            .recent_for_agent(agent_id, usize::MAX)?;
-        for mut timer in timers {
-            if timer.status == TimerStatus::Active {
-                timer.status = TimerStatus::Cancelled;
-
-                self.runtime_db().timers().upsert(&timer)?;
-            }
-        }
+        // Preserve the original per-Timer cancellation; pending wake/Queue
+        // cleanup remains the later original phase responsibility.
+        self.cancel_deletion_timers(agent_id, job, now).await?;
 
         // Abort pending queue entries to prevent orphaned queued messages.
         let queue_aborted = self
@@ -1088,21 +1079,10 @@ impl RuntimeHost {
     }
 
     /// Ingress: revoke all active external triggers for the agent.
-    async fn deletion_phase_ingress(&self, agent_id: &str) -> Result<()> {
-        let triggers = self
-            .runtime_db()
-            .external_triggers()
-            .latest_for_agent(agent_id)?;
-        let now = Utc::now();
-        let mut revoked_count = 0;
-        for mut trigger in triggers {
-            if trigger.status == ExternalTriggerStatus::Active {
-                trigger.status = ExternalTriggerStatus::Revoked;
-                trigger.revoked_at = Some(now);
-                self.runtime_db().external_triggers().upsert(&trigger)?;
-                revoked_count += 1;
-            }
-        }
+    async fn deletion_phase_ingress(&self, agent_id: &str, job: &AgentDeletionJob) -> Result<()> {
+        let revoked_count = self
+            .revoke_deletion_triggers(agent_id, job, Utc::now())
+            .await?;
         if revoked_count > 0 {
             debug!(agent_id, count = revoked_count, "revoked external triggers");
         }

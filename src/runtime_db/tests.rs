@@ -692,7 +692,13 @@ mod tests {
     fn downgrade_before_execution_protocol(db_path: &std::path::Path) -> Result<()> {
         let connection = open_connection(db_path)?;
         connection.execute_batch(
-            "DROP TABLE task_stop_effects;
+            "DROP TABLE scheduling_import_inventory;
+             DROP TABLE scheduling_domain_captures;
+             DROP TABLE scheduling_domain_records;
+             DROP TABLE scheduling_domain_current;
+             DROP TABLE scheduling_fixed_members;
+             DROP TABLE scheduling_fixed_manifests;
+             DROP TABLE task_stop_effects;
              DROP TABLE task_status_child_observers;
              DROP TABLE task_status_fixed_delegations;
              DROP TABLE task_status_fixed_controls;

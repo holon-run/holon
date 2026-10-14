@@ -24,6 +24,7 @@ pub(crate) struct LightweightAgentStateProjection {
     pub(crate) active_children: Vec<ChildAgentSummary>,
     pub(crate) work_queue: WorkQueueReadModel,
     pub(crate) _work_budget: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
+    pub(crate) _scheduling_material: Option<super::SchedulingReadMaterial>,
 }
 
 fn resolve_enter_cwd(execution_root: &Path, cwd: Option<&Path>) -> Result<PathBuf> {
@@ -652,7 +653,7 @@ impl RuntimeHandle {
         Ok(closure)
     }
 
-    pub async fn agent_summary(&self) -> Result<AgentSummary> {
+    pub async fn agent_summary(&self) -> Result<OwnedAgentSummaryRead> {
         // Fast path: return current agent summary.
         self.build_agent_summary().await
     }
@@ -668,6 +669,7 @@ impl RuntimeHandle {
         let closure_timer = attribution::CLOSURE.start();
         let closure = Self::closure_decision_from_projection(&agent, &read.projection, None);
         drop(closure_timer);
+        let scheduling_material = self.scheduling_observation_material(read.scheduling)?;
         let children_timer = attribution::CHILDREN.start();
         let active_children = if let Some(bridge) = self.inner.host_bridge.as_ref() {
             bridge.child_summaries(&agent.id).await?
@@ -695,12 +697,13 @@ impl RuntimeHandle {
             active_children,
             work_queue: read.work_queue,
             _work_budget: Some(read._owned_budget),
+            _scheduling_material: Some(scheduling_material),
         })
     }
 
     /// Get a full AgentSummary for a different agent through the host bridge
     /// without starting an unloaded target runtime.
-    pub async fn agent_summary_for(&self, agent_id: &str) -> Result<AgentSummary> {
+    pub async fn agent_summary_for(&self, agent_id: &str) -> Result<OwnedAgentSummaryRead> {
         let bridge = self
             .inner
             .host_bridge
@@ -709,7 +712,7 @@ impl RuntimeHandle {
         bridge.agent_summary_for(agent_id).await
     }
 
-    async fn build_agent_summary(&self) -> Result<AgentSummary> {
+    async fn build_agent_summary(&self) -> Result<OwnedAgentSummaryRead> {
         let started_at = std::time::Instant::now();
         let read = self.capture_scheduler_projection().await?;
         let agent = read.state.as_ref().clone();
@@ -717,6 +720,8 @@ impl RuntimeHandle {
         let model = self.model_state_for(&agent);
         let scheduling_posture = read.scheduling_posture.clone();
         let closure = Self::closure_decision_from_projection(&agent, &read.projection, None);
+        let (active_external_triggers, scheduling_material) =
+            self.summary_triggers_from_capture(read.scheduling)?;
         let identity = self.agent_identity_view().await?;
         let active_wait_conditions: Vec<crate::types::WaitConditionSummary> = read
             .active_waits
@@ -742,7 +747,6 @@ impl RuntimeHandle {
             skills,
             active_workspace_occupancy,
             active_children,
-            active_external_triggers,
             recent_operator_notifications,
         ) = tokio::join!(
             self.execution_snapshot(),
@@ -769,7 +773,6 @@ impl RuntimeHandle {
                     Ok(Vec::new())
                 }
             },
-            self.active_external_trigger_summaries(),
             self.recent_operator_notifications(10),
         );
         let execution = execution?;
@@ -777,7 +780,6 @@ impl RuntimeHandle {
         let skills = skills?;
         let active_workspace_occupancy = active_workspace_occupancy?;
         let active_children = active_children?;
-        let active_external_triggers = active_external_triggers?;
         let recent_operator_notifications = recent_operator_notifications?;
         let token_usage = AgentTokenUsageSummary {
             total: TokenUsage::new(agent.total_input_tokens, agent.total_output_tokens),
@@ -808,7 +810,11 @@ impl RuntimeHandle {
             recent_event_count: self.inner.storage.read_recent_events(100)?.len(),
         };
         crate::diagnostics::record_agent_summary_projection(started_at.elapsed());
-        Ok(summary)
+        Ok(OwnedAgentSummaryRead::new(
+            summary,
+            scheduling_material,
+            vec![_wait_summary_owned],
+        ))
     }
 
     pub async fn agent_list_entry(&self) -> Result<AgentListEntry> {
@@ -1098,17 +1104,11 @@ impl RuntimeHandle {
     }
 
     pub async fn recent_timers(&self, limit: usize) -> Result<Vec<TimerRecord>> {
-        crate::diagnostics::record_runtime_projection_cache_read();
-        Ok(self
-            .inner
-            .projection_cache
-            .lock()
-            .await
-            .recent_timers(limit))
+        Ok(self.capture_scheduling_records_read(limit).await?.timers)
     }
-
-    pub async fn latest_timer(&self, timer_id: &str) -> Result<Option<TimerRecord>> {
-        self.inner.storage.latest_timer_record(timer_id)
+    pub async fn latest_timer(&self, id: &str) -> Result<Option<TimerRecord>> {
+        let read = self.acquire_timer_record_read(id).await?;
+        Ok(read.record()?.cloned())
     }
 
     pub async fn set_model_override(

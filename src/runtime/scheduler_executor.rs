@@ -663,6 +663,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         Ok(RunLoopPoll::Shutdown)
     }
 
+    // Keep the large claim future out of its caller's poll frame.
     #[inline(never)]
     fn prepare_message(
         &self,
@@ -976,9 +977,30 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         guard.queue.len(),
                     )));
                 }
+                let scheduling_request =
+                    matches!(persisted_message.origin, MessageOrigin::Timer { .. }).then(|| {
+                        super::resident_scheduling::SchedulingCaptureRequest {
+                            include_live: true,
+                            history_limit: 0,
+                            required_keys: Default::default(),
+                        }
+                    });
+                if let Some(request) = scheduling_request.as_ref() {
+                    guard.prepare_owner_scheduling_request(request).await?;
+                }
                 let request = super::work_reads::live_work_request();
                 guard.prepare_owner_work_request(&request).await?;
-                let work = guard.capture_work(&request)?;
+                let (work_token, _, work) = guard.capture_work_with_state(&request)?;
+                let scheduling = scheduling_request
+                    .as_ref()
+                    .map(|request| guard.capture_scheduling_read(request))
+                    .transpose()?;
+                anyhow::ensure!(
+                    scheduling
+                        .as_ref()
+                        .is_none_or(|read| read.token == work_token),
+                    "Timer claim Scheduling and Work have different publications"
+                );
                 let wait_trigger_message_ids = work
                     .unresolved_wait_conditions()?
                     .into_iter()
@@ -1013,10 +1035,24 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     &mut execution_protocol,
                     wait_transition.as_ref(),
                 )?;
-                let timer_wake_claim = timer_wake_claim_for_message(
-                    &self.runtime.inner.runtime_db,
-                    &persisted_message,
-                )?;
+                let (_, record_limit, byte_limit) = guard.context_input_evidence_policy()?;
+                let timer_claim = scheduling
+                    .as_ref()
+                    .map(|read| {
+                        super::timer_mutation_reads::TimerWakeClaimRead::from_selected(
+                            &read.scheduling,
+                            &work,
+                            &persisted_message,
+                            &self.runtime.inner.input_evidence_budget,
+                            record_limit,
+                            byte_limit,
+                        )
+                    })
+                    .transpose()?
+                    .flatten();
+                let (timer_wake_claim, _timer_claim_material) = timer_claim
+                    .map(|read| (Some(read.claim), Some(read.material)))
+                    .unwrap_or((None, None));
                 let mut attempt_audit_events = claim_audit_events.clone();
                 if let Some(wait_transition) = wait_transition.as_ref() {
                     attempt_audit_events.push(AuditEvent::legacy(
@@ -2815,26 +2851,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
 
 pub(super) fn canonical_activation_id(message_id: &str) -> String {
     format!("activation:message:{message_id}")
-}
-
-fn timer_wake_claim_for_message(
-    runtime_db: &crate::runtime_db::RuntimeDb,
-    message: &MessageEnvelope,
-) -> Result<Option<crate::runtime_db::transitions::TimerWakeClaim>> {
-    let MessageOrigin::Timer { timer_id } = &message.origin else {
-        return Ok(None);
-    };
-    let Some(wake) = runtime_db.timers().pending_wake(timer_id)? else {
-        return Ok(None);
-    };
-    if wake.message_id != message.id {
-        return Ok(None);
-    }
-    Ok(Some(crate::runtime_db::transitions::TimerWakeClaim {
-        timer_id: timer_id.clone(),
-        message_id: message.id.clone(),
-        fire_count: wake.fire_count,
-    }))
 }
 
 fn scheduler_work_item_claim_conflict(error: &anyhow::Error) -> bool {

@@ -63,6 +63,7 @@ fn ready_facts(agent_id: &str, incarnation: u64, pending: usize) -> KnownCommit 
         work: None,
 
         tasks: None,
+        scheduling: None,
         state: scoped_state(agent_id, pending),
         episodes: Some(prepared_episodes(agent_id, incarnation)),
         input_evidence: Some(inputs(agent_id, incarnation)),
@@ -226,6 +227,7 @@ async fn input_presence_validates_every_domain_before_promoting_any_group_member
             work: None,
 
             tasks: None,
+            scheduling: None,
             state: scoped_state("agent-b", 4),
             episodes: Some(prepared_episodes("agent-b", 8)),
             input_evidence: Some(inputs("agent-b", 9)),

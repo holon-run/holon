@@ -253,3 +253,6 @@ fn lost_ack_receipt_in_same_deleting_incarnation_restores_state_and_all_domains(
     ));
     Ok(())
 }
+
+#[path = "input_recovery_scheduling_tests.rs"]
+mod scheduling_tests;

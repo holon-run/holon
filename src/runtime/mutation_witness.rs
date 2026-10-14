@@ -175,6 +175,7 @@ impl MutationWitness {
                         input_evidence: root.input_evidence.clone(),
                         work: root.work.clone(),
                         tasks: root.tasks.clone(),
+                        scheduling: root.scheduling.clone(),
                         runtime: None,
                     },
                 ));
@@ -211,6 +212,7 @@ impl MutationWitness {
                     input_evidence: root.input_evidence.clone(),
                     work: root.work.clone(),
                     tasks: root.tasks.clone(),
+                    scheduling: root.scheduling.clone(),
                     runtime: None,
                 });
         }
@@ -302,6 +304,7 @@ impl MutationWitness {
                     input_evidence: root.input_evidence.clone(),
                     work: root.work.clone(),
                     tasks: None,
+                    scheduling: root.scheduling.clone(),
                     runtime: None,
                 });
             }
@@ -342,6 +345,7 @@ impl MutationWitness {
                 input_evidence: root.input_evidence.clone(),
                 work: root.work.clone(),
                 tasks: root.tasks.clone(),
+                scheduling: root.scheduling.clone(),
                 runtime: None,
             });
         }

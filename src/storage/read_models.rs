@@ -44,10 +44,31 @@ impl RuntimeReadModels {
     }
 
     pub fn work_queue(&self) -> Result<WorkQueueReadModel> {
-        let _timer = attribution::WORK_QUEUE.start();
         let current_work_item_id = self
             .read_agent()?
             .and_then(|agent| agent.current_work_item_id);
+        self.work_queue_with_trigger_observation(current_work_item_id, None)
+    }
+
+    pub(crate) fn work_queue_with_observed_scheduling(
+        &self,
+        state: &AgentState,
+        triggers: Vec<crate::types::ExternalTriggerRecord>,
+    ) -> Result<WorkQueueReadModel> {
+        anyhow::ensure!(
+            self.agent_id.as_deref() == Some(state.id.as_str())
+                && triggers.iter().all(|row| row.target_agent_id == state.id),
+            "WorkQueue Scheduling observation scope differs"
+        );
+        self.work_queue_with_trigger_observation(state.current_work_item_id.clone(), Some(triggers))
+    }
+
+    fn work_queue_with_trigger_observation(
+        &self,
+        current_work_item_id: Option<String>,
+        observed: Option<Vec<crate::types::ExternalTriggerRecord>>,
+    ) -> Result<WorkQueueReadModel> {
+        let _timer = attribution::WORK_QUEUE.start();
         let mut latest = HashMap::<String, WorkItemRecord>::new();
         if let Some(agent_id) = self.agent_id.as_deref() {
             let mut timer = attribution::WORK_ITEMS.start();
@@ -64,10 +85,14 @@ impl RuntimeReadModels {
             timer.rows(latest.len());
         }
 
+        let triggers = match observed {
+            Some(triggers) => triggers,
+            None => self.latest_external_triggers()?,
+        };
         Ok(derive_context_work_queue(
             current_work_item_id,
             latest,
-            self.latest_external_triggers()?,
+            triggers,
             self.active_wait_conditions_for_scope()?,
             self.runtime_db
                 .work_item_continuations()

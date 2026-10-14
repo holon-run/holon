@@ -101,6 +101,7 @@ fn resolve_single_episode_recovery(
                     work: None,
 
                     tasks: None,
+                    scheduling: None,
                     state: Arc::new(state),
                     episodes: Some(Arc::new(episodes)),
                     input_evidence: None,

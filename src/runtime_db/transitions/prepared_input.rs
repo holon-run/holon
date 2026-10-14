@@ -19,6 +19,14 @@ use crate::runtime_db::input_mutation_receipts::{
 use crate::runtime_db::repositories;
 pub(in crate::runtime_db) use child_binding::ExistingOriginalChildBindingWriteProof;
 pub(crate) use child_terminal::OriginalChildStatusSelection;
+#[path = "prepared_timer.rs"]
+mod timer_writes;
+#[path = "prepared_external_trigger.rs"]
+mod trigger_writes;
+pub(crate) use timer_writes::{PreparedTimerTransition, TimerMutationOutcome};
+pub(crate) use trigger_writes::{
+    ExternalTriggerMutationOutcome, PreparedExternalTriggerTransition,
+};
 #[path = "prepared_task_stop.rs"]
 mod task_stop;
 #[path = "prepared_task_stop_phase.rs"]
@@ -177,6 +185,8 @@ enum InputTransitionCommand {
     Task(PreparedTaskTransition),
     TaskResult(PreparedTaskResultTransition),
     TaskStatusMetadata(task_status_metadata::PreparedTaskStatusMetadataCommand),
+    Timer(PreparedTimerTransition),
+    ExternalTrigger(PreparedExternalTriggerTransition),
     TaskStopProgress(task_stop_phase::PreparedTaskStopProgressCommand),
     TaskStopContinuation(task_stop_result::PreparedTaskStopResultCommand),
     Work {
@@ -205,9 +215,11 @@ impl InputTransitionCommand {
             Self::Terminal(_) => InputMutationFamily::Terminal,
             Self::Task(_) => InputMutationFamily::Task,
             Self::TaskResult(_) => InputMutationFamily::TaskResult,
+            Self::Timer(_) => InputMutationFamily::Timer,
             Self::TaskStopProgress(_)
             | Self::TaskStopContinuation(_)
             | Self::TaskStatusMetadata(_) => InputMutationFamily::Task,
+            Self::ExternalTrigger(_) => InputMutationFamily::ExternalTrigger,
             Self::Work { .. } => InputMutationFamily::WorkItem,
             Self::Focus { .. } => InputMutationFamily::Focus,
             Self::Wait { .. } => InputMutationFamily::Wait,
@@ -222,6 +234,8 @@ impl InputTransitionCommand {
             Self::Task(task) => &task.command.agent_id,
             Self::TaskResult(command) => command.agent_id(),
             Self::TaskStatusMetadata(command) => &command.scope().agent_id,
+            Self::Timer(command) => command.agent_id(),
+            Self::ExternalTrigger(command) => command.agent_id(),
             Self::TaskStopProgress(command) => &command.scope().agent_id,
             Self::TaskStopContinuation(command) => &command.scope().agent_id,
             Self::Work { command, .. } => &command.agent_id,
@@ -451,6 +465,15 @@ impl PreparedInputTransition {
             InputTransitionCommand::TaskResult(command),
         )
     }
+    pub(crate) fn timer(
+        scope: InputEvidenceScope,
+        nonce: String,
+        at: chrono::DateTime<Utc>,
+        command: PreparedTimerTransition,
+    ) -> Result<Self> {
+        command.validate(&scope)?;
+        Self::prepare(scope, nonce, at, InputTransitionCommand::Timer(command))
+    }
     pub(crate) fn initial_task_stop_intent(
         &self,
     ) -> Option<&crate::runtime_db::task_stop::PreparedTaskStop> {
@@ -572,6 +595,7 @@ impl PreparedInputTransition {
                         .as_ref()
                         .is_none_or(|original| !original.intent.no_op)
             }
+            InputTransitionCommand::Timer(timer) => timer.new_wake().is_some(),
             InputTransitionCommand::Queue(queue) => {
                 queue.command.operation == QueueOperation::Settle
                     || queue.wait_transition.is_some()
@@ -654,6 +678,7 @@ impl PreparedInputTransition {
             {
                 Policy::Finish
             }
+            InputTransitionCommand::Timer(timer) if timer.new_wake().is_some() => Policy::Deferred,
             InputTransitionCommand::Work { .. }
             | InputTransitionCommand::Focus { .. }
             | InputTransitionCommand::Wait { .. }
@@ -703,6 +728,7 @@ impl PreparedInputTransition {
                 | InputTransitionCommand::Wait { .. }
                 | InputTransitionCommand::Task(_)
                 | InputTransitionCommand::TaskStopContinuation(_)
+                | InputTransitionCommand::Timer(_)
                 | InputTransitionCommand::Queue(_),
             ) => {}
             (Memory::Finish { binding, .. }, InputTransitionCommand::Terminal(command)) => {
@@ -880,6 +906,13 @@ impl PreparedInputTransition {
             "Control metadata group must contain only its original scope"
         );
         anyhow::ensure!(
+            !matches!(
+                self.command.as_ref(),
+                InputTransitionCommand::ExternalTrigger(_)
+            ) || scopes.as_slice() == std::slice::from_ref(&self.primary_scope),
+            "Trigger producer requires only its original scope"
+        );
+        anyhow::ensure!(
             !self.is_task_stop_phase()
                 || scopes.as_slice() == std::slice::from_ref(&self.primary_scope),
             "Stop phase group must contain only its original parent"
@@ -971,6 +1004,10 @@ impl PreparedInputTransition {
         };
         agent(self.command.agent_id(), "command")?;
         match self.command.as_ref() {
+            InputTransitionCommand::Timer(command) => command.validate(&self.primary_scope)?,
+            InputTransitionCommand::ExternalTrigger(command) => {
+                command.validate(&self.primary_scope)?
+            }
             InputTransitionCommand::TaskResult(command) => command.validate()?,
             InputTransitionCommand::TaskStatusMetadata(command) => anyhow::ensure!(
                 command.scope() == &self.primary_scope,
@@ -1410,6 +1447,8 @@ impl PreparedInputTransition {
             | InputTransitionCommand::Terminal(_)
             | InputTransitionCommand::TaskResult(_)
             | InputTransitionCommand::TaskStatusMetadata(_)
+            | InputTransitionCommand::Timer(_)
+            | InputTransitionCommand::ExternalTrigger(_)
             | InputTransitionCommand::TaskStopProgress(_)
             | InputTransitionCommand::TaskStopContinuation(_) => {}
         }
@@ -1495,6 +1534,12 @@ impl PreparedInputTransition {
             Ok(())
         }
         let mut pending = Vec::new();
+        if let InputTransitionCommand::Timer(timer) = self.command.as_ref() {
+            if let Some((message, queue)) = timer.new_wake() {
+                add(&self.primary_scope, &mut pending, queue, message)?;
+            }
+            return Ok(pending);
+        }
         if let InputTransitionCommand::TaskStopContinuation(command) = self.command.as_ref() {
             anyhow::ensure!(
                 command.message().agent_id == self.primary_scope.agent_id,
@@ -1656,6 +1701,22 @@ impl RuntimeTransitionRepository<'_> {
         memory_ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
         task_request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
     ) -> Result<InputMutationExecution<TransitionCommit>> {
+        self.commit_prepared_transition_with_domain_requests(
+            prepared,
+            work_request,
+            memory_ledger,
+            task_request,
+            &timer_writes::default_request(work_request),
+        )
+    }
+    pub(crate) fn commit_prepared_transition_with_domain_requests(
+        &self,
+        prepared: &PreparedInputTransition,
+        work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+        memory_ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        task_request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
+        scheduling_request: &crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest,
+    ) -> Result<InputMutationExecution<TransitionCommit>> {
         let scope = self
             .input_scope
             .as_ref()
@@ -1667,6 +1728,9 @@ impl RuntimeTransitionRepository<'_> {
             "prepared input transition scope differs from its repository"
         );
         self.db.transaction(|tx| {
+            if let InputTransitionCommand::ExternalTrigger(command)=prepared.command.as_ref() {
+                return trigger_writes::commit_tx(tx,prepared,command,scheduling_request,memory_ledger);
+            }
             if let InputTransitionCommand::TaskStatusMetadata(command)=prepared.command.as_ref() {
                 return task_status_metadata::commit_tx(tx,prepared,command,task_request,memory_ledger);
             }
@@ -1719,7 +1783,7 @@ impl RuntimeTransitionRepository<'_> {
                 }
             }
             prepared.validate_primary_namespace()?;
-            let result_receipt_guard=if matches!(prepared.command.as_ref(),InputTransitionCommand::Task(_) | InputTransitionCommand::TaskResult(_)) {
+            let result_receipt_guard=if matches!(prepared.command.as_ref(),InputTransitionCommand::Task(_) | InputTransitionCommand::TaskResult(_) | InputTransitionCommand::Timer(_)) {
                 Some(super::prepared_task_result::receipt_budget_tx(tx,&prepared.descriptor,scope,task_request,memory_ledger)?)
             } else {None};
             if let Some(receipt) = lookup_input_mutation_receipt_tx(tx, &prepared.descriptor)? {
@@ -1778,6 +1842,8 @@ impl RuntimeTransitionRepository<'_> {
                     identity.status == crate::types::AgentRegistryStatus::Active),
                     "new TaskStop requires original Active identity");
             }
+            let scheduling_transaction = timer_writes::prepare_tx(tx,prepared,scope,scheduling_request,
+                memory_ledger,memory_budget.as_mut())?;
             let mut task_transaction = if let Some(entry)=child_entry {
                 task_writes::prepare_child_task_transaction_tx(tx,prepared,scope,deleting,task_request,memory_ledger,memory_budget.as_mut(),entry)?
             } else {
@@ -1811,7 +1877,7 @@ impl RuntimeTransitionRepository<'_> {
             } else { None };
             let mut inserted_stop = None;
             let work_proof = prepared.prepare_work_proof_tx(tx, scope, deleting, work_request,
-                memory_ledger, memory_budget.as_mut())?;
+                memory_ledger, memory_budget.as_mut(),scheduling_transaction.as_ref())?;
             let producer_input = match child_terminal::prepare_input_view_tx(tx,prepared,
                 task_transaction.as_ref().map(|task|task.task_write_proof()))? {
                 Some(view)=>Some(view),None=>command_terminal::prepare_input_view_tx(tx,prepared,
@@ -1848,7 +1914,7 @@ impl RuntimeTransitionRepository<'_> {
                 cleanup_input: cleanup.as_ref(),
             };
             let (mut value, mut result) = match prepared.command.as_ref() {
-                InputTransitionCommand::TaskStatusMetadata(_) | InputTransitionCommand::TaskStopProgress(_) | InputTransitionCommand::TaskStopContinuation(_) => unreachable!("focused metadata phase dispatched above"),
+                InputTransitionCommand::ExternalTrigger(_) | InputTransitionCommand::TaskStatusMetadata(_) | InputTransitionCommand::TaskStopProgress(_) | InputTransitionCommand::TaskStopContinuation(_) => unreachable!("focused metadata phase dispatched above"),
                 InputTransitionCommand::Posture {
                     command,
                     started_turn,
@@ -1867,6 +1933,7 @@ impl RuntimeTransitionRepository<'_> {
                     } else { repository.commit_turn_terminal_tx(tx, command)? };
                     (commit, InputMutationResult::Transition)
                 },
+                InputTransitionCommand::Timer(timer) => timer.execute_tx(tx,self.db,scope,work_request,task_request,memory_ledger,memory_budget.as_mut())?,
                 InputTransitionCommand::TaskResult(_) => {
                     let ack=task_transaction.as_mut().context("TaskResult omitted its original proof")?
                         .execute_result()?;
@@ -2045,7 +2112,8 @@ impl RuntimeTransitionRepository<'_> {
                 value.effects.notify_scheduler |= memory.effects.notify_scheduler;
                 value.applied |= memory.applied;
             }
-            if task_transaction.is_none() && value.effects.task_delta.is_none() {
+            if task_transaction.is_none() && value.effects.task_delta.is_none()
+                && !matches!(prepared.command.as_ref(),InputTransitionCommand::Timer(_)) {
                 if let Some((delta, guards)) = crate::runtime_db::task_snapshot::register_task_source_metadata_tx(
                     tx, scope, &value.effects.input_evidence_delta, task_request, memory_ledger, memory_budget.as_mut(),
                 )? {
@@ -2072,6 +2140,9 @@ impl RuntimeTransitionRepository<'_> {
                 // still writes its source, related heads and mandatory receipt.
                 let InputTransitionCommand::Task(task)=prepared.command.as_ref() else{unreachable!()};
                 value.effects.fault=task.command.fault;
+            }
+            if let Some(scheduling)=scheduling_transaction {
+                scheduling.finish(tx,&mut value,scheduling_request,memory_budget.as_mut())?;
             }
             value.effects.task_material_budget_views.extend(result_receipt_guard);
 
@@ -2149,6 +2220,9 @@ impl RuntimeTransitionRepository<'_> {
                     inject_fault(command.fault, TransitionFaultPoint::BeforeCommit)?;
                 }
             }
+            if let InputTransitionCommand::Timer(timer)=prepared.command.as_ref() {
+                inject_fault(timer.fault(),TransitionFaultPoint::BeforeCommit)?;
+            }
             Ok(InputMutationExecution::Committed { value, receipt })
         })
     }
@@ -2171,6 +2245,9 @@ impl PreparedInputTransition {
             &crate::runtime_db::command_task_terminal::OriginalCommandTaskInputView<'_, '_, '_>,
         >,
     ) -> Result<crate::runtime_db::input_evidence_snapshot::ExistingAdmissionInputProof> {
+        if matches!(self.command.as_ref(), InputTransitionCommand::Timer(_)) {
+            anyhow::bail!("ordinary Timer command requires Active identity");
+        }
         if let Some(proof) =
             self.work_cleanup_proof_tx(tx, scope, work_proof, task_cleanup, producer_input)?
         {
@@ -2206,7 +2283,9 @@ impl PreparedInputTransition {
             | InputTransitionCommand::TaskResult(_)
             | InputTransitionCommand::TaskStatusMetadata(_)
             | InputTransitionCommand::TaskStopProgress(_)
-            | InputTransitionCommand::TaskStopContinuation(_) => {
+            | InputTransitionCommand::TaskStopContinuation(_)
+            | InputTransitionCommand::Timer(_)
+            | InputTransitionCommand::ExternalTrigger(_) => {
                 unreachable!("handled by original Work cleanup proof")
             }
             InputTransitionCommand::QueueHeadNoProgress { .. } => {
@@ -2435,7 +2514,9 @@ impl PreparedInputTransition {
             | InputTransitionCommand::TaskResult(_)
             | InputTransitionCommand::TaskStatusMetadata(_)
             | InputTransitionCommand::TaskStopProgress(_)
-            | InputTransitionCommand::TaskStopContinuation(_) => unreachable!(),
+            | InputTransitionCommand::TaskStopContinuation(_)
+            | InputTransitionCommand::Timer(_)
+            | InputTransitionCommand::ExternalTrigger(_) => unreachable!(),
         };
         if let Some(mutation) = mutation {
             let old = mutation
@@ -2513,7 +2594,9 @@ impl PreparedInputTransition {
             | InputTransitionCommand::TaskResult(_)
             | InputTransitionCommand::TaskStatusMetadata(_)
             | InputTransitionCommand::TaskStopProgress(_)
-            | InputTransitionCommand::TaskStopContinuation(_) => None,
+            | InputTransitionCommand::TaskStopContinuation(_)
+            | InputTransitionCommand::Timer(_)
+            | InputTransitionCommand::ExternalTrigger(_) => None,
         };
         if let Some(turn) = terminal {
             for id in &turn.tool_execution_ids {
@@ -2605,12 +2688,34 @@ impl PreparedInputTransition {
         mut memory_budget: Option<
             &mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget,
         >,
+        scheduling: Option<&timer_writes::SchedulingTransaction<'_, '_>>,
     ) -> Result<Option<crate::runtime_db::work_snapshot::WorkWriteProof>> {
         use crate::runtime::resident_work::{WorkFamily, WorkKey};
         let mut keys = BTreeSet::new();
         let mut waits = Vec::new();
         let mut projection_guards = Vec::new();
         match self.command.as_ref() {
+            InputTransitionCommand::ExternalTrigger(_) => return Ok(None),
+            InputTransitionCommand::Timer(timer) => {
+                if scheduling.is_some_and(|plan| plan.fires_wake()) {
+                    let (message, queue) = timer
+                        .new_wake()
+                        .context("Timer plan has another pending branch")?;
+                    let (wait, guard) = predicted_trigger_wait_tx(
+                        tx,
+                        scope,
+                        message,
+                        queue,
+                        request,
+                        ledger,
+                        memory_budget.as_deref_mut(),
+                    )?;
+                    projection_guards.extend(guard);
+                    waits.extend(wait);
+                } else if self.memory.is_none() {
+                    return Ok(None);
+                }
+            }
             InputTransitionCommand::Task(task) => {
                 keys.extend(
                     task.command

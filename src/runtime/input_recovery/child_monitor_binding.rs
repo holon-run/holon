@@ -47,6 +47,7 @@ pub(super) fn prepare_known_tx(
         input_evidence,
         work,
         tasks,
+        scheduling,
         runtime,
     }) = original
     else {
@@ -73,6 +74,7 @@ pub(super) fn prepare_known_tx(
         input_evidence,
         work,
         tasks,
+        scheduling,
         runtime: None,
     })
 }

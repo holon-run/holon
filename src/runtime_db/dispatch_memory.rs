@@ -323,6 +323,7 @@ impl DispatchMemoryRecord {
                             member.original.family(),
                             InputMutationFamily::WorkItem
                                 | InputMutationFamily::Focus
+                                | InputMutationFamily::Timer
                                 | InputMutationFamily::Wait
                                 | InputMutationFamily::Task
                                 | InputMutationFamily::Queue
@@ -428,6 +429,7 @@ pub(crate) fn prepare_detached_memory_tx<'tx, 'connection>(
             original.family(),
             InputMutationFamily::WorkItem
                 | InputMutationFamily::Focus
+                | InputMutationFamily::Timer
                 | InputMutationFamily::Wait
                 | InputMutationFamily::Task
                 | InputMutationFamily::Queue

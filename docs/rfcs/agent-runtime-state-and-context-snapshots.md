@@ -1203,7 +1203,7 @@ Provider usage and cache placement have their own contract; deterministic
 snapshot content alone does not imply a cache hit or better task quality.
 
 
-### D5 accepted TaskResult reducer routing
+### Accepted TaskResult reducer routing
 
 After the original EnsurePending/Admit ACK, owner-unavailable routing captures the
 finite qualified Result/Work dependency under its original owner. Invalid Result
@@ -1215,7 +1215,7 @@ selected facts and the finite parent Input read carrier.
 An existing Task authorizes only its exact current qualified locator and original
 parent. Canonical Task global absence preserves the original first-create timing
 and `should_ignore(None) == false`. In that branch a private parsed-source proof
-must bind the actual accepted D3 Message, exact agent/origin/task, original
+must bind the actual accepted Message, exact agent/origin/task, original
 RuntimeInstruction/RuntimeOwned TaskRejoin route, and every parser-derived Task
 field. The parser's two original local timestamps remain local constructor facts.
 A candidate detail hint alone grants no historical Input read.
@@ -1243,3 +1243,310 @@ Child completion 使用同一 child scope、incarnation 与 publication 的 Stat
 原 accepted monitor 持有调用者拥有的角色 lease，覆盖首次具名有限元数据 acquire、后续纯 capture 与实际消费。只有新的协议 Turn 或实际 owner 更替建立新角色；普通轮询不得因窗口滚动、缺失或失败而隐式回读 canonical history。角色集合通过已有 Task writer/Current recovery 同 revision 维护，Weak registry 不保留 Runtime 或 Root，释放角色后下一次实际 ACK 可以收窄元数据。
 
 Loaded 分支严格使用当前 owner 的 selected capture，并把实际 ledger guards 保留至同步判断及其原消费边界。TaskNone、foreign、retired 或不完整观察显式失败，不转入 raw Storage 兜底。真正 unloaded 的显式 inspection 保持独立边界，不为查询激活 Runtime。Delivery/ExecutionProtocol 证据保持各自来源，不能借 Task 关系授予其他领域的资格。
+### Scheduling residency and original fixed qualification
+
+Scheduling uses three explicit families: Timer, TimerWake and ExternalTrigger.
+Its ready view contains all qualified active timers, all pending wakes (including
+those owned by a completed timer), the active default trigger, bounded historical
+bodies and requested by-ID facts. A pending wake retains its original fire count;
+later timer advances do not rewrite that admission identity. Captures hold only
+selected record Arcs, independent metadata and Weak ledger observations. They do
+not retain an Agent root, storage handle or physical timer/command resource.
+
+The original fixed cutover actor stores a sealed, bounded metadata inventory with
+exact body and full normalized-column digests. This inventory is independent of
+Episode ownership: it does not widen Episode members or source refs, or rewrite
+old payloads with an invented incarnation. The final Scheduling migration consumes
+that original inventory. First import may advance only its frozen members or
+actually received typed-equal stored records from the original Timer/Trigger
+import transactions. A later current read cannot recapture a canonical tail.
+Ordinary preparation requires the exact Active identity and State; named original
+recovery may read its same-incarnation Deleting scope without granting business
+admission. NoState and retired predecessors return unavailable metadata, never
+Ready, and do not read a successor State.
+
+Original writers reserve a finite pre-SQL footprint, including any wake's owning
+timer. A non-cloneable proof borrows that actual transaction and verifies original
+qualification or actual global absence. The finalizer checks every reserved target
+against the actual write set, reads stored canonical facts, validates the final
+business State and emits one complete finite delta before the original whole
+receipt. Its body and metadata guards remain alive through receipt/publication;
+the delta alone cannot manufacture a ready domain when the original root was
+unprepared. Generic new writes cannot revive pruned or foreign-incarnation IDs.
+NoState maintenance and actual removals require their own original actor proof.
+
+Timer fire merge and callback accounting retain their existing transaction
+boundaries. A merged fire may advance its Timer without a new wake, Message or
+pending ticket. Callback wake admission and delivery accounting remain separate
+reservations and preserve an intervening revocation. Loaded Scheduling readers
+require complete writer, removal and joint recovery/publication coverage, with
+one body owner and no independent shadow cache.
+
+
+Timer producers use a frozen whole-transaction command for creation, firing,
+and cancellation. A frozen existing pending wake keeps the original merge
+branch: only the Timer advances, with no new Message, Pending ticket, or Memory
+responsibility. A new-wake branch preserves the original Message/Queue/Wait/State
+transaction and its accepted Source metadata. Queue incorporation reports its
+actual Wake write from the successful original update. Each domain finalizes
+once before the original whole receipt; current installation uses fresh current
+facts rather than replaying historical DTOs. Scheduling dependencies are derived
+from the current pending frontier, not pinned forever by an old receipt window.
+Control, startup, deletion/import actors and coherent root/read integration
+preserve this qualification and publication contract. Ordinary readers cannot
+fall back to storage or create a NoState Ready domain.
+
+
+Control Stop maintains Scheduling qualification in its original transaction. Its
+finite target set includes active Timers, the independent complete pending-Wake
+set (whose owner may already be Completed), and the actual active Triggers. SQL
+write acknowledgments, rather than desired DTOs or cancellation counts, identify
+the changed records. Existing raw cleanup preserves the business contract without
+adopting unqualified history. The actual final State and complete Scheduling view
+are finalized once before the original Control receipt and its immediately
+referencing cancellation obligations; publication and physical signals follow ACK.
+
+Existing-only Scheduling maintenance is a separate borrowed, same-transaction
+qualification proof. It checks the exact identity before any State access and
+retains only original qualified/fixed aliases. NoState maintenance emits incomplete
+coverage with an explicit new revision after actual changes; it does not construct
+State or a Ready domain. It cannot introduce new IDs, revive Pruned members, or
+replace a successor's facts. The original startup/deletion actor still supplies
+business authorization and whole-outcome responsibility. Unbound original seed
+overlays and owner/receipt integration preserve the same qualification boundary.
+
+
+#### 删除协调者的既有 Scheduling 维护 ACK
+
+删除协调者沿原 unloaded、job/inc/phase 与 metadata owner 执行。普通 Quiesce 保留每个 Active Timer 仅改 Cancelled 的原事务；ParentCleanup 保留原 blocker，并在原 bulk 事务取消 Timer 与 pending Wake、丢弃对应 Queue；Ingress 保留每个 Active Trigger 的原撤销事务。有限 IDs 按原顺序分批，实际写集只来自 SQL changed/RETURNING，不能从计划、计数或返回候选反推。
+
+同一事务先预预算实际 identity/job、原正文和 normalized projection、有限关联 Queue/Wake，再验证既有 qualified/fixed 子集；原业务 SQL 后只更新该子集 alias，并使已有 coverage 以一次 revision 进入显式 incomplete。raw 旧行可以按原业务取消，不能由清理获得新成员资格。已固定但尚未完成 JSON 导入的原成员可以维护其版本；普通 loader 仍要求原 import seal，清理不制造 seal、补采尾部或新 Ready。NoState 不创建 State；同原 inc 的 Deleted CleanupRepair 保原业务且不更改已退休 namespace，不读取 successor State。
+
+实际 Host ledger 的 Candidate guards 经原 metadata ACK/Known 保存与发布交接；Unknown 保原 owner 门禁，不能以后一次 no-op 冒充原事务不存在。元数据 ACK 不安装 Scheduling Ready。startup/exclusive-unbound、复合 root 准备与恢复及普通读取遵循相同资格和原回执发布边界。
+
+#### Scheduling exclusive startup 的固定版本维护
+
+原 Host preactivation handoff、maintenance lease 与完整原 scope reservation 持续覆盖原 global stale-Wait/Stopped 清理事务。该事务先以真实 Host ledger 计量 State/live Wait/有限同 owner 依赖及取消候选，再执行原 canonical Wait/Timer/Wake/Queue/State 顺序；actual Timer/Wake keys 来自原更新出口，资格 ACK 与业务同事务。Current 或同代 Deleting 仅维护既有 fixed/qualified 子集并使 coverage 显式 incomplete，raw 旧清理不追认；Deleted 原清理不触退休 namespace。原历史 Task/Trigger/Timer 观察只选择 live Wait 实际引用，保持原同 owner/ID/status stale 判定，不授任何依赖正文新资格。
+
+无 identity 的原 fixed seed 只由实际 `ExclusiveStartupInputRecovery` 与原 `LegacySeedRecoveryScope` 授予现有 Timer/Wake 的取消版本记录。原 fixed manifest/digest 不变，focused seed sidecar 同事务保存当前已 ACK digest；只接受 Active→Cancelled、Pending→Cancelled 及原取消时间字段，地址、owner、火次与其余正文保持。真正首次绑定原 seed 后可以物化该已 ACK 版本，FreshEmpty/successor、晚到 raw key、Pruned 或无原 anchor 均不能借此获得成员资格。该版本记录不构造 identity/incarnation/State/Ready，也不扩原固定承接集合、窗口或 manifest。返回的 actual identities/States/material guards 先进入原 Known metadata 再发布；不会先激活或在事务外重读正文补资格。
+
+#### Scheduling cold bootstrap 的 Wake 规范化
+
+原 bootstrap Wake 规范化保持独立的 metadata 事务、原 Queue 重复项顺序/丢弃规则、原 pending keeper、原独立火次、原每个分支的时钟调用和之后的 pending 重算。单次原 selection 在实际 Host ledger 的原始字节/normalized字段/native JSON节点 admission 后读取；原逻辑 Pending 额度门禁先于 native JSON 解析。实际取消 keys 从原 UPDATE RETURNING 取得，复活与 INSERT keys 从其实际 affected 出口取得。
+
+已有 fixed/qualified Wake 只更新其现有成员版本，raw 旧清理不追认。首次缺失 Wake 的私有同事务能力只能由原 qualified Timer、实际同 owner Queued/Interrupted TimerTick Message 的完整字段/实际序号及 Input current/fixed 资格构造；只允许该冻结 pair/body，Timer 其余正文保持，禁止旧 Pruned/global collision 或 raw Timer 授权。原已观察 Absent 可以接受首次实际版本，且原 alias 必须在业务期间不变。它不写 Message、不建 Run/Turn/activation、无新 Input 票或 dispatch memory checkpoint，也不把 Message body grant 回普通 Input aliases。取消/复活/首次实际 Wake 资格与原 canonical Queue/Wake 写入同 ACK；一次 sparse revision 使完整标记失效，原 cold Known metadata 后才开始下一 bootstrap 阶段，不隐式安装 Ready 或启用普通 reader fallback。
+
+
+#### Scheduling ExternalTrigger 的原回执与两阶段 delivery
+
+ExternalTrigger producer 使用封闭的 Ensure、Reset、Revoke、Account 原命令及独立 whole receipt family。真实 owner 下的写前观察先验证原 identity/State、有限 key 的 fixed/current 资格与 full normalized projection；它不是普通 reader fallback。命令冻结原 default/body、生成的 ID/token/hash、第一次时钟与 callback disposition。Ensure 命中已有 token 时保留原 no-op/旧记录，未使用的新 ID 不成为写目标；缺 token 的替换与 Reset 按原同事务先撤销再创建，actual keys 仅从实际 affected 出口取得。
+
+原 receipt 在原业务前查询，重放只返回原 outcome，不能用后来 latest record 改写成功结果。finite preproof 后执行原 SQL、读取实际 stored ACK，一次 Scheduling finalizer 与原 whole receipt 同事务。初始观察、命令、完整原 receipt、pre/post readback 与 finalizer 共用本次剩余额度；真实 Host Candidate guards 贯穿 ACK、publication 与原后置 audit 边界。原 namespace 未准备时 delta 仍显式需要具名准备，不能制造 Ready。新 ingress 仅 Active；原既有 Revoke/Account 可在同代 Deleting 收束，但不替代原业务 admission gate，不复活 Pruned 或 raw/foreign key。
+
+callback delivery 保留两个独立原 ACK：第一阶段在 owner 下观察已 qualified 的 Active capability，释放 owner 后按原 submit_wake_hint 取得 disposition；第二阶段重新获 owner 并读取当前已 qualified record，再按第一时钟记账。中间撤销不会被旧快照覆盖，Account 保留当前 Revoked/revoked_at。两阶段不合并为新事务，也不引入新 callback 外发。Trigger producer 本身不写 Message、Queue、Task、Run/Turn、activation、identity 或 Episode/dispatch memory；Wake 的责任仍属于其原独立入口。
+
+### Scheduling publication and projection reads
+
+Scheduling is an explicit optional domain in the same published Agent root as
+State, Episode, Input, Work and Task. None requires preparation and cannot stand
+for an empty live frontier. A successful original ACK saves its actual finite
+Scheduling delta in Known facts before installation awaits. Exact original
+receipt recovery prepares current Scheduling in the same SQL view as the other
+domains; the old receipt grants no historical Timer or Trigger body authority.
+A metadata-only or retired scope carries no Ready Scheduling and cannot load a
+successor State. Pending Wake Message dependencies join Input preparation from
+the actual current frontier, independently of optional history.
+
+The scheduler, Work projections and loaded context select Trigger facts and the
+active Timer count from that same root. They do not query canonical Timer or
+Trigger bodies, consult a shadow cache, or interpret a missing domain as empty.
+An explicit owner preparation may install a requested current/fixed selector;
+ordinary capture itself cannot hydrate a missed key or recapture a late tail.
+Selected copies share the caller's remaining bounded read allowance: retained
+Scheduling metadata and bodies are counted with new Trigger DTO copies before
+allocation, and actual ledger guards remain through derived projection building.
+This read allowance does not redefine every named preparation's separate
+material budget or claim an exact allocator/RSS bound.
+
+
+Accepted Timer/Trigger read queries keep selected Scheduling facts and their
+actual owned-output guard through synchronous Tool or HTTP serialization.
+An exact Timer query reserves selector material before copying its ID and may
+prepare only the original current/fixed namespace. A foreign normalized owner
+is rejected before decoding its body; unqualified raw late rows, pruned members
+and historical-table unavailability retain their distinct strict failures.
+Legacy in-process DTO methods preserve their return shape, while production
+wire adapters use the internal owned carrier. Loaded Host State queries select
+Timer and Trigger DTOs together and verify one stable publication generation
+across their other loaded projections; a changing publication is a typed retry
+failure, never a storage-body fallback. These DTO guards carry no root, storage,
+producer handle or new admission authority.
+
+
+Timer bootstrap retains a selected Scheduling capture from the same coherent
+read as its published root, rather than decoding an additional raw active-Timer
+list. Recovery preserves the canonical millisecond created-at descending / ID
+ascending order. Before building that borrowed ordering vector or copying any
+Timer body, it reserves bounded metadata and counts selected material together
+with the new copies against the clamped read allowance.
+
+Timer loop registration uses the already held original owner and its published
+Scheduling capture. It checks the exact Timer agent, ID and original created-at
+generation, then preserves the original admission, cancellation and lease
+checks. Missing or unqualified facts cannot fall back to a canonical Timer row
+or the caller's DTO. The loop owns only its Timer copy and actual ledger guard;
+it does not retain the captured root or unrelated Timer/Trigger history. That
+guard remains through sleeps, original firing and physical loop completion.
+
+
+### Timer fire/cancel 的读取与提交
+
+原 accepted Timer writer 在既有 owner 内显式准备有限 Timer key 与必要 Work live 集合，随后只从同一个 published root 读取 Timer、完整 pending Wake 和唯一 Active Timer Wait 的 Open-owner 关联。纯 lookup 不做 SQL fallback；原 fixed/current qualification、Pruned/foreign/NoState 仍严格。初次 Timer generation/expected/cadence/source 冻结，State OCC 重试只重新观察该原 scope 的 pending 分支；actual Timer/Queue/Wait/Work/Input/Task/Source 仍由原 whole TX/receipt 与一次 finalizer 负责。merge 不投新 Input 票或新 source。
+
+最终选中 Scheduling+Work、仍活 selector 与 Timer/pending/correlation owned command 副本先 clamp64MiB/65536 后累计，actual Host Candidate guard 先于 clone并跨原 ACK。具名 hydration 继续原独立 hard bounds/ledger，不声明整个 Runtime acquire/native RSS 同时限64MiB。原低层 SQL pending observer 保留作独立writer兼容/测试，不再是这些 Runtime 路由的普通读取回退。
+
+### WaitFor 的 Scheduling 只读边界
+
+原 WaitFor 命令在已持有的 mutation owner 内，以有限 current/fixed Scheduling
+请求显式准备 Timer/完整 pending Wake 或 active default ExternalTrigger。后续
+Timer deadline、completed pending trigger 及 ExternalIngress ID 只由该次 published
+root 派生；原 Absent/foreign/Pruned/不可用分别保持 typed 结果，不以旧 DTO 或 SQL
+miss fallback 补正文。register 复用原 owner，外部 Tool/terminal retry 准备只取得一次
+owner，不能嵌套取得同 scope 的 mutation owner。
+
+新 Scheduling 派生材料在 clone 前按已选中记录与该材料的组合预算计量，guard
+随 PreparedWait 保留到原 Wait/Queue whole ACK。active Timer 仍选择 nextFireAt，
+completed Timer 仍必须有真实 pending Wake；取消、缺失、owner mismatch 与原
+TaskResult/OperatorInput 的业务错误、exact Wait、Work blocker、执行协议保持原义。
+这不声称整段 Wait 既有 State/Work/Task/事件适配器或所有 native RSS 已统一预算；
+普通 reader 的 projection 不执行隐藏 hydration。
+
+A Timer queue claim selects its incorporation tuple from complete pending-Wake
+coverage and Work facts in the same owner-held publication. The accepted claim
+prepares these domains explicitly before the pure selection. Absence or a Wake
+for another Message preserves the original no-incorporation branch; a missing
+or incomplete Scheduling domain cannot fall back to the canonical Timer tables.
+The original Queue transaction still validates and writes incorporation with its
+other domain effects and whole receipt. Selected views and owned tuple copies
+share the finite claim-read allowance; the tuple guard remains held through ACK.
+
+Work focus and Command environment decisions use the complete active Trigger
+relation from the same publication as their Work or State observations. Work
+focus may prepare that finite relation at its accepted command boundary; an
+ordinary Command projection cannot adopt a missing or raw Trigger. Trigger
+copies and generated callback URLs are admitted before allocation, and their
+actual material guards remain with the prepared Work or Command value. These
+read projections grant no delivery, activation, reset or revocation authority.
+
+
+### Cold Host Scheduling read scope
+
+An accepted cold state query reserves the exact Active incarnation without
+activating a Runtime. If that owner still has a ready published root, Scheduling
+selection uses that root, while a bounded same-scope State read verifies the
+pair. Otherwise the named preparation uses only the original current/fixed
+qualification in one transaction. No read can adopt a later raw row.
+
+NoState may display an empty Scheduling list only after an exact fresh-empty
+binding or the original sealed fixed inventories prove all three families were
+observed empty, and canonical, current, qualified, fixed and import membership
+are all empty. Missing availability or any original member yields a typed
+failure; the query does not create State, aliases, a ready root or activation.
+Retired/successor scopes are rejected before the successor State body is read.
+
+The cold decode material, selected facts and projected Timer/Trigger copies
+share one bounded allowance. Their actual ledger guards remain in the response
+carrier through child observations and synchronous serialization. The closure
+uses the same complete selected active Timer observation, rather than reading
+Timer bodies again. Primary-scope owners are released before awaiting child
+summaries; immutable selected material survives independently of the root.
+
+
+### Agent summary Scheduling material
+
+The full summary's active Trigger list is derived from the same SchedulerRead
+as its State, Work posture and Timer closure observation. It cannot open a
+second Trigger read after those facts have been captured. A cold full or compact
+summary uses the exact-incarnation cold Scheduling query and its original
+current/fixed qualification, including its explicit NoState empty proof.
+
+The Rust summary return value owns the selected Scheduling observations and
+projection allowance. It serializes transparently as the existing AgentSummary
+DTO. Host bridge and list calls preserve that carrier; GetAgent keeps its
+material while serializing the original full or compact DTO, and HTTP consumes
+the carrier in its synchronous serializer. Compact projections retain the
+Scheduling observation independently through serialization. These values have
+no Root, database or physical producer back-reference.
+
+This contract concerns Scheduling material. State, Work, Task, Wait,
+event and child observations retain their own explicit accounting and
+coherence boundaries; a summary does not assert that all domains share one
+whole-request peak allowance or publication.
+
+
+### Callback token discovery
+
+HTTP callback discovery reads only a finite address and delivery-mode header.
+Integer raw and normalized-column lengths are admitted to the actual Host ledger
+before any JSON parse or owned address; native JSON node counts consume the
+remaining record allowance before header decoding. The original active-token
+LIMIT 1 selection is preserved. Normalized ID, owner, active status and token
+hash must agree with the body. No State, incarnation, qualification or activation
+is inferred from this global locator.
+
+The locator and its material survive until the scoped producer's original
+admission and delivery finish. That producer still verifies original qualified
+Scheduling membership, authority and revocation fences in its existing two
+phases. Discovery never authorizes delivery after revocation.
+
+The existing public Host Record-returning APIs are explicit bounded compatibility
+adapters. They use the same raw/node preflight and then deserialize the finite record and
+validate all normalized fields before returning the DTO; their material spans any
+activation await. The legacy DTO output boundary retains explicit wire material
+accounting limits. Production HTTP does not use that compatibility route.
+
+
+### Scheduling installation has one body owner
+
+Timer and Trigger bodies are installed only through the qualified Scheduling
+domain in the original joint publication. Bootstrap and mutation installation
+do not retain a second full-history projection cache. Current recovery keeps
+only the original acknowledged selectors; an existing normalized foreign row
+fails, and a missing row remains an original selector rather than a body to
+resurrect. Fresh qualified-domain preparation supplies current availability
+and bodies independently of the original outcome.
+
+The first whole receipt still verifies every original Timer/Trigger target is
+present, fully typed, and exact in normalized/body ID and owner under its
+original scope. Receipt replay does not require that old row to remain after
+pruning. This separation cannot adopt raw rows or turn a metadata-only recovery
+into a ready domain.
+
+
+#### Scheduling history preserves each original consumer order
+
+Loaded Timer history uses the original full payload creation time descending and
+ID tie-break; cold Timer output retains the original normalized update/creation
+order, selects its bounded limit, then reverses. Cold Trigger output retains
+normalized creation order and ID; loaded Trigger order uses full payload time.
+The resident coverage retains the finite union of both accepted head selections,
+and each projection emits only its own history keys plus complete live keys.
+
+History selection follows original current aliases or fixed/import metadata,
+never a later raw canonical tail. Current aliases preserve actual acknowledged
+status, update-sort and creation headers beside their body/projection digests.
+The loaded selector expands only the normalized creation-time cutoff bucket;
+raw byte/slot admission precedes every header String, projection encoding and
+payload JSON extraction. Every expanded candidate must match its original
+body/projection digests before its full timestamp participates in ordering.
+Creation headers must also match canonical and payload-normalized time. Missing,
+foreign or changed present members remain typed failures. Optional Pruned heads
+retain their accepted cohort and availability without a body; explicit body or
+owning-dependency reads remain typed Pruned. Original loaded timestamp order may
+be reused only from a complete, same-revision observation of the same cohort;
+otherwise loaded-history reads require preparation. Millisecond headers never
+substitute for removed payload nanoseconds, and no later tail fills the gap.
+An oversized boundary bucket is ResourceExhausted, never an approximate or truncated top K. Prior
+finite accepted heads are revalidated so drift cannot hide a previously observed
+member below a later cutoff. None of these observations grants new membership,
+activation, identity mutation or historical Input authority.

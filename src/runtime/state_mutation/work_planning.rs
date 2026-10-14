@@ -30,6 +30,7 @@ pub(in crate::runtime) struct PreparedSchedulerRead {
     pub projection: SchedulerProjection,
     pub work_queue: WorkQueueReadModel,
     pub work: CapturedWork,
+    pub scheduling: super::super::resident_scheduling::CapturedScheduling,
     pub tasks: super::super::resident_task::CapturedTasks,
     pub due_rechecks: Vec<WorkItemRecord>,
     pub scheduling_posture: crate::types::AgentPostureProjection,
@@ -263,7 +264,21 @@ impl RuntimeMutation {
             work.scope == scope && inputs.scope == scope && tasks.scope == scope,
             "scheduler domains differ"
         );
-        let (triggers, active_timers, has_interrupted_replay, has_queued_input, events) = {
+        let scheduling = self.capture_scheduling_read(
+            &super::super::resident_scheduling::SchedulingCaptureRequest::current(),
+        )?;
+        anyhow::ensure!(
+            scheduling.state == state && scheduling.scheduling.scope == scope,
+            "scheduler Scheduling publication differs"
+        );
+        let (_, records, bytes) = self.context_input_evidence_policy()?;
+        let triggers = scheduling.scheduling.clone_trigger_records(
+            &self.runtime.inner.input_evidence_budget,
+            records,
+            bytes,
+        )?;
+        let active_timers = scheduling.scheduling.active_timer_count()?;
+        let (has_interrupted_replay, has_queued_input, events) = {
             let mut connection = self.runtime.inner.runtime_db.connection()?;
             let tx =
                 connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
@@ -295,20 +310,6 @@ impl RuntimeMutation {
                     tasks.revision,
                 )?;
             }
-            // D6 Trigger/Timer remain explicit same-view adapters.
-            let triggers = durable.external_triggers()?;
-            let mut query = tx
-                .prepare("SELECT payload_json FROM timers WHERE agent_id=?1 AND status='active'")?;
-            let mut timers = 0usize;
-            for row in query.query_map([&state.id], |row| row.get::<_, String>(0))? {
-                let timer: TimerRecord = serde_json::from_str(&row?)?;
-                anyhow::ensure!(
-                    timer.agent_id == state.id && timer.status == TimerStatus::Active,
-                    "scheduler Timer projection differs"
-                );
-                timers += 1;
-            }
-            drop(query);
             let interrupted: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='interrupted')", [&state.id], |row| row.get(0))?;
             let queued: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='queued')",
@@ -324,7 +325,7 @@ impl RuntimeMutation {
             events.reverse();
             drop(query);
             tx.commit()?;
-            (triggers, timers, interrupted, queued, events)
+            (interrupted, queued, events)
         };
         let task_refs = active_task_records(&tasks)?;
         // Register the exact owned Task Vec before its first body clone. This
@@ -381,7 +382,7 @@ impl RuntimeMutation {
             .max();
         let runtime_error =
             latest_error.is_some_and(|at| latest_success.is_none_or(|success| at > success));
-        let work_queue = work.work_queue(&state, triggers)?;
+        let work_queue = work.work_queue(&state, triggers.records)?;
         let due_rechecks = work
             .due_work_rechecks(now)?
             .into_iter()
@@ -463,6 +464,7 @@ impl RuntimeMutation {
             projection,
             work_queue,
             work,
+            scheduling: scheduling.scheduling,
             tasks,
             due_rechecks,
             scheduling_posture,

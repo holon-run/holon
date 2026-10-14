@@ -93,7 +93,7 @@ async fn invoke_new_subagent(
     model_request: Option<holon::types::AgentModelRequest>,
 ) -> Result<holon::types::AgentInvocationReceipt> {
     let registry = ToolRegistry::new(std::path::PathBuf::new());
-    let caller_agent_id = runtime.agent_summary().await?.identity.agent_id;
+    let caller_agent_id = runtime.agent_summary().await?.identity.agent_id.clone();
     let (result, _) = registry
         .execute(
             runtime,

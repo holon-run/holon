@@ -139,6 +139,7 @@ fn resolve_control_recovery_with_run(
                     work: Some(domains.work),
 
                     tasks: Some(domains.tasks),
+                    scheduling: Some(domains.scheduling),
                     state,
                     episodes: Some(episodes),
                     input_evidence: Some(domains.inputs),

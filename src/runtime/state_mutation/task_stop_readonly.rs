@@ -157,6 +157,7 @@ impl RuntimeHandle {
                     input_evidence: root.input_evidence.clone(),
                     work: root.work.clone(),
                     tasks: root.tasks.clone(),
+                    scheduling: root.scheduling.clone(),
                     runtime,
                 }
             } else {

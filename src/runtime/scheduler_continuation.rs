@@ -1441,7 +1441,7 @@ mod tests {
         assert!(hook.entered.load(Ordering::SeqCst));
 
         let previous_turn_index = runtime.agent_state().await.unwrap().turn_index;
-        let cache = runtime.inner.projection_cache.lock().await;
+        let installation = runtime.inner.installation_barrier.lock().await;
         let writer_runtime = runtime.clone();
         let writer = tokio::spawn(async move {
             let mut mutation = writer_runtime.begin_mutation().await.unwrap();
@@ -1466,7 +1466,7 @@ mod tests {
 
         hook.release.notify_one();
         assert!(futures_util::poll!(emit.as_mut()).is_pending());
-        drop(cache);
+        drop(installation);
         writer.await.unwrap().unwrap();
         assert!(emit.await.unwrap());
         assert_eq!(

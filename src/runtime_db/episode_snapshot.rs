@@ -557,6 +557,9 @@ struct EpisodeContinuityRoots {
     work_domain_checkpoint: Option<work_checkpoint::WorkContinuityCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     task_domain_checkpoint: Option<task_checkpoint::TaskContinuityCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scheduling_domain_checkpoint:
+        Option<super::scheduling_snapshot::SchedulingContinuityCheckpoint>,
 }
 
 #[derive(Debug)]
@@ -612,15 +615,39 @@ pub(super) fn capture_episode_continuity_upgrade_tx(
         ("execution_protocol_attempts", "SELECT agent_id FROM execution_protocol_attempts WHERE lifecycle_state != 'settled'"),
         ("execution_protocol_work_items", "SELECT agent_id FROM execution_protocol_work_items WHERE lifecycle_state != 'terminal'"),
         ("turn_records", "SELECT agent_id FROM turn_records WHERE json_extract(payload_json, '$.terminal') IS NULL"),
+        ("timers", "SELECT agent_id FROM timers WHERE status IN ('active','scheduled')"),
+        ("timer_wakes", "SELECT t.agent_id FROM timer_wakes w JOIN timers t ON t.timer_id=w.timer_id WHERE w.status='pending'"),
+        ("external_triggers", "SELECT target_agent_id FROM external_triggers WHERE status='active'"),
     ];
     let queries = inventory_sources
         .into_iter()
-        .filter_map(|(table, query)| tables.contains(table).then_some(query))
+        .filter_map(|(table, query)| {
+            (tables.contains(table) && (table != "timer_wakes" || tables.contains("timers")))
+                .then_some(query)
+        })
         .collect::<Vec<_>>();
     let agent_ids = if queries.is_empty() {
         Vec::new()
     } else {
-        let mut statement = tx.prepare(&format!("{} ORDER BY 1", queries.join(" UNION ")))?;
+        let first_column = if queries[0].starts_with("SELECT owner_agent_id") {
+            "owner_agent_id"
+        } else if queries[0].starts_with("SELECT target_agent_id") {
+            "target_agent_id"
+        } else {
+            "agent_id"
+        };
+        let selected = format!("{} ORDER BY 1", queries.join(" UNION "));
+        let (count, bytes): (usize, usize) = tx.query_row(
+            &format!("SELECT COUNT(*),COALESCE(SUM(length(CAST({first_column} AS BLOB))),0) FROM ({selected})"),
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        ensure!(
+            count <= CONTINUITY_MAX_RECORDS && bytes <= CONTINUITY_MAX_PAYLOAD_BYTES,
+            EpisodeSnapshotError::ClosureResourceExhausted {
+                limit: "scope inventory"
+            }
+        );
+        let mut statement = tx.prepare(&selected)?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
@@ -872,6 +899,18 @@ pub(super) fn seal_imported_episode_continuity_tx(
             Some(&work_import),
             frozen_roots.task_domain_checkpoint.as_ref(),
         )?;
+        roots.scheduling_domain_checkpoint =
+            Some(super::scheduling_snapshot::capture_fixed_checkpoint_on(
+                tx,
+                &seed.agent_id,
+                None,
+                Some(
+                    frozen_roots
+                        .scheduling_domain_checkpoint
+                        .as_ref()
+                        .context("first Scheduling import lacks its original fixed checkpoint")?,
+                ),
+            )?);
         roots.work_item_ids.extend(frozen_roots.work_item_ids);
         roots.source_refs.extend(frozen_roots.source_refs);
         roots.unavailable_refs.extend(frozen_roots.unavailable_refs);
@@ -925,6 +964,11 @@ pub(super) fn seal_imported_episode_continuity_tx(
         )?;
         super::work_snapshot::capture_work_domain_seed_if_ready_tx(tx, &seed.id, "first_import")?;
         super::task_snapshot::capture_task_domain_seed_if_ready_tx(tx, &seed.id, "first_import")?;
+        super::scheduling_snapshot::capture_scheduling_seed_if_ready_tx(
+            tx,
+            &seed.id,
+            "first_import",
+        )?;
     }
     Ok(())
 }
@@ -1063,6 +1107,11 @@ fn insert_seed_with_candidates_tx(
         )?;
         super::work_snapshot::capture_work_domain_seed_if_ready_tx(tx, &seed_id, "legacy_import")?;
         super::task_snapshot::capture_task_domain_seed_if_ready_tx(tx, &seed_id, "legacy_import")?;
+        super::scheduling_snapshot::capture_scheduling_seed_if_ready_tx(
+            tx,
+            &seed_id,
+            "legacy_import",
+        )?;
     }
     Ok(ContinuitySeed {
         id: seed_id,
@@ -1594,6 +1643,12 @@ fn collect_live_episode_roots_with_work_authority(
         task_original,
         work_import,
     )?);
+    if include_nonopen {
+        collector.roots.scheduling_domain_checkpoint =
+            Some(super::scheduling_snapshot::capture_fixed_checkpoint_on(
+                connection, agent_id, tables, None,
+            )?);
+    }
     Ok(collector.roots)
 }
 

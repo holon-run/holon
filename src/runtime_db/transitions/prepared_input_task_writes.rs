@@ -1118,3 +1118,25 @@ pub(super) fn prepare_stop_result_material_tx(
     material.charge(state_material_tx(tx, scope)?, 1, 1)?;
     Ok(material.guards)
 }
+
+/// Reuse the original exact Message material preflight; this grants no Task role.
+pub(super) fn prepare_timer_message_material_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    message: &MessageEnvelope,
+    request: &tasks::TaskDomainLoadRequest,
+    ledger: &InputEvidenceBudgetLedger,
+    memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+) -> Result<(Vec<Arc<BudgetViewGuard>>, usize, usize)> {
+    let mut material = Material {
+        scope,
+        request,
+        ledger,
+        memory_budget,
+        bytes: 0,
+        records: 0,
+        guards: Vec::new(),
+    };
+    material.message(tx, message)?;
+    Ok((material.guards, material.bytes, material.records))
+}

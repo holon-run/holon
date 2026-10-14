@@ -141,6 +141,7 @@ pub(super) fn prepare_known_tx(
                     input_evidence,
                     work,
                     tasks,
+                    scheduling,
                     runtime,
                 }) => {
                     let tasks = if let Some(tasks) = tasks {
@@ -183,6 +184,7 @@ pub(super) fn prepare_known_tx(
                             input_evidence,
                             work,
                             tasks,
+                            scheduling,
                             runtime: None,
                         }
                     }
@@ -347,6 +349,7 @@ pub(super) fn prepare_known_tx(
             inputs.clone(),
             work.clone(),
             Some(tasks.clone()),
+            current.scheduling.clone(),
             current.pending.messages,
             budget,
             witness.input_runtime(&member.agent_id).map(Arc::as_ref),
@@ -365,6 +368,7 @@ pub(super) fn prepare_known_tx(
             input_evidence: Some(inputs),
             work: Some(work),
             tasks: Some(tasks),
+            scheduling: Some(current.scheduling),
             runtime: Some(Arc::new(runtime)),
         });
     }

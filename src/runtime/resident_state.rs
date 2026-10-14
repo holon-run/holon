@@ -6,6 +6,7 @@ use anyhow::{ensure, Result};
 
 use super::mutation_owner::PublicationToken;
 use super::resident_input_evidence::{CapturedInputEvidence, ResidentInputEvidence};
+use super::resident_scheduling::{CapturedScheduling, ResidentSchedulingDomain};
 use super::resident_task::{CapturedTasks, ResidentTaskDomain};
 use super::resident_work::{CapturedWork, ResidentWorkDomain};
 use crate::types::{AgentState, ContextEpisodeRecord};
@@ -19,6 +20,7 @@ pub(crate) struct AgentSnapshot {
     pub input_evidence: Option<Arc<ResidentInputEvidence>>,
     pub work: Option<Arc<ResidentWorkDomain>>,
     pub tasks: Option<Arc<ResidentTaskDomain>>,
+    pub scheduling: Option<Arc<ResidentSchedulingDomain>>,
 }
 
 /// Only the selected immutable records survive request preparation. This value
@@ -32,6 +34,7 @@ pub(crate) struct CapturedAgentContext {
     pub input_evidence: Option<CapturedInputEvidence>,
     pub work: Option<CapturedWork>,
     pub tasks: Option<CapturedTasks>,
+    pub scheduling: Option<CapturedScheduling>,
 }
 
 impl AgentSnapshot {
@@ -49,6 +52,7 @@ impl AgentSnapshot {
             input_evidence: None,
             work: None,
             tasks: None,
+            scheduling: None,
         })
     }
 }
@@ -249,6 +253,7 @@ mod tests {
             input_evidence: None,
             work: None,
             tasks: None,
+            scheduling: None,
             token: PublicationToken {
                 identity_incarnation: 2,
                 owner_epoch: 1,

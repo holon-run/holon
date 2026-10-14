@@ -16,7 +16,7 @@ use crate::{
     queue::RuntimeQueue,
     runtime_db::{
         context_inputs::ContextScopeFacts, input_evidence_snapshot::InputEvidenceLoadRequest,
-        input_preparation::prepare_input_domains_tx, RuntimeDb,
+        RuntimeDb,
     },
     types::AgentState,
 };
@@ -36,6 +36,7 @@ pub(crate) struct PreparedInputDomains {
     pub state: Arc<AgentState>,
     pub episodes: Arc<ResidentEpisodes>,
     pub inputs: Arc<ResidentInputEvidence>,
+    pub scheduling: Arc<super::resident_scheduling::ResidentSchedulingDomain>,
     pub queue: RuntimeQueue,
     /// Retain the observation with the prepared queue until core installs a
     /// Current view. This guard owns no body and never grants queue authority.
@@ -51,6 +52,7 @@ pub(crate) enum InputPreparation {
 /// created. Call only after every original known/unknown group is reconciled.
 /// The caller must keep this same reservation through its short install and
 /// publish step, preserving original run handles and other resident domains.
+#[cfg(test)]
 pub(crate) fn prepare_reserved_input_domains(
     db: &RuntimeDb,
     reservation: &MutationReservation,
@@ -60,47 +62,96 @@ pub(crate) fn prepare_reserved_input_domains(
     recent_episode_limit: usize,
     budget: &InputEvidenceBudgetLedger,
 ) -> Result<InputPreparation> {
+    prepare_reserved_input_domains_with_scheduling(
+        db,
+        reservation,
+        published,
+        cause,
+        request,
+        recent_episode_limit,
+        budget,
+        &super::resident_scheduling::SchedulingCaptureRequest::current(),
+    )
+}
+
+pub(crate) fn prepare_reserved_input_domains_with_scheduling(
+    db: &RuntimeDb,
+    reservation: &MutationReservation,
+    published: &AgentSnapshot,
+    cause: InputPreparationCause,
+    request: &InputEvidenceLoadRequest,
+    recent_episode_limit: usize,
+    budget: &InputEvidenceBudgetLedger,
+    scheduling: &super::resident_scheduling::SchedulingCaptureRequest,
+) -> Result<InputPreparation> {
     let scope = InputEvidenceScope {
         agent_id: reservation.agent_id().to_owned(),
         identity_incarnation: reservation.identity_incarnation(),
     };
     validate_ready_root(reservation, published, &scope)?;
-    if let Some(inputs) = &published.input_evidence {
-        ensure!(inputs.belongs_to(&scope), "published input scope differs");
-        match inputs.capture_for_request(request) {
-            Ok(_) => {
-                if let Some(episodes) = &published.episodes {
-                    ensure!(
-                        episodes.belongs_to(&scope.agent_id, scope.identity_incarnation),
-                        "published Episode scope differs"
-                    );
-                    if episodes.selected(recent_episode_limit).is_ok() {
-                        return Ok(InputPreparation::AlreadyPrepared);
+    let scheduling_ready = published
+        .scheduling
+        .as_ref()
+        .map(|domain| {
+            ensure!(
+                domain.scope() == &scope,
+                "published Scheduling scope differs"
+            );
+            domain.capture(scheduling).map(|_| ())
+        })
+        .transpose();
+    let scheduling_ready = match scheduling_ready {
+        Ok(Some(())) => true,
+        Ok(None) => false,
+        Err(error)
+            if error
+                .downcast_ref::<super::resident_scheduling::SchedulingReadError>()
+                .is_some() =>
+        {
+            false
+        }
+        Err(error) => return Err(error),
+    };
+    if scheduling_ready {
+        if let Some(inputs) = &published.input_evidence {
+            ensure!(inputs.belongs_to(&scope), "published input scope differs");
+            match inputs.capture_for_request(request) {
+                Ok(_) => {
+                    if let Some(episodes) = &published.episodes {
+                        ensure!(
+                            episodes.belongs_to(&scope.agent_id, scope.identity_incarnation),
+                            "published Episode scope differs"
+                        );
+                        if episodes.selected(recent_episode_limit).is_ok() {
+                            return Ok(InputPreparation::AlreadyPrepared);
+                        }
                     }
                 }
+                Err(error) if error.downcast_ref::<InputEvidenceReadError>().is_some() => {}
+                Err(error) => return Err(error),
             }
-            Err(error) if error.downcast_ref::<InputEvidenceReadError>().is_some() => {}
-            Err(error) => return Err(error),
         }
     }
     let prepared = db.transaction(|tx| {
         if cause == InputPreparationCause::ExistingAdmissionCleanup {
-            crate::runtime_db::input_preparation::prepare_existing_admission_cleanup_domains_tx(
+            crate::runtime_db::input_preparation::prepare_original_input_with_scheduling_tx(
                 tx,
                 &scope,
                 &published.state,
                 request,
                 recent_episode_limit,
                 budget,
+                scheduling,
             )
         } else {
-            prepare_input_domains_tx(
+            crate::runtime_db::input_preparation::prepare_input_with_scheduling_tx(
                 tx,
                 &scope,
                 &published.state,
                 request,
                 recent_episode_limit,
                 budget,
+                scheduling,
             )
         }
     })?;
@@ -139,6 +190,7 @@ pub(crate) fn prepare_reserved_input_domains(
         state: published.state.clone(),
         episodes: Arc::new(prepared.episodes),
         inputs,
+        scheduling: prepared.scheduling,
         queue,
         queue_budget_view,
     }))

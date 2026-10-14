@@ -247,8 +247,6 @@ pub(super) fn prepare_partial_stop_known_tx(
     let cache = crate::runtime_db::input_recovery_install::InputRecoveryInstallFacts {
         scope: scope.clone(),
         keys: outcome.install_keys.clone(),
-        timers: vec![],
-        external_triggers: vec![],
     };
     let mut runtime = RuntimeMutationFacts::for_input_recovery(
         reservation.owner_epoch(),
@@ -257,6 +255,7 @@ pub(super) fn prepare_partial_stop_known_tx(
         Arc::new(current.inputs.with_budget(budget.clone())?),
         work,
         None,
+        current.scheduling,
         current.pending.messages,
         budget,
         witness.input_runtime(&scope.agent_id).map(Arc::as_ref),

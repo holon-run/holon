@@ -24,9 +24,9 @@ use crate::{
         },
         repositories::{
             compare_and_set_queue_entry_tx, decode_wait_condition_row,
-            slim_task_record_for_payload, task_transition, upsert_external_trigger_tx,
-            upsert_queue_entry_tx, upsert_task_tx, upsert_timer_tx, upsert_turn_record_tx,
-            upsert_wait_condition_with_writes_tx, WaitConditionWrites,
+            slim_task_record_for_payload, task_transition, upsert_external_trigger_with_write_tx,
+            upsert_queue_entry_tx, upsert_task_tx, upsert_timer_with_write_tx,
+            upsert_turn_record_tx, upsert_wait_condition_with_writes_tx, WaitConditionWrites,
         },
         task_result_settlement::{self, TaskResultSettlementRecord},
         transitions::{
@@ -46,6 +46,7 @@ use crate::{
     },
 };
 
+mod scheduling_writes;
 mod task_writes;
 
 pub(crate) const CONTROL_FAMILY_VERSION: u32 = 1;
@@ -364,6 +365,7 @@ pub(crate) struct ControlRecoveryFacts {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ControlRecoveryDomains {
+    pub scheduling: Arc<crate::runtime::resident_scheduling::ResidentSchedulingDomain>,
     pub inputs: Arc<crate::runtime::resident_input_evidence::ResidentInputEvidence>,
     pub work: Arc<crate::runtime::resident_work::ResidentWorkDomain>,
     pub tasks: Arc<crate::runtime::resident_task::ResidentTaskDomain>,
@@ -1132,6 +1134,7 @@ impl RuntimeDb {
                     (
                         Arc::new(prepared.episodes),
                         Some(ControlRecoveryDomains {
+                            scheduling: prepared.scheduling,
                             inputs: Arc::new(prepared.inputs.with_budget(budget.clone())?),
                             work,
                             tasks: prepared
@@ -1192,7 +1195,7 @@ impl RuntimeDb {
 
     #[cfg(test)]
     pub(crate) fn commit_control(&self, command: &PreparedControl) -> Result<ControlCommit> {
-        self.commit_control_inner(command, None, None)
+        self.commit_control_inner(command, None, None, None)
     }
 
     #[cfg(test)]
@@ -1201,7 +1204,7 @@ impl RuntimeDb {
         command: &PreparedControl,
         request: &super::work_snapshot::WorkDomainLoadRequest,
     ) -> Result<ControlCommit> {
-        self.commit_control_inner(command, Some(request), None)
+        self.commit_control_inner(command, Some(request), None, None)
     }
 
     pub(crate) fn commit_control_with_domain_requests(
@@ -1211,7 +1214,28 @@ impl RuntimeDb {
         task_request: &super::task_snapshot::TaskDomainLoadRequest,
         ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
     ) -> Result<ControlCommit> {
-        self.commit_control_inner(command, Some(work_request), Some((task_request, ledger)))
+        let scheduling_request = super::scheduling_snapshot::SchedulingDomainLoadRequest {
+            capture: crate::runtime::resident_scheduling::SchedulingCaptureRequest::current(),
+            record_limit: work_request.record_limit,
+            byte_limit: work_request.byte_limit,
+        };
+        self.commit_control_inner(
+            command,
+            Some(work_request),
+            Some((task_request, ledger)),
+            Some((&scheduling_request, ledger)),
+        )
+    }
+
+    #[cfg(test)]
+    fn commit_control_with_scheduling_request(
+        &self,
+        command: &PreparedControl,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+        request: &super::scheduling_snapshot::SchedulingDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<ControlCommit> {
+        self.commit_control_inner(command, Some(work_request), None, Some((request, ledger)))
     }
 
     fn commit_control_inner(
@@ -1222,6 +1246,10 @@ impl RuntimeDb {
             &super::task_snapshot::TaskDomainLoadRequest,
             &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
         )>,
+        scheduling_request: Option<(
+            &super::scheduling_snapshot::SchedulingDomainLoadRequest,
+            &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        )>,
     ) -> Result<ControlCommit> {
         let result = self.transaction(|tx| {
             // Authentication of an old namespace is performed by the caller.
@@ -1229,6 +1257,11 @@ impl RuntimeDb {
                 Some(&command.command_digest))? {
                 return Ok(ControlCommit::Replayed { receipt });
             }
+            let mut scheduling_writes = if command.invocation.action == ControlAction::Stop {
+                scheduling_request.map(|(request, ledger)|
+                    scheduling_writes::prepare_control_scheduling_writes_tx(tx, command, request, ledger)
+                ).transpose()?
+            } else { None };
             let mut task_writes = task_request.map(|(request, ledger)|
                 task_writes::prepare_control_task_writes_tx(tx, command, request, ledger)
             ).transpose()?;
@@ -1306,13 +1339,16 @@ impl RuntimeDb {
                 for timer in &command.expected.timers {
                     let mut timer = timer.clone(); timer.status = TimerStatus::Cancelled;
                     // Existing lifecycle Stop retains next_fire_at as history.
-                    upsert_timer_tx(tx, &timer)?;
+                    if upsert_timer_with_write_tx(tx, &timer)? {
+                        if let Some(writes) = &mut scheduling_writes { writes.timer_written(&timer.id); }
+                    }
                 }
                 for wake in &command.expected.pending_timer_wakes {
                     let changed = tx.execute("UPDATE timer_wakes SET status = 'cancelled', updated_at = ?3, cancelled_at = ?3
                         WHERE timer_id = ?1 AND message_id = ?2 AND status = 'pending' AND fire_count = ?4",
                         params![wake.timer_id, wake.message_id, command.prepared_at.to_rfc3339(), i64::try_from(wake.fire_count)?])?;
                     ensure!(changed == 1, "Stop timer wake CAS failed");
+                    if let Some(writes) = &mut scheduling_writes { writes.wake_written(&wake.timer_id, &wake.message_id); }
                 }
             }
             #[cfg(test)] inject_fault(command, ControlFaultPoint::AfterWaitTimerWrites)?;
@@ -1336,7 +1372,10 @@ impl RuntimeDb {
                 }
                 for trigger in &command.expected.external_triggers {
                     let mut trigger = trigger.clone(); trigger.status = ExternalTriggerStatus::Revoked;
-                    trigger.revoked_at = Some(command.prepared_at); upsert_external_trigger_tx(tx, &trigger)?;
+                    trigger.revoked_at = Some(command.prepared_at);
+                    if upsert_external_trigger_with_write_tx(tx, &trigger)? {
+                        if let Some(writes) = &mut scheduling_writes { writes.trigger_written(&trigger.external_trigger_id); }
+                    }
                 }
             }
             #[cfg(test)] inject_fault(command, ControlFaultPoint::AfterQueueTriggerWrites)?;
@@ -1374,6 +1413,7 @@ impl RuntimeDb {
             let task_facts = task_writes.map(|writes|
                 writes.finish(tx, &persisted, task_request.expect("Task request retained").1)
             ).transpose()?;
+            let scheduling_facts = scheduling_writes.map(|writes| writes.finish(tx, &persisted)).transpose()?;
             let mut audit_bindings = Vec::new();
             let mut audit_events = Vec::new();
             for event in &command.audit_events {
@@ -1472,6 +1512,12 @@ impl RuntimeDb {
                 messages: result_messages.clone(), turns: turns.clone(), execution_protocol: execution_protocol.clone(), input_evidence_delta: input_delta,
                 audit_events, notify_memory_index: !changes.is_empty(), notify_scheduler: true, ..Default::default()
             }), ..Default::default() };
+            if let Some(mut scheduling) = scheduling_facts {
+                transition.effects.scheduling_material_budget_views = scheduling.facts.take_budget_views();
+                transition.effects.scheduling_delta_requires_prepared_domain = true;
+                transition.effects.scheduling_write_keys = scheduling.actual;
+                transition.effects.scheduling_delta = Some(Box::new(scheduling.facts.delta));
+            }
             if let Some(tasks) = task_facts {
                 transition.effects.task_delta = Some(tasks.delta);
                 transition.effects.task_delta_requires_prepared_domain = true;

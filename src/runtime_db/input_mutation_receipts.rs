@@ -47,6 +47,8 @@ pub(crate) enum InputMutationFamily {
     Terminal,
     Task,
     TaskResult,
+    Timer,
+    ExternalTrigger,
     WorkItem,
     Wait,
     Focus,
@@ -62,6 +64,8 @@ impl InputMutationFamily {
             Self::Terminal => "terminal",
             Self::Task => "task",
             Self::TaskResult => "task_result",
+            Self::Timer => "timer",
+            Self::ExternalTrigger => "external_trigger",
             Self::WorkItem => "work_item",
             Self::Wait => "wait",
             Self::Focus => "focus",
@@ -242,6 +246,12 @@ pub(crate) enum InputMutationResult {
     TaskResult {
         outcome: Box<super::task_result_settlement::TaskResultWriteOutcome>,
     },
+    ExternalTrigger {
+        outcome: Box<super::transitions::ExternalTriggerMutationOutcome>,
+    },
+    Timer {
+        outcome: Box<super::transitions::TimerMutationOutcome>,
+    },
     Evidence {
         family: InputMutationEvidenceFamily,
         id: String,
@@ -284,6 +294,7 @@ impl InputMutationOutcome {
                         | InputMutationFamily::QueueHeadNoProgress
                         | InputMutationFamily::Task
                         | InputMutationFamily::TaskResult
+                        | InputMutationFamily::Timer
                 ),
                 ReceiptError::InvalidOutcome("result family mismatch")
             ),
@@ -333,6 +344,45 @@ impl InputMutationOutcome {
             InputMutationResult::CommandTaskTerminal { ack } => ack.validate(prepared)?,
             InputMutationResult::ChildTaskTerminal { ack } => ack.validate(prepared)?,
             InputMutationResult::TaskStatusMetadata { ack } => ack.validate(prepared)?,
+            InputMutationResult::ExternalTrigger { outcome } => outcome.validate(prepared)?,
+            InputMutationResult::Timer { outcome } => {
+                ensure!(
+                    prepared.family() == InputMutationFamily::Timer,
+                    ReceiptError::InvalidOutcome("Timer result family mismatch")
+                );
+                use super::transitions::TimerMutationOutcome;
+                match outcome.as_ref() {
+                    TimerMutationOutcome::Created { record } => ensure!(
+                        prepared
+                            .scopes()
+                            .iter()
+                            .any(|scope| scope.agent_id == record.agent_id)
+                            && !record.id.is_empty(),
+                        ReceiptError::InvalidOutcome("Timer creation scope mismatch")
+                    ),
+                    TimerMutationOutcome::Fired { result } => {
+                        ensure!(
+                            result.message.is_some() == result.wake_created
+                                && (!result.wake_created || result.advanced),
+                            ReceiptError::InvalidOutcome("Timer firing disposition mismatch")
+                        );
+                        if let Some(message) = &result.message {
+                            ensure!(
+                                prepared
+                                    .scopes()
+                                    .iter()
+                                    .any(|scope| scope.agent_id == message.agent_id)
+                                    && !message.id.is_empty(),
+                                ReceiptError::InvalidOutcome("Timer firing Message scope mismatch")
+                            );
+                        }
+                    }
+                    TimerMutationOutcome::Cancelled { result } => ensure!(
+                        result.cancelled || result.dropped_message_id.is_none(),
+                        ReceiptError::InvalidOutcome("Timer cancellation disposition mismatch")
+                    ),
+                }
+            }
             InputMutationResult::TaskResult { outcome } => {
                 ensure!(
                     prepared.family() == InputMutationFamily::TaskResult,

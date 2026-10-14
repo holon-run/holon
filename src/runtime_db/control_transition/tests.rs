@@ -2192,3 +2192,6 @@ mod task_write_tests;
 
 #[path = "status_metadata_actor_tests.rs"]
 mod status_metadata_actor_tests;
+
+#[path = "scheduling_write_tests.rs"]
+mod scheduling_write_tests;

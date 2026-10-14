@@ -179,35 +179,31 @@ impl RuntimeHandle {
         let workspace = self.workspace_view_from_state(state)?;
         let model = self.model_state_for_turn(state, fallback_model);
         let history_policy = turn::context_history_preparation(&state.id, &model.effective_model);
+        mutation
+            .prepare_owner_scheduling_request(
+                &super::resident_scheduling::SchedulingCaptureRequest::current(),
+            )
+            .await?;
+        let state = &mutation.state;
+        let planned_scheduling = mutation.capture_scheduling_read(
+            &super::resident_scheduling::SchedulingCaptureRequest::current(),
+        )?;
         let planned_work = mutation.capture_work(&work_request)?;
         anyhow::ensure!(
             planned_work.scope.agent_id == state.id,
             "context Work scope mismatch"
         );
-        // The D6 Trigger adapter is explicit. Freeze its existing predicate/order
-        // before selecting the bounded completion heads; revalidate below.
-        let triggers = {
-            let mut connection = self.inner.runtime_db.connection()?;
-            let transaction =
-                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
-            let durable = ContextDurableRead::new(&transaction, &state.id);
-            let facts = durable.scope_facts()?;
-            anyhow::ensure!(
-                facts.state.as_ref() == Some(state)
-                    && facts.identity.as_ref() == Some(&identity_record)
-                    && identity_record.incarnation == planned_work.scope.identity_incarnation,
-                "context Work differs from the reserved publication"
-            );
-            validate_work_domain_observation_tx(
-                &transaction,
-                &planned_work.scope,
-                planned_work.revision,
-            )
-            .map_err(context_work_observation_error)?;
-            let triggers = durable.external_triggers()?;
-            transaction.commit()?;
-            triggers
-        };
+        anyhow::ensure!(
+            planned_scheduling.state.as_ref() == state
+                && planned_scheduling.scheduling.scope == planned_work.scope,
+            "context Scheduling publication differs"
+        );
+        let owned_triggers = planned_scheduling.scheduling.clone_trigger_records(
+            &self.inner.input_evidence_budget,
+            record_limit,
+            byte_limit,
+        )?;
+        let triggers = &owned_triggers.records;
         let projection = planned_work.work_queue(state, triggers.clone())?;
         let bound_work = state
             .current_execution_binding
@@ -307,7 +303,15 @@ impl RuntimeHandle {
                 .map_err(context_work_observation_error)?;
             validate_task_domain_observation_tx(&transaction, &tasks.scope, tasks.revision)
                 .map_err(context_task_observation_error)?;
-            validate_trigger_selection(&triggers, &durable_inputs.external_triggers()?)?;
+            let scheduling = captured
+                .scheduling
+                .as_ref()
+                .ok_or(super::resident_scheduling::SchedulingReadError::IncompleteLive)?;
+            anyhow::ensure!(
+                scheduling.scope == planned_scheduling.scheduling.scope
+                    && scheduling.revision == planned_scheduling.scheduling.revision,
+                "context Scheduling revision differs from its same-root plan"
+            );
             let inputs =
                 ResidentContextInputs::new(&durable_inputs, resident, work, state, &triggers)?
                     .with_tasks(tasks)?;
@@ -475,6 +479,7 @@ fn validate_work_selection(planned: &CapturedWork, captured: &CapturedWork) -> R
     }
     Ok(())
 }
+#[cfg(test)]
 fn validate_trigger_selection(
     planned: &[ExternalTriggerRecord],
     current: &[ExternalTriggerRecord],

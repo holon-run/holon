@@ -254,9 +254,9 @@ async fn runtime_fires_overdue_timer_after_restart() {
     let workspace = tempdir().unwrap();
     let clock = controlled_clock();
     let now = clock.now();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
-    storage
-        .append_timer(&TimerRecord {
+    seed_legacy_timer_backlog(
+        dir.path(),
+        &[TimerRecord {
             id: "timer-recover".into(),
             agent_id: "default".into(),
             created_at: now - chrono::Duration::milliseconds(10),
@@ -268,8 +268,9 @@ async fn runtime_fires_overdue_timer_after_restart() {
             next_fire_at: Some(now - chrono::Duration::milliseconds(5)),
             last_fired_at: None,
             fire_count: 0,
-        })
-        .unwrap();
+        }],
+        &[],
+    );
 
     let runtime = RuntimeHandle::new_with_clock(
         "default",
@@ -308,9 +309,9 @@ async fn runtime_recovers_active_timer_without_next_fire_at() {
     let workspace = tempdir().unwrap();
     let clock = controlled_clock();
     let now = clock.now();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
-    storage
-        .append_timer(&TimerRecord {
+    seed_legacy_timer_backlog(
+        dir.path(),
+        &[TimerRecord {
             id: "timer-missing-next-fire".into(),
             agent_id: "default".into(),
             created_at: now - chrono::Duration::milliseconds(20),
@@ -322,8 +323,9 @@ async fn runtime_recovers_active_timer_without_next_fire_at() {
             next_fire_at: None,
             last_fired_at: None,
             fire_count: 0,
-        })
-        .unwrap();
+        }],
+        &[],
+    );
 
     let runtime = RuntimeHandle::new_with_clock(
         "default",
@@ -362,10 +364,10 @@ async fn runtime_recovers_overdue_repeating_timer_on_original_schedule() {
     let workspace = tempdir().unwrap();
     let clock = controlled_clock();
     let now = clock.now();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let scheduled_fire_at = now - chrono::Duration::seconds(5);
-    storage
-        .append_timer(&TimerRecord {
+    seed_legacy_timer_backlog(
+        dir.path(),
+        &[TimerRecord {
             id: "timer-recover-repeat".into(),
             agent_id: "default".into(),
             created_at: scheduled_fire_at - chrono::Duration::seconds(1),
@@ -377,8 +379,9 @@ async fn runtime_recovers_overdue_repeating_timer_on_original_schedule() {
             next_fire_at: Some(scheduled_fire_at),
             last_fired_at: None,
             fire_count: 0,
-        })
-        .unwrap();
+        }],
+        &[],
+    );
 
     let runtime = RuntimeHandle::new_with_clock(
         "default",
@@ -1080,20 +1083,81 @@ async fn recovery_reactivates_incorporated_wake_for_restored_timer_message() {
         .unwrap();
     assert_eq!(wake.message_id, message.id);
 
-    // A claim incorporates the wake; a daemon restart then restores the claimed
-    // message to the queue while the wake row for the same (timer, message)
-    // pair is still stored.
-    runtime
+    // Use the actual Queue claim/whole ACK; a raw Wake status update cannot
+    // stand in for its scheduling alias and original pending disposition.
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!("original Timer source must be claimed")
+    };
+    assert_eq!(scheduled.message.id, message.id);
+    assert!(runtime
         .inner
         .runtime_db
-        .connection()
+        .timers()
+        .pending_wake(&timer.id)
         .unwrap()
-        .execute(
-            "UPDATE timer_wakes SET status = 'incorporated', incorporated_at = ?2
-             WHERE timer_id = ?1 AND message_id = ?3",
-            rusqlite::params![timer.id, now.to_rfc3339(), message.id],
+        .is_none());
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM timer_wakes WHERE timer_id=?1 AND message_id=?2",
+                rusqlite::params![timer.id, message.id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "incorporated"
+    );
+    drop(scheduled);
+    // End the original instance before the exclusive pre-activation actor.
+    // The scoped actor updates the actual Attempt/Outcome and its D3 source
+    // projection together; the old cfg-only unscoped repair cannot do that.
+    let db = runtime.inner.runtime_db.clone();
+    let ledger = runtime.inner.input_evidence_budget.clone();
+    runtime
+        .retire_instance_locally("fixture_daemon_restart")
+        .await;
+    runtime.join_retiring_resources().await.unwrap();
+    drop(runtime);
+    let repaired = {
+        let path = dir.path().join(".holon/state/runtime-maintenance.lock");
+        let lease = crate::runtime_db::RuntimeDbLock::try_lock(&path).unwrap();
+        let handoff = tokio::sync::Mutex::new(());
+        let held = handoff.try_lock().unwrap();
+        let capability = crate::runtime_db::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery::for_pre_activation_host(
+            &db, &lease, &path, &held,
+        ).unwrap();
+        let scopes = db
+            .startup_input_recovery_scopes(&["default".into()])
+            .unwrap();
+        db.recover_interrupted_runtime_state_at_startup_with_tasks_in_scopes(
+            &scopes,
+            &capability,
+            &ledger,
         )
-        .unwrap();
+        .unwrap()
+    };
+    assert!(repaired
+        .report
+        .recovered_queue_agent_ids
+        .iter()
+        .any(|id| id == "default"));
+    assert_eq!(repaired.report.interrupted_execution_attempts, 1);
+    assert_eq!(
+        db.queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Interrupted
+    );
 
     // Recovery must be idempotent instead of failing the whole bootstrap with a
     // timer_wakes primary-key conflict.

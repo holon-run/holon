@@ -22,6 +22,7 @@ pub(super) struct WorkCommandRead {
     // resident Work/Wait/Frame reads. No SQL handle escapes this observation.
     pub protocol: Option<crate::domain::execution_protocol::ExecutionProtocolState>,
     pub owned: Arc<BudgetViewGuard>,
+    _scheduling_material: Option<Arc<BudgetViewGuard>>,
 }
 impl WorkCommandRead {
     pub fn active_frames(&self) -> Result<Vec<&WorkItemContinuationFrame>> {
@@ -234,8 +235,48 @@ impl RuntimeHandle {
             request
                 .mandatory_roots
                 .insert(WorkKey::new(WorkFamily::Work, &target.id));
+            let scheduling_request = matches!(mode, WorkCommandReadMode::Focus { .. }).then(|| {
+                super::super::resident_scheduling::SchedulingCaptureRequest {
+                    include_live: true,
+                    history_limit: 0,
+                    required_keys: Default::default(),
+                }
+            });
+            if let Some(scheduling) = scheduling_request.as_ref() {
+                match owner.capture_scheduling_read(scheduling) {
+                    Ok(_) => {}
+                    Err(error)
+                        if error
+                            .downcast_ref::<super::super::resident_scheduling::SchedulingReadError>(
+                            )
+                            .is_some() =>
+                    {
+                        owner.prepare_owner_scheduling_request(scheduling).await?;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
             owner.prepare_owner_work_request(&request).await?;
+            let work_token = owner.capture_published_root()?.token;
             let read = owner.capture_work_read(&request)?;
+            let (_, record_limit, byte_limit) = owner.context_input_evidence_policy()?;
+            let triggers = scheduling_request
+                .as_ref()
+                .map(|request| {
+                    let scheduling = owner.capture_scheduling_read(request)?;
+                    anyhow::ensure!(
+                        scheduling.token == work_token && scheduling.state == read.state,
+                        "Work focus Trigger publication differs"
+                    );
+                    super::super::trigger_decision_reads::ActiveTriggerDecisionRead::from_selected(
+                        &scheduling.scheduling,
+                        &read.work,
+                        &self.inner.input_evidence_budget,
+                        record_limit,
+                        byte_limit,
+                    )
+                })
+                .transpose()?;
             let actual = read
                 .work
                 .work_item(&target.id)?
@@ -249,7 +290,7 @@ impl RuntimeHandle {
                 .with_safe_context("work_item_id", &target.id)
                 .into());
             }
-            let (triggers, protocol) = self.inner.runtime_db.transaction(|tx| {
+            let protocol = self.inner.runtime_db.transaction(|tx| {
                 let durable =
                     crate::runtime_db::context_inputs::ContextDurableRead::new(tx, &read.state.id);
                 let facts = durable.scope_facts()?;
@@ -296,20 +337,16 @@ impl RuntimeHandle {
                                 .current_work_item_id
                                 .as_deref()
                                 .is_some_and(|id| id != target.id);
-                        Ok((
-                            durable.external_triggers()?,
-                            if needs_protocol {
-                                durable.execution_protocol_state(&read.state.id)?
-                            } else {
-                                None
-                            },
-                        ))
+                        if needs_protocol {
+                            durable.execution_protocol_state(&read.state.id)
+                        } else {
+                            Ok(None)
+                        }
                     }
-                    WorkCommandReadMode::CompletionIntent => Ok((Vec::new(), None)),
-                    WorkCommandReadMode::Completion => Ok((
-                        Vec::new(),
-                        durable.execution_protocol_state(&read.state.id)?,
-                    )),
+                    WorkCommandReadMode::CompletionIntent => Ok(None),
+                    WorkCommandReadMode::Completion => {
+                        durable.execution_protocol_state(&read.state.id)
+                    }
                 }
             })?;
             // Reserve before any selector clones the Work bodies. This covers
@@ -329,16 +366,17 @@ impl RuntimeHandle {
                     payload_bytes: body_bytes
                         .saturating_mul(8)
                         .saturating_add(serialized_bytes(read.state.as_ref())?.saturating_mul(4))
-                        .saturating_add(serialized_bytes(&protocol)?.saturating_mul(3))
-                        .saturating_add(serialized_bytes(&triggers)?.saturating_mul(2)),
+                        .saturating_add(serialized_bytes(&protocol)?.saturating_mul(3)),
                     metadata_estimate_bytes: 0,
                 },
             )?;
-            let queue = match mode {
-                WorkCommandReadMode::Focus { .. } => {
-                    Some(read.work.work_queue(&read.state, triggers)?)
-                }
-                WorkCommandReadMode::CompletionIntent | WorkCommandReadMode::Completion => None,
+            let (queue, scheduling_material) = if let Some(triggers) = triggers {
+                (
+                    Some(read.work.work_queue(&read.state, triggers.records)?),
+                    Some(triggers.material),
+                )
+            } else {
+                (None, None)
             };
             drop(owner);
             Ok(WorkCommandRead {
@@ -347,6 +385,7 @@ impl RuntimeHandle {
                 queue,
                 protocol,
                 owned,
+                _scheduling_material: scheduling_material,
             })
         })
     }
@@ -502,6 +541,66 @@ mod tests {
             successor.incarnation += 1;
             upsert_agent_identity_tx(tx, &successor)?;
             assert!(validate_completion_read_admission_tx(tx, &scope, &state, &target).is_err());
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn focus_command_uses_same_root_trigger_without_canonical_trigger_body_read() -> Result<()>
+    {
+        let home = tempfile::tempdir()?;
+        let runtime = RuntimeHandle::new(
+            "default",
+            home.path().into(),
+            None::<crate::types::WorkspaceEntry>,
+            String::new(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            crate::runtime::tests::support::context_config(),
+        )?;
+        let target = runtime
+            .create_work_item("original focus".into(), None, None, vec![])
+            .await?;
+        runtime
+            .default_external_trigger(crate::types::CallbackDeliveryMode::WakeHint)
+            .await?;
+        let token = runtime.inner.mutation_owner.capture()?.unwrap().token;
+        let before = runtime.inner.input_evidence_budget.report()?.observed_bytes;
+        runtime.runtime_db().transaction(|tx| {
+            tx.execute_batch("ALTER TABLE external_triggers RENAME TO focus_trigger_forbidden; ALTER TABLE timers RENAME TO focus_timers_forbidden; ALTER TABLE timer_wakes RENAME TO focus_wakes_forbidden")?;
+            Ok(())
+        })?;
+        let prepared = runtime
+            .prepare_work_command_read(
+                &target,
+                WorkCommandReadMode::Focus {
+                    clear_blocker: false,
+                },
+            )
+            .await?;
+        assert!(prepared.protocol.is_none());
+        assert!(prepared
+            .queue
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .any(|item| item.work_item.id == target.id));
+        assert_eq!(
+            runtime.inner.mutation_owner.capture()?.unwrap().token,
+            token
+        );
+        let guard = Arc::downgrade(prepared._scheduling_material.as_ref().unwrap());
+        assert!(runtime.inner.input_evidence_budget.report()?.observed_bytes > before);
+        drop(prepared);
+        assert!(guard.upgrade().is_none());
+        assert_eq!(
+            runtime.inner.input_evidence_budget.report()?.observed_bytes,
+            before
+        );
+        runtime.runtime_db().transaction(|tx| {
+            tx.execute_batch("ALTER TABLE focus_wakes_forbidden RENAME TO timer_wakes; ALTER TABLE focus_timers_forbidden RENAME TO timers; ALTER TABLE focus_trigger_forbidden RENAME TO external_triggers")?;
             Ok(())
         })?;
         Ok(())

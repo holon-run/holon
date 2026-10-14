@@ -4,14 +4,14 @@ use crate::runtime_db::RuntimeDb;
 use crate::types::{AgentState, MessageEnvelope, QueueEntryRecord, TimerRecord};
 use chrono::{DateTime, Utc};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TimerWakeStatus {
     Pending,
     Incorporated,
     Cancelled,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TimerWakeRecord {
     pub timer_id: String,
     pub message_id: String,
@@ -23,7 +23,7 @@ pub struct TimerWakeRecord {
     pub cancelled_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TimerFire {
     pub expected: TimerRecord,
     pub record: TimerRecord,
@@ -32,21 +32,21 @@ pub struct TimerFire {
     pub agent_state: (AgentState, AgentState),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TimerCancel {
     pub expected: TimerRecord,
     pub record: TimerRecord,
     pub agent_state: Option<(AgentState, AgentState)>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TimerFireResult {
     pub advanced: bool,
     pub wake_created: bool,
     pub message: Option<MessageEnvelope>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TimerCancelResult {
     pub cancelled: bool,
     pub dropped_message_id: Option<String>,
@@ -171,4 +171,13 @@ pub struct OperatorTransportBindingRepository<'a> {
 
 pub struct OperatorDeliveryRepository<'a> {
     pub(crate) db: &'a RuntimeDb,
+}
+
+/// This observation grants no Scheduling authority; original writer proof is separate.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct PendingTimerWakeObservation {
+    pub record: Option<TimerWakeRecord>,
+    pub(in crate::runtime_db) _material:
+        std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>,
 }

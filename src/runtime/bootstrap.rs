@@ -230,8 +230,8 @@ impl ViewImageCandidateHealth {
 
 use super::{
     clock::{Clock, SystemClock},
-    scheduler, scheduler_executor, workspace, AgentRuntimeProjectionCache, InitialWorkspaceBinding,
-    RuntimeAgent, RuntimeHandle, RuntimeInner,
+    scheduler, scheduler_executor, workspace, InitialWorkspaceBinding, RuntimeAgent, RuntimeHandle,
+    RuntimeInner,
 };
 
 fn model_route_parameter_override(state: &AgentState) -> Option<ModelRouteParameterOverride<'_>> {
@@ -756,7 +756,6 @@ impl RuntimeHandle {
             queue,
             active_tasks,
             active_timers,
-            projection_cache,
         } = prepare_runtime_storage_owned(
             storage_setup,
             Some(&mut bootstrap_reservation),
@@ -822,7 +821,8 @@ impl RuntimeHandle {
                     current_run_abort: None,
                     _queue_budget_view: Some(queue_budget_view),
                 }),
-                projection_cache: Mutex::new(projection_cache),
+                #[cfg(test)]
+                installation_barrier: Mutex::new(()),
                 object_query_cache: Arc::new(crate::object_query_cache::ObjectQueryCache::new(256)),
                 notify: Notify::new(),
                 storage,
@@ -1711,8 +1711,7 @@ struct PreparedRuntimeStorage {
     state: AgentState,
     queue: RuntimeQueue,
     active_tasks: BootstrapTaskRecovery,
-    active_timers: Vec<crate::types::TimerRecord>,
-    projection_cache: AgentRuntimeProjectionCache,
+    active_timers: super::resident_scheduling::CapturedScheduling,
 }
 
 struct RuntimeStorageSetup {
@@ -1933,6 +1932,12 @@ fn prepare_runtime_storage_owned(
         ))?;
     }
 
+    // The normalization ACK/material has crossed its independent Known phase.
+    drop((
+        normalized.scope_facts,
+        normalized.queue_entries,
+        normalized.scheduling_ack,
+    ));
     let pending = runtime_db.bootstrap_pending_metadata(&input_scope, input_budget)?;
     let queued_messages = pending.count;
     let recovered_agent = pending.facts.state;
@@ -2107,16 +2112,9 @@ fn prepare_runtime_storage_owned(
         .legacy_importer()
         .import_derived_domains(&state.id)?;
     storage.enable_audit_event_index(runtime_db.clone(), Some(state.id.clone()))?;
-    let projection_cache = AgentRuntimeProjectionCache::rebuild(
-        state.id.clone(),
-        runtime_db
-            .timers()
-            .recent_for_agent(&state.id, usize::MAX)?,
-        runtime_db.external_triggers().latest_for_agent(&state.id)?,
-    );
 
     let recent_episode_candidates = context_config.recent_episode_candidates;
-    let (episodes, inputs, work, tasks, pending) = runtime_db.transaction(|tx| {
+    let (episodes, inputs, work, tasks, scheduling, pending) = runtime_db.transaction(|tx| {
         let current = crate::runtime_db::episode_snapshot::load_episode_memory_snapshot_in(
             tx,
             &crate::runtime_db::episode_snapshot::EpisodeMemoryLoadScope {
@@ -2127,8 +2125,11 @@ fn prepare_runtime_storage_owned(
             None,
         )?
         .require_current()?;
-        let pending =
-            crate::runtime_db::bootstrap_inputs::pending_inputs_tx(tx, &input_scope, input_budget)?;
+        let pending = crate::runtime_db::bootstrap_inputs::pending_queue_inputs_and_charges_tx(
+            tx,
+            &input_scope,
+            input_budget,
+        )?;
         anyhow::ensure!(
             current.identity == durable_identity
                 && current.state.as_ref() == Some(&state)
@@ -2238,6 +2239,26 @@ fn prepare_runtime_storage_owned(
         );
         request.mandatory_roots.extend(work.owning_input_roots);
         let work = Arc::new(work.resident.with_budget(input_budget.clone())?);
+        let scheduling =
+            crate::runtime_db::scheduling_snapshot::prepare_scheduling_domain_snapshot_tx(
+                tx,
+                &input_scope,
+                &crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest {
+                    capture: super::resident_scheduling::SchedulingCaptureRequest::current(),
+                    record_limit: request.record_limit,
+                    byte_limit: request.byte_limit,
+                },
+                input_budget,
+            )?
+            .require_current()?;
+        anyhow::ensure!(
+            scheduling.facts.identity.as_ref() == Some(&current.identity)
+                && scheduling.facts.state == current.state
+                && scheduling.facts.control_revision == current.control_revision,
+            "bootstrap Scheduling domain differs from its canonical State ACK"
+        );
+        request.mandatory_roots.extend(scheduling.input_roots);
+        let scheduling = Arc::new(scheduling.resident);
         let crate::runtime_db::input_evidence_snapshot::InputEvidenceBootstrapSnapshot::Current(
             inputs,
         ) = crate::runtime_db::input_evidence_snapshot::prepare_input_evidence_snapshot_tx(
@@ -2265,9 +2286,18 @@ fn prepare_runtime_storage_owned(
         )?);
         let inputs = Arc::new(inputs.resident.with_budget(input_budget.clone())?);
         input_budget.check_history_budget()?;
-        Ok((episodes, inputs, work, (tasks, recovered_tasks), pending))
+        Ok((
+            episodes,
+            inputs,
+            work,
+            (tasks, recovered_tasks),
+            scheduling,
+            pending,
+        ))
     })?;
     let (tasks, recovered_tasks) = tasks;
+    let recovered_timers =
+        scheduling.capture(&super::resident_scheduling::SchedulingCaptureRequest::current())?;
     let mut queue = RuntimeQueue::default();
     for message in pending.messages {
         queue.push(message);
@@ -2278,12 +2308,13 @@ fn prepare_runtime_storage_owned(
         // not an in-place rewrite of that already acknowledged commit.
         reservation.publish(Arc::new(state.clone()))?;
         reservation.begin(crate::ids::audit_event_id())?;
-        reservation.committed_prepared_with_domains(
+        reservation.committed_prepared_with_scheduling_domains(
             Arc::new(state.clone()),
             Some(episodes),
             Some(inputs),
             Some(work),
             Some(tasks),
+            Some(scheduling),
         )?;
     }
 
@@ -2293,8 +2324,7 @@ fn prepare_runtime_storage_owned(
         state,
         queue,
         active_tasks: recovered_tasks,
-        active_timers: pending.active_timers,
-        projection_cache,
+        active_timers: recovered_timers,
     })
 }
 

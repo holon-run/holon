@@ -57,6 +57,7 @@ pub(crate) enum KnownCommit {
         input_evidence: Option<Arc<ResidentInputEvidence>>,
         work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
         tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
+        scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
         runtime: Option<Arc<super::state_mutation::RuntimeMutationFacts>>,
     },
     Metadata(Arc<IdentityMutationFacts>),
@@ -79,6 +80,7 @@ impl KnownCommit {
                     input_evidence: ai,
                     work: aw,
                     tasks: at,
+                    scheduling: asg,
                     runtime: ar,
                 },
                 Self::State {
@@ -87,6 +89,7 @@ impl KnownCommit {
                     input_evidence: bi,
                     work: bw,
                     tasks: bt,
+                    scheduling: bsg,
                     runtime: br,
                 },
             ) => {
@@ -107,6 +110,11 @@ impl KnownCommit {
                         _ => false,
                     }
                     && match (at, bt) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                        _ => false,
+                    }
+                    && match (asg, bsg) {
                         (None, None) => true,
                         (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                         _ => false,
@@ -561,6 +569,16 @@ impl MutationReservation {
         Ok(self.owner.capture()?.and_then(|root| root.tasks.clone()))
     }
 
+    pub(crate) fn prepared_scheduling_for_state_only_commit(
+        &self,
+    ) -> Result<Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>, MutationOwnerError>
+    {
+        Ok(self
+            .owner
+            .capture()?
+            .and_then(|root| root.scheduling.clone()))
+    }
+
     pub(crate) fn validate_owner(&self, owner: &MutationOwner) -> Result<(), MutationOwnerError> {
         if self.owner.epoch != owner.epoch || !Arc::ptr_eq(&self.owner.slot, &owner.slot) {
             return Err(MutationOwnerError::Replaced);
@@ -653,6 +671,20 @@ impl MutationReservation {
         } = known
         {
             if tasks.scope()
+                != &(InputEvidenceScope {
+                    agent_id: self.owner.agent_id.clone(),
+                    identity_incarnation: self.owner.incarnation,
+                })
+            {
+                return Err(MutationOwnerError::TicketMismatch);
+            }
+        }
+        if let KnownCommit::State {
+            scheduling: Some(domain),
+            ..
+        } = known
+        {
+            if domain.scope()
                 != &(InputEvidenceScope {
                     agent_id: self.owner.agent_id.clone(),
                     identity_incarnation: self.owner.incarnation,
@@ -1527,6 +1559,30 @@ impl MutationReservation {
         work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
         tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
     ) -> Result<(), MutationOwnerError> {
+        let scheduling = self
+            .owner
+            .slot
+            .root
+            .load_full()
+            .and_then(|root| root.scheduling.clone());
+        self.committed_prepared_with_scheduling_domains(
+            state,
+            episodes,
+            input_evidence,
+            work,
+            tasks,
+            scheduling,
+        )
+    }
+    pub(crate) fn committed_prepared_with_scheduling_domains(
+        &self,
+        state: Arc<AgentState>,
+        episodes: Option<Arc<ResidentEpisodes>>,
+        input_evidence: Option<Arc<ResidentInputEvidence>>,
+        work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
+        tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
+        scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
+    ) -> Result<(), MutationOwnerError> {
         let mut publication = self
             .owner
             .slot
@@ -1544,6 +1600,7 @@ impl MutationReservation {
             input_evidence,
             work,
             tasks,
+            scheduling,
             runtime: recovery.committed_runtime.clone(),
         };
         self.validate_known(&known)?;
@@ -1700,6 +1757,12 @@ impl MutationReservation {
                     .flatten()
             }),
         };
+        // Metadata-only maintenance cannot attest Scheduling completeness. It
+        // keeps the durable responsibility and requires named preparation.
+        let scheduling = match &known {
+            KnownCommit::State { scheduling, .. } => scheduling.clone(),
+            KnownCommit::Metadata(_) => None,
+        };
         let observation = known.state().map(|state| {
             Arc::new(PostureObservation {
                 token: PublicationToken {
@@ -1712,6 +1775,7 @@ impl MutationReservation {
                 input_evidence,
                 work,
                 tasks,
+                scheduling,
             })
         });
         self.owner.slot.root.store(observation.clone());

@@ -16,10 +16,17 @@ pub(in crate::runtime) use work_planning::PreparedSchedulerRead;
 #[path = "state_mutation/work_preparation.rs"]
 mod work_preparation;
 
+#[path = "state_mutation/scheduling_preparation.rs"]
+mod scheduling_preparation;
 #[path = "state_mutation/task_output.rs"]
 mod task_output;
 #[path = "state_mutation/task_preparation.rs"]
 mod task_preparation;
+#[path = "state_mutation/timer_preparation.rs"]
+mod timer_preparation;
+#[path = "state_mutation/wait_preparation.rs"]
+mod wait_preparation;
+pub(in crate::runtime) use wait_preparation::WaitSchedulingRead;
 
 #[path = "state_mutation/task_results.rs"]
 mod task_results;
@@ -94,6 +101,7 @@ pub(crate) struct RuntimeMutationFacts {
     input_evidence: Option<Arc<super::resident_input_evidence::ResidentInputEvidence>>,
     work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
     tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
+    scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
     queue: RuntimeQueue,
     _queue_budget_view: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
     _readonly_queue_metadata: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
@@ -101,7 +109,7 @@ pub(crate) struct RuntimeMutationFacts {
     deferred_abort: Option<DeferredRunAbort>,
     control_cancellation: Option<SavedControlCancellation>,
     effects: crate::runtime_db::transitions::PostCommitEffects,
-    recovered_cache:
+    recovered_install:
         Option<Arc<crate::runtime_db::input_recovery_install::InputRecoveryInstallFacts>>,
 }
 
@@ -131,7 +139,7 @@ impl RuntimeMutationFacts {
         facts.effects = Default::default();
         facts.deferred_abort = None;
         facts.control_cancellation = None;
-        facts.recovered_cache = None;
+        facts.recovered_install = None;
         Ok(facts)
     }
     pub(in crate::runtime) fn task_status_metadata_known(self: &Arc<Self>) -> KnownCommit {
@@ -141,6 +149,7 @@ impl RuntimeMutationFacts {
             input_evidence: self.input_evidence.clone(),
             work: self.work.clone(),
             tasks: self.tasks.clone(),
+            scheduling: self.scheduling.clone(),
             runtime: Some(self.clone()),
         }
     }
@@ -158,6 +167,7 @@ impl RuntimeMutationFacts {
             input_evidence,
             work: None,
             tasks: None,
+            scheduling: None,
             queue: RuntimeQueue::default(),
             _queue_budget_view: None,
             _readonly_queue_metadata: None,
@@ -165,7 +175,7 @@ impl RuntimeMutationFacts {
             deferred_abort: None,
             control_cancellation: None,
             effects: Default::default(),
-            recovered_cache: None,
+            recovered_install: None,
         }
     }
 
@@ -174,6 +184,7 @@ impl RuntimeMutationFacts {
         input_evidence: Option<Arc<super::resident_input_evidence::ResidentInputEvidence>>,
         work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
         tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
+        scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
         effects: crate::runtime_db::transitions::PostCommitEffects,
     ) -> Result<Self> {
         if let Some(inputs) = &input_evidence {
@@ -199,10 +210,26 @@ impl RuntimeMutationFacts {
             }),
             "external Task commit scope differs"
         );
+        anyhow::ensure!(
+            scheduling
+                .as_ref()
+                .is_none_or(|domain| domain.scope().agent_id == self.state.id
+                    && input_evidence
+                        .as_ref()
+                        .is_none_or(|inputs| inputs.scope() == domain.scope())
+                    && work
+                        .as_ref()
+                        .is_none_or(|work| work.scope() == domain.scope())
+                    && tasks
+                        .as_ref()
+                        .is_none_or(|tasks| tasks.scope() == domain.scope())),
+            "external Scheduling commit scope differs"
+        );
+        self.scheduling = scheduling;
         self.input_evidence = input_evidence;
         self.work = work;
         self.tasks = tasks;
-        self.recovered_cache = None;
+        self.recovered_install = None;
         self.effects = effects;
         strip_input_evidence_payloads(&mut self.effects);
         Ok(self)
@@ -218,6 +245,7 @@ impl RuntimeMutationFacts {
         inputs: Arc<super::resident_input_evidence::ResidentInputEvidence>,
         work: Arc<super::resident_work::ResidentWorkDomain>,
         tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
+        scheduling: Arc<super::resident_scheduling::ResidentSchedulingDomain>,
         messages: Vec<MessageEnvelope>,
         budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
         original: Option<&Self>,
@@ -233,6 +261,7 @@ impl RuntimeMutationFacts {
                 && tasks
                     .as_ref()
                     .is_none_or(|tasks| tasks.scope() == &outcome.scope)
+                && scheduling.scope() == &outcome.scope
                 && cache.scope == outcome.scope
                 && cache.keys == outcome.install_keys,
             "input recovery scope differs"
@@ -258,6 +287,7 @@ impl RuntimeMutationFacts {
             input_evidence: Some(inputs),
             work: Some(work),
             tasks,
+            scheduling: Some(scheduling),
             queue,
             _queue_budget_view: Some(queue_view),
             _readonly_queue_metadata: None,
@@ -267,7 +297,7 @@ impl RuntimeMutationFacts {
                 .flatten(),
             control_cancellation: original
                 .and_then(|original| original.control_cancellation.clone()),
-            recovered_cache: Some(Arc::new(cache)),
+            recovered_install: Some(Arc::new(cache)),
             effects: crate::runtime_db::transitions::PostCommitEffects {
                 audit_events: outcome.audit_events.clone(),
                 notify_memory_index: outcome.notify_memory_index,
@@ -300,7 +330,7 @@ impl RuntimeMutationFacts {
         facts.effects = Default::default();
         facts.deferred_abort = None;
         facts.control_cancellation = None;
-        facts.recovered_cache = None;
+        facts.recovered_install = None;
         Ok(facts)
     }
     pub(in crate::runtime) fn partial_task_stop_known(self: &Arc<Self>) -> KnownCommit {
@@ -310,6 +340,7 @@ impl RuntimeMutationFacts {
             input_evidence: self.input_evidence.clone(),
             work: self.work.clone(),
             tasks: None,
+            scheduling: self.scheduling.clone(),
             runtime: Some(self.clone()),
         }
     }
@@ -339,6 +370,7 @@ impl RuntimeMutationFacts {
             domains.work.scope().agent_id == state.id
                 && domains.inputs.belongs_to(domains.work.scope())
                 && domains.tasks.scope() == domains.work.scope()
+                && domains.scheduling.scope() == domains.work.scope()
                 && episodes.belongs_to(&state.id, domains.work.scope().identity_incarnation),
             "Control recovery domains changed namespace"
         );
@@ -387,6 +419,7 @@ impl RuntimeMutationFacts {
             input_evidence: Some(domains.inputs),
             work: Some(domains.work),
             tasks: Some(domains.tasks),
+            scheduling: Some(domains.scheduling),
             queue,
             _queue_budget_view: Some(queue_view),
             _readonly_queue_metadata: None,
@@ -394,7 +427,7 @@ impl RuntimeMutationFacts {
             deferred_abort: None,
             control_cancellation: cancellation,
             effects,
-            recovered_cache: None,
+            recovered_install: None,
         })
     }
 }
@@ -409,6 +442,7 @@ pub(super) struct RuntimeMutation {
     input_evidence: Option<Arc<super::resident_input_evidence::ResidentInputEvidence>>,
     work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
     tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
+    scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
     candidate: Box<RuntimeAgent>,
     base: Box<RuntimeAgent>,
     deferred_abort: Option<DeferredRunAbort>,
@@ -505,16 +539,17 @@ impl RuntimeMutation {
         request: &'a crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest,
         recent_episode_limit: usize,
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.prepare_owner_input_request_inner(request, recent_episode_limit))
+        Box::pin(self.prepare_owner_input_request_inner(request, recent_episode_limit, None))
     }
 
     async fn prepare_owner_input_request_inner(
         &mut self,
         request: &crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest,
         recent_episode_limit: usize,
+        scheduling_capture: Option<&super::resident_scheduling::SchedulingCaptureRequest>,
     ) -> Result<()> {
         use super::input_preparation::{
-            prepare_reserved_input_domains, InputPreparation, InputPreparationCause,
+            prepare_reserved_input_domains_with_scheduling, InputPreparation, InputPreparationCause,
         };
         use super::resident_input_evidence::{
             InputEvidenceFamily as Family, InputEvidenceKey as Key,
@@ -589,7 +624,8 @@ impl RuntimeMutation {
         } else {
             InputPreparationCause::OwnerChange
         };
-        let prepared = prepare_reserved_input_domains(
+        let default_scheduling = super::resident_scheduling::SchedulingCaptureRequest::current();
+        let prepared = prepare_reserved_input_domains_with_scheduling(
             &self.runtime.inner.runtime_db,
             &self.reservations[self.primary_index],
             &root,
@@ -597,6 +633,7 @@ impl RuntimeMutation {
             &request,
             recent_episode_limit,
             &self.runtime.inner.input_evidence_budget,
+            scheduling_capture.unwrap_or(&default_scheduling),
         )?;
         let InputPreparation::Prepared(prepared) = prepared else {
             return Ok(());
@@ -608,6 +645,7 @@ impl RuntimeMutation {
         );
         self.episodes = Some(prepared.episodes);
         self.input_evidence = Some(prepared.inputs);
+        self.scheduling = Some(prepared.scheduling);
         self.candidate.queue = prepared.queue;
         self.candidate._queue_budget_view = Some(prepared.queue_budget_view);
         let facts = Arc::new(self.facts(Default::default()));
@@ -621,6 +659,7 @@ impl RuntimeMutation {
                 input_evidence: facts.input_evidence.clone(),
                 work: facts.work.clone(),
                 tasks: facts.tasks.clone(),
+                scheduling: facts.scheduling.clone(),
                 runtime: Some(facts.clone()),
             }],
         )?;
@@ -872,6 +911,11 @@ impl RuntimeMutation {
                     != crate::runtime_db::input_mutation_receipts::InputMutationFamily::Task,
                 "Task receipt requires its typed runtime adapter"
             );
+            anyhow::ensure!(
+                prepared.descriptor().family()
+                    != crate::runtime_db::input_mutation_receipts::InputMutationFamily::ExternalTrigger,
+                "Trigger receipt requires its typed runtime adapter"
+            );
             let (commit, result) = self.commit_prepared_input_with_result(prepared).await?;
             anyhow::ensure!(
                 matches!(
@@ -881,6 +925,77 @@ impl RuntimeMutation {
                 "transition receipt has another result family"
             );
             Ok(commit)
+        })
+    }
+
+    pub(in crate::runtime) fn scheduling_writer_request(
+        &self,
+    ) -> Result<crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest> {
+        let work = self.owner_work_load_request()?;
+        Ok(
+            crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest {
+                capture: super::resident_scheduling::SchedulingCaptureRequest::current(),
+                record_limit: work.record_limit,
+                byte_limit: work.byte_limit,
+            },
+        )
+    }
+    pub(super) fn commit_prepared_external_trigger_transition<'a>(
+        &'a mut self,
+        prepared: crate::runtime_db::transitions::PreparedInputTransition,
+    ) -> std::pin::Pin<
+        Box<
+            impl std::future::Future<
+                    Output = Result<(
+                        TransitionCommit,
+                        crate::runtime_db::transitions::ExternalTriggerMutationOutcome,
+                    )>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            anyhow::ensure!(prepared.descriptor().family()==
+                crate::runtime_db::input_mutation_receipts::InputMutationFamily::ExternalTrigger,
+                "Trigger receipt requires its typed runtime adapter");
+            let (commit, result) = self.commit_prepared_input_with_result(prepared).await?;
+            let crate::runtime_db::input_mutation_receipts::InputMutationResult::ExternalTrigger {
+                outcome,
+            } = result
+            else {
+                anyhow::bail!("Trigger receipt has another result family");
+            };
+            Ok((commit, *outcome))
+        })
+    }
+
+    pub(super) fn commit_prepared_timer_transition<'a>(
+        &'a mut self,
+        prepared: crate::runtime_db::transitions::PreparedInputTransition,
+    ) -> std::pin::Pin<
+        Box<
+            impl std::future::Future<
+                    Output = Result<(
+                        TransitionCommit,
+                        crate::runtime_db::transitions::TimerMutationOutcome,
+                    )>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            anyhow::ensure!(
+                prepared.descriptor().family()
+                    == crate::runtime_db::input_mutation_receipts::InputMutationFamily::Timer,
+                "Timer receipt requires its typed runtime adapter"
+            );
+            let (commit, result) = self.commit_prepared_input_with_result(prepared).await?;
+            let crate::runtime_db::input_mutation_receipts::InputMutationResult::Timer { outcome } =
+                result
+            else {
+                anyhow::bail!("Timer receipt has another result family");
+            };
+            Ok((commit, *outcome))
         })
     }
 
@@ -1089,6 +1204,13 @@ impl RuntimeMutation {
                         replay_observation.mark_original_input_receipt_pending(&receipt, false)?;
                         original_material_views
                             .extend(value.effects.task_material_budget_views.iter().cloned());
+                        original_material_views.extend(
+                            value
+                                .effects
+                                .scheduling_material_budget_views
+                                .iter()
+                                .cloned(),
+                        );
                         original_result = Some(receipt.outcome.result);
                         Ok(value)
                     }
@@ -1338,6 +1460,12 @@ impl RuntimeMutation {
         if let Some(delta) = &committed.effects.task_delta {
             if let Err(error) = self.install_committed_task_delta(delta) {
                 self.tasks = None;
+                projection_error.get_or_insert(error);
+            }
+        }
+        if let Some(delta) = &committed.effects.scheduling_delta {
+            if let Err(error) = self.install_committed_scheduling_delta(delta) {
+                self.scheduling = None;
                 projection_error.get_or_insert(error);
             }
         }
@@ -1653,6 +1781,7 @@ impl RuntimeMutation {
                         input_evidence: facts.input_evidence.clone(),
                         work: facts.work.clone(),
                         tasks: facts.tasks.clone(),
+                        scheduling: facts.scheduling.clone(),
                         runtime: Some(facts.clone()),
                     });
                 }
@@ -1745,6 +1874,7 @@ impl RuntimeMutation {
             input_evidence: self.input_evidence.clone(),
             work: self.work.clone(),
             tasks: self.tasks.clone(),
+            scheduling: self.scheduling.clone(),
             queue: self.candidate.queue.clone(),
             _queue_budget_view: self.candidate._queue_budget_view.clone(),
             _readonly_queue_metadata: None,
@@ -1752,7 +1882,7 @@ impl RuntimeMutation {
             deferred_abort: self.deferred_abort.clone(),
             control_cancellation: self.control_cancellation.clone(),
             effects,
-            recovered_cache: None,
+            recovered_install: None,
         }
     }
 }
@@ -1832,6 +1962,10 @@ fn strip_input_evidence_payloads(effects: &mut crate::runtime_db::transitions::P
     effects.task_write_keys.clear();
     effects.task_observation_keys.clear();
     effects.task_material_budget_views.clear();
+    effects.scheduling_delta = None;
+    effects.scheduling_delta_requires_prepared_domain = false;
+    effects.scheduling_write_keys.clear();
+    effects.scheduling_material_budget_views.clear();
 }
 
 fn strip_authoritative_effects(effects: &mut crate::runtime_db::transitions::PostCommitEffects) {
@@ -1988,6 +2122,7 @@ impl RuntimeHandle {
             input_evidence,
             work: reservation.prepared_work_for_state_only_commit()?,
             tasks: reservation.prepared_tasks_for_state_only_commit()?,
+            scheduling: reservation.prepared_scheduling_for_state_only_commit()?,
             queue: agent.queue.clone(),
             _queue_budget_view: Some(queue_view),
             _readonly_queue_metadata: Some(queue_metadata),
@@ -1995,7 +2130,7 @@ impl RuntimeHandle {
             deferred_abort: None,
             control_cancellation: None,
             effects: Default::default(),
-            recovered_cache: None,
+            recovered_install: None,
         })
     }
 
@@ -2545,6 +2680,14 @@ impl RuntimeHandle {
                 candidate_budget_views.push(view);
             }
         }
+        if let Some(domain) = observation
+            .as_ref()
+            .and_then(|root| root.scheduling.as_ref())
+        {
+            if let Some(view) = domain.candidate_budget_view()? {
+                candidate_budget_views.push(view);
+            }
+        }
         let mutation = RuntimeMutation {
             runtime: self.clone(),
             reservations,
@@ -2556,7 +2699,8 @@ impl RuntimeHandle {
                 .as_ref()
                 .and_then(|root| root.input_evidence.clone()),
             work: observation.as_ref().and_then(|root| root.work.clone()),
-            tasks: observation.and_then(|root| root.tasks.clone()),
+            tasks: observation.as_ref().and_then(|root| root.tasks.clone()),
+            scheduling: observation.and_then(|root| root.scheduling.clone()),
             base: candidate.clone(),
             candidate,
             deferred_abort: None,
@@ -2574,7 +2718,7 @@ impl RuntimeHandle {
             agent_id: facts.state.id.clone(),
             identity_incarnation: self.inner.identity_incarnation,
         };
-        if let Some(current) = &facts.recovered_cache {
+        if let Some(current) = &facts.recovered_install {
             anyhow::ensure!(
                 current.scope == scope,
                 "recovered cache installation scope differs"
@@ -2599,28 +2743,11 @@ impl RuntimeHandle {
                 abort.handle.token.cancel();
             }
         }
-        let mut cache = self.inner.projection_cache.lock().await;
-        if let Some(current) = &facts.recovered_cache {
-            for id in &current.keys.timers {
-                cache.timers.remove(id);
-            }
-            for id in &current.keys.external_triggers {
-                cache.external_triggers.remove(id);
-            }
-            for record in &current.timers {
-                cache.upsert_timer(record.clone());
-            }
-            for record in &current.external_triggers {
-                cache.upsert_external_trigger(record.clone());
-            }
+        #[cfg(test)]
+        {
+            // Preserve the original deterministic after-SQL/before-publish seam.
+            let _installation = self.inner.installation_barrier.lock().await;
         }
-        for record in &facts.effects.timers {
-            cache.upsert_timer(record.clone());
-        }
-        for record in &facts.effects.external_triggers {
-            cache.upsert_external_trigger(record.clone());
-        }
-        drop(cache);
         if let Some(bridge) = self.inner.host_bridge.as_ref() {
             for identity in facts
                 .effects

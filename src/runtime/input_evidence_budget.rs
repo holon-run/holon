@@ -1,6 +1,7 @@
 //! Host admission charges and observed input/evidence allocations.
 //! Pending tickets retain SQL responsibility; memory guards only observe views.
 use super::resident_input_evidence::{InputEvidenceScope, QualifiedInputEvidence};
+use super::resident_scheduling::QualifiedSchedulingFact;
 use super::resident_task::QualifiedTaskFact;
 use super::resident_work::QualifiedWorkRecord;
 use crate::config::StateMemoryLimits;
@@ -166,6 +167,7 @@ enum AllocationWeak {
     Queue(Weak<crate::types::MessageEnvelope>),
     Work(Weak<QualifiedWorkRecord>),
     Task(Weak<QualifiedTaskFact>),
+    Scheduling(Weak<QualifiedSchedulingFact>),
     TaskStop(Weak<crate::runtime_db::task_stop::TaskStopRecord>),
 }
 impl AllocationWeak {
@@ -175,6 +177,7 @@ impl AllocationWeak {
             Self::Queue(message) => message.strong_count(),
             Self::Work(record) => record.strong_count(),
             Self::Task(record) => record.strong_count(),
+            Self::Scheduling(record) => record.strong_count(),
             Self::TaskStop(record) => record.strong_count(),
         }
     }
@@ -957,6 +960,70 @@ impl InputEvidenceBudgetLedger {
             nonce,
         }))
     }
+    pub(crate) fn register_scheduling_view<'a>(
+        &self,
+        scope: &InputEvidenceScope,
+        category: InputMemoryCategory,
+        records: impl IntoIterator<Item = &'a Arc<QualifiedSchedulingFact>>,
+    ) -> Result<Arc<BudgetViewGuard>> {
+        valid_scope(scope)?;
+        let sk = ScopeKey::from(scope);
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| InputEvidenceBudgetError::Poisoned)?;
+        state.prune_dead();
+        let mut unique = BTreeMap::new();
+        for record in records {
+            if &record.locator.scope != scope || record.fact.agent_id() != scope.agent_id {
+                return Err(InputEvidenceBudgetError::InvalidInput(
+                    "Scheduling scope differs from view",
+                ));
+            }
+            let id = Arc::as_ptr(record) as usize;
+            let bytes = u64::try_from(record.resident_bytes)
+                .map_err(|_| InputEvidenceBudgetError::CounterOverflow)?;
+            if let Some(entry) = state.allocations.get(&id) {
+                if entry.scope != sk
+                    || !matches!(&entry.weak, AllocationWeak::Scheduling(_))
+                    || entry.bytes != bytes
+                {
+                    return Err(InputEvidenceBudgetError::InvalidInput(
+                        "Scheduling allocation scope/charge changed",
+                    ));
+                }
+            }
+            unique.insert(id, (record, bytes));
+        }
+        let nonce = state.nonce()?;
+        for (id, (record, bytes)) in &unique {
+            let entry = state
+                .allocations
+                .entry(*id)
+                .or_insert_with(|| AllocationEntry {
+                    weak: AllocationWeak::Scheduling(Arc::downgrade(record)),
+                    scope: sk.clone(),
+                    bytes: *bytes,
+                    memberships: BTreeMap::new(),
+                });
+            entry.memberships.insert(nonce, category);
+        }
+        state.views.insert(
+            nonce,
+            ViewEntry {
+                scope: sk,
+                category,
+                allocations: unique.into_keys().collect(),
+                owned: OwnedBytesEstimate::default(),
+            },
+        );
+        Ok(Arc::new(BudgetViewGuard {
+            ledger: self.inner.clone(),
+            nonce,
+        }))
+    }
+
     pub(crate) fn register_task_view<'a>(
         &self,
         scope: &InputEvidenceScope,

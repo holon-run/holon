@@ -341,6 +341,17 @@ impl RuntimeMutation {
         let mut captured = root.capture_context(episode_limit)?;
         captured.input_evidence = Some(inputs.capture_for_request(input_request)?);
         captured.work = Some(work.capture(work_request)?);
+        let scheduling = root
+            .scheduling
+            .as_ref()
+            .ok_or(super::resident_scheduling::SchedulingReadError::IncompleteLive)?;
+        anyhow::ensure!(
+            scheduling.scope() == inputs.scope(),
+            "context Scheduling scope differs"
+        );
+        captured.scheduling = Some(
+            scheduling.capture(&super::resident_scheduling::SchedulingCaptureRequest::current())?,
+        );
         captured.tasks = Some(tasks.capture(task_request)?);
         Ok(captured)
     }

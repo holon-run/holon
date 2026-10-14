@@ -331,9 +331,11 @@ impl AgentStateRepository<'_> {
         &self,
         fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
     ) -> Result<(usize, BTreeMap<String, AgentState>)> {
-        self.reconcile_stale_waits_at_startup_inner(None, fault)
+        self.reconcile_stale_waits_at_startup_inner(None, None, fault)
+            .map(|(n, states, _)| (n, states))
     }
 
+    #[cfg(test)]
     pub(crate) fn reconcile_stale_waits_at_startup_in_scopes(
         &self,
         scopes: &[crate::runtime_db::transitions::StartupInputRecoveryScope],
@@ -344,7 +346,37 @@ impl AgentStateRepository<'_> {
         fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
     ) -> Result<(usize, BTreeMap<String, AgentState>)> {
         admission.validate_database(self.db)?;
-        self.reconcile_stale_waits_at_startup_inner(Some((scopes, admission, request)), fault)
+        self.reconcile_stale_waits_at_startup_inner(Some((scopes, admission, request)), None, fault)
+            .map(|(n, states, _)| (n, states))
+    }
+
+    pub(crate) fn reconcile_stale_waits_at_startup_with_scheduling(
+        &self,
+        scopes: &[crate::runtime_db::transitions::StartupInputRecoveryScope],
+        admission: &super::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery<
+            '_,
+        >,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+        scheduling_request: &super::scheduling_snapshot::SchedulingDomainLoadRequest,
+        accounting: &[crate::runtime::resident_input_evidence::InputEvidenceScope],
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+    ) -> Result<(
+        usize,
+        BTreeMap<String, AgentState>,
+        super::scheduling_snapshot::StartupSchedulingAck,
+    )> {
+        admission.validate_database(self.db)?;
+        let (count, states, ack) = self.reconcile_stale_waits_at_startup_inner(
+            Some((scopes, admission, work_request)),
+            Some((scheduling_request, accounting, ledger)),
+            fault,
+        )?;
+        Ok((
+            count,
+            states,
+            ack.context("startup Scheduling ACK missing")?,
+        ))
     }
 
     fn reconcile_stale_waits_at_startup_inner(
@@ -354,8 +386,17 @@ impl AgentStateRepository<'_> {
             &super::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery<'_>,
             &super::work_snapshot::WorkDomainLoadRequest,
         )>,
+        scheduling: Option<(
+            &super::scheduling_snapshot::SchedulingDomainLoadRequest,
+            &[crate::runtime::resident_input_evidence::InputEvidenceScope],
+            &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        )>,
         fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
-    ) -> Result<(usize, BTreeMap<String, AgentState>)> {
+    ) -> Result<(
+        usize,
+        BTreeMap<String, AgentState>,
+        Option<super::scheduling_snapshot::StartupSchedulingAck>,
+    )> {
         use super::{
             input_evidence_snapshot::legacy_recovery::legacy_seed_recovery_scope_tx, work_snapshot,
         };
@@ -363,6 +404,10 @@ impl AgentStateRepository<'_> {
         use crate::runtime_db::transitions::{StartupInputRecoveryScope, TransitionFaultPoint};
 
         self.db.transaction(|tx| {
+            let scheduling_material=if let Some((request,accounting,ledger))=scheduling {
+                let (scopes,admission,_)=preparation.context("Scheduling startup lacks original exclusive actor")?;
+                Some(super::scheduling_snapshot::StartupSchedulingMaterial::prepare_tx(tx,scopes,accounting,request,ledger,admission)?)
+            }else{None};
             let mut states = {
                 let mut statement = tx.prepare("SELECT payload_json FROM agent_states")?;
                 let records = statement
@@ -385,19 +430,19 @@ impl AgentStateRepository<'_> {
                 records
             };
             let tasks = {
-                let mut statement = tx.prepare("SELECT payload_json FROM tasks")?;
+                let mut statement = tx.prepare(if scheduling.is_some(){super::scheduling_snapshot::startup_maintenance::WAIT_TASK_POOL}else{"SELECT payload_json FROM tasks"})?;
                 let records = statement.query_map([], |row| row.get::<_, String>(0))?
                     .map(|row| decode_task_payload(&row?)).collect::<Result<Vec<_>>>()?;
                 records
             };
             let external_triggers = {
-                let mut statement = tx.prepare("SELECT payload_json FROM external_triggers")?;
+                let mut statement = tx.prepare(if scheduling.is_some(){super::scheduling_snapshot::startup_maintenance::WAIT_TRIGGER_POOL}else{"SELECT payload_json FROM external_triggers"})?;
                 let records = statement.query_map([], |row| row.get::<_, String>(0))?
                     .map(|row| decode_external_trigger_payload(&row?)).collect::<Result<Vec<_>>>()?;
                 records
             };
             let timers = {
-                let mut statement = tx.prepare("SELECT payload_json FROM timers")?;
+                let mut statement = tx.prepare(if scheduling.is_some(){super::scheduling_snapshot::startup_maintenance::WAIT_TIMER_POOL}else{"SELECT payload_json FROM timers"})?;
                 let records = statement.query_map([], |row| row.get::<_, String>(0))?
                     .map(|row| decode_timer_payload(&row?)).collect::<Result<Vec<_>>>()?;
                 records
@@ -472,6 +517,11 @@ impl AgentStateRepository<'_> {
                     && states.values().filter(|state|state.status==AgentStatus::Stopped).all(|state|agents.contains(&state.id)),
                     "startup Wait cleanup has an unreserved write scope");
             }
+            let scheduling_cleanup=if let Some(material)=scheduling_material {
+                let (scopes,admission,_)=preparation.context("Scheduling startup preparation missing")?;
+                let (_,_,ledger)=scheduling.context("Scheduling startup ledger missing")?;
+                Some(material.prepare_stopped_tx(tx,&states,scopes,ledger,admission)?)
+            }else{None};
             inject_fault(fault, TransitionFaultPoint::AfterValidation)?;
             let now = Utc::now();
             let cancelled=stale_waits.len();
@@ -483,8 +533,10 @@ impl AgentStateRepository<'_> {
                 let writes=upsert_wait_condition_with_writes_tx(tx,&wait)?;
                 actual.entry(wait.agent_id.clone()).or_default().extend(writes);
             }
+            let mut scheduling_actual=BTreeMap::new();
             for state in states.values_mut().filter(|state| state.status == AgentStatus::Stopped) {
-                cancel_active_timers_for_agent_tx(tx, &state.id, now)?;
+                let writes=cancel_active_timers_with_writes_tx(tx,&state.id,now)?;
+                scheduling_actual.insert(state.id.clone(),writes);
                 let pending = {
                     let mut statement = tx.prepare(
                         "SELECT payload_json FROM queue_entries WHERE agent_id = ?1 AND status IN ('queued', 'interrupted')",
@@ -518,8 +570,13 @@ impl AgentStateRepository<'_> {
                     }
                 }
             }
+            let scheduling_ack=if let Some(cleanup)=scheduling_cleanup {
+                let (_,admission,_)=preparation.context("Scheduling startup original actor missing")?;
+                let (_,_,ledger)=scheduling.context("Scheduling startup ledger missing")?;
+                Some(cleanup.finish_tx(tx,&scheduling_actual,ledger,admission)?)
+            }else{None};
             inject_fault(fault, TransitionFaultPoint::BeforeCommit)?;
-            Ok((cancelled, states))
+            Ok((cancelled, states,scheduling_ack))
         })
     }
 
@@ -2213,6 +2270,10 @@ impl ExternalTriggerRepository<'_> {
                 let latest = reduce_external_trigger_records(records);
                 for record in latest.values() {
                     upsert_external_trigger_tx(tx, record)?;
+                    super::scheduling_snapshot::record_scheduling_import_tx(
+                        tx,
+                        super::scheduling_snapshot::SchedulingImportRecord::ExternalTrigger(record),
+                    )?;
                 }
                 Ok(serde_json::json!({ "imported_records": latest.len() }))
             })
@@ -2232,36 +2293,15 @@ impl ExternalTriggerRepository<'_> {
         token: String,
     ) -> Result<(ExternalTriggerRecord, Option<ExternalTriggerRecord>, bool)> {
         self.db.transaction(|tx| {
-            if let Some(descriptor) = active_default_for_agent_tx(tx, agent_id)? {
-                if descriptor.token.is_some() {
-                    return Ok((descriptor, None, false));
-                }
-
-                let mut revoked = descriptor;
-                revoked.status = ExternalTriggerStatus::Revoked;
-                revoked.revoked_at = Some(now);
-                upsert_external_trigger_tx(tx, &revoked)?;
-
-                let descriptor = default_external_trigger_record(
-                    agent_id,
-                    delivery_mode.clone(),
-                    now,
-                    external_trigger_id.clone(),
-                    token.clone(),
-                );
-                upsert_external_trigger_tx(tx, &descriptor)?;
-                return Ok((descriptor, Some(revoked), true));
-            }
-
-            let descriptor = default_external_trigger_record(
+            ensure_default_external_trigger_tx(
+                tx,
                 agent_id,
                 delivery_mode.clone(),
                 now,
                 external_trigger_id.clone(),
                 token.clone(),
-            );
-            upsert_external_trigger_tx(tx, &descriptor)?;
-            Ok((descriptor, None, true))
+                &mut BTreeSet::new(),
+            )
         })
     }
 
@@ -2274,25 +2314,15 @@ impl ExternalTriggerRepository<'_> {
         token: String,
     ) -> Result<(ExternalTriggerRecord, Option<ExternalTriggerRecord>)> {
         self.db.transaction(|tx| {
-            let revoked = if let Some(descriptor) = active_default_for_agent_tx(tx, agent_id)? {
-                let mut revoked = descriptor;
-                revoked.status = ExternalTriggerStatus::Revoked;
-                revoked.revoked_at = Some(now);
-                upsert_external_trigger_tx(tx, &revoked)?;
-                Some(revoked)
-            } else {
-                None
-            };
-
-            let descriptor = default_external_trigger_record(
+            reset_default_external_trigger_tx(
+                tx,
                 agent_id,
                 delivery_mode.clone(),
                 now,
                 external_trigger_id.clone(),
                 token.clone(),
-            );
-            upsert_external_trigger_tx(tx, &descriptor)?;
-            Ok((descriptor, revoked))
+                &mut BTreeSet::new(),
+            )
         })
     }
 
@@ -2356,6 +2386,9 @@ impl ExternalTriggerRepository<'_> {
             .transpose()
     }
 
+    /// Legacy persistence inspection; this does not authorize runtime ingress or
+    /// grant a qualified Scheduling scope. Runtime and HTTP callback admission
+    /// use the bounded, owner-held token locator and original delivery fences.
     pub fn active_by_token_hash(&self, token_hash: &str) -> Result<Option<ExternalTriggerRecord>> {
         let connection = self.db.connection()?;
         connection
@@ -3110,11 +3143,27 @@ impl QueueEntryRepository<'_> {
     }
 }
 
+/// Original timer cancellation ACK; keys come only from actual SQL exits.
+#[derive(Default)]
+pub(in crate::runtime_db) struct TimerCancellationWrites {
+    pub cancelled_timers: usize,
+    pub timer_ids: std::collections::BTreeSet<String>,
+    pub wake_pairs: std::collections::BTreeSet<(String, String)>,
+    pub queue_entries: Vec<QueueEntryRecord>,
+}
 fn cancel_active_timers_for_agent_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
     cancelled_at: chrono::DateTime<Utc>,
 ) -> Result<usize> {
+    Ok(cancel_active_timers_with_writes_tx(tx, agent_id, cancelled_at)?.cancelled_timers)
+}
+
+pub(in crate::runtime_db) fn cancel_active_timers_with_writes_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    cancelled_at: chrono::DateTime<Utc>,
+) -> Result<TimerCancellationWrites> {
     let mut statement = tx.prepare(
         "SELECT payload_json
              FROM timers
@@ -3126,10 +3175,12 @@ fn cancel_active_timers_for_agent_tx(
         .collect::<Result<Vec<_>>>()?;
     drop(statement);
 
-    let mut count = 0;
+    let mut writes = TimerCancellationWrites::default();
     for mut record in records {
         record.status = TimerStatus::Cancelled;
-        upsert_timer_tx(tx, &record)?;
+        if upsert_timer_with_write_tx(tx, &record)? {
+            writes.timer_ids.insert(record.id.clone());
+        }
 
         let message_ids = {
             let mut wake_statement = tx.prepare(
@@ -3142,12 +3193,18 @@ fn cancel_active_timers_for_agent_tx(
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             message_ids
         };
-        tx.execute(
-            "UPDATE timer_wakes
-                 SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
-                 WHERE timer_id = ?1 AND status = 'pending'",
-            params![record.id, timestamp(cancelled_at)],
+        // RETURNING is the actual write exit; the original predicate and one
+        // bulk UPDATE stay intact, including independently pending old wakes.
+        let mut update = tx.prepare(
+            "UPDATE timer_wakes SET status='cancelled', updated_at=?2, cancelled_at=?2
+             WHERE timer_id=?1 AND status='pending' RETURNING timer_id,message_id",
         )?;
+        for row in update.query_map(params![record.id, timestamp(cancelled_at)], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            writes.wake_pairs.insert(row?);
+        }
+        drop(update);
         for message_id in message_ids {
             let payload = tx
                 .query_row(
@@ -3162,24 +3219,35 @@ fn cancel_active_timers_for_agent_tx(
                 let mut entry = decode_queue_entry_payload(&payload)?;
                 entry.status = QueueEntryStatus::Dropped;
                 entry.updated_at = cancelled_at;
-                upsert_queue_entry_tx(tx, &entry)?;
+                if upsert_queue_entry_tx(tx, &entry)? {
+                    writes.queue_entries.push(entry);
+                }
             }
         }
-        count += 1;
+        writes.cancelled_timers += 1;
     }
-    Ok(count)
+    Ok(writes)
 }
 
 pub(crate) struct ScopedTimerWakeRecovery {
     pub result: TimerWakeRecoveryResult,
     pub queue_entries: Vec<QueueEntryRecord>,
     pub scope_facts: super::context_inputs::ContextScopeFacts,
+    pub scheduling_ack: super::scheduling_snapshot::SchedulingMaintenanceAck,
 }
 
-fn normalize_timer_wakes_for_recovery_tx(
+pub(in crate::runtime_db) struct TimerWakeNormalizationInput {
+    pub live_messages: Vec<(QueueEntryRecord, MessageEnvelope)>,
+    pub pending_wakes: Vec<(String, String, i64)>,
+}
+pub(in crate::runtime_db) struct TimerWakeNormalizationWrites {
+    pub result: TimerWakeRecoveryResult,
+    pub wake_pairs: BTreeSet<(String, String)>,
+}
+pub(in crate::runtime_db) fn read_timer_wake_normalization_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
-) -> Result<TimerWakeRecoveryResult> {
+) -> Result<TimerWakeNormalizationInput> {
     let live_messages = {
         let mut statement = tx.prepare(
             "SELECT q.payload_json, m.payload_json
@@ -3217,7 +3285,38 @@ fn normalize_timer_wakes_for_recovery_tx(
         rows.collect::<std::result::Result<Vec<_>, _>>()?
     };
 
+    Ok(TimerWakeNormalizationInput {
+        live_messages,
+        pending_wakes,
+    })
+}
+
+fn cancel_pending_timer_wakes_with_writes_tx(
+    tx: &Transaction<'_>,
+    timer: &str,
+    at: chrono::DateTime<Utc>,
+    actual: &mut BTreeSet<(String, String)>,
+) -> Result<usize> {
+    let mut update=tx.prepare("UPDATE timer_wakes SET status='cancelled',updated_at=?2,cancelled_at=?2 WHERE timer_id=?1 AND status='pending' RETURNING timer_id,message_id")?;
+    let mut changed = 0;
+    for row in update.query_map(params![timer, timestamp(at)], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })? {
+        actual.insert(row?);
+        changed += 1;
+    }
+    Ok(changed)
+}
+pub(in crate::runtime_db) fn normalize_timer_wakes_with_writes_tx(
+    tx: &Transaction<'_>,
+    input: TimerWakeNormalizationInput,
+) -> Result<TimerWakeNormalizationWrites> {
+    let TimerWakeNormalizationInput {
+        live_messages,
+        pending_wakes,
+    } = input;
     let mut result = TimerWakeRecoveryResult::default();
+    let mut actual = BTreeSet::new();
     let mut wakes_by_timer = pending_wakes
         .into_iter()
         .map(|(timer_id, message_id, fire_count)| (timer_id, (message_id, fire_count)))
@@ -3273,11 +3372,11 @@ fn normalize_timer_wakes_for_recovery_tx(
                     continue;
                 }
                 if existing_wake.is_some() {
-                    result.invalidated_wakes += tx.execute(
-                        "UPDATE timer_wakes
-                         SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
-                         WHERE timer_id = ?1 AND status = 'pending'",
-                        params![timer_id, timestamp(Utc::now())],
+                    result.invalidated_wakes += cancel_pending_timer_wakes_with_writes_tx(
+                        tx,
+                        &timer_id,
+                        Utc::now(),
+                        &mut actual,
                     )?;
                 }
                 let fire_count = message
@@ -3298,6 +3397,7 @@ fn normalize_timer_wakes_for_recovery_tx(
                     params![timer_id, message.id, fire_count as i64, now],
                 )?;
                 if reactivated > 0 {
+                    actual.insert((timer_id.clone(), message.id.clone()));
                     result.reactivated_wakes += reactivated;
                     continue;
                 }
@@ -3308,15 +3408,16 @@ fn normalize_timer_wakes_for_recovery_tx(
                      VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
                     params![timer_id, message.id, fire_count as i64, created_at],
                 )?;
+                actual.insert((timer_id.clone(), message.id.clone()));
                 result.created_wakes += 1;
             }
             None => {
                 if existing_wake.is_some() {
-                    result.invalidated_wakes += tx.execute(
-                        "UPDATE timer_wakes
-                         SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
-                         WHERE timer_id = ?1 AND status = 'pending'",
-                        params![timer_id, timestamp(Utc::now())],
+                    result.invalidated_wakes += cancel_pending_timer_wakes_with_writes_tx(
+                        tx,
+                        &timer_id,
+                        Utc::now(),
+                        &mut actual,
                     )?;
                 }
             }
@@ -3324,14 +3425,21 @@ fn normalize_timer_wakes_for_recovery_tx(
     }
 
     for (timer_id, _) in wakes_by_timer {
-        result.invalidated_wakes += tx.execute(
-            "UPDATE timer_wakes
-             SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
-             WHERE timer_id = ?1 AND status = 'pending'",
-            params![timer_id, timestamp(Utc::now())],
-        )?;
+        result.invalidated_wakes +=
+            cancel_pending_timer_wakes_with_writes_tx(tx, &timer_id, Utc::now(), &mut actual)?;
     }
-    Ok(result)
+    Ok(TimerWakeNormalizationWrites {
+        result,
+        wake_pairs: actual,
+    })
+}
+
+fn normalize_timer_wakes_for_recovery_tx(
+    tx: &Transaction<'_>,
+    agent: &str,
+) -> Result<TimerWakeRecoveryResult> {
+    normalize_timer_wakes_with_writes_tx(tx, read_timer_wake_normalization_tx(tx, agent)?)
+        .map(|ack| ack.result)
 }
 
 impl TimerRepository<'_> {
@@ -3431,13 +3539,14 @@ impl TimerRepository<'_> {
         budget: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
     ) -> Result<ScopedTimerWakeRecovery> {
         self.db.transaction(|tx| {
-            super::input_evidence_writes::validate_input_evidence_scope_tx(
-                tx,
-                scope,
-                &scope.agent_id,
+            let proof = super::scheduling_snapshot::prepare_bootstrap_wake_normalization_tx(
+                tx, scope, budget,
             )?;
-            super::bootstrap_inputs::pending_metadata_tx(tx, scope, budget)?;
-            let result = normalize_timer_wakes_for_recovery_tx(tx, &scope.agent_id)?;
+            let input = read_timer_wake_normalization_tx(tx, &scope.agent_id)?;
+            let proof = proof.observe_inputs_tx(tx, &input)?;
+            let writes = normalize_timer_wakes_with_writes_tx(tx, input)?;
+            let result = writes.result;
+            let scheduling_ack = proof.finish_tx(tx, &writes.wake_pairs)?;
             let mut queue_entries = Vec::new();
             for id in &result.dropped_message_ids {
                 let payload: String = tx.query_row(
@@ -3470,6 +3579,7 @@ impl TimerRepository<'_> {
                 result,
                 queue_entries,
                 scope_facts,
+                scheduling_ack,
             })
         })
     }
@@ -3512,6 +3622,7 @@ impl TimerRepository<'_> {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn fire_with_wait_in_scope_with_task_request(
         &self,
         scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
@@ -3540,281 +3651,338 @@ impl TimerRepository<'_> {
         )>,
     ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TimerFireResult>> {
         self.db.transaction(|tx| {
-            if let Some((scope, _, _, _)) = scoped_work {
-                super::input_evidence_writes::validate_input_evidence_scope_tx(
+            self.fire_with_wait_tx(
+                tx,
+                command,
+                fault,
+                scoped_work,
+                false,
+                &mut WaitConditionWrites::default(),
+                &mut Vec::new(),
+                None,
+            )
+        })
+    }
+
+    /// Same original business kernel; the Prepared outer TX owns Work finalization.
+    pub(crate) fn fire_with_wait_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &TimerFire,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+        scoped_work: Option<(
+            &crate::runtime::resident_input_evidence::InputEvidenceScope,
+            &super::work_snapshot::WorkDomainLoadRequest,
+            &super::task_snapshot::TaskDomainLoadRequest,
+            &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        )>,
+        defer_work: bool,
+        actual_wait_writes: &mut WaitConditionWrites,
+        actual_audits: &mut Vec<AuditEvent>,
+        mut memory: Option<&mut super::dispatch_memory::DispatchMemoryTransactionBudget>,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TimerFireResult>> {
+        if let Some((scope, _, _, _)) = scoped_work {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &command.expected.agent_id,
+            )?;
+        }
+        if timer_tx(tx, &command.expected.id)?.as_ref() != Some(&command.expected)
+            || command.expected.status != TimerStatus::Active
+        {
+            return Ok(super::input_evidence_writes::InputEvidenceCommit {
+                work_delta: None,
+                task_delta: None,
+                task_material_budget_views: Vec::new(),
+                record: TimerFireResult {
+                    advanced: false,
+                    wake_created: false,
+                    message: None,
+                },
+                input_delta: Default::default(),
+                agent_state: None,
+            });
+        }
+        if command.record.id != command.expected.id
+            || command.record.agent_id != command.expected.agent_id
+            || command.record.fire_count != command.expected.fire_count + 1
+        {
+            return Err(anyhow!("invalid timer fire transition"));
+        }
+        let pending = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM timer_wakes WHERE timer_id = ?1 AND status = 'pending')",
+            [&command.record.id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if pending {
+            upsert_timer_tx(tx, &command.record)?;
+            return Ok(super::input_evidence_writes::InputEvidenceCommit {
+                work_delta: None,
+                task_delta: None,
+                task_material_budget_views: Vec::new(),
+                record: TimerFireResult {
+                    advanced: true,
+                    wake_created: false,
+                    message: None,
+                },
+                input_delta: Default::default(),
+                agent_state: None,
+            });
+        }
+        let actual_agent_state = tx
+            .query_row(
+                "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
+                [&command.record.agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|value| serde_json::from_str::<AgentState>(&value))
+            .transpose()?;
+        if actual_agent_state.as_ref() != Some(&command.agent_state.0) {
+            return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+                "agent_state",
+                &command.record.agent_id,
+            )
+            .into());
+        }
+        if command.message.agent_id != command.record.agent_id
+            || command.queue_entry.agent_id != command.record.agent_id
+        {
+            return Err(anyhow!("invalid timer wake message or queue entry"));
+        }
+        if let Some((scope, _, _, _)) = scoped_work {
+            // A retried append cannot grant a same-name historical Message
+            // to a Fresh successor or resurrect a pruned evidence ID.
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                    &command.message.id,
+                ),
+            )?;
+        }
+        // Freeze the original reducer's possible Wait writes before it
+        // changes any qualified body. Existing admission/no-match is empty.
+        let (predicted_wait, projection_guard) =
+            if let Some((scope, request, _, ledger)) = scoped_work.filter(|_| !defer_work) {
+                super::transitions::predicted_trigger_wait_tx(
                     tx,
                     scope,
-                    &command.expected.agent_id,
-                )?;
-            }
-            if timer_tx(tx, &command.expected.id)?.as_ref() != Some(&command.expected)
-                || command.expected.status != TimerStatus::Active
-            {
-                return Ok(super::input_evidence_writes::InputEvidenceCommit {
-                    work_delta: None,
-                    task_delta: None,
-                    task_material_budget_views: Vec::new(),
-                    record: TimerFireResult {
-                        advanced: false,
-                        wake_created: false,
-                        message: None,
-                    },
-                    input_delta: Default::default(),
-                    agent_state: None,
-                });
-            }
-            if command.record.id != command.expected.id
-                || command.record.agent_id != command.expected.agent_id
-                || command.record.fire_count != command.expected.fire_count + 1
-            {
-                return Err(anyhow!("invalid timer fire transition"));
-            }
-            let pending = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM timer_wakes WHERE timer_id = ?1 AND status = 'pending')",
-                [&command.record.id],
-                |row| row.get::<_, bool>(0),
+                    &command.message,
+                    &command.queue_entry,
+                    request,
+                    ledger,
+                    memory.as_deref_mut(),
+                )?
+            } else {
+                (None, None)
+            };
+        // A no-match still materializes the original reducer's pool below.
+        let _projection_guard = projection_guard;
+        let work_proof = if let (Some((scope, _, _, _)), Some(wait)) = (scoped_work, predicted_wait)
+        {
+            let keys = super::work_snapshot::work_wait_write_keys_tx(tx, &[wait])?;
+            Some(super::work_snapshot::prepare_work_write_tx(
+                tx, scope, &keys,
+            )?)
+        } else {
+            None
+        };
+        upsert_timer_tx(tx, &command.record)?;
+        inject_fault(
+            fault,
+            crate::runtime_db::transitions::TransitionFaultPoint::AfterValidation,
+        )?;
+        let wake = trigger_wait_and_enqueue_tx(tx, &command.message, &command.queue_entry)?;
+        if wake.message_inserted {
+            insert_runtime_index_changes_tx(tx, &[RuntimeIndexChange::for_message(&wake.message)])?;
+        }
+        let now = timestamp(command.queue_entry.updated_at);
+        tx.execute(
+            "INSERT INTO timer_wakes
+                 (timer_id, message_id, fire_count, status, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
+            params![
+                command.record.id,
+                command.message.id,
+                command.record.fire_count as i64,
+                now
+            ],
+        )?;
+        upsert_agent_state_tx(tx, &command.agent_state.1)?;
+        actual_wait_writes.extend(wake.wait_writes.clone());
+        actual_audits.extend(wake.audit_events);
+        let wait_writes = wake.wait_writes;
+        let result = TimerFireResult {
+            advanced: true,
+            wake_created: true,
+            message: Some(wake.message),
+        };
+        let acknowledgement = if let Some((scope, work_request, task_request, ledger)) = scoped_work
+        {
+            let actual = committed_message_tx(tx, &scope.agent_id, &command.message.id)?;
+            let facts =
+                [super::input_evidence_snapshot::CanonicalInputEvidence::Message(actual.clone())];
+            let mut acknowledgement = super::input_evidence_writes::acknowledge_input_evidence_tx(
+                tx,
+                scope,
+                TimerFireResult {
+                    message: Some(actual),
+                    ..result
+                },
+                &facts,
             )?;
-            if pending {
-                upsert_timer_tx(tx, &command.record)?;
-                return Ok(super::input_evidence_writes::InputEvidenceCommit {
-                    work_delta: None,
-                    task_delta: None,
-                    task_material_budget_views: Vec::new(),
-                    record: TimerFireResult {
-                        advanced: true,
-                        wake_created: false,
-                        message: None,
-                    },
-                    input_delta: Default::default(),
-                    agent_state: None,
-                });
+            let payload: String = tx.query_row(
+                "SELECT payload_json FROM agent_states WHERE agent_id=?1",
+                [&scope.agent_id],
+                |row| row.get(0),
+            )?;
+            let actual: AgentState = serde_json::from_str(&payload)?;
+            let mut expected_ack = command.agent_state.1.clone();
+            expected_ack.total_message_count = actual.total_message_count;
+            anyhow::ensure!(
+                actual == expected_ack,
+                "timer fire State ACK differs from the committed wake projection"
+            );
+            if !defer_work && !wait_writes.wait_ids.is_empty() {
+                let proof = work_proof
+                    .as_ref()
+                    .context("timer Wait writes omitted their original Work proof")?;
+                let actual_keys = wait_writes
+                    .wait_ids
+                    .iter()
+                    .map(|id| {
+                        crate::runtime::resident_work::WorkKey::new(
+                            crate::runtime::resident_work::WorkFamily::Wait,
+                            id,
+                        )
+                    })
+                    .collect();
+                acknowledgement.work_delta = Some(
+                    super::work_snapshot::register_work_writes_tx(
+                        tx,
+                        proof,
+                        &actual_keys,
+                        &Default::default(),
+                        &actual,
+                        work_request,
+                    )?
+                    .delta,
+                );
             }
-            let actual_agent_state = tx
+            if let Some((delta, guards)) = super::task_snapshot::register_task_source_metadata_tx(
+                tx,
+                scope,
+                &acknowledgement.input_delta,
+                task_request,
+                ledger,
+                memory.as_deref_mut(),
+            )? {
+                acknowledgement.task_delta = Some(delta);
+                acknowledgement.task_material_budget_views = guards;
+            }
+            acknowledgement.agent_state = Some(super::transitions::AgentStateMutation {
+                expected: Some(Box::new(command.agent_state.0.clone())),
+                record: Box::new(actual),
+            });
+            acknowledgement
+        } else {
+            super::input_evidence_writes::InputEvidenceCommit {
+                work_delta: None,
+                task_delta: None,
+                task_material_budget_views: Vec::new(),
+                record: result,
+                input_delta: Default::default(),
+                agent_state: None,
+            }
+        };
+        inject_fault(
+            fault,
+            crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,
+        )?;
+        Ok(acknowledgement)
+    }
+
+    pub fn cancel(&self, command: &TimerCancel) -> Result<TimerCancelResult> {
+        self.db.transaction(|tx| self.cancel_tx(tx, command))
+    }
+
+    pub(crate) fn cancel_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &TimerCancel,
+    ) -> Result<TimerCancelResult> {
+        if timer_tx(tx, &command.expected.id)?.as_ref() != Some(&command.expected)
+            || command.expected.status != TimerStatus::Active
+        {
+            return Ok(TimerCancelResult {
+                cancelled: false,
+                dropped_message_id: None,
+            });
+        }
+        if command.record.id != command.expected.id
+            || command.record.agent_id != command.expected.agent_id
+            || command.record.status != TimerStatus::Cancelled
+            || command.record.fire_count != command.expected.fire_count
+        {
+            return Err(anyhow!("invalid timer cancellation transition"));
+        }
+        if let Some((expected, record)) = command.agent_state.as_ref() {
+            let actual = tx
                 .query_row(
                     "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
-                    [&command.record.agent_id],
+                    [&record.id],
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?
                 .map(|value| serde_json::from_str::<AgentState>(&value))
                 .transpose()?;
-            if actual_agent_state.as_ref() != Some(&command.agent_state.0) {
+            if actual.as_ref() != Some(expected) {
                 return Err(RuntimeStateTransitionConflict::concurrent_mutation(
                     "agent_state",
-                    &command.record.agent_id,
+                    &record.id,
                 )
                 .into());
             }
-            if command.message.agent_id != command.record.agent_id
-                || command.queue_entry.agent_id != command.record.agent_id
-            {
-                return Err(anyhow!("invalid timer wake message or queue entry"));
-            }
-            if let Some((scope, _, _, _)) = scoped_work {
-                // A retried append cannot grant a same-name historical Message
-                // to a Fresh successor or resurrect a pruned evidence ID.
-                super::input_evidence_snapshot::validate_existing_input_evidence_tx(
-                    tx,
-                    scope,
-                    &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
-                        crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
-                        &command.message.id,
-                    ),
-                )?;
-            }
-            // Freeze the original reducer's possible Wait writes before it
-            // changes any qualified body. Existing admission/no-match is empty.
-            let (predicted_wait, projection_guard) = if let Some((scope, request, _, ledger)) = scoped_work {
-                super::transitions::predicted_trigger_wait_tx(
-                    tx, scope, &command.message, &command.queue_entry, request, ledger, None,
-                )?
-            } else { (None, None) };
-            // A no-match still materializes the original reducer's pool below.
-            let _projection_guard = projection_guard;
-            let work_proof = if let (Some((scope, _, _, _)), Some(wait)) = (scoped_work, predicted_wait) {
-                let keys = super::work_snapshot::work_wait_write_keys_tx(tx, &[wait])?;
-                Some(super::work_snapshot::prepare_work_write_tx(tx, scope, &keys)?)
-            } else { None };
-            upsert_timer_tx(tx, &command.record)?;
-            inject_fault(
-                fault,
-                crate::runtime_db::transitions::TransitionFaultPoint::AfterValidation,
-            )?;
-            let wake =
-                trigger_wait_and_enqueue_tx(tx, &command.message, &command.queue_entry)?;
-            if wake.message_inserted {
-                insert_runtime_index_changes_tx(
-                    tx,
-                    &[RuntimeIndexChange::for_message(&wake.message)],
-                )?;
-            }
-            let now = timestamp(command.queue_entry.updated_at);
-            tx.execute(
-                "INSERT INTO timer_wakes
-                 (timer_id, message_id, fire_count, status, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
-                params![command.record.id, command.message.id, command.record.fire_count as i64, now],
-            )?;
-            upsert_agent_state_tx(tx, &command.agent_state.1)?;
-            let wait_writes = wake.wait_writes;
-            let result = TimerFireResult {
-                advanced: true,
-                wake_created: true,
-                message: Some(wake.message),
-            };
-            let acknowledgement = if let Some((scope, work_request, task_request, ledger)) = scoped_work {
-                let actual = committed_message_tx(tx, &scope.agent_id, &command.message.id)?;
-                let facts = [
-                    super::input_evidence_snapshot::CanonicalInputEvidence::Message(actual.clone()),
-                ];
-                let mut acknowledgement =
-                    super::input_evidence_writes::acknowledge_input_evidence_tx(
-                        tx,
-                        scope,
-                        TimerFireResult { message: Some(actual), ..result },
-                        &facts,
-                    )?;
-                let payload: String = tx.query_row(
-                    "SELECT payload_json FROM agent_states WHERE agent_id=?1",
-                    [&scope.agent_id],
-                    |row| row.get(0),
-                )?;
-                let actual: AgentState = serde_json::from_str(&payload)?;
-                let mut expected_ack = command.agent_state.1.clone();
-                expected_ack.total_message_count = actual.total_message_count;
-                anyhow::ensure!(
-                    actual == expected_ack,
-                    "timer fire State ACK differs from the committed wake projection"
-                );
-                if !wait_writes.wait_ids.is_empty() {
-                    let proof = work_proof
-                        .as_ref()
-                        .context("timer Wait writes omitted their original Work proof")?;
-                    let actual_keys = wait_writes
-                        .wait_ids
-                        .iter()
-                        .map(|id| {
-                            crate::runtime::resident_work::WorkKey::new(
-                                crate::runtime::resident_work::WorkFamily::Wait,
-                                id,
-                            )
-                        })
-                        .collect();
-                    acknowledgement.work_delta = Some(
-                        super::work_snapshot::register_work_writes_tx(
-                            tx,
-                            proof,
-                            &actual_keys,
-                            &Default::default(),
-                            &actual,
-                            work_request,
-                        )?
-                        .delta,
-                    );
-                }
-                if let Some((delta, guards)) = super::task_snapshot::register_task_source_metadata_tx(
-                    tx, scope, &acknowledgement.input_delta, task_request, ledger, None,
-                )? {
-                    acknowledgement.task_delta = Some(delta);
-                    acknowledgement.task_material_budget_views = guards;
-                }
-                acknowledgement.agent_state = Some(
-                    super::transitions::AgentStateMutation {
-                        expected: Some(Box::new(command.agent_state.0.clone())),
-                        record: Box::new(actual),
-                    },
-                );
-                acknowledgement
-            } else {
-                super::input_evidence_writes::InputEvidenceCommit {
-                    work_delta: None,
-                    task_delta: None,
-                    task_material_budget_views: Vec::new(),
-                    record: result,
-                    input_delta: Default::default(),
-                    agent_state: None,
-                }
-            };
-            inject_fault(
-                fault,
-                crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,
-            )?;
-            Ok(acknowledgement)
-        })
-    }
-
-    pub fn cancel(&self, command: &TimerCancel) -> Result<TimerCancelResult> {
-        self.db.transaction(|tx| {
-            if timer_tx(tx, &command.expected.id)?.as_ref() != Some(&command.expected)
-                || command.expected.status != TimerStatus::Active
-            {
-                return Ok(TimerCancelResult {
-                    cancelled: false,
-                    dropped_message_id: None,
-                });
-            }
-            if command.record.id != command.expected.id
-                || command.record.agent_id != command.expected.agent_id
-                || command.record.status != TimerStatus::Cancelled
-                || command.record.fire_count != command.expected.fire_count
-            {
-                return Err(anyhow!("invalid timer cancellation transition"));
-            }
-            if let Some((expected, record)) = command.agent_state.as_ref() {
-                let actual = tx
-                    .query_row(
-                        "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
-                        [&record.id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?
-                    .map(|value| serde_json::from_str::<AgentState>(&value))
-                    .transpose()?;
-                if actual.as_ref() != Some(expected) {
-                    return Err(RuntimeStateTransitionConflict::concurrent_mutation(
-                        "agent_state",
-                        &record.id,
-                    )
-                    .into());
-                }
-            }
-            upsert_timer_tx(tx, &command.record)?;
-            let now = timestamp(timer_updated_at(&command.record));
-            let message_id = tx
+        }
+        upsert_timer_tx(tx, &command.record)?;
+        let now = timestamp(timer_updated_at(&command.record));
+        let message_id = tx
+            .query_row(
+                "SELECT message_id FROM timer_wakes WHERE timer_id = ?1 AND status = 'pending'",
+                [&command.record.id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        tx.execute(
+            "UPDATE timer_wakes SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
+                 WHERE timer_id = ?1 AND status = 'pending'",
+            params![command.record.id, now],
+        )?;
+        if let Some(message_id) = message_id.as_deref() {
+            let payload = tx
                 .query_row(
-                    "SELECT message_id FROM timer_wakes WHERE timer_id = ?1 AND status = 'pending'",
-                    [&command.record.id],
+                    "SELECT payload_json FROM queue_entries WHERE message_id = ?1
+                     AND status IN ('queued', 'interrupted')",
+                    [message_id],
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?;
-            tx.execute(
-                "UPDATE timer_wakes SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
-                 WHERE timer_id = ?1 AND status = 'pending'",
-                params![command.record.id, now],
-            )?;
-            if let Some(message_id) = message_id.as_deref() {
-                let payload = tx
-                    .query_row(
-                        "SELECT payload_json FROM queue_entries WHERE message_id = ?1
-                     AND status IN ('queued', 'interrupted')",
-                        [message_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?;
-                if let Some(payload) = payload {
-                    let mut entry = decode_queue_entry_payload(&payload)?;
-                    entry.status = QueueEntryStatus::Dropped;
-                    entry.updated_at = timer_updated_at(&command.record);
-                    upsert_queue_entry_tx(tx, &entry)?;
-                }
+            if let Some(payload) = payload {
+                let mut entry = decode_queue_entry_payload(&payload)?;
+                entry.status = QueueEntryStatus::Dropped;
+                entry.updated_at = timer_updated_at(&command.record);
+                upsert_queue_entry_tx(tx, &entry)?;
             }
-            if let Some((_, record)) = command.agent_state.as_ref() {
-                upsert_agent_state_tx(tx, record)?;
-            }
-            Ok(TimerCancelResult {
-                cancelled: true,
-                dropped_message_id: message_id,
-            })
+        }
+        if let Some((_, record)) = command.agent_state.as_ref() {
+            upsert_agent_state_tx(tx, record)?;
+        }
+        Ok(TimerCancelResult {
+            cancelled: true,
+            dropped_message_id: message_id,
         })
     }
 
@@ -3827,6 +3995,10 @@ impl TimerRepository<'_> {
                 let latest = reduce_timer_records(records);
                 for record in latest.values() {
                     upsert_timer_tx(tx, record)?;
+                    super::scheduling_snapshot::record_scheduling_import_tx(
+                        tx,
+                        super::scheduling_snapshot::SchedulingImportRecord::Timer(record),
+                    )?;
                 }
                 let active_records = latest
                     .values()
@@ -5184,6 +5356,13 @@ pub(crate) fn upsert_external_trigger_tx(
     tx: &Transaction<'_>,
     record: &ExternalTriggerRecord,
 ) -> Result<()> {
+    upsert_external_trigger_with_write_tx(tx, record).map(|_| ())
+}
+
+pub(crate) fn upsert_external_trigger_with_write_tx(
+    tx: &Transaction<'_>,
+    record: &ExternalTriggerRecord,
+) -> Result<bool> {
     if record.status == ExternalTriggerStatus::Active {
         super::reclamation::ensure_work_admission_tx(tx, &record.target_agent_id)?;
     }
@@ -5191,7 +5370,7 @@ pub(crate) fn upsert_external_trigger_tx(
     let status = enum_string(&record.status)?;
     let revoked_at = record.revoked_at.map(timestamp);
     let last_delivered_at = record.last_delivered_at.map(timestamp);
-    tx.execute(
+    let changed = tx.execute(
         "INSERT INTO external_triggers (
             external_trigger_id, target_agent_id, trigger_url,
             token_hash, status, created_at, revoked_at, last_delivered_at,
@@ -5236,9 +5415,89 @@ pub(crate) fn upsert_external_trigger_tx(
             payload_json,
         ],
     )?;
-    Ok(())
+    Ok(changed == 1)
 }
 
+/// Actual affected IDs from the original ensure/reset SQL exits.
+pub(crate) fn ensure_default_external_trigger_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    delivery_mode: CallbackDeliveryMode,
+    now: DateTime<Utc>,
+    external_trigger_id: String,
+    token: String,
+    actual_ids: &mut BTreeSet<String>,
+) -> Result<(ExternalTriggerRecord, Option<ExternalTriggerRecord>, bool)> {
+    if let Some(descriptor) = active_default_for_agent_tx(tx, agent_id)? {
+        if descriptor.token.is_some() {
+            return Ok((descriptor, None, false));
+        }
+
+        let mut revoked = descriptor;
+        revoked.status = ExternalTriggerStatus::Revoked;
+        revoked.revoked_at = Some(now);
+        if upsert_external_trigger_with_write_tx(tx, &revoked)? {
+            actual_ids.insert(revoked.external_trigger_id.clone());
+        }
+
+        let descriptor = default_external_trigger_record(
+            agent_id,
+            delivery_mode.clone(),
+            now,
+            external_trigger_id.clone(),
+            token.clone(),
+        );
+        if upsert_external_trigger_with_write_tx(tx, &descriptor)? {
+            actual_ids.insert(descriptor.external_trigger_id.clone());
+        }
+        return Ok((descriptor, Some(revoked), true));
+    }
+
+    let descriptor = default_external_trigger_record(
+        agent_id,
+        delivery_mode.clone(),
+        now,
+        external_trigger_id.clone(),
+        token.clone(),
+    );
+    if upsert_external_trigger_with_write_tx(tx, &descriptor)? {
+        actual_ids.insert(descriptor.external_trigger_id.clone());
+    }
+    Ok((descriptor, None, true))
+}
+pub(crate) fn reset_default_external_trigger_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    delivery_mode: CallbackDeliveryMode,
+    now: DateTime<Utc>,
+    external_trigger_id: String,
+    token: String,
+    actual_ids: &mut BTreeSet<String>,
+) -> Result<(ExternalTriggerRecord, Option<ExternalTriggerRecord>)> {
+    let revoked = if let Some(descriptor) = active_default_for_agent_tx(tx, agent_id)? {
+        let mut revoked = descriptor;
+        revoked.status = ExternalTriggerStatus::Revoked;
+        revoked.revoked_at = Some(now);
+        if upsert_external_trigger_with_write_tx(tx, &revoked)? {
+            actual_ids.insert(revoked.external_trigger_id.clone());
+        }
+        Some(revoked)
+    } else {
+        None
+    };
+
+    let descriptor = default_external_trigger_record(
+        agent_id,
+        delivery_mode.clone(),
+        now,
+        external_trigger_id.clone(),
+        token.clone(),
+    );
+    if upsert_external_trigger_with_write_tx(tx, &descriptor)? {
+        actual_ids.insert(descriptor.external_trigger_id.clone());
+    }
+    Ok((descriptor, revoked))
+}
 fn active_default_for_agent_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -6475,7 +6734,10 @@ fn try_transition_claimable_message_tx(
     Ok(changed == 1)
 }
 
-fn timer_tx(tx: &Transaction<'_>, timer_id: &str) -> Result<Option<TimerRecord>> {
+pub(in crate::runtime_db) fn timer_tx(
+    tx: &Transaction<'_>,
+    timer_id: &str,
+) -> Result<Option<TimerRecord>> {
     tx.query_row(
         "SELECT payload_json FROM timers WHERE timer_id = ?1",
         [timer_id],
@@ -6487,13 +6749,20 @@ fn timer_tx(tx: &Transaction<'_>, timer_id: &str) -> Result<Option<TimerRecord>>
 }
 
 pub(crate) fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Result<()> {
+    upsert_timer_with_write_tx(tx, record).map(|_| ())
+}
+
+pub(crate) fn upsert_timer_with_write_tx(
+    tx: &Transaction<'_>,
+    record: &TimerRecord,
+) -> Result<bool> {
     if record.status == TimerStatus::Active {
         super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
     }
     let payload_json = serde_json::to_string(record)?;
     let status = enum_string(&record.status)?;
     let updated_at = timer_updated_at(record);
-    tx.execute(
+    let changed = tx.execute(
         "INSERT INTO timers (
             timer_id, agent_id, status, summary, created_at, duration_ms,
             interval_ms, repeat, next_fire_at, last_fired_at, fire_count,
@@ -6553,7 +6822,7 @@ pub(crate) fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Res
             payload_json,
         ],
     )?;
-    Ok(())
+    Ok(changed == 1)
 }
 
 fn merge_legacy_turn_evidence_tx(tx: &Transaction<'_>, derived: &TurnRecord) -> Result<TurnRecord> {

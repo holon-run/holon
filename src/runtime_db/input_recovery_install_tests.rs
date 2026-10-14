@@ -11,8 +11,9 @@ use crate::{
     },
     types::{
         AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentState,
-        AgentVisibility, CallbackDeliveryMode, ExternalTriggerScope, ExternalTriggerStatus,
-        TaskKind, TaskRecord, TaskStatus, TimerStatus, WorkItemRecord, WorkItemState,
+        AgentVisibility, CallbackDeliveryMode, ExternalTriggerRecord, ExternalTriggerScope,
+        ExternalTriggerStatus, TaskKind, TaskRecord, TaskStatus, TimerRecord, TimerStatus,
+        WorkItemRecord, WorkItemState,
     },
 };
 
@@ -174,8 +175,8 @@ fn original_receipt_keeps_typed_ids_and_recovery_reads_current_values() -> Resul
             current_work
         );
         assert_eq!(current.keys.tasks, keys.tasks);
-        assert_eq!(current.timers.len(), 1);
-        assert_eq!(current.external_triggers.len(), 1);
+        assert_eq!(current.keys.timers, keys.timers);
+        assert_eq!(current.keys.external_triggers, keys.external_triggers);
         Ok(())
     })
 }
@@ -321,4 +322,64 @@ fn task_recovery_install_keeps_selectors_without_decoding_duplicate_bodies() -> 
         assert!(validate_original_install_keys_tx(tx, &f.scope, &keys).is_err());
         Ok(())
     })
+}
+
+#[test]
+fn scheduling_recovery_selectors_never_decode_a_second_body_but_original_ack_stays_typed(
+) -> Result<()> {
+    let f = Fixture::new()?;
+    let keys = InputMutationInstallKeys::from_effects(&f.scope, &f.effects)?;
+    for (table, id_column, id) in [
+        ("timers", "timer_id", &f.effects.timers[0].id),
+        (
+            "external_triggers",
+            "external_trigger_id",
+            &f.effects.external_triggers[0].external_trigger_id,
+        ),
+    ] {
+        f.db.transaction(|tx| {
+            let original: String = tx.query_row(&format!("SELECT payload_json FROM {table} WHERE {id_column}=?1"),
+                [id], |row| row.get(0))?;
+            tx.execute(&format!("UPDATE {table} SET payload_json='invalid-scheduling-body-never-in-metadata' WHERE {id_column}=?1"),[id])?;
+            let current=load_current_install_facts_tx(tx,&f.scope,&keys)?;
+            assert_eq!(current.keys,keys);
+            assert!(!format!("{current:?}").contains("invalid-scheduling-body"));
+            assert!(validate_original_install_keys_tx(tx,&f.scope,&keys).is_err(),
+                "initial receipt must still validate the full typed original body");
+            tx.execute(&format!("UPDATE {table} SET payload_json=?2 WHERE {id_column}=?1"),
+                rusqlite::params![id,original])?;
+            validate_original_install_keys_tx(tx,&f.scope,&keys)?;
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+#[test]
+fn scheduling_recovery_scalar_scope_rejects_foreign_without_parsing_poisoned_body() -> Result<()> {
+    let f = Fixture::new()?;
+    let keys = InputMutationInstallKeys::from_effects(&f.scope, &f.effects)?;
+    for (table, id_column, owner_column, id) in [
+        ("timers", "timer_id", "agent_id", &f.effects.timers[0].id),
+        (
+            "external_triggers",
+            "external_trigger_id",
+            "target_agent_id",
+            &f.effects.external_triggers[0].external_trigger_id,
+        ),
+    ] {
+        f.db.transaction(|tx| {
+            tx.execute(&format!("UPDATE {table} SET {owner_column}='foreign-agent',payload_json='!' WHERE {id_column}=?1"),[id])?;
+            let error=load_current_install_facts_tx(tx,&f.scope,&keys).err()
+                .context("existing foreign install selector cannot be accepted")?;
+            assert!(error.to_string().contains("normalized ID/agent differs"),"{error:#}");
+            // A pruned current row keeps the original receipt selector; only
+            // the separate fresh qualified domain can provide its availability.
+            tx.execute(&format!("DELETE FROM {table} WHERE {id_column}=?1"),[id])?;
+            let current=load_current_install_facts_tx(tx,&f.scope,&keys)?;
+            assert_eq!(current.keys,keys);
+            Ok(())
+        })?;
+    }
+    Ok(())
 }

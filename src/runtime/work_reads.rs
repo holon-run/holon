@@ -122,6 +122,46 @@ impl CapturedWork {
     }
     /// Original Active-only/Open-owner context predicate and canonical order.
     /// A missing preparation is never interpreted as an absent owner.
+    /// Preserve the original unique Active Timer wait / Open owner predicate.
+    pub(in crate::runtime) fn timer_wait_work_item_id(
+        &self,
+        timer_id: &str,
+    ) -> Result<Option<&str>> {
+        ensure_live(self)?;
+        let mut selected = None;
+        let mut count = 0usize;
+        for id in &self.unresolved_wait_ids {
+            let wait = self
+                .records
+                .iter()
+                .find_map(|record| match &record.record {
+                    CanonicalWorkRecord::Wait(wait) if &wait.id == id => Some(wait),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("complete Work Timer route lacks selected Wait body")
+                })?;
+            if wait.status != WaitConditionStatus::Active
+                || wait.kind != crate::types::WaitConditionKind::Timer
+                || wait.subject_ref.as_deref() != Some(timer_id)
+            {
+                continue;
+            }
+            if let Some(owner) = wait.work_item_id.as_deref() {
+                let is_open = self.records.iter().any(|record| {
+                    matches!(&record.record, CanonicalWorkRecord::Work(work)
+                        if work.id == owner && work.state == WorkItemState::Open)
+                });
+                if !is_open {
+                    continue;
+                }
+            }
+            count += 1;
+            selected = wait.work_item_id.as_deref();
+        }
+        Ok((count == 1).then_some(selected).flatten())
+    }
+
     pub(crate) fn context_active_wait_conditions(&self) -> Result<Vec<&WaitConditionRecord>> {
         let mut selected = Vec::new();
         for wait in self.unresolved_wait_conditions()? {
@@ -243,28 +283,23 @@ impl RuntimeHandle {
         let mutation = self.begin_mutation().await?;
         let request = super::context_capture::context_work_capture_request(&mutation.state);
         let captured = mutation.capture_work_read(&request)?;
-        let work_queue = self.inner.runtime_db.transaction(|tx| {
-            let read =
-                crate::runtime_db::context_inputs::ContextDurableRead::new(tx, &captured.state.id);
-            let facts = read.scope_facts()?;
-            ensure!(
-                facts.state.as_ref() == Some(captured.state.as_ref())
-                    && facts
-                        .identity
-                        .as_ref()
-                        .is_some_and(|identity| identity.agent_id == captured.work.scope.agent_id
-                            && identity.incarnation == captured.work.scope.identity_incarnation),
-                "Work query canonical scope/State differs from its published root"
-            );
-            crate::runtime_db::work_snapshot::validate_work_domain_observation_tx(
-                tx,
-                &captured.work.scope,
-                captured.work.revision,
-            )?;
-            captured
-                .work
-                .work_queue(&captured.state, read.external_triggers()?)
-        })?;
+        let scheduling = mutation.capture_scheduling_read(
+            &super::resident_scheduling::SchedulingCaptureRequest::current(),
+        )?;
+        ensure!(
+            scheduling.state == captured.state
+                && scheduling.scheduling.scope == captured.work.scope,
+            "Work and Scheduling publication differ"
+        );
+        let (_, records, bytes) = mutation.context_input_evidence_policy()?;
+        let triggers = scheduling.scheduling.clone_trigger_records(
+            &self.inner.input_evidence_budget,
+            records,
+            bytes,
+        )?;
+        let work_queue = captured
+            .work
+            .work_queue(&captured.state, triggers.records)?;
         let items = work_queue.items;
         let owned = self.inner.input_evidence_budget.register_owned_bytes(
             &captured.work.scope,

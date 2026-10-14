@@ -9,35 +9,39 @@ async fn callback_ingress(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let payload = build_callback_delivery_payload(&headers, body)
         .map_err(|err| bad_request(err.to_string()))?;
-    let (agent_id, descriptor) = state
+    let locator = state
         .host
-        .resolve_external_trigger_record(&callback_token)
-        .await
+        .resolve_external_trigger_locator(&callback_token)
         .map_err(error_response)?
         .ok_or_else(|| forbidden("invalid callback token"))?;
     let identity = state
         .host
-        .agent_identity_record(&agent_id)
+        .agent_identity_record(&locator.target_agent_id)
         .map_err(error_response)?
         .ok_or_else(|| forbidden("invalid callback token"))?;
     if identity.status != AgentRegistryStatus::Active {
         return Err(forbidden("invalid callback token"));
     }
-    if descriptor.delivery_mode != mode.delivery_mode() {
+    if locator.delivery_mode != mode.delivery_mode() {
         return Err(forbidden("callback delivery mode mismatch"));
     }
     let result = state
         .host
-        .deliver_external_callback(&agent_id, &descriptor.external_trigger_id, payload)
+        .deliver_external_callback(
+            &locator.target_agent_id,
+            &locator.external_trigger_id,
+            payload,
+        )
         .await
         .map_err(|err| {
             error!(
-                external_trigger_id = %descriptor.external_trigger_id,
+                external_trigger_id = %locator.external_trigger_id,
                 error = %err,
                 "callback ingress rejected delivery"
             );
             forbidden("forbidden")
         })?;
+    drop(locator);
     Ok(Json(CallbackResponse { ok: true, result }))
 }
 

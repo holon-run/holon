@@ -3,6 +3,8 @@
 use anyhow::{ensure, Result};
 use rusqlite::Transaction;
 
+mod scheduling_capture;
+
 use super::{
     bootstrap_inputs::{pending_metadata_tx, pending_queue_inputs_tx, PreparedPendingQueue},
     context_inputs::{ContextDurableRead, ContextScopeFacts},
@@ -31,10 +33,12 @@ pub(crate) struct PreparedInputRead {
     pub pending: PreparedPendingQueue,
     pub work: Option<std::sync::Arc<crate::runtime::resident_work::ResidentWorkDomain>>,
     pub tasks: Option<std::sync::Arc<crate::runtime::resident_task::ResidentTaskDomain>>,
+    pub scheduling: std::sync::Arc<crate::runtime::resident_scheduling::ResidentSchedulingDomain>,
 }
 
 /// The caller holds the original Ready owner reservation throughout this
 /// transaction and installation. Only qualification sidecars may be written.
+#[cfg(test)]
 pub(crate) fn prepare_input_domains_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
@@ -56,11 +60,13 @@ pub(crate) fn prepare_input_domains_tx(
         None,
         None,
         None,
+        None,
     )
 }
 
 /// Explicit preparation for an already admitted cleanup, after owner identity
 /// validation. Deleting reads only this scope's fixed/current qualification.
+#[cfg(test)]
 pub(crate) fn prepare_existing_admission_cleanup_domains_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
@@ -79,6 +85,7 @@ pub(crate) fn prepare_existing_admission_cleanup_domains_tx(
         true,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -111,6 +118,7 @@ pub(crate) fn prepare_original_input_recovery_with_work_tx(
         Some(task_request),
         None,
         None,
+        None,
     )
 }
 
@@ -138,6 +146,7 @@ pub(crate) fn prepare_original_input_recovery_with_queries_tx(
         Some(tasks),
         query,
         None,
+        None,
     )
 }
 
@@ -164,6 +173,7 @@ pub(crate) fn prepare_control_recovery_with_queries_tx(
         true,
         Some(tasks),
         query,
+        None,
         None,
     )
 }
@@ -202,6 +212,59 @@ pub(crate) fn prepare_partial_task_stop_input_recovery_tx(
         None,
         None,
         None,
+        None,
+    )
+}
+
+/// Explicit finite Scheduling preparation under the same existing owner and State.
+pub(crate) fn prepare_input_with_scheduling_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    state: &AgentState,
+    request: &InputEvidenceLoadRequest,
+    recent_episode_limit: usize,
+    budget: &InputEvidenceBudgetLedger,
+    scheduling: &crate::runtime::resident_scheduling::SchedulingCaptureRequest,
+) -> Result<PreparedInputRead> {
+    prepare_input_domains_inner_tx(
+        tx,
+        scope,
+        state,
+        request,
+        recent_episode_limit,
+        budget,
+        false,
+        None,
+        false,
+        None,
+        None,
+        None,
+        Some(scheduling),
+    )
+}
+pub(crate) fn prepare_original_input_with_scheduling_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    state: &AgentState,
+    request: &InputEvidenceLoadRequest,
+    recent_episode_limit: usize,
+    budget: &InputEvidenceBudgetLedger,
+    scheduling: &crate::runtime::resident_scheduling::SchedulingCaptureRequest,
+) -> Result<PreparedInputRead> {
+    prepare_input_domains_inner_tx(
+        tx,
+        scope,
+        state,
+        request,
+        recent_episode_limit,
+        budget,
+        true,
+        None,
+        false,
+        None,
+        None,
+        None,
+        Some(scheduling),
     )
 }
 
@@ -241,6 +304,7 @@ pub(in crate::runtime_db) fn prepare_child_terminal_input_recovery_tx(
         Some(tasks),
         query,
         Some(material),
+        None,
     )
 }
 
@@ -257,6 +321,7 @@ fn prepare_input_domains_inner_tx(
     task_request: Option<&crate::runtime::resident_task::TaskCaptureRequest>,
     query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
     task_material: Option<&mut super::task_snapshot::read_preparation::TaskReadMaterial<'_>>,
+    scheduling_capture: Option<&crate::runtime::resident_scheduling::SchedulingCaptureRequest>,
 ) -> Result<PreparedInputRead> {
     let facts = ContextDurableRead::new(tx, &scope.agent_id).scope_facts()?;
     if !facts.identity.as_ref().is_some_and(|identity| {
@@ -271,6 +336,15 @@ fn prepare_input_domains_inner_tx(
         facts.state.as_ref() == Some(published_state) && facts.control_revision.is_some(),
         "input preparation canonical State differs from its published root"
     );
+    // The owned Scheduling selector must be admitted before its first clone.
+    // Its guard lives beside the request through the nested Scheduling read.
+    let scheduling_request = scheduling_capture::PreparedSchedulingRequest::new(
+        scope,
+        scheduling_capture,
+        request.record_limit,
+        request.byte_limit,
+        budget,
+    )?;
     // Count and conservative encoded bytes reject before Episode or input body
     // materialization. The later queue read is from this same SQL snapshot.
     let metadata = if original_recovery {
@@ -416,6 +490,32 @@ fn prepare_input_domains_inner_tx(
     } else {
         None
     };
+    let scheduling = if original_recovery {
+        super::scheduling_snapshot::prepare_original_scheduling_recovery_snapshot_tx(
+            tx,
+            scope,
+            &scheduling_request.request,
+            budget,
+        )?
+    } else {
+        super::scheduling_snapshot::prepare_scheduling_domain_snapshot_tx(
+            tx,
+            scope,
+            &scheduling_request.request,
+            budget,
+        )?
+    }
+    .require_current()?;
+    ensure!(
+        scheduling.facts.identity == facts.identity
+            && scheduling.facts.state == facts.state
+            && scheduling.facts.control_revision == facts.control_revision,
+        "Scheduling preparation canonical view differs"
+    );
+    request
+        .mandatory_roots
+        .extend(scheduling.input_roots.iter().cloned());
+    let scheduling = std::sync::Arc::new(scheduling.resident);
     let prepared = if original_recovery {
         super::input_evidence_snapshot::prepare_original_input_recovery_snapshot_tx(
             tx, scope, &request,
@@ -462,5 +562,6 @@ fn prepare_input_domains_inner_tx(
         pending,
         work,
         tasks: tasks.map(|tasks| tasks.resident),
+        scheduling,
     })
 }

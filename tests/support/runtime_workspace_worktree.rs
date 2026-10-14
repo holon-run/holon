@@ -298,6 +298,7 @@ pub async fn enter_workspace_conflict_preserves_existing_occupancy() -> Result<(
     let summary = default_runtime.agent_summary().await?;
     let occupancy = summary
         .active_workspace_occupancy
+        .as_ref()
         .expect("shared_read occupancy should still be held");
     assert_eq!(occupancy.access_mode, WorkspaceAccessMode::SharedRead);
     Ok(())

@@ -347,6 +347,7 @@ impl RuntimeMutation {
                 input_evidence: facts.input_evidence.clone(),
                 work: facts.work.clone(),
                 tasks: facts.tasks.clone(),
+                scheduling: facts.scheduling.clone(),
                 runtime: Some(facts.clone()),
             }],
         )?;

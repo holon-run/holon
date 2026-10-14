@@ -79,6 +79,7 @@ impl AutomaticMemoryIntent {
                     base.family(),
                     InputMutationFamily::WorkItem
                         | InputMutationFamily::Focus
+                        | InputMutationFamily::Timer
                         | InputMutationFamily::Wait
                         | InputMutationFamily::Task
                         | InputMutationFamily::Queue

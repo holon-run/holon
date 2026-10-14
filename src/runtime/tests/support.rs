@@ -114,6 +114,28 @@ pub(crate) async fn persist_task_transition(
     runtime.persist_task_transition(record, event_type).await
 }
 
+/// Persist the original Timer creation ACK, leaving its loop unarmed so restart
+/// is the first producer. This models a crash after durable creation.
+pub(crate) async fn persist_timer_creation_for_restart(
+    runtime: &RuntimeHandle,
+    record: &TimerRecord,
+) -> anyhow::Result<()> {
+    let mut mutation = runtime.begin_mutation().await?;
+    let prepared = crate::runtime_db::transitions::PreparedInputTransition::timer(
+        mutation.input_evidence_scope(),
+        crate::ids::audit_event_id(),
+        runtime.now(),
+        crate::runtime_db::transitions::PreparedTimerTransition::create(record.clone(), None),
+    )?;
+    let (commit, outcome) = mutation.commit_prepared_timer_transition(prepared).await?;
+    assert!(matches!(outcome,
+        crate::runtime_db::transitions::TimerMutationOutcome::Created { record: actual }
+        if actual == *record));
+    drop(mutation);
+    runtime.apply_transition_commit(commit).await;
+    Ok(())
+}
+
 /// Historical parent evidence is committed through the original evidence writer;
 /// it does not stand in for an execution attempt or an active parent dispatch.
 pub(crate) async fn persist_completed_task_parent_fixture(

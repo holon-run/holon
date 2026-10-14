@@ -1,7 +1,9 @@
 //! Bounded cold-bootstrap inputs. Metadata fixes the read view and rejects an
 //! oversized accepted queue before any Message payload is materialized.
 use anyhow::{ensure, Result};
-use rusqlite::{params, Transaction};
+#[cfg(test)]
+use rusqlite::params;
+use rusqlite::Transaction;
 
 use super::{
     context_inputs::{ContextDurableRead, ContextScopeFacts},
@@ -12,7 +14,7 @@ use crate::{
         input_evidence_budget::{InputEvidenceBudgetLedger, PendingBodyCharge},
         resident_input_evidence::InputEvidenceScope,
     },
-    types::{MessageEnvelope, QueueEntryStatus, TimerRecord, TimerStatus},
+    types::{MessageEnvelope, QueueEntryStatus},
 };
 
 pub(crate) struct BootstrapPendingMetadata {
@@ -23,12 +25,6 @@ pub(crate) struct BootstrapPendingMetadata {
 pub(crate) struct PreparedPendingQueue {
     pub metadata: BootstrapPendingMetadata,
     pub messages: Vec<MessageEnvelope>,
-}
-
-pub(crate) struct BootstrapPendingInputs {
-    pub metadata: BootstrapPendingMetadata,
-    pub messages: Vec<MessageEnvelope>,
-    pub active_timers: Vec<TimerRecord>,
 }
 
 impl RuntimeDb {
@@ -212,42 +208,24 @@ fn pending_queue_inputs_inner_tx(
     Ok(PreparedPendingQueue { metadata, messages })
 }
 
-pub(crate) fn pending_inputs_tx(
+pub(crate) fn pending_queue_inputs_and_charges_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     budget: &InputEvidenceBudgetLedger,
-) -> Result<BootstrapPendingInputs> {
-    let PreparedPendingQueue { metadata, messages } = pending_queue_inputs_tx(tx, scope, budget)?;
-    let charges = messages
+) -> Result<PreparedPendingQueue> {
+    let pending = pending_queue_inputs_tx(tx, scope, budget)?;
+    let charges = pending
+        .messages
         .iter()
         .map(|message| {
             Ok(PendingBodyCharge {
                 message_id: message.id.clone(),
-                body_bytes: u64::try_from(serde_json::to_vec(&message.body)?.len())?,
+                body_bytes: crate::runtime::input_evidence_budget::serialized_bytes(&message.body)?,
             })
         })
         .collect::<Result<Vec<_>>>()?;
     budget.install_actual_pending(scope, &charges)?;
-    let mut statement=tx.prepare("SELECT timer_id,payload_json FROM timers WHERE agent_id=?1 AND status='active' ORDER BY created_at DESC,timer_id ASC")?;
-    let mut active_timers = Vec::new();
-    for row in statement.query_map(params![scope.agent_id], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })? {
-        let (id, payload) = row?;
-        let timer = repositories::decode_timer_payload(&payload)?;
-        ensure!(
-            timer.id == id
-                && timer.agent_id == scope.agent_id
-                && timer.status == TimerStatus::Active,
-            "bootstrap Timer columns differ from canonical payload"
-        );
-        active_timers.push(timer);
-    }
-    Ok(BootstrapPendingInputs {
-        metadata,
-        messages,
-        active_timers,
-    })
+    Ok(pending)
 }
 
 #[cfg(test)]
@@ -341,7 +319,8 @@ mod tests {
             Ok(())
         })?;
         let budget = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-        let inputs = db.transaction(|tx| pending_inputs_tx(tx, &scope, &budget))?;
+        let inputs =
+            db.transaction(|tx| pending_queue_inputs_and_charges_tx(tx, &scope, &budget))?;
         assert_eq!(inputs.messages, vec![message.clone()]);
         assert_eq!(inputs.metadata.count, 1);
         assert_eq!(
@@ -368,7 +347,7 @@ mod tests {
             db.bootstrap_pending_metadata(&scope, &budget)
                 .err()
                 .unwrap(),
-            db.transaction(|tx| pending_inputs_tx(tx, &scope, &budget))
+            db.transaction(|tx| pending_queue_inputs_and_charges_tx(tx, &scope, &budget))
                 .err()
                 .unwrap(),
             db.timers()

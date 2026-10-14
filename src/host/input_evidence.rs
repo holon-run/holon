@@ -59,6 +59,7 @@ struct PreparedExternalInput {
     inputs: Option<Arc<ResidentInputEvidence>>,
     work: Option<Arc<crate::runtime::resident_work::ResidentWorkDomain>>,
     tasks: Option<Arc<crate::runtime::resident_task::ResidentTaskDomain>>,
+    scheduling: Option<Arc<crate::runtime::resident_scheduling::ResidentSchedulingDomain>>,
 }
 
 impl RuntimeHost {
@@ -156,6 +157,7 @@ impl RuntimeHost {
                 inputs,
                 work,
                 tasks,
+                scheduling: reservation.prepared_scheduling_for_state_only_commit()?,
             });
         }
         let original_runtime = prepared
@@ -389,12 +391,24 @@ impl RuntimeHost {
                 (tasks, None) => tasks,
                 (None, Some(_)) => None,
             };
+            let scheduling = match (prepared.scheduling, effects.scheduling_delta.as_ref()) {
+                (Some(domain), Some(delta)) => match domain.with_committed(delta) {
+                    Ok(domain) => Some(Arc::new(domain)),
+                    Err(error) => {
+                        preparation_error = Some(error);
+                        None
+                    }
+                },
+                (domain, None) => domain,
+                (None, Some(_)) => None,
+            };
             // A failed projection preparation stays explicitly unprepared;
             // it cannot erase our knowledge that SQL returned an exact ACK.
             let runtime = match runtime.clone().with_external_input_commit(
                 inputs.clone(),
                 work.clone(),
                 tasks.clone(),
+                scheduling.clone(),
                 effects.clone(),
             ) {
                 Ok(runtime) => runtime,
@@ -402,7 +416,13 @@ impl RuntimeHost {
                     preparation_error = Some(error);
                     inputs = None;
                     work = None;
-                    runtime.with_external_input_commit(None, None, tasks.clone(), effects)?
+                    runtime.with_external_input_commit(
+                        None,
+                        None,
+                        tasks.clone(),
+                        scheduling.clone(),
+                        effects,
+                    )?
                 }
             };
             let runtime = Arc::new(runtime);
@@ -410,6 +430,7 @@ impl RuntimeHost {
                 work,
 
                 tasks,
+                scheduling,
                 state: runtime.state.clone(),
                 episodes: prepared.episodes,
                 input_evidence: inputs,

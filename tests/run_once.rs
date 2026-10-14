@@ -98,7 +98,7 @@ async fn run_once_returns_completed_text_for_simple_prompt() -> Result<()> {
         .list_agents()
         .await?
         .into_iter()
-        .map(|summary| summary.identity.agent_id)
+        .map(|summary| summary.identity.agent_id.clone())
         .collect::<Vec<_>>();
     assert!(!listed_agents.iter().any(|id| id == &response.agent_id));
     Ok(())
@@ -1808,7 +1808,7 @@ async fn run_once_can_target_a_persistent_named_agent_session() -> Result<()> {
         .list_agents()
         .await?
         .into_iter()
-        .map(|summary| summary.identity.agent_id)
+        .map(|summary| summary.identity.agent_id.clone())
         .collect::<Vec<_>>();
     assert!(listed_agents.iter().any(|id| id == "bench-15"));
 

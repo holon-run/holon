@@ -3960,6 +3960,11 @@ CREATE INDEX IF NOT EXISTS idx_episode_memory_results_episode_scope
         name: "qualified_task_result_domain",
         sql: super::task_snapshot::TASK_DOMAIN_SCHEMA,
     },
+    Migration {
+        version: 89,
+        name: "qualified_scheduling_domain",
+        sql: super::scheduling_snapshot::SCHEDULING_SCHEMA,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4275,6 +4280,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
         transaction.execute_batch(super::task_stop::TASK_STOP_SCHEMA)?;
         super::task_snapshot::capture_task_domain_upgrade_tx(transaction)?;
         super::task_snapshot::capture_status_sources_upgrade_tx(transaction)?;
+    }
+    if migration.version == 89 {
+        super::scheduling_snapshot::consume_scheduling_upgrade_tx(transaction)?;
     }
     if migration.name == "actual_dispatch_memory_responsibility" {
         super::dispatch_memory::capture_legacy_dispatches_at_upgrade_tx(transaction)?;
