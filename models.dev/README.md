@@ -25,8 +25,17 @@ cargo run -- models-dev refresh
 This fetches the live `models.dev` snapshot, regenerates the artifact,
 drafts the supplemental catalog, and prints a provider mapping audit
 summary. The GitHub Actions workflow `models-dev-refresh.yml` runs this
-weekly and opens a PR (with the refresh summary as the PR body) when
-anything under `models.dev/` changes.
+only when manually dispatched and opens a generated update PR (with the
+refresh summary as the PR body) when anything under `models.dev/` changes.
+
+Daily maintenance is performed by the `holon-model-provider` agent at
+04:30 Beijing time (20:30 UTC on the previous day), using an agent-owned
+persistent timer rather than a GitHub Actions schedule. The agent reviews
+the generated diff and deferred candidates, checks runtime-specific
+adaptations such as `openai-codex` coverage and route capabilities, and
+fixes and validates necessary changes before submitting a PR. Refresh
+output alone is not a reviewed catalog update. No PR is created when
+there is no substantive change; merging still requires maintainer approval.
 
 ## Validate
 
