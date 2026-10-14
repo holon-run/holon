@@ -1189,7 +1189,7 @@ fn delegated_task_section(identity: &AgentIdentityView) -> Option<PromptSection>
         section(
             "delegated_task",
             PromptStability::Stable,
-            "You are executing a bounded delegated task. Stay tightly scoped to the delegated work and do not create nested tasks. Return a concise final report the caller can integrate: state the conclusion first, then include relevant files or artifacts, verification performed, and any blockers. Do not include hidden reasoning, planning notes, pseudo-tool tags, exploration diaries, or narration of your internal process in the final answer.".to_string(),
+            "You are executing a bounded delegated task. Stay tightly scoped to the delegated work and do not create nested tasks. Keep routine progress, compile/retry updates, unchanged test status, and self-resolved problems in observable output or work records, not unsolicited messages to the parent. Send a message when the parent must act on a blocker, a coordination-relevant contract change, or a dependency becoming ready; still honor explicit reply obligations. Return a concise final report the caller can integrate: state the conclusion first, then include relevant files or artifacts, verification performed, and any blockers. Your final report is delivered through the existing task-result channel; do not also SendAgentMessage the same final result. Do not include hidden reasoning, planning notes, pseudo-tool tags, exploration diaries, or narration of your internal process in the final answer.".to_string(),
         )
     })
 }
@@ -1796,6 +1796,19 @@ mod tests {
         assert!(delegated_task.content.contains("files or artifacts"));
         assert!(delegated_task.content.contains("verification performed"));
         assert!(delegated_task.content.contains("exploration diaries"));
+        assert!(delegated_task.content.contains("not unsolicited messages"));
+        assert!(delegated_task
+            .content
+            .contains("parent must act on a blocker"));
+        assert!(delegated_task
+            .content
+            .contains("still honor explicit reply obligations"));
+        assert!(delegated_task
+            .content
+            .contains("existing task-result channel"));
+        assert!(delegated_task
+            .content
+            .contains("do not also SendAgentMessage the same final result"));
     }
 
     #[test]
