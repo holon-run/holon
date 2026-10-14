@@ -12,7 +12,7 @@ use crate::{
     types::{
         AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentState,
         AgentVisibility, CallbackDeliveryMode, ExternalTriggerScope, ExternalTriggerStatus,
-        TaskKind, TaskStatus, TimerStatus, WorkItemRecord, WorkItemState,
+        TaskKind, TaskRecord, TaskStatus, TimerStatus, WorkItemRecord, WorkItemState,
     },
 };
 
@@ -173,7 +173,7 @@ fn original_receipt_keeps_typed_ids_and_recovery_reads_current_values() -> Resul
             repositories::decode_work_item_payload(&payload)?,
             current_work
         );
-        assert_eq!(current.tasks.len(), 1);
+        assert_eq!(current.keys.tasks, keys.tasks);
         assert_eq!(current.timers.len(), 1);
         assert_eq!(current.external_triggers.len(), 1);
         Ok(())
@@ -304,4 +304,21 @@ fn every_family_rejects_foreign_normalized_agent_and_mismatched_payload_id() -> 
     foreign.work_items[0].agent_id = "foreign-agent".into();
     assert!(InputMutationInstallKeys::from_effects(&f.scope, &foreign).is_err());
     Ok(())
+}
+
+#[test]
+fn task_recovery_install_keeps_selectors_without_decoding_duplicate_bodies() -> Result<()> {
+    let f = Fixture::new()?;
+    let keys = InputMutationInstallKeys::from_effects(&f.scope, &f.effects)?;
+    f.db.transaction(|tx| {
+        tx.execute(
+            "UPDATE tasks SET payload_json='invalid-task-body' WHERE task_id=?1",
+            [&f.effects.tasks[0].id],
+        )?;
+        let current = load_current_install_facts_tx(tx, &f.scope, &keys)?;
+        assert_eq!(current.keys.tasks, keys.tasks);
+        // The DTO is not Task readiness or original ACK authority.
+        assert!(validate_original_install_keys_tx(tx, &f.scope, &keys).is_err());
+        Ok(())
+    })
 }

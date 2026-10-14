@@ -1,5 +1,5 @@
 use super::*;
-use crate::types::{BriefKind, TaskStatus, TodoItemState};
+use crate::types::{BriefKind, TodoItemState};
 
 const CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT: usize = 512;
 const QUEUED_AVAILABLE_NO_PROGRESS_LIMIT: usize = 5;
@@ -243,8 +243,12 @@ impl RuntimeHandle {
                 let duplicate = if has_due_recheck {
                     None
                 } else {
-                    self.duplicate_continue_active_result_brief_id(&active, generation)?
-                        .map(scheduler::SchedulerDuplicateEvidence::ContinueActiveBrief)
+                    self.duplicate_continue_active_result_brief_id(
+                        &active,
+                        generation,
+                        &read.tasks,
+                    )?
+                    .map(scheduler::SchedulerDuplicateEvidence::ContinueActiveBrief)
                 };
                 let decision = scheduler::decide_next_action(
                     &scheduler_projection,
@@ -741,6 +745,7 @@ impl RuntimeHandle {
         &self,
         work_item: &crate::types::WorkItemRecord,
         generation: Option<u64>,
+        tasks: &super::resident_task::CapturedTasks,
     ) -> Result<Option<String>> {
         if let Some((message_id, message_created_at)) = self.duplicate_work_queue_tick_message_id(
             &scheduler::work_queue_tick_idempotency_key(work_item, "continue_active", generation),
@@ -748,7 +753,12 @@ impl RuntimeHandle {
             // Same rationale as duplicate_queued_available_message_id: a provider
             // failure during the active continuation turn must not permanently
             // suppress the retry tick when the WorkItem still has pending work.
-            if self.has_work_signal_after(work_item, message_created_at, "continue_active")? {
+            if self.has_work_signal_after(
+                work_item,
+                message_created_at,
+                "continue_active",
+                tasks,
+            )? {
                 return Ok(None);
             }
             return Ok(Some(message_id));
@@ -763,7 +773,12 @@ impl RuntimeHandle {
             return Ok(None);
         };
 
-        if self.has_work_signal_after(work_item, result_brief.created_at, "continue_active")? {
+        if self.has_work_signal_after(
+            work_item,
+            result_brief.created_at,
+            "continue_active",
+            tasks,
+        )? {
             return Ok(None);
         }
 
@@ -868,6 +883,7 @@ impl RuntimeHandle {
         work_item: &crate::types::WorkItemRecord,
         anchor: chrono::DateTime<chrono::Utc>,
         ignored_runtime_reason: &str,
+        tasks: &super::resident_task::CapturedTasks,
     ) -> Result<bool> {
         let work_item_id = work_item.id.as_str();
 
@@ -916,19 +932,7 @@ impl RuntimeHandle {
             return Ok(true);
         }
 
-        if self
-            .inner
-            .storage
-            .latest_task_records()?
-            .iter()
-            .any(|task| {
-                task.updated_at > anchor
-                    && matches!(
-                        task.status,
-                        TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
-                    )
-            })
-        {
+        if super::task_reads::active_task_updated_after(tasks, anchor)? {
             return Ok(true);
         }
 
@@ -1772,14 +1776,14 @@ mod tests {
                     let work = register_work_writes_tx(tx, &proof, &keys, &Default::default(), &final_state, &request)?;
                     Ok(TransitionCommit {
                         applied,
-                        effects: PostCommitEffects {
+                        effects: Box::new(PostCommitEffects {
                             work_items: vec![record.clone()],
                             execution_protocol: Some(execution),
                             input_evidence_delta: input_delta,
                             work_delta: Some(work.delta),
                             work_delta_requires_prepared_domain: true,
                             ..Default::default()
-                        },
+                        }),
                         ..Default::default()
                     })
                 })
@@ -1813,7 +1817,7 @@ mod tests {
                     let delta = register_committed_input_evidence_tx(tx, scope, &[CanonicalInputEvidence::WorkExecution { work_item_id: work_item_id.to_owned(), record: stored }])?;
                     Ok(crate::runtime_db::transitions::TransitionCommit {
                         applied: true,
-                        effects: crate::runtime_db::transitions::PostCommitEffects { execution_protocol: Some(execution), input_evidence_delta: delta, ..Default::default() },
+                        effects: Box::new(crate::runtime_db::transitions::PostCommitEffects { execution_protocol: Some(execution), input_evidence_delta: delta, ..Default::default() }),
                         ..Default::default()
                     })
                 })

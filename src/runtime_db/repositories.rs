@@ -2546,7 +2546,10 @@ impl TaskRepository<'_> {
             .run_storage_domain_import("tasks", "jsonl", "db", |tx| {
                 let latest = reduce_task_records(records);
                 for record in latest.values() {
-                    let _ = upsert_task_tx(tx, record)?;
+                    let changed = upsert_task_tx(tx, record)?;
+                    super::task_snapshot::qualification::record_task_import_tx(
+                        tx, record, changed,
+                    )?;
                 }
                 let active_records = latest
                     .values()
@@ -2607,6 +2610,7 @@ impl TaskRepository<'_> {
         self.query_for_agent(agent_id, "owner_agent_id = ?1", [agent_id], limit)
     }
 
+    #[cfg(test)]
     pub(crate) fn message_waits_for_reply(
         &self,
         agent_id: &str,
@@ -3483,6 +3487,7 @@ impl TimerRepository<'_> {
             .map(|ack| ack.record)
     }
 
+    #[cfg(test)]
     pub(crate) fn fire_with_wait_in_scope(
         &self,
         scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
@@ -3491,7 +3496,36 @@ impl TimerRepository<'_> {
         ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
         fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
     ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TimerFireResult>> {
-        self.fire_with_wait_inner(command, fault, Some((scope, work_request, ledger)))
+        let task_request = super::task_snapshot::TaskDomainLoadRequest {
+            query: Default::default(),
+            capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+            record_limit: work_request.record_limit,
+            byte_limit: work_request.byte_limit,
+        };
+        self.fire_with_wait_in_scope_with_task_request(
+            scope,
+            command,
+            work_request,
+            &task_request,
+            ledger,
+            fault,
+        )
+    }
+
+    pub(crate) fn fire_with_wait_in_scope_with_task_request(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        command: &TimerFire,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+        task_request: &super::task_snapshot::TaskDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TimerFireResult>> {
+        self.fire_with_wait_inner(
+            command,
+            fault,
+            Some((scope, work_request, task_request, ledger)),
+        )
     }
 
     fn fire_with_wait_inner(
@@ -3501,11 +3535,12 @@ impl TimerRepository<'_> {
         scoped_work: Option<(
             &crate::runtime::resident_input_evidence::InputEvidenceScope,
             &super::work_snapshot::WorkDomainLoadRequest,
+            &super::task_snapshot::TaskDomainLoadRequest,
             &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
         )>,
     ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TimerFireResult>> {
         self.db.transaction(|tx| {
-            if let Some((scope, _, _)) = scoped_work {
+            if let Some((scope, _, _, _)) = scoped_work {
                 super::input_evidence_writes::validate_input_evidence_scope_tx(
                     tx,
                     scope,
@@ -3517,6 +3552,8 @@ impl TimerRepository<'_> {
             {
                 return Ok(super::input_evidence_writes::InputEvidenceCommit {
                     work_delta: None,
+                    task_delta: None,
+                    task_material_budget_views: Vec::new(),
                     record: TimerFireResult {
                         advanced: false,
                         wake_created: false,
@@ -3541,6 +3578,8 @@ impl TimerRepository<'_> {
                 upsert_timer_tx(tx, &command.record)?;
                 return Ok(super::input_evidence_writes::InputEvidenceCommit {
                     work_delta: None,
+                    task_delta: None,
+                    task_material_budget_views: Vec::new(),
                     record: TimerFireResult {
                         advanced: true,
                         wake_created: false,
@@ -3571,7 +3610,7 @@ impl TimerRepository<'_> {
             {
                 return Err(anyhow!("invalid timer wake message or queue entry"));
             }
-            if let Some((scope, _, _)) = scoped_work {
+            if let Some((scope, _, _, _)) = scoped_work {
                 // A retried append cannot grant a same-name historical Message
                 // to a Fresh successor or resurrect a pruned evidence ID.
                 super::input_evidence_snapshot::validate_existing_input_evidence_tx(
@@ -3585,14 +3624,14 @@ impl TimerRepository<'_> {
             }
             // Freeze the original reducer's possible Wait writes before it
             // changes any qualified body. Existing admission/no-match is empty.
-            let (predicted_wait, projection_guard) = if let Some((scope, request, ledger)) = scoped_work {
+            let (predicted_wait, projection_guard) = if let Some((scope, request, _, ledger)) = scoped_work {
                 super::transitions::predicted_trigger_wait_tx(
                     tx, scope, &command.message, &command.queue_entry, request, ledger, None,
                 )?
             } else { (None, None) };
             // A no-match still materializes the original reducer's pool below.
             let _projection_guard = projection_guard;
-            let work_proof = if let (Some((scope, _, _)), Some(wait)) = (scoped_work, predicted_wait) {
+            let work_proof = if let (Some((scope, _, _, _)), Some(wait)) = (scoped_work, predicted_wait) {
                 let keys = super::work_snapshot::work_wait_write_keys_tx(tx, &[wait])?;
                 Some(super::work_snapshot::prepare_work_write_tx(tx, scope, &keys)?)
             } else { None };
@@ -3623,7 +3662,7 @@ impl TimerRepository<'_> {
                 wake_created: true,
                 message: Some(wake.message),
             };
-            let acknowledgement = if let Some((scope, work_request, _)) = scoped_work {
+            let acknowledgement = if let Some((scope, work_request, task_request, ledger)) = scoped_work {
                 let actual = committed_message_tx(tx, &scope.agent_id, &command.message.id)?;
                 let facts = [
                     super::input_evidence_snapshot::CanonicalInputEvidence::Message(actual.clone()),
@@ -3673,6 +3712,12 @@ impl TimerRepository<'_> {
                         .delta,
                     );
                 }
+                if let Some((delta, guards)) = super::task_snapshot::register_task_source_metadata_tx(
+                    tx, scope, &acknowledgement.input_delta, task_request, ledger, None,
+                )? {
+                    acknowledgement.task_delta = Some(delta);
+                    acknowledgement.task_material_budget_views = guards;
+                }
                 acknowledgement.agent_state = Some(
                     super::transitions::AgentStateMutation {
                         expected: Some(Box::new(command.agent_state.0.clone())),
@@ -3683,6 +3728,8 @@ impl TimerRepository<'_> {
             } else {
                 super::input_evidence_writes::InputEvidenceCommit {
                     work_delta: None,
+                    task_delta: None,
+                    task_material_budget_views: Vec::new(),
                     record: result,
                     input_delta: Default::default(),
                     agent_state: None,
@@ -4965,13 +5012,35 @@ impl AuditEventSink<'_> {
     }
 }
 
-fn upsert_work_item_delegation_tx(
+/// Only this repository's successful original SQL write can mint the source.
+pub(in crate::runtime_db) struct OriginalDelegationWrite<'tx, 'connection> {
+    tx: &'tx Transaction<'connection>,
+    delegation_id: &'tx str,
+}
+impl OriginalDelegationWrite<'_, '_> {
+    pub(in crate::runtime_db) fn source_in<'a>(&'a self, tx: &Transaction<'_>) -> Result<&'a str> {
+        anyhow::ensure!(
+            std::ptr::eq(self.tx, tx),
+            "Delegation source crossed transaction"
+        );
+        Ok(self.delegation_id)
+    }
+}
+
+pub(in crate::runtime_db) fn upsert_work_item_delegation_tx(
     tx: &Transaction<'_>,
     record: &WorkItemDelegationRecord,
 ) -> Result<()> {
+    upsert_work_item_delegation_with_ack_tx(tx, record).map(|_| ())
+}
+
+pub(in crate::runtime_db) fn upsert_work_item_delegation_with_ack_tx(
+    tx: &Transaction<'_>,
+    record: &WorkItemDelegationRecord,
+) -> Result<bool> {
     let payload_json = serde_json::to_string(record)?;
     let state = enum_string(&record.state)?;
-    tx.execute(
+    let changed = tx.execute(
         "INSERT INTO work_item_delegations (
             delegation_id, parent_agent_id, parent_work_item_id, child_agent_id,
             child_work_item_id, state, created_at, updated_at, payload_json
@@ -4998,7 +5067,23 @@ fn upsert_work_item_delegation_tx(
             payload_json,
         ],
     )?;
-    Ok(())
+    if changed == 1 {
+        // Older schema fixtures and the upgrade collector precede Task schema.
+        // They receive their fixed inventory at the migration cut instead.
+        let installed: bool = tx.query_row(
+            "SELECT COALESCE(MAX(version),0)>=?1 FROM schema_migrations",
+            [super::task_snapshot::TASK_DOMAIN_VERSION],
+            |row| row.get(0),
+        )?;
+        if installed {
+            let observed = OriginalDelegationWrite {
+                tx,
+                delegation_id: &record.delegation_id,
+            };
+            super::task_snapshot::register_delegation_write_tx(tx, &observed)?;
+        }
+    }
+    Ok(changed == 1)
 }
 
 pub(crate) fn upsert_work_item_continuation_tx(
@@ -5571,6 +5656,59 @@ pub(crate) fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Resul
         }
     }
 
+    write_task_row_tx(tx, record)
+}
+
+pub(crate) fn upsert_interrupted_child_task_stop_tx(
+    tx: &Transaction<'_>,
+    proof: &super::task_stop::TaskStopWriteProof<'_, '_>,
+    record: &TaskRecord,
+) -> Result<bool> {
+    anyhow::ensure!(
+        proof.interrupted_child_cancellation(tx, record)?,
+        "TaskStop does not authorize interrupted child cancellation"
+    );
+    write_task_row_tx(tx, record)
+}
+
+pub(in crate::runtime_db) fn update_original_child_monitor_binding_tx(
+    tx: &Transaction<'_>,
+    proof: &super::transitions::ExistingOriginalChildBindingWriteProof<'_, '_, '_>,
+    record: &TaskRecord,
+) -> Result<bool> {
+    proof.validate_transaction(tx)?;
+    let existing = tx
+        .query_row(
+            "SELECT payload_json FROM tasks WHERE task_id=?1",
+            [&record.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|raw| decode_task_payload(&raw))
+        .transpose()?
+        .context("existing child binding Task disappeared")?;
+    proof.validate_existing(tx, &existing, record)?;
+    if matches!(
+        task_transition(&existing, record)?,
+        StateTransitionOutcome::Idempotent
+    ) {
+        return Ok(false);
+    }
+    write_task_row_with_mode_tx(tx, record, TaskRowWriteMode::ExistingOriginalBinding)
+}
+#[derive(Clone, Copy)]
+enum TaskRowWriteMode {
+    Upsert,
+    ExistingOriginalBinding,
+}
+fn write_task_row_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<bool> {
+    write_task_row_with_mode_tx(tx, record, TaskRowWriteMode::Upsert)
+}
+fn write_task_row_with_mode_tx(
+    tx: &Transaction<'_>,
+    record: &TaskRecord,
+    mode: TaskRowWriteMode,
+) -> Result<bool> {
     let kind = record.kind.as_str();
     let status = enum_string(&record.status)?;
     let status_phase = i64::from(task_status_phase(&record.status));
@@ -5586,8 +5724,7 @@ pub(crate) fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Resul
     let completed_at =
         is_terminal_task_status(&record.status).then(|| timestamp(record.updated_at));
     let payload_json = serde_json::to_string(&slim_task_record_for_payload(record))?;
-    tx.execute(
-        "INSERT INTO tasks (
+    let sql=match mode {TaskRowWriteMode::Upsert=>"INSERT INTO tasks (
             task_id, owner_agent_id, parent_agent_id, child_agent_id, kind, status,
             summary, input_target, wait_policy, output_path, result_summary,
             exit_status, terminal_reentry, revision, created_at, updated_at,
@@ -5618,7 +5755,13 @@ pub(crate) fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Resul
                 WHEN 'running' THEN 1
                 WHEN 'cancelling' THEN 2
                 ELSE 3
-            END)",
+            END)",TaskRowWriteMode::ExistingOriginalBinding=>"UPDATE tasks SET owner_agent_id=?2,parent_agent_id=?3,child_agent_id=?4,kind=?5,status=?6,
+         summary=?7,input_target=?8,wait_policy=?9,output_path=?10,result_summary=?11,exit_status=?12,
+         terminal_reentry=?13,revision=?14,created_at=?15,updated_at=?16,completed_at=?17,last_message_id=?18,payload_json=?19
+         WHERE task_id=?1 AND (?14>revision OR (?14=revision AND ?20>=CASE status
+            WHEN 'queued' THEN 0 WHEN 'running' THEN 1 WHEN 'cancelling' THEN 2 ELSE 3 END))"};
+    let actual = tx.execute(
+        sql,
         params![
             record.id,
             record.agent_id,
@@ -5642,6 +5785,12 @@ pub(crate) fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Resul
             status_phase,
         ],
     )?;
+    if matches!(mode, TaskRowWriteMode::ExistingOriginalBinding) {
+        anyhow::ensure!(
+            actual == 1,
+            "existing child binding UPDATE did not affect its original Task"
+        );
+    }
     Ok(true)
 }
 

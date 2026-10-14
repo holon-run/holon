@@ -3,12 +3,33 @@
 //! Prepared commands own their payload exactly once. A replay carries the
 //! original outcome only; current installation facts come from a fresh resolver.
 use super::*;
+#[path = "prepared_child_monitor_binding.rs"]
+mod child_binding;
+#[path = "prepared_child_task_terminal.rs"]
+mod child_terminal;
+#[path = "prepared_command_task_terminal.rs"]
+mod command_terminal;
+#[path = "prepared_task_terminal_business.rs"]
+mod task_terminal_business;
 use crate::runtime_db::input_mutation_receipts::{
     canonical_command_digest, insert_input_mutation_receipt_tx, lookup_input_mutation_receipt_tx,
     InputMutationFamily, InputMutationOutcome, InputMutationReceipt, InputMutationResult,
     InputMutationScopeOutcome, PreparedInputMutation,
 };
 use crate::runtime_db::repositories;
+pub(in crate::runtime_db) use child_binding::ExistingOriginalChildBindingWriteProof;
+pub(crate) use child_terminal::OriginalChildStatusSelection;
+#[path = "prepared_task_stop.rs"]
+mod task_stop;
+#[path = "prepared_task_stop_phase.rs"]
+mod task_stop_phase;
+#[path = "prepared_input_task_writes.rs"]
+mod task_writes;
+pub(crate) use task_stop_phase::worktree_receipt_exists_tx;
+#[path = "prepared_task_status_metadata.rs"]
+mod task_status_metadata;
+#[path = "prepared_task_stop_result.rs"]
+mod task_stop_result;
 
 /// Every argument of the original queue transaction is frozen before its owner
 /// ticket begins. No field is inferred from a callback or the current database.
@@ -45,6 +66,31 @@ impl PreparedQueueTransition {
     }
 }
 
+/// A borrowed view can only be minted from the frozen original Task bundle.
+/// It is not a new mutation command and owns no second command body.
+pub(crate) struct OriginalTaskCleanupView<'a> {
+    descriptor: &'a PreparedInputMutation,
+    task: &'a crate::types::TaskRecord,
+    result: &'a crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
+    message: &'a crate::types::MessageEnvelope,
+}
+impl OriginalTaskCleanupView<'_> {
+    pub(crate) fn descriptor(&self) -> &PreparedInputMutation {
+        self.descriptor
+    }
+    pub(crate) fn task(&self) -> &crate::types::TaskRecord {
+        self.task
+    }
+    pub(crate) fn result(
+        &self,
+    ) -> &crate::runtime_db::task_result_settlement::TaskResultSettlementRecord {
+        self.result
+    }
+    pub(crate) fn message(&self) -> &crate::types::MessageEnvelope {
+        self.message
+    }
+}
+
 /// The child is a business write member, not a read-only group expansion.
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct PreparedTaskTransition {
@@ -52,6 +98,14 @@ pub(crate) struct PreparedTaskTransition {
     pub execution_protocol: ExecutionProtocolTransition,
     pub synchronize_execution_protocol: bool,
     child: Option<PreparedTaskChildDeletion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stop_intent: Option<crate::runtime_db::task_stop::PreparedTaskStop>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_command_terminal: Option<command_terminal::PreparedOriginalCommandTerminal>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_child_terminal: Option<child_terminal::PreparedOriginalChildTerminal>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_child_binding: Option<child_binding::PreparedOriginalChildMonitorBinding>,
 }
 #[derive(Debug, serde::Serialize)]
 struct PreparedTaskChildDeletion {
@@ -98,6 +152,10 @@ impl PreparedTaskTransition {
             execution_protocol,
             synchronize_execution_protocol,
             child,
+            stop_intent: None,
+            original_command_terminal: None,
+            original_child_terminal: None,
+            original_child_binding: None,
         })
     }
 }
@@ -117,6 +175,10 @@ enum InputTransitionCommand {
     },
     Terminal(TurnTerminalTransitionCommand),
     Task(PreparedTaskTransition),
+    TaskResult(PreparedTaskResultTransition),
+    TaskStatusMetadata(task_status_metadata::PreparedTaskStatusMetadataCommand),
+    TaskStopProgress(task_stop_phase::PreparedTaskStopProgressCommand),
+    TaskStopContinuation(task_stop_result::PreparedTaskStopResultCommand),
     Work {
         command: WorkItemTransitionCommand,
         execution_protocol: ExecutionProtocolTransition,
@@ -142,6 +204,10 @@ impl InputTransitionCommand {
             Self::QueueHeadNoProgress { .. } => InputMutationFamily::QueueHeadNoProgress,
             Self::Terminal(_) => InputMutationFamily::Terminal,
             Self::Task(_) => InputMutationFamily::Task,
+            Self::TaskResult(_) => InputMutationFamily::TaskResult,
+            Self::TaskStopProgress(_)
+            | Self::TaskStopContinuation(_)
+            | Self::TaskStatusMetadata(_) => InputMutationFamily::Task,
             Self::Work { .. } => InputMutationFamily::WorkItem,
             Self::Focus { .. } => InputMutationFamily::Focus,
             Self::Wait { .. } => InputMutationFamily::Wait,
@@ -154,6 +220,10 @@ impl InputTransitionCommand {
             Self::QueueHeadNoProgress { command, .. } => &command.agent_id,
             Self::Terminal(command) => &command.agent_id,
             Self::Task(task) => &task.command.agent_id,
+            Self::TaskResult(command) => command.agent_id(),
+            Self::TaskStatusMetadata(command) => &command.scope().agent_id,
+            Self::TaskStopProgress(command) => &command.scope().agent_id,
+            Self::TaskStopContinuation(command) => &command.scope().agent_id,
             Self::Work { command, .. } => &command.agent_id,
             Self::Focus { command, .. } => &command.agent_id,
             Self::Wait { command, .. } => &command.agent_id,
@@ -170,9 +240,39 @@ pub(crate) struct PreparedInputTransition {
     command: Box<InputTransitionCommand>,
     memory: Option<crate::runtime_db::dispatch_memory::DispatchMemoryIntent>,
     ended_memory: Option<crate::runtime::ended_dispatch::EndedDispatchAuthorization>,
+    original_dispatch_claim: Option<crate::runtime::started_dispatch::OriginalDispatchClaim>,
     auto_base_descriptor: Option<PreparedInputMutation>,
 }
 impl PreparedInputTransition {
+    pub(crate) fn original_task_cleanup(&self) -> Result<OriginalTaskCleanupView<'_>> {
+        let InputTransitionCommand::Task(task) = self.command.as_ref() else {
+            anyhow::bail!("original Task cleanup requires a Task command");
+        };
+        let result = task
+            .command
+            .task_result_settlement
+            .as_ref()
+            .context("original Task cleanup has no pending result")?;
+        let mut messages = task
+            .command
+            .message_evidence
+            .iter()
+            .filter(|message| message.id == result.message_id);
+        let message = messages
+            .next()
+            .context("original Task cleanup result Message missing")?;
+        anyhow::ensure!(
+            messages.next().is_none(),
+            "ambiguous original Task result Message"
+        );
+        Ok(OriginalTaskCleanupView {
+            descriptor: &self.descriptor,
+            task: &task.command.task,
+            result,
+            message,
+        })
+    }
+
     pub(crate) fn posture(
         scope: InputEvidenceScope,
         command_nonce: String,
@@ -314,7 +414,17 @@ impl PreparedInputTransition {
         prepared_at: chrono::DateTime<Utc>,
         command: PreparedTaskTransition,
     ) -> Result<Self> {
-        let child_scope = command.child.as_ref().map(|child| child.scope.clone());
+        let child_scope = command
+            .child
+            .as_ref()
+            .map(|child| child.scope.clone())
+            .or_else(|| {
+                command
+                    .stop_intent
+                    .as_ref()
+                    .and_then(|intent| intent.child.as_ref())
+                    .map(|child| child.scope.clone())
+            });
         let mut prepared = Self::prepare(
             scope.clone(),
             command_nonce,
@@ -327,9 +437,55 @@ impl PreparedInputTransition {
         prepared.validate_primary_namespace()?;
         Ok(prepared)
     }
+    pub(crate) fn task_result(
+        scope: InputEvidenceScope,
+        command_nonce: String,
+        prepared_at: chrono::DateTime<Utc>,
+        command: PreparedTaskResultTransition,
+    ) -> Result<Self> {
+        command.validate()?;
+        Self::prepare(
+            scope,
+            command_nonce,
+            prepared_at,
+            InputTransitionCommand::TaskResult(command),
+        )
+    }
+    pub(crate) fn initial_task_stop_intent(
+        &self,
+    ) -> Option<&crate::runtime_db::task_stop::PreparedTaskStop> {
+        match self.command.as_ref() {
+            InputTransitionCommand::Task(task) => task.stop_intent.as_ref(),
+            _ => None,
+        }
+    }
+    pub(crate) fn task_stop_phase_scope(&self) -> Option<&InputEvidenceScope> {
+        match self.command.as_ref() {
+            InputTransitionCommand::TaskStopProgress(command) => Some(command.scope()),
+            InputTransitionCommand::TaskStopContinuation(command) => Some(command.scope()),
+            _ => None,
+        }
+    }
+    pub(crate) fn is_task_stop_phase(&self) -> bool {
+        matches!(
+            self.command.as_ref(),
+            InputTransitionCommand::TaskStopProgress(_)
+                | InputTransitionCommand::TaskStopContinuation(_)
+        )
+    }
     pub(crate) fn task_deletion_scope(&self) -> Option<&InputEvidenceScope> {
         match self.command.as_ref() {
             InputTransitionCommand::Task(task) => task.child.as_ref().map(|child| &child.scope),
+            _ => None,
+        }
+    }
+    fn task_stop_child_scope(&self) -> Option<&InputEvidenceScope> {
+        match self.command.as_ref() {
+            InputTransitionCommand::Task(task) => task
+                .stop_intent
+                .as_ref()
+                .and_then(|intent| intent.child.as_ref())
+                .map(|child| &child.scope),
             _ => None,
         }
     }
@@ -356,8 +512,29 @@ impl PreparedInputTransition {
             command: Box::new(command),
             memory: None,
             ended_memory: None,
+            original_dispatch_claim: None,
             auto_base_descriptor: None,
         })
+    }
+    pub(crate) fn with_original_dispatch_claim(
+        mut self,
+        claim: crate::runtime::started_dispatch::OriginalDispatchClaim,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            matches!(
+                self.command.as_ref(),
+                InputTransitionCommand::Posture {
+                    started_turn: Some(_),
+                    ..
+                }
+            ) && matches!(
+                self.memory.as_ref(),
+                Some(crate::runtime_db::dispatch_memory::DispatchMemoryIntent::Started { .. })
+            ),
+            "original claim requires an actual StartedTurn memory command"
+        );
+        self.original_dispatch_claim = Some(claim);
+        Ok(self)
     }
     pub(crate) fn descriptor(&self) -> &PreparedInputMutation {
         &self.descriptor
@@ -380,8 +557,21 @@ impl PreparedInputTransition {
             InputTransitionCommand::Work { .. }
             | InputTransitionCommand::Focus { .. }
             | InputTransitionCommand::Wait { .. }
-            | InputTransitionCommand::Task(_)
-            | InputTransitionCommand::Terminal(_) => true,
+            | InputTransitionCommand::Terminal(_)
+            | InputTransitionCommand::TaskStopContinuation(_) => true,
+            // Stop's first ACK has no Work/Wait/State/Result footprint. Its later
+            // terminal Result command follows the ordinary memory path.
+            InputTransitionCommand::Task(task) => {
+                task.stop_intent.is_none()
+                    && task
+                        .original_command_terminal
+                        .as_ref()
+                        .is_none_or(|original| !original.intent.no_op)
+                    && task
+                        .original_child_terminal
+                        .as_ref()
+                        .is_none_or(|original| !original.intent.no_op)
+            }
             InputTransitionCommand::Queue(queue) => {
                 queue.command.operation == QueueOperation::Settle
                     || queue.wait_transition.is_some()
@@ -467,7 +657,8 @@ impl PreparedInputTransition {
             InputTransitionCommand::Work { .. }
             | InputTransitionCommand::Focus { .. }
             | InputTransitionCommand::Wait { .. }
-            | InputTransitionCommand::Task(_) => Policy::Deferred,
+            | InputTransitionCommand::Task(_)
+            | InputTransitionCommand::TaskStopContinuation(_) => Policy::Deferred,
             InputTransitionCommand::Queue(queue)
                 if queue.wait_transition.is_some()
                     || queue.wait_registration.is_some()
@@ -511,6 +702,7 @@ impl PreparedInputTransition {
                 | InputTransitionCommand::Focus { .. }
                 | InputTransitionCommand::Wait { .. }
                 | InputTransitionCommand::Task(_)
+                | InputTransitionCommand::TaskStopContinuation(_)
                 | InputTransitionCommand::Queue(_),
             ) => {}
             (Memory::Finish { binding, .. }, InputTransitionCommand::Terminal(command)) => {
@@ -673,6 +865,26 @@ impl PreparedInputTransition {
     /// whose original deletion result belongs to the same complete receipt.
     pub(crate) fn with_scope_group(mut self, scopes: Vec<InputEvidenceScope>) -> Result<Self> {
         anyhow::ensure!(
+            self.task_status_metadata_scope().is_none()
+                || scopes.as_slice() == std::slice::from_ref(&self.primary_scope),
+            "Control metadata group must contain only its original scope"
+        );
+        anyhow::ensure!(
+            self.original_command_terminal().is_none()
+                || scopes.as_slice() == std::slice::from_ref(&self.primary_scope),
+            "Command producer requires only its original owner"
+        );
+        anyhow::ensure!(
+            self.task_status_metadata_scope().is_none()
+                || scopes.as_slice() == std::slice::from_ref(&self.primary_scope),
+            "Control metadata group must contain only its original scope"
+        );
+        anyhow::ensure!(
+            !self.is_task_stop_phase()
+                || scopes.as_slice() == std::slice::from_ref(&self.primary_scope),
+            "Stop phase group must contain only its original parent"
+        );
+        anyhow::ensure!(
             scopes.contains(&self.primary_scope),
             "prepared transition group omits its original primary scope"
         );
@@ -688,6 +900,20 @@ impl PreparedInputTransition {
                     .count()
                     == 1,
                 "Task group has conflicting child incarnations"
+            );
+        }
+        if let Some(child) = self.task_stop_child_scope() {
+            anyhow::ensure!(
+                scopes.contains(child),
+                "TaskStop group omits original child witness"
+            );
+            anyhow::ensure!(
+                scopes
+                    .iter()
+                    .filter(|scope| scope.agent_id == child.agent_id)
+                    .count()
+                    == 1,
+                "TaskStop group has conflicting child incarnations"
             );
         }
         if let Some(base) = &mut self.auto_base_descriptor {
@@ -745,8 +971,28 @@ impl PreparedInputTransition {
         };
         agent(self.command.agent_id(), "command")?;
         match self.command.as_ref() {
+            InputTransitionCommand::TaskResult(command) => command.validate()?,
+            InputTransitionCommand::TaskStatusMetadata(command) => anyhow::ensure!(
+                command.scope() == &self.primary_scope,
+                "Control metadata namespace differs"
+            ),
+            InputTransitionCommand::TaskStopProgress(command) => anyhow::ensure!(
+                command.scope() == &self.primary_scope,
+                "Stop phase namespace differs"
+            ),
+            InputTransitionCommand::TaskStopContinuation(command) => anyhow::ensure!(
+                command.scope() == &self.primary_scope,
+                "Stop Result namespace differs"
+            ),
             InputTransitionCommand::Task(task) => {
                 let command = &task.command;
+                if let Some(intent) = &task.stop_intent {
+                    task_stop::validate_command(task)?;
+                    anyhow::ensure!(
+                        intent.task.scope == self.primary_scope,
+                        "TaskStop intent differs from original primary scope"
+                    );
+                }
                 agent(&command.task.agent_id, "Task")?;
                 work_items(&command.work_items)?;
                 waits(&command.wait_conditions)?;
@@ -1035,6 +1281,9 @@ impl PreparedInputTransition {
                 owner.is_none_or(|owner| owner == self.primary_scope.agent_id),
                 "prepared Task stored target differs from primary namespace"
             );
+            if let Some(intent) = &task.stop_intent {
+                task_stop::validate_child_readonly_tx(tx, intent)?;
+            }
             if let Some(child) = &task.child {
                 let actual = task_child_identity_tx(tx, &child.scope)?;
                 anyhow::ensure!(
@@ -1157,7 +1406,12 @@ impl PreparedInputTransition {
             }
             // Turn, Tool, Continuation and canonical evidence already reject
             // existing foreign owners in their original validators.
-            InputTransitionCommand::Posture { .. } | InputTransitionCommand::Terminal(_) => {}
+            InputTransitionCommand::Posture { .. }
+            | InputTransitionCommand::Terminal(_)
+            | InputTransitionCommand::TaskResult(_)
+            | InputTransitionCommand::TaskStatusMetadata(_)
+            | InputTransitionCommand::TaskStopProgress(_)
+            | InputTransitionCommand::TaskStopContinuation(_) => {}
         }
         for (table, column, id) in targets {
             let owner: Option<String> = tx
@@ -1241,6 +1495,14 @@ impl PreparedInputTransition {
             Ok(())
         }
         let mut pending = Vec::new();
+        if let InputTransitionCommand::TaskStopContinuation(command) = self.command.as_ref() {
+            anyhow::ensure!(
+                command.message().agent_id == self.primary_scope.agent_id,
+                "Stop Result pending scope differs"
+            );
+            pending.push(command.message());
+            return Ok(pending);
+        }
         if let InputTransitionCommand::Task(task) = self.command.as_ref() {
             if let Some(queue) = &task.command.queue_entry {
                 let [message] = task.command.message_evidence.as_slice() else {
@@ -1330,6 +1592,8 @@ pub(crate) enum InputMutationExecution<T> {
     },
     Replayed {
         receipt: InputMutationReceipt,
+        _material_budget_views:
+            Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
     },
 }
 
@@ -1374,6 +1638,12 @@ impl RuntimeTransitionRepository<'_> {
             prepared,
             work_request,
             &ledger,
+            &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                query: Default::default(),
+                capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+                record_limit: work_request.record_limit,
+                byte_limit: work_request.byte_limit,
+            },
         )
     }
 
@@ -1384,6 +1654,7 @@ impl RuntimeTransitionRepository<'_> {
         prepared: &PreparedInputTransition,
         work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
         memory_ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        task_request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
     ) -> Result<InputMutationExecution<TransitionCommit>> {
         let scope = self
             .input_scope
@@ -1396,6 +1667,31 @@ impl RuntimeTransitionRepository<'_> {
             "prepared input transition scope differs from its repository"
         );
         self.db.transaction(|tx| {
+            if let InputTransitionCommand::TaskStatusMetadata(command)=prepared.command.as_ref() {
+                return task_status_metadata::commit_tx(tx,prepared,command,task_request,memory_ledger);
+            }
+            if prepared.original_child_monitor_binding().is_some() {
+                if let Some(execution)=child_binding::replay_tx(tx,prepared,task_request,memory_ledger)? { return Ok(execution); }
+            }
+            if prepared.original_child_terminal().is_some() {
+                if let Some(execution)=child_terminal::replay_or_sparse_tx(tx,prepared,task_request,memory_ledger)? {return Ok(execution)}
+            }
+            if prepared.original_command_terminal().is_some() {
+                if let Some(execution) = command_terminal::replay_or_sparse_tx(
+                    tx, prepared, task_request, memory_ledger,
+                )? { return Ok(execution); }
+            }
+            if let InputTransitionCommand::TaskStopProgress(command) = prepared.command.as_ref() {
+                return task_stop_phase::commit_progress_tx(tx, prepared, command, task_request, memory_ledger);
+            }
+            if let InputTransitionCommand::TaskStopContinuation(command) = prepared.command.as_ref() {
+                return task_stop_result::commit_result_tx(tx, prepared, command, work_request, task_request, memory_ledger);
+            }
+            let child_entry=if prepared.original_child_terminal().is_some() {
+                Some(child_terminal::preflight_current_entry_tx(tx,prepared,task_request,memory_ledger)?)
+            } else if prepared.original_child_monitor_binding().is_some() {
+                Some(child_binding::preflight_current_entry_tx(tx, prepared, task_request, memory_ledger)?)
+            } else {None};
             // Current authorization precedes replay; OCC and canonical aliases
             // follow it. A later current version never invalidates exact replay.
             for reserved_scope in prepared.descriptor.scopes() {
@@ -1406,10 +1702,15 @@ impl RuntimeTransitionRepository<'_> {
                         tx,
                         reserved_scope,
                     )?;
+                } else if prepared.task_stop_child_scope() == Some(reserved_scope) {
+                    let InputTransitionCommand::Task(task) = prepared.command.as_ref() else { unreachable!() };
+                    task_stop::validate_child_readonly_tx(tx, task.stop_intent.as_ref().expect("Stop child scope"))?;
                 } else if prepared.task_deletion_scope() == Some(reserved_scope) {
                     // Same original child may already be Deleted at exact replay;
                     // no new write is allowed without its frozen pre-State below.
                     let _ = task_child_identity_tx(tx, reserved_scope)?;
+                } else if prepared.original_child_terminal().is_some() {
+                    child_terminal::validate_reserved_scope(prepared,reserved_scope)?;
                 } else {
                     crate::runtime_db::input_evidence_writes::validate_readonly_input_reservation_tx(
                         tx,
@@ -1418,8 +1719,12 @@ impl RuntimeTransitionRepository<'_> {
                 }
             }
             prepared.validate_primary_namespace()?;
+            let result_receipt_guard=if matches!(prepared.command.as_ref(),InputTransitionCommand::Task(_) | InputTransitionCommand::TaskResult(_)) {
+                Some(super::prepared_task_result::receipt_budget_tx(tx,&prepared.descriptor,scope,task_request,memory_ledger)?)
+            } else {None};
             if let Some(receipt) = lookup_input_mutation_receipt_tx(tx, &prepared.descriptor)? {
-                return Ok(InputMutationExecution::Replayed { receipt });
+                return Ok(InputMutationExecution::Replayed { receipt,
+                    _material_budget_views:result_receipt_guard.into_iter().collect() });
             }
             // Exact replay above is legal after later dispatches. A new claim
             // or StartedTurn must first finish the prior actual phase.
@@ -1427,6 +1732,21 @@ impl RuntimeTransitionRepository<'_> {
                 if queue.command.operation == QueueOperation::Claim)
                 || matches!(prepared.command.as_ref(),InputTransitionCommand::Posture { started_turn:Some(_),.. }) {
                 crate::runtime_db::dispatch_memory::validate_new_dispatch_tx(tx,scope)?;
+            }
+            if let InputTransitionCommand::Posture { started_turn: Some(turn), .. } = prepared.command.as_ref() {
+                if let Some(source) = turn.trigger.as_ref().and_then(|trigger| trigger.message_id.as_deref()) {
+                    // Only booleans are acquired here; malformed/unbounded assignment
+                    // addresses cannot allocate before the transaction material budget.
+                    let assignment: Option<(bool,bool)> = rusqlite::OptionalExtension::optional(tx.query_row(
+                        "SELECT COALESCE(t.agent_id=?1 AND json_extract(t.payload_json,'$.agent_id')=?1,0),t.turn_id IS NOT ?3 AND json_type(t.payload_json,'$.terminal') IS NOT 'object' FROM conversation_input_assignments a LEFT JOIN turn_records t ON t.turn_id=a.turn_id WHERE a.agent_id=?1 AND a.message_id=?2",
+                        rusqlite::params![scope.agent_id,source,turn.turn_id],|r|Ok((r.get(0)?,r.get(1)?)),
+                    ))?;
+                    if let Some((owned,historical_open)) = assignment {
+                        anyhow::ensure!(owned,"historical assignment Turn owner differs");
+                        anyhow::ensure!(!historical_open || prepared.original_dispatch_claim.is_some(),
+                            crate::runtime::started_dispatch::StartedDispatchConflict("historical assignment requires an original live dispatch claim"));
+                    }
+                }
             }
             prepared.validate_primary_targets_tx(tx)?;
             let mut memory_budget=prepared.memory.as_ref().map(|memory|
@@ -1437,6 +1757,15 @@ impl RuntimeTransitionRepository<'_> {
                 memory_budget.as_mut().context("ended memory omitted budget")?
                     .additional_material(bytes, records, 12)?;
             }
+            if let Some(claim) = &prepared.original_dispatch_claim {
+                let (bytes, records) = claim.proof_material_tx(tx)?;
+                memory_budget.as_mut().context("original claim omitted Start memory budget")?
+                    .additional_material(bytes, records, 4)?;
+                let InputTransitionCommand::Posture { command, started_turn: Some(turn) } = prepared.command.as_ref() else {
+                    anyhow::bail!("original claim has another business command");
+                };
+                claim.validate_posture_tx(tx, command, turn)?;
+            }
             prepared.validate_memory_ending_tx(tx)?;
             let facts =
                 crate::runtime_db::context_inputs::ContextDurableRead::new(tx, &scope.agent_id)
@@ -1444,10 +1773,53 @@ impl RuntimeTransitionRepository<'_> {
             let deleting = facts.identity.as_ref().is_some_and(|identity| {
                 identity.status == crate::types::AgentRegistryStatus::Deleting
             });
+            if matches!(prepared.command.as_ref(), InputTransitionCommand::Task(task) if task.stop_intent.is_some()) {
+                anyhow::ensure!(facts.identity.as_ref().is_some_and(|identity|
+                    identity.status == crate::types::AgentRegistryStatus::Active),
+                    "new TaskStop requires original Active identity");
+            }
+            let mut task_transaction = if let Some(entry)=child_entry {
+                task_writes::prepare_child_task_transaction_tx(tx,prepared,scope,deleting,task_request,memory_ledger,memory_budget.as_mut(),entry)?
+            } else {
+                task_writes::prepare_task_transaction_tx(tx,prepared,scope,deleting,task_request,memory_ledger,memory_budget.as_mut())?
+            };
+            if prepared.original_command_terminal().is_some() {
+                let InputTransitionCommand::Task(command)=prepared.command.as_ref() else {unreachable!()};
+                task_transaction.as_mut().context("Command terminal omitted W1 proof")?
+                    .prepare_original_terminal_material_tx(tx,&command.command,memory_ledger,memory_budget.as_mut())?;
+                command_terminal::validate_current_task_proof(prepared,
+                    task_transaction.as_ref().context("Command terminal omitted W1 proof")?.task_write_proof())?;
+            }
+            if prepared.original_child_terminal().is_some() {
+                let InputTransitionCommand::Task(command)=prepared.command.as_ref() else{unreachable!()};
+                let tasks=task_transaction.as_mut().context("child terminal omitted W1 proof")?;
+                tasks.prepare_original_terminal_material_tx(tx,&command.command,memory_ledger,memory_budget.as_mut())?;
+                child_terminal::validate_current_task_proof(prepared,tasks.task_write_proof())?;
+            }
+            if prepared.original_child_monitor_binding().is_some() {
+                child_binding::validate_task_proof(prepared, task_transaction.as_ref()
+                    .context("child binding omitted original Task proof")?.task_write_proof())?;
+            }
+            let stop_proof = if let InputTransitionCommand::Task(task) = prepared.command.as_ref() {
+                if let Some(intent) = &task.stop_intent {
+                    let tasks = task_transaction.as_mut().context("TaskStop omitted original Task proof")?;
+                    tasks.prepare_stop_material_tx(tx, &prepared.descriptor, intent, &task.command.task,
+                        memory_ledger, memory_budget.as_mut())?;
+                    Some(crate::runtime_db::task_stop::prepare_task_stop_tx(tx, &prepared.descriptor, intent,
+                        tasks.task_write_proof(), task_request, memory_ledger)?)
+                } else { None }
+            } else { None };
+            let mut inserted_stop = None;
             let work_proof = prepared.prepare_work_proof_tx(tx, scope, deleting, work_request,
                 memory_ledger, memory_budget.as_mut())?;
+            let producer_input = match child_terminal::prepare_input_view_tx(tx,prepared,
+                task_transaction.as_ref().map(|task|task.task_write_proof()))? {
+                Some(view)=>Some(view),None=>command_terminal::prepare_input_view_tx(tx,prepared,
+                    task_transaction.as_ref().map(|task|task.task_write_proof()))?,
+            };
             let cleanup = if deleting {
-                Some(prepared.cleanup_proof_tx(tx, scope, work_proof.as_ref())?)
+                Some(prepared.cleanup_proof_tx(tx, scope, work_proof.as_ref(),
+                    task_transaction.as_ref().and_then(|task|task.cleanup()),producer_input.as_ref())?)
             } else { None };
             // Freeze the original memory baseline before any business write.
             // Its own phase cannot substitute for this whole command's receipt.
@@ -1466,12 +1838,17 @@ impl RuntimeTransitionRepository<'_> {
                     Some(crate::runtime_db::dispatch_memory::prepare_dispatch_memory_finish_tx(tx,binding,frozen)?),
                 _ => None,
             };
+            let child_source_phase=if prepared.original_child_terminal().is_some() {
+                Some(task_transaction.as_mut().context("child Source omitted enclosing Task proof")?
+                    .apply_original_child_source_tx(tx,prepared,memory_ledger,memory_budget.as_mut())?)
+            } else {None};
             let repository = RuntimeTransitionRepository {
                 db: self.db,
                 input_scope: Some(scope.clone()),
                 cleanup_input: cleanup.as_ref(),
             };
-            let (mut value, result) = match prepared.command.as_ref() {
+            let (mut value, mut result) = match prepared.command.as_ref() {
+                InputTransitionCommand::TaskStatusMetadata(_) | InputTransitionCommand::TaskStopProgress(_) | InputTransitionCommand::TaskStopContinuation(_) => unreachable!("focused metadata phase dispatched above"),
                 InputTransitionCommand::Posture {
                     command,
                     started_turn,
@@ -1484,16 +1861,28 @@ impl RuntimeTransitionRepository<'_> {
                         validate_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
                         inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
                         TransitionCommit {
-                            effects: PostCommitEffects { fault: command.fault, ..Default::default() },
+                            effects: Box::new(PostCommitEffects { fault: command.fault, ..Default::default() }),
                             ..Default::default()
                         }
                     } else { repository.commit_turn_terminal_tx(tx, command)? };
                     (commit, InputMutationResult::Transition)
                 },
+                InputTransitionCommand::TaskResult(_) => {
+                    let ack=task_transaction.as_mut().context("TaskResult omitted its original proof")?
+                        .execute_result()?;
+                    let mut effects=PostCommitEffects::default();
+                    effects.task_write_keys.extend(ack.actual_result_ids.iter().map(|id|
+                        crate::runtime::resident_task::TaskKey::new(crate::runtime::resident_task::TaskFamily::ResultSettlement,id)));
+                    (TransitionCommit {applied:!ack.actual_result_ids.is_empty(),effects: Box::new(effects),..Default::default()},
+                        InputMutationResult::TaskResult {outcome:Box::new(ack.outcome)})
+                }
                 InputTransitionCommand::Task(task) => {
-                    let (value, deletion) = repository.commit_task_at_tx(tx, &task.command,
+                    let pending=task_transaction.as_mut().and_then(|tasks|tasks.take_result());
+                    let existing_binding=prepared.original_child_monitor_binding().map(|_|child_binding::existing_write_proof_tx(tx,prepared,task_transaction.as_ref().context("child binding omitted Task proof")?.task_write_proof())).transpose()?;
+                    let (mut value, deletion) = repository.commit_task_at_with_task_results_tx(tx, &task.command,
                         &task.execution_protocol, task.synchronize_execution_protocol,
-                        prepared.descriptor.prepared_at(), task.child.as_ref().map(|child| child.deletion_id.as_str()))?;
+                        prepared.descriptor.prepared_at(), task.child.as_ref().map(|child| child.deletion_id.as_str()),
+                        pending,task_transaction.as_ref().and_then(|tasks|tasks.cleanup()),stop_proof.as_ref(),existing_binding.as_ref())?;
                     if let Some(deletion) = &deletion {
                         let child = task.child.as_ref().context("Task deletion omitted original scope")?;
                         let actual_identity = task_child_identity_tx(tx, &child.scope)?;
@@ -1504,8 +1893,20 @@ impl RuntimeTransitionRepository<'_> {
                         anyhow::ensure!(actual_identity == deletion.identity && actual_job == deletion.job,
                             "Task deletion ACK differs from actual canonical metadata");
                     }
-                    (value, InputMutationResult::Task { task_id: task.command.task.id.clone(),
-                        deletion: deletion.map(Box::new) })
+                    let stop = if let Some(proof) = &stop_proof {
+                        let (record, observation) = crate::runtime_db::task_stop::insert_task_stop_with_observation_ack_tx(
+                            proof, &task.command.task)?;
+                        value.applied = true;
+                        inserted_stop = Some(observation);
+                        Some(record.receipt_binding())
+                    } else { None };
+                    let result = if let Some(original) = &task.original_command_terminal {
+                        anyhow::ensure!(deletion.is_none() && stop.is_none(), "Command producer combined another lifecycle facet");
+                        command_terminal::current_ack(original, &value)?
+                    } else {
+                        InputMutationResult::Task { task_id: task.command.task.id.clone(), deletion: deletion.map(Box::new), stop }
+                    };
+                    (value, result)
                 }
                 InputTransitionCommand::Work { command, execution_protocol, synchronize_execution_protocol } => (
                     repository.commit_work_item_tx(tx, command, execution_protocol, *synchronize_execution_protocol)?,
@@ -1521,7 +1922,7 @@ impl RuntimeTransitionRepository<'_> {
                     InputMutationResult::Transition,
                 ),
                 InputTransitionCommand::Queue(queue) => (
-                    repository.commit_queue_transaction_full_tx(
+                    repository.commit_queue_transaction_full_with_task_results_tx(
                         tx,
                         &queue.command,
                         &queue.execution_protocol,
@@ -1535,6 +1936,7 @@ impl RuntimeTransitionRepository<'_> {
                         DeliverySynchronization::Required,
                         queue.timer_wake_claim.as_ref(),
                         queue.task_result_settlement.as_ref(),
+                        task_transaction.as_mut().and_then(|tasks| tasks.take_result()),
                     )?,
                     InputMutationResult::Transition,
                 ),
@@ -1643,6 +2045,36 @@ impl RuntimeTransitionRepository<'_> {
                 value.effects.notify_scheduler |= memory.effects.notify_scheduler;
                 value.applied |= memory.applied;
             }
+            if task_transaction.is_none() && value.effects.task_delta.is_none() {
+                if let Some((delta, guards)) = crate::runtime_db::task_snapshot::register_task_source_metadata_tx(
+                    tx, scope, &value.effects.input_evidence_delta, task_request, memory_ledger, memory_budget.as_mut(),
+                )? {
+                    value.effects.task_delta = Some(delta);
+                    value.effects.task_delta_requires_prepared_domain = true;
+                    value.effects.task_material_budget_views.extend(guards);
+                }
+            }
+            let mut child_usage=None;
+            if let Some(tasks) = task_transaction {
+                if prepared.original_child_terminal().is_some() {
+                    child_usage=Some(tasks.finish_original_child(tx,&mut value,memory_ledger,memory_budget.as_mut())?);
+                } else { match inserted_stop.as_ref() {
+                    Some(observation) => tasks.finish_with_stop_observation(tx, &mut value, memory_ledger,
+                        memory_budget.as_mut(), observation)?,
+                    None => tasks.finish(tx,&mut value,memory_ledger,memory_budget.as_mut())?,
+                }}
+            }
+            if let Some(phase)=child_source_phase {
+                let deletion=match result {InputMutationResult::Task{deletion,..}=>deletion,_=>anyhow::bail!("child Task ACK placeholder changed")};
+                result=child_terminal::finish_related_tx(tx,prepared,phase,&mut value,deletion,
+                    child_usage.context("child Task omitted cumulative final material")?,task_request,memory_ledger,memory_budget.as_mut())?;
+                // The original Task may be a no-op while this compound phase
+                // still writes its source, related heads and mandatory receipt.
+                let InputTransitionCommand::Task(task)=prepared.command.as_ref() else{unreachable!()};
+                value.effects.fault=task.command.fault;
+            }
+            value.effects.task_material_budget_views.extend(result_receipt_guard);
+
             // The original body has already materialized SQL sequences, linked
             // Brief events, persisted index intent, exact count and aliases.
             let mut install_keys =
@@ -1679,6 +2111,8 @@ impl RuntimeTransitionRepository<'_> {
                         InputMutationScopeOutcome {
                             install_keys: if primary {
                                 install_keys.clone()
+                            } else if prepared.original_child_terminal().is_some() {
+                                child_terminal::related_install_keys(prepared,reserved_scope)
                             } else {
                                 Default::default()
                             },
@@ -1701,6 +2135,10 @@ impl RuntimeTransitionRepository<'_> {
             let receipt =
                 insert_input_mutation_receipt_tx(tx, &prepared.descriptor, &outcome, Utc::now())?;
             // A successful no-op still wrote its receipt in this transaction.
+            if prepared.original_child_terminal().is_some() {
+                let InputTransitionCommand::Task(task)=prepared.command.as_ref() else{unreachable!()};
+                inject_fault(task.command.fault,TransitionFaultPoint::BeforeCommit)?;
+            }
             if let InputTransitionCommand::QueueHeadNoProgress { command, .. } =
                 prepared.command.as_ref()
             {
@@ -1726,9 +2164,21 @@ impl PreparedInputTransition {
         tx: &Transaction<'_>,
         scope: &InputEvidenceScope,
         work_proof: Option<&crate::runtime_db::work_snapshot::WorkWriteProof>,
+        task_cleanup: Option<
+            &crate::runtime_db::task_snapshot::OriginalTaskResultCleanupProof<'_, '_, '_>,
+        >,
+        producer_input: Option<
+            &crate::runtime_db::command_task_terminal::OriginalCommandTaskInputView<'_, '_, '_>,
+        >,
     ) -> Result<crate::runtime_db::input_evidence_snapshot::ExistingAdmissionInputProof> {
-        if let Some(proof) = self.work_cleanup_proof_tx(tx, scope, work_proof)? {
+        if let Some(proof) =
+            self.work_cleanup_proof_tx(tx, scope, work_proof, task_cleanup, producer_input)?
+        {
             return Ok(proof);
+        }
+        if matches!(self.command.as_ref(), InputTransitionCommand::TaskResult(_)) {
+            return crate::runtime_db::input_evidence_snapshot::ExistingAdmissionInputProof::prepare_tx(
+                tx, scope, BTreeSet::new(), BTreeSet::new());
         }
         use crate::domain::execution_protocol::{
             ExecutionBinding, ExecutionProtocolCommand as Command,
@@ -1752,7 +2202,11 @@ impl PreparedInputTransition {
             InputTransitionCommand::Work { .. }
             | InputTransitionCommand::Focus { .. }
             | InputTransitionCommand::Wait { .. }
-            | InputTransitionCommand::Task(_) => {
+            | InputTransitionCommand::Task(_)
+            | InputTransitionCommand::TaskResult(_)
+            | InputTransitionCommand::TaskStatusMetadata(_)
+            | InputTransitionCommand::TaskStopProgress(_)
+            | InputTransitionCommand::TaskStopContinuation(_) => {
                 unreachable!("handled by original Work cleanup proof")
             }
             InputTransitionCommand::QueueHeadNoProgress { .. } => {
@@ -1977,7 +2431,11 @@ impl PreparedInputTransition {
             | InputTransitionCommand::Work { .. }
             | InputTransitionCommand::Focus { .. }
             | InputTransitionCommand::Wait { .. }
-            | InputTransitionCommand::Task(_) => unreachable!(),
+            | InputTransitionCommand::Task(_)
+            | InputTransitionCommand::TaskResult(_)
+            | InputTransitionCommand::TaskStatusMetadata(_)
+            | InputTransitionCommand::TaskStopProgress(_)
+            | InputTransitionCommand::TaskStopContinuation(_) => unreachable!(),
         };
         if let Some(mutation) = mutation {
             let old = mutation
@@ -2051,7 +2509,11 @@ impl PreparedInputTransition {
             | InputTransitionCommand::Work { .. }
             | InputTransitionCommand::Focus { .. }
             | InputTransitionCommand::Wait { .. }
-            | InputTransitionCommand::Task(_) => None,
+            | InputTransitionCommand::Task(_)
+            | InputTransitionCommand::TaskResult(_)
+            | InputTransitionCommand::TaskStatusMetadata(_)
+            | InputTransitionCommand::TaskStopProgress(_)
+            | InputTransitionCommand::TaskStopContinuation(_) => None,
         };
         if let Some(turn) = terminal {
             for id in &turn.tool_execution_ids {
@@ -2352,12 +2814,21 @@ impl PreparedInputTransition {
         tx: &Transaction<'_>,
         scope: &InputEvidenceScope,
         work_proof: Option<&crate::runtime_db::work_snapshot::WorkWriteProof>,
+        task_cleanup: Option<
+            &crate::runtime_db::task_snapshot::OriginalTaskResultCleanupProof<'_, '_, '_>,
+        >,
+        producer_input: Option<
+            &crate::runtime_db::command_task_terminal::OriginalCommandTaskInputView<'_, '_, '_>,
+        >,
     ) -> Result<Option<crate::runtime_db::input_evidence_snapshot::ExistingAdmissionInputProof>>
     {
         use crate::domain::execution_protocol::ExecutionProtocolCommand as Command;
         use crate::runtime::resident_input_evidence::{
             InputEvidenceFamily as Family, InputEvidenceKey as Key,
         };
+        if self.original_child_monitor_binding().is_some() {
+            return child_binding::existing_input_projection_tx(tx, self, scope).map(Some);
+        }
         let (works, waits, state, briefs, protocol, completion_tool) = match self.command.as_ref() {
             InputTransitionCommand::Task(task) => {
                 let command = &task.command;
@@ -2369,11 +2840,99 @@ impl PreparedInputTransition {
                 let old: TaskRecord = serde_json::from_str(&payload)?;
                 anyhow::ensure!(
                     old.agent_id == scope.agent_id
-                        && repositories::is_terminal_task_status(&command.task.status)
-                        && command.queue_entry.is_none()
-                        && command.task_result_settlement.is_none(),
-                    "Deleting Task cleanup cannot create an active Task, queue or settlement"
+                        && repositories::is_terminal_task_status(&command.task.status),
+                    "Deleting Task cleanup cannot create an active Task"
                 );
+                if let Some(cap) = task_cleanup {
+                    let (cap_scope, descriptor, message, result) =
+                        cap.original_task_input_tx(tx)?;
+                    anyhow::ensure!(
+                        cap_scope == scope
+                            && descriptor == self.descriptor()
+                            && command.task_result_settlement.as_ref() == Some(result)
+                            && command.message_evidence.as_slice() == std::slice::from_ref(message),
+                        "Task cleanup Message/Result differs from original command"
+                    );
+                    let body_exists: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM messages WHERE evidence_id=?1)",
+                        [&message.id],
+                        |row| row.get(0),
+                    )?;
+                    if let Some(queue) = &command.queue_entry {
+                        anyhow::ensure!(
+                            queue.message_id == message.id
+                                && queue.agent_id == scope.agent_id
+                                && queue.priority == message.priority
+                                && queue.status == QueueEntryStatus::Queued,
+                            "Task cleanup queue differs from its original Message"
+                        );
+                        let previous: Option<String> = tx
+                            .query_row(
+                                "SELECT status FROM queue_entries WHERE message_id=?1",
+                                [&message.id],
+                                |row| row.get(0),
+                            )
+                            .optional()?;
+                        anyhow::ensure!(
+                            previous
+                                .as_deref()
+                                .is_none_or(|status| matches!(status, "queued" | "interrupted")),
+                            "Task cleanup cannot requeue a claimed or terminal input"
+                        );
+                    } else {
+                        anyhow::ensure!(
+                            body_exists,
+                            "first Task Result Message requires its original queue responsibility"
+                        );
+                    }
+                } else if let Some(view) = producer_input {
+                    view.validate_tx(tx)?;
+                    anyhow::ensure!(
+                        view.scope() == scope
+                            && command.task_result_settlement.is_none()
+                            && command.message_evidence.as_slice()
+                                == std::slice::from_ref(view.message())
+                            && command.task == *view.task(),
+                        "Command cleanup differs from original accepted producer"
+                    );
+                    let message = view.message();
+                    if let Some(queue) = &command.queue_entry {
+                        anyhow::ensure!(
+                            queue.message_id == message.id
+                                && queue.agent_id == scope.agent_id
+                                && queue.priority == message.priority
+                                && queue.status == QueueEntryStatus::Queued,
+                            "Command cleanup Queue differs from original Message"
+                        );
+                        let old: Option<String> = tx
+                            .query_row(
+                                "SELECT status FROM queue_entries WHERE message_id=?1",
+                                [&message.id],
+                                |r| r.get(0),
+                            )
+                            .optional()?;
+                        anyhow::ensure!(
+                            old.as_deref()
+                                .is_none_or(|status| matches!(status, "queued" | "interrupted")),
+                            "Command cleanup cannot requeue claimed or terminal source"
+                        );
+                    } else {
+                        let exists: bool = tx.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM messages WHERE evidence_id=?1)",
+                            [&message.id],
+                            |r| r.get(0),
+                        )?;
+                        anyhow::ensure!(
+                            exists,
+                            "first Command terminal Message requires original queue responsibility"
+                        );
+                    }
+                } else {
+                    anyhow::ensure!(
+                        command.queue_entry.is_none() && command.task_result_settlement.is_none(),
+                        "Deleting Task cleanup requires its original Result capability"
+                    );
+                }
                 (
                     command.work_items.as_slice(),
                     command.wait_conditions.as_slice(),
@@ -2472,6 +3031,19 @@ impl PreparedInputTransition {
                 "Deleting cleanup cannot rebind an existing Wait"
             );
         }
+        if let InputTransitionCommand::Task(task) = self.command.as_ref() {
+            if (task_cleanup.is_some() || producer_input.is_some())
+                && task.command.queue_entry.is_some()
+                && state.is_none()
+            {
+                let queue = task.command.queue_entry.as_ref().unwrap();
+                let existing:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND message_id=?2 AND status IN ('queued','interrupted'))",params![scope.agent_id,queue.message_id],|row|row.get(0))?;
+                anyhow::ensure!(
+                    existing,
+                    "Task cleanup queue requires original State pending accounting"
+                );
+            }
+        }
         if let Some(state) = state {
             let old = state
                 .expected
@@ -2479,6 +3051,44 @@ impl PreparedInputTransition {
                 .context("Work cleanup State requires its original OCC baseline")?;
             validate_agent_state_mutation_tx(tx, Some(state))?;
             let next = state.record.as_ref();
+            if task_cleanup.is_some() || producer_input.is_some() {
+                anyhow::ensure!(
+                    (next.current_turn_work_item_id.is_none()
+                        || next.current_turn_work_item_id == old.current_turn_work_item_id)
+                        && (next.current_turn_operator_binding_id.is_none()
+                            || next.current_turn_operator_binding_id
+                                == old.current_turn_operator_binding_id)
+                        && (next.current_turn_operator_reply_route_id.is_none()
+                            || next.current_turn_operator_reply_route_id
+                                == old.current_turn_operator_reply_route_id)
+                        && (next.status != crate::types::AgentStatus::AwakeRunning
+                            || next.status == old.status),
+                    "Deleting Task cleanup cannot create execution or operator bindings"
+                );
+            }
+            let task_queue = match self.command.as_ref() {
+                InputTransitionCommand::Task(task)
+                    if task_cleanup.is_some() || producer_input.is_some() =>
+                {
+                    task.command.queue_entry.as_ref()
+                }
+                _ => None,
+            };
+            let pending_limit = if let Some(queue) = task_queue {
+                let (count,already_pending):(usize,bool)=tx.query_row(
+                    "SELECT (SELECT COUNT(*) FROM queue_entries WHERE agent_id=?1 AND status IN ('queued','interrupted')),EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND message_id=?2 AND status IN ('queued','interrupted'))",
+                    params![scope.agent_id,queue.message_id],|row|Ok((row.get(0)?,row.get(1)?)))?;
+                let expected = count
+                    .checked_add(usize::from(!already_pending))
+                    .context("Task queue count overflow")?;
+                anyhow::ensure!(
+                    old.pending == count && next.pending == expected,
+                    "Task cleanup pending differs from its one actual queue membership"
+                );
+                expected
+            } else {
+                old.pending
+            };
             anyhow::ensure!(
                 next.turn_index == old.turn_index
                     && (next.current_run_id.is_none() || next.current_run_id == old.current_run_id)
@@ -2486,7 +3096,10 @@ impl PreparedInputTransition {
                         || next.current_turn_id == old.current_turn_id)
                     && (next.current_work_item_id.is_none()
                         || next.current_work_item_id == old.current_work_item_id)
-                    && next.pending <= old.pending,
+                    && (!matches!(self.command.as_ref(), InputTransitionCommand::Task(_))
+                        || next.current_execution_binding.is_none()
+                        || next.current_execution_binding == old.current_execution_binding)
+                    && next.pending <= pending_limit,
                 "Deleting Work cleanup cannot start a run, Turn, focus or admission"
             );
         }
@@ -2507,12 +3120,14 @@ impl PreparedInputTransition {
         }
         let mut roots = BTreeSet::new();
         if let InputTransitionCommand::Task(task) = self.command.as_ref() {
-            roots.extend(
-                task.command
-                    .message_evidence
-                    .iter()
-                    .map(|message| Key::new(Family::Message, &message.id)),
-            );
+            if task_cleanup.is_none() && producer_input.is_none() {
+                roots.extend(
+                    task.command
+                        .message_evidence
+                        .iter()
+                        .map(|message| Key::new(Family::Message, &message.id)),
+                );
+            }
         }
         anyhow::ensure!(
             protocol.bootstrap.is_none(),
@@ -2557,7 +3172,7 @@ impl PreparedInputTransition {
             );
             derived.insert(Key::new(Family::ToolExecution, &tool.id), work.clone());
         }
-        Ok(Some(if derived.is_empty() {
+        let input_proof = if derived.is_empty() {
             crate::runtime_db::input_evidence_snapshot::ExistingAdmissionInputProof::prepare_tx(
                 tx,
                 scope,
@@ -2568,6 +3183,13 @@ impl PreparedInputTransition {
             crate::runtime_db::input_evidence_snapshot::ExistingAdmissionInputProof::prepare_from_work_tx(
                 tx, proof, roots, derived,
             )?
+        };
+        Ok(Some(if let Some(cap) = task_cleanup {
+            crate::runtime_db::input_evidence_snapshot::ExistingAdmissionInputProof::prepare_from_task_result_cleanup_tx(tx,input_proof,cap)?
+        } else if let Some(view) = producer_input {
+            crate::runtime_db::input_evidence_snapshot::ExistingAdmissionInputProof::prepare_from_original_command_message_tx(tx,input_proof,view)?
+        } else {
+            input_proof
         }))
     }
 }

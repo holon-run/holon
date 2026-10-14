@@ -162,10 +162,10 @@ impl RuntimeHandle {
                     .upsert(&updated_descriptor)?;
                 Ok(TransitionCommit {
                     applied: true,
-                    effects: crate::runtime_db::transitions::PostCommitEffects {
+                    effects: Box::new(crate::runtime_db::transitions::PostCommitEffects {
                         external_triggers: vec![updated_descriptor.clone()],
                         ..Default::default()
-                    },
+                    }),
                     ..Default::default()
                 })
             })
@@ -232,10 +232,10 @@ impl RuntimeHandle {
                 self.inner.runtime_db.external_triggers().upsert(&revoked)?;
                 Ok(TransitionCommit {
                     applied: true,
-                    effects: crate::runtime_db::transitions::PostCommitEffects {
+                    effects: Box::new(crate::runtime_db::transitions::PostCommitEffects {
                         external_triggers: vec![revoked.clone()],
                         ..Default::default()
-                    },
+                    }),
                     ..Default::default()
                 })
             })

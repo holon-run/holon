@@ -20,6 +20,120 @@ fn fixture() -> (tempfile::TempDir, RuntimeHandle) {
 }
 
 #[tokio::test]
+async fn child_observability_keeps_exact_active_tasks_and_brief_window_without_body_sql(
+) -> Result<()> {
+    use crate::{
+        runtime_db::{
+            prepared_input_evidence::PreparedInputEvidence as Write,
+            transitions::TaskTransitionCommand,
+        },
+        types::{AuditEvent, BriefKind, BriefRecord, TaskKind, TaskRecord, TaskStatus},
+    };
+    let (_home, runtime) = fixture();
+    let at = runtime.now();
+    let mut mutation = runtime.begin_mutation().await?;
+    mutation
+        .commit_task_transition(
+            "child-observability-actual-task".into(),
+            TaskTransitionCommand {
+                agent_id: "scheduler-resident".into(),
+                task: TaskRecord {
+                    id: "child-observability-running".into(),
+                    agent_id: "scheduler-resident".into(),
+                    kind: TaskKind::CommandTask,
+                    status: TaskStatus::Running,
+                    created_at: at,
+                    updated_at: at,
+                    parent_message_id: None,
+                    work_item_id: None,
+                    summary: Some("actual managed task".into()),
+                    detail: None,
+                    recovery: None,
+                },
+                agent_deletion: None,
+                task_result_settlement: None,
+                queue_entry: None,
+                work_items: Vec::new(),
+                expected_wait_conditions: Vec::new(),
+                wait_conditions: Vec::new(),
+                agent_state: None,
+                message_evidence: Vec::new(),
+                audit_events: Vec::new(),
+                index_changes: Vec::new(),
+                notify_scheduler: false,
+                commit_on_idempotent: false,
+                fault: None,
+            },
+            Default::default(),
+            true,
+        )
+        .await?;
+    for i in 0..20 {
+        let mut brief = BriefRecord::new(
+            "scheduler-resident",
+            if i == 0 {
+                BriefKind::Ack
+            } else {
+                BriefKind::Result
+            },
+            format!("original-child-brief-{i:02}"),
+            None,
+            None,
+        );
+        brief.created_at = at + chrono::Duration::milliseconds(i);
+        let prepared = Write::brief_created(
+            mutation.input_evidence_scope(),
+            crate::ids::audit_event_id(),
+            brief.created_at,
+            brief.clone(),
+            AuditEvent::legacy("brief_created", serde_json::json!({"brief_id": brief.id})),
+            Vec::new(),
+        )?;
+        mutation.commit_prepared_evidence(prepared, None).await?;
+    }
+    let read = mutation
+        .prepare_scheduler_read(None, Default::default(), Default::default(), runtime.now())
+        .await?;
+    assert_eq!(read.observability_briefs.len(), 16);
+    let expected =
+        RuntimeHandle::child_agent_observability_from_storage(runtime.storage(), &read.state)?;
+    assert_eq!(
+        expected.last_progress_brief, None,
+        "Ack outside the original 16 window stays excluded"
+    );
+    assert_eq!(
+        expected.last_result_brief.as_deref(),
+        Some("original-child-brief-19")
+    );
+    assert_eq!(read.projection.active_tasks.len(), 1);
+    assert_eq!(
+        read.projection.active_tasks[0].id,
+        "child-observability-running"
+    );
+    assert_eq!(read.projection.active_tasks[0].status, TaskStatus::Running);
+    assert_eq!(
+        crate::runtime::task_reads::task_record(&read.tasks, "child-observability-running",)?
+            .expect("actual Running Task remains selected")
+            .status,
+        TaskStatus::Running
+    );
+    // Active Tasks re-enter through terminal results and are not scheduler blockers.
+    assert_eq!(expected.blocked_reason, None);
+    drop(read);
+    drop(mutation);
+    runtime.runtime_db().transaction(|tx| {
+        tx.execute_batch("DROP TABLE tasks; DROP TABLE briefs;")?;
+        Ok(())
+    })?;
+    let actual = runtime.child_agent_observability().await?;
+    assert_eq!(
+        serde_json::to_value(actual)?,
+        serde_json::to_value(expected)?
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn scheduler_acquisition_matches_legacy_live_work_and_active_wait_projection() -> Result<()> {
     let (_home, runtime) = fixture();
     let work = runtime
@@ -134,6 +248,7 @@ async fn scheduler_triggered_wait_capture_and_dispatch_survive_storage_removal()
         closure,
         &read.state,
         &read.work,
+        &read.tasks,
     )?;
     let _decision = scheduler::decide_next_action(
         &read.projection,
@@ -175,6 +290,7 @@ async fn scheduler_dispatch_requires_explicit_trigger_relation_preparation() -> 
         closure,
         &read.state,
         &read.work,
+        &read.tasks,
     ) {
         Ok(_) => anyhow::bail!("unprepared relation was silently hydrated"),
         Err(error) => error,
@@ -304,6 +420,9 @@ async fn scheduler_prepares_current_source_after_positive_episode_recovery_inval
         .await?;
     mutation
         .prepare_owner_work_request(&crate::runtime::resident_work::WorkCaptureRequest::current())
+        .await?;
+    mutation
+        .prepare_owner_task_request(&crate::runtime::task_reads::active_task_request())
         .await?;
     let before = mutation.capture_published_root()?;
     let alias_rows = || -> Result<Vec<(String, String, i64, Option<String>, String, String)>> {

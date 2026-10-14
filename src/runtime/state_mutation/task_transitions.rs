@@ -95,6 +95,7 @@ impl RuntimeMutation {
             let InputMutationResult::Task {
                 task_id: original_task_id,
                 deletion,
+                ..
             } = result
             else {
                 bail!("Task receipt has another result family");

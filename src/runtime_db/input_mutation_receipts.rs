@@ -46,6 +46,7 @@ pub(crate) enum InputMutationFamily {
     QueueHeadNoProgress,
     Terminal,
     Task,
+    TaskResult,
     WorkItem,
     Wait,
     Focus,
@@ -60,6 +61,7 @@ impl InputMutationFamily {
             Self::QueueHeadNoProgress => "queue_head_no_progress",
             Self::Terminal => "terminal",
             Self::Task => "task",
+            Self::TaskResult => "task_result",
             Self::WorkItem => "work_item",
             Self::Wait => "wait",
             Self::Focus => "focus",
@@ -198,6 +200,17 @@ pub(crate) struct InputTaskDeletionResult {
     pub created: bool,
 }
 
+/// Immutable address of the original TaskStop facet inside the whole receipt.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TaskStopReceiptBinding {
+    pub scope: InputEvidenceScope,
+    pub effect_seq: u64,
+    pub intent_digest: String,
+    pub generation_digest: String,
+    pub task_ack_digest: String,
+}
+
 /// Minimal original public result. Full mutable evidence belongs only to the
 /// first ACK; current installation facts are separately loaded in a fresh view.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -208,6 +221,26 @@ pub(crate) enum InputMutationResult {
     Task {
         task_id: String,
         deletion: Option<Box<InputTaskDeletionResult>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop: Option<TaskStopReceiptBinding>,
+    },
+    /// Original focused Stop phase ACK; never current Task/identity authority.
+    TaskStopPhase {
+        ack: Box<super::task_stop::TaskStopPhaseAck>,
+    },
+    ChildTaskTerminal {
+        ack: Box<super::child_task_terminal::ChildTaskTerminalAck>,
+    },
+    CommandTaskTerminal {
+        ack: Box<super::command_task_terminal::CommandTaskTerminalAck>,
+    },
+    TaskStatusMetadata {
+        ack: Box<super::task_status_metadata::TaskStatusMetadataAck>,
+    },
+    /// Original successful Result operation, including None/false/empty/zero.
+    /// Current installation facts are independently reloaded after lost ACK.
+    TaskResult {
+        outcome: Box<super::task_result_settlement::TaskResultWriteOutcome>,
     },
     Evidence {
         family: InputMutationEvidenceFamily,
@@ -250,14 +283,29 @@ impl InputMutationOutcome {
                         | InputMutationFamily::Retention
                         | InputMutationFamily::QueueHeadNoProgress
                         | InputMutationFamily::Task
+                        | InputMutationFamily::TaskResult
                 ),
                 ReceiptError::InvalidOutcome("result family mismatch")
             ),
-            InputMutationResult::Task { task_id, deletion } => {
+            InputMutationResult::Task {
+                task_id,
+                deletion,
+                stop,
+            } => {
                 ensure!(
                     prepared.family() == InputMutationFamily::Task && !task_id.trim().is_empty(),
                     ReceiptError::InvalidOutcome("Task result family or ID mismatch")
                 );
+                if let Some(stop) = stop {
+                    ensure!(
+                        stop.effect_seq > 0
+                            && prepared.scopes().contains(&stop.scope)
+                            && valid_sha256(&stop.intent_digest)
+                            && valid_sha256(&stop.generation_digest)
+                            && valid_sha256(&stop.task_ack_digest),
+                        ReceiptError::InvalidOutcome("TaskStop receipt binding differs")
+                    );
+                }
                 if let Some(deletion) = deletion {
                     let identity = &deletion.identity;
                     let job = &deletion.job;
@@ -277,6 +325,43 @@ impl InputMutationOutcome {
                             ),
                         ReceiptError::InvalidOutcome(
                             "Task deletion result is outside original group"
+                        )
+                    );
+                }
+            }
+            InputMutationResult::TaskStopPhase { ack } => ack.validate(prepared)?,
+            InputMutationResult::CommandTaskTerminal { ack } => ack.validate(prepared)?,
+            InputMutationResult::ChildTaskTerminal { ack } => ack.validate(prepared)?,
+            InputMutationResult::TaskStatusMetadata { ack } => ack.validate(prepared)?,
+            InputMutationResult::TaskResult { outcome } => {
+                ensure!(
+                    prepared.family() == InputMutationFamily::TaskResult,
+                    ReceiptError::InvalidOutcome("TaskResult result family mismatch")
+                );
+                use super::task_result_settlement::TaskResultWriteOutcome;
+                let records: &[super::task_result_settlement::TaskResultSettlementRecord] =
+                    match outcome.as_ref() {
+                        TaskResultWriteOutcome::Record(record) => record.as_slice(),
+                        TaskResultWriteOutcome::Records(records) => records,
+                        TaskResultWriteOutcome::Changed(_)
+                        | TaskResultWriteOutcome::Count(_)
+                        | TaskResultWriteOutcome::Unit => &[],
+                    };
+                let mut ids = std::collections::BTreeSet::new();
+                for record in records {
+                    ensure!(
+                        !record.result_identity.trim().is_empty()
+                            && !record.task_id.trim().is_empty()
+                            && !record.message_id.trim().is_empty()
+                            && !record.parent_turn_id.trim().is_empty()
+                            && record.rejoin_generation > 0
+                            && prepared
+                                .scopes()
+                                .iter()
+                                .any(|scope| scope.agent_id == record.agent_id)
+                            && ids.insert(record.result_identity.as_str()),
+                        ReceiptError::InvalidOutcome(
+                            "TaskResult outcome is outside original group or malformed"
                         )
                     );
                 }
@@ -533,6 +618,17 @@ pub(crate) fn insert_input_mutation_receipt_tx(
         );
         return Ok(stored);
     }
+    if let InputMutationResult::Task {
+        task_id,
+        stop: Some(stop),
+        ..
+    } = &outcome.result
+    {
+        super::task_stop::validate_task_stop_ack_binding_tx(tx, prepared, task_id, stop)?;
+    }
+    if let InputMutationResult::TaskStopPhase { ack } = &outcome.result {
+        super::task_stop::validate_task_stop_phase_ack_tx(tx, ack)?;
+    }
     // Initial acknowledgement binds actual SQL events, not command copies with
     // unallocated sequence/epoch. Later recovery uses the preserved payloads.
     for item in &outcome.scopes {
@@ -595,11 +691,28 @@ pub(crate) fn with_fresh_input_mutation_resolution<T>(
     attempt: &OriginalInputMutationAttempt,
     read_current: impl FnOnce(&Transaction<'_>, InputMutationResolution) -> Result<T>,
 ) -> Result<T> {
+    with_fresh_input_mutation_resolution_and_preflight(
+        connection,
+        attempt,
+        |_| Ok(()),
+        read_current,
+    )
+}
+
+/// The owned acquisition guard exists before receipt decoding and remains until
+/// the same-view callback completes. It adds no business/recovery authorization.
+pub(crate) fn with_fresh_input_mutation_resolution_and_preflight<T, G>(
+    connection: &mut Connection,
+    attempt: &OriginalInputMutationAttempt,
+    preflight: impl FnOnce(&Transaction<'_>) -> Result<G>,
+    read_current: impl FnOnce(&Transaction<'_>, InputMutationResolution) -> Result<T>,
+) -> Result<T> {
     ensure!(
         attempt.original_attempt_finished(),
         ReceiptError::OriginalAttemptNotFinished
     );
     let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+    let _material = preflight(&tx)?;
     let resolution = match lookup_input_mutation_receipt_tx(&tx, attempt.prepared())? {
         Some(receipt) => InputMutationResolution::Present(receipt),
         None => InputMutationResolution::Absent,

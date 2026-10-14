@@ -582,6 +582,7 @@ fn message_dispatch_plan_public_fields_are_constructible_from_tests() {
     let _plan: MessageDispatchPlan = MessageDispatchPlan {
         prior_closure: closure_decision(),
         task: Ok(None),
+        _task_budget: None,
         continuation_trigger: None,
         continuation_resolution: None,
         model_turn_allowed: false,

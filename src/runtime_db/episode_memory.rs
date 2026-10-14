@@ -493,7 +493,7 @@ fn write_validated_episode_memory_tx(
         // Even a business no-op has committed a new durable receipt.
         transition: TransitionCommit {
             applied: true,
-            effects: PostCommitEffects {
+            effects: Box::new(PostCommitEffects {
                 agent_state: Some(AgentStateMutation {
                     expected: Some(command.expected_state.clone()),
                     record: Box::new(candidate.clone()),
@@ -501,7 +501,7 @@ fn write_validated_episode_memory_tx(
                 audit_events,
                 notify_memory_index: command.plan.finalized_episode.is_some(),
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         },
         episode: command.plan.finalized_episode.clone(),

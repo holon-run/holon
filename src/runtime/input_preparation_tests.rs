@@ -54,7 +54,7 @@ impl Fixture {
         {
             let mut reservation = owner.reserve().await?;
             reservation.begin("initial-state".into())?;
-            reservation.committed(state.clone())?;
+            reservation.committed(state.clone(), None)?;
             reservation.publish(state)?;
         }
         Ok(Self {
@@ -132,6 +132,7 @@ impl Fixture {
             prepared.state.clone(),
             Some(prepared.episodes),
             Some(prepared.inputs),
+            None,
         )?;
         Ok(reservation.publish(prepared.state)?)
     }
@@ -212,7 +213,7 @@ async fn stale_publication_generation_cannot_prepare_even_with_equal_state() -> 
     let mut reservation = fixture.owner.reserve().await?;
     let old = fixture.owner.capture()?.unwrap();
     reservation.begin("same-state-new-generation".into())?;
-    reservation.committed(old.state.clone())?;
+    reservation.committed(old.state.clone(), None)?;
     let new = reservation.publish(old.state.clone())?;
     assert_ne!(old.token, new.token);
     assert!(fixture

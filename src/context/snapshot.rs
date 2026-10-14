@@ -1442,6 +1442,7 @@ mod coherent_acquisition_tests {
         CapturedAgentContext {
             input_evidence: None,
             work: None,
+            tasks: None,
             token: PublicationToken {
                 identity_incarnation: 1,
                 owner_epoch: 1,

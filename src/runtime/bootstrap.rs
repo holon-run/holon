@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use arc_swap::ArcSwap;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use tokio::sync::{Mutex, Notify, RwLock};
@@ -38,7 +38,7 @@ use crate::{
     tool::{apply_patch::ApplyPatchSurface, ToolRegistry},
     types::{
         ActiveWorkspaceEntry, AgentState, AuditEvent, ResolvedModelAvailability,
-        SkillActivationSource, SkillActivationState,
+        SkillActivationSource, SkillActivationState, TaskRecord, TaskStatus,
     },
 };
 
@@ -847,11 +847,15 @@ impl RuntimeHandle {
                 default_agent_id,
                 host_bridge,
                 task_handles: Mutex::new(HashMap::new()),
+                #[cfg(test)]
+                last_child_deletion_rejections_for_test: StdMutex::new(HashMap::new()),
+                task_stop_effects: super::task_stop_effects::TaskStopEffectRegistry::default(),
                 owned_task_handles: StdMutex::new(Vec::new()),
                 owned_task_drain: Mutex::new(Vec::new()),
                 control_cancellations:
                     super::control_cancellation::ControlCancellationRegistry::default(),
                 mutation_tasks: StdMutex::new(super::state_mutation::OwnedMutationTasks::default()),
+                task_queries: super::task_queries::TaskQueryRegistry::default(),
                 recovered_tasks: Mutex::new(Some(active_tasks)),
                 recovered_timers: Mutex::new(Some(active_timers)),
                 bootstrap_result: StdMutex::new(None),
@@ -1594,12 +1598,119 @@ impl RuntimeHandle {
     }
 }
 
+/// The original same-Tx boot observation retains selected Arcs, never a root.
+pub(super) struct BootstrapTaskRecovery {
+    selected: super::resident_task::CapturedTasks,
+    record_limit: usize,
+    byte_limit: usize,
+}
+pub(super) struct BootstrapTaskRecoveryRetention {
+    _selected: super::resident_task::CapturedTasks,
+    _owned: Arc<super::input_evidence_budget::BudgetViewGuard>,
+}
+impl BootstrapTaskRecovery {
+    /// Old transient recovery APIs still consume owned records. Charge before
+    /// cloning, and retain both that allocation and its frozen source until ACK.
+    pub(super) fn into_records(
+        self,
+        ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<(Vec<TaskRecord>, BootstrapTaskRecoveryRetention)> {
+        use super::input_evidence_budget::{
+            serialized_bytes, InputMemoryCategory, OwnedBytesEstimate,
+        };
+        use super::resident_task::{CanonicalTaskFact, TaskReadError};
+        let count = super::task_reads::active_task_count(&self.selected)?;
+        let mut bytes = 256u64;
+        let mut present = 0usize;
+        for row in &self.selected.records {
+            let CanonicalTaskFact::Task(task) = &row.fact else {
+                continue;
+            };
+            if !self.selected.coverage.active_task_ids.contains(&task.id) {
+                continue;
+            }
+            row.validate(&self.selected.scope)?;
+            anyhow::ensure!(
+                matches!(
+                    task.status,
+                    TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
+                ),
+                "bootstrap active Task body differs"
+            );
+            present = present
+                .checked_add(1)
+                .context("bootstrap Task count overflow")?;
+            bytes = bytes
+                .checked_add(serialized_bytes(task)?)
+                .and_then(|n| n.checked_add(std::mem::size_of::<TaskRecord>() as u64))
+                .context("bootstrap Task material overflow")?;
+        }
+        anyhow::ensure!(
+            present == count,
+            "bootstrap active Task snapshot missing body"
+        );
+        let bytes = bytes
+            .checked_mul(8)
+            .context("bootstrap Task copies overflow")?;
+        let records = count
+            .checked_add(1)
+            .and_then(|n| n.checked_mul(8))
+            .context("bootstrap Task copies overflow")?;
+        anyhow::ensure!(
+            bytes <= u64::try_from(self.byte_limit)? && records <= self.record_limit,
+            TaskReadError::ResourceExhausted("bootstrap transient Task recovery")
+        );
+        let guard = ledger.register_owned_bytes(
+            &self.selected.scope,
+            InputMemoryCategory::Candidate,
+            OwnedBytesEstimate {
+                payload_bytes: bytes,
+                metadata_estimate_bytes: 0,
+            },
+        )?;
+        let mut tasks = self
+            .selected
+            .records
+            .iter()
+            .filter_map(|row| {
+                let CanonicalTaskFact::Task(task) = &row.fact else {
+                    return None;
+                };
+                self.selected
+                    .coverage
+                    .active_task_ids
+                    .contains(&task.id)
+                    .then(|| task.clone())
+            })
+            .collect::<Vec<_>>();
+        // Preserve ContextDurableRead::active_tasks normalized SQL order.
+        tasks.sort_by(|a, b| {
+            b.updated_at
+                .timestamp_millis()
+                .cmp(&a.updated_at.timestamp_millis())
+                .then_with(|| {
+                    b.created_at
+                        .timestamp_millis()
+                        .cmp(&a.created_at.timestamp_millis())
+                })
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        Ok((
+            tasks,
+            BootstrapTaskRecoveryRetention {
+                _selected: self.selected,
+                _owned: guard,
+            },
+        ))
+    }
+}
+
 struct PreparedRuntimeStorage {
     storage: AppStorage,
     runtime_db: RuntimeDb,
     state: AgentState,
     queue: RuntimeQueue,
-    active_tasks: Vec<crate::types::TaskRecord>,
+    active_tasks: BootstrapTaskRecovery,
     active_timers: Vec<crate::types::TimerRecord>,
     projection_cache: AgentRuntimeProjectionCache,
 }
@@ -1990,7 +2101,7 @@ fn prepare_runtime_storage_owned(
     // This receipt proves the canonical posture only. Derived import/cache
     // failure remains retryable without treating the whole bootstrap as atomic.
     if let Some(reservation) = reservation.as_deref_mut() {
-        reservation.committed(Arc::new(state.clone()))?;
+        reservation.committed(Arc::new(state.clone()), None)?;
     }
     storage
         .legacy_importer()
@@ -1998,7 +2109,6 @@ fn prepare_runtime_storage_owned(
     storage.enable_audit_event_index(runtime_db.clone(), Some(state.id.clone()))?;
     let projection_cache = AgentRuntimeProjectionCache::rebuild(
         state.id.clone(),
-        runtime_db.tasks().latest_for_agent(&state.id, usize::MAX)?,
         runtime_db
             .timers()
             .recent_for_agent(&state.id, usize::MAX)?,
@@ -2006,7 +2116,7 @@ fn prepare_runtime_storage_owned(
     );
 
     let recent_episode_candidates = context_config.recent_episode_candidates;
-    let (episodes, inputs, work, pending) = runtime_db.transaction(|tx| {
+    let (episodes, inputs, work, tasks, pending) = runtime_db.transaction(|tx| {
         let current = crate::runtime_db::episode_snapshot::load_episode_memory_snapshot_in(
             tx,
             &crate::runtime_db::episode_snapshot::EpisodeMemoryLoadScope {
@@ -2088,6 +2198,28 @@ fn prepare_runtime_storage_owned(
                 }
             }
         }
+        let tasks = crate::runtime_db::task_recovery::prepare_bootstrap_task_domains_tx(
+            tx,
+            &input_scope,
+            &state,
+            &super::resident_task::TaskCaptureRequest::current(),
+            &pending.messages,
+            request.record_limit,
+            request.byte_limit,
+            input_budget,
+        )?;
+        request.mandatory_roots.extend(tasks.input_roots);
+        work_request
+            .mandatory_roots
+            .extend(tasks.work_roots.iter().map(|id| {
+                super::resident_work::WorkKey::new(super::resident_work::WorkFamily::Work, id)
+            }));
+        let tasks = tasks.resident;
+        let recovered_tasks = BootstrapTaskRecovery {
+            selected: tasks.capture(&super::task_reads::active_task_request())?,
+            record_limit: request.record_limit,
+            byte_limit: request.byte_limit,
+        };
         let work = crate::runtime_db::work_snapshot::prepare_work_domain_snapshot_tx(
             tx,
             &input_scope,
@@ -2133,8 +2265,9 @@ fn prepare_runtime_storage_owned(
         )?);
         let inputs = Arc::new(inputs.resident.with_budget(input_budget.clone())?);
         input_budget.check_history_budget()?;
-        Ok((episodes, inputs, work, pending))
+        Ok((episodes, inputs, work, (tasks, recovered_tasks), pending))
     })?;
+    let (tasks, recovered_tasks) = tasks;
     let mut queue = RuntimeQueue::default();
     for message in pending.messages {
         queue.push(message);
@@ -2150,6 +2283,7 @@ fn prepare_runtime_storage_owned(
             Some(episodes),
             Some(inputs),
             Some(work),
+            Some(tasks),
         )?;
     }
 
@@ -2158,7 +2292,7 @@ fn prepare_runtime_storage_owned(
         runtime_db,
         state,
         queue,
-        active_tasks: pending.active_tasks,
+        active_tasks: recovered_tasks,
         active_timers: pending.active_timers,
         projection_cache,
     })
@@ -2831,3 +2965,7 @@ mod mutation_bootstrap_tests {
         assert!(runtime.inner.mutation_owner.capture().unwrap().is_some());
     }
 }
+
+#[cfg(test)]
+#[path = "bootstrap_task_recovery_tests.rs"]
+mod task_recovery_tests;

@@ -29,6 +29,14 @@ use std::{
     sync::Arc,
 };
 
+#[path = "input_evidence_task_output.rs"]
+mod task_output;
+pub(in crate::runtime_db) use task_output::{
+    capture_fixed_task_output_inputs_on, initialize_output_input_relations_tx,
+    prepare_authorized_task_output_inputs_tx, read_authorized_task_input_tx,
+};
+pub(crate) use task_output::{OutputRecallInvalidation, TaskOutputInputRecall};
+
 #[path = "input_evidence_attempt_turn.rs"]
 mod attempt_turn;
 use attempt_turn::AttemptTurnProof;
@@ -43,6 +51,8 @@ pub(crate) use dispatch_briefs::{
 mod execution;
 #[path = "input_evidence_work_observation.rs"]
 mod execution_work;
+#[path = "input_evidence_task_cleanup.rs"]
+mod task_cleanup;
 
 const BOUNDARY_KEY: &str = "input_evidence/v1/fixed_upgrade";
 const MAX_RECORDS: usize = 65_536;
@@ -514,6 +524,7 @@ pub(crate) struct ExistingAdmissionInputProof {
     allowed: BTreeSet<Key>,
     derived: BTreeSet<Key>,
     derived_work_owners: BTreeMap<Key, String>,
+    derived_task_messages: BTreeMap<Key, task_cleanup::DerivedTaskMessage>,
 }
 impl ExistingAdmissionInputProof {
     pub(crate) fn prepare_tx(
@@ -552,6 +563,7 @@ impl ExistingAdmissionInputProof {
             allowed: roots.union(&derived).cloned().collect(),
             derived,
             derived_work_owners: BTreeMap::new(),
+            derived_task_messages: BTreeMap::new(),
         })
     }
     /// The same original transaction observed these qualified Work bodies
@@ -757,6 +769,9 @@ fn register_committed_input_evidence_inner_tx(
                 "committed derived input differs from its original Work admission"
             );
         }
+        if let Some(proof) = cleanup {
+            proof.validate_derived_task_message_tx(tx, &actual)?;
+        }
         let fingerprint = fingerprint_on(tx, &scope.agent_id, &key)?
             .context("committed evidence metadata disappeared")?;
         let digest = bytes_digest(payload.as_bytes());
@@ -800,6 +815,7 @@ fn register_committed_input_evidence_inner_tx(
     let mut turn_transcript_keys = BTreeMap::new();
     let mut message_turn_keys = BTreeMap::new();
     for record in final_records.values() {
+        super::task_snapshot::register_message_source_tx(tx, record)?;
         if let PreparedInputEvidence::Message(message) = &record.record {
             message_turn_keys.insert(
                 message.id.clone(),
@@ -814,6 +830,7 @@ fn register_committed_input_evidence_inner_tx(
         }
     }
     Ok(CommittedInputEvidenceDelta {
+        output_recall_invalidation: None,
         execution: execution::register_tx(tx, scope, &binding, records)?,
         records: final_records.into_values().collect(),
         removals: Vec::new(),
@@ -1918,6 +1935,13 @@ fn upsert_alias_tx(
             && old.present == present
             && old.attempt_turn_proof.as_ref() == attempt_turn_proof
         {
+            task_output::register_current_input_relation_tx(
+                tx,
+                scope,
+                key,
+                old.revision,
+                fingerprint.related_turn_id.as_deref(),
+            )?;
             return Ok(old.revision);
         }
     }
@@ -1927,6 +1951,13 @@ fn upsert_alias_tx(
             .context("input evidence revision overflow")
     })?;
     tx.execute("INSERT INTO input_evidence_current(agent_id,identity_incarnation,family,record_id,revision,content_digest,fingerprint_json,availability,qualification,seed_id,attempt_turn_proof_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(agent_id,identity_incarnation,family,record_id) DO UPDATE SET revision=excluded.revision,content_digest=excluded.content_digest,fingerprint_json=excluded.fingerprint_json,availability=excluded.availability,qualification=excluded.qualification,seed_id=excluded.seed_id,attempt_turn_proof_json=excluded.attempt_turn_proof_json",params![scope.agent_id,i64::try_from(scope.identity_incarnation)?,key.family.as_str(),key.id,i64::try_from(revision)?,digest,serde_json::to_string(fingerprint)?,if present{"present"}else{"pruned"},qualification,seed,attempt_turn_proof.map(serde_json::to_string).transpose()?])?;
+    task_output::register_current_input_relation_tx(
+        tx,
+        scope,
+        key,
+        revision,
+        fingerprint.related_turn_id.as_deref(),
+    )?;
     let stored = alias_on(tx, scope, key)?.context("input evidence alias missing after commit")?;
     ensure!(
         stored.revision == revision
@@ -1966,7 +1997,7 @@ fn table(family: Family) -> (&'static str, &'static str) {
         Family::WorkExecution => ("execution_protocol_work_items", "work_item_id"),
     }
 }
-fn payload_on(tx: &Transaction<'_>, agent: &str, key: &Key) -> Result<Option<String>> {
+fn payload_on(tx: &rusqlite::Connection, agent: &str, key: &Key) -> Result<Option<String>> {
     let (table, id) = table(key.family);
     Ok(tx
         .query_row(
@@ -1976,7 +2007,49 @@ fn payload_on(tx: &Transaction<'_>, agent: &str, key: &Key) -> Result<Option<Str
         )
         .optional()?)
 }
-fn fingerprint_on(tx: &Transaction<'_>, agent: &str, key: &Key) -> Result<Option<Fingerprint>> {
+/// Original fixed actor only. This freezes a source header/body version; it
+/// does not mint a current alias or ordinary read authority.
+pub(in crate::runtime_db) fn fixed_task_query_message_on(
+    connection: &rusqlite::Connection,
+    agent: &str,
+    id: &str,
+) -> Result<(crate::types::MessageEnvelope, String, String)> {
+    let bytes: usize = connection.query_row(
+        "SELECT length(CAST(m.payload_json AS BLOB))+length(CAST(m.evidence_id AS BLOB))+length(CAST(m.agent_id AS BLOB))+COALESCE(length(CAST(m.message_id AS BLOB)),0)+length(CAST(m.created_at AS BLOB))+COALESCE(length(CAST(m.content_hash AS BLOB)),0)+COALESCE((SELECT length(CAST(a.turn_id AS BLOB)) FROM conversation_input_assignments a WHERE a.agent_id=m.agent_id AND a.message_id=m.evidence_id),0)+1024 FROM messages m WHERE m.agent_id=?1 AND m.evidence_id=?2",
+        params![agent,id], |row| row.get(0))?;
+    ensure!(
+        bytes
+            .checked_mul(8)
+            .is_some_and(|n| n <= MAX_METADATA_BYTES),
+        InputEvidenceSnapshotError::ResourceExhausted("fixed Task query Message material")
+    );
+    let key = Key::new(Family::Message, id);
+    let mut fingerprint =
+        fingerprint_on(connection, agent, &key)?.context("fixed Task query Message missing")?;
+    let raw =
+        payload_on(connection, agent, &key)?.context("fixed Task query Message body missing")?;
+    let message = crate::runtime_db::repositories::decode_message_payload(&raw)?;
+    ensure!(
+        message.id == id
+            && message.agent_id == agent
+            && message.message_seq == fingerprint.sequence
+            && crate::runtime_db::repositories::timestamp(message.created_at)
+                == fingerprint.created_at,
+        "fixed Task query Message normalized header differs"
+    );
+    let digest = bytes_digest(raw.as_bytes());
+    // Match the original Input seed representation: a canonical hash already
+    // proves the body; unhashed legacy rows need the independent frozen digest.
+    if requires_frozen_body_digest(&key, &fingerprint) {
+        fingerprint.frozen_payload_digest = Some(digest.clone());
+    }
+    Ok((message, digest, serde_json::to_string(&fingerprint)?))
+}
+fn fingerprint_on(
+    tx: &rusqlite::Connection,
+    agent: &str,
+    key: &Key,
+) -> Result<Option<Fingerprint>> {
     let (table, id) = table(key.family);
     let (hash,seq,index,created,owner_kind,owner_id,revision)=match key.family {
  Family::Turn=>("NULL","NULL","r.turn_index","r.created_at","r.owner_kind","r.owner_id","'canonical_body'"),
@@ -2510,11 +2583,15 @@ pub(crate) fn register_pruned_input_evidence_tx(
     require_current_scope(tx, scope)?;
     let binding = binding_on(tx, scope)?;
     let mut removals = BTreeMap::new();
+    let mut output_recall_invalidation = None;
     for key in keys {
         ensure!(
             fingerprint_on(tx, &scope.agent_id, key)?.is_none(),
             "pruned evidence remains in canonical SQL"
         );
+        if let Some(invalidation) = task_output::register_pruned_focused_input_tx(tx, scope, key)? {
+            output_recall_invalidation = Some(invalidation);
+        }
         let old = alias_on(tx, scope, key)?;
         let (fingerprint, digest, attempt_turn_proof) = if let Some(old) = old {
             if !old.present {
@@ -2561,6 +2638,7 @@ pub(crate) fn register_pruned_input_evidence_tx(
         );
     }
     Ok(CommittedInputEvidenceDelta {
+        output_recall_invalidation,
         execution: execution::prune_tx(tx, scope, &binding, keys)?,
         records: Vec::new(),
         removals: removals.into_values().collect(),

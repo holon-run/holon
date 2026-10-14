@@ -241,8 +241,9 @@ fn original_retention_keeps_work_history_and_protected_head_while_pruning_actual
             .as_deref(),
         Some("retention-protected-source")
     );
-    let InputMutationExecution::Replayed { receipt: replay } =
-        db.commit_prepared_external_input_evidence_with_work_request(&prepared, &bounded)?
+    let InputMutationExecution::Replayed {
+        receipt: replay, ..
+    } = db.commit_prepared_external_input_evidence_with_work_request(&prepared, &bounded)?
     else {
         panic!("retention must resolve its exact receipt after inventory is empty");
     };

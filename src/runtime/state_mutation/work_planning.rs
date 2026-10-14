@@ -13,6 +13,7 @@ use crate::{
             CanonicalWorkRecord, CapturedWork, WorkCaptureRequest, WorkFamily, WorkKey,
         },
         scheduler::{SchedulerAgentSnapshot, SchedulerObservations, SchedulerProjection},
+        task_reads::active_task_records,
     },
     runtime_db::{
         context_inputs::ContextDurableRead, input_evidence_snapshot::InputEvidenceLoadRequest,
@@ -29,11 +30,24 @@ pub(in crate::runtime) struct PreparedSchedulerRead {
     pub projection: SchedulerProjection,
     pub work_queue: WorkQueueReadModel,
     pub work: CapturedWork,
+    pub tasks: super::super::resident_task::CapturedTasks,
     pub due_rechecks: Vec<WorkItemRecord>,
     pub scheduling_posture: crate::types::AgentPostureProjection,
     pub active_waits: Vec<WaitConditionRecord>,
     pub advisories: Vec<super::super::scheduler::SchedulingAdvisory>,
+    pub observability_briefs:
+        Vec<Arc<super::super::resident_input_evidence::QualifiedInputEvidence>>,
+    _brief_budget: Arc<BudgetViewGuard>,
+    _task_selector_budget: Arc<BudgetViewGuard>,
     pub(in crate::runtime) _owned_budget: Arc<BudgetViewGuard>,
+    pub(in crate::runtime) _task_owned_budget: Arc<BudgetViewGuard>,
+}
+
+// The original command preparation still checks its durable adapter view.
+// Ordinary child observability already holds one published owner root.
+enum SchedulerAdapterRoot {
+    Revalidate,
+    HeldPublication,
 }
 
 impl RuntimeMutation {
@@ -81,6 +95,11 @@ impl RuntimeMutation {
                         request.required_task_ids.insert(task_id.clone());
                     }
                 }
+            }
+        }
+        if let Some(source) = message.filter(|source| source.kind == MessageKind::TaskResult) {
+            if let Some(task_id) = &source.task_id {
+                request.required_task_ids.insert(task_id.clone());
             }
         }
         // Queue payloads can still retain isolated legacy caller hints. Only
@@ -137,6 +156,24 @@ impl RuntimeMutation {
                     .insert(WorkKey::new(WorkFamily::Work, &key.id));
             }
         }
+        {
+            let (_, records, bytes) = self.context_input_evidence_policy()?;
+            let (tasks, _selectors) = super::super::task_reads::scheduler_task_request(
+                &self.input_evidence_scope(),
+                &request,
+                self.tasks.as_ref().map(|tasks| tasks.coverage()),
+                &self.runtime.inner.input_evidence_budget,
+                records,
+                bytes,
+            )?;
+            // Explicit acquisition for this actual message's finite Task/Wait
+            // addresses. Ordinary capture below never prepares on a miss.
+            let (mut load, _live_queries) = self.owner_task_load_request()?;
+            load.capture
+                .required_keys
+                .extend(tasks.required_keys.iter().cloned());
+            self.prepare_owner_task_domain_request(&load).await?;
+        }
         self.prepare_owner_work_request(&request).await?;
         let work = self.capture_work(&request)?;
         let (mut roots, record_limit, byte_limit) = self.context_input_evidence_policy()?;
@@ -188,47 +225,77 @@ impl RuntimeMutation {
         request: &WorkCaptureRequest,
         now: chrono::DateTime<Utc>,
     ) -> Result<PreparedSchedulerRead> {
-        // Capture both domains again from their final single root.
-        let (_, state, work) = self.capture_work_with_state(&request)?;
-        let inputs = self.capture_input_evidence()?;
+        self.capture_scheduler_read_inner(request, now, SchedulerAdapterRoot::Revalidate)
+    }
+
+    fn capture_child_observability_read(
+        &self,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<PreparedSchedulerRead> {
+        self.capture_scheduler_read_inner(
+            &WorkCaptureRequest::current(),
+            now,
+            SchedulerAdapterRoot::HeldPublication,
+        )
+    }
+
+    fn capture_scheduler_read_inner(
+        &self,
+        request: &WorkCaptureRequest,
+        now: chrono::DateTime<Utc>,
+        adapter_root: SchedulerAdapterRoot,
+    ) -> Result<PreparedSchedulerRead> {
+        // Task/Work/Input/State all come from one final publication.
+        let (_, records, bytes) = self.context_input_evidence_policy()?;
+        let (task_request, task_selector_budget) =
+            super::super::task_reads::scheduler_task_request(
+                &self.input_evidence_scope(),
+                request,
+                self.tasks.as_ref().map(|tasks| tasks.coverage()),
+                &self.runtime.inner.input_evidence_budget,
+                records,
+                bytes,
+            )?;
+        let (state, work, inputs, tasks) =
+            self.capture_scheduler_task_domains(request, &task_request)?;
         let scope = self.input_evidence_scope();
         anyhow::ensure!(
-            work.scope == scope && inputs.scope == scope,
+            work.scope == scope && inputs.scope == scope && tasks.scope == scope,
             "scheduler domains differ"
         );
-        let (
-            active_tasks,
-            triggers,
-            active_timers,
-            has_interrupted_replay,
-            has_queued_input,
-            events,
-        ) = {
+        let (triggers, active_timers, has_interrupted_replay, has_queued_input, events) = {
             let mut connection = self.runtime.inner.runtime_db.connection()?;
             let tx =
                 connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
             let durable = ContextDurableRead::new(&tx, &state.id);
-            let facts = durable.scope_facts()?;
-            anyhow::ensure!(
-                facts.state.as_ref() == Some(state.as_ref()) && facts.control_revision.is_some(),
-                "scheduler adapter State changed"
-            );
-            let identity = facts
-                .identity
-                .context("scheduler adapter identity missing")?;
-            anyhow::ensure!(
-                identity.agent_id == scope.agent_id
-                    && identity.incarnation == scope.identity_incarnation
-                    && identity.status == AgentRegistryStatus::Active,
-                "scheduler adapter identity differs"
-            );
-            crate::runtime_db::work_snapshot::validate_work_domain_observation_tx(
-                &tx,
-                &scope,
-                work.revision,
-            )?;
-            // D5 Task and D6 Trigger/Timer remain explicit same-view adapters.
-            let tasks = durable.active_tasks(&state.id)?;
+            if matches!(adapter_root, SchedulerAdapterRoot::Revalidate) {
+                let facts = durable.scope_facts()?;
+                anyhow::ensure!(
+                    facts.state.as_ref() == Some(state.as_ref())
+                        && facts.control_revision.is_some(),
+                    "scheduler adapter State changed"
+                );
+                let identity = facts
+                    .identity
+                    .context("scheduler adapter identity missing")?;
+                anyhow::ensure!(
+                    identity.agent_id == scope.agent_id
+                        && identity.incarnation == scope.identity_incarnation
+                        && identity.status == AgentRegistryStatus::Active,
+                    "scheduler adapter identity differs"
+                );
+                crate::runtime_db::work_snapshot::validate_work_domain_observation_tx(
+                    &tx,
+                    &scope,
+                    work.revision,
+                )?;
+                crate::runtime_db::task_snapshot::validate_task_domain_observation_tx(
+                    &tx,
+                    &scope,
+                    tasks.revision,
+                )?;
+            }
+            // D6 Trigger/Timer remain explicit same-view adapters.
             let triggers = durable.external_triggers()?;
             let mut query = tx
                 .prepare("SELECT payload_json FROM timers WHERE agent_id=?1 AND status='active'")?;
@@ -257,8 +324,13 @@ impl RuntimeMutation {
             events.reverse();
             drop(query);
             tx.commit()?;
-            (tasks, triggers, timers, interrupted, queued, events)
+            (triggers, timers, interrupted, queued, events)
         };
+        let task_refs = active_task_records(&tasks)?;
+        // Register the exact owned Task Vec before its first body clone. This
+        // guard follows the projection, independently of the selected Arc view.
+        let task_owned_budget = self.runtime.task_projection_budget(&tasks, &task_refs, 1)?;
+        let active_tasks = task_refs.into_iter().cloned().collect::<Vec<_>>();
         let unresolved = work.unresolved_wait_conditions()?;
         let active_waits = work
             .context_active_wait_conditions()?
@@ -321,7 +393,6 @@ impl RuntimeMutation {
         activation_waits.sort_by(|left, right| left.id.cmp(&right.id));
         let mut owned = scheduler_owned_bytes(
             &work_queue,
-            &active_tasks,
             &active_waits,
             &activation_waits,
             &due_rechecks,
@@ -362,21 +433,46 @@ impl RuntimeMutation {
             &scheduling_posture,
             &advisories,
         ))?);
+        // Reuse the original window allocation, retaining only the exact last
+        // 16 bodies needed by child observability. Its capacity remains charged.
+        let mut observability_briefs = briefs;
+        let omitted = observability_briefs.len().saturating_sub(16);
+        observability_briefs.drain(..omitted);
+        owned.metadata_estimate_bytes = owned
+            .metadata_estimate_bytes
+            .checked_add(
+                u64::try_from(observability_briefs.capacity())?
+                    .checked_mul(u64::try_from(std::mem::size_of::<
+                        Arc<super::super::resident_input_evidence::QualifiedInputEvidence>,
+                    >())?)
+                    .context("scheduler Brief slots overflow")?,
+            )
+            .context("scheduler Brief metadata overflow")?;
         let budget = self
             .runtime
             .inner
             .input_evidence_budget
             .register_owned_bytes(&scope, InputMemoryCategory::Pins, owned)?;
+        let brief_budget = self.runtime.inner.input_evidence_budget.register_view(
+            &scope,
+            InputMemoryCategory::Pins,
+            &observability_briefs,
+        )?;
         Ok(PreparedSchedulerRead {
             state,
             projection,
             work_queue,
             work,
+            tasks,
             due_rechecks,
             scheduling_posture,
             active_waits,
             advisories,
+            observability_briefs,
+            _brief_budget: brief_budget,
+            _task_selector_budget: task_selector_budget,
             _owned_budget: budget,
+            _task_owned_budget: task_owned_budget,
         })
     }
 }
@@ -395,11 +491,24 @@ impl RuntimeHandle {
         let mutation = self.begin_mutation().await?;
         mutation.capture_scheduler_read(&WorkCaptureRequest::current(), self.now())
     }
+
+    #[inline(never)]
+    pub(in crate::runtime) fn capture_child_observability_projection(
+        &self,
+    ) -> std::pin::Pin<
+        Box<impl std::future::Future<Output = Result<PreparedSchedulerRead>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            // No preparation or SQL root refresh: State/Task/Work/Input are
+            // selected from this one Ready publication under its actual owner.
+            let mutation = self.begin_mutation().await?;
+            mutation.capture_child_observability_read(self.now())
+        })
+    }
 }
 
 fn scheduler_owned_bytes(
     queue: &WorkQueueReadModel,
-    tasks: &[TaskRecord],
     active_waits: &[WaitConditionRecord],
     waits: &[WaitConditionRecord],
     due: &[WorkItemRecord],
@@ -422,13 +531,7 @@ fn scheduler_owned_bytes(
     // queue is an explicit conservative estimate, not allocator/RSS accounting.
     let payload_bytes = queue_bytes
         .saturating_mul(2)
-        .saturating_add(serialized_bytes(&(
-            tasks,
-            active_waits,
-            waits,
-            due,
-            execution,
-        ))?);
+        .saturating_add(serialized_bytes(&(active_waits, waits, due, execution))?);
     Ok(OwnedBytesEstimate {
         payload_bytes,
         metadata_estimate_bytes: (std::mem::size_of::<PreparedSchedulerRead>() as u64)

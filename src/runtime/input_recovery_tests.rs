@@ -50,7 +50,7 @@ impl Fixture {
         let mut reservation = owner.try_reserve()?;
         reservation.begin("initial".into())?;
         let initial = Arc::new(state.clone());
-        reservation.committed_prepared(initial.clone(), None)?;
+        reservation.committed_prepared(initial.clone(), None, None)?;
         reservation.publish(initial)?;
         drop(reservation);
         Ok(Self {

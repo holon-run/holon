@@ -203,6 +203,11 @@ pub(crate) struct ScopedRuntimeDbRetentionCommit {
         InputEvidenceScope,
         crate::runtime::resident_work::CommittedWorkDelta,
     )>,
+    pub task_deltas: Vec<(
+        InputEvidenceScope,
+        crate::runtime::resident_task::CommittedTaskDelta,
+        Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+    )>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -315,6 +320,7 @@ impl RuntimeDb {
                 committed: self.commit_retention_pass(policy, now)?,
                 input_deltas: Vec::new(),
                 work_deltas: Vec::new(),
+                task_deltas: Vec::new(),
             });
         }
         self.transaction_with_context(
@@ -404,6 +410,7 @@ impl RuntimeDb {
             committed,
             input_deltas,
             work_deltas: Vec::new(),
+            task_deltas: Vec::new(),
         })
     }
 

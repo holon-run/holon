@@ -568,7 +568,7 @@ fn real_upgrade_deleting_scope_preserves_admitted_cleanup_without_activation() -
     assert_eq!(fixture.state()?.pending, 0);
     assert!(matches!(fixture.db.transitions_in_scope(&input_scope(7))
         .commit_prepared_transition(&prepared)?,
-        InputMutationExecution::Replayed { receipt: original } if original == receipt));
+        InputMutationExecution::Replayed { receipt: original, .. } if original == receipt));
     assert_eq!(
         fixture.db.agent_identities().latest(AGENT)?.unwrap().status,
         AgentRegistryStatus::Deleting

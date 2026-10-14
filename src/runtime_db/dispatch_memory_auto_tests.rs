@@ -139,7 +139,9 @@ fn automatic_deferred_replay_restores_original_frozen_intent_and_rejects_changed
         .transitions_in_scope(&f.scope)
         .commit_prepared_transition(&retry)?
     {
-        InputMutationExecution::Replayed { receipt: replayed } => assert_eq!(replayed, receipt),
+        InputMutationExecution::Replayed {
+            receipt: replayed, ..
+        } => assert_eq!(replayed, receipt),
         _ => panic!("retry must not expose old candidate/effects"),
     }
     assert_eq!(f.read()?.unwrap(), obligation);
@@ -206,7 +208,9 @@ fn automatic_finish_replay_after_done_does_not_rewrite_later_state_or_reissue_ef
         .transitions_in_scope(&f.scope)
         .commit_prepared_transition(&retry)?
     {
-        InputMutationExecution::Replayed { receipt: replayed } => assert_eq!(replayed, receipt),
+        InputMutationExecution::Replayed {
+            receipt: replayed, ..
+        } => assert_eq!(replayed, receipt),
         _ => panic!("Done replay must return only the original receipt"),
     }
     assert_eq!(current(&f)?, later);

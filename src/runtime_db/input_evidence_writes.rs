@@ -18,6 +18,9 @@ pub(crate) struct InputEvidenceCommit<T> {
     pub input_delta: CommittedInputEvidenceDelta,
     pub agent_state: Option<super::transitions::AgentStateMutation>,
     pub work_delta: Option<crate::runtime::resident_work::CommittedWorkDelta>,
+    pub task_delta: Option<crate::runtime::resident_task::CommittedTaskDelta>,
+    pub task_material_budget_views:
+        Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
 }
 
 pub(crate) fn validate_input_evidence_scope_tx(
@@ -83,6 +86,8 @@ pub(crate) fn acknowledge_input_evidence_tx<T>(
     };
     Ok(InputEvidenceCommit {
         work_delta: None,
+        task_delta: None,
+        task_material_budget_views: Vec::new(),
         record,
         input_delta,
         agent_state,
@@ -131,6 +136,13 @@ pub(crate) fn merge_input_evidence_delta(
     into: &mut CommittedInputEvidenceDelta,
     delta: CommittedInputEvidenceDelta,
 ) -> Result<()> {
+    if let Some(invalidation) = delta.output_recall_invalidation {
+        if let Some(existing) = &into.output_recall_invalidation {
+            existing.merge(&invalidation)?;
+        } else {
+            into.output_recall_invalidation = Some(invalidation);
+        }
+    }
     for record in delta.records {
         ensure!(
             !into

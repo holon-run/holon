@@ -124,8 +124,9 @@ fn transcript_original_sequence_replays_after_prune_without_recreating_body() ->
         )?;
         Ok(())
     })?;
-    let InputMutationExecution::Replayed { receipt: replay } =
-        f.db.evidence().commit_prepared_input_evidence(&prepared)?
+    let InputMutationExecution::Replayed {
+        receipt: replay, ..
+    } = f.db.evidence().commit_prepared_input_evidence(&prepared)?
     else {
         panic!("pruned original result must replay")
     };
@@ -223,8 +224,9 @@ fn brief_receipt_has_actual_event_link_and_keeps_original_event_after_audit_prun
         "DELETE FROM audit_events WHERE audit_event_id=?1",
         [&actual.event.id],
     )?;
-    let InputMutationExecution::Replayed { receipt: replay } =
-        f.db.evidence().commit_prepared_input_evidence(&prepared)?
+    let InputMutationExecution::Replayed {
+        receipt: replay, ..
+    } = f.db.evidence().commit_prepared_input_evidence(&prepared)?
     else {
         panic!("must replay original")
     };
@@ -368,8 +370,9 @@ fn multi_scope_retention_replays_original_report_after_inventory_becomes_empty()
     assert_eq!(receipt.outcome.scopes.len(), 2);
     assert_eq!(f.count("tool_executions")?, 2);
     assert!(f.db.retention_input_scopes(policy, f.at)?.is_empty());
-    let InputMutationExecution::Replayed { receipt: replay } =
-        f.db.commit_prepared_external_input_evidence(&prepared)?
+    let InputMutationExecution::Replayed {
+        receipt: replay, ..
+    } = f.db.commit_prepared_external_input_evidence(&prepared)?
     else {
         panic!("empty later inventory cannot invalidate receipt")
     };

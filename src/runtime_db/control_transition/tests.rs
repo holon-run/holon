@@ -2186,3 +2186,9 @@ fn original_stop_material_counts_all_command_obligations_before_any_proof_decode
         .unwrap();
     assert_eq!(count_after, count_before);
 }
+
+#[path = "task_write_tests.rs"]
+mod task_write_tests;
+
+#[path = "status_metadata_actor_tests.rs"]
+mod status_metadata_actor_tests;

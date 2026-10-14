@@ -5555,6 +5555,7 @@ impl AppStorage {
             },
         )
     }
+    #[cfg(test)]
     pub(crate) fn commit_prepared_input_evidence_with_work_request(
         &self,
         prepared: &crate::runtime_db::prepared_input_evidence::PreparedInputEvidence,
@@ -5568,5 +5569,25 @@ impl AppStorage {
     > {
         self.store
             .commit_prepared_input_evidence_with_work_request(prepared, work_request)
+    }
+    pub(crate) fn commit_prepared_input_evidence_with_task_budget(
+        &self,
+        prepared: &crate::runtime_db::prepared_input_evidence::PreparedInputEvidence,
+        work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+        task_request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<
+        crate::runtime_db::transitions::InputMutationExecution<
+            crate::runtime_db::input_evidence_writes::InputEvidenceCommit<
+                crate::runtime_db::prepared_input_evidence::PreparedEvidenceValue,
+            >,
+        >,
+    > {
+        self.store.commit_prepared_input_evidence_with_task_budget(
+            prepared,
+            work_request,
+            task_request,
+            ledger,
+        )
     }
 }

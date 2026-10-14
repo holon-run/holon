@@ -287,7 +287,7 @@ fn publish_contract_execution(
                         register_committed_input_evidence_tx(tx, scope, &facts)?;
                     Ok(TransitionCommit {
                         applied: true,
-                        effects: PostCommitEffects {
+                        effects: Box::new(PostCommitEffects {
                             agent_state: Some(AgentStateMutation {
                                 expected: Some(Box::new(before.clone())),
                                 record: Box::new(state),
@@ -297,7 +297,7 @@ fn publish_contract_execution(
                             execution_protocol: Some(final_execution),
                             input_evidence_delta,
                             ..Default::default()
-                        },
+                        }),
                         ..Default::default()
                     })
                 })
@@ -359,7 +359,7 @@ fn publish_original_reply<'a>(
                     stored = Some(reply.clone());
                     Ok(TransitionCommit {
                         applied: true,
-                        effects: PostCommitEffects {
+                        effects: Box::new(PostCommitEffects {
                             agent_state: Some(AgentStateMutation {
                                 expected: Some(Box::new(before.clone())),
                                 record: Box::new(state),
@@ -368,7 +368,7 @@ fn publish_original_reply<'a>(
                             turns: vec![turn],
                             input_evidence_delta,
                             ..Default::default()
-                        },
+                        }),
                         ..Default::default()
                     })
                 })
@@ -1710,7 +1710,11 @@ async fn terminal_task_replay_repairs_wait_once_across_restart() {
         .await
         .unwrap();
     let running = running_task("task-replay", &work.id, harness.now());
-    harness.runtime().storage().append_task(&running).unwrap();
+    harness
+        .runtime()
+        .persist_task_transition(&running, "replay_running_fixture")
+        .await
+        .unwrap();
     let registration = harness
         .runtime()
         .register_wait_for(
@@ -1730,8 +1734,19 @@ async fn terminal_task_replay_repairs_wait_once_across_restart() {
     );
     message.task_id = Some("task-replay".into());
     message.work_item_id = Some(work.id.clone());
+    persist_completed_task_parent_fixture(
+        harness.runtime(),
+        "turn-late-task-parent",
+        Some(&work.id),
+    )
+    .await
+    .unwrap();
     let terminal = terminal_task_with_result(&running, &message, harness.now());
-    harness.runtime().storage().append_task(&terminal).unwrap();
+    harness
+        .runtime()
+        .persist_task_transition(&terminal, "replay_already_terminal_fixture")
+        .await
+        .unwrap();
     let before = harness
         .runtime()
         .inner

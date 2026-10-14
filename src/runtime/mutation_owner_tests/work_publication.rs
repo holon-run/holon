@@ -43,7 +43,7 @@ async fn work_publication_rejects_foreign_scope_before_known_acknowledgement() {
     let key = reservation.begin("work-scope".into()).unwrap();
     for work in [work_domain("other", 7), work_domain("default", 8)] {
         assert!(matches!(
-            reservation.committed_prepared_with_domains(state(1), None, None, Some(work)),
+            reservation.committed_prepared_with_domains(state(1), None, None, Some(work), None),
             Err(MutationOwnerError::TicketMismatch)
         ));
         assert!(reservation.recovery().unwrap().unwrap().known.is_none());
@@ -59,14 +59,15 @@ async fn work_publication_keeps_original_known_allocation_and_explicit_readiness
     let mut reservation = owner.reserve().await.unwrap();
     reservation.begin("work-known".into()).unwrap();
     reservation
-        .committed_prepared_with_domains(state(1), None, None, Some(work.clone()))
+        .committed_prepared_with_domains(state(1), None, None, Some(work.clone()), None)
         .unwrap();
     assert!(matches!(
         reservation.committed_prepared_with_domains(
             state(1),
             None,
             None,
-            Some(work_domain("default", 7))
+            Some(work_domain("default", 7)),
+            None,
         ),
         Err(MutationOwnerError::TicketMismatch)
     ));
@@ -83,7 +84,7 @@ async fn work_publication_keeps_original_known_allocation_and_explicit_readiness
         1
     );
     reservation.begin("unmigrated-writer".into()).unwrap();
-    reservation.committed(state(2)).unwrap();
+    reservation.committed(state(2), None).unwrap();
     let next = reservation.publish(state(2)).unwrap();
     assert!(
         next.work.is_none(),
@@ -99,7 +100,7 @@ async fn work_publication_preserves_same_incarnation_active_metadata_only() {
     let mut reservation = owner.reserve().await.unwrap();
     reservation.begin("work-initial".into()).unwrap();
     reservation
-        .committed_prepared_with_domains(state(1), None, None, Some(work.clone()))
+        .committed_prepared_with_domains(state(1), None, None, Some(work.clone()), None)
         .unwrap();
     reservation.publish(state(1)).unwrap();
     reservation.begin("active-metadata".into()).unwrap();

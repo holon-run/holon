@@ -712,6 +712,188 @@ orphan OS process exited. Proof selection, decoded records, and planner output
 share the preparation budget; persisted addresses do not grant authority to
 recreate a process capability.
 
+### Task facts, results, and original Stop effects
+
+Task residency distinguishes qualified current records, explicit unavailable or
+pruned references, and historical records that cannot grant current authority.
+Relations validate their exact Task generation before following Work or source
+Message dependencies. An invalid Result relation remains observable for finite
+canonical cleanup; it cannot make a foreign or unqualified Work a capture root.
+A cleanup phase rechecks that relation in its own transaction, so a relation
+that became valid cannot be settled from an earlier invalid observation.
+
+Complete active Task metadata, unsettled Result metadata, and pending Stop
+responsibilities are independent of bounded terminal history. Selected records
+and exact-generation Stop heads share the Task domain revision. A terminal Task
+or empty queue does not remove an unfinished Stop from startup inventory. Raw
+maintenance can invalidate coverage without manufacturing qualified records or
+a Ready Task domain. Result writers, Control, startup interruption, and deletion
+maintenance return their complete actual write footprint for one domain install.
+
+Task status also captures read-only observations of original worktree cleanup
+and the latest child delegation. These observations bind the exact selected Task
+locator and share its domain revision; they grant neither mutation authority nor
+source-body membership. Cleanup overlays preserve the original artifact and
+lineage, exposing only cleanup status, reason, error, changed files, retention,
+and branch-cleanup evidence. Delegation observations preserve the existing
+latest-for-child ordering. Unavailable metadata and observed absence remain
+separate, including when an optional delegation is omitted from a response.
+The original completion and delegation writers maintain accepted metadata in
+their owning transactions. Named preparation can consume the fixed original
+inventory; a normal reader cannot adopt an unacknowledged canonical tail.
+
+Task query relations are complete observations in the same captured view. A
+native Task's first acknowledged insertion advances a durable incarnation-local
+birth cursor; updates and receipt replay do not create another birth. Fixed
+history and first-import members precede a newly admitted observation session.
+Live query roles retain the entire required birth interval or completed-reply
+relation independently of the bounded terminal history window. Their members
+count as current facts while the role remains live, and admission fails before
+allocation when that complete set exceeds its budget. An observed empty reply
+relation differs from unavailable or pruned membership. These indexes select
+already qualified Task facts and grant no Input body or mutation authority.
+
+A producer generation preserves the raw rejoin shape as well as the Task's
+original birth. An absent contract, a valid creator-allocated obligation and
+generation without a parent Turn, and a complete bound rejoin are distinct.
+Explicit null, zero or foreign markers cannot become an unbound contract by
+failing to decode a complete fence. A creator without a parent has no model
+reentry authority; the eventual Result Message's provenance Turn cannot grant it.
+
+A Running input obtains its original clock from the qualified actual Task and
+its independently accepted canonical Message in the same owner-held capture.
+A native expected-birth header supplies equality only. A historical missing
+header requires an immutable association between both original fixed-cohort
+members, or the exact live producer's private seal. Such an association never
+follows a later Task birth or raw rejoin generation under the same Task ID and
+does not itself admit an Input body. Fixed Input and Task-query fingerprints use
+the same metadata representation and retain the independent body proofs required
+by that original cohort.
+
+The original child monitor retains actual child incarnation, delivery/baseline,
+lifecycle duty and artifact addresses before it can publish Running or freeze a
+Stop that takes over those responsibilities. Binding is an acknowledged Task
+mutation under the original producer, with its own recoverable whole receipt;
+it preserves the Task birth, Work and rejoin contract. A Stop coordinating that
+binding releases its first parent reservation before awaiting the same producer,
+then reacquires and validates the current Task and the identical original lease.
+Missing current qualification preserves the producer's responsibility.
+
+Finite child creation is Host-owned from registration through its actual result,
+independently of the abortable monitor and caller. Created identity or worktree
+side effects remain attached to that original responsibility even if a later
+creation step fails; an unexecuted plan is not proof of a created artifact.
+The subsequent whole ACK or an exact durable Stop handoff must cover the actual
+child and artifact facets before releasing the source. None of these
+observations independently grants identity deletion or artifact removal.
+
+TaskStop has a focused durable effect record within the Task domain. Its first
+transaction updates the original Task and records its immutable intent and
+whole-command receipt. The intent freezes identity incarnation, original Task
+locator and generation, owner epoch, signal kind, exact local lease identity or
+explicit absence, original child association, artifact addresses, and the
+Result continuation's nonce, Message identity, clock, and canonical Work binding.
+It admits no Result and performs no physical action in that transaction.
+
+The runtime retains its local plan before SQL and registers the owned worker
+before the caller's first suspension. An unknown commit cannot permit a signal;
+only the original acknowledged and published intent can authorize the frozen
+local target. A distinct later Force request is a new intent, never an upgrade
+of replayed Cancel. The worker never looks up a replacement handle by Task ID.
+A child included solely as an initial read dependency preserves its existing
+published State and domain allocations; this grants no child mutation or
+activation. Retired or absent-State child observations remain metadata only.
+
+Physical monitor completion, child retirement, worktree disposition, and Result
+admission have separate acknowledged progress. A monitor join proves neither
+OS-process exit nor child retirement. Archiving a child revalidates the frozen
+incarnation and parent creation-Task association before and after drain using
+the existing lifecycle rules. Worktree removal requires original artifact
+ownership and producer-exit evidence held through the filesystem operation;
+missing evidence produces an explicit retained disposition. These observations
+do not independently authorize identity deletion or successor writes.
+
+Result delivery proceeds independently of physical attention. Its original
+frozen continuation uses the existing qualified Task/Result/Work/Wait/Input
+transaction and applicable deferred-memory obligations, with one complete
+receipt after all writes. The typed ACK distinguishes actual delivery from
+finite unavailability; a successful metadata-only outcome cannot count its
+unadmitted template as accepted input. Only that original attempt's newly
+reserved tickets are resolved from this ACK. Existing accepted inputs remain
+owned and accounted independently.
+
+A loaded runtime may install a Stop phase through its ordinary mutation adapter
+only when both the original ACK and the fresh current scope support complete
+current-domain installation. No State, incomplete coverage, or a retired scope
+uses the original owner's finite metadata actor. A sealed fresh observation
+binds the finished original attempt, phase receipt, initial whole Stop receipt,
+and actual current scope; it cannot hydrate missing State or turn TaskNone into
+Ready. Retired recovery does not read successor State. Positive recovery returns
+the original result while preserving current installation and accepted-input
+accounting; receipt replay is not permission to repeat physical effects.
+
+The public Stop reply describes the acknowledged initial Task mutation.
+Its owned continuation remains responsible for Result admission and the
+independent physical facets after the caller disconnects. A completed original
+monitor releases only the matching instance handle; a later lease under the
+same Task ID remains untouched.
+
+Physical retirement joins the original instance's owned mutation workers before
+resolving their durable scope. When that instance's owner has been replaced,
+only a closed-admission instance may ask the Host to reconcile its original
+agent/incarnation through the current owner and complete witness group. This
+does not grant the old token publication rights. Unknown outcomes and original
+worker failures remain errors; resource drain cannot turn them into Ready or
+successful exit proof.
+
+An original Stop plan can outlive replacement of its in-process mutation owner.
+A retry keeps its original descriptor, immutable receipt binding and exact local
+lease; Cancel and Force remain distinct commands. A positive publication can
+be reused without selecting another Task handle. If the initial publication
+was lost, the Host first resolves the original finished attempt under the real
+current scope owner. Only a ready current publication containing the exact
+original Stop record, equal to its fresh whole receipt, may grant the frozen
+local signal capability. The publication token belongs to that current owner;
+the old Runtime does not install state with its former epoch. Missing Task
+coverage permits named preparation through an already registered current
+Runtime, never activation merely to continue Stop. Missing or retired State
+remains an explicit unavailable/attention outcome, not fabricated readiness.
+
+Completed Stop facets may no longer appear in pending inventories. The Host
+also observes retained finished local attempts by their original descriptor,
+including terminal whole acknowledgements, before releasing their exact local
+plan. An original attempt may be released as uncommitted only after it ended,
+its complete recovery group is resolved, and a fresh reserved read proves the
+joint absence of both the mandatory Stop effect and its unpruned whole receipt.
+Every successful initial Stop, including a Task no-op, writes both atomically.
+
+
+#### Original worktree cleanup observation
+
+Worktree cleanup is a closed continuation of one initial Stop receipt. Its
+request identity contains that immutable original address and a deterministic
+phase nonce. Only this action excludes the current progress revision and
+filesystem observations from the business digest: those are local compare-and-
+set metadata and derived results, not a new cleanup request. Existing progress
+commands retain their original digest contract.
+
+The Host first reconciles the original owner's unknown attempt and checks the
+full phase receipt. A committed receipt returns its original ACK before Git is
+run. Otherwise it holds bootstrap locks and mutation owners in sorted scope
+order, validates the same parent incarnation, qualified original Task generation,
+frozen artifact and repository address, retired original child association, and
+the sealed complete producer-exit capability. Retired/successor or unavailable
+associations retain the artifact. The SQLite read ends before Git; the bootstrap
+and owner gates cover branch inspection, dirty checking, and ordinary removal.
+
+Only that gated actual cleanup can mint the opaque Removed/AlreadyRemoved
+observation. The Host releases its owners before the original metadata actor
+commits that observation, actual audits, domain revision and whole phase receipt
+atomically. If FS succeeded but SQL definitely rolled back, retry may observe
+AlreadyRemoved under the same original request. A positive receipt always wins
+and never repeats FS. Failed/retained outcomes keep the existing branch/dirty
+policy; monitor join, Task cancellation and Result delivery are not exit proof.
+
 ### Durability level
 
 Commit means a successful database transaction under the configured durability
@@ -1019,3 +1201,45 @@ and outstanding recovery/effect obligations. Performance or cache measurements
 must include acquisition and request preparation, not just renderer time.
 Provider usage and cache placement have their own contract; deterministic
 snapshot content alone does not imply a cache hit or better task quality.
+
+
+### D5 accepted TaskResult reducer routing
+
+After the original EnsurePending/Admit ACK, owner-unavailable routing captures the
+finite qualified Result/Work dependency under its original owner. Invalid Result
+relations grant no Work body access. The unchanged owner-unavailable settlement
+actor commits before the subsequent Task/parent routing read. That read selects
+Task and Work from one final publication; ordinary decisions borrow only those
+selected facts and the finite parent Input read carrier.
+
+An existing Task authorizes only its exact current qualified locator and original
+parent. Canonical Task global absence preserves the original first-create timing
+and `should_ignore(None) == false`. In that branch a private parsed-source proof
+must bind the actual accepted D3 Message, exact agent/origin/task, original
+RuntimeInstruction/RuntimeOwned TaskRejoin route, and every parser-derived Task
+field. The parser's two original local timestamps remain local constructor facts.
+A candidate detail hint alone grants no historical Input read.
+
+The parent read is a visible, owner-held accepted-source preparation. It reuses
+current/fixed Input fingerprint and prune validation without creating aliases or
+adding parent IDs to long-lived mandatory roots. Only the parent Turn and its
+produced Brief IDs are read; real global absence preserves false, while known
+pruned/frozen-missing/foreign/corrupt evidence stays a typed failure. NoState,
+retired identities, missing Task domains and unknown qualification never fall
+back to canonical repository reads.
+
+Actual ledger guards precede parser clones, SQL body materialization and native
+JSON node traversal. The same finite allowance subtracts selected capture/proof
+materials before the read phase; shared Arc payloads keep their existing Weak/Pins
+observation rather than being counted as new copied allocations. Returned
+carriers hold selected Arcs, finite observations and guards, with no root/storage
+back-reference. Original Task writes, model-reentry rules and final writer OCC
+remain separate from this read authority.
+
+### Child monitor 的完整 Task 观察
+
+Child completion 使用同一 child scope、incarnation 与 publication 的 State、完整 active Task 和 live Work/Wait 观察。invocation 的 parentTurn 关系使用有限活跃角色，完整保存已接纳 Task 的 ID、原 parent_turn_id、status、locator 与 availability；显式空集表示完整观察，Pruned/Unavailable 成员不得通过忽略该成员而判定完成。该关系不授予历史 Task 正文、Input/Result、重入或删除权限。
+
+原 accepted monitor 持有调用者拥有的角色 lease，覆盖首次具名有限元数据 acquire、后续纯 capture 与实际消费。只有新的协议 Turn 或实际 owner 更替建立新角色；普通轮询不得因窗口滚动、缺失或失败而隐式回读 canonical history。角色集合通过已有 Task writer/Current recovery 同 revision 维护，Weak registry 不保留 Runtime 或 Root，释放角色后下一次实际 ACK 可以收窄元数据。
+
+Loaded 分支严格使用当前 owner 的 selected capture，并把实际 ledger guards 保留至同步判断及其原消费边界。TaskNone、foreign、retired 或不完整观察显式失败，不转入 raw Storage 兜底。真正 unloaded 的显式 inspection 保持独立边界，不为查询激活 Runtime。Delivery/ExecutionProtocol 证据保持各自来源，不能借 Task 关系授予其他领域的资格。

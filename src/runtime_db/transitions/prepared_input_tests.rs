@@ -154,7 +154,9 @@ fn posture_noop_has_committed_receipt_and_replays_before_later_occ() -> Result<(
         .transitions_in_scope(&f.scope)
         .commit_prepared_transition(&prepared)?
     {
-        InputMutationExecution::Replayed { receipt: replay } => assert_eq!(replay, receipt),
+        InputMutationExecution::Replayed {
+            receipt: replay, ..
+        } => assert_eq!(replay, receipt),
         _ => panic!("stale original expected State must not run again"),
     }
     assert_eq!(f.state()?, later);
@@ -198,7 +200,7 @@ fn queue_receipt_follows_exact_count_and_replay_carries_no_old_installation() ->
         .transitions_in_scope(&f.scope)
         .commit_prepared_transition(&prepared)?
     {
-        InputMutationExecution::Replayed { receipt } => assert_eq!(receipt, original),
+        InputMutationExecution::Replayed { receipt, .. } => assert_eq!(receipt, original),
         _ => panic!("replay cannot return a stale TransitionCommit"),
     }
     assert_eq!(f.state()?, later);
@@ -741,7 +743,7 @@ fn deleting_admitted_cleanup_commits_new_trace_and_brief_with_original_receipt()
     assert_eq!(f.state()?.pending, 0);
     assert!(
         matches!(f.db.transitions_in_scope(&f.scope).commit_prepared_transition(&original)?,
-        InputMutationExecution::Replayed { receipt } if receipt == committed)
+        InputMutationExecution::Replayed { receipt, .. } if receipt == committed)
     );
     Ok(())
 }
@@ -1081,7 +1083,7 @@ fn prepared_queue_progress_freezes_clock_and_replays_original_bounded_dispositio
             .unwrap(),
         command.quarantined
     );
-    let InputMutationExecution::Replayed { receipt } =
+    let InputMutationExecution::Replayed { receipt, .. } =
         f.db.transitions_in_scope(&f.scope)
             .commit_prepared_transition(&first)?
     else {
@@ -1136,7 +1138,7 @@ fn prepared_queue_progress_successful_none_has_receipt_and_cannot_later_apply() 
     f.db.queue_entries().upsert(&command.expected)?;
     assert!(
         matches!(f.db.transitions_in_scope(&f.scope).commit_prepared_transition(&first)?,
-        InputMutationExecution::Replayed { receipt } if receipt == original)
+        InputMutationExecution::Replayed { receipt, .. } if receipt == original)
     );
     assert_eq!(f.progress_rows()?, 0);
     assert_eq!(f.state()?.pending, 1);
@@ -1606,7 +1608,7 @@ fn primary_queue_commit_preserves_truly_readonly_absent_secondary() -> Result<()
     assert_eq!(child_rows, 0);
     assert!(matches!(
         f.db.transitions_in_scope(&f.scope).commit_prepared_transition(&prepared)?,
-        InputMutationExecution::Replayed { receipt: original } if original == receipt
+        InputMutationExecution::Replayed { receipt: original, .. } if original == receipt
     ));
     assert_eq!(f.db.queue_entries().latest_all()?.len(), 1);
     Ok(())
@@ -1759,7 +1761,9 @@ fn exact_receipt_replay_precedes_later_existing_target_namespace_check() -> Resu
         Ok(())
     })?;
     let before = namespace_rows(&f)?;
-    let InputMutationExecution::Replayed { receipt: replay } =
+    let InputMutationExecution::Replayed {
+        receipt: replay, ..
+    } =
         f.db.transitions_in_scope(&f.scope)
             .commit_prepared_transition(&prepared)?
     else {
@@ -1917,7 +1921,9 @@ fn original_work_focus_wait_receipts_replay_before_later_occ_and_target_reads() 
             upsert_agent_state_tx(tx, &later)
         })?;
         let before = namespace_rows(&f)?;
-        let InputMutationExecution::Replayed { receipt: replay } =
+        let InputMutationExecution::Replayed {
+            receipt: replay, ..
+        } =
             f.db.transitions_in_scope(&f.scope)
                 .commit_prepared_transition(&prepared)?
         else {
@@ -2382,3 +2388,18 @@ fn original_deleting_no_turn_work_cleanup_qualifies_result_without_new_activatio
 
 #[path = "prepared_task_tests.rs"]
 mod task_tests;
+
+#[path = "prepared_task_domain_tests.rs"]
+mod task_domain_tests;
+
+#[path = "prepared_task_result_tests.rs"]
+mod task_result_writer_tests;
+
+#[path = "prepared_task_stop_tests.rs"]
+mod prepared_task_stop_tests;
+
+#[path = "prepared_task_stop_phase_tests.rs"]
+mod prepared_task_stop_phase_tests;
+
+#[path = "prepared_task_stop_result_tests.rs"]
+mod prepared_task_stop_result_tests;

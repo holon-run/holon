@@ -29,6 +29,10 @@ pub(crate) fn closed_error() -> anyhow::Error {
 }
 
 impl ExecutionAdmission {
+    pub(super) fn is_closed_and_quiescent(&self) -> bool {
+        let state = self.0.load(Ordering::Acquire);
+        state & CLOSED != 0 && state & !(CLOSED | FORCED) == 0
+    }
     pub(super) fn is_open(&self) -> bool {
         self.0.load(Ordering::Acquire) & CLOSED == 0
     }
@@ -116,7 +120,7 @@ impl super::RuntimeHandle {
                     | crate::types::TaskStatus::Cancelling
             ) && current.agent_id == task.agent_id
                 && current.created_at == task.created_at
-                && current.rejoin_fence().ok() == task.rejoin_fence().ok(),
+                && super::task_generation::same_task_rejoin_generation(&current, task),
             "task handle registration belongs to a closed or replaced Task"
         );
         Ok(reservation)
@@ -135,7 +139,10 @@ impl super::RuntimeHandle {
     pub(crate) async fn join_idle_owned_tasks(&self) -> Result<()> {
         self.join_owned_mutations().await?;
         self.inner.control_cancellations.cancel_local_timer_loops();
-        self.inner.control_cancellations.drain().await?;
+        self.inner
+            .control_cancellations
+            .drain_for_original_runtime(self, false)
+            .await?;
         let mut tasks = self.inner.owned_task_drain.lock().await;
         tasks.extend(std::mem::take(
             &mut *self.inner.owned_task_handles.lock().unwrap(),
@@ -174,6 +181,16 @@ impl super::RuntimeHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn process_exit_cap_requires_closed_admission_with_no_original_lease() {
+        let gate = ExecutionAdmission::default();
+        assert!(!gate.is_closed_and_quiescent());
+        let lease = gate.lease().unwrap();
+        gate.force_close();
+        assert!(!gate.is_closed_and_quiescent());
+        drop(lease);
+        assert!(gate.is_closed_and_quiescent());
+    }
     #[test]
     fn forced_close_preserves_in_flight_leases_and_cannot_be_rolled_back() {
         let gate = ExecutionAdmission::default();

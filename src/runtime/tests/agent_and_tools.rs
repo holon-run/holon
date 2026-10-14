@@ -1136,8 +1136,10 @@ async fn latest_task_list_entries_return_compact_projection() {
             promoted_from_exec_command: false,
         }),
     };
-    runtime.storage().append_task(&task).unwrap();
-    runtime.inner.runtime_db.tasks().upsert(&task).unwrap();
+    runtime
+        .persist_task_transition(&task, "task_list_projection_fixture")
+        .await
+        .unwrap();
 
     let entries = runtime.latest_task_list_entries().await.unwrap();
     assert_eq!(entries.len(), 1);
@@ -1196,12 +1198,9 @@ async fn latest_task_list_entries_filters_to_active_statuses_only() {
         })),
         recovery: None,
     };
-    runtime.storage().append_task(&active_task).unwrap();
     runtime
-        .inner
-        .runtime_db
-        .tasks()
-        .upsert(&active_task)
+        .persist_task_transition(&active_task, "task_list_active_fixture")
+        .await
         .unwrap();
 
     let historical_running = TaskRecord {
@@ -1220,12 +1219,9 @@ async fn latest_task_list_entries_filters_to_active_statuses_only() {
         })),
         recovery: None,
     };
-    runtime.storage().append_task(&historical_running).unwrap();
     runtime
-        .inner
-        .runtime_db
-        .tasks()
-        .upsert(&historical_running)
+        .persist_task_transition(&historical_running, "task_list_history_fixture")
+        .await
         .unwrap();
 
     let historical_completed = TaskRecord {
@@ -1260,14 +1256,8 @@ async fn latest_task_list_entries_filters_to_active_statuses_only() {
         }),
     };
     runtime
-        .storage()
-        .append_task(&historical_completed)
-        .unwrap();
-    runtime
-        .inner
-        .runtime_db
-        .tasks()
-        .upsert(&historical_completed)
+        .persist_task_transition(&historical_completed, "task_list_completed_fixture")
+        .await
         .unwrap();
 
     let other_agent_task = TaskRecord {
@@ -1335,8 +1325,10 @@ async fn list_tasks_tool_returns_bounded_metadata_and_accepts_legacy_alias() {
             })),
             recovery: None,
         };
-        runtime.storage().append_task(&task).unwrap();
-        runtime.inner.runtime_db.tasks().upsert(&task).unwrap();
+        runtime
+            .persist_task_transition(&task, "task_list_tool_fixture")
+            .await
+            .unwrap();
     }
     let other_agent_task = TaskRecord {
         id: "task-other-agent".into(),

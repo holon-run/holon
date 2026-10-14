@@ -11,19 +11,40 @@ mod prepared_evidence;
 
 #[path = "state_mutation/work_planning.rs"]
 mod work_planning;
+pub(in crate::runtime) use work_planning::PreparedSchedulerRead;
 
 #[path = "state_mutation/work_preparation.rs"]
 mod work_preparation;
 
+#[path = "state_mutation/task_output.rs"]
+mod task_output;
+#[path = "state_mutation/task_preparation.rs"]
+mod task_preparation;
+
+#[path = "state_mutation/task_results.rs"]
+mod task_results;
+#[path = "state_mutation/task_stop_memory.rs"]
+mod task_stop_memory;
+#[path = "state_mutation/task_stop_readonly.rs"]
+mod task_stop_readonly;
+#[path = "state_mutation/task_stops.rs"]
+mod task_stops;
+pub(crate) use task_stop_memory::attach_original_child_terminal_memory_to_owner;
+pub(crate) use task_stop_memory::attach_original_command_terminal_memory_to_owner;
+pub(crate) use task_stop_memory::attach_task_stop_phase_memory_to_original_owner;
 #[path = "state_mutation/task_transitions.rs"]
 mod task_transitions;
+pub(in crate::runtime) use task_stop_readonly::InitialTaskStopReadonlyMember;
 
 #[path = "state_mutation/work_transitions.rs"]
 mod work_transitions;
 
 #[derive(Debug, thiserror::Error)]
 #[error("prepared input operation already has its original receipt")]
-struct PreparedInputReplay(crate::runtime_db::input_mutation_receipts::InputMutationReceipt);
+struct PreparedInputReplay(
+    crate::runtime_db::input_mutation_receipts::InputMutationReceipt,
+    Vec<Arc<super::input_evidence_budget::BudgetViewGuard>>,
+);
 
 #[derive(Debug, thiserror::Error)]
 #[error("agent mutation identity incarnation is no longer current: agent {agent_id}, expected incarnation {expected_incarnation}, actual incarnation {actual_incarnation}, status {status:?}")]
@@ -72,8 +93,10 @@ pub(crate) struct RuntimeMutationFacts {
     episodes: Option<Arc<super::resident_state::ResidentEpisodes>>,
     input_evidence: Option<Arc<super::resident_input_evidence::ResidentInputEvidence>>,
     work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
+    tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
     queue: RuntimeQueue,
     _queue_budget_view: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
+    _readonly_queue_metadata: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
     current_run_abort: Option<CurrentRunAbortHandle>,
     deferred_abort: Option<DeferredRunAbort>,
     control_cancellation: Option<SavedControlCancellation>,
@@ -83,6 +106,45 @@ pub(crate) struct RuntimeMutationFacts {
 }
 
 impl RuntimeMutationFacts {
+    /// Only the extra container clone owned by binding facts, not shared bodies.
+    pub(crate) fn original_child_binding_queue_material(
+        &self,
+    ) -> Result<crate::runtime_db::task_snapshot::TaskMaintenanceMaterial> {
+        anyhow::ensure!(
+            self._readonly_queue_metadata.is_some(),
+            "binding facts have no owned queue guard"
+        );
+        readonly_queue_material(self.queue.len())
+    }
+    pub(in crate::runtime) fn for_task_status_metadata_recovery(
+        &self,
+        tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            tasks
+                .as_ref()
+                .is_none_or(|t| t.scope().agent_id == self.state.id),
+            "Status recovery Task scope differs"
+        );
+        let mut facts = self.clone();
+        facts.tasks = tasks;
+        facts.effects = Default::default();
+        facts.deferred_abort = None;
+        facts.control_cancellation = None;
+        facts.recovered_cache = None;
+        Ok(facts)
+    }
+    pub(in crate::runtime) fn task_status_metadata_known(self: &Arc<Self>) -> KnownCommit {
+        KnownCommit::State {
+            state: self.state.clone(),
+            episodes: self.episodes.clone(),
+            input_evidence: self.input_evidence.clone(),
+            work: self.work.clone(),
+            tasks: self.tasks.clone(),
+            runtime: Some(self.clone()),
+        }
+    }
+
     pub(crate) fn for_cold_external_input(
         owner_epoch: u64,
         state: Arc<AgentState>,
@@ -95,8 +157,10 @@ impl RuntimeMutationFacts {
             episodes,
             input_evidence,
             work: None,
+            tasks: None,
             queue: RuntimeQueue::default(),
             _queue_budget_view: None,
+            _readonly_queue_metadata: None,
             current_run_abort: None,
             deferred_abort: None,
             control_cancellation: None,
@@ -109,6 +173,7 @@ impl RuntimeMutationFacts {
         mut self,
         input_evidence: Option<Arc<super::resident_input_evidence::ResidentInputEvidence>>,
         work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
+        tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
         effects: crate::runtime_db::transitions::PostCommitEffects,
     ) -> Result<Self> {
         if let Some(inputs) = &input_evidence {
@@ -122,8 +187,21 @@ impl RuntimeMutationFacts {
                 .is_none_or(|work| work.scope().agent_id == self.state.id),
             "external Work commit scope differs"
         );
+        anyhow::ensure!(
+            tasks.as_ref().is_none_or(|tasks| {
+                tasks.scope().agent_id == self.state.id
+                    && input_evidence
+                        .as_ref()
+                        .is_none_or(|inputs| inputs.scope() == tasks.scope())
+                    && work
+                        .as_ref()
+                        .is_none_or(|work| work.scope() == tasks.scope())
+            }),
+            "external Task commit scope differs"
+        );
         self.input_evidence = input_evidence;
         self.work = work;
+        self.tasks = tasks;
         self.recovered_cache = None;
         self.effects = effects;
         strip_input_evidence_payloads(&mut self.effects);
@@ -139,6 +217,7 @@ impl RuntimeMutationFacts {
         episodes: Arc<super::resident_state::ResidentEpisodes>,
         inputs: Arc<super::resident_input_evidence::ResidentInputEvidence>,
         work: Arc<super::resident_work::ResidentWorkDomain>,
+        tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
         messages: Vec<MessageEnvelope>,
         budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
         original: Option<&Self>,
@@ -151,6 +230,9 @@ impl RuntimeMutationFacts {
             outcome.scope.agent_id == state.id
                 && inputs.belongs_to(&outcome.scope)
                 && work.scope() == &outcome.scope
+                && tasks
+                    .as_ref()
+                    .is_none_or(|tasks| tasks.scope() == &outcome.scope)
                 && cache.scope == outcome.scope
                 && cache.keys == outcome.install_keys,
             "input recovery scope differs"
@@ -175,8 +257,10 @@ impl RuntimeMutationFacts {
             episodes: Some(episodes),
             input_evidence: Some(inputs),
             work: Some(work),
+            tasks,
             queue,
             _queue_budget_view: Some(queue_view),
+            _readonly_queue_metadata: None,
             current_run_abort,
             deferred_abort: applied
                 .then(|| original.and_then(|original| original.deferred_abort.clone()))
@@ -192,6 +276,42 @@ impl RuntimeMutationFacts {
                 ..Default::default()
             },
         })
+    }
+
+    pub(in crate::runtime) fn with_task_stop_queue_metadata(
+        mut self,
+        guard: Arc<super::input_evidence_budget::BudgetViewGuard>,
+    ) -> Self {
+        self._readonly_queue_metadata = Some(guard);
+        self
+    }
+    #[cfg(test)]
+    pub(crate) fn task_stop_queue_metadata_test_weak(
+        &self,
+    ) -> Option<std::sync::Weak<super::input_evidence_budget::BudgetViewGuard>> {
+        self._readonly_queue_metadata.as_ref().map(Arc::downgrade)
+    }
+    pub(in crate::runtime) fn for_unchanged_task_stop_partial(&self) -> Result<Self> {
+        anyhow::ensure!(
+            self.tasks.is_none(),
+            "metadata-only Stop cannot discard a prepared Task domain"
+        );
+        let mut facts = self.clone();
+        facts.effects = Default::default();
+        facts.deferred_abort = None;
+        facts.control_cancellation = None;
+        facts.recovered_cache = None;
+        Ok(facts)
+    }
+    pub(in crate::runtime) fn partial_task_stop_known(self: &Arc<Self>) -> KnownCommit {
+        KnownCommit::State {
+            state: self.state.clone(),
+            episodes: self.episodes.clone(),
+            input_evidence: self.input_evidence.clone(),
+            work: self.work.clone(),
+            tasks: None,
+            runtime: Some(self.clone()),
+        }
     }
 
     pub(super) fn suppress_observed_input_replay_publication(&mut self) {
@@ -218,6 +338,7 @@ impl RuntimeMutationFacts {
         anyhow::ensure!(
             domains.work.scope().agent_id == state.id
                 && domains.inputs.belongs_to(domains.work.scope())
+                && domains.tasks.scope() == domains.work.scope()
                 && episodes.belongs_to(&state.id, domains.work.scope().identity_incarnation),
             "Control recovery domains changed namespace"
         );
@@ -257,7 +378,7 @@ impl RuntimeMutationFacts {
         )?;
         let current_run_abort =
             original_run.filter(|handle| state.current_run_id.as_ref() == Some(&handle.run_id));
-        let mut effects = facts.transition.effects;
+        let mut effects = *facts.transition.effects;
         strip_input_evidence_payloads(&mut effects);
         Ok(Self {
             owner_epoch,
@@ -265,8 +386,10 @@ impl RuntimeMutationFacts {
             episodes: Some(episodes),
             input_evidence: Some(domains.inputs),
             work: Some(domains.work),
+            tasks: Some(domains.tasks),
             queue,
             _queue_budget_view: Some(queue_view),
+            _readonly_queue_metadata: None,
             current_run_abort,
             deferred_abort: None,
             control_cancellation: cancellation,
@@ -281,9 +404,11 @@ pub(super) struct RuntimeMutation {
     reservations: Vec<MutationReservation>,
     primary_index: usize,
     metadata: Vec<Option<Arc<IdentityMutationFacts>>>,
+    task_stop_readonly: Vec<Arc<InitialTaskStopReadonlyMember>>,
     episodes: Option<Arc<super::resident_state::ResidentEpisodes>>,
     input_evidence: Option<Arc<super::resident_input_evidence::ResidentInputEvidence>>,
     work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
+    tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
     candidate: Box<RuntimeAgent>,
     base: Box<RuntimeAgent>,
     deferred_abort: Option<DeferredRunAbort>,
@@ -315,6 +440,22 @@ impl RuntimeMutation {
             agent_id: reservation.agent_id().to_owned(),
             identity_incarnation: reservation.identity_incarnation(),
         }
+    }
+
+    pub(in crate::runtime) fn validate_original_command_source_scope(
+        &self,
+        scope: &super::resident_input_evidence::InputEvidenceScope,
+        owner_epoch: u64,
+    ) -> Result<()> {
+        let reservation = &self.reservations[self.primary_index];
+        reservation.validate_owner(&self.runtime.inner.mutation_owner)?;
+        anyhow::ensure!(
+            reservation.agent_id() == scope.agent_id
+                && reservation.identity_incarnation() == scope.identity_incarnation
+                && reservation.owner_epoch() == owner_epoch,
+            "Command registration original scope/owner differs"
+        );
+        Ok(())
     }
 
     /// Non-context planners derive their default policy once at this explicit
@@ -479,6 +620,7 @@ impl RuntimeMutation {
                 episodes: facts.episodes.clone(),
                 input_evidence: facts.input_evidence.clone(),
                 work: facts.work.clone(),
+                tasks: facts.tasks.clone(),
                 runtime: Some(facts.clone()),
             }],
         )?;
@@ -553,25 +695,27 @@ impl RuntimeMutation {
         &'a mut self,
         _storage: &AppStorage,
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.persist_state_inner(None, None))
+        Box::pin(self.persist_state_inner(None, None, None))
     }
 
     pub(super) async fn persist_state_with_started_turn(&mut self, turn: TurnRecord) -> Result<()> {
-        self.persist_state_inner(Some(turn), None).await
+        self.persist_state_inner(Some(turn), None, None).await
     }
 
     pub(super) async fn persist_started_dispatch(
         &mut self,
         turn: TurnRecord,
         start: crate::runtime_db::dispatch_memory::DispatchMemoryStart,
+        original_claim: Option<super::started_dispatch::OriginalDispatchClaim>,
     ) -> Result<()> {
-        Box::pin(self.persist_state_inner(Some(turn), Some(start))).await
+        Box::pin(self.persist_state_inner(Some(turn), Some(start), original_claim)).await
     }
 
     async fn persist_state_inner(
         &mut self,
         started_turn: Option<TurnRecord>,
         dispatch_start: Option<crate::runtime_db::dispatch_memory::DispatchMemoryStart>,
+        original_claim: Option<super::started_dispatch::OriginalDispatchClaim>,
     ) -> Result<()> {
         self.validate_candidate_identity()?;
         if self.candidate.state == self.base.state && started_turn.is_none() {
@@ -608,6 +752,10 @@ impl RuntimeMutation {
                     start: Box::new(start),
                 },
             )?,
+            None => prepared,
+        };
+        let prepared = match original_claim {
+            Some(claim) => prepared.with_original_dispatch_claim(claim)?,
             None => prepared,
         };
         let result = self.commit_prepared_input_transition(prepared).await;
@@ -783,27 +931,9 @@ impl RuntimeMutation {
     ) -> Result<crate::runtime_db::transitions::PreparedInputTransition> {
         use crate::runtime_db::dispatch_memory::{
             load_dispatch_memory_binding_by_turn_tx, load_dispatch_memory_binding_tx,
-            DispatchMemoryCommandPolicy, DispatchMemoryIntent,
         };
-        if !prepared.dispatch_memory_candidate() {
-            return Ok(prepared);
-        }
-        match self.runtime.inner.runtime_db.transaction(|tx| {
-            crate::runtime_db::dispatch_memory::load_original_auto_memory_tx(
-                tx,
-                prepared.descriptor(),
-            )
-        })? {
-            crate::runtime_db::dispatch_memory::OriginalAutoMemory::Restore(original) => {
-                return prepared.restore_automatic_dispatch_memory(original)
-            }
-            crate::runtime_db::dispatch_memory::OriginalAutoMemory::PlainReceipt => {
-                return Ok(prepared)
-            }
-            crate::runtime_db::dispatch_memory::OriginalAutoMemory::Unseen => {}
-        }
         let scope = self.input_evidence_scope();
-        let binding = self.runtime.inner.runtime_db.transaction(|tx| {
+        self.runtime.attach_dispatch_memory_with_binding(prepared, |tx, prepared| {
             if let Some(turn_id) = prepared.actual_memory_terminal_turn_id() {
                 if let Some(source) = prepared
                     .claim_only_queue_terminal_source(&self.base.last_persisted_state)
@@ -828,29 +958,7 @@ impl RuntimeMutation {
                 // original published State, never that candidate, locates the seed.
                 load_dispatch_memory_binding_tx(tx, &scope, &self.base.last_persisted_state)
             }
-        })?;
-        let Some(binding) = binding else {
-            return Ok(prepared);
-        };
-        let policy = prepared.dispatch_memory_policy(&binding);
-        if policy == DispatchMemoryCommandPolicy::None {
-            return Ok(prepared);
-        }
-        let frozen = crate::memory::episode_transition::FrozenEpisodeMemoryValues {
-            timestamp: self.runtime.now(),
-            initial_builder_id: crate::ids::episode_id(),
-            fallback_builder_id: crate::ids::episode_id(),
-            next_builder_id: crate::ids::episode_id(),
-            audit_event_id: crate::ids::audit_event_id(),
-        };
-        let memory = match policy {
-            DispatchMemoryCommandPolicy::Deferred => {
-                DispatchMemoryIntent::Deferred { binding, frozen }
-            }
-            DispatchMemoryCommandPolicy::Finish => DispatchMemoryIntent::Finish { binding, frozen },
-            DispatchMemoryCommandPolicy::None => unreachable!("checked memory policy"),
-        };
-        prepared.with_automatic_dispatch_memory(memory)
+        })
     }
 
     async fn commit_prepared_input_transition_inner(
@@ -875,6 +983,7 @@ impl RuntimeMutation {
             )
             .collect::<Vec<_>>();
         let prepared = prepared.with_scope_group(scopes)?;
+        self.validate_initial_readonly_stop(&prepared)?;
         let prepared = self.attach_actual_dispatch_memory(prepared)?;
         let _owned = self
             .runtime
@@ -891,6 +1000,16 @@ impl RuntimeMutation {
         let mut saved_runtime = vec![Arc::new(self.facts(Default::default()))];
         for (index, reservation) in self.reservations.iter().enumerate() {
             if index == self.primary_index {
+                continue;
+            }
+            if let Some(member) = self
+                .task_stop_readonly
+                .iter()
+                .find(|member| member.target().scope.agent_id == reservation.agent_id())
+            {
+                if let Some(facts) = member.runtime() {
+                    saved_runtime.push(facts.clone());
+                }
                 continue;
             }
             if let Some(bridge) = &self.runtime.inner.host_bridge {
@@ -913,6 +1032,7 @@ impl RuntimeMutation {
             }
         }
         let work_request = self.owner_work_load_request()?;
+        let (task_request, _task_request_budget) = self.owner_task_load_request()?;
         let ledger = self.runtime.inner.input_evidence_budget.clone();
         let mut pending = Vec::new();
         for message in prepared.pending_messages()? {
@@ -939,7 +1059,9 @@ impl RuntimeMutation {
             pending,
         )
         .and_then(|witness| witness.with_input_runtime(saved_runtime))
-        {
+        .and_then(|witness| {
+            witness.with_initial_task_stop_readonly(self.task_stop_readonly.clone())
+        }) {
             Ok(witness) => witness,
             Err(error) => {
                 for (ledger, ticket) in &pending_cleanup {
@@ -952,6 +1074,7 @@ impl RuntimeMutation {
         let scope = self.input_evidence_scope();
         let replay_observation = witness.clone();
         let mut original_result = None;
+        let mut original_material_views = Vec::new();
         let result = self
             .commit_transition_inner(operation_id, Some(witness), || {
                 match db
@@ -960,24 +1083,31 @@ impl RuntimeMutation {
                         &prepared,
                         &work_request,
                         &ledger,
+                        &task_request,
                     )? {
                     InputMutationExecution::Committed { value, receipt } => {
+                        replay_observation.mark_original_input_receipt_pending(&receipt, false)?;
+                        original_material_views
+                            .extend(value.effects.task_material_budget_views.iter().cloned());
                         original_result = Some(receipt.outcome.result);
                         Ok(value)
                     }
-                    InputMutationExecution::Replayed { receipt } => {
+                    InputMutationExecution::Replayed {
+                        receipt,
+                        _material_budget_views,
+                    } => {
                         replay_observation.mark_input_storage_replayed()?;
-                        Err(PreparedInputReplay(receipt).into())
+                        Err(PreparedInputReplay(receipt, _material_budget_views).into())
                     }
                 }
             })
             .await;
         match result {
             Err(error) if error.downcast_ref::<PreparedInputReplay>().is_some() => {
-                let receipt = error
+                let replay = error
                     .downcast::<PreparedInputReplay>()
-                    .expect("checked replay")
-                    .0;
+                    .expect("checked replay");
+                let PreparedInputReplay(receipt, replay_material) = replay;
                 self.runtime
                     .reconcile_reserved_mutations(&mut self.reservations)
                     .await?;
@@ -986,18 +1116,27 @@ impl RuntimeMutation {
                 let root = self.runtime.inner.mutation_owner.capture()?;
                 self.episodes = root.as_ref().and_then(|root| root.episodes.clone());
                 self.input_evidence = root.as_ref().and_then(|root| root.input_evidence.clone());
-                self.work = root.and_then(|root| root.work.clone());
+                self.work = root.as_ref().and_then(|root| root.work.clone());
+                self.tasks = root.and_then(|root| root.tasks.clone());
                 self.deferred_abort = None;
                 Ok((
                     TransitionCommit {
                         applied: receipt.outcome.applied,
                         delivery_receipt: receipt.outcome.delivery_receipt,
+                        effects: Box::new(crate::runtime_db::transitions::PostCommitEffects {
+                            task_material_budget_views: replay_material,
+                            ..Default::default()
+                        }),
                         ..Default::default()
                     },
                     receipt.outcome.result,
                 ))
             }
-            result => result.and_then(|commit| {
+            result => result.and_then(|mut commit| {
+                commit
+                    .effects
+                    .task_material_budget_views
+                    .extend(original_material_views);
                 Ok((
                     commit,
                     original_result.context("input transaction omitted its original result")?,
@@ -1022,15 +1161,18 @@ impl RuntimeMutation {
                 record = Some(acknowledged.record);
                 Ok(TransitionCommit {
                     applied: true,
-                    effects: crate::runtime_db::transitions::PostCommitEffects {
+                    effects: Box::new(crate::runtime_db::transitions::PostCommitEffects {
                         agent_state: acknowledged.agent_state,
                         input_evidence_delta: acknowledged.input_delta,
                         work_delta: acknowledged.work_delta,
                         work_delta_requires_prepared_domain: true,
+                        task_delta: acknowledged.task_delta,
+                        task_delta_requires_prepared_domain: true,
+                        task_material_budget_views: acknowledged.task_material_budget_views,
                         notify_memory_index: true,
                         notify_scheduler: true,
                         ..Default::default()
-                    },
+                    }),
                     ..Default::default()
                 })
             })
@@ -1193,6 +1335,12 @@ impl RuntimeMutation {
                 }
             }
         }
+        if let Some(delta) = &committed.effects.task_delta {
+            if let Err(error) = self.install_committed_task_delta(delta) {
+                self.tasks = None;
+                projection_error.get_or_insert(error);
+            }
+        }
         match self
             .runtime
             .inner
@@ -1207,7 +1355,7 @@ impl RuntimeMutation {
                 projection_error.get_or_insert(error.into());
             }
         }
-        let facts = Arc::new(self.facts(committed.effects.clone()));
+        let facts = Arc::new(self.facts(committed.effects.as_ref().clone()));
         // Retain all authoritative installation facts before the first await
         // after SQL. Cancellation leaves a known commit for the next owner call.
         self.record_committed_facts(facts.clone(), &committed.effects)?;
@@ -1246,7 +1394,9 @@ impl RuntimeMutation {
         Ok(committed)
     }
 
-    fn capture_published_root(&self) -> Result<Arc<super::resident_state::AgentSnapshot>> {
+    pub(in crate::runtime) fn capture_published_root(
+        &self,
+    ) -> Result<Arc<super::resident_state::AgentSnapshot>> {
         let root = self
             .runtime
             .inner
@@ -1295,32 +1445,6 @@ impl RuntimeMutation {
             "Work capture scope differs"
         );
         Ok((root.token, root.state.clone(), work))
-    }
-
-    pub(super) fn capture_context_with_inputs_and_work(
-        &self,
-        episode_limit: usize,
-        input_request: &crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest,
-        work_request: &super::resident_work::WorkCaptureRequest,
-    ) -> Result<super::resident_state::CapturedAgentContext> {
-        let root = self.capture_published_root()?;
-        let inputs = root.input_evidence.as_ref().ok_or_else(|| {
-            crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::NeedsPreparation(
-                "resident input domain has not been prepared".into(),
-            )
-        })?;
-        let work = root
-            .work
-            .as_ref()
-            .ok_or(super::resident_work::WorkReadError::IncompleteLive)?;
-        anyhow::ensure!(
-            inputs.scope() == work.scope() && work.scope() == &self.input_evidence_scope(),
-            "context domain scope differs"
-        );
-        let mut captured = root.capture_context(episode_limit)?;
-        captured.input_evidence = Some(inputs.capture_for_request(input_request)?);
-        captured.work = Some(work.capture(work_request)?);
-        Ok(captured)
     }
 
     pub(super) async fn commit_episode_memory(
@@ -1389,11 +1513,18 @@ impl RuntimeMutation {
             self.candidate.current_run_abort = None;
         }
         let work_request = self.owner_work_load_request()?;
+        let (task_request, _task_request_budget) = self.owner_task_load_request()?;
+        let task_ledger = self.runtime.inner.input_evidence_budget.clone();
         let db = self.runtime.inner.runtime_db.clone();
         let mut receipt = None;
         let result = self
             .commit_transition_inner(operation_id, Some(witness), || {
-                match db.commit_control_with_work_request(command, &work_request)? {
+                match db.commit_control_with_domain_requests(
+                    command,
+                    &work_request,
+                    &task_request,
+                    &task_ledger,
+                )? {
                     ControlCommit::Applied {
                         receipt: original,
                         delta,
@@ -1488,6 +1619,7 @@ impl RuntimeMutation {
         self.episodes = root.as_ref().and_then(|root| root.episodes.clone());
         self.input_evidence = root.as_ref().and_then(|root| root.input_evidence.clone());
         self.work = root.as_ref().and_then(|root| root.work.clone());
+        self.tasks = root.as_ref().and_then(|root| root.tasks.clone());
         self.base = self.candidate.clone();
         self.deferred_abort = None;
         self.control_cancellation = None;
@@ -1520,8 +1652,31 @@ impl RuntimeMutation {
                         episodes: facts.episodes.clone(),
                         input_evidence: facts.input_evidence.clone(),
                         work: facts.work.clone(),
+                        tasks: facts.tasks.clone(),
                         runtime: Some(facts.clone()),
                     });
+                }
+                if let Some(member) = self
+                    .task_stop_readonly
+                    .iter()
+                    .find(|member| member.target().scope.agent_id == reservation.agent_id())
+                {
+                    anyhow::ensure!(
+                        !effects
+                            .agent_identities
+                            .iter()
+                            .any(|identity| identity.agent_id == reservation.agent_id())
+                            && effects
+                                .agent_state
+                                .as_ref()
+                                .is_none_or(|state| state.record.id != reservation.agent_id())
+                            && !effects
+                                .tasks
+                                .iter()
+                                .any(|task| task.agent_id == reservation.agent_id()),
+                        "initial Stop cannot mutate its readonly child"
+                    );
+                    return Ok(member.known());
                 }
                 let mut metadata = self.metadata[index]
                     .as_ref()
@@ -1589,8 +1744,10 @@ impl RuntimeMutation {
             episodes: self.episodes.clone(),
             input_evidence: self.input_evidence.clone(),
             work: self.work.clone(),
+            tasks: self.tasks.clone(),
             queue: self.candidate.queue.clone(),
             _queue_budget_view: self.candidate._queue_budget_view.clone(),
+            _readonly_queue_metadata: None,
             current_run_abort: self.candidate.current_run_abort.clone(),
             deferred_abort: self.deferred_abort.clone(),
             control_cancellation: self.control_cancellation.clone(),
@@ -1670,6 +1827,11 @@ fn strip_input_evidence_payloads(effects: &mut crate::runtime_db::transitions::P
     effects.work_delta = None;
     effects.work_delta_requires_prepared_domain = false;
     effects.work_input_preparation = None;
+    effects.task_delta = None;
+    effects.task_delta_requires_prepared_domain = false;
+    effects.task_write_keys.clear();
+    effects.task_observation_keys.clear();
+    effects.task_material_budget_views.clear();
 }
 
 fn strip_authoritative_effects(effects: &mut crate::runtime_db::transitions::PostCommitEffects) {
@@ -1686,6 +1848,25 @@ fn strip_authoritative_effects(effects: &mut crate::runtime_db::transitions::Pos
     effects.removed_context_episode_ids.clear();
 }
 
+fn readonly_queue_material(
+    slots: usize,
+) -> Result<crate::runtime_db::task_snapshot::TaskMaintenanceMaterial> {
+    Ok(crate::runtime_db::task_snapshot::TaskMaintenanceMaterial {
+        bytes: std::mem::size_of::<RuntimeQueue>()
+            .checked_add(
+                slots
+                    .checked_mul(std::mem::size_of::<Arc<MessageEnvelope>>())
+                    .context("readonly queue slots overflow")?,
+            )
+            .and_then(|bytes| bytes.checked_mul(4))
+            .context("readonly queue metadata overflow")?,
+        records: slots
+            .checked_add(1)
+            .and_then(|n| n.checked_mul(4))
+            .context("readonly queue record overflow")?,
+    })
+}
+
 impl RuntimeHandle {
     pub(crate) async fn prepare_external_input_facts(
         &self,
@@ -1693,6 +1874,67 @@ impl RuntimeHandle {
         state: Arc<AgentState>,
         episodes: Option<Arc<super::resident_state::ResidentEpisodes>>,
         input_evidence: Option<Arc<super::resident_input_evidence::ResidentInputEvidence>>,
+    ) -> Result<RuntimeMutationFacts> {
+        self.prepare_external_input_facts_with_queue_material(
+            reservation,
+            state,
+            episodes,
+            input_evidence,
+            |_| Ok(()),
+        )
+        .await
+    }
+
+    pub(crate) async fn prepare_original_child_binding_facts(
+        &self,
+        reservation: &MutationReservation,
+        state: Arc<AgentState>,
+        episodes: Option<Arc<super::resident_state::ResidentEpisodes>>,
+        input_evidence: Option<Arc<super::resident_input_evidence::ResidentInputEvidence>>,
+        remaining: &mut crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
+    ) -> Result<RuntimeMutationFacts> {
+        let (records, bytes) =
+            crate::runtime_db::task_snapshot::TaskDomainLoadRequest::bounded_material_limits(
+                remaining.record_limit,
+                remaining.byte_limit,
+            );
+        remaining.record_limit = records;
+        remaining.byte_limit = bytes;
+        self.prepare_external_input_facts_with_queue_material(
+            reservation,
+            state,
+            episodes,
+            input_evidence,
+            |material| {
+                anyhow::ensure!(
+                    material.bytes <= remaining.byte_limit
+                        && material.records <= remaining.record_limit,
+                    crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
+                        "binding queue container material"
+                    )
+                );
+                remaining.byte_limit = remaining
+                    .byte_limit
+                    .checked_sub(material.bytes)
+                    .context("binding queue byte allowance underflow")?;
+                remaining.record_limit = remaining
+                    .record_limit
+                    .checked_sub(material.records)
+                    .context("binding queue record allowance underflow")?;
+                Ok(())
+            },
+        )
+        .await
+    }
+
+    async fn prepare_external_input_facts_with_queue_material(
+        &self,
+        reservation: &MutationReservation,
+        state: Arc<AgentState>,
+        episodes: Option<Arc<super::resident_state::ResidentEpisodes>>,
+        input_evidence: Option<Arc<super::resident_input_evidence::ResidentInputEvidence>>,
+        before_clone: impl FnOnce(crate::runtime_db::task_snapshot::TaskMaintenanceMaterial) -> Result<()>
+            + Send,
     ) -> Result<RuntimeMutationFacts> {
         reservation.validate_owner(&self.inner.mutation_owner)?;
         anyhow::ensure!(
@@ -1704,14 +1946,51 @@ impl RuntimeHandle {
             agent.state == *state,
             "external input preparation saw a different runtime state"
         );
+        let slots = agent.queue.len();
+        let material = readonly_queue_material(slots)?;
+        let metadata_bytes = material.bytes;
+        before_clone(material)?;
+        let limits = self.inner.input_evidence_budget.limits();
+        anyhow::ensure!(
+            slots <= usize::try_from(limits.record_limit)?
+                && u64::try_from(metadata_bytes)?
+                    <= limits
+                        .history_per_agent_bytes
+                        .checked_add(limits.pending_per_agent_bytes)
+                        .context("readonly queue limit overflow")?,
+            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
+                "Stop readonly queue metadata"
+            )
+        );
+        let queue_metadata = self.inner.input_evidence_budget.register_owned_bytes(
+            &super::resident_input_evidence::InputEvidenceScope {
+                agent_id: reservation.agent_id().to_owned(),
+                identity_incarnation: reservation.identity_incarnation(),
+            },
+            super::input_evidence_budget::InputMemoryCategory::Candidate,
+            super::input_evidence_budget::OwnedBytesEstimate {
+                payload_bytes: 0,
+                metadata_estimate_bytes: u64::try_from(metadata_bytes)?,
+            },
+        )?;
+        let queue_view = self.inner.input_evidence_budget.register_queue_view(
+            &super::resident_input_evidence::InputEvidenceScope {
+                agent_id: reservation.agent_id().to_owned(),
+                identity_incarnation: reservation.identity_incarnation(),
+            },
+            super::input_evidence_budget::InputMemoryCategory::Candidate,
+            agent.queue.shared_messages(),
+        )?;
         Ok(RuntimeMutationFacts {
             owner_epoch: reservation.owner_epoch(),
             state,
             episodes,
             input_evidence,
             work: reservation.prepared_work_for_state_only_commit()?,
+            tasks: reservation.prepared_tasks_for_state_only_commit()?,
             queue: agent.queue.clone(),
-            _queue_budget_view: agent._queue_budget_view.clone(),
+            _queue_budget_view: Some(queue_view),
+            _readonly_queue_metadata: Some(queue_metadata),
             current_run_abort: agent.current_run_abort.clone(),
             deferred_abort: None,
             control_cancellation: None,
@@ -1871,6 +2150,43 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    /// A closed owned-task registry does not accept more tasks. Its original
+    /// Control lease remains the supervisor of an already observed terminal.
+    pub(in crate::runtime) fn try_register_owned_original_child_terminal(
+        &self,
+        source: &Arc<super::OriginalChildTaskProducer>,
+        mutation: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> Result<bool> {
+        source.validate_material_ledger(&self.inner.input_evidence_budget)?;
+        let address = source.address();
+        anyhow::ensure!(
+            address.scope.agent_id == self.instance_agent_id()
+                && address.scope.identity_incarnation == self.instance_incarnation()
+                && address.owner_epoch == self.instance_owner_epoch(),
+            "accepted child continuation crossed original instance"
+        );
+        let lease = source.original_lease()?;
+        anyhow::ensure!(
+            lease
+                .original_child()?
+                .as_ref()
+                .is_some_and(|installed| Arc::ptr_eq(installed, source))
+                && source.observed_terminal().is_some(),
+            "accepted child continuation lacks its original observed lease"
+        );
+        let mut tasks = self
+            .inner
+            .mutation_tasks
+            .lock()
+            .expect("mutation tasks poisoned");
+        if tasks.closed {
+            return Ok(false);
+        }
+        tasks.handles.retain(|task| !task.is_finished());
+        tasks.handles.push(tokio::spawn(mutation));
+        Ok(true)
+    }
+
     pub(super) fn close_mutation_admission(&self) {
         self.inner
             .mutation_tasks
@@ -1880,6 +2196,12 @@ impl RuntimeHandle {
     }
 
     pub(crate) async fn join_owned_mutations(&self) -> Result<()> {
+        let joined = self.drain_original_owned_mutation_tasks().await;
+        let reconciled = self.reconcile_posture_observation().await;
+        joined.and(reconciled)
+    }
+
+    async fn drain_original_owned_mutation_tasks(&self) -> Result<()> {
         let drain = {
             let mut tasks = self
                 .inner
@@ -1909,19 +2231,78 @@ impl RuntimeHandle {
             }
         }
         drop(draining);
-        let reconciled = self.reconcile_posture_observation().await;
-        failure.map_or(reconciled, Err)
+        failure.map_or(Ok(()), Err)
+    }
+
+    async fn reconcile_retiring_original_scope(&self) -> Result<()> {
+        match self.reconcile_posture_observation().await {
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<mutation_owner::MutationOwnerError>(),
+                    Some(mutation_owner::MutationOwnerError::Replaced)
+                ) && !self.inner.execution_admission.is_open() =>
+            {
+                // Old instances still own physical resources. Only the Host's
+                // current owner can resolve their original durable scope.
+                let Some(bridge) = self.inner.host_bridge.as_ref() else {
+                    return Err(error);
+                };
+                bridge
+                    .reconcile_retiring_original_scope(
+                        self.inner.mutation_owner.agent_id(),
+                        self.inner.identity_incarnation,
+                    )
+                    .await
+            }
+            result => result,
+        }
     }
 
     // Physical retirement preserves durable Task/Timer intent for startup
     // recovery. It stops and joins only this instance's original producers.
     pub(crate) async fn join_retiring_resources(&self) -> Result<()> {
+        self.join_retiring_resources_inner(false).await.map(|_| ())
+    }
+    pub(crate) async fn join_retiring_resources_with_process_exit(
+        &self,
+    ) -> Result<Option<super::control_cancellation::RetiredProducerExit>> {
+        anyhow::ensure!(
+            !self.accepts_execution_admission(),
+            "process exit proof requires original admission closed"
+        );
+        self.join_retiring_resources_inner(true).await
+    }
+    async fn join_retiring_resources_inner(
+        &self,
+        observe_exit: bool,
+    ) -> Result<Option<super::control_cancellation::RetiredProducerExit>> {
         self.inner.control_cancellations.cancel_local_producers();
-        self.join_owned_mutations().await?;
+        let joined = self.drain_original_owned_mutation_tasks().await;
+        let reconciled = self.reconcile_retiring_original_scope().await;
+        joined.and(reconciled)?;
         // Accepted registration workers may have reached their original lease
         // after the first snapshot; local closing also fences later attachment.
         self.inner.control_cancellations.cancel_local_producers();
-        self.inner.control_cancellations.drain_retiring().await?;
+        let original_producers = if observe_exit {
+            Some(
+                self.inner
+                    .control_cancellations
+                    .capture_retiring_producers(
+                        &super::resident_input_evidence::InputEvidenceScope {
+                            agent_id: self.inner.mutation_owner.agent_id().to_owned(),
+                            identity_incarnation: self.inner.identity_incarnation,
+                        },
+                        self.inner.mutation_owner.owner_epoch(),
+                        &self.inner.input_evidence_budget,
+                    )?,
+            )
+        } else {
+            None
+        };
+        self.inner
+            .control_cancellations
+            .drain_for_original_runtime(self, true)
+            .await?;
         let mut draining = self.inner.owned_task_drain.lock().await;
         loop {
             draining.extend(std::mem::take(
@@ -1945,7 +2326,31 @@ impl RuntimeHandle {
                 }
             }
         }
-        Ok(())
+        match original_producers {
+            Some(snapshot) if self.inner.execution_admission.is_closed_and_quiescent() => {
+                snapshot.finish(&self.inner.control_cancellations)
+            }
+            Some(_) => Ok(None),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) fn original_process_registry_id(&self) -> uuid::Uuid {
+        self.inner
+            .control_cancellations
+            .original_process_registry_id()
+    }
+    pub(crate) fn original_process_registration_revision(&self) -> u64 {
+        self.inner
+            .control_cancellations
+            .original_process_registration_revision()
+    }
+    pub(crate) fn original_registered_groups_quiescent(&self) -> bool {
+        self.inner.execution_admission.is_closed_and_quiescent()
+            && self
+                .inner
+                .control_cancellations
+                .original_registered_groups_quiescent()
     }
 
     pub(crate) fn instance_owner_epoch(&self) -> u64 {
@@ -2029,6 +2434,14 @@ impl RuntimeHandle {
         &self,
         owners: Vec<mutation_owner::MutationOwner>,
     ) -> Result<RuntimeMutation> {
+        self.begin_mutation_with_owners_inner(owners, None).await
+    }
+
+    async fn begin_mutation_with_owners_inner(
+        &self,
+        owners: Vec<mutation_owner::MutationOwner>,
+        readonly_child: Option<&crate::runtime_db::task_stop::TaskStopChildTarget>,
+    ) -> Result<RuntimeMutation> {
         let measurement_started = crate::diagnostics::io_probe::start_timer();
         // reserve_all also acquires every member of a pending recovery group.
         let requested = owners.clone();
@@ -2057,35 +2470,47 @@ impl RuntimeHandle {
             );
         }
         self.validate_mutation_identity()?;
-        let metadata = reservations
-            .iter()
-            .enumerate()
-            .map(|(index, reservation)| {
-                if index == primary_index {
-                    return Ok(None);
-                }
-                let identity = self
-                    .inner
-                    .runtime_db
-                    .agent_identities()
-                    .latest(reservation.agent_id())?;
-                if let Some(identity) = identity.as_ref() {
-                    anyhow::ensure!(
-                        identity.incarnation == reservation.identity_incarnation(),
-                        "related mutation identity incarnation is no longer current"
-                    );
-                }
-                let state = self
-                    .inner
-                    .runtime_db
-                    .agent_states()
-                    .latest(reservation.agent_id())?;
-                Ok(Some(Arc::new(IdentityMutationFacts {
-                    identity: identity.map(Arc::new),
-                    state: state.map(Arc::new),
-                })))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let mut metadata = Vec::with_capacity(reservations.len());
+        let mut task_stop_readonly = Vec::new();
+        for (index, reservation) in reservations.iter().enumerate() {
+            if index == primary_index {
+                metadata.push(None);
+                continue;
+            }
+            if let Some(child) =
+                readonly_child.filter(|child| child.scope.agent_id == reservation.agent_id())
+            {
+                let member = self
+                    .prepare_initial_stop_readonly_member(reservation, child)
+                    .await?;
+                metadata.push(match member.known() {
+                    KnownCommit::Metadata(facts) => Some(facts),
+                    KnownCommit::State { .. } => None,
+                });
+                task_stop_readonly.push(member);
+                continue;
+            }
+            let identity = self
+                .inner
+                .runtime_db
+                .agent_identities()
+                .latest(reservation.agent_id())?;
+            if let Some(identity) = &identity {
+                anyhow::ensure!(
+                    identity.incarnation == reservation.identity_incarnation(),
+                    "related mutation identity incarnation is no longer current"
+                );
+            }
+            let state = self
+                .inner
+                .runtime_db
+                .agent_states()
+                .latest(reservation.agent_id())?;
+            metadata.push(Some(Arc::new(IdentityMutationFacts {
+                identity: identity.map(Arc::new),
+                state: state.map(Arc::new),
+            })));
+        }
         let candidate = Box::new(self.inner.agent.lock().await.clone());
         let scope = super::resident_input_evidence::InputEvidenceScope {
             agent_id: self.inner.mutation_owner.agent_id().to_owned(),
@@ -2112,16 +2537,26 @@ impl RuntimeHandle {
                 candidate_budget_views.push(view);
             }
         }
+        if let Some(tasks) = observation.as_ref().and_then(|root| root.tasks.as_ref()) {
+            if let Some(view) = tasks.candidate_budget_view()? {
+                candidate_budget_views.push(view);
+            }
+            if let Some(view) = tasks.candidate_stop_budget_view()? {
+                candidate_budget_views.push(view);
+            }
+        }
         let mutation = RuntimeMutation {
             runtime: self.clone(),
             reservations,
             primary_index,
             metadata,
+            task_stop_readonly,
             episodes: observation.as_ref().and_then(|root| root.episodes.clone()),
             input_evidence: observation
                 .as_ref()
                 .and_then(|root| root.input_evidence.clone()),
-            work: observation.and_then(|root| root.work.clone()),
+            work: observation.as_ref().and_then(|root| root.work.clone()),
+            tasks: observation.and_then(|root| root.tasks.clone()),
             base: candidate.clone(),
             candidate,
             deferred_abort: None,
@@ -2166,17 +2601,11 @@ impl RuntimeHandle {
         }
         let mut cache = self.inner.projection_cache.lock().await;
         if let Some(current) = &facts.recovered_cache {
-            for id in &current.keys.tasks {
-                cache.tasks.remove(id);
-            }
             for id in &current.keys.timers {
                 cache.timers.remove(id);
             }
             for id in &current.keys.external_triggers {
                 cache.external_triggers.remove(id);
-            }
-            for record in &current.tasks {
-                cache.upsert_task(record.clone());
             }
             for record in &current.timers {
                 cache.upsert_timer(record.clone());
@@ -2184,9 +2613,6 @@ impl RuntimeHandle {
             for record in &current.external_triggers {
                 cache.upsert_external_trigger(record.clone());
             }
-        }
-        for record in &facts.effects.tasks {
-            cache.upsert_task(record.clone());
         }
         for record in &facts.effects.timers {
             cache.upsert_timer(record.clone());
@@ -2267,12 +2693,14 @@ impl RuntimeHandle {
         reservations: &mut [MutationReservation],
     ) -> Result<bool> {
         let version = self.inner.config_snapshot.load_full();
-        super::input_recovery::resolve_input_recovery(
+        let task_queries = self.task_recovery_queries_for_group(reservations).await?;
+        super::input_recovery::resolve_input_recovery_with_queries(
             &self.inner.runtime_db,
             reservations,
             &self.inner.input_evidence_budget,
             &version.base_context_config,
             &version.model_catalog,
+            &task_queries,
         )?;
         super::control_recovery::resolve_control_recovery(
             &self.inner.runtime_db,
@@ -2520,7 +2948,7 @@ impl RuntimeHandle {
         // Reissue only rediscoverable notifications, never business SQL.
         self.apply_transition_commit(TransitionCommit {
             applied: true,
-            effects,
+            effects: Box::new(effects),
             delivery_receipt: None,
         })
         .await;

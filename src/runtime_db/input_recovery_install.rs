@@ -1,4 +1,4 @@
-//! Focused acknowledged targets and remaining D5/D6 legacy cache installation.
+//! Focused acknowledged selectors and remaining D6 legacy cache installation.
 //! Receipts retain IDs only; recovery reads current rows in its fresh view.
 use std::collections::BTreeSet;
 
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::{repositories, transitions::PostCommitEffects};
 use crate::{
     runtime::resident_input_evidence::{InputEvidenceKey, InputEvidenceScope},
-    types::{ExternalTriggerRecord, TaskRecord, TimerRecord},
+    types::{ExternalTriggerRecord, TimerRecord},
 };
 
 const MAX_INSTALL_KEYS: usize = 65_536;
@@ -29,6 +29,8 @@ pub(crate) struct InputMutationInstallKeys {
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub continuations: BTreeSet<String>,
     pub tasks: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub task_result_settlements: BTreeSet<String>,
     pub timers: BTreeSet<String>,
     pub external_triggers: BTreeSet<String>,
 }
@@ -41,6 +43,7 @@ impl InputMutationInstallKeys {
             &self.continuations,
             &self.completion_brief_ids,
             &self.tasks,
+            &self.task_result_settlements,
             &self.timers,
             &self.external_triggers,
         ] {
@@ -85,6 +88,25 @@ impl InputMutationInstallKeys {
             );
             keys.tasks.insert(record.id.clone());
         }
+        // Domain install records include unrelated active/history bodies. They
+        // are never an actual-write inventory or an original command selector.
+        for key in effects
+            .task_write_keys
+            .iter()
+            .chain(&effects.task_observation_keys)
+        {
+            match key.family {
+                crate::runtime::resident_task::TaskFamily::Task => {
+                    keys.tasks.insert(key.id.clone());
+                }
+                crate::runtime::resident_task::TaskFamily::ResultSettlement => {
+                    keys.task_result_settlements.insert(key.id.clone());
+                }
+            }
+        }
+        if let Some(delta) = &effects.task_delta {
+            ensure!(&delta.scope == scope, "Task delta install scope differs");
+        }
         for record in &effects.timers {
             ensure!(
                 record.agent_id == scope.agent_id,
@@ -105,14 +127,13 @@ impl InputMutationInstallKeys {
     }
 }
 
-/// Missing current rows deliberately remain in `keys`: installation removes
-/// exactly those old D5/D6 cached IDs. Work selectors instead feed its qualified domain;
-/// this DTO never retains duplicate Work/Wait/Frame bodies.
+/// Missing current rows deliberately remain in `keys` as finite selectors.
+/// Task and Work bodies belong only to their qualified domains; this DTO keeps
+/// only the remaining D6 Timer/Trigger cache bodies.
 #[derive(Debug, Clone)]
 pub(crate) struct InputRecoveryInstallFacts {
     pub scope: InputEvidenceScope,
     pub keys: InputMutationInstallKeys,
-    pub tasks: Vec<TaskRecord>,
     pub timers: Vec<TimerRecord>,
     pub external_triggers: Vec<ExternalTriggerRecord>,
 }
@@ -130,22 +151,9 @@ pub(crate) fn load_current_install_facts_tx(
     let mut facts = InputRecoveryInstallFacts {
         scope: scope.clone(),
         keys: keys.clone(),
-        tasks: Vec::new(),
         timers: Vec::new(),
         external_triggers: Vec::new(),
     };
-    for id in &keys.tasks {
-        if let Some(payload) =
-            current_payload_tx(tx, scope, "tasks", "task_id", "owner_agent_id", id)?
-        {
-            let record = repositories::decode_task_payload(&payload)?;
-            ensure!(
-                record.id == *id && record.agent_id == scope.agent_id,
-                "Task cache payload differs from normalized scope/ID"
-            );
-            facts.tasks.push(record);
-        }
-    }
     for id in &keys.timers {
         if let Some(payload) = current_payload_tx(tx, scope, "timers", "timer_id", "agent_id", id)?
         {
@@ -186,11 +194,38 @@ pub(crate) fn validate_original_install_keys_tx(
 ) -> Result<()> {
     let facts = load_current_install_facts_tx(tx, scope, keys)?;
     ensure!(
-        facts.tasks.len() == keys.tasks.len()
-            && facts.timers.len() == keys.timers.len()
+        facts.timers.len() == keys.timers.len()
             && facts.external_triggers.len() == keys.external_triggers.len(),
         "input cache installation target is missing from original SQL ACK"
     );
+    // Qualification and canonical body/fence checks remain in the original
+    // Task finalizer. The receipt proves these exact targets before its ACK,
+    // without retaining a second Task body for later cache installation.
+    for id in &keys.tasks {
+        let exact: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks WHERE task_id=?1 AND owner_agent_id=?2 AND CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.id')=task_id AND json_extract(payload_json,'$.agent_id')=owner_agent_id ELSE 0 END)",
+            rusqlite::params![id,scope.agent_id], |row| row.get(0),
+        )?;
+        ensure!(
+            exact,
+            "original Task installation target normalized/payload scope differs or is missing"
+        );
+    }
+    for id in &keys.task_result_settlements {
+        let row: Option<(String,String,Option<String>,Option<String>)> = tx.query_row(
+            "SELECT result_identity,agent_id,json_extract(payload_json,'$.result_identity'),json_extract(payload_json,'$.agent_id') FROM task_result_settlements WHERE result_identity=?1",
+            [id],|row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+        ).optional()?;
+        let (actual_id, agent, payload_id, payload_agent) =
+            row.context("original Task result installation target is missing from SQL ACK")?;
+        ensure!(
+            actual_id == *id
+                && agent == scope.agent_id
+                && payload_id.as_deref() == Some(id.as_str())
+                && payload_agent.as_deref() == Some(scope.agent_id.as_str()),
+            "original Task result installation target normalized/payload scope differs"
+        );
+    }
     // Work bodies belong only to the qualified Work domain. The original
     // receipt still proves every exact normalized target before SQL ACK.
     for (table, id_column, keys) in [

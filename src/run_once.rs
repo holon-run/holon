@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use tokio::task::JoinHandle;
 
@@ -115,7 +115,7 @@ pub struct RunOnceResponse {
 
 #[derive(Debug, Default)]
 struct RunBaseline {
-    task_ids: HashSet<String>,
+    task_session: Option<crate::runtime::task_queries::TaskBirthSession>,
     tool_ids: HashSet<String>,
     message_ids: HashSet<String>,
     event_ids: HashSet<String>,
@@ -230,8 +230,7 @@ async fn run_once_with_host_inner(
 ) -> Result<RunOnceResponse> {
     let session = prepare_run_session(&host, &request).await?;
     bind_run_workspace(&host, &session.runtime, &request, session.is_persistent).await?;
-    let baseline =
-        capture_baseline(&session.runtime, &session.runtime.agent_state().await?).await?;
+    let baseline = capture_baseline(&session.runtime).await?;
 
     let inbound = InboundRequest {
         agent_id: session.agent_id.clone(),
@@ -273,7 +272,6 @@ async fn run_once_with_host_inner(
     let queued_message = session.runtime.enqueue(message).await?;
 
     let mut candidate_completion: Option<CandidateCompletion> = None;
-    let mut observed_new_task_ids = HashSet::<String>::new();
     let mut observed_terminal_final_text: Option<String> = None;
     let run_started_at = Instant::now();
     let mut timeout_warning_due = false;
@@ -286,7 +284,6 @@ async fn run_once_with_host_inner(
         let poll_view =
             collect_run_poll_view(&session.runtime, &baseline, &state, storage_marker.clone())
                 .await?;
-        observed_new_task_ids.extend(poll_view.new_task_ids.iter().cloned());
         let active_new_task_ids =
             active_new_task_ids(&session.runtime, &poll_view.new_task_ids).await?;
         let foreground_idle = state.current_run_id.is_none() && state.pending == 0;
@@ -458,7 +455,6 @@ async fn run_once_with_host_inner(
         session.runtime.poll_activity_marker()?,
     )
     .await?;
-    observed_new_task_ids.extend(pre_cleanup_view.new_task_ids.iter().cloned());
     let active_tasks =
         active_new_task_ids(&session.runtime, &pre_cleanup_view.new_task_ids).await?;
     for task_id in &active_tasks {
@@ -470,7 +466,7 @@ async fn run_once_with_host_inner(
     settle_stopped_tasks(&session.runtime, &active_tasks, &request.authority_class).await?;
     final_state = session.runtime.agent_state().await?;
 
-    let final_view = collect_run_view(&session.runtime, &baseline, &observed_new_task_ids).await?;
+    let final_view = collect_run_view(&session.runtime, &baseline).await?;
     let response = build_response(
         &session.runtime,
         &baseline,
@@ -575,17 +571,10 @@ async fn bind_run_workspace(
     Ok(())
 }
 
-async fn capture_baseline(
-    runtime: &RuntimeHandle,
-    state: &crate::types::AgentState,
-) -> Result<RunBaseline> {
+async fn capture_baseline(runtime: &RuntimeHandle) -> Result<RunBaseline> {
+    let (state, task_session) = runtime.begin_task_birth_session().await?;
     Ok(RunBaseline {
-        task_ids: runtime
-            .latest_task_records_snapshot()
-            .await?
-            .into_iter()
-            .map(|item| item.id)
-            .collect(),
+        task_session: Some(task_session),
         tool_ids: runtime
             .all_tool_executions()?
             .into_iter()
@@ -625,6 +614,7 @@ struct RunView {
     new_tools: Vec<ToolExecutionRecord>,
     new_messages: Vec<MessageEnvelope>,
     new_events: Vec<AuditEvent>,
+    _task_retention: crate::runtime::task_queries::TaskQueryOwnedRecords,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -660,9 +650,10 @@ impl CandidateCompletion {
     }
 }
 
-#[derive(Clone)]
 struct RunPollView {
     new_task_ids: Vec<String>,
+    _task_retention: crate::runtime::task_queries::TaskQueryOwnedRecords,
+    _event_task_budget: std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>,
     turn_terminal_observed: bool,
     operator_visible_assistant_text_observed: bool,
     runtime_error: bool,
@@ -676,7 +667,11 @@ async fn collect_run_poll_view(
     storage_marker: PollActivityMarker,
 ) -> Result<RunPollView> {
     let events = runtime.all_events()?;
-    let latest_tasks = runtime.latest_task_records_snapshot().await?;
+    let task_session = baseline
+        .task_session
+        .as_ref()
+        .context("RunOnce Task session missing")?;
+    let (mut new_task_ids, task_ids) = runtime.task_birth_session_ids(task_session)?;
     let new_tools = runtime
         .all_tool_executions()?
         .into_iter()
@@ -697,17 +692,29 @@ async fn collect_run_poll_view(
                 && event.data["has_text"].as_bool() == Some(true)
         });
 
-    let mut new_task_ids = latest_tasks
-        .iter()
-        .filter(|task| !baseline.task_ids.contains(&task.id))
-        .map(|task| task.id.clone())
-        .collect::<Vec<_>>();
-    new_task_ids.extend(new_tools.iter().filter_map(exec_command_task_id));
+    // Borrow all extra selectors before their first owned copies. The guard
+    // follows RunPollView through active-task / stop awaits in its caller.
+    let event_task_budget = runtime.task_session_id_budget(
+        task_session,
+        new_tools.iter().filter_map(exec_command_task_id).chain(
+            events
+                .iter()
+                .filter(|event| !baseline.event_ids.contains(&event.id))
+                .filter_map(run_event_task_id),
+        ),
+    )?;
+    new_task_ids.extend(
+        new_tools
+            .iter()
+            .filter_map(exec_command_task_id)
+            .map(str::to_owned),
+    );
     new_task_ids.extend(
         events
             .iter()
             .filter(|event| !baseline.event_ids.contains(&event.id))
-            .filter_map(run_event_task_id),
+            .filter_map(run_event_task_id)
+            .map(str::to_owned),
     );
     new_task_ids.sort();
     new_task_ids.dedup();
@@ -726,6 +733,8 @@ async fn collect_run_poll_view(
 
     Ok(RunPollView {
         new_task_ids,
+        _task_retention: task_ids,
+        _event_task_budget: event_task_budget,
         turn_terminal_observed: state
             .last_turn_terminal
             .as_ref()
@@ -736,11 +745,7 @@ async fn collect_run_poll_view(
     })
 }
 
-async fn collect_run_view(
-    runtime: &RuntimeHandle,
-    baseline: &RunBaseline,
-    observed_task_ids: &HashSet<String>,
-) -> Result<RunView> {
+async fn collect_run_view(runtime: &RuntimeHandle, baseline: &RunBaseline) -> Result<RunView> {
     let new_messages = runtime
         .all_messages()?
         .into_iter()
@@ -751,57 +756,27 @@ async fn collect_run_view(
         .into_iter()
         .filter(|event| !baseline.event_ids.contains(&event.id))
         .collect::<Vec<_>>();
-    let mut task_ids = observed_task_ids.clone();
-    task_ids.extend(new_messages.iter().filter_map(message_task_id));
-
     let new_tools = runtime
         .all_tool_executions()?
         .into_iter()
         .filter(|tool| !baseline.tool_ids.contains(&tool.id))
         .collect::<Vec<_>>();
-    task_ids.extend(new_tools.iter().filter_map(exec_command_task_id));
-    task_ids.extend(new_events.iter().filter_map(run_event_task_id));
-
-    let mut tasks_by_id = runtime
-        .latest_task_records_snapshot()
-        .await?
-        .into_iter()
-        .filter(|task| !baseline.task_ids.contains(&task.id) || task_ids.contains(&task.id))
-        .map(|task| (task.id.clone(), task))
-        .collect::<HashMap<_, _>>();
-    for task_id in &task_ids {
-        if baseline.task_ids.contains(task_id) || tasks_by_id.contains_key(task_id) {
-            continue;
-        }
-        if let Some(task) = runtime.task_record(task_id).await? {
-            tasks_by_id.insert(task.id.clone(), task);
-        }
-    }
-    let mut new_tasks = tasks_by_id
-        .into_values()
-        .filter(|task| !baseline.task_ids.contains(&task.id))
-        .collect::<Vec<_>>();
+    let task_session = baseline
+        .task_session
+        .as_ref()
+        .context("RunOnce Task session missing")?;
+    let (mut new_tasks, task_retention) = runtime.task_birth_session_records(task_session)?;
     new_tasks.sort_by(|left, right| left.created_at.cmp(&right.created_at));
     Ok(RunView {
         new_tasks,
         new_tools,
         new_messages,
         new_events,
+        _task_retention: task_retention,
     })
 }
 
-fn message_task_id(message: &MessageEnvelope) -> Option<String> {
-    message.task_id.clone().or_else(|| {
-        message
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("task_id"))
-            .and_then(|value| value.as_str())
-            .map(ToString::to_string)
-    })
-}
-
-fn exec_command_task_id(tool: &ToolExecutionRecord) -> Option<String> {
+fn exec_command_task_id(tool: &ToolExecutionRecord) -> Option<&str> {
     if tool.tool_name != "ExecCommand" || tool.status != ToolExecutionStatus::Success {
         return None;
     }
@@ -810,10 +785,9 @@ fn exec_command_task_id(tool: &ToolExecutionRecord) -> Option<String> {
         .and_then(|value| value.get("task_handle"))
         .and_then(|value| value.get("task_id"))
         .and_then(|value| value.as_str())
-        .map(ToString::to_string)
 }
 
-fn exec_command_event_task_id(event: &AuditEvent) -> Option<String> {
+fn exec_command_event_task_id(event: &AuditEvent) -> Option<&str> {
     if event.kind != "tool_executed"
         || event.data.get("tool_name").and_then(|value| value.as_str()) != Some("ExecCommand")
         || event
@@ -830,10 +804,9 @@ fn exec_command_event_task_id(event: &AuditEvent) -> Option<String> {
         .get("task_handle")
         .and_then(|value| value.get("task_id"))
         .and_then(|value| value.as_str())
-        .map(ToString::to_string)
 }
 
-fn process_execution_event_task_id(event: &AuditEvent) -> Option<String> {
+fn process_execution_event_task_id(event: &AuditEvent) -> Option<&str> {
     if event.kind != "process_execution_requested"
         || event.data.get("surface").and_then(|value| value.as_str()) != Some("command_task")
         || event
@@ -845,14 +818,10 @@ fn process_execution_event_task_id(event: &AuditEvent) -> Option<String> {
         return None;
     }
 
-    event
-        .data
-        .get("task_id")
-        .and_then(|value| value.as_str())
-        .map(ToString::to_string)
+    event.data.get("task_id").and_then(|value| value.as_str())
 }
 
-fn run_event_task_id(event: &AuditEvent) -> Option<String> {
+fn run_event_task_id(event: &AuditEvent) -> Option<&str> {
     exec_command_event_task_id(event).or_else(|| process_execution_event_task_id(event))
 }
 
@@ -868,8 +837,8 @@ async fn active_new_task_ids(
 ) -> Result<Vec<String>> {
     let mut active = Vec::new();
     for task_id in task_ids {
-        let snapshot = runtime.task_output(task_id, false, 0).await?;
-        if crate::storage::is_active_task_status(&snapshot.task.status) {
+        let status = runtime.current_task_output_status(task_id)?;
+        if crate::storage::is_active_task_status(&status) {
             active.push(task_id.clone());
         }
     }
@@ -887,8 +856,8 @@ async fn settle_stopped_tasks(
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 break;
             };
-            let snapshot = runtime.task_output(task_id, false, 0).await?;
-            if !crate::storage::is_active_task_status(&snapshot.task.status) {
+            let status = runtime.current_task_output_status(task_id)?;
+            if !crate::storage::is_active_task_status(&status) {
                 break;
             }
 
@@ -904,8 +873,20 @@ async fn settle_stopped_tasks(
                 break;
             }
 
-            let waited = runtime.task_output(task_id, true, remaining_ms).await?;
-            if !crate::storage::is_active_task_status(&waited.task.status) {
+            let wait_started = Instant::now();
+            let waited = loop {
+                let status = runtime.current_task_output_status(task_id)?;
+                if !crate::storage::is_active_task_status(&status)
+                    || wait_started.elapsed() >= Duration::from_millis(remaining_ms)
+                {
+                    break status;
+                }
+                tokio::time::sleep(Duration::from_millis(100).min(
+                    Duration::from_millis(remaining_ms).saturating_sub(wait_started.elapsed()),
+                ))
+                .await;
+            };
+            if !crate::storage::is_active_task_status(&waited) {
                 break;
             }
         }
@@ -951,8 +932,17 @@ async fn build_response(
     let workspace_root = runtime.workspace_root();
     let mut changed_files = changed_files_from_tools(&view.new_tools, &workspace_root);
     let mut task_summaries = Vec::new();
+    let mut task_summary_budgets = Vec::new();
+    let task_session = baseline
+        .task_session
+        .as_ref()
+        .context("RunOnce Task session missing")?;
     for task in &view.new_tasks {
-        let output = runtime.task_output(&task.id, false, 0).await?;
+        let output_read = runtime.task_output_read(&task.id, false, 0).await?;
+        let output = output_read.result;
+        // Remaining carrier fields retain the source/render/file allocations
+        // until the original RunOnce summary guard has taken responsibility.
+        task_summary_budgets.push(runtime.task_session_wire_budget(task_session, &output.task)?);
         let worktree =
             worktree_summary_for_task(task.id.as_str(), &view.new_messages).or_else(|| {
                 output
@@ -1546,6 +1536,11 @@ mod tests {
         let dir = tempdir()?;
         let runtime = test_runtime(dir.path())?;
         let state = AgentState::new("default");
+        let (_, task_session) = runtime.begin_task_birth_session().await?;
+        let baseline = RunBaseline {
+            task_session: Some(task_session),
+            ..Default::default()
+        };
 
         runtime
             .storage()
@@ -1557,13 +1552,9 @@ mod tests {
             ))?;
         }
 
-        let view = collect_run_poll_view(
-            &runtime,
-            &RunBaseline::default(),
-            &state,
-            runtime.poll_activity_marker()?,
-        )
-        .await?;
+        let view =
+            collect_run_poll_view(&runtime, &baseline, &state, runtime.poll_activity_marker()?)
+                .await?;
 
         assert!(view.runtime_error);
         Ok(())
@@ -1574,21 +1565,30 @@ mod tests {
         let dir = tempdir()?;
         let runtime = test_runtime(dir.path())?;
         let state = AgentState::new("default");
+        let (_, task_session) = runtime.begin_task_birth_session().await?;
+        let baseline = RunBaseline {
+            task_session: Some(task_session),
+            ..Default::default()
+        };
 
-        runtime.storage().append_task(&task_record("early-task"))?;
-        for index in 0..129 {
-            runtime
-                .storage()
-                .append_task(&task_record(format!("later-task-{index}")))?;
-        }
-
-        let view = collect_run_poll_view(
+        crate::runtime::tests::support::persist_task_transition(
             &runtime,
-            &RunBaseline::default(),
-            &state,
-            runtime.poll_activity_marker()?,
+            &task_record("early-task"),
+            "task_running",
         )
         .await?;
+        for index in 0..129 {
+            crate::runtime::tests::support::persist_task_transition(
+                &runtime,
+                &task_record(format!("later-task-{index}")),
+                "task_running",
+            )
+            .await?;
+        }
+
+        let view =
+            collect_run_poll_view(&runtime, &baseline, &state, runtime.poll_activity_marker()?)
+                .await?;
 
         assert!(view.new_task_ids.iter().any(|id| id == "early-task"));
         Ok(())
@@ -1685,7 +1685,7 @@ mod tests {
             invocation_surface: None,
         };
 
-        assert_eq!(exec_command_task_id(&tool), Some("task-promoted".into()));
+        assert_eq!(exec_command_task_id(&tool), Some("task-promoted"));
     }
 
     #[test]
@@ -1717,7 +1717,7 @@ mod tests {
             invocation_surface: None,
         };
 
-        assert_eq!(exec_command_task_id(&tool), Some("task-promoted".into()));
+        assert_eq!(exec_command_task_id(&tool), Some("task-promoted"));
     }
 
     #[test]
@@ -1735,10 +1735,7 @@ mod tests {
             }),
         );
 
-        assert_eq!(
-            exec_command_event_task_id(&event),
-            Some("task-promoted".into())
-        );
+        assert_eq!(exec_command_event_task_id(&event), Some("task-promoted"));
     }
 
     #[test]

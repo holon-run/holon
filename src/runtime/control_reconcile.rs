@@ -77,6 +77,7 @@ struct RegistrationIdentity {
     kind: TaskKind,
     created_at: DateTime<Utc>,
     rejoin: Option<crate::domain::execution_protocol::RejoinFence>,
+    raw_rejoin: Option<super::task_generation::TaskRejoinGeneration>,
 }
 impl From<&TaskRecord> for RegistrationIdentity {
     fn from(task: &TaskRecord) -> Self {
@@ -86,6 +87,7 @@ impl From<&TaskRecord> for RegistrationIdentity {
             kind: task.kind,
             created_at: task.created_at,
             rejoin: task.rejoin_fence().ok(),
+            raw_rejoin: super::task_generation::TaskRejoinGeneration::of(task),
         }
     }
 }
@@ -103,7 +105,9 @@ impl ControlRegistrationRecord {
             && self.identity.agent_id == task.agent_id
             && self.identity.kind == task.kind
             && self.identity.created_at == task.created_at
-            && self.identity.rejoin == task.rejoin_fence().ok()
+            && self.identity.raw_rejoin.is_some_and(|original| {
+                Some(original) == super::task_generation::TaskRejoinGeneration::of(task)
+            })
             && self.incarnation == incarnation
             && self.owner_epoch == owner_epoch
     }
@@ -114,6 +118,9 @@ impl ControlRegistrationRecord {
             && self.incarnation == key.identity_incarnation
             && target.target_generation.get("created_at") == Some(&json!(self.identity.created_at))
             && target.target_generation.get("rejoin") == Some(&json!(self.identity.rejoin))
+            && self.identity.raw_rejoin.is_some_and(|original| {
+                original.matches_control_original(&target.target_generation)
+            })
             && target.target_generation.get("owner_epoch") == Some(&json!(self.owner_epoch))
     }
     pub(super) fn attach(&self, lease: &Arc<ControlJoinLease>) {
@@ -253,7 +260,9 @@ impl ControlRegistrationLedger {
             .filter(|record| {
                 record.identity.agent_id == task.agent_id
                     && record.identity.created_at == task.created_at
-                    && record.identity.rejoin == task.rejoin_fence().ok()
+                    && record.identity.raw_rejoin.is_some_and(|original| {
+                        Some(original) == super::task_generation::TaskRejoinGeneration::of(task)
+                    })
             })
             .cloned()
     }
@@ -273,7 +282,7 @@ fn task_matches_target(
     task.id == target.target_identity
         && task.agent_id == key.agent_id
         && target.target_generation.get("created_at") == Some(&json!(task.created_at))
-        && target.target_generation.get("rejoin") == Some(&json!(task.rejoin_fence().ok()))
+        && super::task_generation::control_terminal_rejoin_matches(task, &target.target_generation)
         && target.target.get("kind") == Some(&json!(task.kind))
         && target.target.get("recovery") == Some(&json!(task.recovery))
         && target.target.get("work_item_id") == Some(&json!(task.effective_work_item_id()))
@@ -524,7 +533,8 @@ impl RuntimeHandle {
 
 /// Read overlay only. Old completion evidence can never rewrite a same-ID
 /// replacement Task or revive historical mutable state.
-pub(crate) fn overlay_control_worktree_evidence(
+#[cfg(test)]
+fn overlay_control_worktree_evidence(
     db: &RuntimeDb,
     task: &TaskRecord,
     incarnation: u64,
@@ -554,7 +564,10 @@ pub(crate) fn overlay_control_worktree_evidence(
         if target.target_kind != ControlCancellationKind::Worktree
             || target.target_identity != task.id
             || target.target_generation.get("created_at") != Some(&json!(task.created_at))
-            || target.target_generation.get("rejoin") != Some(&json!(task.rejoin_fence().ok()))
+            || !super::task_generation::control_terminal_rejoin_matches(
+                task,
+                &target.target_generation,
+            )
         {
             continue;
         }
@@ -627,7 +640,7 @@ mod tests {
         time: DateTime<Utc>,
     }
     impl Fixture {
-        fn stop(kind: TaskKind) -> Self {
+        fn before_stop(kind: TaskKind) -> Self {
             let home = tempdir().unwrap();
             let workspace = tempdir().unwrap();
             let runtime = RuntimeHandle::new(
@@ -659,10 +672,6 @@ mod tests {
                 recovery: None,
             };
             let ledger = ControlRegistrationLedger::default();
-            let registration =
-                ledger.before_active_task_sql(&task, runtime.inner.identity_incarnation, 1);
-            runtime.inner.runtime_db.tasks().upsert(&task).unwrap();
-            drop(registration);
             let key = ControlKey {
                 agent_id: "default".into(),
                 identity_incarnation: runtime.inner.identity_incarnation,
@@ -675,45 +684,6 @@ mod tests {
                 target_generation: json!({"created_at":task.created_at,"rejoin":task.rejoin_fence().ok(),"owner_epoch":1,"runtime_lease_id":null}),
                 target: json!({"kind":task.kind,"recovery":task.recovery,"work_item_id":task.effective_work_item_id()}),
             };
-            let mut cancellation_targets = vec![target.clone()];
-            if task.is_worktree_child_agent_task() {
-                let mut generation = target.target_generation.clone();
-                generation["artifact"] = task.detail.as_ref().unwrap()["worktree"].clone();
-                cancellation_targets.push(ControlCancellationTarget {
-                    obligation_id: "original-worktree-obligation".into(),
-                    target_kind: ControlCancellationKind::Worktree,
-                    target_identity: task.id.clone(),
-                    target_generation: generation,
-                    target: json!({"reason":"agent_lifecycle_stop"}),
-                });
-            }
-            let snapshot = runtime
-                .inner
-                .runtime_db
-                .load_control_snapshot(&key)
-                .unwrap();
-            let command = prepare_control(ControlPlanInput {
-                key: key.clone(),
-                invocation: ControlInvocation {
-                    action: ControlAction::Stop,
-                    source: ControlSource::DirectApi,
-                    authority_class: AuthorityClass::OperatorInstruction,
-                },
-                snapshot,
-                prepared_at: time,
-                task_results: vec![prepare_lifecycle_stop_task_result(&task, time).unwrap()],
-                healthy_running: None,
-                protected_control_attempt: None,
-                protected_control_run_id: None,
-                cancellation_targets,
-                audit_events: vec![],
-                index_changes: vec![],
-            })
-            .unwrap();
-            assert!(matches!(
-                runtime.inner.runtime_db.commit_control(&command).unwrap(),
-                ControlCommit::Applied { .. }
-            ));
             Self {
                 _home: home,
                 _workspace: workspace,
@@ -724,6 +694,98 @@ mod tests {
                 ledger,
                 time,
             }
+        }
+        fn stop_command(&self) -> crate::runtime_db::control_transition::PreparedControl {
+            let mut cancellation_targets = vec![self.target.clone()];
+            if self.task.is_worktree_child_agent_task() {
+                let mut generation = self.target.target_generation.clone();
+                generation["artifact"] = self.task.detail.as_ref().unwrap()["worktree"].clone();
+                cancellation_targets.push(ControlCancellationTarget {
+                    obligation_id: "original-worktree-obligation".into(),
+                    target_kind: ControlCancellationKind::Worktree,
+                    target_identity: self.task.id.clone(),
+                    target_generation: generation,
+                    target: json!({"reason":"agent_lifecycle_stop"}),
+                });
+            }
+            let snapshot = self
+                .runtime
+                .inner
+                .runtime_db
+                .load_control_snapshot(&self.key)
+                .unwrap();
+            prepare_control(ControlPlanInput {
+                key: self.key.clone(),
+                invocation: ControlInvocation {
+                    action: ControlAction::Stop,
+                    source: ControlSource::DirectApi,
+                    authority_class: AuthorityClass::OperatorInstruction,
+                },
+                snapshot,
+                prepared_at: self.time,
+                task_results: vec![
+                    prepare_lifecycle_stop_task_result(&self.task, self.time).unwrap()
+                ],
+                healthy_running: None,
+                protected_control_attempt: None,
+                protected_control_run_id: None,
+                cancellation_targets,
+                audit_events: vec![],
+                index_changes: vec![],
+            })
+            .unwrap()
+        }
+        fn stop(kind: TaskKind) -> Self {
+            let fixture = Self::before_stop(kind);
+            let registration = fixture.ledger.before_active_task_sql(
+                &fixture.task,
+                fixture.runtime.inner.identity_incarnation,
+                1,
+            );
+            fixture.db().tasks().upsert(&fixture.task).unwrap();
+            drop(registration);
+            let command = fixture.stop_command();
+            assert!(matches!(
+                fixture.db().commit_control(&command).unwrap(),
+                ControlCommit::Applied { .. }
+            ));
+            fixture
+        }
+        async fn stop_published(kind: TaskKind) -> Self {
+            let fixture = Self::before_stop(kind);
+            fixture
+                .runtime
+                .persist_task_transition(&fixture.task, "original_overlay_task_fixture")
+                .await
+                .unwrap();
+            let mut mutation = fixture.runtime.begin_mutation().await.unwrap();
+            let command = fixture.stop_command();
+            let work_request = mutation.owner_work_load_request().unwrap();
+            let (task_request, _selectors) = mutation.owner_task_load_request().unwrap();
+            let db = fixture.db().clone();
+            let ledger = fixture.runtime.inner.input_evidence_budget.clone();
+            // This storage/publication fixture supplies a retained observation;
+            // no actual cancellation or Git worker is registered by its setup.
+            let commit = mutation
+                .commit_transition(
+                    "original-stop-publication-fixture".into(),
+                    move |_| match db.commit_control_with_domain_requests(
+                        &command,
+                        &work_request,
+                        &task_request,
+                        &ledger,
+                    )? {
+                        ControlCommit::Applied { delta, .. } => Ok(delta.transition),
+                        ControlCommit::Replayed { .. } => {
+                            anyhow::bail!("first fixture Stop unexpectedly replayed")
+                        }
+                    },
+                )
+                .await
+                .unwrap();
+            fixture.runtime.apply_transition_commit(commit).await;
+            drop(mutation);
+            fixture
         }
         fn db(&self) -> &RuntimeDb {
             &self.runtime.inner.runtime_db
@@ -1119,7 +1181,7 @@ mod tests {
 
     #[tokio::test]
     async fn worktree_cleanup_evidence_overlays_only_the_exact_current_terminal_generation() {
-        let f = Fixture::stop(TaskKind::WorktreeSubagentTask);
+        let f = Fixture::stop_published(TaskKind::WorktreeSubagentTask).await;
         let target = f
             .db()
             .pending_control_obligations(&f.key.agent_id, f.key.identity_incarnation)
@@ -1133,13 +1195,49 @@ mod tests {
         detail["worktree"]["cleanup_status"] = json!("retained");
         detail["worktree"]["retained_for_review"] = json!(true);
         // This is exact completed cleanup evidence, not a synthetic Task write.
-        f.db()
-            .complete_control_obligation(
+        let ledger = &f.runtime.inner.input_evidence_budget;
+        let limits = ledger.limits();
+        let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+            query: Default::default(),
+            capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+            record_limit: usize::try_from(limits.record_limit).unwrap().min(65_536),
+            byte_limit: usize::try_from(
+                limits
+                    .history_per_agent_bytes
+                    .checked_add(limits.pending_per_agent_bytes)
+                    .unwrap(),
+            )
+            .unwrap()
+            .min(64 * 1024 * 1024),
+        };
+        let scope = super::super::resident_input_evidence::InputEvidenceScope {
+            agent_id: f.key.agent_id.clone(),
+            identity_incarnation: f.key.identity_incarnation,
+        };
+        let completion = Arc::new(
+            ledger
+                .reserve_owned_completion(
+                    &scope,
+                    super::super::input_evidence_budget::InputMemoryCategory::Candidate,
+                    super::super::input_evidence_budget::OwnedBytesEstimate {
+                        payload_bytes: 0,
+                        metadata_estimate_bytes: 1024,
+                    },
+                )
+                .unwrap(),
+        );
+        let mut capsule =
+            super::super::task_status_metadata::OriginalControlMetadataCapsule::completed(
+                scope,
                 &f.key,
                 &target,
-                f.time,
                 json!({"cleanup":"retained","detail":detail}),
-            )
+                f.time,
+                completion,
+            );
+        f.runtime
+            .commit_control_worktree_metadata(&mut capsule, &request)
+            .await
             .unwrap();
         let overlay =
             overlay_control_worktree_evidence(f.db(), &terminal, f.key.identity_incarnation)
@@ -1184,5 +1282,109 @@ mod tests {
             overlay_control_worktree_evidence(f.db(), &active, f.key.identity_incarnation).unwrap(),
             active
         );
+    }
+
+    #[tokio::test]
+    async fn original_worktree_completion_records_only_cleanup_headers_and_replay_preserves_them() {
+        let f = Fixture::stop(TaskKind::WorktreeSubagentTask);
+        let target = f
+            .db()
+            .pending_control_obligations(&f.key.agent_id, f.key.identity_incarnation)
+            .unwrap()
+            .into_iter()
+            .find(|(_, target)| target.target_kind == ControlCancellationKind::Worktree)
+            .unwrap()
+            .1;
+        let original = f.db().tasks().latest(&f.task.id).unwrap().unwrap();
+        let evidence = json!({"detail":{"worktree":{"path":"/cannot-overlay","branch":"cannot-overlay",
+            "cleanup_status":"retained","retained_for_review":true,"auto_cleaned_up":false,
+            "changed_files":["src/a.rs"],"cleanup_error":null}}});
+        f.db()
+            .complete_control_obligation(&f.key, &target, f.time, evidence)
+            .unwrap();
+        let read = || {
+            f.db().connection().unwrap().query_row(
+            "SELECT target_generation_json,fields_json FROM task_status_control_sources WHERE agent_id=?1 AND identity_incarnation=?2 AND command_id=?3 AND obligation_id=?4",
+            rusqlite::params![f.key.agent_id,f.key.identity_incarnation,f.key.command_id,target.obligation_id],
+            |row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).unwrap()
+        };
+        let saved = read();
+        assert_eq!(
+            serde_json::from_str::<Value>(&saved.0).unwrap(),
+            target.target_generation
+        );
+        let fields: Value = serde_json::from_str(&saved.1).unwrap();
+        assert_eq!(
+            fields,
+            json!({"cleanup_status":"retained","retained_for_review":true,
+            "auto_cleaned_up":false,"changed_files":["src/a.rs"],"cleanup_error":null})
+        );
+        f.db()
+            .complete_control_obligation(
+                &f.key,
+                &target,
+                f.time + chrono::Duration::seconds(1),
+                json!({"detail":{"worktree":{"cleanup_status":"replacement"}}}),
+            )
+            .unwrap();
+        assert_eq!(
+            read(),
+            saved,
+            "completed replay cannot replace accepted source headers"
+        );
+        let count: u64 = f
+            .db()
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM task_status_control_sources",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(
+            f.db().tasks().latest(&f.task.id).unwrap().unwrap(),
+            original
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_header_failure_rolls_back_the_actual_control_completion() {
+        let f = Fixture::stop(TaskKind::WorktreeSubagentTask);
+        let target = f
+            .db()
+            .pending_control_obligations(&f.key.agent_id, f.key.identity_incarnation)
+            .unwrap()
+            .into_iter()
+            .find(|(_, target)| target.target_kind == ControlCancellationKind::Worktree)
+            .unwrap()
+            .1;
+        f.db().connection().unwrap().execute_batch(
+            "CREATE TRIGGER fail_control_cleanup_header BEFORE INSERT ON task_status_control_sources BEGIN SELECT RAISE(ABORT,'cleanup metadata failure'); END;").unwrap();
+        let error = f
+            .db()
+            .complete_control_obligation(
+                &f.key,
+                &target,
+                f.time,
+                json!({"detail":{"worktree":{"cleanup_status":"retained"}}}),
+            )
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("cleanup metadata failure"));
+        let saved = f.db().control_obligation(&f.key, &target).unwrap().unwrap();
+        assert_eq!(saved.state, ControlObligationState::Pending);
+        assert!(saved.completion_evidence.is_none());
+        let count: u64 = f
+            .db()
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM task_status_control_sources",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
     }
 }

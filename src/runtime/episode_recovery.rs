@@ -99,6 +99,8 @@ fn resolve_single_episode_recovery(
                 )?;
                 Some(KnownCommit::State {
                     work: None,
+
+                    tasks: None,
                     state: Arc::new(state),
                     episodes: Some(Arc::new(episodes)),
                     input_evidence: None,
@@ -220,6 +222,7 @@ mod tests {
                     Some(Arc::new(
                         ResidentEpisodes::bootstrap("agent-a", 1, 12, true, vec![]).unwrap(),
                     )),
+                    None,
                 )
                 .unwrap();
             reservation.publish(state_arc).unwrap();

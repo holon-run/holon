@@ -46,6 +46,8 @@ use crate::{
     },
 };
 
+mod task_writes;
+
 pub(crate) const CONTROL_FAMILY_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -180,7 +182,78 @@ pub(crate) struct PreparedControl {
     fault: Option<ControlFaultPoint>,
 }
 
+/// Private construction preserves the real original Control command and snapshot.
+#[cfg(test)]
+pub(crate) struct OriginalControlTaskCleanupView<'a> {
+    command: &'a PreparedControl,
+    before: &'a TaskRecord,
+    result: &'a ControlTaskResult,
+}
+#[cfg(test)]
+impl OriginalControlTaskCleanupView<'_> {
+    pub(crate) fn key(&self) -> &ControlKey {
+        &self.command.key
+    }
+    pub(crate) fn command_digest(&self) -> &str {
+        &self.command.command_digest
+    }
+    pub(crate) fn prepared_at(&self) -> DateTime<Utc> {
+        self.command.prepared_at
+    }
+    pub(crate) fn before(&self) -> &TaskRecord {
+        self.before
+    }
+    pub(crate) fn task(&self) -> &TaskRecord {
+        &self.result.task
+    }
+    pub(crate) fn message(&self) -> &MessageEnvelope {
+        &self.result.message
+    }
+}
+
 impl PreparedControl {
+    #[cfg(test)]
+    pub(crate) fn original_task_cleanup(
+        &self,
+        task_id: &str,
+    ) -> Result<OriginalControlTaskCleanupView<'_>> {
+        ensure!(
+            self.invocation.action == ControlAction::Stop,
+            "Task cleanup requires original Stop"
+        );
+        let before = self
+            .expected
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .context("original Control Task target missing")?;
+        let result = self
+            .task_results
+            .iter()
+            .find(|result| result.task.id == task_id)
+            .context("original Control Task result missing")?;
+        ensure!(
+            self.expected
+                .tasks
+                .iter()
+                .filter(|task| task.id == task_id)
+                .count()
+                == 1
+                && self
+                    .task_results
+                    .iter()
+                    .filter(|result| result.task.id == task_id)
+                    .count()
+                    == 1,
+            "ambiguous original Control Task target"
+        );
+        Ok(OriginalControlTaskCleanupView {
+            command: self,
+            before,
+            result,
+        })
+    }
+
     pub(crate) fn key(&self) -> &ControlKey {
         &self.key
     }
@@ -293,6 +366,7 @@ pub(crate) struct ControlRecoveryFacts {
 pub(crate) struct ControlRecoveryDomains {
     pub inputs: Arc<crate::runtime::resident_input_evidence::ResidentInputEvidence>,
     pub work: Arc<crate::runtime::resident_work::ResidentWorkDomain>,
+    pub tasks: Arc<crate::runtime::resident_task::ResidentTaskDomain>,
 }
 
 #[derive(Debug, Clone)]
@@ -366,6 +440,7 @@ pub(crate) fn prepare_control(input: ControlPlanInput) -> Result<PreparedControl
             &snapshot,
             protected_control_run_id.as_deref(),
             &cancellation_targets,
+            &task_results,
         )?;
         candidate.status = AgentStatus::Stopped;
         candidate.current_run_id = None;
@@ -883,6 +958,7 @@ impl RuntimeDb {
 
     /// The original owner is held. Positive recovery prepares all domains from
     /// one fresh transaction; receipt absence never starts body preparation.
+    #[cfg(test)]
     pub(crate) fn load_control_recovery_with_domains(
         &self,
         key: &ControlKey,
@@ -898,7 +974,27 @@ impl RuntimeDb {
             invocation,
             command_digest,
             recent_episode_limit,
-            Some((input_request, work_request, budget)),
+            Some((input_request, work_request, budget, None)),
+        )
+    }
+
+    pub(crate) fn load_control_recovery_with_queries(
+        &self,
+        key: &ControlKey,
+        invocation: &ControlInvocation,
+        command_digest: &str,
+        recent_episode_limit: usize,
+        input_request: &super::input_evidence_snapshot::InputEvidenceLoadRequest,
+        work_request: &crate::runtime::resident_work::WorkCaptureRequest,
+        budget: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
+    ) -> Result<ControlRecoveryObservation> {
+        self.load_control_recovery_inner(
+            key,
+            invocation,
+            command_digest,
+            recent_episode_limit,
+            Some((input_request, work_request, budget, query)),
         )
     }
 
@@ -912,6 +1008,7 @@ impl RuntimeDb {
             &super::input_evidence_snapshot::InputEvidenceLoadRequest,
             &crate::runtime::resident_work::WorkCaptureRequest,
             &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+            Option<&crate::runtime::task_queries::TaskQuerySelection>,
         )>,
     ) -> Result<ControlRecoveryObservation> {
         validate_key(key)?;
@@ -944,7 +1041,7 @@ impl RuntimeDb {
         }) {
             let snapshot = load_snapshot_in_with_original_scope(&tx, key, true)?;
             let (episodes, domains, pending) =
-                if let (Some(receipt), Some((input, capture, budget))) =
+                if let (Some(receipt), Some((input, capture, budget, query))) =
                     (receipt.as_ref(), preparation)
                 {
                     use crate::runtime::resident_work::{WorkFamily, WorkKey};
@@ -1001,15 +1098,28 @@ impl RuntimeDb {
                                 .map(|id| Key::new(Family::Attempt, id)),
                         );
                     }
-                    let prepared = super::input_preparation::prepare_control_recovery_domains_tx(
-                        &tx,
-                        &scope,
-                        &snapshot.state,
-                        &input,
-                        recent_episode_limit,
-                        budget,
-                        &capture,
-                    )?;
+                    let mut task_request =
+                        crate::runtime::resident_task::TaskCaptureRequest::current();
+                    task_request.required_keys.extend(
+                        receipt.outcome.interrupted_task_ids.iter().map(|id| {
+                            crate::runtime::resident_task::TaskKey::new(
+                                crate::runtime::resident_task::TaskFamily::Task,
+                                id,
+                            )
+                        }),
+                    );
+                    let prepared =
+                        super::input_preparation::prepare_control_recovery_with_queries_tx(
+                            &tx,
+                            &scope,
+                            &snapshot.state,
+                            &input,
+                            recent_episode_limit,
+                            budget,
+                            &capture,
+                            &task_request,
+                            query,
+                        )?;
                     ensure!(
                         prepared.facts.state.as_ref() == Some(&snapshot.state)
                             && prepared.facts.control_revision == Some(snapshot.control_revision)
@@ -1024,6 +1134,9 @@ impl RuntimeDb {
                         Some(ControlRecoveryDomains {
                             inputs: Arc::new(prepared.inputs.with_budget(budget.clone())?),
                             work,
+                            tasks: prepared
+                                .tasks
+                                .context("Control recovery Task domain is absent")?,
                         }),
                         Some(prepared.pending.messages),
                     )
@@ -1079,21 +1192,36 @@ impl RuntimeDb {
 
     #[cfg(test)]
     pub(crate) fn commit_control(&self, command: &PreparedControl) -> Result<ControlCommit> {
-        self.commit_control_inner(command, None)
+        self.commit_control_inner(command, None, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn commit_control_with_work_request(
         &self,
         command: &PreparedControl,
         request: &super::work_snapshot::WorkDomainLoadRequest,
     ) -> Result<ControlCommit> {
-        self.commit_control_inner(command, Some(request))
+        self.commit_control_inner(command, Some(request), None)
+    }
+
+    pub(crate) fn commit_control_with_domain_requests(
+        &self,
+        command: &PreparedControl,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+        task_request: &super::task_snapshot::TaskDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<ControlCommit> {
+        self.commit_control_inner(command, Some(work_request), Some((task_request, ledger)))
     }
 
     fn commit_control_inner(
         &self,
         command: &PreparedControl,
         work_request: Option<&super::work_snapshot::WorkDomainLoadRequest>,
+        task_request: Option<(
+            &super::task_snapshot::TaskDomainLoadRequest,
+            &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        )>,
     ) -> Result<ControlCommit> {
         let result = self.transaction(|tx| {
             // Authentication of an old namespace is performed by the caller.
@@ -1101,6 +1229,9 @@ impl RuntimeDb {
                 Some(&command.command_digest))? {
                 return Ok(ControlCommit::Replayed { receipt });
             }
+            let mut task_writes = task_request.map(|(request, ledger)|
+                task_writes::prepare_control_task_writes_tx(tx, command, request, ledger)
+            ).transpose()?;
             let actual = load_snapshot_in(tx, &command.key)?;
             if actual != *command.expected {
                 return Err(RuntimeStateTransitionConflict::concurrent_mutation("control_targets", &command.key.agent_id).into());
@@ -1136,6 +1267,7 @@ impl RuntimeDb {
             let mut derived_audit_ids = Vec::new();
             for result in &command.task_results {
                 ensure!(upsert_task_tx(tx, &result.task)?, "Stop task write unexpectedly became a no-op");
+                if let Some(writes) = &mut task_writes { writes.task_written(&result.task.id); }
                 let queued = QueueEntryRecord { message_id: result.message.id.clone(),
                     agent_id: result.message.agent_id.clone(), priority: result.message.priority.clone(),
                     status: QueueEntryStatus::Queued, created_at: result.message.created_at,
@@ -1145,7 +1277,10 @@ impl RuntimeDb {
                 ensure!(admission.message_inserted && admission.queue_applied,
                     "Stop TaskResult admission was not exact/new");
                 message_index_changes.push(RuntimeIndexChange::for_message(&admission.message));
-                if let Some(settlement) = TaskResultSettlementRecord::pending(&result.task, &admission.message, command.prepared_at)? {
+                if let Some(writes) = &mut task_writes {
+                    writes.execute_pending(&result.task.id)?;
+                } else if let Some(settlement) = TaskResultSettlementRecord::pending(&result.task, &admission.message, command.prepared_at)? {
+                    // Explicit legacy/cfg entry preserves its original SQL adapter.
                     task_result_settlement::upsert_pending_tx(tx, &settlement)?;
                 }
                 derived_audit_ids.extend([
@@ -1230,6 +1365,15 @@ impl RuntimeDb {
                     tx, proof, &wait_condition_writes, Some(&persisted), request,
                 )
             }).transpose()?.flatten();
+            // Actual D3 Message ACKs also advance TaskOutput source metadata.
+            // Join those exact sources into the single final Task coverage.
+            let mut input_facts = result_messages.iter().cloned().map(super::input_evidence_snapshot::CanonicalInputEvidence::Message).collect::<Vec<_>>();
+            input_facts.extend(command.interrupted_turns.iter().cloned().map(super::input_evidence_snapshot::CanonicalInputEvidence::Turn));
+            let evidence_delta = super::input_evidence_snapshot::register_committed_input_evidence_tx(tx, &input_scope, &input_facts)?;
+            super::input_evidence_writes::merge_input_evidence_delta(&mut input_delta,evidence_delta)?;
+            let task_facts = task_writes.map(|writes|
+                writes.finish(tx, &persisted, task_request.expect("Task request retained").1)
+            ).transpose()?;
             let mut audit_bindings = Vec::new();
             let mut audit_events = Vec::new();
             for event in &command.audit_events {
@@ -1313,17 +1457,13 @@ impl RuntimeDb {
                     "SELECT payload_json FROM workspace_occupancies WHERE occupancy_id = ?1", &expected.occupancy_id)?.context("Control occupancy disappeared")?;
                 ensure!(stored == *expected, "Control occupancy release was not persisted exactly");
             }
-            let mut input_facts = result_messages.iter().cloned().map(super::input_evidence_snapshot::CanonicalInputEvidence::Message).collect::<Vec<_>>();
-            input_facts.extend(turns.iter().cloned().map(super::input_evidence_snapshot::CanonicalInputEvidence::Turn));
-            let evidence_delta = super::input_evidence_snapshot::register_committed_input_evidence_tx(tx, &input_scope, &input_facts)?;
-            super::input_evidence_writes::merge_input_evidence_delta(&mut input_delta,evidence_delta)?;
             let work_input_preparation = work.as_ref().map(|work| super::transitions::WorkInputPreparation {
                 scope: input_scope.clone(), work_revision: work.delta.revision,
                 owning_roots: work.owning_input_roots.clone(),
                 completion_heads: work.delta.coverage.latest_results.iter()
                     .filter_map(|(id, head)| head.clone().map(|head| (id.clone(), head))).collect(),
             });
-            let transition = TransitionCommit { applied: true, effects: PostCommitEffects {
+            let mut transition = TransitionCommit { applied: true, effects: Box::new(PostCommitEffects {
                 work_delta_requires_prepared_domain: work.is_some(),
                 work_delta: work.map(|work| work.delta), work_input_preparation, wait_condition_writes,
                 agent_state: (persisted != command.expected.state).then(|| AgentStateMutation { expected: Some(Box::new(command.expected.state.clone())), record: Box::new(persisted.clone()) }),
@@ -1331,7 +1471,14 @@ impl RuntimeDb {
                 timers: timers.clone(), tasks: tasks.clone(), external_triggers: external_triggers.clone(),
                 messages: result_messages.clone(), turns: turns.clone(), execution_protocol: execution_protocol.clone(), input_evidence_delta: input_delta,
                 audit_events, notify_memory_index: !changes.is_empty(), notify_scheduler: true, ..Default::default()
-            }, ..Default::default() };
+            }), ..Default::default() };
+            if let Some(tasks) = task_facts {
+                transition.effects.task_delta = Some(tasks.delta);
+                transition.effects.task_delta_requires_prepared_domain = true;
+                transition.effects.task_write_keys = tasks.actual;
+                transition.effects.task_observation_keys = tasks.observations;
+                transition.effects.task_material_budget_views = tasks.guards;
+            }
             Ok(ControlCommit::Applied { receipt, delta: Box::new(ControlCommittedDelta { state: persisted, tasks, waits,
                 timers, timer_wakes, queue_entries: final_queue, external_triggers, workspace_occupancy: occupancy,
                 result_messages, turns, execution_protocol, transition }) })
@@ -1800,7 +1947,7 @@ fn load_recovery_facts_in(
         workspace_occupancy,
         transition: TransitionCommit {
             applied: true,
-            effects: PostCommitEffects {
+            effects: Box::new(PostCommitEffects {
                 agent_state: Some(AgentStateMutation {
                     expected: None,
                     record: Box::new(snapshot.state.clone()),
@@ -1814,7 +1961,7 @@ fn load_recovery_facts_in(
                 removed_queue_message_ids: removed.into_iter().collect(),
                 notify_scheduler: true,
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         },
     })
@@ -2201,6 +2348,7 @@ fn validate_cancellation_targets(
     snapshot: &ControlSnapshot,
     protected_run_id: Option<&str>,
     targets: &[ControlCancellationTarget],
+    task_results: &[ControlTaskResult],
 ) -> Result<()> {
     let mut ids = BTreeSet::new();
     for target in targets {
@@ -2246,6 +2394,29 @@ fn validate_cancellation_targets(
                             == Some(&serde_json::to_value(task.rejoin_fence().ok())?),
                     "task cancellation generation does not match exact original Task"
                 );
+                // Legacy targets retain their stored digest/outcome. New runtime
+                // targets bind both pre-Stop and its validated terminal shape.
+                if generation
+                    .get(crate::runtime::task_generation::CONTROL_ORIGINAL_REJOIN)
+                    .is_some()
+                    || generation
+                        .get(crate::runtime::task_generation::CONTROL_TERMINAL_REJOIN)
+                        .is_some()
+                {
+                    let terminal = &task_results
+                        .iter()
+                        .find(|result| result.task.id == task.id)
+                        .context("Control target terminal Task missing")?
+                        .task;
+                    ensure!(
+                        crate::runtime::task_generation::control_original_rejoin_matches(
+                            task, generation
+                        ) && crate::runtime::task_generation::control_terminal_rejoin_matches(
+                            terminal, generation
+                        ),
+                        "Control target raw rejoin generation differs from its original command"
+                    );
+                }
                 ensure!(
                     generation
                         .get("runtime_lease_id")
@@ -2511,6 +2682,72 @@ pub(crate) struct ControlCancellationObligation {
     pub completion_evidence: Option<Value>,
 }
 
+/// Minted only after the actual original Worktree completion CAS in this TX.
+/// Metadata observation does not authorize Task writes or physical cleanup.
+pub(in crate::runtime_db) struct OriginalControlWorktreeCompletion<'tx, 'connection> {
+    tx: &'tx Transaction<'connection>,
+    key: &'tx ControlKey,
+    obligation_id: &'tx str,
+}
+impl OriginalControlWorktreeCompletion<'_, '_> {
+    pub(in crate::runtime_db) fn source_in<'a>(
+        &'a self,
+        tx: &Transaction<'_>,
+    ) -> Result<(&'a ControlKey, &'a str)> {
+        ensure!(
+            std::ptr::eq(self.tx, tx),
+            "Control completion observation crossed transaction"
+        );
+        Ok((self.key, self.obligation_id))
+    }
+}
+
+/// Same original CAS used by the whole TaskStatus metadata receipt actor.
+/// The actor admits the original obligation pool before this decoder runs.
+pub(in crate::runtime_db) fn complete_control_obligation_tx(
+    tx: &Transaction<'_>,
+    key: &ControlKey,
+    target: &ControlCancellationTarget,
+    completed_at: DateTime<Utc>,
+    evidence: &Value,
+) -> Result<bool> {
+    validate_key(key)?;
+    ensure!(
+        !evidence.is_null(),
+        "Control obligation completion requires evidence"
+    );
+    let obligation = load_obligations_in(tx, key)?
+        .into_iter()
+        .find(|obligation| obligation.target.obligation_id == target.obligation_id)
+        .context("Control cancellation obligation does not exist")?;
+    ensure!(
+        obligation.target == *target,
+        "Control cancellation target/generation conflict"
+    );
+    if obligation.state == ControlObligationState::Completed {
+        return Ok(false);
+    }
+    ensure!(
+        completed_at >= obligation.updated_at,
+        "Control completion time precedes its current evidence"
+    );
+    let changed = tx.execute("UPDATE control_cancellation_obligations SET state = 'completed', updated_at = ?5, completion_evidence_json = ?6
+                WHERE agent_id = ?1 AND identity_incarnation = ?2 AND command_id = ?3 AND obligation_id = ?4
+                AND state IN ('pending','needs_attention') AND target_json = ?7", params![key.agent_id,
+                i64::try_from(key.identity_incarnation)?, key.command_id, target.obligation_id,
+                completed_at.to_rfc3339(), serde_json::to_string(&evidence)?, serde_json::to_string(target)?])?;
+    ensure!(changed == 1, "Control obligation completion CAS failed");
+    if target.target_kind == ControlCancellationKind::Worktree {
+        let observed = OriginalControlWorktreeCompletion {
+            tx,
+            key,
+            obligation_id: &target.obligation_id,
+        };
+        super::task_snapshot::register_control_worktree_completion_tx(tx, &observed)?;
+    }
+    Ok(true)
+}
+
 impl RuntimeDb {
     /// A completion only settles this immutable original target. It never
     /// overwrites a later Task, Timer, State or worktree record.
@@ -2527,18 +2764,7 @@ impl RuntimeDb {
             "Control obligation completion requires evidence"
         );
         self.transaction(|tx| {
-            let obligation = load_obligations_in(tx, key)?.into_iter()
-                .find(|obligation| obligation.target.obligation_id == target.obligation_id)
-                .context("Control cancellation obligation does not exist")?;
-            ensure!(obligation.target == *target, "Control cancellation target/generation conflict");
-            if obligation.state == ControlObligationState::Completed { return Ok(true); }
-            ensure!(completed_at >= obligation.updated_at, "Control completion time precedes its current evidence");
-            let changed = tx.execute("UPDATE control_cancellation_obligations SET state = 'completed', updated_at = ?5, completion_evidence_json = ?6
-                WHERE agent_id = ?1 AND identity_incarnation = ?2 AND command_id = ?3 AND obligation_id = ?4
-                AND state IN ('pending','needs_attention') AND target_json = ?7", params![key.agent_id,
-                i64::try_from(key.identity_incarnation)?, key.command_id, target.obligation_id,
-                completed_at.to_rfc3339(), serde_json::to_string(&evidence)?, serde_json::to_string(target)?])?;
-            ensure!(changed == 1, "Control obligation completion CAS failed");
+            complete_control_obligation_tx(tx, key, target, completed_at, &evidence)?;
             Ok(true)
         })
     }

@@ -30,6 +30,7 @@ pub(crate) struct PreparedInputRead {
     pub inputs: ResidentInputEvidence,
     pub pending: PreparedPendingQueue,
     pub work: Option<std::sync::Arc<crate::runtime::resident_work::ResidentWorkDomain>>,
+    pub tasks: Option<std::sync::Arc<crate::runtime::resident_task::ResidentTaskDomain>>,
 }
 
 /// The caller holds the original Ready owner reservation throughout this
@@ -52,6 +53,9 @@ pub(crate) fn prepare_input_domains_tx(
         false,
         None,
         false,
+        None,
+        None,
+        None,
     )
 }
 
@@ -75,11 +79,15 @@ pub(crate) fn prepare_existing_admission_cleanup_domains_tx(
         true,
         None,
         false,
+        None,
+        None,
+        None,
     )
 }
 
 /// Original positive receipt recovery installs current Work and Input from
 /// one view. The receipt supplies finite selectors, never old body authority.
+#[cfg(test)]
 pub(crate) fn prepare_original_input_recovery_with_work_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
@@ -88,6 +96,7 @@ pub(crate) fn prepare_original_input_recovery_with_work_tx(
     recent_episode_limit: usize,
     budget: &InputEvidenceBudgetLedger,
     work_request: &crate::runtime::resident_work::WorkCaptureRequest,
+    task_request: &crate::runtime::resident_task::TaskCaptureRequest,
 ) -> Result<PreparedInputRead> {
     prepare_input_domains_inner_tx(
         tx,
@@ -99,30 +108,139 @@ pub(crate) fn prepare_original_input_recovery_with_work_tx(
         true,
         Some(work_request),
         false,
+        Some(task_request),
+        None,
+        None,
     )
 }
 
-/// Control receipt recovery restores historical target bodies in Work, while
-/// only current live owning roots become mandatory Input dependencies.
-pub(crate) fn prepare_control_recovery_domains_tx(
+pub(crate) fn prepare_original_input_recovery_with_queries_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
-    published_state: &AgentState,
+    state: &AgentState,
     request: &InputEvidenceLoadRequest,
     recent_episode_limit: usize,
     budget: &InputEvidenceBudgetLedger,
-    work_request: &crate::runtime::resident_work::WorkCaptureRequest,
+    work: &crate::runtime::resident_work::WorkCaptureRequest,
+    tasks: &crate::runtime::resident_task::TaskCaptureRequest,
+    query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
 ) -> Result<PreparedInputRead> {
     prepare_input_domains_inner_tx(
         tx,
         scope,
-        published_state,
+        state,
         request,
         recent_episode_limit,
         budget,
         true,
-        Some(work_request),
+        Some(work),
+        false,
+        Some(tasks),
+        query,
+        None,
+    )
+}
+
+pub(crate) fn prepare_control_recovery_with_queries_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    state: &AgentState,
+    request: &InputEvidenceLoadRequest,
+    recent_episode_limit: usize,
+    budget: &InputEvidenceBudgetLedger,
+    work: &crate::runtime::resident_work::WorkCaptureRequest,
+    tasks: &crate::runtime::resident_task::TaskCaptureRequest,
+    query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
+) -> Result<PreparedInputRead> {
+    prepare_input_domains_inner_tx(
+        tx,
+        scope,
+        state,
+        request,
+        recent_episode_limit,
+        budget,
         true,
+        Some(work),
+        true,
+        Some(tasks),
+        query,
+        None,
+    )
+}
+
+/// Only a real Delivered Stop continuation may install fresh partial domains.
+/// Task remains explicitly unprepared; this is not the ordinary Task loader.
+pub(crate) fn prepare_partial_task_stop_input_recovery_tx(
+    tx: &Transaction<'_>,
+    view: &super::task_stop::TaskStopSparseReadView<'_, '_>,
+    state: &AgentState,
+    request: &InputEvidenceLoadRequest,
+    recent_episode_limit: usize,
+    budget: &InputEvidenceBudgetLedger,
+    work: &crate::runtime::resident_work::WorkCaptureRequest,
+) -> Result<PreparedInputRead> {
+    view.validate_read_view_tx(tx, view.scope())?;
+    let super::input_mutation_receipts::InputMutationResult::TaskStopPhase { ack } =
+        &view.receipt().outcome.result
+    else {
+        anyhow::bail!("partial Stop recovery lacks its original phase ACK");
+    };
+    ensure!(
+        matches!(&ack.result,Some(result) if matches!(result.outcome,super::task_stop::TaskStopResultOutcome::Delivered{..})),
+        "only actual Delivered Stop Result can install new partial State"
+    );
+    prepare_input_domains_inner_tx(
+        tx,
+        view.scope(),
+        state,
+        request,
+        recent_episode_limit,
+        budget,
+        true,
+        Some(work),
+        true,
+        None,
+        None,
+        None,
+    )
+}
+
+pub(in crate::runtime_db) fn prepare_child_terminal_input_recovery_tx(
+    tx: &Transaction<'_>,
+    view: &super::child_task_terminal::OriginalChildTerminalReadView<'_, '_>,
+    state: &AgentState,
+    request: &InputEvidenceLoadRequest,
+    recent_episode_limit: usize,
+    budget: &InputEvidenceBudgetLedger,
+    work: &crate::runtime::resident_work::WorkCaptureRequest,
+    tasks: &crate::runtime::resident_task::TaskCaptureRequest,
+    query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
+    material: &mut super::task_snapshot::read_preparation::TaskReadMaterial<'_>,
+) -> Result<PreparedInputRead> {
+    let super::input_mutation_receipts::InputMutationResult::ChildTaskTerminal { ack } =
+        &view.receipt().outcome.result
+    else {
+        anyhow::bail!("child recovery lacks its original terminal ACK");
+    };
+    let scope = &ack.original.scope;
+    view.validate_tx(tx, scope)?;
+    ensure!(
+        view.mode(scope)? == super::child_task_terminal::ChildTaskTerminalInstallMode::Current,
+        "child primary recovery cannot manufacture State"
+    );
+    prepare_input_domains_inner_tx(
+        tx,
+        scope,
+        state,
+        request,
+        recent_episode_limit,
+        budget,
+        true,
+        Some(work),
+        false,
+        Some(tasks),
+        query,
+        Some(material),
     )
 }
 
@@ -136,6 +254,9 @@ fn prepare_input_domains_inner_tx(
     original_recovery: bool,
     work_request: Option<&crate::runtime::resident_work::WorkCaptureRequest>,
     current_work_roots_only: bool,
+    task_request: Option<&crate::runtime::resident_task::TaskCaptureRequest>,
+    query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
+    task_material: Option<&mut super::task_snapshot::read_preparation::TaskReadMaterial<'_>>,
 ) -> Result<PreparedInputRead> {
     let facts = ContextDurableRead::new(tx, &scope.agent_id).scope_facts()?;
     if !facts.identity.as_ref().is_some_and(|identity| {
@@ -188,8 +309,52 @@ fn prepare_input_domains_inner_tx(
         // Snapshot preparation validates asserted recovery sources on its
         // same read view, including focused canonical absence observations.
     }
+    let tasks = if let Some(capture) = task_request {
+        let task = if let Some(material) = task_material {
+            super::task_recovery::prepare_original_task_domains_using_material_tx(
+                tx,
+                scope,
+                published_state,
+                capture,
+                &pending.messages,
+                request.record_limit,
+                request.byte_limit,
+                budget,
+                query,
+                material,
+            )?
+        } else {
+            super::task_recovery::prepare_original_task_domains_with_queries_tx(
+                tx,
+                scope,
+                published_state,
+                capture,
+                &pending.messages,
+                request.record_limit,
+                request.byte_limit,
+                budget,
+                query,
+            )?
+        };
+        request
+            .mandatory_roots
+            .extend(task.input_roots.iter().cloned());
+        Some(task)
+    } else {
+        None
+    };
     let work = if let Some(capture) = work_request {
         let mut capture = capture.clone();
+        if let Some(tasks) = &tasks {
+            capture
+                .mandatory_roots
+                .extend(tasks.work_roots.iter().map(|id| {
+                    crate::runtime::resident_work::WorkKey::new(
+                        crate::runtime::resident_work::WorkFamily::Work,
+                        id,
+                    )
+                }));
+        }
         for message in &pending.messages {
             capture
                 .required_trigger_message_ids
@@ -296,5 +461,6 @@ fn prepare_input_domains_inner_tx(
         inputs: input.resident,
         pending,
         work,
+        tasks: tasks.map(|tasks| tasks.resident),
     })
 }

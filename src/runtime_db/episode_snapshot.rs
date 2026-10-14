@@ -32,6 +32,8 @@ use super::{
     RuntimeDb,
 };
 
+#[path = "episode_snapshot_task.rs"]
+pub(super) mod task_checkpoint;
 #[path = "episode_snapshot_work.rs"]
 pub(super) mod work_checkpoint;
 
@@ -553,6 +555,8 @@ struct EpisodeContinuityRoots {
     /// Frozen by the same explicit legacy actor; absence is not observed None.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     work_domain_checkpoint: Option<work_checkpoint::WorkContinuityCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    task_domain_checkpoint: Option<task_checkpoint::TaskContinuityCheckpoint>,
 }
 
 #[derive(Debug)]
@@ -581,6 +585,7 @@ pub(super) fn capture_episode_continuity_upgrade_tx(
     if existing.is_some() {
         return Ok(());
     }
+    task_checkpoint::queries::ensure_schema(tx)?;
     let boundary = crate::ids::runtime_id("episode_cutover");
     let at = captured_at.to_rfc3339();
     tx.execute(
@@ -865,6 +870,7 @@ pub(super) fn seal_imported_episode_continuity_tx(
             None,
             false,
             Some(&work_import),
+            frozen_roots.task_domain_checkpoint.as_ref(),
         )?;
         roots.work_item_ids.extend(frozen_roots.work_item_ids);
         roots.source_refs.extend(frozen_roots.source_refs);
@@ -918,6 +924,7 @@ pub(super) fn seal_imported_episode_continuity_tx(
             false,
         )?;
         super::work_snapshot::capture_work_domain_seed_if_ready_tx(tx, &seed.id, "first_import")?;
+        super::task_snapshot::capture_task_domain_seed_if_ready_tx(tx, &seed.id, "first_import")?;
     }
     Ok(())
 }
@@ -1055,6 +1062,7 @@ fn insert_seed_with_candidates_tx(
             true,
         )?;
         super::work_snapshot::capture_work_domain_seed_if_ready_tx(tx, &seed_id, "legacy_import")?;
+        super::task_snapshot::capture_task_domain_seed_if_ready_tx(tx, &seed_id, "legacy_import")?;
     }
     Ok(ContinuitySeed {
         id: seed_id,
@@ -1409,6 +1417,7 @@ fn collect_live_episode_roots_with_work_policy(
         tables,
         include_nonopen,
         None,
+        None,
     )
 }
 
@@ -1418,6 +1427,7 @@ fn collect_live_episode_roots_with_work_authority(
     tables: Option<&BTreeSet<String>>,
     include_nonopen: bool,
     work_import: Option<&work_checkpoint::imports::ImportAuthority>,
+    task_original: Option<&task_checkpoint::TaskContinuityCheckpoint>,
 ) -> Result<EpisodeContinuityRoots> {
     let mut collector = RootCollector::default();
     let state = if root_table_available(tables, "agent_states") {
@@ -1575,6 +1585,15 @@ fn collect_live_episode_roots_with_work_authority(
     // or explicit-live-ref membership through Brief/Turn owner back-edges.
     collector.roots.record_digests = input_digests;
     collector.roots.work_domain_checkpoint = Some(work);
+    collector.roots.task_domain_checkpoint = Some(task_checkpoint::capture(
+        connection,
+        agent_id,
+        tables,
+        &collector.roots,
+        include_nonopen,
+        task_original,
+        work_import,
+    )?);
     Ok(collector.roots)
 }
 

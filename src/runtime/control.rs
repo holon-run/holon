@@ -27,6 +27,7 @@ pub(super) enum OriginalControlLease {
     Worktree {
         original: TaskRecord,
         terminal: TaskRecord,
+        metadata: Mutex<Option<super::task_status_metadata::OriginalControlMetadataCapsule>>,
     },
     /// An unloaded/legacy producer has no local process lease. The durable
     /// obligation remains explicit; missing memory is never a join receipt.
@@ -371,11 +372,24 @@ impl RuntimeHandle {
                 .and_then(ManagedTaskHandle::control_lease);
             if let Some(lease) = &lease {
                 anyhow::ensure!(
-                    lease.domain_generation() == &expected_generation,
+                    lease.matches_task_generation(task),
                     "Control task handle belongs to another generation"
                 );
             }
+            let terminal = &task_results
+                .iter()
+                .find(|result| result.task.id == task.id)
+                .context("Control original terminal Task missing")?
+                .task;
+            let raw_original = super::task_generation::TaskRejoinGeneration::of(task)
+                .context("Control original Task has an invalid rejoin generation")?;
+            let raw_terminal = super::task_generation::TaskRejoinGeneration::of(terminal)
+                .context("Control terminal Task has an invalid rejoin generation")?;
             let mut generation = expected_generation;
+            generation[super::task_generation::CONTROL_ORIGINAL_REJOIN] =
+                serde_json::to_value(raw_original)?;
+            generation[super::task_generation::CONTROL_TERMINAL_REJOIN] =
+                serde_json::to_value(raw_terminal)?;
             generation["owner_epoch"] = serde_json::json!(owner_epoch);
             generation["runtime_lease_id"] =
                 serde_json::json!(lease.as_ref().map(|lease| lease.lease_id()));
@@ -406,6 +420,7 @@ impl RuntimeHandle {
                             .ok_or_else(|| anyhow!("Control worktree task result missing"))?
                             .task
                             .clone(),
+                        metadata: Mutex::new(None),
                     },
                 });
             }
@@ -457,13 +472,70 @@ impl RuntimeHandle {
                     }
                     serde_json::json!({"runtime_lease_id": lease.lease_id(), "joined": true})
                 }
-                OriginalControlLease::Worktree { original, terminal } => {
+                OriginalControlLease::Worktree {
+                    original,
+                    terminal,
+                    metadata,
+                } => {
+                    let limits = self.inner.input_evidence_budget.limits();
+                    let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                        query: Default::default(),
+                        capture: super::resident_task::TaskCaptureRequest::current(),
+                        record_limit: usize::try_from(limits.record_limit)?,
+                        byte_limit: usize::try_from(
+                            limits
+                                .history_per_agent_bytes
+                                .checked_add(limits.pending_per_agent_bytes)
+                                .context("Control metadata limit overflow")?,
+                        )?,
+                    };
+                    let mut metadata = metadata.lock().await;
+                    // A completed source may still have an unpublished original
+                    // whole ACK. Resolve that capsule before considering FS again.
+                    if let Some(capsule) = metadata.as_mut() {
+                        let committed = self
+                            .commit_control_worktree_metadata(capsule, &request)
+                            .await?;
+                        anyhow::ensure!(
+                            committed.ack.key == *key
+                                && committed.ack.obligation_id == frozen.target.obligation_id,
+                            "Control metadata ACK differs from its original target"
+                        );
+                        let failed = capsule.physical_failed();
+                        *metadata = None;
+                        anyhow::ensure!(
+                            !failed,
+                            "Control worktree cleanup failed; original obligation retained"
+                        );
+                        continue;
+                    }
+                    let scope = super::resident_input_evidence::InputEvidenceScope {
+                        agent_id: key.agent_id.clone(),
+                        identity_incarnation: key.identity_incarnation,
+                    };
+                    let initial = super::input_evidence_budget::serialized_bytes(&(
+                        key,
+                        &frozen.target,
+                        original,
+                        terminal,
+                    ))?
+                    .checked_add(1024)
+                    .and_then(|n| n.checked_mul(8))
+                    .context("Control completion reservation overflow")?;
+                    let completion =
+                        Arc::new(self.inner.input_evidence_budget.reserve_owned_completion(
+                            &scope,
+                            super::input_evidence_budget::InputMemoryCategory::Candidate,
+                            super::input_evidence_budget::OwnedBytesEstimate {
+                                payload_bytes: initial,
+                                metadata_estimate_bytes: 0,
+                            },
+                        )?);
                     let producer = facts.targets.iter().find(|candidate| {
                         candidate.target.target_kind == ControlCancellationKind::Task
                             && candidate.target.target_identity == frozen.target.target_identity
                     });
-                    let producer_completed = producer.map(|producer| self.inner.runtime_db.control_obligation(key,&producer.target))
-                        .transpose()?.flatten().is_some_and(|obligation| obligation.state == crate::runtime_db::control_transition::ControlObligationState::Completed);
+                    let producer_completed=producer.map(|producer|self.inner.runtime_db.transaction(|tx|crate::runtime_db::task_status_metadata::original_target_completed_tx(tx,key,&producer.target))).transpose()?.unwrap_or(false);
                     if !producer_completed
                         || (self.inner.host_bridge.is_some() && original.is_child_agent_task())
                     {
@@ -481,12 +553,15 @@ impl RuntimeHandle {
                     // only across the exact artifact check + Git/FS cleanup, so
                     // a later Resume cannot reuse the artifact in between.
                     let _artifact_reservations = self.reserve_control_obligation_scope(key).await?;
-                    let identity = self
-                        .inner
-                        .runtime_db
-                        .agent_identities()
-                        .latest(&key.agent_id)?;
-                    if !identity.as_ref().is_some_and(|identity| {
+                    let owner = self.inner.runtime_db.transaction(|tx| {
+                        crate::runtime_db::command_task_terminal::observe_original_owner_tx(
+                            tx,
+                            &scope,
+                            &request,
+                            &self.inner.input_evidence_budget,
+                        )
+                    })?;
+                    if !owner.identity.as_ref().is_some_and(|identity| {
                         identity.incarnation == key.identity_incarnation
                             && identity.status == crate::types::AgentRegistryStatus::Active
                     }) {
@@ -497,8 +572,22 @@ impl RuntimeHandle {
                         )?;
                         continue;
                     }
-                    let current = self.inner.runtime_db.tasks().latest(&original.id)?;
-                    if current.as_ref() != Some(terminal) {
+                    let keys = BTreeSet::from([super::resident_task::TaskKey::new(
+                        super::resident_task::TaskFamily::Task,
+                        &original.id,
+                    )]);
+                    let (current,_task_material)=self.inner.runtime_db.transaction(|tx|{
+                        let estimate=crate::runtime_db::task_snapshot::task_maintenance_material_tx(tx,&scope,&keys)?;
+                        let guard=crate::runtime_db::command_task_terminal::charge_material(&scope,estimate.bytes,estimate.records,&request,&self.inner.input_evidence_budget)?;
+                        use rusqlite::OptionalExtension;
+                        let own:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE task_id=?1 AND owner_agent_id=?2 AND CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.agent_id')=owner_agent_id AND json_extract(payload_json,'$.id')=task_id ELSE 0 END)",rusqlite::params![original.id,scope.agent_id],|r|r.get(0))?;
+                        let raw:Option<String>=if own {tx.query_row("SELECT payload_json FROM tasks WHERE task_id=?1",[&original.id],|r|r.get(0)).optional()?}else{None};
+                        let current=raw.as_deref().map(crate::runtime_db::repositories::decode_task_payload).transpose()?;
+                        Ok((current,guard))
+                    })?;
+                    let mut audits = Vec::new();
+                    let mut physical_failed = false;
+                    let evidence = if current.as_ref() != Some(terminal) {
                         serde_json::json!({"cleanup": "retained", "reason": "original_task_replaced_or_advanced",
                             "original_created_at": original.created_at, "original_rejoin": original.rejoin_fence().ok()})
                     } else {
@@ -509,19 +598,64 @@ impl RuntimeHandle {
                         anyhow::ensure!(detail.get("worktree") == original.detail.as_ref().and_then(|detail| detail.get("worktree")),
                             "Control original worktree artifact differs from committed terminal Task");
                         let outcome = self
-                            .cleanup_task_owned_worktree_in_detail(
+                            .cleanup_original_control_worktree_in_detail(
                                 &original.id,
                                 &mut detail,
                                 "agent_lifecycle_stop",
+                                completion.clone(),
+                                &request,
                             )
                             .await?;
-                        anyhow::ensure!(
-                            outcome.as_ref().is_none_or(|outcome| outcome.status
-                                != worktree::TaskOwnedWorktreeCleanupStatus::Failed),
-                            "Control worktree cleanup failed; original obligation retained"
-                        );
+                        let outcome = outcome.map(|observed| {
+                            audits = observed.audits;
+                            observed.cleanup
+                        });
+                        physical_failed = outcome.as_ref().is_some_and(|outcome| {
+                            outcome.status == worktree::TaskOwnedWorktreeCleanupStatus::Failed
+                        });
+                        let output_bytes = super::input_evidence_budget::serialized_bytes(&detail)
+                            .unwrap_or(u64::MAX)
+                            .saturating_add(outcome.as_ref().map_or(0, |outcome| {
+                                outcome.changed_files.iter().fold(0u64, |n, path| {
+                                    n.saturating_add(path.len() as u64).saturating_add(128)
+                                })
+                            }))
+                            .saturating_add(1024)
+                            .saturating_mul(8);
+                        completion.observe_material(output_bytes, 0);
                         serde_json::json!({"cleanup": outcome.map(|outcome| format!("{outcome:?}")), "detail": detail})
-                    }
+                    };
+                    *metadata = Some(
+                        super::task_status_metadata::OriginalControlMetadataCapsule::observed(
+                            scope,
+                            key,
+                            &frozen.target,
+                            evidence,
+                            audits,
+                            physical_failed,
+                            self.now(),
+                            completion,
+                        ),
+                    );
+                    drop(_task_material);
+                    drop(_artifact_reservations);
+                    let committed = self
+                        .commit_control_worktree_metadata(
+                            metadata.as_mut().expect("frozen above"),
+                            &request,
+                        )
+                        .await?;
+                    anyhow::ensure!(
+                        committed.ack.key == *key
+                            && committed.ack.obligation_id == frozen.target.obligation_id,
+                        "Control metadata ACK differs from its original target"
+                    );
+                    *metadata = None;
+                    anyhow::ensure!(
+                        !physical_failed,
+                        "Control worktree cleanup failed; original obligation retained"
+                    );
+                    continue;
                 }
                 OriginalControlLease::Absent { registration } => {
                     self.reconcile_absent_control_target(

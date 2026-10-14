@@ -25,6 +25,9 @@ use crate::{
 pub(crate) struct ExternalInputEvidenceEffects {
     pub(crate) input_delta: crate::runtime::resident_input_evidence::CommittedInputEvidenceDelta,
     pub(crate) work_delta: Option<crate::runtime::resident_work::CommittedWorkDelta>,
+    pub(crate) task_delta: Option<crate::runtime::resident_task::CommittedTaskDelta>,
+    pub(crate) task_material_budget_views:
+        Vec<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
     pub(crate) briefs: Vec<BriefRecord>,
     pub(crate) audit_events: Vec<AuditEvent>,
     pub(crate) notify_memory_index: bool,
@@ -37,6 +40,9 @@ impl From<ExternalInputEvidenceEffects> for PostCommitEffects {
             input_evidence_delta: effects.input_delta,
             work_delta: effects.work_delta,
             work_delta_requires_prepared_domain: true,
+            task_delta: effects.task_delta,
+            task_delta_requires_prepared_domain: true,
+            task_material_budget_views: effects.task_material_budget_views,
             briefs: effects.briefs,
             audit_events: effects.audit_events,
             notify_memory_index: effects.notify_memory_index,
@@ -52,6 +58,7 @@ struct PreparedExternalInput {
     episodes: Option<Arc<ResidentEpisodes>>,
     inputs: Option<Arc<ResidentInputEvidence>>,
     work: Option<Arc<crate::runtime::resident_work::ResidentWorkDomain>>,
+    tasks: Option<Arc<crate::runtime::resident_task::ResidentTaskDomain>>,
 }
 
 impl RuntimeHost {
@@ -100,6 +107,11 @@ impl RuntimeHost {
             let episodes = reservation.prepared_episodes_for_state_only_commit()?;
             let inputs = reservation.prepared_inputs_for_state_only_commit()?;
             let work = reservation.prepared_work_for_state_only_commit()?;
+            let tasks = reservation.prepared_tasks_for_state_only_commit()?;
+            anyhow::ensure!(
+                tasks.as_ref().is_none_or(|tasks| tasks.scope() == scope),
+                "prepared external Task has a different namespace"
+            );
             anyhow::ensure!(
                 work.as_ref().is_none_or(|work| work.scope() == scope),
                 "prepared external Work has a different namespace"
@@ -143,6 +155,7 @@ impl RuntimeHost {
                 episodes,
                 inputs,
                 work,
+                tasks,
             });
         }
         let original_runtime = prepared
@@ -171,6 +184,12 @@ impl RuntimeHost {
                     .context("external Work byte limit overflow")?,
             )?,
         };
+        let task_request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+            query: Default::default(),
+            capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+            record_limit: work_request.record_limit,
+            byte_limit: work_request.byte_limit,
+        };
         MutationReservation::begin_all_with_witness(
             reservations,
             witness.operation_id().to_owned(),
@@ -178,13 +197,21 @@ impl RuntimeHost {
         )?;
         let committed = self
             .runtime_db()
-            .commit_prepared_external_input_evidence_with_work_request(&command, &work_request);
+            .commit_prepared_external_input_evidence_with_task_budget(
+                &command,
+                &work_request,
+                &task_request,
+                &self.inner.input_evidence_budget,
+            );
         if matches!(&committed, Ok(InputMutationExecution::Replayed { .. })) {
             witness.mark_input_storage_replayed()?;
         }
         witness.finish_original_attempt();
         let (result, effects) = match committed {
-            Ok(InputMutationExecution::Replayed { receipt }) => {
+            Ok(InputMutationExecution::Replayed {
+                receipt,
+                _material_budget_views,
+            }) => {
                 self.reconcile_external_mutations(reservations).await?;
                 return Ok(receipt.outcome.result);
             }
@@ -210,6 +237,8 @@ impl RuntimeHost {
                             ExternalInputEvidenceEffects {
                                 input_delta: ack.input_delta,
                                 work_delta: ack.work_delta,
+                                task_delta: ack.task_delta,
+                                task_material_budget_views: ack.task_material_budget_views,
                                 briefs: vec![actual.brief],
                                 audit_events: if actual.event_inserted {
                                     vec![actual.event]
@@ -259,6 +288,24 @@ impl RuntimeHost {
                                 effect.work_delta.replace(work_delta).is_none(),
                                 "retention ACK repeated its Work scope"
                             );
+                        }
+                        for (scope, task_delta, guards) in ack.task_deltas {
+                            let key = (scope.agent_id.clone(), scope.identity_incarnation);
+                            let (_, effect) = effects.entry(key).or_insert_with(|| {
+                                (
+                                    scope,
+                                    ExternalInputEvidenceEffects {
+                                        notify_memory_index: true,
+                                        notify_scheduler: true,
+                                        ..Default::default()
+                                    },
+                                )
+                            });
+                            anyhow::ensure!(
+                                effect.task_delta.replace(task_delta).is_none(),
+                                "retention ACK repeated its Task scope"
+                            );
+                            effect.task_material_budget_views.extend(guards);
                         }
                         effects.into_values().collect()
                     }
@@ -331,11 +378,23 @@ impl RuntimeHost {
                 (work, None) => work,
                 (None, Some(_)) => None,
             };
+            let tasks = match (prepared.tasks, effects.task_delta.as_ref()) {
+                (Some(tasks), Some(delta)) => match tasks.with_committed(delta) {
+                    Ok(tasks) => Some(Arc::new(tasks)),
+                    Err(error) => {
+                        preparation_error = Some(error);
+                        None
+                    }
+                },
+                (tasks, None) => tasks,
+                (None, Some(_)) => None,
+            };
             // A failed projection preparation stays explicitly unprepared;
             // it cannot erase our knowledge that SQL returned an exact ACK.
             let runtime = match runtime.clone().with_external_input_commit(
                 inputs.clone(),
                 work.clone(),
+                tasks.clone(),
                 effects.clone(),
             ) {
                 Ok(runtime) => runtime,
@@ -343,12 +402,14 @@ impl RuntimeHost {
                     preparation_error = Some(error);
                     inputs = None;
                     work = None;
-                    runtime.with_external_input_commit(None, None, effects)?
+                    runtime.with_external_input_commit(None, None, tasks.clone(), effects)?
                 }
             };
             let runtime = Arc::new(runtime);
             known.push(KnownCommit::State {
                 work,
+
+                tasks,
                 state: runtime.state.clone(),
                 episodes: prepared.episodes,
                 input_evidence: inputs,

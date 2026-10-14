@@ -12,7 +12,7 @@ use crate::{
         input_evidence_budget::{InputEvidenceBudgetLedger, PendingBodyCharge},
         resident_input_evidence::InputEvidenceScope,
     },
-    types::{MessageEnvelope, QueueEntryStatus, TaskRecord, TimerRecord, TimerStatus},
+    types::{MessageEnvelope, QueueEntryStatus, TimerRecord, TimerStatus},
 };
 
 pub(crate) struct BootstrapPendingMetadata {
@@ -28,7 +28,6 @@ pub(crate) struct PreparedPendingQueue {
 pub(crate) struct BootstrapPendingInputs {
     pub metadata: BootstrapPendingMetadata,
     pub messages: Vec<MessageEnvelope>,
-    pub active_tasks: Vec<TaskRecord>,
     pub active_timers: Vec<TimerRecord>,
 }
 
@@ -229,8 +228,6 @@ pub(crate) fn pending_inputs_tx(
         })
         .collect::<Result<Vec<_>>>()?;
     budget.install_actual_pending(scope, &charges)?;
-    let read = ContextDurableRead::new(tx, &scope.agent_id);
-    let active_tasks = read.active_tasks(&scope.agent_id)?;
     let mut statement=tx.prepare("SELECT timer_id,payload_json FROM timers WHERE agent_id=?1 AND status='active' ORDER BY created_at DESC,timer_id ASC")?;
     let mut active_timers = Vec::new();
     for row in statement.query_map(params![scope.agent_id], |r| {
@@ -249,7 +246,6 @@ pub(crate) fn pending_inputs_tx(
     Ok(BootstrapPendingInputs {
         metadata,
         messages,
-        active_tasks,
         active_timers,
     })
 }

@@ -592,3 +592,127 @@ fn result_checksum_detects_later_timestamp_or_payload_corruption() -> Result<()>
     }
     Ok(())
 }
+
+#[test]
+fn task_result_successful_empty_outcomes_replay_original_after_later_state() -> Result<()> {
+    use crate::runtime_db::task_result_settlement::TaskResultWriteOutcome;
+    let f = Fixture::new()?;
+    let values = [
+        TaskResultWriteOutcome::Record(None),
+        TaskResultWriteOutcome::Records(Vec::new()),
+        TaskResultWriteOutcome::Changed(false),
+        TaskResultWriteOutcome::Count(0),
+        TaskResultWriteOutcome::Unit,
+    ];
+    let mut originals = Vec::new();
+    for (index, value) in values.into_iter().enumerate() {
+        let prepared = PreparedInputMutation::new(
+            InputMutationFamily::TaskResult,
+            format!("original-result-{index}"),
+            vec![scope("agent-a", 1)],
+            canonical_command_digest(&serde_json::json!({"operation":index,"time":f.time}))?,
+            f.time,
+        )?;
+        let mut outcome = noop(&prepared);
+        outcome.result = InputMutationResult::TaskResult {
+            outcome: Box::new(value),
+        };
+        f.db.transaction(|tx| {
+            assert!(lookup_input_mutation_receipt_tx(tx, &prepared)?.is_none());
+            insert_input_mutation_receipt_tx(tx, &prepared, &outcome, f.time)?;
+            Ok(())
+        })?;
+        originals.push((prepared, outcome));
+    }
+    let mut later = f.state.clone();
+    later.pending = 7;
+    f.db.agent_states().upsert_for_fixture(&later)?;
+    for (prepared, outcome) in originals {
+        let attempt = OriginalInputMutationAttempt::new(prepared);
+        attempt.finish_original_attempt();
+        with_fresh_input_mutation_resolution(
+            &mut f.db.connection()?,
+            &attempt,
+            |_, resolution| {
+                let InputMutationResolution::Present(receipt) = resolution else {
+                    anyhow::bail!("successful empty TaskResult operation lost its receipt")
+                };
+                assert_eq!(receipt.outcome, outcome);
+                assert!(!receipt.outcome.applied);
+                assert_eq!(receipt.committed_at, f.time);
+                Ok(())
+            },
+        )?;
+    }
+    assert_eq!(f.db.agent_states().latest("agent-a")?, Some(later));
+    assert_eq!(f.count("input_mutation_receipts")?, 5);
+    Ok(())
+}
+
+#[test]
+fn task_result_receipt_rejects_wrong_family_and_foreign_original_result() -> Result<()> {
+    use crate::runtime_db::task_result_settlement::{
+        TaskResultSettlementRecord, TaskResultSettlementState, TaskResultWriteOutcome,
+    };
+    let f = Fixture::new()?;
+    let prepared = PreparedInputMutation::new(
+        InputMutationFamily::TaskResult,
+        "original-result-invalid".into(),
+        vec![scope("agent-a", 1)],
+        canonical_command_digest(&serde_json::json!({"operation":"admit","time":f.time}))?,
+        f.time,
+    )?;
+    let mut outcome = noop(&prepared);
+    assert!(f
+        .db
+        .transaction(|tx| {
+            insert_input_mutation_receipt_tx(tx, &prepared, &outcome, f.time)?;
+            Ok(())
+        })
+        .is_err());
+    outcome.result = InputMutationResult::TaskResult {
+        outcome: Box::new(TaskResultWriteOutcome::Record(Some(
+            TaskResultSettlementRecord {
+                result_identity: "foreign-result".into(),
+                agent_id: "agent-b".into(),
+                task_id: "task-b".into(),
+                message_id: "message-b".into(),
+                work_item_id: None,
+                rejoin_generation: 1,
+                parent_turn_id: "turn-b".into(),
+                task_status: "completed".into(),
+                state: TaskResultSettlementState::PersistedPending,
+                activation_id: None,
+                disposition: None,
+                created_at: f.time,
+                updated_at: f.time,
+                admitted_at: None,
+                settled_at: None,
+                deferred_reason: None,
+                deferred_at: None,
+                next_recheck_at: None,
+            },
+        ))),
+    };
+    assert!(f
+        .db
+        .transaction(|tx| {
+            insert_input_mutation_receipt_tx(tx, &prepared, &outcome, f.time)?;
+            Ok(())
+        })
+        .is_err());
+    let queue = f.prepared()?;
+    outcome = noop(&queue);
+    outcome.result = InputMutationResult::TaskResult {
+        outcome: Box::new(TaskResultWriteOutcome::Record(None)),
+    };
+    assert!(f
+        .db
+        .transaction(|tx| {
+            insert_input_mutation_receipt_tx(tx, &queue, &outcome, f.time)?;
+            Ok(())
+        })
+        .is_err());
+    assert_eq!(f.count("input_mutation_receipts")?, 0);
+    Ok(())
+}

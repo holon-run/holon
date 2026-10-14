@@ -79,17 +79,25 @@ impl RuntimeMutation {
         )?
         .with_input_runtime(saved)?;
         let work_request = self.owner_work_load_request()?;
+        let (task_request, _task_selectors) = self.owner_task_load_request()?;
+        let ledger = self.runtime.inner.input_evidence_budget.clone();
         let storage = self.runtime.inner.storage.clone();
         let mut original_result = None;
         let replay_observation = witness.clone();
         let committed = self
             .commit_transition_inner(operation, Some(witness), || {
-                match storage
-                    .commit_prepared_input_evidence_with_work_request(&prepared, &work_request)?
-                {
-                    InputMutationExecution::Replayed { receipt } => {
+                match storage.commit_prepared_input_evidence_with_task_budget(
+                    &prepared,
+                    &work_request,
+                    &task_request,
+                    &ledger,
+                )? {
+                    InputMutationExecution::Replayed {
+                        receipt,
+                        _material_budget_views,
+                    } => {
                         replay_observation.mark_input_storage_replayed()?;
-                        Err(PreparedInputReplay(receipt).into())
+                        Err(PreparedInputReplay(receipt, _material_budget_views).into())
                     }
                     InputMutationExecution::Committed {
                         value: ack,
@@ -101,6 +109,9 @@ impl RuntimeMutation {
                             input_evidence_delta: ack.input_delta,
                             work_delta: ack.work_delta,
                             work_delta_requires_prepared_domain: true,
+                            task_delta: ack.task_delta,
+                            task_delta_requires_prepared_domain: true,
+                            task_material_budget_views: ack.task_material_budget_views,
                             notify_memory_index: true,
                             notify_scheduler: true,
                             fault,
@@ -122,7 +133,7 @@ impl RuntimeMutation {
                         }
                         Ok(TransitionCommit {
                             applied: receipt.outcome.applied,
-                            effects,
+                            effects: Box::new(effects),
                             ..Default::default()
                         })
                     }
@@ -131,10 +142,10 @@ impl RuntimeMutation {
             .await;
         match committed {
             Err(error) if error.downcast_ref::<PreparedInputReplay>().is_some() => {
-                let receipt = error
+                let replay = error
                     .downcast::<PreparedInputReplay>()
-                    .expect("checked replay")
-                    .0;
+                    .expect("checked replay");
+                let PreparedInputReplay(receipt, _replay_material) = replay;
                 self.runtime
                     .reconcile_reserved_mutations(&mut self.reservations)
                     .await?;
@@ -143,7 +154,8 @@ impl RuntimeMutation {
                 let root = self.runtime.inner.mutation_owner.capture()?;
                 self.episodes = root.as_ref().and_then(|root| root.episodes.clone());
                 self.input_evidence = root.as_ref().and_then(|root| root.input_evidence.clone());
-                self.work = root.and_then(|root| root.work.clone());
+                self.work = root.as_ref().and_then(|root| root.work.clone());
+                self.tasks = root.and_then(|root| root.tasks.clone());
                 self.deferred_abort = None;
                 Ok(receipt.outcome.result)
             }

@@ -274,10 +274,37 @@ impl EvidenceRepository<'_> {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn commit_prepared_input_evidence_with_work_request(
         &self,
         prepared: &PreparedInputEvidence,
         work_request: &super::work_snapshot::WorkDomainLoadRequest,
+    ) -> Result<InputMutationExecution<InputEvidenceCommit<PreparedEvidenceValue>>> {
+        self.commit_prepared_input_evidence_with_budgets(prepared, work_request, None)
+    }
+
+    pub(crate) fn commit_prepared_input_evidence_with_task_budget(
+        &self,
+        prepared: &PreparedInputEvidence,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+        task_request: &super::task_snapshot::TaskDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<InputMutationExecution<InputEvidenceCommit<PreparedEvidenceValue>>> {
+        self.commit_prepared_input_evidence_with_budgets(
+            prepared,
+            work_request,
+            Some((task_request, ledger)),
+        )
+    }
+
+    fn commit_prepared_input_evidence_with_budgets(
+        &self,
+        prepared: &PreparedInputEvidence,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+        task_budget: Option<(
+            &super::task_snapshot::TaskDomainLoadRequest,
+            &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        )>,
     ) -> Result<InputMutationExecution<InputEvidenceCommit<PreparedEvidenceValue>>> {
         let scope = &prepared.primary_scope;
         let (agent, id, family, result_family) = prepared.command.identity();
@@ -297,7 +324,10 @@ impl EvidenceRepository<'_> {
                 }
             }
             if let Some(receipt) = lookup_input_mutation_receipt_tx(tx, &prepared.descriptor)? {
-                return Ok(InputMutationExecution::Replayed { receipt });
+                return Ok(InputMutationExecution::Replayed {
+                    receipt,
+                    _material_budget_views: Vec::new(),
+                });
             }
             let completion =
                 if matches!(family, Family::Brief | Family::Transcript | Family::Message) {
@@ -428,6 +458,21 @@ impl EvidenceRepository<'_> {
                     &brief_ids,
                     work_request,
                 )?;
+            }
+            if let Some((task_request, ledger)) = task_budget {
+                if let Some((delta, guards)) =
+                    super::task_snapshot::register_task_source_metadata_tx(
+                        tx,
+                        scope,
+                        &value.input_delta,
+                        task_request,
+                        ledger,
+                        None,
+                    )?
+                {
+                    value.task_delta = Some(delta);
+                    value.task_material_budget_views = guards;
+                }
             }
             let applied = value.agent_state.is_some()
                 || before != canonical_marker_tx(tx, agent, id, family)?
@@ -595,26 +640,60 @@ impl RuntimeDb {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn commit_prepared_external_input_evidence_with_work_request(
         &self,
         prepared: &PreparedExternalInputEvidence,
         work_request: &super::work_snapshot::WorkDomainLoadRequest,
     ) -> Result<InputMutationExecution<PreparedExternalInputValue>> {
+        self.commit_prepared_external_input_evidence_with_budgets(prepared, work_request, None)
+    }
+
+    pub(crate) fn commit_prepared_external_input_evidence_with_task_budget(
+        &self,
+        prepared: &PreparedExternalInputEvidence,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+        task_request: &super::task_snapshot::TaskDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<InputMutationExecution<PreparedExternalInputValue>> {
+        self.commit_prepared_external_input_evidence_with_budgets(
+            prepared,
+            work_request,
+            Some((task_request, ledger)),
+        )
+    }
+
+    fn commit_prepared_external_input_evidence_with_budgets(
+        &self,
+        prepared: &PreparedExternalInputEvidence,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+        task_budget: Option<(
+            &super::task_snapshot::TaskDomainLoadRequest,
+            &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        )>,
+    ) -> Result<InputMutationExecution<PreparedExternalInputValue>> {
         match prepared {
             PreparedExternalInputEvidence::BriefCreated(prepared) => Ok(
                 match self
                     .evidence()
-                    .commit_prepared_input_evidence_with_work_request(prepared, work_request)?
-                {
+                    .commit_prepared_input_evidence_with_budgets(
+                        prepared,
+                        work_request,
+                        task_budget,
+                    )? {
                     InputMutationExecution::Committed { value, receipt } => {
                         InputMutationExecution::Committed {
                             value: PreparedExternalInputValue::BriefCreated(value),
                             receipt,
                         }
                     }
-                    InputMutationExecution::Replayed { receipt } => {
-                        InputMutationExecution::Replayed { receipt }
-                    }
+                    InputMutationExecution::Replayed {
+                        receipt,
+                        _material_budget_views,
+                    } => InputMutationExecution::Replayed {
+                        receipt,
+                        _material_budget_views,
+                    },
                 },
             ),
             PreparedExternalInputEvidence::Retention(prepared) => self.transaction_with_context(
@@ -626,7 +705,10 @@ impl RuntimeDb {
                     if let Some(receipt) =
                         lookup_input_mutation_receipt_tx(tx, &prepared.descriptor)?
                     {
-                        return Ok(InputMutationExecution::Replayed { receipt });
+                        return Ok(InputMutationExecution::Replayed {
+                            receipt,
+                            _material_budget_views: Vec::new(),
+                        });
                     }
                     // Recheck actual reservation inventory only for a new command;
                     // previously pruned rows cannot invalidate exact original replay.
@@ -657,6 +739,22 @@ impl RuntimeDb {
                             work_request,
                         )? {
                             value.work_deltas.push((scope.clone(), delta));
+                        }
+                    }
+                    if let Some((task_request, ledger)) = task_budget {
+                        for (scope, input) in &value.input_deltas {
+                            if let Some((delta, guards)) =
+                                super::task_snapshot::register_task_source_metadata_tx(
+                                    tx,
+                                    scope,
+                                    input,
+                                    task_request,
+                                    ledger,
+                                    None,
+                                )?
+                            {
+                                value.task_deltas.push((scope.clone(), delta, guards));
+                            }
                         }
                     }
                     let scopes = prepared

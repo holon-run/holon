@@ -105,6 +105,48 @@ pub(crate) fn continuation_ready_context_config(
     }
 }
 
+/// Crate-level fixtures use the same qualified Task writer as runtime tests.
+pub(crate) async fn persist_task_transition(
+    runtime: &RuntimeHandle,
+    record: &TaskRecord,
+    event_type: &'static str,
+) -> anyhow::Result<()> {
+    runtime.persist_task_transition(record, event_type).await
+}
+
+/// Historical parent evidence is committed through the original evidence writer;
+/// it does not stand in for an execution attempt or an active parent dispatch.
+pub(crate) async fn persist_completed_task_parent_fixture(
+    runtime: &RuntimeHandle,
+    turn_id: &str,
+    work_item_id: Option<&str>,
+) -> anyhow::Result<()> {
+    let mut mutation = runtime.begin_mutation().await?;
+    let at = runtime.now();
+    let mut record = TurnRecord::new(
+        &mutation.state.id,
+        turn_id,
+        mutation.state.turn_index.max(1),
+    );
+    record.created_at = at;
+    record.current_work_item_id = work_item_id.map(str::to_owned);
+    record.terminal = Some(crate::types::TurnTerminalSummary {
+        kind: TurnTerminalKind::Completed,
+        reason: Some("historical_task_parent_fixture".into()),
+        no_brief_reason: None,
+        completed_at: at,
+        duration_ms: 0,
+    });
+    let prepared = crate::runtime_db::prepared_input_evidence::PreparedInputEvidence::turn(
+        mutation.input_evidence_scope(),
+        crate::ids::audit_event_id(),
+        at,
+        record,
+    )?;
+    mutation.commit_prepared_evidence(prepared, None).await?;
+    Ok(())
+}
+
 pub(crate) async fn finish_claimed_test_run(runtime: &RuntimeHandle) {
     let mut guard = runtime.inner.agent.lock().await;
     // Provider polling has ended; the original queue terminal transaction owns
@@ -2034,4 +2076,24 @@ impl AgentProvider for CountingProvider {
             request_diagnostics: None,
         })
     }
+}
+
+/// A DB-only fixture uses the real normalized query selection and its actual
+/// ledger guard without creating a Runtime or changing durable qualification.
+pub(crate) fn task_query_lease_for_fixture(
+    scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+    owner_epoch: u64,
+    spec: crate::runtime::task_queries::TaskQuerySpec<'_>,
+    ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    records: usize,
+    bytes: usize,
+) -> anyhow::Result<crate::runtime::task_queries::TaskQueryLease> {
+    crate::runtime::task_queries::TaskQueryRegistry::default().register(
+        scope,
+        owner_epoch,
+        spec,
+        ledger,
+        records,
+        bytes,
+    )
 }

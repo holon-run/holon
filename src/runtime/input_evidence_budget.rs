@@ -1,6 +1,7 @@
 //! Host admission charges and observed input/evidence allocations.
 //! Pending tickets retain SQL responsibility; memory guards only observe views.
 use super::resident_input_evidence::{InputEvidenceScope, QualifiedInputEvidence};
+use super::resident_task::QualifiedTaskFact;
 use super::resident_work::QualifiedWorkRecord;
 use crate::config::StateMemoryLimits;
 use serde::Serialize;
@@ -153,6 +154,8 @@ pub(crate) struct InputEvidenceBudgetReport {
     pub retained_unclassified: AllocationUsage,
     pub reclaimable_history: AllocationUsage,
     pub owned: OwnedBytesEstimate,
+    /// Host actor metadata with no invented agent/incarnation. Included in owned.
+    pub host_owned: OwnedBytesEstimate,
     /// Physical prepared records plus owned payload/metadata estimate. Excludes
     /// SQL/provider/tool temporaries, allocator overhead, other domains and RSS.
     pub observed_bytes: u64,
@@ -162,6 +165,8 @@ enum AllocationWeak {
     Evidence(Weak<QualifiedInputEvidence>),
     Queue(Weak<crate::types::MessageEnvelope>),
     Work(Weak<QualifiedWorkRecord>),
+    Task(Weak<QualifiedTaskFact>),
+    TaskStop(Weak<crate::runtime_db::task_stop::TaskStopRecord>),
 }
 impl AllocationWeak {
     fn strong_count(&self) -> usize {
@@ -169,6 +174,8 @@ impl AllocationWeak {
             Self::Evidence(record) => record.strong_count(),
             Self::Queue(message) => message.strong_count(),
             Self::Work(record) => record.strong_count(),
+            Self::Task(record) => record.strong_count(),
+            Self::TaskStop(record) => record.strong_count(),
         }
     }
 }
@@ -186,6 +193,11 @@ struct ViewEntry {
     allocations: BTreeSet<usize>,
     owned: OwnedBytesEstimate,
 }
+#[derive(Debug)]
+struct HostOwnedViewEntry {
+    category: InputMemoryCategory,
+    owned: OwnedBytesEstimate,
+}
 #[derive(Debug, Default)]
 struct LedgerState {
     next_nonce: u64,
@@ -194,6 +206,7 @@ struct LedgerState {
     pending_host_bytes: u64,
     allocations: BTreeMap<usize, AllocationEntry>,
     views: BTreeMap<u64, ViewEntry>,
+    host_owned_views: BTreeMap<u64, HostOwnedViewEntry>,
 }
 impl LedgerState {
     fn nonce(&mut self) -> Result<u64> {
@@ -233,6 +246,52 @@ pub(crate) struct BudgetViewGuard {
     ledger: Arc<LedgerInner>,
     nonce: u64,
 }
+/// A single already registered owned completion view. Growth records actual
+/// source-output ownership and cannot acquire a new nonce or reject a quota.
+#[derive(Debug)]
+pub(crate) struct OwnedCompletionBudget {
+    guard: Arc<BudgetViewGuard>,
+}
+impl OwnedCompletionBudget {
+    pub(crate) fn matches_ledger(&self, ledger: &InputEvidenceBudgetLedger) -> bool {
+        Arc::ptr_eq(&self.guard.ledger, &ledger.inner)
+    }
+    pub(crate) fn matches_scope(&self, scope: &InputEvidenceScope) -> bool {
+        let state = self
+            .guard
+            .ledger
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let view = state
+            .views
+            .get(&self.guard.nonce)
+            .expect("live completion reservation");
+        view.scope.0 == scope.agent_id && view.scope.1 == scope.identity_incarnation
+    }
+    /// Call before the original kernel allocates its derived owned copies.
+    /// Saturation preserves responsibility; report still diagnoses total overflow.
+    pub(crate) fn observe_material(&self, payload_bytes: u64, metadata_bytes: u64) {
+        let mut state = self
+            .guard
+            .ledger
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let view = state
+            .views
+            .get_mut(&self.guard.nonce)
+            .expect("live completion reservation");
+        view.owned.payload_bytes = view.owned.payload_bytes.saturating_add(payload_bytes);
+        view.owned.metadata_estimate_bytes = view
+            .owned
+            .metadata_estimate_bytes
+            .saturating_add(metadata_bytes);
+    }
+    pub(crate) fn guard(&self) -> Arc<BudgetViewGuard> {
+        self.guard.clone()
+    }
+}
 impl Drop for BudgetViewGuard {
     fn drop(&mut self) {
         let mut state = self
@@ -247,6 +306,7 @@ impl Drop for BudgetViewGuard {
                 }
             }
         }
+        state.host_owned_views.remove(&self.nonce);
         state.prune_dead();
     }
 }
@@ -897,6 +957,133 @@ impl InputEvidenceBudgetLedger {
             nonce,
         }))
     }
+    pub(crate) fn register_task_view<'a>(
+        &self,
+        scope: &InputEvidenceScope,
+        category: InputMemoryCategory,
+        records: impl IntoIterator<Item = &'a Arc<QualifiedTaskFact>>,
+    ) -> Result<Arc<BudgetViewGuard>> {
+        valid_scope(scope)?;
+        let sk = ScopeKey::from(scope);
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| InputEvidenceBudgetError::Poisoned)?;
+        state.prune_dead();
+        let mut unique = BTreeMap::new();
+        for record in records {
+            if &record.locator.scope != scope || record.fact.agent_id() != scope.agent_id {
+                return Err(InputEvidenceBudgetError::InvalidInput(
+                    "Task scope differs from view",
+                ));
+            }
+            let id = Arc::as_ptr(record) as usize;
+            let bytes = u64::try_from(record.resident_bytes)
+                .map_err(|_| InputEvidenceBudgetError::CounterOverflow)?;
+            if let Some(entry) = state.allocations.get(&id) {
+                if entry.scope != sk
+                    || !matches!(&entry.weak, AllocationWeak::Task(_))
+                    || entry.bytes != bytes
+                {
+                    return Err(InputEvidenceBudgetError::InvalidInput(
+                        "Task allocation scope/charge changed",
+                    ));
+                }
+            }
+            unique.insert(id, (record, bytes));
+        }
+        let nonce = state.nonce()?;
+        for (id, (record, bytes)) in &unique {
+            let entry = state
+                .allocations
+                .entry(*id)
+                .or_insert_with(|| AllocationEntry {
+                    weak: AllocationWeak::Task(Arc::downgrade(record)),
+                    scope: sk.clone(),
+                    bytes: *bytes,
+                    memberships: BTreeMap::new(),
+                });
+            entry.memberships.insert(nonce, category);
+        }
+        state.views.insert(
+            nonce,
+            ViewEntry {
+                scope: sk,
+                category,
+                allocations: unique.into_keys().collect(),
+                owned: OwnedBytesEstimate::default(),
+            },
+        );
+        Ok(Arc::new(BudgetViewGuard {
+            ledger: self.inner.clone(),
+            nonce,
+        }))
+    }
+    pub(crate) fn register_task_stop_view<'a>(
+        &self,
+        scope: &InputEvidenceScope,
+        category: InputMemoryCategory,
+        records: impl IntoIterator<Item = &'a Arc<crate::runtime_db::task_stop::TaskStopRecord>>,
+    ) -> Result<Arc<BudgetViewGuard>> {
+        valid_scope(scope)?;
+        let sk = ScopeKey::from(scope);
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| InputEvidenceBudgetError::Poisoned)?;
+        state.prune_dead();
+        let mut unique = BTreeMap::new();
+        for record in records {
+            if &record.intent.task.scope != scope {
+                return Err(InputEvidenceBudgetError::InvalidInput(
+                    "TaskStop scope differs from view",
+                ));
+            }
+            let id = Arc::as_ptr(record) as usize;
+            let bytes = record
+                .resident_bytes()
+                .map_err(|_| InputEvidenceBudgetError::CounterOverflow)?;
+            if let Some(entry) = state.allocations.get(&id) {
+                if entry.scope != sk
+                    || !matches!(&entry.weak, AllocationWeak::TaskStop(_))
+                    || entry.bytes != bytes
+                {
+                    return Err(InputEvidenceBudgetError::InvalidInput(
+                        "TaskStop allocation scope/charge changed",
+                    ));
+                }
+            }
+            unique.insert(id, (record, bytes));
+        }
+        let nonce = state.nonce()?;
+        for (id, (record, bytes)) in &unique {
+            let entry = state
+                .allocations
+                .entry(*id)
+                .or_insert_with(|| AllocationEntry {
+                    weak: AllocationWeak::TaskStop(Arc::downgrade(record)),
+                    scope: sk.clone(),
+                    bytes: *bytes,
+                    memberships: BTreeMap::new(),
+                });
+            entry.memberships.insert(nonce, category);
+        }
+        state.views.insert(
+            nonce,
+            ViewEntry {
+                scope: sk,
+                category,
+                allocations: unique.into_keys().collect(),
+                owned: OwnedBytesEstimate::default(),
+            },
+        );
+        Ok(Arc::new(BudgetViewGuard {
+            ledger: self.inner.clone(),
+            nonce,
+        }))
+    }
     /// One guard per owned data allocation; enclosing Arc clones share the guard.
     pub(crate) fn register_owned_bytes(
         &self,
@@ -926,6 +1113,44 @@ impl InputEvidenceBudgetLedger {
             nonce,
         }))
     }
+    /// Reserve before physical work. Every fallible scope/nonce/ledger check is
+    /// complete before its source can finish; later growth only updates this view.
+    pub(crate) fn reserve_owned_completion(
+        &self,
+        scope: &InputEvidenceScope,
+        category: InputMemoryCategory,
+        initial: OwnedBytesEstimate,
+    ) -> Result<OwnedCompletionBudget> {
+        Ok(OwnedCompletionBudget {
+            guard: self.register_owned_bytes(scope, category, initial)?,
+        })
+    }
+    /// A Host actor may own bounded metadata before any agent identity exists.
+    /// This registers no body, pending ticket, namespace or mutation authority.
+    pub(crate) fn register_host_owned_bytes(
+        &self,
+        category: InputMemoryCategory,
+        bytes: OwnedBytesEstimate,
+    ) -> Result<Arc<BudgetViewGuard>> {
+        bytes.total()?;
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| InputEvidenceBudgetError::Poisoned)?;
+        let nonce = state.nonce()?;
+        state.host_owned_views.insert(
+            nonce,
+            HostOwnedViewEntry {
+                category,
+                owned: bytes,
+            },
+        );
+        Ok(Arc::new(BudgetViewGuard {
+            ledger: self.inner.clone(),
+            nonce,
+        }))
+    }
     /// No record/root/domain Arc escapes in a report. Weak bookkeeping can
     /// observe allocations that outlive every registered view as unclassified.
     pub(crate) fn report(&self) -> Result<InputEvidenceBudgetReport> {
@@ -945,6 +1170,7 @@ impl InputEvidenceBudgetLedger {
             retained_unclassified: AllocationUsage::default(),
             reclaimable_history: AllocationUsage::default(),
             owned: OwnedBytesEstimate::default(),
+            host_owned: OwnedBytesEstimate::default(),
             observed_bytes: 0,
         };
         for (sk, usage) in &state.pending_usage {
@@ -999,6 +1225,14 @@ impl InputEvidenceBudgetLedger {
             add_owned(&mut report.owned, view.owned)?;
             add_usage(scope.categories.entry(view.category).or_default(), bytes)?;
             add_usage(report.categories.entry(view.category).or_default(), bytes)?;
+        }
+        for view in state.host_owned_views.values() {
+            let bytes = view.owned.total()?;
+            add_owned(&mut report.host_owned, view.owned)?;
+            add_owned(&mut report.owned, view.owned)?;
+            if bytes > 0 {
+                add_usage(report.categories.entry(view.category).or_default(), bytes)?;
+            }
         }
         report.observed_bytes = add(report.physical_records.bytes, report.owned.total()?)?;
         report.scopes = scopes.into_values().collect();
@@ -1121,3 +1355,7 @@ fn add_owned(total: &mut OwnedBytesEstimate, bytes: OwnedBytesEstimate) -> Resul
 #[cfg(test)]
 #[path = "input_evidence_budget_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "input_evidence_owned_completion_tests.rs"]
+mod owned_completion_tests;

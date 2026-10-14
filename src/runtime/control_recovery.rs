@@ -23,6 +23,7 @@ fn resolve_control_recovery_with_run(
     recent_episode_limit: usize,
     budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
     original_run: Option<CurrentRunAbortHandle>,
+    task_queries: Option<&super::task_queries::TaskRecoveryQueries>,
 ) -> Result<Option<ControlResolution>> {
     if reservations.len() != 1 {
         return Ok(None);
@@ -84,7 +85,7 @@ fn resolve_control_recovery_with_run(
         )?,
     };
     // Positive receipts prepare current State and all three domains in one view.
-    let known = match db.load_control_recovery_with_domains(
+    let known = match db.load_control_recovery_with_queries(
         key,
         invocation,
         command_digest,
@@ -92,6 +93,13 @@ fn resolve_control_recovery_with_run(
         &input_request,
         &super::resident_work::WorkCaptureRequest::current(),
         budget,
+        task_queries.and_then(|queries| {
+            queries.selection_for_owner(
+                &key.agent_id,
+                key.identity_incarnation,
+                reservations[0].owner_epoch(),
+            )
+        }),
     )? {
         ControlRecoveryObservation::Absent { obligations } => {
             validate_obligation_receipt(key, None, &obligations)?;
@@ -129,6 +137,8 @@ fn resolve_control_recovery_with_run(
                 )?;
                 Some(KnownCommit::State {
                     work: Some(domains.work),
+
+                    tasks: Some(domains.tasks),
                     state,
                     episodes: Some(episodes),
                     input_evidence: Some(domains.inputs),
@@ -203,10 +213,15 @@ pub(crate) fn resolve_unloaded_control_recovery(
     recent_episode_limit: usize,
     budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
 ) -> Result<bool> {
-    Ok(
-        resolve_control_recovery_with_run(db, reservations, recent_episode_limit, budget, None)?
-            .is_some(),
-    )
+    Ok(resolve_control_recovery_with_run(
+        db,
+        reservations,
+        recent_episode_limit,
+        budget,
+        None,
+        None,
+    )?
+    .is_some())
 }
 
 pub(crate) async fn resolve_control_recovery(
@@ -216,6 +231,29 @@ pub(crate) async fn resolve_control_recovery(
     runtime: Option<&RuntimeHandle>,
     budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
 ) -> Result<bool> {
+    if reservations.len() != 1 {
+        return Ok(false);
+    }
+    if reservations[0]
+        .recovery()?
+        .is_none_or(|recovery| recovery.known.is_some())
+    {
+        return Ok(false);
+    }
+    let limits = budget.limits();
+    let task_queries = match (runtime, reservations.first()) {
+        (Some(runtime), Some(reservation)) => runtime.task_recovery_queries(
+            reservation,
+            usize::try_from(limits.record_limit)?,
+            usize::try_from(
+                limits
+                    .history_per_agent_bytes
+                    .checked_add(limits.pending_per_agent_bytes)
+                    .ok_or_else(|| anyhow::anyhow!("Control live query limit overflow"))?,
+            )?,
+        )?,
+        _ => None,
+    };
     let original_run = match runtime {
         Some(runtime) => runtime.inner.agent.lock().await.current_run_abort.clone(),
         None => None,
@@ -226,6 +264,7 @@ pub(crate) async fn resolve_control_recovery(
         recent_episode_limit,
         budget,
         original_run,
+        task_queries.as_ref(),
     )?
     else {
         return Ok(false);
@@ -296,6 +335,13 @@ mod tests {
     async fn lost_ack_recovers_current_exact_queue_and_replay_does_not_stop_a_later_start() {
         let (_home, runtime) = fixture();
         let input = enqueue(&runtime, "before Stop").await;
+        let role = runtime
+            .register_task_query(super::super::task_queries::TaskQuerySpec {
+                birth_after: Some(0),
+                reply_message_ids: &["control-recovery-empty-reply"],
+                ..Default::default()
+            })
+            .unwrap();
         let (key, invocation) =
             runtime.freeze_direct_control(ControlAction::Stop, AuthorityClass::OperatorInstruction);
         let mut mutation = runtime.begin_mutation().await.unwrap();
@@ -333,7 +379,20 @@ mod tests {
         let restored = runtime.begin_mutation().await.unwrap();
         assert_eq!(restored.state.status, AgentStatus::Stopped);
         assert!(restored.queue.is_empty());
-        drop(restored);
+        let tasks = restored
+            .capture_tasks(&super::super::resident_task::TaskCaptureRequest::current())
+            .unwrap();
+        assert_eq!(tasks.coverage.query.birth_after, Some(0));
+        assert_eq!(
+            tasks
+                .coverage
+                .query
+                .reply_task_ids
+                .get("control-recovery-empty-reply"),
+            Some(&Default::default())
+        );
+        assert_eq!(tasks.task_birth_cursor().unwrap(), 0);
+        drop((tasks, restored, role));
         runtime.inner.control_cancellations.drain().await.unwrap();
         runtime.control(ControlAction::Start).await.unwrap();
         let later = enqueue(&runtime, "after Start").await;

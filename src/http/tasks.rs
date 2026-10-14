@@ -19,11 +19,26 @@ pub async fn tasks(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    Ok(Json(
-        storage
-            .latest_active_task_records(query.limit.unwrap_or(50))
-            .map_err(error_response)?,
-    ))
+    match state
+        .host
+        .try_get_operator_loaded_runtime(&agent_id)
+        .await
+        .map_err(agent_access_error)?
+    {
+        Some(runtime) => {
+            let read = runtime
+                .active_task_records_read(query.limit.unwrap_or(50))
+                .await
+                .map_err(task_lifecycle_error)?;
+            Ok(Json(&read.records).into_response())
+        }
+        None => Ok(Json(
+            storage
+                .latest_active_task_records(query.limit.unwrap_or(50))
+                .map_err(error_response)?,
+        )
+        .into_response()),
+    }
 }
 
 pub async fn task_status(
@@ -36,27 +51,31 @@ pub async fn task_status(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    let Some(task) = storage
-        .latest_task_record(&task_id)
-        .map_err(error_response)?
-        .filter(|task| task.agent_id == agent_id)
-    else {
-        return Err(task_not_found_response(&task_id));
-    };
-    let snapshot = match state
+    match state
         .host
         .try_get_operator_loaded_runtime(&agent_id)
         .await
         .map_err(agent_access_error)?
     {
-        Some(runtime) => runtime
-            .managed_tasks()
-            .task_status_snapshot(&task_id)
-            .await
-            .map_err(task_lifecycle_error)?,
-        None => TaskStatusSnapshot::from_task_record(&task),
-    };
-    Ok(Json(snapshot))
+        Some(runtime) => {
+            let read = runtime
+                .managed_tasks()
+                .task_status_read(&task_id)
+                .await
+                .map_err(|error| task_query_error(error, &task_id))?;
+            Ok(Json(&read.snapshot).into_response())
+        }
+        None => {
+            let Some(task) = storage
+                .latest_task_record(&task_id)
+                .map_err(error_response)?
+                .filter(|task| task.agent_id == agent_id)
+            else {
+                return Err(task_not_found_response(&task_id));
+            };
+            Ok(Json(TaskStatusSnapshot::from_task_record(&task)).into_response())
+        }
+    }
 }
 
 pub async fn task_output(
@@ -70,20 +89,24 @@ pub async fn task_output(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    if !storage
-        .latest_task_record(&task_id)
-        .map_err(error_response)?
-        .is_some_and(|task| task.agent_id == agent_id)
-    {
-        return Err(task_not_found_response(&task_id));
-    }
-    let runtime = state
+    let runtime = match state
         .host
         .try_get_operator_loaded_runtime(&agent_id)
         .await
         .map_err(agent_access_error)?
-        .ok_or_else(|| {
-            error_response(
+    {
+        Some(runtime) => runtime,
+        None => {
+            // The unloaded route preserves its original cold existence/error
+            // contract. Loaded output uses the exact qualified Task read.
+            if !storage
+                .latest_task_record(&task_id)
+                .map_err(error_response)?
+                .is_some_and(|task| task.agent_id == agent_id)
+            {
+                return Err(task_not_found_response(&task_id));
+            }
+            return Err(error_response(
                 RuntimeError::new(
                     crate::runtime_error::RuntimeErrorDomain::Conflict,
                     "task_not_live",
@@ -91,18 +114,19 @@ pub async fn task_output(
                 )
                 .with_safe_context("task_id", &task_id)
                 .into(),
-            )
-        })?;
+            ));
+        }
+    };
     let output = runtime
         .managed_tasks()
-        .task_output(
+        .task_output_read(
             &task_id,
             query.block.unwrap_or(false),
             query.timeout_ms.unwrap_or(TASK_OUTPUT_DEFAULT_TIMEOUT_MS),
         )
         .await
-        .map_err(task_lifecycle_error)?;
-    Ok(Json(output))
+        .map_err(|error| task_query_error(error, &task_id))?;
+    Ok(Json(&output.result).into_response())
 }
 
 pub async fn tool_execution(
@@ -753,3 +777,95 @@ fn task_not_found_response(task_id: &str) -> (StatusCode, Json<Value>) {
             .into(),
     )
 }
+
+// Only the exact requested foreign Task shares the public not-found contract.
+pub(super) fn task_query_error(error: anyhow::Error, task_id: &str) -> (StatusCode, Json<Value>) {
+    use crate::runtime::resident_task::{TaskFamily, TaskKey};
+    use crate::runtime_db::task_snapshot::TaskSnapshotError;
+    if matches!(error.downcast_ref::<TaskSnapshotError>(),
+        Some(TaskSnapshotError::ForeignRecord(TaskKey { family: TaskFamily::Task, id })) if id == task_id)
+    {
+        task_not_found_response(task_id)
+    } else {
+        task_lifecycle_error(error)
+    }
+}
+
+#[cfg(test)]
+mod task_query_error_tests {
+    use super::*;
+    use crate::runtime::{
+        resident_task::{TaskFamily, TaskKey},
+        tests::support::LifecycleHarness,
+    };
+    use crate::runtime_db::task_snapshot::TaskSnapshotError;
+    use anyhow::Context;
+
+    #[tokio::test]
+    async fn loaded_foreign_status_named_acquisition_preserves_http_not_found() -> Result<()> {
+        let harness = LifecycleHarness::new();
+        let runtime = harness.runtime();
+        let at = Utc::now();
+        let task = crate::types::TaskRecord {
+            id: "foreign-http-status".into(),
+            agent_id: "another-agent".into(),
+            kind: crate::types::TaskKind::CommandTask,
+            status: crate::types::TaskStatus::Completed,
+            created_at: at,
+            updated_at: at,
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("foreign history".into()),
+            detail: None,
+            recovery: None,
+        };
+        runtime.runtime_db().transaction(|tx| {
+            crate::runtime_db::repositories::upsert_task_tx(tx, &task)?;
+            Ok(())
+        })?;
+        let error = runtime
+            .task_status_read(&task.id)
+            .await
+            .err()
+            .context("foreign task was exposed")?;
+        assert!(
+            matches!(error.downcast_ref::<TaskSnapshotError>(), Some(TaskSnapshotError::ForeignRecord(key)) if key.family == TaskFamily::Task && key.id == task.id),
+            "{error:#}"
+        );
+        let (status, body) = task_query_error(error, &task.id);
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body.0["code"], "task_not_found");
+        assert_eq!(
+            runtime.runtime_db().transaction(|tx| Ok(tx.query_row(
+                "SELECT COUNT(*) FROM task_domain_records WHERE record_id=?1",
+                [&task.id],
+                |row| row.get::<_, usize>(0)
+            )?))?,
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn task_query_error_preserves_non_foreign_and_non_target_failures() {
+        let key = TaskKey::new(TaskFamily::Task, "requested-task");
+        for error in [
+            TaskSnapshotError::NeedsPreparation(key.clone()),
+            TaskSnapshotError::CanonicalChanged(key.clone()),
+            TaskSnapshotError::ResourceExhausted("actual budget"),
+            TaskSnapshotError::ForeignRecord(TaskKey::new(TaskFamily::Task, "different-task")),
+            TaskSnapshotError::ForeignRecord(TaskKey::new(
+                TaskFamily::ResultSettlement,
+                "requested-task",
+            )),
+        ] {
+            let (status, body) = task_query_error(error.into(), "requested-task");
+            assert_ne!(status, StatusCode::NOT_FOUND);
+            assert_ne!(body.0["code"], "task_not_found");
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "task_active_list_tests.rs"]
+mod active_list_tests;

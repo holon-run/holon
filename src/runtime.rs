@@ -2,14 +2,48 @@ mod agent_message_delivery;
 mod agent_services;
 mod bootstrap;
 mod callback;
+#[path = "runtime/child_task_producer_actor.rs"]
+mod child_task_producer_actor;
+#[cfg(test)]
+mod child_task_producer_tests;
+mod child_task_terminal;
 mod clock;
 mod closure;
+pub(crate) use child_task_producer_actor::{
+    execute_original_child_terminal, OriginalChildTerminalRead,
+};
+#[cfg(test)]
+pub(crate) use child_task_producer_tests::{
+    child_observer_domains_for_test, continue_child_monitor_for_test,
+    prepare_child_observer_for_test, register_child_monitor_for_test, write_child_task_for_test,
+};
+pub(crate) use child_task_terminal::{
+    FrozenChildTaskTerminal, OriginalChildSpawnNoStart, OriginalChildTaskProducer,
+};
+
 mod command_task;
+pub(crate) use command_task::{
+    execute_original_command_terminal, FrozenCommandTaskTerminal, OriginalCommandTaskProducer,
+    OriginalCommandTerminalRead,
+};
+pub(crate) use state_mutation::{
+    attach_original_child_terminal_memory_to_owner,
+    attach_original_command_terminal_memory_to_owner,
+};
 pub(crate) mod completion_sources;
 mod context_capture;
 mod continuation;
 mod control;
+mod task_status_metadata;
+pub(crate) use task_status_metadata::{
+    execute_original_control_metadata, select_original_control_status_head,
+    OriginalControlMetadataCapsule, TaskStatusMetadataRead,
+};
 mod control_cancellation;
+#[cfg(test)]
+mod control_task_generation_tests;
+pub(crate) mod task_generation;
+pub(crate) use control_cancellation::RetiredProducerExit;
 mod control_entry;
 pub(crate) mod control_reconcile;
 pub(crate) mod control_recovery;
@@ -35,16 +69,43 @@ mod provider_turn;
 mod repair;
 pub(crate) mod resident_input_evidence;
 pub(crate) mod resident_state;
+pub(crate) mod resident_task;
 pub(crate) mod resident_work;
 mod scheduler;
 mod scheduler_acceptance;
 mod scheduler_continuation;
 pub(crate) mod scheduler_executor;
+pub(crate) mod started_dispatch;
 mod state_mutation;
-pub(crate) use state_mutation::RuntimeMutationFacts;
+pub(crate) use state_mutation::{
+    attach_task_stop_phase_memory_to_original_owner, RuntimeMutationFacts,
+};
 mod subagent;
+mod task_monitor_read;
+pub(crate) mod task_reads;
+pub(crate) use task_monitor_read::{ChildMonitorRead, TaskParentTurnRead, TaskParentTurnSession};
+pub(crate) mod task_queries;
 mod task_result_recovery;
+mod task_result_routing;
 mod task_state_reducer;
+pub(crate) use scheduler::apply_message_wake_projection as original_task_message_wake_projection;
+pub(crate) use task_result_routing::AcceptedTaskResultSource;
+pub(crate) use task_state_reducer::{
+    is_terminal_task_status as original_task_status_is_terminal,
+    should_ignore_task_update_ref as original_task_update_is_ignored,
+    stable_terminal_task_event_id as original_terminal_task_event_id,
+};
+mod task_stop_effects;
+#[cfg(test)]
+mod task_stop_finished_fixture;
+pub(crate) use task_stop_effects::FinishedOriginalTaskStopAttempt;
+mod task_stop_cold;
+#[path = "runtime/task_stop_current.rs"]
+mod task_stop_current;
+mod task_stop_worker;
+pub(crate) use task_stop_cold::continue_original_task_stop_metadata;
+mod task_stop_intent;
+pub(crate) mod task_stop_join;
 mod task_supervisor;
 mod tasks;
 #[cfg(test)]
@@ -57,6 +118,12 @@ mod work_reads;
 pub(crate) mod workspace;
 pub(crate) mod workspace_control;
 mod worktree;
+#[cfg(test)]
+pub(crate) use worktree::cleanup_completion_worktree_for_test;
+pub(crate) use worktree::{
+    cleanup_frozen_worktree, FrozenWorktreeCleanup, ObservedWorktreeCleanup,
+    TaskOwnedWorktreeCleanupStatus,
+};
 
 #[cfg(test)]
 pub(crate) use agent_message_delivery::{
@@ -92,7 +159,7 @@ pub(crate) use worktree::format_worktree_task_summary;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::{
-    collections::{hash_map::Entry, BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -475,11 +542,15 @@ struct RuntimeInner {
     default_agent_id: String,
     host_bridge: Option<RuntimeHostBridge>,
     task_handles: Mutex<HashMap<String, ManagedTaskHandle>>,
+    #[cfg(test)]
+    last_child_deletion_rejections_for_test: StdMutex<HashMap<String, String>>,
+    task_stop_effects: task_stop_effects::TaskStopEffectRegistry,
     owned_task_handles: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
     owned_task_drain: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     control_cancellations: control_cancellation::ControlCancellationRegistry,
     mutation_tasks: StdMutex<state_mutation::OwnedMutationTasks>,
-    recovered_tasks: Mutex<Option<Vec<TaskRecord>>>,
+    task_queries: task_queries::TaskQueryRegistry,
+    recovered_tasks: Mutex<Option<bootstrap::BootstrapTaskRecovery>>,
     recovered_timers: Mutex<Option<Vec<TimerRecord>>>,
     bootstrap_result: StdMutex<Option<std::result::Result<(), String>>>,
     bootstrap_notify: Notify,
@@ -2527,7 +2598,6 @@ fn runtime_error_queue_settlement(
 #[derive(Debug, Clone)]
 struct AgentRuntimeProjectionCache {
     agent_id: String,
-    tasks: HashMap<String, TaskRecord>,
     timers: HashMap<String, TimerRecord>,
     external_triggers: HashMap<String, ExternalTriggerRecord>,
 }
@@ -2535,22 +2605,14 @@ struct AgentRuntimeProjectionCache {
 impl AgentRuntimeProjectionCache {
     fn rebuild(
         agent_id: String,
-        tasks: Vec<TaskRecord>,
         timers: Vec<TimerRecord>,
         external_triggers: Vec<ExternalTriggerRecord>,
     ) -> Self {
         crate::diagnostics::record_runtime_projection_cache_rebuild();
-        let task_agent_id = agent_id.clone();
         let timer_agent_id = agent_id.clone();
         let external_trigger_agent_id = agent_id.clone();
         Self {
             agent_id,
-            tasks: latest_by(
-                tasks
-                    .into_iter()
-                    .filter(|record| record.agent_id == task_agent_id),
-                |record| record.id.clone(),
-            ),
             timers: latest_by(
                 timers
                     .into_iter()
@@ -2566,12 +2628,6 @@ impl AgentRuntimeProjectionCache {
         }
     }
 
-    fn upsert_task(&mut self, record: TaskRecord) {
-        if record.agent_id == self.agent_id {
-            self.tasks.insert(record.id.clone(), record);
-        }
-    }
-
     fn upsert_timer(&mut self, record: TimerRecord) {
         if record.agent_id == self.agent_id {
             self.timers.insert(record.id.clone(), record);
@@ -2583,40 +2639,6 @@ impl AgentRuntimeProjectionCache {
             self.external_triggers
                 .insert(record.external_trigger_id.clone(), record);
         }
-    }
-
-    fn active_tasks(&self, limit: usize) -> Vec<TaskRecord> {
-        let mut records = self
-            .tasks
-            .values()
-            .filter(|record| {
-                matches!(
-                    record.status,
-                    TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
-                )
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        records.sort_by(|left, right| {
-            right
-                .updated_at
-                .cmp(&left.updated_at)
-                .then_with(|| right.created_at.cmp(&left.created_at))
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        take_limit(records, limit)
-    }
-
-    fn latest_tasks(&self, limit: usize) -> Vec<TaskRecord> {
-        let mut records = self.tasks.values().cloned().collect::<Vec<_>>();
-        records.sort_by(|left, right| {
-            right
-                .updated_at
-                .cmp(&left.updated_at)
-                .then_with(|| right.created_at.cmp(&left.created_at))
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        take_limit(records, limit)
     }
 
     fn recent_timers(&self, limit: usize) -> Vec<TimerRecord> {
@@ -3159,10 +3181,10 @@ impl RuntimeHandle {
                 self.inner.storage.append_timer(record)?;
                 Ok(TransitionCommit {
                     applied: true,
-                    effects: crate::runtime_db::transitions::PostCommitEffects {
+                    effects: Box::new(crate::runtime_db::transitions::PostCommitEffects {
                         timers: vec![record.clone()],
                         ..Default::default()
-                    },
+                    }),
                     delivery_receipt: None,
                 })
             })
@@ -3346,36 +3368,9 @@ impl RuntimeHandle {
     }
 
     pub async fn latest_task_records_snapshot(&self) -> Result<Vec<TaskRecord>> {
-        let mut tasks_by_id = self
-            .inner
-            .storage
-            .latest_task_records()?
-            .into_iter()
-            .map(|task| (task.id.clone(), task))
-            .collect::<HashMap<_, _>>();
-        for task in self
-            .inner
-            .projection_cache
-            .lock()
-            .await
-            .latest_tasks(usize::MAX)
-        {
-            match tasks_by_id.entry(task.id.clone()) {
-                Entry::Occupied(mut entry) => {
-                    if task_state_reducer::should_ignore_task_update(
-                        Some(entry.get().clone()),
-                        &task,
-                    ) {
-                        continue;
-                    }
-                    entry.insert(task);
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(task);
-                }
-            }
-        }
-        let mut tasks = tasks_by_id.into_values().collect::<Vec<_>>();
+        // Full-history callers still use the explicit durable API until their
+        // session/output selection frontiers join the qualified Task domain.
+        let mut tasks = self.inner.storage.latest_task_records()?;
         tasks.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         Ok(tasks)
     }
@@ -3947,6 +3942,44 @@ impl RuntimeHandle {
         } else {
             None
         };
+        if dispatch_prior_closure.is_some() {
+            if let Some(message) = message {
+                if let Some(original) = self.retry_started_dispatch(
+                    &guard,
+                    message,
+                    &inputs,
+                    execution_admission_provenance.as_ref(),
+                )? {
+                    let mut request = resident_work::WorkCaptureRequest::current();
+                    request.required_turn_ids.insert(original.0.clone());
+                    request
+                        .required_trigger_message_ids
+                        .insert(message.id.clone());
+                    guard.prepare_owner_work_request(&request).await?;
+                    return Ok(original);
+                }
+            }
+        }
+        let original_claim = if assigned_source_turn
+            .as_ref()
+            .is_some_and(|(_, turn)| turn.terminal.is_none())
+        {
+            let source = message.context("assigned Turn has no actual source")?;
+            anyhow::ensure!(
+                dispatch_prior_closure.is_some(),
+                started_dispatch::StartedDispatchConflict(
+                    "historical assignment reentry requires an actual dispatch"
+                )
+            );
+            Some(self.original_dispatch_claim(
+                &guard,
+                source,
+                &inputs,
+                execution_admission_provenance.as_ref(),
+            )?)
+        } else {
+            None
+        };
         let replay_source = message
             .and_then(|message| message.source_refs.get("replay_source_turn_id"))
             .map(|source_turn_id| {
@@ -4094,8 +4127,12 @@ impl RuntimeHandle {
             None
         };
         let state = {
-            guard.state.turn_index += 1;
-            let turn_id = if replay_source.is_some() || terminal_source_turn.is_some() {
+            guard.state.turn_index = guard
+                .state
+                .turn_index
+                .checked_add(1)
+                .context("Turn index overflow")?;
+            let turn_id = if assigned_source_turn.is_some() || replay_source.is_some() {
                 crate::ids::turn_id()
             } else {
                 message
@@ -4212,7 +4249,9 @@ impl RuntimeHandle {
                     prior_closure.clone(),
                     guard.last_persisted_state.working_memory.clone(),
                 )?;
-                guard.persist_started_dispatch(started_turn, start).await?;
+                guard
+                    .persist_started_dispatch(started_turn, start, original_claim)
+                    .await?;
             } else {
                 guard.persist_state_with_started_turn(started_turn).await?;
             }
@@ -4486,7 +4525,7 @@ impl RuntimeHandle {
     }
 
     pub async fn enqueue(&self, message: MessageEnvelope) -> Result<MessageEnvelope> {
-        let (message, _) = self.enqueue_internal(message, None).await?;
+        let (message, _) = self.enqueue_internal(message, None, None).await?;
         Ok(message)
     }
 
@@ -4495,14 +4534,26 @@ impl RuntimeHandle {
         message: MessageEnvelope,
         delivery: &AgentMessageDeliveryRecord,
     ) -> Result<AgentMessageDeliveryReceipt> {
-        let (_, receipt) = self.enqueue_internal(message, Some(delivery)).await?;
+        let (_, receipt) = self.enqueue_internal(message, Some(delivery), None).await?;
         receipt.context("delivery admission completed without a receipt")
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn enqueue_original_spawn_with_fault_for_test(
+        &self,
+        message: MessageEnvelope,
+        fault: TransitionFaultPoint,
+    ) -> Result<MessageEnvelope> {
+        self.enqueue_internal(message, None, Some(fault))
+            .await
+            .map(|value| value.0)
     }
 
     async fn enqueue_internal(
         &self,
         mut message: MessageEnvelope,
         delivery: Option<&AgentMessageDeliveryRecord>,
+        mut original_fault: Option<TransitionFaultPoint>,
     ) -> Result<(MessageEnvelope, Option<AgentMessageDeliveryReceipt>)> {
         let _admission = self.execution_admission_lease()?;
         message.normalize_admission_fields();
@@ -4515,7 +4566,10 @@ impl RuntimeHandle {
         }
         let enqueue_started_at = chrono::Utc::now();
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
-            match self.enqueue_attempt(&message, delivery).await {
+            match self
+                .enqueue_attempt(&message, delivery, original_fault.take())
+                .await
+            {
                 Ok(mut commit) => {
                     commit.effects.notify_scheduler =
                         commit.delivery_receipt.as_ref().is_none_or(|receipt| {
@@ -4587,6 +4641,7 @@ impl RuntimeHandle {
         &self,
         message: &MessageEnvelope,
         delivery: Option<&AgentMessageDeliveryRecord>,
+        original_fault: Option<TransitionFaultPoint>,
     ) -> Result<TransitionCommit> {
         let existing_queue_entry = self.inner.runtime_db.queue_entries().latest(&message.id)?;
         if existing_queue_entry.as_ref().is_some_and(|entry| {
@@ -4634,14 +4689,15 @@ impl RuntimeHandle {
             {
                 if let Some(owner_key) = message.source_refs.get("task_result_owner_key") {
                     if let Some(existing_id) =
-                        task_result_recovery::outstanding_recovery_message_id(
+                        task_result_recovery::prepare_outstanding_recovery_message_id(
                             self,
-                            &message.agent_id,
+                            &mut guard,
                             message.work_item_id.as_deref(),
                             owner_key,
-                        )?
+                        )
+                        .await?
                     {
-                        if existing_id != message.id {
+                        if existing_id.id() != message.id {
                             return Ok(TransitionCommit::default());
                         }
                     }
@@ -4743,7 +4799,7 @@ impl RuntimeHandle {
                 turn_record: None,
                 audit_events,
                 notify_scheduler: queue_status == QueueEntryStatus::Queued,
-                fault: self.take_transition_fault(),
+                fault: original_fault.or_else(|| self.take_transition_fault()),
                 brief_evidence: Vec::new(),
             };
             let mut prepared =
@@ -6025,11 +6081,7 @@ impl RuntimeHandle {
                     .into_iter()
                     .flatten()
                     .min();
-                    let result_recheck_at = self
-                        .inner
-                        .runtime_db
-                        .task_result_settlements()
-                        .next_recheck_at(&idle_read.state.id)?;
+                    let result_recheck_at = idle_read.tasks.next_recheck_at()?;
                     let next_recheck_at = match (next_recheck_at, result_recheck_at) {
                         (Some(left), Some(right)) => Some(left.min(right)),
                         (left, right) => left.or(right),
@@ -7066,6 +7118,8 @@ impl RuntimeHandle {
 
     async fn bootstrap_recovery(&self) -> Result<()> {
         if let Some(tasks) = self.inner.recovered_tasks.lock().await.take() {
+            let (tasks, _original_task_material) =
+                tasks.into_records(&self.inner.input_evidence_budget)?;
             if self.agent_state().await?.status == AgentStatus::Stopped {
                 self.interrupt_active_tasks_for_lifecycle_stop(tasks)
                     .await?;

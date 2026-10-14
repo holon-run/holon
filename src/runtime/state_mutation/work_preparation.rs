@@ -139,6 +139,7 @@ impl RuntimeMutation {
                 episodes: facts.episodes.clone(),
                 input_evidence: facts.input_evidence.clone(),
                 work: facts.work.clone(),
+                tasks: facts.tasks.clone(),
                 runtime: Some(facts.clone()),
             }],
         )?;
@@ -200,6 +201,7 @@ mod tests {
                 root.state.clone(),
                 root.episodes.clone(),
                 root.input_evidence.clone(),
+                None,
             )
             .unwrap();
         reservation.publish(root.state.clone()).unwrap();
@@ -384,10 +386,10 @@ mod tests {
                 work,
                 TransitionCommit {
                     applied: true,
-                    effects: crate::runtime_db::transitions::PostCommitEffects {
+                    effects: Box::new(crate::runtime_db::transitions::PostCommitEffects {
                         work_delta: Some(facts.delta),
                         ..Default::default()
-                    },
+                    }),
                     ..Default::default()
                 },
             ))

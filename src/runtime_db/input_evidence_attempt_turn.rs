@@ -44,6 +44,17 @@ pub(super) struct AttemptTurnProof {
     pub(super) turn_keys: BTreeSet<Key>,
 }
 impl AttemptTurnProof {
+    pub(super) fn for_output(attempt: &ExecutionAttempt, turn_keys: BTreeSet<Key>) -> Self {
+        Self {
+            source_message_id: attempt.source_message_id.clone(),
+            source: attempt.source.clone(),
+            binding: attempt.binding.clone(),
+            fences: attempt.admitted_fences.clone(),
+            admitted_at: attempt.admitted_at.clone(),
+            hint_turn_id: attempt.turn_id.clone(),
+            turn_keys,
+        }
+    }
     fn matches_attempt(&self, attempt: &ExecutionAttempt) -> bool {
         self.source_message_id == attempt.source_message_id
             && self.source == attempt.source

@@ -17,7 +17,7 @@ async fn install_test_observation(
 ) -> Arc<PostureObservation> {
     let mut reservation = owner.reserve().await.unwrap();
     reservation.begin(operation_id.to_owned()).unwrap();
-    reservation.committed(committed.clone()).unwrap();
+    reservation.committed(committed.clone(), None).unwrap();
     reservation.publish(committed).unwrap()
 }
 
@@ -46,7 +46,7 @@ async fn reservations_keep_prepare_commit_and_publication_in_fifo_order() {
     assert!(futures_util::poll!(&mut third).is_pending());
     assert_needs_reconcile(&owner, &first_key);
     let first_state = state(1);
-    first.committed(first_state.clone()).unwrap();
+    first.committed(first_state.clone(), None).unwrap();
     let first_observation = first.publish(first_state).unwrap();
     assert_eq!(first_observation.token.generation, 1);
     // SQL completion/publication alone must not release the reservation.
@@ -58,7 +58,7 @@ async fn reservations_keep_prepare_commit_and_publication_in_fifo_order() {
     let mut second = second.await.unwrap();
     second.begin("second".into()).unwrap();
     let second_state = state(2);
-    second.committed(second_state.clone()).unwrap();
+    second.committed(second_state.clone(), None).unwrap();
     let second_observation = second.publish(second_state).unwrap();
     assert_eq!(second_observation.token.generation, 2);
     assert!(futures_util::poll!(&mut third).is_pending());
@@ -67,7 +67,7 @@ async fn reservations_keep_prepare_commit_and_publication_in_fifo_order() {
     let mut third = third.await.unwrap();
     third.begin("third".into()).unwrap();
     let third_state = state(3);
-    third.committed(third_state.clone()).unwrap();
+    third.committed(third_state.clone(), None).unwrap();
     let third_observation = third.publish(third_state).unwrap();
     assert_eq!(third_observation.token.generation, 3);
     assert_eq!(owner.capture().unwrap().unwrap().state.pending, 3);
@@ -114,7 +114,7 @@ async fn definitely_not_committed_preserves_the_old_observation_and_generation()
     assert!(reservation.recovery().unwrap().is_none());
     reservation.begin("next-success".into()).unwrap();
     let next_state = state(2);
-    reservation.committed(next_state.clone()).unwrap();
+    reservation.committed(next_state.clone(), None).unwrap();
     let next = reservation.publish(next_state).unwrap();
     assert_eq!(next.token.generation, old.token.generation + 1);
 }
@@ -129,7 +129,7 @@ async fn known_commit_survives_publication_failure_and_reconciles_without_anothe
         let key = reservation
             .begin("committed-before-install-failure".into())
             .unwrap();
-        reservation.committed(committed.clone()).unwrap();
+        reservation.committed(committed.clone(), None).unwrap();
         // Simulate cancellation/failure after durable success and before install.
         key
     };
@@ -206,7 +206,7 @@ async fn unknown_and_known_pending_operations_survive_successor_claims() {
             let mut reservation = owner.reserve().await.unwrap();
             let key = reservation.begin("pending-across-handoff".into()).unwrap();
             if known_commit {
-                reservation.committed(committed.clone()).unwrap();
+                reservation.committed(committed.clone(), None).unwrap();
             }
             key
         };
@@ -298,7 +298,7 @@ async fn known_commit_cannot_be_reclassified_or_publish_an_uncommitted_state() {
     assert_needs_reconcile(&owner, &key);
 
     let committed = state(2);
-    reservation.committed(committed.clone()).unwrap();
+    reservation.committed(committed.clone(), None).unwrap();
     assert!(matches!(
         reservation.definitely_not_committed(),
         Err(MutationOwnerError::TicketMismatch)
@@ -361,7 +361,7 @@ async fn last_owner_release_preserves_pending_committed_facts_for_recovery() {
         .unwrap();
     let committed = state(2);
     let pending_body = Arc::downgrade(&committed);
-    reservation.committed(committed).unwrap();
+    reservation.committed(committed, None).unwrap();
     drop(owner);
     drop(reservation);
     assert!(old_body.upgrade().is_none());
@@ -465,7 +465,7 @@ async fn batch_publication_validates_every_member_before_opening_any_gate() {
     ];
     for (reservation, state) in reservations.iter_mut().zip(&states) {
         reservation.begin("compound".into()).unwrap();
-        reservation.committed(state.clone()).unwrap();
+        reservation.committed(state.clone(), None).unwrap();
     }
     let mut wrong = states.clone();
     wrong[1] = Arc::new(AgentState::new("different-agent"));
@@ -496,6 +496,8 @@ fn scoped_state(agent_id: &str, pending: usize) -> Arc<AgentState> {
 fn state_facts(state: Arc<AgentState>) -> KnownCommit {
     KnownCommit::State {
         work: None,
+
+        tasks: None,
         state,
         episodes: None,
         input_evidence: None,
@@ -759,6 +761,8 @@ fn episode_witness(operation: &str, agent_id: &str, incarnation: u64) -> Mutatio
 fn prepared_facts(state: Arc<AgentState>, episodes: Arc<ResidentEpisodes>) -> KnownCommit {
     KnownCommit::State {
         work: None,
+
+        tasks: None,
         state,
         episodes: Some(episodes),
         input_evidence: None,
@@ -773,14 +777,14 @@ async fn prepared_publication_keeps_exact_domain_and_rejects_different_saved_arc
     let mut permit = owner.reserve().await.unwrap();
     permit.begin("prepared-bootstrap".into()).unwrap();
     permit
-        .committed_prepared(state(1), Some(episodes.clone()))
+        .committed_prepared(state(1), Some(episodes.clone()), None)
         .unwrap();
     assert!(matches!(
-        permit.committed_prepared(state(1), Some(prepared_episodes("default", 7))),
+        permit.committed_prepared(state(1), Some(prepared_episodes("default", 7)), None),
         Err(MutationOwnerError::TicketMismatch)
     ));
     permit
-        .committed_prepared(state(1), Some(episodes.clone()))
+        .committed_prepared(state(1), Some(episodes.clone()), None)
         .unwrap();
     let first = permit.publish(state(1)).unwrap();
     assert!(Arc::ptr_eq(first.episodes.as_ref().unwrap(), &episodes));
@@ -789,7 +793,7 @@ async fn prepared_publication_keeps_exact_domain_and_rejects_different_saved_arc
     permit
         .begin("explicitly-unprepared-legacy-writer".into())
         .unwrap();
-    permit.committed(state(2)).unwrap();
+    permit.committed(state(2), None).unwrap();
     let next = permit.publish(state(2)).unwrap();
     assert!(next.episodes.is_none());
     assert!(Arc::ptr_eq(first.episodes.as_ref().unwrap(), &episodes));
@@ -805,7 +809,7 @@ async fn prepared_domain_scope_is_validated_before_recording_known_facts() {
         prepared_episodes("default", 8),
     ] {
         assert!(matches!(
-            permit.committed_prepared(state(1), Some(episodes)),
+            permit.committed_prepared(state(1), Some(episodes), None),
             Err(MutationOwnerError::TicketMismatch)
         ));
         assert!(permit.recovery().unwrap().unwrap().known.is_none());
@@ -1077,7 +1081,7 @@ async fn prepared_domains_survive_active_metadata_only_for_the_current_incarnati
     let mut permits = vec![owner.reserve().await.unwrap()];
     permits[0].begin("initial".into()).unwrap();
     permits[0]
-        .committed_prepared(state(1), Some(episodes.clone()))
+        .committed_prepared(state(1), Some(episodes.clone()), None)
         .unwrap();
     permits[0].publish(state(1)).unwrap();
     for (index, status) in [AgentRegistryStatus::Active, AgentRegistryStatus::Deleting]
@@ -1240,3 +1244,6 @@ mod input_recovery;
 
 #[path = "mutation_owner_tests/work_publication.rs"]
 mod work_publication;
+
+#[path = "mutation_owner_tests/task_publication.rs"]
+mod task_publication;

@@ -273,6 +273,15 @@ impl ImportAuthority {
             startup_wait_versions,
         })
     }
+    /// Only exact received rows from the original, sealed domain imports.
+    pub(in crate::runtime_db) fn task_query_message_imports(
+        &self,
+    ) -> impl Iterator<Item = (&str, &str)> {
+        self.records.iter().filter_map(|(key, record)| {
+            key.strip_prefix("message:")
+                .map(|id| (id, record.raw_digest.as_str()))
+        })
+    }
     pub(super) fn original_relations(&self) -> &WorkContinuityCheckpoint {
         self.frozen
             .work_domain_checkpoint

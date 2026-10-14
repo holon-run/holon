@@ -1,5 +1,7 @@
 use super::{scheduler, *};
-use crate::types::{BriefKind, ExecutionAdmissionProvenance};
+#[cfg(test)]
+use crate::types::BriefKind;
+use crate::types::ExecutionAdmissionProvenance;
 use sha2::{Digest, Sha256};
 
 const TASK_TRANSITION_MAX_ATTEMPTS: usize = 3;
@@ -25,11 +27,18 @@ impl std::error::Error for TaskTransitionRetryExhausted {
     }
 }
 
-pub(super) fn is_terminal_task_status(status: &TaskStatus) -> bool {
+pub(crate) fn is_terminal_task_status(status: &TaskStatus) -> bool {
     scheduler::is_terminal_task_status(status)
 }
 
 pub(super) fn should_ignore_task_update(latest: Option<TaskRecord>, task: &TaskRecord) -> bool {
+    should_ignore_task_update_ref(latest.as_ref(), task)
+}
+
+pub(crate) fn should_ignore_task_update_ref(
+    latest: Option<&TaskRecord>,
+    task: &TaskRecord,
+) -> bool {
     let Some(latest) = latest else {
         return false;
     };
@@ -99,13 +108,6 @@ impl<'a> TaskTransition<'a> {
 impl RuntimeHandle {
     pub(super) async fn apply_task_transition(&self, transition: TaskTransition<'_>) -> Result<()> {
         self.apply_task_transition_inner(transition, true).await
-    }
-
-    pub(super) async fn apply_task_transition_silent(
-        &self,
-        transition: TaskTransition<'_>,
-    ) -> Result<()> {
-        self.apply_task_transition_inner(transition, false).await
     }
 
     async fn apply_task_transition_inner(
@@ -548,6 +550,7 @@ impl RuntimeHandle {
         self.apply_task_transition(transition).await
     }
 
+    #[cfg(test)]
     pub(super) async fn commit_terminal_child_task_result(
         &self,
         task: &TaskRecord,
@@ -639,49 +642,61 @@ impl RuntimeHandle {
         execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
         dispatch_prior_closure: Option<&ClosureDecision>,
     ) -> Result<turn::TurnTerminalTransition> {
-        let settlement = self
-            .inner
-            .runtime_db
-            .task_result_settlements()
-            .ensure_pending(&task, message, self.now())?;
+        let result_at = self.now();
+        let settlement_read = self
+            .apply_task_result_operation((&task.id, message, result_at), || {
+                crate::runtime_db::transitions::TaskResultOperation::EnsurePending {
+                    task_id: task.id.clone(),
+                    message: Box::new(message.clone()),
+                    at: result_at,
+                }
+            })
+            .await?;
+        let settlement = settlement_read.record()?;
         if settlement.is_some() && model_reentry {
             if let Some(ExecutionAdmissionProvenance::Canonical { activation_id, .. }) =
                 execution_admission_provenance.as_ref()
             {
-                self.inner
-                    .runtime_db
-                    .task_result_settlements()
-                    .admit_message(&message.agent_id, &message.id, activation_id, self.now())?;
+                let admitted_at = self.now();
+                self.apply_task_result_operation((&message.id, activation_id, admitted_at), || {
+                    crate::runtime_db::transitions::TaskResultOperation::AdmitMessage {
+                        message_id: message.id.clone(),
+                        activation_id: activation_id.clone(),
+                        at: admitted_at,
+                    }
+                })
+                .await?
+                .record()?;
             }
         }
         if let Some(settlement) = settlement.as_ref() {
-            let unavailable = if let Some(work_item_id) = settlement.work_item_id.as_deref() {
-                match self.inner.runtime_db.work_items().latest(work_item_id)? {
-                    Some(owner) if owner.state != WorkItemState::Open => {
-                        Some(crate::runtime_db::TaskResultSettlementDisposition::OwnerClosed)
-                    }
-                    None => Some(crate::runtime_db::TaskResultSettlementDisposition::OwnerMissing),
-                    Some(_) => None,
-                }
-            } else {
-                None
-            };
+            let owner = self.acquire_task_result_owner(settlement).await?;
+            let unavailable = owner.disposition()?;
+            drop(owner);
             if let Some(disposition) = unavailable {
-                self.inner
-                    .runtime_db
-                    .task_result_settlements()
-                    .settle_owner_unavailable(&message.id, disposition, self.now())?;
+                let settled_at = self.now();
+                self.apply_task_result_operation((&message.id, disposition, settled_at), || {
+                    crate::runtime_db::transitions::TaskResultOperation::SettleOwnerUnavailable {
+                        message_id: message.id.clone(),
+                        disposition,
+                        at: settled_at,
+                    }
+                })
+                .await?
+                .changed()?;
             }
         }
-        if should_ignore_task_update(self.inner.runtime_db.tasks().latest(&task.id)?, &task) {
+        let routing = self.acquire_task_result_routing(message, &task).await?;
+        if routing.should_ignore() {
+            drop(routing);
             self.begin_reducer_only_turn(message, dispatch_prior_closure)
                 .await?;
             return self
                 .build_reducer_only_terminal_transition("reducer_only/duplicate_task_result", false)
                 .await;
         }
-        let parent_turn_already_delivered =
-            task_result_parent_turn_already_delivered(&self.inner.storage, &task)?;
+        let parent_turn_already_delivered = routing.parent_delivered()?;
+        drop(routing);
         if !model_reentry || parent_turn_already_delivered {
             self.begin_reducer_only_turn(message, dispatch_prior_closure)
                 .await?;
@@ -812,7 +827,7 @@ fn task_transition_error_is_retryable_conflict(error: &anyhow::Error) -> bool {
     crate::runtime_db::retryable_state_transition_conflict(error).is_some()
 }
 
-fn stable_terminal_task_event_id(event_kind: &str, task: &TaskRecord) -> String {
+pub(crate) fn stable_terminal_task_event_id(event_kind: &str, task: &TaskRecord) -> String {
     let mut hasher = Sha256::new();
     hasher.update(event_kind.as_bytes());
     hasher.update([0]);
@@ -845,22 +860,6 @@ fn task_parent_turn_id(task: &TaskRecord) -> Option<&str> {
         .as_ref()
         .and_then(|detail| detail.get("parent_turn_id"))
         .and_then(serde_json::Value::as_str)
-}
-
-fn task_result_parent_turn_already_delivered(
-    storage: &AppStorage,
-    task: &TaskRecord,
-) -> Result<bool> {
-    let Some(parent_turn_id) = task_parent_turn_id(task) else {
-        return Ok(false);
-    };
-    let Some(parent_turn) = storage.read_turn_by_id(parent_turn_id)? else {
-        return Ok(false);
-    };
-    Ok(storage
-        .read_briefs_by_ids(&parent_turn.produced_brief_ids)?
-        .iter()
-        .any(|brief| brief.kind == BriefKind::Result))
 }
 
 #[cfg(test)]
@@ -951,25 +950,38 @@ mod tests {
         message
     }
 
+    fn authentic_task_result_fixture_source(task: &TaskRecord) -> Result<MessageEnvelope> {
+        let mut message = task_result_message(&task.id);
+        message.authority_class = AuthorityClass::RuntimeInstruction;
+        message.admission_context = Some(crate::types::AdmissionContext::RuntimeOwned);
+        message.delivery_surface = Some(crate::types::MessageDeliverySurface::TaskRejoin);
+        message.work_item_id = task.effective_work_item_id().map(ToString::to_string);
+        message.metadata = Some(
+            json!({"task_id":task.id,"task_kind":task.kind,"task_status":task.status,
+            "task_summary":task.summary,"work_item_id":message.work_item_id}),
+        );
+        if let Some(detail) = task.detail.as_ref() {
+            message.metadata.as_mut().unwrap()["task_detail"] = detail.clone();
+        }
+        if let Some(recovery) = task.recovery.as_ref() {
+            message.metadata.as_mut().unwrap()["task_recovery"] = serde_json::to_value(recovery)?;
+        }
+        Ok(message)
+    }
+
     fn dispatch_task_result_message<'a>(
         runtime: &'a RuntimeHandle,
         task: TaskRecord,
         model_reentry: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            let mut message = task_result_message(&task.id);
-            message.work_item_id = task.effective_work_item_id().map(ToString::to_string);
-            message.metadata = Some(json!({
-                "task_id": task.id,
-                "task_kind": task.kind,
-                "task_status": task.status,
-                "task_summary": task.summary,
-                "task_detail": task.detail,
-                "work_item_id": message.work_item_id,
-            }));
-            if let Some(recovery) = task.recovery.as_ref() {
-                message.metadata.as_mut().unwrap()["task_recovery"] =
-                    serde_json::to_value(recovery)?;
+            let mut message = authentic_task_result_fixture_source(&task)?;
+            // A first Task still originates in the actual Source parser. Use a
+            // requested original parent-message address as that real Source ID.
+            if runtime.runtime_db().tasks().latest(&task.id)?.is_none() {
+                if let Some(id) = task.parent_message_id.as_ref() {
+                    message.id = id.clone();
+                }
             }
             let admitted = runtime.enqueue(message).await?;
             let scheduler_executor::RunLoopPoll::Message(scheduled) =
@@ -987,14 +999,21 @@ mod tests {
                 mut dispatch_plan,
                 mut scheduler_decision,
                 run_completion,
+                _reply_owner_budget,
             } = scheduled;
             let original_run = running_state
                 .current_run_id
                 .as_ref()
                 .expect("actual claim owns a run");
-            // Keep these reducer tests' explicit Task/reentry inputs while using
-            // the real post-dispatch posture and memory projection as well.
-            dispatch_plan.task = Ok(Some(task));
+            // Keep the explicit kind/status/clocks/reentry inputs while deriving
+            // every Source relationship through the real production parser.
+            let mut parsed = super::super::tasks::task_from_message(&message, &task.agent_id)?;
+            parsed.created_at = task.created_at;
+            parsed.updated_at = task.updated_at;
+            assert_eq!(parsed.id, task.id);
+            assert_eq!(parsed.kind, task.kind);
+            assert_eq!(parsed.status, task.status);
+            dispatch_plan.task = Ok(Some(parsed));
             scheduler_decision.model_reentry = model_reentry;
             let transition = runtime
                 .process_message_with_plan_deferred(
@@ -1113,6 +1132,133 @@ mod tests {
                 .unwrap();
             assert!(delivered.created_event_seq.is_some());
             delivered
+        })
+    }
+
+    fn original_v81_concurrent_terminal_boundary(
+        original: &RuntimeFixture,
+    ) -> Result<RuntimeFixture> {
+        use crate::runtime_db::migrations::{apply_migration, ensure_migration_table, MIGRATIONS};
+        let dir = tempdir()?;
+        let workspace = tempdir()?;
+        let path = dir.path().join(".holon/state/runtime.sqlite");
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        let mut connection = rusqlite::Connection::open(&path)?;
+        ensure_migration_table(&connection)?;
+        for migration in MIGRATIONS.iter().filter(|m| m.version <= 81) {
+            apply_migration(&mut connection, migration)?;
+        }
+        connection.execute(
+            "ATTACH DATABASE ?1 AS original_ack",
+            [original
+                .runtime_db()
+                .path()
+                .to_str()
+                .context("fixture path is not UTF8")?],
+        )?;
+        // Copy this tiny quiescent canonical fixture into a genuine v81 DB.
+        // Preserve its original events/seqs/State, without any D5 qualification.
+        connection.execute_batch("PRAGMA foreign_keys=OFF;")?;
+        let tables: Vec<String> = {
+            let mut q=connection.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('schema_migrations','schema_migration_baselines')")?;
+            let rows = q
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            rows
+        };
+        for table in tables {
+            anyhow::ensure!(
+                table
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+                "fixture table name changed"
+            );
+            let exists:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM original_ack.sqlite_master WHERE type='table' AND name=?1)",[&table],|r|r.get(0))?;
+            if !exists {
+                continue;
+            }
+            let columns = |db: &str| -> Result<Vec<String>> {
+                let mut q = connection.prepare(&format!("PRAGMA {db}.table_info({table})"))?;
+                let rows = q
+                    .query_map([], |r| r.get(1))?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok(rows)
+            };
+            let source_columns = columns("original_ack")?;
+            let columns: Vec<_> = columns("main")?
+                .into_iter()
+                .filter(|c| source_columns.contains(c))
+                .collect();
+            if columns.is_empty() {
+                continue;
+            }
+            anyhow::ensure!(
+                columns
+                    .iter()
+                    .all(|c| c.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')),
+                "fixture column name changed"
+            );
+            let columns = columns
+                .iter()
+                .map(|c| format!("\"{c}\""))
+                .collect::<Vec<_>>()
+                .join(",");
+            connection.execute(&format!("DELETE FROM {table}"), [])?;
+            // v82/v84 fixed-boundary markers did not exist in this actual v81
+            // database. Copying only those markers would suppress migration
+            // capture while their new continuity/eligibility tables are absent.
+            let before_cutover = if table == "runtime_metadata" {
+                " WHERE key NOT IN ('episode_continuity/v1/upgrade_boundary','input_evidence/v1/fixed_upgrade')"
+            } else {
+                ""
+            };
+            connection.execute(
+                &format!(
+                    "INSERT INTO {table}({columns}) SELECT {columns} FROM original_ack.{table}{before_cutover}"
+                ),
+                [],
+            )?;
+        }
+        connection.execute_batch("DETACH DATABASE original_ack;")?;
+        // This is the pre-cutover concurrent old writer, not a post-D5 restore.
+        connection.execute("UPDATE tasks SET payload_json=json_set(payload_json,'$.detail',json('{\"version\":2}')) WHERE task_id='task-1'",[])?;
+        assert_eq!(connection.query_row("SELECT json_extract(payload_json,'$.detail.version') FROM tasks WHERE task_id='task-1'",[],|r|r.get::<_,u64>(0))?,2);
+        assert_eq!(
+            connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r
+                .get::<_, u64>(0))?,
+            81
+        );
+        assert_eq!(connection.query_row(
+            "SELECT COUNT(*) FROM runtime_metadata WHERE key IN ('episode_continuity/v1/upgrade_boundary','input_evidence/v1/fixed_upgrade')",
+            [],|row|row.get::<_,usize>(0))?,0);
+        drop(connection);
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("done")),
+            "default".into(),
+            ContextConfig::default(),
+        )?;
+        let binding:usize=runtime.runtime_db().connection()?.query_row(
+            "SELECT COUNT(*) FROM agent_episode_continuity WHERE agent_id='default' AND mode='legacy_adopted'",
+            [],|row|row.get(0))?;
+        assert_eq!(
+            binding, 1,
+            "actual v82 migration must bind the original namespace"
+        );
+        let boundaries:usize=runtime.runtime_db().connection()?.query_row(
+            "SELECT COUNT(*) FROM runtime_metadata WHERE key IN ('episode_continuity/v1/upgrade_boundary','input_evidence/v1/fixed_upgrade')",
+            [],|row|row.get(0))?;
+        assert_eq!(
+            boundaries, 2,
+            "actual fixed upgrades must capture, not reuse future markers"
+        );
+        Ok(RuntimeFixture {
+            runtime,
+            _dir: dir,
+            _workspace: workspace,
         })
     }
 
@@ -1501,6 +1647,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accepted_incoming_parent_suppresses_reentry_with_different_existing_task_parent() {
+        let runtime = runtime();
+        let mut delivered = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "Original operator answer.",
+            Some("operator-message".into()),
+            None,
+        );
+        delivered.turn_id = Some("turn-parent".into());
+        let delivered = persist_delivered_parent_fixture(&runtime, delivered).await;
+        let mut existing = task("incoming-parent-task", TaskStatus::Running, false);
+        existing.detail = Some(json!({"parent_turn_id":"older-task-parent"}));
+        runtime.reduce_task_status_message(existing).await.unwrap();
+        let mut incoming = task("incoming-parent-task", TaskStatus::Completed, false);
+        incoming.detail = Some(json!({"parent_turn_id":"turn-parent"}));
+        dispatch_task_result_message(&runtime, incoming, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime.storage().read_recent_briefs(10).unwrap(),
+            vec![delivered]
+        );
+        let terminal = runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .last_turn_terminal
+            .unwrap();
+        assert_eq!(
+            terminal.reason.as_deref(),
+            Some("reducer_only/parent_turn_already_delivered")
+        );
+    }
+
+    #[tokio::test]
     async fn repeated_terminal_task_result_skips_transition_but_processes_message() {
         let runtime = runtime();
         let mut recorded = task("task-1", TaskStatus::Completed, false);
@@ -1558,19 +1740,10 @@ mod tests {
             .await
             .unwrap();
 
-        // Simulate a concurrent writer updating the task in the runtime_db
-        // with different content while keeping the same terminal status.
-        // Use raw SQL to bypass the transition validation that would reject
-        // a completed -> completed update with a different payload.
-        runtime
-            .runtime_db()
-            .connection()
-            .unwrap()
-            .execute(
-                "UPDATE tasks SET payload_json = json_set(payload_json, '$.detail', json('{\"version\": 2}')) WHERE task_id = 'task-1'",
-                [],
-            )
-            .unwrap();
+        // The original legacy writer's changed body is fixed before D5
+        // qualification. Post-cutover raw corruption remains a strict error.
+        let upgraded = original_v81_concurrent_terminal_boundary(&runtime).unwrap();
+        let runtime = &upgraded;
 
         // Re-dispatch the same task result.  Before the fix this emitted an
         // audit event with the same stable ID but content derived from the
@@ -1597,8 +1770,49 @@ mod tests {
         let runtime = runtime();
         let mut task = task("task-1", TaskStatus::Completed, false);
         task.work_item_id = Some("work-1".into());
-        let mut message = task_result_message("task-1");
-        message.work_item_id = Some("work-1".into());
+        let message = authentic_task_result_fixture_source(&task).unwrap();
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let prepared = crate::runtime_db::prepared_input_evidence::PreparedInputEvidence::message(
+            mutation.input_evidence_scope(),
+            crate::ids::audit_event_id(),
+            Utc::now(),
+            message.clone(),
+            Vec::new(),
+        )
+        .unwrap();
+        mutation
+            .commit_prepared_evidence(prepared, None)
+            .await
+            .unwrap();
+        mutation
+            .prepare_owner_task_request(&crate::runtime::resident_task::TaskCaptureRequest {
+                required_keys: std::collections::BTreeSet::from([
+                    crate::runtime::resident_task::TaskKey::new(
+                        crate::runtime::resident_task::TaskFamily::Task,
+                        &task.id,
+                    ),
+                ]),
+                ..crate::runtime::resident_task::TaskCaptureRequest::current()
+            })
+            .await
+            .unwrap();
+        mutation
+            .prepare_owner_work_request(
+                &crate::runtime::resident_work::WorkCaptureRequest::current(),
+            )
+            .await
+            .unwrap();
+        drop(mutation);
+        let message = runtime
+            .storage()
+            .read_message_by_id(&message.id)
+            .unwrap()
+            .unwrap();
+        assert!(message.message_seq.is_some_and(|seq| seq > 0));
+        let mut parsed = super::super::tasks::task_from_message(&message, &task.agent_id).unwrap();
+        parsed.created_at = task.created_at;
+        parsed.updated_at = task.updated_at;
+        let task = parsed;
 
         let error = runtime
             .reduce_task_result_message(&message, task, true, None)

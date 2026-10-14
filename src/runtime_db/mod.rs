@@ -48,6 +48,12 @@ pub mod turn_settlement_repair;
 pub use input_evidence_snapshot::maintenance::{
     NeedsOfflineInputMaintenance, OfflineInputMaintenance,
 };
+pub(crate) mod child_task_terminal;
+pub(crate) mod command_task_terminal;
+pub(crate) mod task_recovery;
+pub(crate) mod task_snapshot;
+pub(crate) mod task_status_metadata;
+pub(crate) mod task_stop;
 pub mod types;
 pub mod unread;
 pub(crate) mod work_snapshot;
@@ -953,7 +959,10 @@ impl RuntimeDb {
         self.writer.append_wait_with_context(context, f)
     }
 
-    fn transaction_once<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+    pub(crate) fn transaction_once<T>(
+        &self,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
         self.writer.append_wait_once(f)
     }
 

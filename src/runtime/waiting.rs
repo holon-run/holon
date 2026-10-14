@@ -1592,11 +1592,11 @@ impl RuntimeHandle {
                 self.inner.storage.append_timer(&timer)?;
                 Ok(TransitionCommit {
                     applied: true,
-                    effects: crate::runtime_db::transitions::PostCommitEffects {
+                    effects: Box::new(crate::runtime_db::transitions::PostCommitEffects {
                         timers: vec![timer.clone()],
                         fault,
                         ..Default::default()
-                    },
+                    }),
                     ..Default::default()
                 })
             })
@@ -1917,17 +1917,23 @@ impl RuntimeHandle {
                 agent_state: (expected_state, committed_state.clone()),
             };
             let work_request = guard.owner_work_load_request()?;
+            let (task_request, _task_selectors) = guard.owner_task_load_request()?;
             let fault = self.take_transition_fault();
             let mut timer_result = None;
             let result = guard
                 .commit_transition(message.id.clone(), |scope| {
-                    let acknowledged = self.inner.runtime_db.timers().fire_with_wait_in_scope(
-                        scope,
-                        &command,
-                        &work_request,
-                        &self.inner.input_evidence_budget,
-                        fault,
-                    )?;
+                    let acknowledged = self
+                        .inner
+                        .runtime_db
+                        .timers()
+                        .fire_with_wait_in_scope_with_task_request(
+                            scope,
+                            &command,
+                            &work_request,
+                            &task_request,
+                            &self.inner.input_evidence_budget,
+                            fault,
+                        )?;
                     let result = acknowledged.record;
                     let mut commit = TransitionCommit {
                         applied: result.advanced,
@@ -1935,6 +1941,10 @@ impl RuntimeHandle {
                     };
                     commit.effects.input_evidence_delta = acknowledged.input_delta;
                     commit.effects.work_delta = acknowledged.work_delta;
+                    commit.effects.task_delta = acknowledged.task_delta;
+                    commit.effects.task_delta_requires_prepared_domain = true;
+                    commit.effects.task_material_budget_views =
+                        acknowledged.task_material_budget_views;
                     commit.effects.agent_state = acknowledged.agent_state;
                     if result.advanced {
                         commit.effects.timers.push(record.clone());

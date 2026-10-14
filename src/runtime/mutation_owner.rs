@@ -56,6 +56,7 @@ pub(crate) enum KnownCommit {
         episodes: Option<Arc<ResidentEpisodes>>,
         input_evidence: Option<Arc<ResidentInputEvidence>>,
         work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
+        tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
         runtime: Option<Arc<super::state_mutation::RuntimeMutationFacts>>,
     },
     Metadata(Arc<IdentityMutationFacts>),
@@ -77,6 +78,7 @@ impl KnownCommit {
                     episodes: ae,
                     input_evidence: ai,
                     work: aw,
+                    tasks: at,
                     runtime: ar,
                 },
                 Self::State {
@@ -84,6 +86,7 @@ impl KnownCommit {
                     episodes: be,
                     input_evidence: bi,
                     work: bw,
+                    tasks: bt,
                     runtime: br,
                 },
             ) => {
@@ -99,6 +102,11 @@ impl KnownCommit {
                         _ => false,
                     }
                     && match (aw, bw) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                        _ => false,
+                    }
+                    && match (at, bt) {
                         (None, None) => true,
                         (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                         _ => false,
@@ -129,6 +137,18 @@ struct RecoveryGroup {
     members: Vec<RecoveryMember>,
 }
 
+/// Only sealed DB evidence may select a narrower positive Input recovery route.
+#[derive(Debug)]
+pub(in crate::runtime) enum OriginalInputRecoveryEvidence {
+    Sparse(Arc<crate::runtime_db::task_stop::TaskStopSparseRecoveryEvidence>),
+    Command(Arc<crate::runtime_db::command_task_terminal::OriginalCommandTaskSparseRecovery>),
+    TaskStatus(Arc<super::input_recovery::TaskStatusMetadataKnown>),
+    ChildTerminal(Arc<super::input_recovery::ChildTerminalKnown>),
+    ChildBinding(Arc<super::input_recovery::ChildMonitorBindingKnown>),
+    Readonly(Vec<Arc<crate::runtime_db::task_stop::InitialTaskStopReadonlyRecovery>>),
+    Partial(Arc<super::input_recovery::TaskStopPartialKnown>),
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RecoveryRecord {
     pub key: RecoveryKey,
@@ -141,6 +161,7 @@ pub(crate) struct RecoveryRecord {
     // A successor claim clears its root. Preserve the original cold boundary
     // so recovery cannot reinterpret a formerly published State as absent.
     original_root_absent: bool,
+    _original_input_evidence: Option<Arc<OriginalInputRecoveryEvidence>>,
     group: Arc<RecoveryGroup>,
 }
 
@@ -534,6 +555,12 @@ impl MutationReservation {
         Ok(self.owner.capture()?.and_then(|root| root.work.clone()))
     }
 
+    pub(crate) fn prepared_tasks_for_state_only_commit(
+        &self,
+    ) -> Result<Option<Arc<super::resident_task::ResidentTaskDomain>>, MutationOwnerError> {
+        Ok(self.owner.capture()?.and_then(|root| root.tasks.clone()))
+    }
+
     pub(crate) fn validate_owner(&self, owner: &MutationOwner) -> Result<(), MutationOwnerError> {
         if self.owner.epoch != owner.epoch || !Arc::ptr_eq(&self.owner.slot, &owner.slot) {
             return Err(MutationOwnerError::Replaced);
@@ -613,6 +640,19 @@ impl MutationReservation {
         } = known
         {
             if work.scope()
+                != &(InputEvidenceScope {
+                    agent_id: self.owner.agent_id.clone(),
+                    identity_incarnation: self.owner.incarnation,
+                })
+            {
+                return Err(MutationOwnerError::TicketMismatch);
+            }
+        }
+        if let KnownCommit::State {
+            tasks: Some(tasks), ..
+        } = known
+        {
+            if tasks.scope()
                 != &(InputEvidenceScope {
                     agent_id: self.owner.agent_id.clone(),
                     identity_incarnation: self.owner.incarnation,
@@ -717,6 +757,7 @@ impl MutationReservation {
                 known: None,
                 witness: witness.clone(),
                 original_root_absent,
+                _original_input_evidence: None,
                 group: group.clone(),
             });
         }
@@ -902,7 +943,7 @@ impl MutationReservation {
         witness: &MutationWitness,
         committed: Option<Vec<KnownCommit>>,
     ) -> Result<WitnessUnknownResolution, MutationOwnerError> {
-        Self::resolve_input_unknown_inner(reservations, key, witness, committed, false)
+        Self::resolve_input_unknown_inner(reservations, key, witness, committed, false, None)
     }
 
     /// Only the never-activated exclusive actor may keep an original startup
@@ -925,15 +966,110 @@ impl MutationReservation {
             witness,
             committed,
             true,
+            None,
         )?)
     }
 
+    pub(in crate::runtime) fn resolve_task_stop_input_unknown(
+        reservations: &mut [Self],
+        key: &RecoveryKey,
+        witness: &MutationWitness,
+        committed: Vec<KnownCommit>,
+        evidence: OriginalInputRecoveryEvidence,
+    ) -> Result<WitnessUnknownResolution, MutationOwnerError> {
+        if matches!(
+            evidence,
+            OriginalInputRecoveryEvidence::Command(_)
+                | OriginalInputRecoveryEvidence::TaskStatus(_)
+                | OriginalInputRecoveryEvidence::ChildTerminal(_)
+                | OriginalInputRecoveryEvidence::ChildBinding(_)
+        ) {
+            return Err(MutationOwnerError::TicketMismatch);
+        }
+        Self::resolve_input_unknown_inner(
+            reservations,
+            key,
+            witness,
+            Some(committed),
+            false,
+            Some(Arc::new(evidence)),
+        )
+    }
+
+    pub(in crate::runtime) fn resolve_original_command_input_unknown(
+        reservations: &mut [Self],
+        key: &RecoveryKey,
+        witness: &MutationWitness,
+        committed: Vec<KnownCommit>,
+        proof: Arc<crate::runtime_db::command_task_terminal::OriginalCommandTaskSparseRecovery>,
+    ) -> Result<WitnessUnknownResolution, MutationOwnerError> {
+        Self::resolve_input_unknown_inner(
+            reservations,
+            key,
+            witness,
+            Some(committed),
+            false,
+            Some(Arc::new(OriginalInputRecoveryEvidence::Command(proof))),
+        )
+    }
+
+    pub(in crate::runtime) fn resolve_task_status_metadata_input_unknown(
+        reservations: &mut [Self],
+        key: &RecoveryKey,
+        witness: &MutationWitness,
+        committed: Vec<KnownCommit>,
+        proof: Arc<super::input_recovery::TaskStatusMetadataKnown>,
+    ) -> Result<WitnessUnknownResolution, MutationOwnerError> {
+        Self::resolve_input_unknown_inner(
+            reservations,
+            key,
+            witness,
+            Some(committed),
+            false,
+            Some(Arc::new(OriginalInputRecoveryEvidence::TaskStatus(proof))),
+        )
+    }
+
+    pub(in crate::runtime) fn resolve_child_terminal_input_unknown(
+        reservations: &mut [Self],
+        key: &RecoveryKey,
+        witness: &MutationWitness,
+        proof: Arc<super::input_recovery::ChildTerminalKnown>,
+    ) -> Result<WitnessUnknownResolution, MutationOwnerError> {
+        Self::resolve_input_unknown_inner(
+            reservations,
+            key,
+            witness,
+            Some(proof.known()),
+            false,
+            Some(Arc::new(OriginalInputRecoveryEvidence::ChildTerminal(
+                proof,
+            ))),
+        )
+    }
+
+    pub(in crate::runtime) fn resolve_child_monitor_binding_input_unknown(
+        reservations: &mut [Self],
+        key: &RecoveryKey,
+        witness: &MutationWitness,
+        proof: Arc<super::input_recovery::ChildMonitorBindingKnown>,
+    ) -> Result<WitnessUnknownResolution, MutationOwnerError> {
+        Self::resolve_input_unknown_inner(
+            reservations,
+            key,
+            witness,
+            Some(vec![proof.known()]),
+            false,
+            Some(Arc::new(OriginalInputRecoveryEvidence::ChildBinding(proof))),
+        )
+    }
     fn resolve_input_unknown_inner(
         reservations: &mut [Self],
         key: &RecoveryKey,
         witness: &MutationWitness,
         committed: Option<Vec<KnownCommit>>,
         startup_cold: bool,
+        task_stop_evidence: Option<Arc<OriginalInputRecoveryEvidence>>,
     ) -> Result<WitnessUnknownResolution, MutationOwnerError> {
         Self::validate_order(reservations)?;
         let mut publications = reservations
@@ -956,6 +1092,87 @@ impl MutationReservation {
             for (&index, facts) in selected.iter().zip(&known) {
                 let reservation = &reservations[index];
                 let publication = &publications[index];
+                let stop_specific = task_stop_evidence.as_ref().is_some_and(|evidence| {
+                    let Some(attempt)=witness.input_attempt() else { return false; };
+                    match evidence.as_ref() {
+                        OriginalInputRecoveryEvidence::ChildBinding(proof)=> {
+                            selected.len()==1 && proof.evidence().matches_original(attempt)
+                                && proof.evidence().receipt().prepared.scopes()==attempt.prepared().scopes()
+                                && facts.same_facts(&proof.known())
+                        }
+                        OriginalInputRecoveryEvidence::ChildTerminal(proof)=>{
+                            proof.evidence().matches_original(attempt)
+                                && proof.evidence().receipt().prepared.scopes()==attempt.prepared().scopes()
+                                && proof.known_for_scope(&super::resident_input_evidence::InputEvidenceScope{agent_id:reservation.agent_id().to_owned(),identity_incarnation:reservation.identity_incarnation()})
+                                    .is_some_and(|expected|facts.same_facts(expected))
+                        }
+                        OriginalInputRecoveryEvidence::TaskStatus(proof) => {
+                            selected.len()==1 && proof.proof().matches_original(attempt)
+                                && proof.proof().receipt().prepared.scopes()==attempt.prepared().scopes()
+                                && facts.same_facts(&proof.known())
+                        }
+                        OriginalInputRecoveryEvidence::Command(proof) => {
+                            selected.len()==1 && proof.matches_original(attempt)
+                                && proof.mode()!=crate::runtime_db::command_task_terminal::CommandTaskTerminalInstallMode::Current
+                                && matches!(facts,KnownCommit::Metadata(metadata) if metadata.state.is_none() && metadata.identity.as_deref()==proof.identity())
+                        }
+                        OriginalInputRecoveryEvidence::Sparse(proof) => {
+                            if selected.len()!=1 || !proof.matches_original(attempt)
+                                || proof.receipt().prepared.scopes()!=attempt.prepared().scopes()
+                                || proof.mode()==crate::runtime_db::task_stop::TaskStopPhaseInstallMode::Current {
+                                return false;
+                            }
+                            let presence_matches=matches!((proof.mode(),proof.state_presence()),
+                                (crate::runtime_db::task_stop::TaskStopPhaseInstallMode::NoState,crate::runtime_db::task_stop::TaskStopSparseStatePresence::Absent)
+                                |(crate::runtime_db::task_stop::TaskStopPhaseInstallMode::Incomplete,crate::runtime_db::task_stop::TaskStopSparseStatePresence::PresentUnprepared)
+                                |(crate::runtime_db::task_stop::TaskStopPhaseInstallMode::Retired,crate::runtime_db::task_stop::TaskStopSparseStatePresence::NotReadRetired));
+                            if !presence_matches { return false; }
+                            let cold=reservation.owner.slot.root.load_full().as_ref().is_none_or(|root|
+                                root.episodes.is_none() && root.input_evidence.is_none() && root.work.is_none() && root.tasks.is_none());
+                            cold && matches!(facts,KnownCommit::Metadata(metadata) if metadata.state.is_none()
+                                && metadata.identity.as_deref()==proof.identity())
+                        }
+                        OriginalInputRecoveryEvidence::Partial(partial) => {
+                            let proof=partial.evidence();
+                            selected.len()==1 && proof.matches_original(attempt)
+                                && proof.mode()==crate::runtime_db::task_stop::TaskStopPhaseInstallMode::Incomplete
+                                && reservation.owner.slot.root.load_full().as_ref().is_none_or(|root|root.tasks.is_none())
+                                && matches!(facts,KnownCommit::State{tasks:None,..})
+                                && facts.same_facts(&partial.known())
+                        }
+                        OriginalInputRecoveryEvidence::Readonly(proofs) => proofs.iter().any(|proof| {
+                            let child=proof.child();
+                            if child.target().scope.agent_id!=reservation.agent_id()
+                                || child.target().scope.identity_incarnation!=reservation.identity_incarnation()
+                                || !proof.matches_original(attempt) { return false; }
+                            let Some(original)=witness.initial_task_stop_readonly(reservation.agent_id()) else { return false; };
+                            if original.target()!=child.target() { return false; }
+                            if child.state_present()==Some(true) && matches!(original.known(),KnownCommit::State{..}) {
+                                facts.same_facts(&original.known())
+                            } else {
+                                matches!(facts,KnownCommit::Metadata(metadata) if metadata.state.is_none()
+                                    && metadata.identity.as_ref().is_some_and(|identity|identity.as_ref()==child.identity().as_ref()))
+                            }
+                        }),
+                    }
+                });
+                if stop_specific {
+                    reservation.validate_known(facts)?;
+                    continue;
+                }
+                // A sealed sparse proof cannot fall through to a broader route.
+                if matches!(
+                    task_stop_evidence.as_deref(),
+                    Some(
+                        OriginalInputRecoveryEvidence::Sparse(_)
+                            | OriginalInputRecoveryEvidence::Partial(_)
+                            | OriginalInputRecoveryEvidence::Command(_)
+                            | OriginalInputRecoveryEvidence::TaskStatus(_)
+                            | OriginalInputRecoveryEvidence::ChildBinding(_)
+                    )
+                ) {
+                    return Err(MutationOwnerError::TicketMismatch);
+                }
                 match facts {
                     KnownCommit::State {
                         episodes: Some(_),
@@ -977,6 +1194,7 @@ impl MutationReservation {
                                         root.episodes.is_none()
                                             && root.input_evidence.is_none()
                                             && root.work.is_none()
+                                            && root.tasks.is_none()
                                     },
                                 )
                             } else {
@@ -1003,6 +1221,7 @@ impl MutationReservation {
                     .as_mut()
                     .expect("validated group");
                 recovery.set_known(facts);
+                recovery._original_input_evidence = task_stop_evidence.clone();
                 recovery.phase = RecoveryPhase::NeedsReconcile;
             }
             Ok(WitnessUnknownResolution::Known)
@@ -1271,8 +1490,12 @@ impl MutationReservation {
         Self::definitely_not_committed_all(std::slice::from_mut(self))
     }
 
-    pub(crate) fn committed(&self, state: Arc<AgentState>) -> Result<(), MutationOwnerError> {
-        self.committed_prepared(state, None)
+    pub(crate) fn committed(
+        &self,
+        state: Arc<AgentState>,
+        tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
+    ) -> Result<(), MutationOwnerError> {
+        self.committed_prepared(state, None, tasks)
     }
 
     /// Bootstrap and migrated families pass the exact prepared domain with the
@@ -1281,8 +1504,9 @@ impl MutationReservation {
         &self,
         state: Arc<AgentState>,
         episodes: Option<Arc<ResidentEpisodes>>,
+        tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
     ) -> Result<(), MutationOwnerError> {
-        self.committed_prepared_with_inputs(state, episodes, None)
+        self.committed_prepared_with_inputs(state, episodes, None, tasks)
     }
 
     pub(crate) fn committed_prepared_with_inputs(
@@ -1290,8 +1514,9 @@ impl MutationReservation {
         state: Arc<AgentState>,
         episodes: Option<Arc<ResidentEpisodes>>,
         input_evidence: Option<Arc<ResidentInputEvidence>>,
+        tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
     ) -> Result<(), MutationOwnerError> {
-        self.committed_prepared_with_domains(state, episodes, input_evidence, None)
+        self.committed_prepared_with_domains(state, episodes, input_evidence, None, tasks)
     }
 
     pub(crate) fn committed_prepared_with_domains(
@@ -1300,6 +1525,7 @@ impl MutationReservation {
         episodes: Option<Arc<ResidentEpisodes>>,
         input_evidence: Option<Arc<ResidentInputEvidence>>,
         work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
+        tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
     ) -> Result<(), MutationOwnerError> {
         let mut publication = self
             .owner
@@ -1317,6 +1543,7 @@ impl MutationReservation {
             episodes,
             input_evidence,
             work,
+            tasks,
             runtime: recovery.committed_runtime.clone(),
         };
         self.validate_known(&known)?;
@@ -1458,6 +1685,21 @@ impl MutationReservation {
                     .flatten()
             }),
         };
+        let tasks = match &known {
+            KnownCommit::State { tasks, .. } => tasks.clone(),
+            KnownCommit::Metadata(facts) => facts.identity.as_ref().and_then(|identity| {
+                (identity.incarnation == self.owner.incarnation
+                    && identity.status == AgentRegistryStatus::Active)
+                    .then(|| {
+                        self.owner
+                            .slot
+                            .root
+                            .load_full()
+                            .and_then(|root| root.tasks.clone())
+                    })
+                    .flatten()
+            }),
+        };
         let observation = known.state().map(|state| {
             Arc::new(PostureObservation {
                 token: PublicationToken {
@@ -1469,6 +1711,7 @@ impl MutationReservation {
                 episodes,
                 input_evidence,
                 work,
+                tasks,
             })
         });
         self.owner.slot.root.store(observation.clone());

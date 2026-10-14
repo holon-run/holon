@@ -13,13 +13,16 @@ use crate::{
         TranscriptEntry, TurnOwner, TurnRecord,
     },
 };
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::Arc,
 };
+
+#[path = "input_evidence_output_recall.rs"]
+mod output_recall;
 
 #[path = "input_evidence_execution.rs"]
 mod execution;
@@ -485,6 +488,8 @@ pub(crate) struct CommittedEvidenceRemoval {
 }
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CommittedInputEvidenceDelta {
+    pub output_recall_invalidation:
+        Option<crate::runtime_db::input_evidence_snapshot::OutputRecallInvalidation>,
     pub execution: ExecutionInputDelta,
     pub records: Vec<Arc<QualifiedInputEvidence>>,
     pub removals: Vec<CommittedEvidenceRemoval>,
@@ -496,6 +501,8 @@ pub(crate) struct CommittedInputEvidenceDelta {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResidentInputEvidence {
+    output_recall_roots: BTreeSet<InputEvidenceKey>,
+    output_recall_task: Option<super::resident_task::TaskFactLocator>,
     scope: InputEvidenceScope,
     records: BTreeMap<InputEvidenceKey, Arc<QualifiedInputEvidence>>,
     coverage: InputEvidenceCoverage,
@@ -532,6 +539,55 @@ pub(crate) enum InputEvidenceReadError {
     WindowNotPrepared,
 }
 impl CapturedInputEvidence {
+    pub(crate) fn selected_material_estimate(&self) -> Result<(u64, usize)> {
+        let mut bytes = serialized_bytes(&(
+            &self.scope,
+            &self.windows,
+            &self.unavailable,
+            &self.turn_transcript_keys,
+            &self.message_turn_keys,
+            &self.recovery_source_absences,
+            &self.execution,
+        ))?;
+        let mut count = self
+            .records
+            .len()
+            .checked_add(self.windows.len())
+            .and_then(|n| n.checked_add(self.unavailable.len()))
+            .and_then(|n| n.checked_add(self.turn_transcript_keys.len()))
+            .and_then(|n| n.checked_add(self.message_turn_keys.len()))
+            .and_then(|n| n.checked_add(self.recovery_source_absences.len()))
+            .and_then(|n| n.checked_add(self.execution.metadata_count()))
+            .context("selected Input material count overflow")?;
+        for window in &self.windows {
+            count = count
+                .checked_add(window.keys.len())
+                .context("selected Input window count overflow")?;
+        }
+        for keys in self.turn_transcript_keys.values() {
+            count = count
+                .checked_add(keys.len())
+                .context("selected Input frontier count overflow")?;
+        }
+        for proof in self.recovery_source_absences.values() {
+            count = count
+                .checked_add(proof.absent.len())
+                .context("selected Input absence count overflow")?;
+        }
+        bytes = bytes
+            .checked_add(u64::try_from(
+                count
+                    .checked_mul(256)
+                    .context("selected Input metadata slots overflow")?,
+            )?)
+            .context("selected Input metadata bytes overflow")?;
+        for record in &self.records {
+            bytes = bytes
+                .checked_add(u64::try_from(record.resident_bytes)?)
+                .context("selected Input body material overflow")?;
+        }
+        Ok((bytes, count))
+    }
     /// Authority validation only. Unknown/pruned/unqualified keys never become
     /// None through this proof; ordinary lookup remains strict.
     pub(crate) fn reject_proven_missing_recovery_source(
@@ -698,6 +754,8 @@ impl ResidentInputEvidence {
             }
         }
         let mut result = Self {
+            output_recall_roots: BTreeSet::new(),
+            output_recall_task: None,
             scope,
             records: map,
             coverage,
@@ -768,6 +826,7 @@ impl ResidentInputEvidence {
                 .windows
                 .iter()
                 .flat_map(|window| window.keys.iter().cloned())
+                .chain(self.output_recall_roots.iter().cloned())
                 .collect(),
         )?;
         let records = |keys: BTreeSet<InputEvidenceKey>| {
@@ -800,8 +859,11 @@ impl ResidentInputEvidence {
                 Arc<QualifiedInputEvidence>,
             )>())
             .ok_or_else(|| anyhow::anyhow!("input metadata estimate overflow"))?;
+        let recall_task_bytes = serialized_bytes(&self.output_recall_task)?;
         Ok(serialized_bytes(&self.coverage)?
-            .checked_add(nodes as u64)
+            .checked_add(serialized_bytes(&self.output_recall_roots)?)
+            .and_then(|bytes| bytes.checked_add(recall_task_bytes))
+            .and_then(|bytes| bytes.checked_add(nodes as u64))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>() as u64))
             .ok_or_else(|| anyhow::anyhow!("input metadata estimate overflow"))?)
     }
@@ -1096,6 +1158,27 @@ impl ResidentInputEvidence {
             })
             .transpose()?;
         let mut next = self.clone();
+        // A real D3 write invalidates read-only recall. Old captures keep their
+        // pinned bytes; the old locator cannot recreate durable qualification.
+        if let Some(invalidation) = &delta.output_recall_invalidation {
+            ensure!(
+                invalidation.belongs_to(&self.scope),
+                "Output invalidation scope differs"
+            );
+        }
+        if delta.output_recall_invalidation.is_some()
+            || !delta.records.is_empty()
+            || !delta.removals.is_empty()
+            || delta.execution.initialized.is_some()
+            || !delta.execution.sources.is_empty()
+            || !delta.execution.open_attempts.is_empty()
+            || !delta.execution.nonterminal_work_items.is_empty()
+            || !delta.execution.work_items.is_empty()
+        {
+            next.output_recall_roots.clear();
+            next.output_recall_task = None;
+            next.trim_and_validate()?;
+        }
         let changed = delta
             .records
             .iter()
@@ -1433,6 +1516,7 @@ impl ResidentInputEvidence {
     }
     fn required_keys(&self) -> Result<BTreeSet<InputEvidenceKey>> {
         let mut roots = self.coverage.mandatory_roots.clone();
+        roots.extend(self.output_recall_roots.iter().cloned());
         roots.extend(
             self.coverage
                 .execution
@@ -1888,6 +1972,7 @@ mod tests {
         let next = original
             .with_committed(
                 &CommittedInputEvidenceDelta {
+                    output_recall_invalidation: None,
                     execution: ExecutionInputDelta::default(),
                     records: vec![turn("c", 3)],
                     removals: Vec::new(),
@@ -1975,6 +2060,7 @@ mod tests {
         assert!(original
             .with_committed(
                 &CommittedInputEvidenceDelta {
+                    output_recall_invalidation: None,
                     execution: ExecutionInputDelta::default(),
                     records: Vec::new(),
                     removals: vec![removal.clone()],
@@ -1989,6 +2075,7 @@ mod tests {
         let next = exhaustive
             .with_committed(
                 &CommittedInputEvidenceDelta {
+                    output_recall_invalidation: None,
                     execution: ExecutionInputDelta::default(),
                     records: Vec::new(),
                     removals: vec![removal],
@@ -2007,6 +2094,7 @@ mod tests {
         let grown = original
             .with_committed(
                 &CommittedInputEvidenceDelta {
+                    output_recall_invalidation: None,
                     execution: ExecutionInputDelta::default(),
                     records: vec![turn("c", 3)],
                     removals: Vec::new(),
@@ -2024,6 +2112,7 @@ mod tests {
         let pruned = grown
             .with_committed(
                 &CommittedInputEvidenceDelta {
+                    output_recall_invalidation: None,
                     execution: ExecutionInputDelta::default(),
                     records: Vec::new(),
                     removals: vec![CommittedEvidenceRemoval {
@@ -2074,6 +2163,7 @@ mod tests {
     fn committed_history_growth_checks_agent_and_shared_host_limits() {
         fn delta() -> CommittedInputEvidenceDelta {
             CommittedInputEvidenceDelta {
+                output_recall_invalidation: None,
                 execution: ExecutionInputDelta::default(),
                 records: vec![turn("c", 3)],
                 removals: Vec::new(),

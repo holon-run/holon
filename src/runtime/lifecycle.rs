@@ -851,8 +851,17 @@ impl RuntimeHandle {
     }
 
     pub async fn active_tasks(&self, limit: usize) -> Result<Vec<TaskRecord>> {
-        crate::diagnostics::record_runtime_projection_cache_read();
-        Ok(self.inner.projection_cache.lock().await.active_tasks(limit))
+        let read = self
+            .capture_task_read(&super::task_reads::active_task_request())
+            .await?;
+        let selected = super::task_reads::active_task_records(&read.tasks)?
+            .into_iter()
+            .take(limit)
+            .collect::<Vec<_>>();
+        let _owned_budget = self.task_projection_budget(&read.tasks, &selected, 1)?;
+        // The public observability Vec is the final output boundary. Internal
+        // Task clones stay charged through this synchronous return.
+        Ok(selected.into_iter().cloned().collect())
     }
 
     pub async fn recent_transcript(&self, limit: usize) -> Result<Vec<TranscriptEntry>> {
@@ -866,17 +875,54 @@ impl RuntimeHandle {
     pub(crate) async fn child_agent_observability(
         &self,
     ) -> Result<ChildAgentObservabilitySnapshot> {
-        let read = self.capture_scheduler_projection().await?;
-        let agent = read.state.as_ref().clone();
-        let closure = Self::closure_decision_from_projection(&agent, &read.projection, None);
-        let latest_tasks = self.latest_task_records().await?;
-        let briefs = self.recent_briefs(16).await?;
-        Ok(build_child_agent_observability(
-            &agent,
+        Ok(self.child_agent_summary_observation().await?.2)
+    }
+
+    pub(crate) async fn child_agent_summary_observation(
+        &self,
+    ) -> Result<(Arc<AgentState>, usize, ChildAgentObservabilitySnapshot)> {
+        let read = self.capture_child_observability_projection().await?;
+        let active_task_count = super::task_reads::active_task_count(&read.tasks)?;
+        anyhow::ensure!(
+            active_task_count == read.projection.active_tasks.len(),
+            "child summary Task metadata differs from selected active facts"
+        );
+        let agent = read.state.as_ref();
+        let closure = Self::closure_decision_from_projection(agent, &read.projection, None);
+        let metadata_bytes = std::mem::size_of::<Vec<&TaskRecord>>()
+            .checked_add(
+                read.projection
+                    .active_tasks
+                    .len()
+                    .checked_mul(std::mem::size_of::<&TaskRecord>())
+                    .context("child Task reference slots overflow")?,
+            )
+            .context("child Task metadata overflow")?;
+        let _references = self.inner.input_evidence_budget.register_owned_bytes(
+            &read.tasks.scope,
+            super::input_evidence_budget::InputMemoryCategory::Pins,
+            super::input_evidence_budget::OwnedBytesEstimate {
+                payload_bytes: 0,
+                metadata_estimate_bytes: u64::try_from(metadata_bytes)?,
+            },
+        )?;
+        let active_tasks = read.projection.active_tasks.iter().collect::<Vec<_>>();
+        let briefs = read
+            .observability_briefs
+            .iter()
+            .filter_map(|record| match &record.record {
+                super::resident_input_evidence::PreparedInputEvidence::Brief(brief) => Some(brief),
+                _ => None,
+            });
+        // All internal Task bodies and Brief Arcs remain pinned until this
+        // synchronous conversion to the public observability DTO returns.
+        let observability = build_child_agent_observability_with_active_tasks(
+            agent,
             closure.waiting_reason,
-            &latest_tasks,
-            &briefs,
-        ))
+            &active_tasks,
+            briefs,
+        );
+        Ok((read.state.clone(), active_task_count, observability))
     }
 
     pub(crate) fn child_agent_observability_from_storage(
@@ -912,7 +958,7 @@ impl RuntimeHandle {
             state,
             closure.waiting_reason,
             &active_tasks,
-            &briefs,
+            briefs.iter(),
         ))
     }
 
@@ -2198,6 +2244,7 @@ impl RuntimeHandle {
     }
 }
 
+#[cfg(test)]
 fn active_child_tasks<'a>(agent_id: &str, tasks: &'a [TaskRecord]) -> Vec<&'a TaskRecord> {
     tasks
         .iter()
@@ -2236,6 +2283,7 @@ fn child_blocked_reason(
     })
 }
 
+#[cfg(test)]
 fn build_child_agent_observability(
     agent: &AgentState,
     waiting_reason: Option<WaitingReason>,
@@ -2243,14 +2291,19 @@ fn build_child_agent_observability(
     briefs: &[BriefRecord],
 ) -> ChildAgentObservabilitySnapshot {
     let active_tasks = active_child_tasks(&agent.id, latest_tasks);
-    build_child_agent_observability_with_active_tasks(agent, waiting_reason, &active_tasks, briefs)
+    build_child_agent_observability_with_active_tasks(
+        agent,
+        waiting_reason,
+        &active_tasks,
+        briefs.iter(),
+    )
 }
 
-fn build_child_agent_observability_with_active_tasks(
+fn build_child_agent_observability_with_active_tasks<'a>(
     agent: &AgentState,
     waiting_reason: Option<WaitingReason>,
     active_tasks: &[&TaskRecord],
-    briefs: &[BriefRecord],
+    briefs: impl DoubleEndedIterator<Item = &'a BriefRecord> + Clone,
 ) -> ChildAgentObservabilitySnapshot {
     let blocked_reason = child_blocked_reason(&agent.status, &active_tasks);
     let phase = if agent.last_turn_terminal.is_some()
@@ -2289,12 +2342,11 @@ fn build_child_agent_observability_with_active_tasks(
             .work_summary
             .clone(),
         last_progress_brief: briefs
-            .iter()
+            .clone()
             .rev()
             .find(|brief| brief.kind == BriefKind::Ack)
             .map(|brief| brief.text.clone()),
         last_result_brief: briefs
-            .iter()
             .rev()
             .find(|brief| brief.kind.is_terminal())
             .map(|brief| brief.text.clone()),

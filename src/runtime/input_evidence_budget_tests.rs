@@ -534,3 +534,80 @@ fn current_pending_reload_keeps_the_original_accepted_ticket_nonce() {
         .unwrap();
     assert_eq!(ledger.report().unwrap().pending.count, 0);
 }
+
+#[test]
+fn host_owned_metadata_needs_no_fake_identity_and_lives_until_last_guard() -> Result<()> {
+    let ledger = InputEvidenceBudgetLedger::new(limits())?;
+    let guard = ledger.register_host_owned_bytes(
+        InputMemoryCategory::Candidate,
+        OwnedBytesEstimate {
+            payload_bytes: 11,
+            metadata_estimate_bytes: 37,
+        },
+    )?;
+    let held = guard.clone();
+    let report = ledger.report()?;
+    assert!(report.scopes.is_empty());
+    assert_eq!(report.pending.count, 0);
+    assert_eq!(report.host_owned.payload_bytes, 11);
+    assert_eq!(report.host_owned.metadata_estimate_bytes, 37);
+    assert_eq!(report.owned.total()?, 48);
+    assert_eq!(report.observed_bytes, 48);
+    assert_eq!(report.categories[&InputMemoryCategory::Candidate].bytes, 48);
+    drop(guard);
+    assert_eq!(ledger.report()?.observed_bytes, 48);
+    drop(held);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
+}
+#[test]
+fn host_owned_metadata_does_not_change_scoped_pending_or_history_responsibility() -> Result<()> {
+    let ledger = InputEvidenceBudgetLedger::new(limits())?;
+    let s = scope("real-owner", 7);
+    let _accepted = accepted(&ledger, &s, "original-accepted", 5);
+    let scoped = ledger.register_owned_bytes(
+        &s,
+        InputMemoryCategory::Pins,
+        OwnedBytesEstimate {
+            payload_bytes: 3,
+            metadata_estimate_bytes: 9,
+        },
+    )?;
+    let before = ledger.report()?;
+    let host = ledger.register_host_owned_bytes(
+        InputMemoryCategory::Candidate,
+        OwnedBytesEstimate {
+            payload_bytes: 0,
+            metadata_estimate_bytes: 81,
+        },
+    )?;
+    let current = ledger.report()?;
+    assert_eq!(current.scopes.len(), 1);
+    assert_eq!(current.scopes[0].scope, s);
+    assert_eq!(
+        current.scopes[0].owned.total()?,
+        before.scopes[0].owned.total()?
+    );
+    assert_eq!(current.pending.count, before.pending.count);
+    assert_eq!(current.pending.body_bytes, before.pending.body_bytes);
+    assert_eq!(
+        current.reclaimable_history.bytes,
+        before.reclaimable_history.bytes
+    );
+    assert_eq!(current.observed_bytes, before.observed_bytes + 81);
+    drop(host);
+    assert_eq!(ledger.report()?.observed_bytes, before.observed_bytes);
+    drop(scoped);
+    assert_eq!(ledger.report()?.pending.count, 1);
+    assert!(ledger
+        .register_host_owned_bytes(
+            InputMemoryCategory::Candidate,
+            OwnedBytesEstimate {
+                payload_bytes: u64::MAX,
+                metadata_estimate_bytes: 1
+            }
+        )
+        .is_err());
+    assert_eq!(ledger.report()?.host_owned.total()?, 0);
+    Ok(())
+}

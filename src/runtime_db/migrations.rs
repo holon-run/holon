@@ -3955,6 +3955,11 @@ CREATE INDEX IF NOT EXISTS idx_episode_memory_results_episode_scope
         name: "actual_dispatch_memory_responsibility",
         sql: super::dispatch_memory::DISPATCH_MEMORY_SCHEMA,
     },
+    Migration {
+        version: super::task_snapshot::TASK_DOMAIN_VERSION,
+        name: "qualified_task_result_domain",
+        sql: super::task_snapshot::TASK_DOMAIN_SCHEMA,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4265,6 +4270,11 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     }
     if migration.name == "qualified_work_wait_continuation" {
         super::work_snapshot::capture_work_domain_upgrade_tx(transaction)?;
+    }
+    if migration.version == super::task_snapshot::TASK_DOMAIN_VERSION {
+        transaction.execute_batch(super::task_stop::TASK_STOP_SCHEMA)?;
+        super::task_snapshot::capture_task_domain_upgrade_tx(transaction)?;
+        super::task_snapshot::capture_status_sources_upgrade_tx(transaction)?;
     }
     if migration.name == "actual_dispatch_memory_responsibility" {
         super::dispatch_memory::capture_legacy_dispatches_at_upgrade_tx(transaction)?;

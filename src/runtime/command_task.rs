@@ -36,6 +36,17 @@ use crate::{
 
 use super::{task_state_reducer, RuntimeHandle};
 
+#[path = "command_process_exit.rs"]
+mod process_exit;
+mod producer_actor;
+mod producer_maintenance;
+pub(super) use process_exit::OriginalCommandProcessExit;
+pub(crate) use producer_actor::{execute_original_command_terminal, OriginalCommandTerminalRead};
+pub(crate) use producer_maintenance::{FrozenCommandTaskTerminal, OriginalCommandTaskProducer};
+#[path = "managed_process.rs"]
+mod managed_process;
+pub(super) use managed_process::OriginalManagedProcess;
+
 const OUTPUT_CHANNEL_CAPACITY: usize = 64;
 const INPUT_CHANNEL_CAPACITY: usize = 16;
 const STREAM_TAIL_CHAR_LIMIT: usize = 128_000;
@@ -89,9 +100,18 @@ pub(super) struct ResolvedCommandTask {
 
 pub(super) struct RunningCommand {
     process: Box<dyn RunningProcess>,
+    process_responsibility: Option<std::sync::Arc<OriginalManagedProcess>>,
     output_rx: mpsc::Receiver<OutputChunk>,
     reader_handles: Vec<JoinHandle<()>>,
     trace: Option<RunningCommandTrace>,
+}
+
+impl RunningCommand {
+    fn record_process_exit(&self) {
+        if let Some(original) = &self.process_responsibility {
+            original.record_successful_exit();
+        }
+    }
 }
 
 struct RunningCommandTrace {
@@ -168,6 +188,7 @@ struct CommandTaskMatch {
     status: crate::types::TaskStatus,
     summary: Option<String>,
     command: Option<CommandTaskStatusSnapshot>,
+    _owned_budget: std::sync::Arc<super::input_evidence_budget::BudgetViewGuard>,
 }
 
 impl CapturedOutput {
@@ -638,6 +659,7 @@ impl RuntimeHandle {
                         .await
                         .context("failed to query command status")?
                     {
+                        running.record_process_exit();
                         let process_completed_at = chrono::Utc::now();
                         collect_remaining_output(&mut running, &mut captured).await;
                         record_command_trace(
@@ -669,6 +691,7 @@ impl RuntimeHandle {
                             .await
                             .context("failed to query command status")?
                         {
+                            running.record_process_exit();
                             let process_completed_at = chrono::Utc::now();
                             collect_remaining_output(&mut running, &mut captured).await;
                             record_command_trace(
@@ -776,6 +799,7 @@ impl RuntimeHandle {
                         .await
                         .context("failed to query command status")?
                     {
+                        running.record_process_exit();
                         let process_completed_at = chrono::Utc::now();
                         collect_remaining_output(&mut running, &mut captured).await;
                         record_command_trace(
@@ -849,8 +873,10 @@ impl RuntimeHandle {
         spec: &CommandTaskSpec,
         workdir: &PathBuf,
     ) -> Result<Option<CommandTaskMatch>> {
-        let mut entries = self.managed_tasks().latest_task_list_entries().await?;
-        let found = entries
+        let mut read = self.managed_tasks().latest_task_list_entries().await?;
+        let owned_budget = read._owned_budget.clone();
+        let found = read
+            .entries
             .drain(..)
             .find(|entry| {
                 entry.kind == TaskKind::CommandTask.as_str()
@@ -864,6 +890,7 @@ impl RuntimeHandle {
                 status: entry.status,
                 summary: entry.summary,
                 command: entry.command,
+                _owned_budget: owned_budget,
             });
         Ok(found)
     }
@@ -1109,7 +1136,24 @@ impl RuntimeHandle {
         ))
         .await?;
 
-        let _registration = self.admit_control_task_handle_registration(&task).await?;
+        let mut registration = self.admit_control_task_handle_registration(&task).await?;
+        let mut selected_request = super::resident_task::TaskCaptureRequest::current();
+        selected_request
+            .required_keys
+            .insert(super::resident_task::TaskKey::new(
+                super::resident_task::TaskFamily::Task,
+                &task.id,
+            ));
+        registration
+            .prepare_owner_task_request(&selected_request)
+            .await?;
+        let selected = registration.capture_tasks(&selected_request)?;
+        let qualified = selected
+            .lookup(&super::resident_task::TaskKey::new(
+                super::resident_task::TaskFamily::Task,
+                &task.id,
+            ))?
+            .context("Command registration lacks its qualified original Task")?;
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let (force_stop_tx, force_stop_rx) = oneshot::channel();
         let cancel_tx = super::control_cancellation::SharedControlSignal::new(cancel_tx);
@@ -1119,6 +1163,24 @@ impl RuntimeHandle {
             cancel_tx.clone(),
             force_stop_tx.clone(),
         );
+        let producer = match OriginalCommandTaskProducer::admitted(
+            &registration,
+            qualified,
+            &task,
+            &control_lease,
+            self.inner.mutation_owner.owner_epoch(),
+            &self.inner.input_evidence_budget,
+        ) {
+            Ok(source) => source,
+            Err(error) => {
+                self.inner
+                    .control_cancellations
+                    .abandon_unattached_command(&control_lease)?;
+                return Err(error);
+            }
+        };
+        control_lease.install_original_command(producer.clone())?;
+        let runner_material = producer.runner_material()?;
         // Hold map lock until the monitor JoinHandle is attached.
         let mut registered_handles = self.inner.task_handles.lock().await;
         registered_handles.insert(
@@ -1139,6 +1201,7 @@ impl RuntimeHandle {
             .take()
             .expect("original command process transferred twice");
         let monitor = tokio::spawn(async move {
+            let _runner_material = runner_material;
             if let Err(err) = runtime
                 .run_command_task(
                     task_record,
@@ -1149,7 +1212,8 @@ impl RuntimeHandle {
                     input_rx,
                     promoted_from_exec_command,
                     initial_capture,
-                    control_lease_for_monitor.lease_id(),
+                    &control_lease_for_monitor,
+                    &producer,
                 )
                 .await
             {
@@ -1163,8 +1227,9 @@ impl RuntimeHandle {
                             "error": err.to_string(),
                         }),
                     ));
-                let _ = runtime
+                if let Err(terminal_error) = runtime
                     .persist_command_task_terminal_state(
+                        &producer,
                         &task_record_for_error,
                         TaskStatus::Failed,
                         command_task_detail(
@@ -1178,13 +1243,11 @@ impl RuntimeHandle {
                         None,
                         None,
                     )
-                    .await;
-                runtime
-                    .release_completed_task_handle_exact(
-                        &task_record_for_error.id,
-                        control_lease_for_monitor.lease_id(),
-                    )
-                    .await;
+                    .await
+                {
+                    tracing::error!(task_id=%task_record_for_error.id,error=%terminal_error,
+                        "original Command terminal responsibility retained for reconciliation");
+                }
             }
         });
         control_lease.attach(monitor);
@@ -1199,6 +1262,9 @@ impl RuntimeHandle {
             let _responsible_runtime = runtime;
             let stopped = running.process.stop(StopSignal::Force).await;
             let waited = running.process.wait().await;
+            if waited.is_ok() {
+                running.record_process_exit();
+            }
             for reader in &running.reader_handles {
                 reader.abort();
             }
@@ -1222,10 +1288,11 @@ impl RuntimeHandle {
         mut input_rx: mpsc::Receiver<CommandTaskInputRequest>,
         promoted_from_exec_command: bool,
         initial_capture: CapturedOutput,
-        control_lease_id: &str,
+        control_lease: &std::sync::Arc<super::control_cancellation::ControlJoinLease>,
+        producer: &std::sync::Arc<OriginalCommandTaskProducer>,
     ) -> Result<()> {
         let mut captured = initial_capture;
-        let mut terminal = match self
+        let terminal = match self
             .run_command_task_inner(
                 &task_record,
                 &resolved,
@@ -1235,6 +1302,8 @@ impl RuntimeHandle {
                 &mut input_rx,
                 promoted_from_exec_command,
                 &mut captured,
+                control_lease,
+                producer,
             )
             .await
         {
@@ -1272,7 +1341,15 @@ impl RuntimeHandle {
             }
             Err(err) => {
                 let _ = running.process.stop(StopSignal::Graceful).await;
-                let _ = running.process.wait().await;
+                if let Ok(status) = running.process.wait().await {
+                    running.record_process_exit();
+                    self.observe_original_command_process_exit(
+                        &task_record,
+                        control_lease,
+                        &status,
+                        running.process.as_ref(),
+                    );
+                }
                 let process_completed_at = chrono::Utc::now();
                 collect_remaining_output(&mut running, &mut captured).await;
                 record_command_trace(
@@ -1291,14 +1368,6 @@ impl RuntimeHandle {
                 }
             }
         };
-        if terminal.status == TaskStatus::Cancelled {
-            if let Some(latest_task) = self.inner.storage.latest_task_record(&task_record.id)? {
-                terminal.cancel_requested |=
-                    command_task_detail_flag(latest_task.detail.as_ref(), "cancel_requested");
-                terminal.force_stop_requested |=
-                    command_task_detail_flag(latest_task.detail.as_ref(), "force_stop_requested");
-            }
-        }
         let status_label = task_status_label(&terminal.status);
         let mut detail = command_task_detail(
             &resolved,
@@ -1314,13 +1383,9 @@ impl RuntimeHandle {
             terminal.cancel_requested,
             terminal.force_stop_requested,
         );
+        // Result dispatch has a new hint; the Task keeps its admitted parent fence.
+        let detail = self.task_detail_preserving_rejoin_contract(&task_record, detail);
         let result_turn_id = crate::ids::turn_id();
-        if let Some(detail) = detail.as_object_mut() {
-            detail.insert(
-                "parent_turn_id".to_string(),
-                serde_json::json!(result_turn_id.clone()),
-            );
-        }
         let result_text = build_command_task_result_text(
             task_record.summary.as_deref().unwrap_or(&resolved.spec.cmd),
             &resolved.output_path,
@@ -1331,6 +1396,8 @@ impl RuntimeHandle {
         );
         let result_message = MessageEnvelope {
             turn_id: Some(result_turn_id),
+            task_id: Some(task_record.id.clone()),
+            work_item_id: task_record.work_item_id.clone(),
             metadata: Some({
                 serde_json::json!({
                     "task_id": task_record.id,
@@ -1358,6 +1425,7 @@ impl RuntimeHandle {
             )
         };
         self.persist_command_task_terminal_state(
+            producer,
             &task_record,
             terminal.status.clone(),
             detail.clone(),
@@ -1366,9 +1434,34 @@ impl RuntimeHandle {
         )
         .await?;
 
-        self.release_completed_task_handle_exact(&task_record.id, control_lease_id)
-            .await;
         Ok(())
+    }
+
+    fn observe_original_command_process_exit(
+        &self,
+        task: &TaskRecord,
+        lease: &super::control_cancellation::ControlJoinLease,
+        status: &RunningProcessExitStatus,
+        process: &dyn RunningProcess,
+    ) {
+        let scope = super::resident_input_evidence::InputEvidenceScope {
+            agent_id: task.agent_id.clone(),
+            identity_incarnation: self.inner.identity_incarnation,
+        };
+        let observed = OriginalCommandProcessExit::from_successful_process_exit(
+            &scope,
+            task,
+            lease,
+            status,
+            process,
+            &self.inner.input_evidence_budget,
+        )
+        .and_then(|fact| lease.record_original_command_process_exit(fact));
+        if let Err(error) = observed {
+            // Missing proof retains the worktree; it must not change the already
+            // observed Command's canonical terminal/result business outcome.
+            tracing::warn!(task_id=%task.id,error=%error,"original Command exit proof unavailable");
+        }
     }
 
     async fn run_command_task_inner(
@@ -1381,6 +1474,8 @@ impl RuntimeHandle {
         input_rx: &mut mpsc::Receiver<CommandTaskInputRequest>,
         promoted_from_exec_command: bool,
         captured: &mut CapturedOutput,
+        control_lease: &std::sync::Arc<super::control_cancellation::ControlJoinLease>,
+        producer: &std::sync::Arc<OriginalCommandTaskProducer>,
     ) -> Result<CommandTaskRunOutcome> {
         let system = self.system();
         let mut output_failure = None;
@@ -1412,48 +1507,31 @@ impl RuntimeHandle {
             captured.fail(failure);
             let _ = running.process.stop(StopSignal::Graceful).await;
         }
-        let latest_status = self
-            .inner
-            .storage
-            .latest_task_record(&task_record.id)?
-            .map(|task| task.status);
-        if !matches!(
-            latest_status,
-            Some(TaskStatus::Cancelling)
-                | Some(TaskStatus::Completed)
-                | Some(TaskStatus::Failed)
-                | Some(TaskStatus::Cancelled)
-                | Some(TaskStatus::Interrupted)
-        ) {
-            let running_task = TaskRecord {
-                id: task_record.id.clone(),
-                agent_id: task_record.agent_id.clone(),
-                kind: task_record.kind.clone(),
-                status: TaskStatus::Running,
-                created_at: task_record.created_at,
-                updated_at: chrono::Utc::now(),
-                parent_message_id: None,
-                work_item_id: task_record.work_item_id.clone(),
-                summary: task_record.summary.clone(),
-                detail: Some(self.task_detail_preserving_rejoin_contract(
-                    task_record,
-                    command_task_detail(
-                        resolved,
-                        promoted_from_exec_command,
-                        captured,
-                        None,
-                        None,
-                        false,
-                    ),
-                )),
-                recovery: task_record.recovery.clone(),
-            };
-            self.apply_task_transition(task_state_reducer::TaskTransition::new(
-                &running_task,
-                "task_status_updated",
-            ))
+        let running_task = TaskRecord {
+            id: task_record.id.clone(),
+            agent_id: task_record.agent_id.clone(),
+            kind: task_record.kind.clone(),
+            status: TaskStatus::Running,
+            created_at: task_record.created_at,
+            updated_at: chrono::Utc::now(),
+            parent_message_id: None,
+            work_item_id: task_record.work_item_id.clone(),
+            summary: task_record.summary.clone(),
+            detail: Some(self.task_detail_preserving_rejoin_contract(
+                task_record,
+                command_task_detail(
+                    resolved,
+                    promoted_from_exec_command,
+                    captured,
+                    None,
+                    None,
+                    false,
+                ),
+            )),
+            recovery: task_record.recovery.clone(),
+        };
+        self.prepare_original_command_running(producer, &running_task)
             .await?;
-        }
 
         let mut cancelled = false;
         let mut cancellation_requested = false;
@@ -1518,6 +1596,8 @@ impl RuntimeHandle {
                         .await
                         .context("failed to query command status")?
                     {
+                        running.record_process_exit();
+                        self.observe_original_command_process_exit(task_record,control_lease,&status,running.process.as_ref());
                         exit_status = status;
                         process_completed_at = chrono::Utc::now();
                         break;
@@ -1583,6 +1663,7 @@ impl RuntimeHandle {
 
     async fn persist_command_task_terminal_state(
         &self,
+        producer: &std::sync::Arc<OriginalCommandTaskProducer>,
         task_record: &TaskRecord,
         status: TaskStatus,
         detail: serde_json::Value,
@@ -1590,16 +1671,9 @@ impl RuntimeHandle {
         message_evidence: Option<&MessageEnvelope>,
     ) -> Result<()> {
         let (cancel_requested, force_stop_requested) = if status == TaskStatus::Cancelled {
-            let latest_detail = self
-                .inner
-                .storage
-                .latest_task_record(&task_record.id)?
-                .and_then(|task| task.detail);
             (
-                command_task_detail_flag(Some(&detail), "cancel_requested")
-                    || command_task_detail_flag(latest_detail.as_ref(), "cancel_requested"),
-                command_task_detail_flag(Some(&detail), "force_stop_requested")
-                    || command_task_detail_flag(latest_detail.as_ref(), "force_stop_requested"),
+                command_task_detail_flag(Some(&detail), "cancel_requested"),
+                command_task_detail_flag(Some(&detail), "force_stop_requested"),
             )
         } else {
             (false, false)
@@ -1624,20 +1698,8 @@ impl RuntimeHandle {
             detail: Some(self.task_detail_preserving_rejoin_contract(task_record, detail)),
             recovery: task_record.recovery.clone(),
         };
-        if let Some(message_evidence) = message_evidence {
-            self.commit_terminal_task_result(
-                &fallback,
-                "command_task_terminal_persisted",
-                message_evidence,
-            )
+        self.commit_original_command_terminal(producer, &fallback, message_evidence)
             .await?;
-        } else {
-            self.apply_task_transition_silent(task_state_reducer::TaskTransition::new(
-                &fallback,
-                "command_task_terminal_persisted",
-            ))
-            .await?;
-        }
         Ok(())
     }
 
@@ -1756,7 +1818,21 @@ impl RuntimeHandle {
         let execution = self
             .effective_execution(ExecutionScopeKind::CommandTask)
             .await?;
-        let mut process = system
+        // Register before spawn can suspend. Cancellation never becomes an
+        // absence proof for a process whose handle was not returned.
+        let process_scope = super::resident_input_evidence::InputEvidenceScope {
+            agent_id: self.inner.mutation_owner.agent_id().to_owned(),
+            identity_incarnation: self.inner.identity_incarnation,
+        };
+        let process_responsibility = OriginalManagedProcess::before_spawn(
+            &process_scope,
+            &self.inner.input_evidence_budget,
+        )?;
+        self.inner.control_cancellations.retain_managed_process(
+            process_responsibility.clone(),
+            &self.inner.input_evidence_budget,
+        )?;
+        let spawned = system
             .spawn(
                 &execution,
                 ProcessRequest {
@@ -1778,8 +1854,8 @@ impl RuntimeHandle {
                     purpose: ProcessPurpose::CommandTask,
                 },
             )
-            .await
-            .map_err(|error| {
+            .await;
+        let mut process = spawned.map_err(|error| {
                 ToolError::new("command_spawn_failed", "failed to start command process")
                     .with_details(json!({
                         "cmd": resolved.spec.cmd.clone(),
@@ -1792,6 +1868,7 @@ impl RuntimeHandle {
                     )
                     .with_retryable(false)
             })?;
+        process_responsibility.attach_original_handle(process.as_ref())?;
         let stdout = process
             .take_stdout()
             .ok_or_else(|| anyhow!("failed to capture command stdout"))?;
@@ -1804,6 +1881,7 @@ impl RuntimeHandle {
 
         Ok(RunningCommand {
             process,
+            process_responsibility: Some(process_responsibility),
             output_rx: rx,
             reader_handles,
             trace: trace_context.map(|parent| RunningCommandTrace {
@@ -2121,6 +2199,7 @@ mod tests {
     };
 
     use super::*;
+    include!("command_task/producer_tests.rs");
 
     #[derive(Clone)]
     struct FakeRunningProcess {
@@ -2261,6 +2340,7 @@ mod tests {
 
         RunningCommand {
             process: Box::new(process),
+            process_responsibility: None,
             output_rx: rx,
             reader_handles: Vec::new(),
             trace: None,

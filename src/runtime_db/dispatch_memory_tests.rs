@@ -746,3 +746,94 @@ mod retired_tests;
 
 #[path = "dispatch_memory_auto_tests.rs"]
 mod automatic_tests;
+
+#[path = "dispatch_memory_task_budget_tests.rs"]
+mod task_budget_tests;
+
+impl RuntimeDb {
+    /// The original canonical assignment + typed Started posture, with no
+    /// runtime construction or guessed physical producer completion.
+    pub(crate) fn original_cold_started_stop_host_fixture(
+        &self,
+        scope: &InputEvidenceScope,
+    ) -> Result<()> {
+        let at = Utc::now() - chrono::Duration::seconds(5);
+        let start = self.transaction(|tx| {
+            let mut source = MessageEnvelope::new(
+                &scope.agent_id,
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "original cold actual dispatch".into(),
+                },
+            );
+            source.id = "stop-host-original-dispatch-source".into();
+            source.created_at = at;
+            let (source, inserted) = append_message_tx(tx, &source)?;
+            ensure!(inserted, "original source duplicated");
+            let mut turn = TurnRecord::new(&scope.agent_id, "stop-host-original-dispatch-turn", 1);
+            turn.created_at = at;
+            turn.run_id = Some("stop-host-original-dispatch-run".into());
+            turn.input_message_ids.push(source.id.clone());
+            turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&source));
+            upsert_turn_record_tx(tx, &turn)?;
+            let actual = committed_turn_record_tx(tx, &scope.agent_id, &turn.turn_id)?;
+            let mut state = ContextDurableRead::new(tx, &scope.agent_id)
+                .scope_facts()?
+                .state
+                .context("cold original State missing")?;
+            state.status = AgentStatus::AwakeRunning;
+            state.turn_index = 1;
+            state.total_message_count += 1;
+            state.current_turn_id = Some(turn.turn_id.clone());
+            state.current_run_id = turn.run_id.clone();
+            state.current_execution_binding = Some(WorkItemExecutionBinding {
+                activation_id: None,
+                admission_provenance: None,
+                source_message_id: source.id.clone(),
+                turn_id: turn.turn_id.clone(),
+                owner: None,
+                work_item_id: None,
+                claimed_work_revision: None,
+            });
+            upsert_agent_state_tx(tx, &state)?;
+            register_committed_input_evidence_tx(
+                tx,
+                scope,
+                &[
+                    CanonicalInputEvidence::Message(source.clone()),
+                    CanonicalInputEvidence::Turn(actual.record),
+                ],
+            )?;
+            DispatchMemoryStart::new(
+                EpisodeMemoryKey {
+                    agent_id: scope.agent_id.clone(),
+                    identity_incarnation: scope.identity_incarnation,
+                    actual_dispatch_turn_id: turn.turn_id,
+                },
+                EpisodeMemoryInvocation {
+                    message_id: source.id.clone(),
+                    turn_index: 1,
+                },
+                &source,
+                idle(),
+                state.working_memory,
+            )
+        })?;
+        let prepared = prepare_start_command(self, scope, &start, at)?;
+        ensure!(
+            matches!(
+                self.transitions_in_scope(scope)
+                    .commit_prepared_transition(&prepared)?,
+                crate::runtime_db::transitions::InputMutationExecution::Committed { .. }
+            ),
+            "original Start missing"
+        );
+        Ok(())
+    }
+}

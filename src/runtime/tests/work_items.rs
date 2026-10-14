@@ -1519,11 +1519,11 @@ async fn work_item_mutations_atomically_track_execution_readiness() {
                     )?;
                     Ok(TransitionCommit {
                         applied: true,
-                        effects: PostCommitEffects {
+                        effects: Box::new(PostCommitEffects {
                             execution_protocol: Some(actual),
                             input_evidence_delta,
                             ..Default::default()
-                        },
+                        }),
                         ..Default::default()
                     })
                 })
@@ -9409,3 +9409,6 @@ fn rebase_completion_rejects_mismatched_agent_id() {
     let result = crate::runtime::rebase_prepared_completion_agent_state(&prepared, &baseline);
     assert!(result.is_err(), "mismatched agent id must be rejected");
 }
+
+#[path = "work_result_phase_tests.rs"]
+mod work_result_phase_tests;

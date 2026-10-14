@@ -5,7 +5,8 @@ use crate::{
     context::{
         acquire_durable_context, completion_work_item_ids,
         inputs::{
-            captured_work_item, selected_completion_brief_ids, ContextInputs, ResidentContextInputs,
+            captured_work_item, pending_task_input_roots, selected_completion_brief_ids,
+            ContextInputs, ResidentContextInputs,
         },
         observe_context_resources, ContextConfig, ContextHistoryPreparation,
         FilesystemContextResources,
@@ -16,11 +17,16 @@ use crate::{
         InputEvidenceFamily as Family, InputEvidenceKey, InputWindowSelector, LEGACY_INPUT_WINDOW,
     },
     runtime::resident_work::{CapturedWork, WorkCaptureRequest, WorkFamily, WorkKey},
+    runtime::{
+        resident_task::CapturedTasks,
+        task_reads::{active_task_request, context_task_request},
+    },
     runtime_db::{
         context_inputs::ContextDurableRead,
         input_evidence_snapshot::{
             InputEvidenceLoadRequest, InputEvidenceSnapshotError, InputWindowRequest,
         },
+        task_snapshot::{validate_task_domain_observation_tx, TaskSnapshotError},
         work_snapshot::{validate_work_domain_observation_tx, WorkSnapshotError},
     },
     types::TurnOwner,
@@ -31,7 +37,7 @@ use crate::{
 struct ContextConfigurationChanged;
 
 #[derive(Debug, thiserror::Error)]
-#[error("context Work or Trigger dependency changed during acquisition")]
+#[error("context Work, Task or Trigger dependency changed during acquisition")]
 struct ContextDependencyChanged;
 
 #[derive(Debug, thiserror::Error)]
@@ -134,6 +140,30 @@ impl RuntimeHandle {
             .prompt_budget_estimated_tokens
             .checked_sub(crate::prompt::time::RUNTIME_TIME_RESERVED_TOKENS)
             .ok_or_else(|| anyhow!("context budget cannot reserve runtime time"))?;
+        // Complete metadata names only this binding's admitted settlements;
+        // retry eligibility must not exclude still-Open CallerAdmitted facts.
+        let (mandatory_roots, record_limit, byte_limit) =
+            mutation.context_input_evidence_policy()?;
+        let metadata_request = active_task_request();
+        mutation
+            .prepare_owner_task_request(&metadata_request)
+            .await?;
+        let metadata = mutation.capture_task_read(&metadata_request)?;
+        anyhow::ensure!(
+            metadata.token.identity_incarnation == metadata.tasks.scope.identity_incarnation
+                && metadata.state.id == metadata.tasks.scope.agent_id,
+            "context Task publication differs"
+        );
+        let (task_request, _task_selector_budget) = context_task_request(
+            &metadata.tasks,
+            &metadata.state,
+            &self.inner.input_evidence_budget,
+            record_limit,
+            byte_limit,
+        )?;
+        drop(metadata);
+        mutation.prepare_owner_task_request(&task_request).await?;
+        let planned_tasks = mutation.capture_task_read(&task_request)?.tasks;
         let work_request = context_work_capture_request(&mutation.state);
         mutation.prepare_owner_work_request(&work_request).await?;
         let state = &mutation.state;
@@ -149,8 +179,6 @@ impl RuntimeHandle {
         let workspace = self.workspace_view_from_state(state)?;
         let model = self.model_state_for_turn(state, fallback_model);
         let history_policy = turn::context_history_preparation(&state.id, &model.effective_model);
-        let (mandatory_roots, record_limit, byte_limit) =
-            mutation.context_input_evidence_policy()?;
         let planned_work = mutation.capture_work(&work_request)?;
         anyhow::ensure!(
             planned_work.scope.agent_id == state.id,
@@ -198,6 +226,17 @@ impl RuntimeHandle {
             record_limit,
             byte_limit,
         )?;
+        let pending_task_sources = pending_task_input_roots(
+            &planned_tasks,
+            state,
+            &message.id,
+            &self.inner.input_evidence_budget,
+            record_limit,
+            byte_limit,
+        )?;
+        input_request
+            .mandatory_roots
+            .extend(pending_task_sources.roots);
         // Completion is its own owning path. Ordinary mandatory roots retain
         // their strict meaning even when they name the same Brief or source.
         input_request.selected_completion_brief_ids =
@@ -209,16 +248,22 @@ impl RuntimeHandle {
         mutation
             .prepare_owner_input_request(&acquisition_request, config.recent_episode_candidates)
             .await?;
-        let captured = mutation.capture_context_with_inputs_and_work(
+        let captured = mutation.capture_context_with_inputs_and_work_and_tasks(
             config.recent_episode_candidates,
             &input_request,
             &work_request,
+            &task_request,
         )?;
         let work = captured
             .work
             .as_ref()
             .ok_or_else(|| crate::runtime::resident_work::WorkReadError::IncompleteLive)?;
         validate_work_selection(&planned_work, work)?;
+        let tasks = captured
+            .tasks
+            .as_ref()
+            .ok_or(crate::runtime::resident_task::TaskReadError::IncompleteActive)?;
+        validate_task_selection(&planned_tasks, tasks)?;
         let state = captured.state.as_ref();
         let resident = captured.input_evidence.as_ref().ok_or_else(|| {
             InputEvidenceSnapshotError::NeedsPreparation(
@@ -260,9 +305,12 @@ impl RuntimeHandle {
                 .ok_or_else(|| anyhow!("context control revision missing"))?;
             validate_work_domain_observation_tx(&transaction, &work.scope, work.revision)
                 .map_err(context_work_observation_error)?;
+            validate_task_domain_observation_tx(&transaction, &tasks.scope, tasks.revision)
+                .map_err(context_task_observation_error)?;
             validate_trigger_selection(&triggers, &durable_inputs.external_triggers()?)?;
             let inputs =
-                ResidentContextInputs::new(&durable_inputs, resident, work, state, &triggers)?;
+                ResidentContextInputs::new(&durable_inputs, resident, work, state, &triggers)?
+                    .with_tasks(tasks)?;
             if require_execution {
                 validate_context_execution(&inputs, state, message)?;
             }
@@ -401,6 +449,24 @@ fn context_work_observation_error(error: anyhow::Error) -> anyhow::Error {
     } else {
         error
     }
+}
+
+fn context_task_observation_error(error: anyhow::Error) -> anyhow::Error {
+    if matches!(
+        error.downcast_ref::<TaskSnapshotError>(),
+        Some(TaskSnapshotError::RevisionMismatch { .. })
+    ) {
+        ContextDependencyChanged.into()
+    } else {
+        error
+    }
+}
+
+fn validate_task_selection(planned: &CapturedTasks, captured: &CapturedTasks) -> Result<()> {
+    if planned.scope != captured.scope || planned.revision != captured.revision {
+        return Err(ContextDependencyChanged.into());
+    }
+    Ok(())
 }
 
 fn validate_work_selection(planned: &CapturedWork, captured: &CapturedWork) -> Result<()> {
@@ -974,7 +1040,7 @@ mod tests {
                             register_committed_input_evidence_tx(tx, scope, &facts)?;
                         Ok(TransitionCommit {
                             applied: true,
-                            effects: PostCommitEffects {
+                            effects: Box::new(PostCommitEffects {
                                 agent_state: Some(AgentStateMutation {
                                     expected: Some(Box::new(expected.clone())),
                                     record: Box::new(actual_state),
@@ -983,7 +1049,7 @@ mod tests {
                                 messages,
                                 turns,
                                 ..Default::default()
-                            },
+                            }),
                             ..Default::default()
                         })
                     })

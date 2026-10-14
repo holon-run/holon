@@ -2,6 +2,10 @@
 
 use anyhow::{ensure, Result};
 
+#[path = "inputs/tasks.rs"]
+mod tasks;
+pub(crate) use tasks::pending_task_input_roots;
+
 #[path = "inputs/work.rs"]
 mod work;
 pub(crate) use work::{selected_completion_brief_ids, work_item as captured_work_item};
@@ -66,7 +70,7 @@ pub(crate) trait ContextInputs {
     /// Existing active_for_agent ordering, unbounded so count and display share a view.
     fn active_tasks(&self, agent_id: &str) -> Result<Vec<TaskRecord>>;
     fn delivery_summaries(&self, limit: usize) -> Result<Vec<DeliverySummaryRecord>>;
-    /// D5 settlement aggregate owns these explicit Message/reply SQL reads.
+    /// Selected Task settlement facts and exact Message/reply sources share one view.
     fn admitted_settlement_inputs(
         &self,
         agent_id: &str,
@@ -342,11 +346,13 @@ impl ContextInputs for ContextDurableRead<'_> {
 }
 
 /// Migrated input/evidence and Work reads use selected resident allocations.
-/// Remaining Task/Timer/Trigger adapters explicitly borrow one durable view.
+/// Remaining Timer/Trigger adapters explicitly borrow one durable view.
 pub(crate) struct ResidentContextInputs<'a, 'db> {
     durable: &'a ContextDurableRead<'db>,
     captured: &'a CapturedInputEvidence,
     work: &'a CapturedWork,
+    tasks: Option<&'a crate::runtime::resident_task::CapturedTasks>,
+    task_projection_guards: tasks::TaskProjectionGuards,
     state: &'a AgentState,
     triggers: &'a [ExternalTriggerRecord],
 }
@@ -372,9 +378,22 @@ impl<'a, 'db> ResidentContextInputs<'a, 'db> {
             durable,
             captured,
             work,
+            tasks: None,
+            task_projection_guards: Default::default(),
             state,
             triggers,
         })
+    }
+    pub(crate) fn with_tasks(
+        mut self,
+        tasks: &'a crate::runtime::resident_task::CapturedTasks,
+    ) -> Result<Self> {
+        ensure!(
+            tasks.scope == self.captured.scope,
+            "resident Task context scope mismatch"
+        );
+        self.tasks = Some(tasks);
+        Ok(self)
     }
     fn check_scope(&self, agent_id: &str) -> Result<()> {
         ensure!(
@@ -584,7 +603,7 @@ impl ContextInputs for ResidentContextInputs<'_, '_> {
         Ok(self.triggers.to_vec())
     }
     fn active_tasks(&self, agent_id: &str) -> Result<Vec<TaskRecord>> {
-        self.durable.active_tasks(agent_id)
+        self.resident_active_tasks(agent_id)
     }
     fn delivery_summaries(&self, limit: usize) -> Result<Vec<DeliverySummaryRecord>> {
         self.durable.delivery_summaries(limit)
@@ -594,7 +613,7 @@ impl ContextInputs for ResidentContextInputs<'_, '_> {
         agent_id: &str,
         activation_id: &str,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
-        self.durable.admitted_settlements(agent_id, activation_id)
+        self.resident_admitted_settlements(agent_id, activation_id)
     }
     fn admitted_settlement_inputs(
         &self,
@@ -603,7 +622,7 @@ impl ContextInputs for ResidentContextInputs<'_, '_> {
         current_message_id: &str,
         reply_limit: usize,
     ) -> Result<Vec<AdmittedSettlementInput>> {
-        self.durable.admitted_settlement_inputs(
+        self.resident_admitted_settlement_inputs(
             agent_id,
             activation_id,
             current_message_id,
@@ -1132,7 +1151,7 @@ mod resident_tests {
     }
 
     #[test]
-    fn settlement_aggregate_keeps_exclusions_reply_bound_and_original_body() {
+    fn durable_settlement_aggregate_keeps_exclusions_reply_bound_and_original_body() {
         use crate::{
             runtime_db::task_result_settlement::{upsert_pending_tx, TaskResultSettlementState},
             types::{AdmissionContext, MessageDeliverySurface},
@@ -1211,7 +1230,13 @@ mod resident_tests {
         let state = AgentState::new("default");
         let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[]).unwrap();
         assert!(inputs.message_by_id(&reply.id).is_err());
-        let pending = inputs
+        assert!(inputs
+            .admitted_settlement_inputs("default", "activation", &current.id, 1)
+            .unwrap_err()
+            .downcast_ref::<crate::runtime::resident_task::TaskReadError>()
+            .is_some());
+        // The legacy adapter remains explicit; resident reads cannot borrow it.
+        let pending = durable
             .admitted_settlement_inputs("default", "activation", &current.id, 1)
             .unwrap();
         assert_eq!(pending.len(), 2);
@@ -1222,6 +1247,67 @@ mod resident_tests {
             pending[1].reply.is_none(),
             "reply fetch stays bounded and deduplicated"
         );
+    }
+
+    #[test]
+    fn resident_task_context_preserves_open_reply_selection_without_sql_tables() {
+        let (tasks, messages) = crate::runtime::task_reads::tests::admitted_fixture().unwrap();
+        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+        let tx = connection.transaction().unwrap();
+        let durable = ContextDurableRead::new(&tx, "default");
+        let work = empty_work();
+        let state = AgentState::new("default");
+        let selected = captured(
+            messages
+                .iter()
+                .cloned()
+                .map(|message| evidence(PreparedInputEvidence::Message(message)))
+                .collect(),
+        );
+        let inputs = ResidentContextInputs::new(&durable, &selected, &work, &state, &[])
+            .unwrap()
+            .with_tasks(&tasks)
+            .unwrap();
+        let rows = inputs
+            .admitted_settlement_inputs(
+                "default",
+                "original-open-activation",
+                "result-current-task",
+                1,
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].record.message_id, "result-first-task");
+        assert_eq!(
+            rows[0].reply.as_ref().unwrap().body,
+            messages.last().unwrap().body
+        );
+        assert_eq!(rows[1].record.message_id, "result-duplicate-task");
+        assert!(rows[1].reply.is_none());
+        assert!(inputs.active_tasks("default").unwrap().is_empty());
+        assert!(inputs.active_tasks("foreign").is_err());
+        drop(inputs);
+        let missing_reply = captured(
+            messages
+                .into_iter()
+                .filter(|row| row.id != "reply-outside-window")
+                .map(|message| evidence(PreparedInputEvidence::Message(message)))
+                .collect(),
+        );
+        let inputs = ResidentContextInputs::new(&durable, &missing_reply, &work, &state, &[])
+            .unwrap()
+            .with_tasks(&tasks)
+            .unwrap();
+        assert!(inputs
+            .admitted_settlement_inputs(
+                "default",
+                "original-open-activation",
+                "result-current-task",
+                1
+            )
+            .unwrap_err()
+            .downcast_ref::<InputEvidenceReadError>()
+            .is_some());
     }
 
     #[test]

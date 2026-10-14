@@ -153,14 +153,7 @@ impl RuntimeIndexOutbox {
     }
 
     pub(crate) fn changes_for_task(&self, task: &TaskRecord) -> Vec<RuntimeIndexChange> {
-        vec![self.upsert(
-            task.agent_id.clone(),
-            "task",
-            task.id.clone(),
-            format!("task:{}", task.id),
-            Some(task.updated_at),
-            "task_written",
-        )]
+        vec![RuntimeIndexChange::for_task(task)]
     }
 
     pub(crate) fn changes_for_work_item(&self, record: &WorkItemRecord) -> Vec<RuntimeIndexChange> {

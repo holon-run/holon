@@ -647,7 +647,10 @@ impl RuntimeHost {
         for reservation in &reservations {
             if let Some(root) = reservation.capture_ready_snapshot()? {
                 anyhow::ensure!(
-                    root.episodes.is_none() && root.input_evidence.is_none() && root.work.is_none(),
+                    root.episodes.is_none()
+                        && root.input_evidence.is_none()
+                        && root.work.is_none()
+                        && root.tasks.is_none(),
                     "startup recovery cannot replace a prepared resident root"
                 );
             }
@@ -688,7 +691,11 @@ impl RuntimeHost {
             MutationReservation::begin_all(&mut reservations, ids::audit_event_id())?;
             let global = self
                 .runtime_db()
-                .recover_interrupted_runtime_state_at_startup_in_scopes(&input_scopes, &capability);
+                .recover_interrupted_runtime_state_at_startup_with_tasks_in_scopes(
+                    &input_scopes,
+                    &capability,
+                    &self.inner.input_evidence_budget,
+                );
             let global = match global {
                 Ok(global) => global,
                 Err(error) => {
@@ -1281,6 +1288,12 @@ impl RuntimeHost {
                 prepared,
                 request,
                 &self.inner.input_evidence_budget,
+                &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                    query: Default::default(),
+                    capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+                    record_limit: request.record_limit,
+                    byte_limit: request.byte_limit,
+                },
             );
         let replay_observation =
             if matches!(&committed, Ok(InputMutationExecution::Replayed { .. })) {
@@ -2128,6 +2141,12 @@ mod tests {
                     &finish,
                     &request,
                     &host.inner.input_evidence_budget,
+                    &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                        query: Default::default(),
+                        capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+                        record_limit: request.record_limit,
+                        byte_limit: request.byte_limit,
+                    },
                 )?;
             witness.finish_original_attempt();
             // Actual Finish ACK was lost. Session goes away, but the original

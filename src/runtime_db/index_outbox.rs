@@ -49,6 +49,18 @@ pub struct RuntimeIndexChange {
 }
 
 impl RuntimeIndexChange {
+    pub(crate) fn for_task(task: &crate::types::TaskRecord) -> Self {
+        Self {
+            agent_id: task.agent_id.clone(),
+            source_kind: "task".into(),
+            source_id: task.id.clone(),
+            source_ref: format!("task:{}", task.id),
+            operation: RuntimeIndexOperation::Upsert,
+            source_updated_at: Some(task.updated_at),
+            reason: "task_written".into(),
+        }
+    }
+
     pub(crate) fn for_message(message: &MessageEnvelope) -> Self {
         Self {
             agent_id: message.agent_id.clone(),

@@ -6,11 +6,20 @@
 mod execution_protocol_fixture_repository;
 pub(crate) mod execution_protocol_repository;
 mod prepared_input;
+#[path = "transitions/prepared_task_result.rs"]
+mod prepared_task_result;
 pub(crate) use execution_protocol_repository::{authority_fences_tx, persist_state_tx};
 pub(super) use prepared_input::predicted_trigger_wait_tx;
+pub(crate) use prepared_input::worktree_receipt_exists_tx as task_stop_worktree_receipt_exists_tx;
+pub(in crate::runtime_db) use prepared_input::ExistingOriginalChildBindingWriteProof;
 pub(crate) use prepared_input::{
-    InputMutationExecution, PreparedInputTransition, PreparedQueueTransition,
-    PreparedTaskTransition,
+    InputMutationExecution, OriginalChildStatusSelection, OriginalTaskCleanupView,
+    PreparedInputTransition, PreparedQueueTransition, PreparedTaskTransition,
+};
+pub(in crate::runtime_db) use prepared_task_result::receipt_budget_with_material_tx as task_status_receipt_budget_with_material_tx;
+pub(crate) use prepared_task_result::{
+    receipt_budget_tx as task_result_receipt_budget_tx, PreparedTaskResultTransition,
+    TaskResultOperation,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -133,6 +142,18 @@ pub(crate) enum QueueOperation {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PostCommitEffects {
+    pub task_material_budget_views:
+        Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+    pub task_delta: Option<crate::runtime::resident_task::CommittedTaskDelta>,
+    /// Already observed related Status heads from one original child terminal ACK.
+    /// They carry no State, Task body or missing-domain bootstrap permission.
+    pub related_task_metadata_deltas: Vec<crate::runtime::resident_task::CommittedTaskDelta>,
+    /// A Task delta never supplies complete missing-domain authority.
+    pub task_delta_requires_prepared_domain: bool,
+    /// Actual original SQL writes, independent of full domain install records.
+    pub task_write_keys: BTreeSet<crate::runtime::resident_task::TaskKey>,
+    /// Frozen original command/result observations, including noop dependencies.
+    pub task_observation_keys: BTreeSet<crate::runtime::resident_task::TaskKey>,
     /// Final complete Work coverage from this original committing transaction.
     pub work_delta: Option<crate::runtime::resident_work::CommittedWorkDelta>,
     /// Sparse metadata/maintenance ACKs cannot bootstrap missing Work bodies.
@@ -198,7 +219,7 @@ pub(crate) struct AgentPostureTransitionCommand {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TransitionCommit {
     pub applied: bool,
-    pub effects: PostCommitEffects,
+    pub effects: Box<PostCommitEffects>,
     pub delivery_receipt: Option<AgentMessageDeliveryReceipt>,
 }
 
@@ -580,6 +601,7 @@ impl RuntimeDb {
         Ok(scopes)
     }
 
+    #[cfg(test)]
     pub(crate) fn recover_interrupted_runtime_state_at_startup_in_scopes(
         &self,
         scopes: &[StartupInputRecoveryScope],
@@ -588,7 +610,23 @@ impl RuntimeDb {
         >,
     ) -> Result<StartupInputRecoveryCommit> {
         admission.validate_database(self)?;
-        self.recover_interrupted_runtime_state_at_startup_inner(None, Some(scopes))
+        self.recover_interrupted_runtime_state_at_startup_inner(None, Some(scopes), None)
+    }
+
+    pub(crate) fn recover_interrupted_runtime_state_at_startup_with_tasks_in_scopes(
+        &self,
+        scopes: &[StartupInputRecoveryScope],
+        admission: &super::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery<
+            '_,
+        >,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<StartupInputRecoveryCommit> {
+        admission.validate_database(self)?;
+        self.recover_interrupted_runtime_state_at_startup_inner(
+            None,
+            Some(scopes),
+            Some((admission, ledger)),
+        )
     }
 
     #[cfg(test)]
@@ -597,7 +635,7 @@ impl RuntimeDb {
         fault: Option<TransitionFaultPoint>,
     ) -> Result<StartupRuntimeRecoveryReport> {
         Ok(self
-            .recover_interrupted_runtime_state_at_startup_inner(fault, None)?
+            .recover_interrupted_runtime_state_at_startup_inner(fault, None, None)?
             .report)
     }
 
@@ -605,6 +643,10 @@ impl RuntimeDb {
         &self,
         fault: Option<TransitionFaultPoint>,
         input_scopes: Option<&[StartupInputRecoveryScope]>,
+        task_metadata: Option<(
+            &super::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery<'_>,
+            &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        )>,
     ) -> Result<StartupInputRecoveryCommit> {
         self.transaction(|tx| {
             let mut input_facts=BTreeMap::<String,Vec<super::input_evidence_snapshot::CanonicalInputEvidence>>::new();
@@ -646,6 +688,10 @@ impl RuntimeDb {
                     }
                 }
             }
+            let task_metadata = task_metadata.map(|(capability, ledger)|
+                super::task_snapshot::prepare_exclusive_startup_task_metadata_tx(tx, capability,
+                    input_scopes.context("startup Task metadata requires original scopes")?, ledger)
+            ).transpose()?;
             let recovered_at = Utc::now();
             inject_fault(fault, TransitionFaultPoint::AfterValidation)?;
             let terminal_sources = {
@@ -953,6 +999,7 @@ impl RuntimeDb {
                     }
                 }
             }
+            if let Some(metadata) = task_metadata { metadata.finish(tx, &input_commands)?; }
             let mut input_deltas = Vec::new();
             if let Some(scopes)=input_scopes {
                 for (agent,facts) in input_facts {
@@ -2605,6 +2652,45 @@ impl RuntimeTransitionRepository<'_> {
             &crate::runtime_db::task_result_settlement::TaskResultActivationSettlement,
         >,
     ) -> Result<TransitionCommit> {
+        self.commit_queue_transaction_full_with_task_results_tx(
+            tx,
+            command,
+            execution_protocol_transition,
+            wait_transition,
+            task_expectation,
+            completion,
+            wait_registration,
+            terminal_tool_executions,
+            extra_wait_conditions,
+            delivery,
+            delivery_synchronization,
+            timer_wake_claim,
+            task_result_settlement,
+            None,
+        )
+    }
+
+    fn commit_queue_transaction_full_with_task_results_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &QueueTransitionCommand,
+        execution_protocol_transition: &ExecutionProtocolTransition,
+        wait_transition: Option<&QueueWaitTransition>,
+        task_expectation: Option<&TaskExpectation>,
+        completion: Option<&CompletionTransition>,
+        wait_registration: Option<&WaitTransitionCommand>,
+        terminal_tool_executions: &[ToolExecutionRecord],
+        extra_wait_conditions: &[crate::types::WaitConditionRecord],
+        delivery: Option<&AgentMessageDeliveryRecord>,
+        delivery_synchronization: DeliverySynchronization,
+        timer_wake_claim: Option<&TimerWakeClaim>,
+        task_result_settlement: Option<
+            &crate::runtime_db::task_result_settlement::TaskResultActivationSettlement,
+        >,
+        prepared_task_results: Option<
+            super::task_result_settlement::PreparedTaskResultMutation<'_, '_>,
+        >,
+    ) -> Result<TransitionCommit> {
         self.validate_input_scope_tx(tx, &command.agent_id)?;
         for record in &command.message_evidence {
             self.validate_input_key_tx(
@@ -2665,7 +2751,7 @@ impl RuntimeTransitionRepository<'_> {
             persist_completed_admission_tx(tx, decision)?;
             return Ok(TransitionCommit {
                 applied: true,
-                effects: PostCommitEffects::default(),
+                effects: Box::new(PostCommitEffects::default()),
                 delivery_receipt: Some(decision.receipt()),
             });
         }
@@ -2865,13 +2951,13 @@ impl RuntimeTransitionRepository<'_> {
         };
         if !matches!(&command.mutation, QueueMutation::Upsert(_)) && !mutation_applied {
             return Ok(TransitionCommit {
-                effects: PostCommitEffects {
+                effects: Box::new(PostCommitEffects {
                     audit_events: trigger_wait_and_enqueue
                         .as_ref()
                         .map(|result| result.audit_events.clone())
                         .unwrap_or_default(),
                     ..Default::default()
-                },
+                }),
                 ..Default::default()
             });
         }
@@ -3029,7 +3115,27 @@ impl RuntimeTransitionRepository<'_> {
             || wait_work_item_applied
             || completion_applied
             || terminal_tool_execution_applied;
-        if let Some(settlement) = task_result_settlement {
+        let mut task_write_keys = BTreeSet::new();
+        if let Some(prepared) = prepared_task_results {
+            anyhow::ensure!(
+                task_result_settlement.is_some(),
+                "Queue omitted frozen Result settlement"
+            );
+            let ack = prepared.execute()?;
+            use super::task_result_settlement::TaskResultWriteOutcome;
+            let TaskResultWriteOutcome::Count(count) = ack.outcome else {
+                bail!("Queue Result settlement returned a different operation")
+            };
+            applied |= count > 0;
+            task_write_keys.extend(ack.actual_result_ids.into_iter().map(|id| {
+                crate::runtime::resident_task::TaskKey::new(
+                    crate::runtime::resident_task::TaskFamily::ResultSettlement,
+                    id,
+                )
+            }));
+        } else if let Some(settlement) = task_result_settlement {
+            // Explicit legacy/test adapter. Online prepared callers pass the
+            // original finite selection above and retain its actual footprint.
             applied |= crate::runtime_db::task_result_settlement::settle_activation_tx(
                 tx,
                 &command.agent_id,
@@ -3094,6 +3200,7 @@ impl RuntimeTransitionRepository<'_> {
             &index_changes,
             command.fault,
             PostCommitEffects {
+                task_write_keys,
                 agent_state: command.agent_state.clone(),
                 wait_condition_writes,
                 messages: command.message_evidence.clone(),
@@ -3195,11 +3302,15 @@ impl RuntimeTransitionRepository<'_> {
             synchronize_execution_protocol,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
         )
         .map(|(value, _)| value)
     }
 
-    pub(super) fn commit_task_at_tx(
+    pub(super) fn commit_task_at_with_task_results_tx(
         &self,
         tx: &Transaction<'_>,
         command: &TaskTransitionCommand,
@@ -3207,6 +3318,14 @@ impl RuntimeTransitionRepository<'_> {
         synchronize_execution_protocol: bool,
         prepared_at: chrono::DateTime<Utc>,
         deletion_id: Option<&str>,
+        prepared_task_results: Option<
+            super::task_result_settlement::PreparedTaskResultMutation<'_, '_>,
+        >,
+        original_task_cleanup: Option<
+            &super::task_snapshot::OriginalTaskResultCleanupProof<'_, '_, '_>,
+        >,
+        original_stop: Option<&super::task_stop::TaskStopWriteProof<'_, '_>>,
+        original_binding: Option<&ExistingOriginalChildBindingWriteProof<'_, '_, '_>>,
     ) -> Result<(
         TransitionCommit,
         Option<super::input_mutation_receipts::InputTaskDeletionResult>,
@@ -3222,6 +3341,10 @@ impl RuntimeTransitionRepository<'_> {
             synchronize_execution_protocol,
             Some(prepared_at),
             deletion_id,
+            prepared_task_results,
+            original_task_cleanup,
+            original_stop,
+            original_binding,
         )
     }
 
@@ -3233,6 +3356,14 @@ impl RuntimeTransitionRepository<'_> {
         synchronize_execution_protocol: bool,
         prepared_at: Option<chrono::DateTime<Utc>>,
         deletion_id: Option<&str>,
+        prepared_task_results: Option<
+            super::task_result_settlement::PreparedTaskResultMutation<'_, '_>,
+        >,
+        original_task_cleanup: Option<
+            &super::task_snapshot::OriginalTaskResultCleanupProof<'_, '_, '_>,
+        >,
+        original_stop: Option<&super::task_stop::TaskStopWriteProof<'_, '_>>,
+        original_binding: Option<&ExistingOriginalChildBindingWriteProof<'_, '_, '_>>,
     ) -> Result<(
         TransitionCommit,
         Option<super::input_mutation_receipts::InputTaskDeletionResult>,
@@ -3246,7 +3377,13 @@ impl RuntimeTransitionRepository<'_> {
             )?;
         }
 
-        validate_task_tx(tx, &command.task)?;
+        let interrupted_stop = original_stop
+            .map(|proof| proof.interrupted_child_cancellation(tx, &command.task))
+            .transpose()?
+            .unwrap_or(false);
+        if !interrupted_stop {
+            validate_task_tx(tx, &command.task)?;
+        }
         if let Some(queue_entry) = command.queue_entry.as_ref() {
             validate_queue_mutation_tx(tx, &QueueMutation::Upsert(queue_entry.clone()))?;
         }
@@ -3295,7 +3432,32 @@ impl RuntimeTransitionRepository<'_> {
         } else {
             None
         };
-        let task_applied = upsert_task_tx(tx, &command.task)?;
+        let task_existed: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks WHERE task_id=?1)",
+            [&command.task.id],
+            |row| row.get(0),
+        )?;
+        let task_applied = if interrupted_stop {
+            super::repositories::upsert_interrupted_child_task_stop_tx(
+                tx,
+                original_stop.expect("validated original Stop"),
+                &command.task,
+            )?
+        } else if let Some(proof) = original_binding {
+            super::repositories::update_original_child_monitor_binding_tx(tx, proof, &command.task)?
+        } else {
+            upsert_task_tx(tx, &command.task)?
+        };
+        let mut task_write_keys = BTreeSet::new();
+        let task_key = crate::runtime::resident_task::TaskKey::new(
+            crate::runtime::resident_task::TaskFamily::Task,
+            &command.task.id,
+        );
+        if task_applied {
+            task_write_keys.insert(task_key.clone());
+        }
+        let task_observation_keys: BTreeSet<_> =
+            task_existed.then_some(task_key).into_iter().collect();
         let mut applied = task_applied;
         let mut agent_identities = Vec::new();
         let mut deletion_result = None;
@@ -3316,7 +3478,27 @@ impl RuntimeTransitionRepository<'_> {
             });
             applied |= created;
         }
-        if let Some(settlement) = command.task_result_settlement.as_ref() {
+        if let Some(prepared) = prepared_task_results {
+            anyhow::ensure!(
+                command.task_result_settlement.is_some(),
+                "Task omitted frozen Result intent"
+            );
+            let ack = match original_task_cleanup {
+                Some(proof) => prepared.execute_original_task_cleanup(proof)?,
+                None => prepared.execute()?,
+            };
+            use super::task_result_settlement::TaskResultWriteOutcome;
+            let TaskResultWriteOutcome::Changed(changed) = ack.outcome else {
+                bail!("Task pending Result returned a different operation")
+            };
+            applied |= changed;
+            task_write_keys.extend(ack.actual_result_ids.into_iter().map(|id| {
+                crate::runtime::resident_task::TaskKey::new(
+                    crate::runtime::resident_task::TaskFamily::ResultSettlement,
+                    id,
+                )
+            }));
+        } else if let Some(settlement) = command.task_result_settlement.as_ref() {
             applied |=
                 crate::runtime_db::task_result_settlement::upsert_pending_tx(tx, settlement)?;
         }
@@ -3364,13 +3546,15 @@ impl RuntimeTransitionRepository<'_> {
         if !applied {
             return Ok((
                 TransitionCommit {
-                    effects: PostCommitEffects {
+                    effects: Box::new(PostCommitEffects {
+                        task_write_keys,
+                        task_observation_keys,
                         audit_events: trigger_wait_and_enqueue
                             .as_ref()
                             .map(|result| result.audit_events.clone())
                             .unwrap_or_default(),
                         ..Default::default()
-                    },
+                    }),
                     ..Default::default()
                 },
                 deletion_result,
@@ -3397,6 +3581,8 @@ impl RuntimeTransitionRepository<'_> {
             &index_changes,
             command.fault,
             PostCommitEffects {
+                task_write_keys,
+                task_observation_keys,
                 agent_state: command.agent_state.clone(),
                 agent_identities,
                 work_items,
@@ -3856,7 +4042,7 @@ fn finish_transition_with_cleanup_tx(
     effects.fault = fault.filter(|point| point.is_post_commit());
     Ok(TransitionCommit {
         applied: true,
-        effects,
+        effects: Box::new(effects),
         delivery_receipt: None,
     })
 }

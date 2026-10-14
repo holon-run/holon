@@ -252,7 +252,9 @@ fn actual_terminal_finishes_once_then_done_binding_allows_later_work() -> Result
         later.working_memory, after.working_memory,
         "NoTurn Work must keep the D1 checkpoint"
     );
-    let InputMutationExecution::Replayed { receipt: replay } =
+    let InputMutationExecution::Replayed {
+        receipt: replay, ..
+    } =
         f.db.transitions_in_scope(&f.scope)
             .commit_prepared_transition(&original)?
     else {
@@ -682,7 +684,9 @@ fn bound_queue_wait_and_memory_finish_share_the_original_whole_receipt() -> Resu
         .db
         .episode_memory_receipt(f.start.key(), None, f.start.invocation())?
         .is_some());
-    let InputMutationExecution::Replayed { receipt: replay } =
+    let InputMutationExecution::Replayed {
+        receipt: replay, ..
+    } =
         f.db.transitions_in_scope(&f.scope)
             .commit_prepared_transition(&prepared)?
     else {
@@ -891,6 +895,12 @@ fn combined_memory_preparation_limit_rolls_back_before_any_business_or_receipt()
                 &update(&f, "combined-too-large", "must roll back")?,
                 &request,
                 &ledger,
+                &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                    query: Default::default(),
+                    capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+                    record_limit: 65_536,
+                    byte_limit: 64 * 1024 * 1024,
+                },
             )
             .unwrap_err();
     assert!(matches!(
@@ -915,6 +925,12 @@ fn combined_memory_preparation_limit_rolls_back_before_any_business_or_receipt()
             &update(&f, "combined-too-large", "must roll back")?,
             &memory_request(),
             &ledger,
+            &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                query: Default::default(),
+                capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+                record_limit: 65_536,
+                byte_limit: 64 * 1024 * 1024,
+            },
         )?;
     assert_eq!(ledger.report()?.owned, Default::default());
     Ok(())
@@ -1102,7 +1118,9 @@ fn business_terminal_noop_still_finishes_original_memory_and_writes_whole_receip
         .db
         .episode_memory_receipt(f.start.key(), None, f.start.invocation())?
         .is_some());
-    let InputMutationExecution::Replayed { receipt: replay } =
+    let InputMutationExecution::Replayed {
+        receipt: replay, ..
+    } =
         f.db.transitions_in_scope(&f.scope)
             .commit_prepared_transition(&prepared)?
     else {
@@ -1174,7 +1192,15 @@ fn new_work_memory_amplification_is_preflighted_before_planner_and_whole_ack() -
     let error =
         f.db.transitions_in_scope(&f.scope)
             .commit_prepared_transition_with_work_request_and_memory_budget(
-                &prepared, &request, &ledger,
+                &prepared,
+                &request,
+                &ledger,
+                &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                    query: Default::default(),
+                    capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+                    record_limit: 65_536,
+                    byte_limit: 64 * 1024 * 1024,
+                },
             )
             .unwrap_err();
     assert!(matches!(
@@ -1202,6 +1228,12 @@ fn new_work_memory_amplification_is_preflighted_before_planner_and_whole_ack() -
             &prepared,
             &memory_request(),
             &ledger,
+            &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                query: Default::default(),
+                capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+                record_limit: 65_536,
+                byte_limit: 64 * 1024 * 1024,
+            },
         )?;
     assert_eq!(
         state(&f)?

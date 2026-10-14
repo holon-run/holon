@@ -644,7 +644,27 @@ fn backfill_report_does_not_migrate_and_apply_can_record_pre_migration_backup() 
             None,
         ))?;
         db.connection()?.execute_batch(
-            "DROP TABLE dispatch_memory_retired_handoffs;
+            "DROP TABLE task_stop_effects;
+             DROP TABLE task_status_child_observers;
+             DROP TABLE task_status_fixed_delegations;
+             DROP TABLE task_status_fixed_controls;
+             DROP TABLE task_status_source_inventory;
+             DROP TABLE task_status_delegation_sources;
+             DROP TABLE task_status_control_sources;
+             DROP TABLE task_query_task_members;
+             DROP TABLE task_query_task_births;
+             DROP TABLE task_query_birth_cursors;
+             DROP TABLE task_query_task_inventory;
+             DROP TABLE task_message_order_headers;
+             DROP TABLE task_message_sources;
+             DROP TABLE task_message_source_inventory;
+             DROP TABLE task_domain_seed_recovery_current;
+             DROP TABLE task_domain_import_inventory;
+             DROP TABLE task_domain_records;
+             DROP TABLE task_domain_current;
+             DROP TABLE task_domain_eligibility;
+             DROP TABLE task_domain_captures;
+             DROP TABLE dispatch_memory_retired_handoffs;
              DROP TABLE dispatch_memory_auto_commands;
              DROP TABLE dispatch_memory_checkpoints;
              DROP TABLE dispatch_memory_legacy_dispatches;

@@ -11,8 +11,12 @@ use crate::{
 
 pub(crate) const TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT: usize = 8;
 
+mod writes;
+pub(crate) use writes::*;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod writes_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -161,29 +165,21 @@ impl RuntimeDb {
 }
 
 impl TaskResultSettlementRepository<'_> {
+    #[cfg(test)]
     pub(crate) fn ensure_pending(
         &self,
         task: &TaskRecord,
         message: &MessageEnvelope,
         now: DateTime<Utc>,
     ) -> Result<Option<TaskResultSettlementRecord>> {
-        let Some(durable_task) = self.db.tasks().latest(&task.id)? else {
-            return Ok(None);
-        };
-        let Some(record) = TaskResultSettlementRecord::pending(&durable_task, message, now)? else {
-            return Ok(None);
-        };
         self.db.transaction(|tx| {
-            if existing_for_task_generation_tx(tx, &record.task_id, record.rejoin_generation)?
-                .is_some_and(|existing| existing.message_id != record.message_id)
-            {
-                return Ok(None);
-            }
-            upsert_pending_tx(tx, &record)?;
-            latest_for_message_tx(tx, &record.message_id)
+            prepare_ensure_pending_tx(tx, &task.id, message, now, TaskResultWriteLimits::default())?
+                .execute()?
+                .into_record()
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn admit_unsettled(
         &self,
         agent_id: &str,
@@ -192,31 +188,20 @@ impl TaskResultSettlementRepository<'_> {
         now: DateTime<Utc>,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
         self.db.transaction(|tx| {
-            let mut records = unsettled_for_owner_tx(
+            prepare_admit_unsettled_tx(
                 tx,
                 agent_id,
                 work_item_id,
-                TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT,
-            )?;
-            let mut admitted = Vec::with_capacity(records.len());
-            for mut record in records.drain(..) {
-                if !record_matches_durable_task_tx(tx, &record)? {
-                    settle_invalid_or_stale_tx(tx, &mut record, now)?;
-                    continue;
-                }
-                record.state = TaskResultSettlementState::CallerAdmitted;
-                record.activation_id = Some(activation_id.to_owned());
-                record.admitted_at = Some(now);
-                record.updated_at = now;
-                record.deferred_reason = None;
-                record.deferred_at = None;
-                update_tx(tx, &record)?;
-                admitted.push(record);
-            }
-            Ok(admitted)
+                activation_id,
+                now,
+                TaskResultWriteLimits::default(),
+            )?
+            .execute()?
+            .into_records()
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn admit_reply_message(
         &self,
         agent_id: &str,
@@ -226,50 +211,17 @@ impl TaskResultSettlementRepository<'_> {
         now: DateTime<Utc>,
     ) -> Result<()> {
         self.db.transaction(|tx| {
-            // An exact task waiter may belong to another WorkItem (#3124).
-            // Admit its promised result as well as same-owner observations,
-            // without acknowledging unrelated owners that share the reply.
-            let records = records_tx(tx,
-                "SELECT settlements.payload_json FROM task_result_settlements settlements
-                 JOIN messages ON messages.message_id = settlements.message_id
-                 WHERE settlements.agent_id = ?1
-                   AND (settlements.work_item_id IS ?2 OR settlements.task_id IN (
-                     SELECT json_extract(wake.value, '$.task_id')
-                     FROM wait_conditions AS waits, json_each(waits.wake_sources_json) AS wake
-                     WHERE waits.agent_id = ?1 AND waits.work_item_id IS ?2
-                       AND waits.status = 'resolved' AND waits.kind = 'task'
-                       AND waits.trigger_message_id = ?3
-                       AND json_extract(wake.value, '$.kind') = 'task_result'
-                   ))
-                   AND json_extract(messages.payload_json, '$.metadata.task_detail.message_id') = ?3
-                   AND json_extract(messages.payload_json, '$.metadata.task_kind') = 'agent_message_wait'
-                   AND json_extract(messages.payload_json, '$.metadata.task_detail.reply_content_source') = 'original_message'
-                   AND settlements.state != 'settled'", params![agent_id, work_item_id, message_id])?;
-            for mut record in records {
-                if !record_matches_durable_task_tx(tx, &record)? {
-                    continue;
-                }
-                if record.state == TaskResultSettlementState::CallerAdmitted
-                    && record.activation_id.as_deref() != Some(activation_id)
-                {
-                    if let Some(id) = record.activation_id.as_ref() {
-                        let open = tx.query_row(
-                            "SELECT EXISTS(SELECT 1 FROM execution_protocol_attempts WHERE agent_id = ?1 AND attempt_id = ?2 AND lifecycle_state = 'open')",
-                            params![agent_id, id], |row| row.get::<_, bool>(0))?;
-                        if open {
-                            continue;
-                        }
-                    }
-                }
-                record.state = TaskResultSettlementState::CallerAdmitted;
-                record.activation_id = Some(activation_id.to_owned());
-                record.admitted_at = Some(now);
-                record.updated_at = now;
-                record.deferred_reason = None;
-                record.deferred_at = None;
-                update_tx(tx, &record)?;
-            }
-            Ok(())
+            prepare_admit_reply_message_tx(
+                tx,
+                agent_id,
+                work_item_id,
+                message_id,
+                activation_id,
+                now,
+                TaskResultWriteLimits::default(),
+            )?
+            .execute()?
+            .into_unit()
         })
     }
 
@@ -282,6 +234,7 @@ impl TaskResultSettlementRepository<'_> {
         context_admitted_settlements_on(&connection, agent_id, activation_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn admit_message(
         &self,
         agent_id: &str,
@@ -290,36 +243,16 @@ impl TaskResultSettlementRepository<'_> {
         now: DateTime<Utc>,
     ) -> Result<Option<TaskResultSettlementRecord>> {
         self.db.transaction(|tx| {
-            let Some(mut record) = latest_for_message_tx(tx, message_id)? else {
-                return Ok(None);
-            };
-            if record.agent_id != agent_id {
-                bail!("task result settlement agent mismatch for message {message_id}");
-            }
-            if !record_matches_durable_task_tx(tx, &record)? {
-                settle_invalid_or_stale_tx(tx, &mut record, now)?;
-                return Ok(None);
-            }
-            match record.state {
-                TaskResultSettlementState::PersistedPending => {
-                    record.state = TaskResultSettlementState::CallerAdmitted;
-                    record.activation_id = Some(activation_id.to_owned());
-                    record.admitted_at = Some(now);
-                    record.updated_at = now;
-                    record.deferred_reason = None;
-                    record.deferred_at = None;
-                    update_tx(tx, &record)?;
-                    Ok(Some(record))
-                }
-                TaskResultSettlementState::CallerAdmitted
-                    if record.activation_id.as_deref() == Some(activation_id) =>
-                {
-                    Ok(Some(record))
-                }
-                TaskResultSettlementState::CallerAdmitted | TaskResultSettlementState::Settled => {
-                    Ok(None)
-                }
-            }
+            prepare_admit_message_tx(
+                tx,
+                agent_id,
+                message_id,
+                activation_id,
+                now,
+                TaskResultWriteLimits::default(),
+            )?
+            .execute()?
+            .into_record()
         })
     }
 
@@ -335,6 +268,7 @@ impl TaskResultSettlementRepository<'_> {
             .transaction(|tx| settle_activation_tx(tx, agent_id, activation_id, disposition, now))
     }
 
+    #[cfg(test)]
     pub(crate) fn settle_owner_unavailable(
         &self,
         message_id: &str,
@@ -342,34 +276,19 @@ impl TaskResultSettlementRepository<'_> {
         now: DateTime<Utc>,
     ) -> Result<bool> {
         self.db.transaction(|tx| {
-            let Some(mut record) = latest_for_message_tx(tx, message_id)? else {
-                return Ok(false);
-            };
-            if record.state == TaskResultSettlementState::Settled {
-                return Ok(false);
-            }
-            record.state = TaskResultSettlementState::Settled;
-            record.disposition = Some(disposition);
-            record.settled_at = Some(now);
-            record.next_recheck_at = None;
-            record.updated_at = now;
-            update_tx(tx, &record)?;
-            Ok(true)
+            prepare_settle_owner_unavailable_tx(
+                tx,
+                message_id,
+                disposition,
+                now,
+                TaskResultWriteLimits::default(),
+            )?
+            .execute()?
+            .into_changed()
         })
     }
 
-    pub(crate) fn settle_reply_consumed_elsewhere(
-        &self,
-        message_id: &str,
-        now: DateTime<Utc>,
-    ) -> Result<bool> {
-        self.settle_owner_unavailable(
-            message_id,
-            TaskResultSettlementDisposition::ReplyConsumedElsewhere,
-            now,
-        )
-    }
-
+    #[cfg(test)]
     pub(crate) fn mark_deferred(
         &self,
         message_id: &str,
@@ -378,20 +297,20 @@ impl TaskResultSettlementRepository<'_> {
         next_recheck_at: DateTime<Utc>,
     ) -> Result<Option<TaskResultSettlementRecord>> {
         self.db.transaction(|tx| {
-            let Some(mut record) = latest_for_message_tx(tx, message_id)? else {
-                return Ok(None);
-            };
-            if record.state != TaskResultSettlementState::Settled {
-                record.deferred_reason = Some(reason.to_owned());
-                record.deferred_at = Some(now);
-                record.next_recheck_at = Some(next_recheck_at);
-                record.updated_at = now;
-                defer_update_tx(tx, &record)?;
-            }
-            Ok(Some(record))
+            prepare_mark_deferred_tx(
+                tx,
+                message_id,
+                reason,
+                now,
+                next_recheck_at,
+                TaskResultWriteLimits::default(),
+            )?
+            .execute()?
+            .into_record()
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn wake_deferred_for_owner(
         &self,
         agent_id: &str,
@@ -399,39 +318,19 @@ impl TaskResultSettlementRepository<'_> {
         now: DateTime<Utc>,
     ) -> Result<usize> {
         self.db.transaction(|tx| {
-            let mut statement = tx.prepare(
-                "SELECT payload_json
-                 FROM task_result_settlements
-                 WHERE agent_id = ?1
-                   AND work_item_id = ?2
-                   AND state != 'settled'
-                   AND next_recheck_at IS NOT NULL",
-            )?;
-            let records = statement
-                .query_map(params![agent_id, work_item_id], |row| {
-                    row.get::<_, String>(0)
-                })?
-                .map(|row| {
-                    serde_json::from_str::<TaskResultSettlementRecord>(&row?).map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            0,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })
-                })
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            let mut woken = 0;
-            for mut record in records {
-                record.next_recheck_at = Some(now);
-                record.updated_at = now;
-                defer_update_tx(tx, &record)?;
-                woken += 1;
-            }
-            Ok(woken)
+            prepare_wake_deferred_for_owner_tx(
+                tx,
+                agent_id,
+                work_item_id,
+                now,
+                TaskResultWriteLimits::default(),
+            )?
+            .execute()?
+            .into_count()
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn due_deferred(
         &self,
         agent_id: &str,
@@ -519,6 +418,7 @@ impl TaskResultSettlementRepository<'_> {
         .map_err(Into::into)
     }
 
+    #[cfg(test)]
     pub(crate) fn unsettled_for_owner(
         &self,
         agent_id: &str,
@@ -563,6 +463,7 @@ impl TaskResultSettlementRepository<'_> {
         .map_err(Into::into)
     }
 
+    #[cfg(test)]
     pub(crate) fn next_recheck_at(&self, agent_id: &str) -> Result<Option<DateTime<Utc>>> {
         let connection = self.db.connection()?;
         let value = connection.query_row(
@@ -594,6 +495,7 @@ impl TaskResultSettlementRepository<'_> {
             .map_err(Into::into)
     }
 
+    #[cfg(test)]
     pub(crate) fn latest_for_message(
         &self,
         message_id: &str,
@@ -623,6 +525,19 @@ pub(crate) fn upsert_pending_tx(
         return Ok(false);
     }
     super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
+    insert_pending_tx(tx, record)
+}
+/// The original cleanup capability grants qualification, not business admission.
+fn upsert_pending_original_cleanup_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+    proof: &super::task_snapshot::OriginalTaskResultCleanupProof<'_, '_, '_>,
+) -> Result<bool> {
+    proof.validate_pending_insert_tx(tx, record)?;
+    upsert_pending_tx(tx, record)
+}
+
+fn insert_pending_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<bool> {
     let payload = serde_json::to_string(record)?;
     let inserted = tx.execute(
         "INSERT INTO task_result_settlements (
@@ -658,9 +573,9 @@ pub(crate) fn upsert_pending_tx(
     Ok(inserted == 1)
 }
 
-fn update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<()> {
+fn update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<bool> {
     let payload = serde_json::to_string(record)?;
-    tx.execute(
+    let affected = tx.execute(
         "UPDATE task_result_settlements
          SET state = ?2, activation_id = ?3, disposition = ?4, updated_at = ?5,
              admitted_at = ?6, settled_at = ?7, deferred_reason = ?8,
@@ -682,16 +597,16 @@ fn update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Resul
             payload,
         ],
     )?;
-    Ok(())
+    Ok(affected == 1)
 }
 
 /// Narrowed UPDATE for the deferred-recheck hot path. The recovery loop
 /// rewrites the same due rows every recheck interval; a full-column UPDATE
 /// touches `state`/`activation_id` and churns every index referencing them
 /// even though those values never change on deferral.
-fn defer_update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<()> {
+fn defer_update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<bool> {
     let payload = serde_json::to_string(record)?;
-    tx.execute(
+    let affected = tx.execute(
         "UPDATE task_result_settlements
          SET deferred_reason = ?2, deferred_at = ?3, next_recheck_at = ?4,
              updated_at = ?5, payload_json = ?6
@@ -705,7 +620,7 @@ fn defer_update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) ->
             payload,
         ],
     )?;
-    Ok(())
+    Ok(affected == 1)
 }
 
 fn record_matches_durable_task_tx(
@@ -748,87 +663,13 @@ fn settle_invalid_or_stale_tx(
     tx: &Transaction<'_>,
     record: &mut TaskResultSettlementRecord,
     now: DateTime<Utc>,
-) -> Result<()> {
+) -> Result<bool> {
     record.state = TaskResultSettlementState::Settled;
     record.disposition = Some(TaskResultSettlementDisposition::InvalidOrStale);
     record.settled_at = Some(now);
     record.updated_at = now;
     record.next_recheck_at = None;
     update_tx(tx, record)
-}
-
-fn existing_for_task_generation_tx(
-    tx: &Transaction<'_>,
-    task_id: &str,
-    rejoin_generation: u64,
-) -> Result<Option<TaskResultSettlementRecord>> {
-    tx.query_row(
-        "SELECT payload_json
-         FROM task_result_settlements
-         WHERE task_id = ?1 AND rejoin_generation = ?2
-         ORDER BY created_at ASC, result_identity ASC
-         LIMIT 1",
-        params![task_id, rejoin_generation],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()?
-    .map(|payload| serde_json::from_str(&payload))
-    .transpose()
-    .map_err(Into::into)
-}
-
-fn unsettled_for_owner_tx(
-    tx: &Transaction<'_>,
-    agent_id: &str,
-    work_item_id: Option<&str>,
-    limit: usize,
-) -> Result<Vec<TaskResultSettlementRecord>> {
-    records_tx(
-        tx,
-        "SELECT payload_json
-         FROM task_result_settlements
-         WHERE agent_id = ?1
-           AND work_item_id IS ?2
-           AND NOT EXISTS (
-             SELECT 1 FROM messages
-             WHERE messages.message_id = task_result_settlements.message_id
-               AND json_extract(messages.payload_json, '$.metadata.task_kind') = 'agent_message_wait'
-               AND json_extract(messages.payload_json, '$.metadata.task_status') = 'completed'
-               AND json_extract(messages.payload_json, '$.metadata.task_detail.reply_content_source') = 'original_message'
-               AND json_extract(messages.payload_json, '$.metadata.task_detail.message_id') IS NOT NULL
-           )
-           AND (
-             state = 'persisted_pending'
-             OR (
-               state = 'caller_admitted'
-               AND NOT EXISTS (
-                 SELECT 1
-                 FROM execution_protocol_attempts attempts
-                 WHERE attempts.agent_id = task_result_settlements.agent_id
-                   AND attempts.attempt_id = task_result_settlements.activation_id
-                   AND attempts.lifecycle_state = 'open'
-               )
-             )
-           )
-         ORDER BY created_at ASC, result_identity ASC
-         LIMIT ?3",
-        params![agent_id, work_item_id, limit as i64],
-    )
-}
-
-fn admitted_for_activation_tx(
-    tx: &Transaction<'_>,
-    agent_id: &str,
-    activation_id: &str,
-) -> Result<Vec<TaskResultSettlementRecord>> {
-    records_tx(
-        tx,
-        "SELECT payload_json
-         FROM task_result_settlements
-         WHERE agent_id = ?1 AND activation_id = ?2 AND state = 'caller_admitted'
-         ORDER BY created_at ASC, result_identity ASC",
-        params![agent_id, activation_id],
-    )
 }
 
 pub(crate) fn settle_activation_tx(
@@ -838,41 +679,19 @@ pub(crate) fn settle_activation_tx(
     disposition: TaskResultSettlementDisposition,
     now: DateTime<Utc>,
 ) -> Result<usize> {
-    let mut records = admitted_for_activation_tx(tx, agent_id, activation_id)?;
-    for record in &mut records {
-        record.state = TaskResultSettlementState::Settled;
-        record.disposition = Some(disposition);
-        record.settled_at = Some(now);
-        record.updated_at = now;
-        update_tx(tx, record)?;
-    }
-    Ok(records.len())
+    prepare_settle_activation_tx(
+        tx,
+        agent_id,
+        activation_id,
+        disposition,
+        now,
+        TaskResultWriteLimits::default(),
+    )?
+    .execute()?
+    .into_count()
 }
 
-fn records_tx<P>(
-    tx: &Transaction<'_>,
-    sql: &str,
-    params: P,
-) -> Result<Vec<TaskResultSettlementRecord>>
-where
-    P: rusqlite::Params,
-{
-    let mut statement = tx.prepare(sql)?;
-    let rows = statement.query_map(params, |row| row.get::<_, String>(0))?;
-    rows.map(|row| {
-        let payload = row?;
-        serde_json::from_str(&payload).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                Box::new(error),
-            )
-        })
-    })
-    .collect::<std::result::Result<Vec<_>, _>>()
-    .map_err(Into::into)
-}
-
+#[cfg(test)]
 fn latest_for_message_connection(
     connection: &rusqlite::Connection,
     message_id: &str,

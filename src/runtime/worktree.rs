@@ -1,5 +1,10 @@
 use super::{task_state_reducer, *};
 use std::ffi::OsString;
+#[path = "worktree_cleanup.rs"]
+mod cleanup;
+#[cfg(test)]
+pub(crate) use cleanup::cleanup_completion_worktree_for_test;
+pub(crate) use cleanup::{cleanup_frozen_worktree, FrozenWorktreeCleanup, ObservedWorktreeCleanup};
 
 use crate::system::{
     file::FileHost, CaptureSpec, ExecutionScopeKind, ProcessHost, ProcessPurpose, ProcessRequest,
@@ -8,13 +13,13 @@ use crate::system::{
 use crate::types::{WorkspaceProjectionMetadata, WorktreeSession};
 
 #[derive(Debug, Clone)]
-pub(super) struct TaskOwnedWorktreeCleanup {
+pub(crate) struct TaskOwnedWorktreeCleanup {
     pub(super) changed_files: Vec<String>,
     pub(super) status: TaskOwnedWorktreeCleanupStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum TaskOwnedWorktreeCleanupStatus {
+pub(crate) enum TaskOwnedWorktreeCleanupStatus {
     Cleaned,
     AlreadyRemoved,
     Retained,
@@ -414,9 +419,69 @@ impl RuntimeHandle {
         task_id: &str,
         seed: &ManagedWorktreeSeed,
     ) -> Result<()> {
-        let Some(task) = self.task_record(task_id).await? else {
-            return Ok(());
+        let mut mutation = self.begin_mutation().await?;
+        let scope = mutation.input_evidence_scope();
+        let limits = self.inner.input_evidence_budget.limits();
+        let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+            query: Default::default(),
+            capture: super::resident_task::TaskCaptureRequest::current(),
+            record_limit: usize::try_from(limits.record_limit)?,
+            byte_limit: usize::try_from(
+                limits
+                    .history_per_agent_bytes
+                    .checked_add(limits.pending_per_agent_bytes)
+                    .context("worktree Task limits overflow")?,
+            )?,
         };
+        let _selector = crate::runtime_db::command_task_terminal::charge_material(
+            &scope,
+            task_id
+                .len()
+                .checked_add(256)
+                .and_then(|n| n.checked_mul(8))
+                .context("worktree Task selector overflow")?,
+            8,
+            &request,
+            &self.inner.input_evidence_budget,
+        )?;
+        let mut capture = super::resident_task::TaskCaptureRequest::current();
+        capture
+            .required_keys
+            .insert(super::resident_task::TaskKey::new(
+                super::resident_task::TaskFamily::Task,
+                task_id,
+            ));
+        mutation.prepare_owner_task_request(&capture).await?;
+        let selected = mutation.capture_tasks(&capture)?;
+        let fact = selected
+            .lookup(&super::resident_task::TaskKey::new(
+                super::resident_task::TaskFamily::Task,
+                task_id,
+            ))?
+            .context("worktree Task producer missing")?;
+        let super::resident_task::CanonicalTaskFact::Task(task) = &fact.fact else {
+            anyhow::bail!("worktree Task producer selected another family")
+        };
+        let _owned = crate::runtime_db::command_task_terminal::charge_material(
+            &scope,
+            usize::try_from(super::input_evidence_budget::serialized_bytes(&(
+                task,
+                &seed.original_cwd,
+                &seed.original_branch,
+                &seed.worktree_path,
+                &seed.worktree_branch,
+            ))?)?
+            .checked_add(1024)
+            .and_then(|n| n.checked_mul(8))
+            .context("worktree Task material overflow")?,
+            super::child_task_terminal::completion_value_nodes(task.detail.as_ref())?
+                .checked_add(16)
+                .and_then(|n| n.checked_mul(8))
+                .context("worktree Task nodes overflow")?,
+            &request,
+            &self.inner.input_evidence_budget,
+        )?;
+        let task = task.clone();
         let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
         if let Some(detail) = detail.as_object_mut() {
             detail.insert("workspace_mode".into(), serde_json::json!("worktree"));
@@ -443,6 +508,7 @@ impl RuntimeHandle {
             updated_at: chrono::Utc::now(),
             ..task
         };
+        drop(mutation);
         self.apply_task_transition(task_state_reducer::TaskTransition::new(
             &updated,
             "task_status_updated",
@@ -474,238 +540,30 @@ impl RuntimeHandle {
         Ok(Some(cleanup))
     }
 
+    pub(super) async fn cleanup_original_control_worktree_in_detail(
+        &self,
+        task_id: &str,
+        detail: &mut serde_json::Value,
+        reason: &str,
+        completion: Arc<super::input_evidence_budget::OwnedCompletionBudget>,
+        request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
+    ) -> Result<Option<cleanup::ObservedOriginalControlCleanup>> {
+        let Some(worktree) = detail.get_mut("worktree") else {
+            return Ok(None);
+        };
+        cleanup::cleanup_original_control_metadata(
+            self, task_id, worktree, reason, completion, request,
+        )
+        .await
+        .map(Some)
+    }
     async fn cleanup_task_owned_worktree_metadata(
         &self,
         task_id: &str,
         worktree: &mut serde_json::Value,
         reason: &str,
     ) -> Result<TaskOwnedWorktreeCleanup> {
-        let artifact = match parse_task_owned_worktree_artifact(worktree) {
-            Ok(artifact) => artifact,
-            Err(err) => {
-                let error = err.to_string();
-                worktree["cleanup_status"] =
-                    serde_json::json!(TaskOwnedWorktreeCleanupStatus::Failed.label());
-                worktree["cleanup_error"] = serde_json::json!(error);
-                self.inner.storage.append_event(&AuditEvent::legacy(
-                    "task_worktree_cleanup_failed",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "reason": reason,
-                        "error": worktree["cleanup_error"],
-                    }),
-                ))?;
-                return Ok(TaskOwnedWorktreeCleanup {
-                    changed_files: Vec::new(),
-                    status: TaskOwnedWorktreeCleanupStatus::Failed,
-                });
-            }
-        };
-
-        if !artifact.worktree_path.exists() {
-            worktree["cleanup_status"] =
-                serde_json::json!(TaskOwnedWorktreeCleanupStatus::AlreadyRemoved.label());
-            worktree["cleanup_reason"] = serde_json::json!("worktree_path_missing");
-            worktree["auto_cleaned_up"] = serde_json::json!(true);
-            self.inner.storage.append_event(&AuditEvent::legacy(
-                "task_worktree_cleanup_already_removed",
-                serde_json::json!({
-                    "task_id": task_id,
-                    "worktree_path": artifact.worktree_path,
-                    "worktree_branch": artifact.worktree_branch,
-                    "reason": reason,
-                }),
-            ))?;
-            return Ok(TaskOwnedWorktreeCleanup {
-                changed_files: Vec::new(),
-                status: TaskOwnedWorktreeCleanupStatus::AlreadyRemoved,
-            });
-        }
-
-        let actual_branch = self.current_worktree_branch(&artifact.worktree_path).await;
-        match actual_branch {
-            Ok(actual_branch) if actual_branch != artifact.worktree_branch => {
-                worktree["cleanup_status"] =
-                    serde_json::json!(TaskOwnedWorktreeCleanupStatus::Retained.label());
-                worktree["cleanup_reason"] = serde_json::json!("branch_mismatch");
-                worktree["actual_branch"] = serde_json::json!(actual_branch);
-                self.inner.storage.append_event(&AuditEvent::legacy(
-                    "task_worktree_cleanup_retained",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "worktree_path": artifact.worktree_path,
-                        "worktree_branch": artifact.worktree_branch,
-                        "actual_branch": actual_branch,
-                        "reason": "branch_mismatch",
-                        "cleanup_trigger": reason,
-                    }),
-                ))?;
-                return Ok(TaskOwnedWorktreeCleanup {
-                    changed_files: changed_files_from_metadata(worktree),
-                    status: TaskOwnedWorktreeCleanupStatus::Retained,
-                });
-            }
-            Err(err) => {
-                let error = err.to_string();
-                worktree["cleanup_status"] =
-                    serde_json::json!(TaskOwnedWorktreeCleanupStatus::Retained.label());
-                worktree["cleanup_reason"] = serde_json::json!("branch_inspection_failed");
-                worktree["cleanup_error"] = serde_json::json!(error);
-                self.inner.storage.append_event(&AuditEvent::legacy(
-                    "task_worktree_cleanup_retained",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "worktree_path": artifact.worktree_path,
-                        "worktree_branch": artifact.worktree_branch,
-                        "reason": "branch_inspection_failed",
-                        "cleanup_trigger": reason,
-                        "error": worktree["cleanup_error"],
-                    }),
-                ))?;
-                return Ok(TaskOwnedWorktreeCleanup {
-                    changed_files: changed_files_from_metadata(worktree),
-                    status: TaskOwnedWorktreeCleanupStatus::Retained,
-                });
-            }
-            _ => {}
-        }
-
-        let changed_files = match self
-            .changed_files_for_worktree(&artifact.worktree_path)
-            .await
-        {
-            Ok(changed_files) => changed_files,
-            Err(err) => {
-                let error = err.to_string();
-                worktree["cleanup_status"] =
-                    serde_json::json!(TaskOwnedWorktreeCleanupStatus::Retained.label());
-                worktree["cleanup_reason"] = serde_json::json!("change_detection_failed");
-                worktree["cleanup_error"] = serde_json::json!(error);
-                self.inner.storage.append_event(&AuditEvent::legacy(
-                    "task_worktree_cleanup_retained",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "worktree_path": artifact.worktree_path,
-                        "worktree_branch": artifact.worktree_branch,
-                        "reason": "change_detection_failed",
-                        "cleanup_trigger": reason,
-                        "error": worktree["cleanup_error"],
-                    }),
-                ))?;
-                return Ok(TaskOwnedWorktreeCleanup {
-                    changed_files: changed_files_from_metadata(worktree),
-                    status: TaskOwnedWorktreeCleanupStatus::Retained,
-                });
-            }
-        };
-        worktree["changed_files"] = serde_json::json!(changed_files);
-
-        if !changed_files.is_empty() {
-            worktree["cleanup_status"] =
-                serde_json::json!(TaskOwnedWorktreeCleanupStatus::Retained.label());
-            worktree["cleanup_reason"] = serde_json::json!("changed_files");
-            worktree["retained_for_review"] = serde_json::json!(true);
-            self.inner.storage.append_event(&AuditEvent::legacy(
-                "worktree_retained_for_review",
-                serde_json::json!({
-                    "task_id": task_id,
-                    "worktree_path": artifact.worktree_path,
-                    "worktree_branch": artifact.worktree_branch,
-                    "changed_files": changed_files,
-                    "reason": "changes detected in worktree",
-                    "cleanup_trigger": reason,
-                }),
-            ))?;
-            return Ok(TaskOwnedWorktreeCleanup {
-                changed_files,
-                status: TaskOwnedWorktreeCleanupStatus::Retained,
-            });
-        }
-
-        match self.remove_task_owned_worktree(&artifact).await {
-            Ok(remove_outcome) => {
-                worktree["cleanup_status"] =
-                    serde_json::json!(TaskOwnedWorktreeCleanupStatus::Cleaned.label());
-                worktree["cleanup_reason"] = serde_json::json!("clean_worktree");
-                worktree["auto_cleaned_up"] = serde_json::json!(true);
-                worktree["branch_cleanup_status"] =
-                    serde_json::json!(if remove_outcome.branch_deleted {
-                        "deleted"
-                    } else if remove_outcome.branch_delete_error.is_some() {
-                        "retained"
-                    } else {
-                        "already_removed"
-                    });
-                if let Some(error) = remove_outcome.branch_delete_error.as_ref() {
-                    worktree["branch_cleanup_error"] = serde_json::json!(error);
-                    self.inner.storage.append_event(&AuditEvent::legacy(
-                        "task_worktree_branch_cleanup_retained",
-                        serde_json::json!({
-                            "task_id": task_id,
-                            "worktree_path": artifact.worktree_path,
-                            "worktree_branch": artifact.worktree_branch,
-                            "reason": reason,
-                            "error": error,
-                        }),
-                    ))?;
-                }
-                self.inner.storage.append_event(&AuditEvent::legacy(
-                    "worktree_auto_cleaned_up",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "worktree_path": artifact.worktree_path,
-                        "worktree_branch": artifact.worktree_branch,
-                        "reason": reason,
-                        "branch_cleanup_status": worktree["branch_cleanup_status"],
-                    }),
-                ))?;
-                Ok(TaskOwnedWorktreeCleanup {
-                    changed_files,
-                    status: TaskOwnedWorktreeCleanupStatus::Cleaned,
-                })
-            }
-            Err(err) if !artifact.worktree_path.exists() => {
-                worktree["cleanup_status"] =
-                    serde_json::json!(TaskOwnedWorktreeCleanupStatus::AlreadyRemoved.label());
-                worktree["cleanup_reason"] =
-                    serde_json::json!("worktree_path_missing_after_remove");
-                worktree["auto_cleaned_up"] = serde_json::json!(true);
-                self.inner.storage.append_event(&AuditEvent::legacy(
-                    "task_worktree_cleanup_already_removed",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "worktree_path": artifact.worktree_path,
-                        "worktree_branch": artifact.worktree_branch,
-                        "reason": reason,
-                        "remove_error": err.to_string(),
-                    }),
-                ))?;
-                Ok(TaskOwnedWorktreeCleanup {
-                    changed_files,
-                    status: TaskOwnedWorktreeCleanupStatus::AlreadyRemoved,
-                })
-            }
-            Err(err) => {
-                let error = err.to_string();
-                worktree["cleanup_status"] =
-                    serde_json::json!(TaskOwnedWorktreeCleanupStatus::Failed.label());
-                worktree["cleanup_error"] = serde_json::json!(error);
-                self.inner.storage.append_event(&AuditEvent::legacy(
-                    "worktree_auto_cleanup_failed",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "worktree_path": artifact.worktree_path,
-                        "worktree_branch": artifact.worktree_branch,
-                        "reason": reason,
-                        "error": worktree["cleanup_error"],
-                    }),
-                ))?;
-                Ok(TaskOwnedWorktreeCleanup {
-                    changed_files,
-                    status: TaskOwnedWorktreeCleanupStatus::Failed,
-                })
-            }
-        }
+        cleanup::cleanup_runtime_metadata(self, task_id, worktree, reason).await
     }
 
     pub async fn summarize_worktree_tasks(&self) -> Result<String> {

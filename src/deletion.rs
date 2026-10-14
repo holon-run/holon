@@ -23,6 +23,8 @@ use tracing::{debug, info, warn};
 use crate::host::RuntimeHost;
 use crate::types::*;
 
+mod task_maintenance;
+
 /// Interval between periodic deletion coordinator safety/observation sweeps.
 /// Deletion admission wakes the coordinator directly and retries use persisted
 /// deadlines, so this cadence only bounds low-priority scans.
@@ -59,7 +61,27 @@ impl RuntimeHost {
         &self,
         agent_id: String,
         expected_incarnation: Option<u64>,
+        scopes: Vec<String>,
+        persist: impl FnOnce(&RuntimeHost) -> Result<(T, AgentIdentityRecord)> + Send + 'static,
+    ) -> Result<T> {
+        self.commit_deletion_identity_metadata_checked(
+            agent_id,
+            expected_incarnation,
+            scopes,
+            |_| Ok(()),
+            persist,
+        )
+        .await
+    }
+
+    async fn commit_deletion_identity_metadata_checked<T: Send + 'static>(
+        &self,
+        agent_id: String,
+        expected_incarnation: Option<u64>,
         mut scopes: Vec<String>,
+        preflight: impl FnOnce(&[crate::runtime::mutation_owner::MutationReservation]) -> Result<()>
+            + Send
+            + 'static,
         persist: impl FnOnce(&RuntimeHost) -> Result<(T, AgentIdentityRecord)> + Send + 'static,
     ) -> Result<T> {
         scopes.push(agent_id.clone());
@@ -102,6 +124,7 @@ impl RuntimeHost {
                     "deletion target identity incarnation changed"
                 );
             }
+            preflight(&reservations)?;
             let mut committed_value = None;
             let result = host
                 .commit_external_metadata(&mut reservations, crate::ids::audit_event_id(), || {
@@ -994,17 +1017,9 @@ impl RuntimeHost {
 
         let now = Utc::now();
 
-        // Terminalize active tasks.
-        let active_tasks = self
-            .runtime_db()
-            .tasks()
-            .active_for_agent(agent_id, usize::MAX)?;
-        let tasks_count = active_tasks.len();
-        for mut task in active_tasks {
-            task.status = TaskStatus::Cancelled;
-            task.updated_at = now;
-            self.runtime_db().tasks().upsert(&task)?;
-        }
+        // Original per-Task cleanup transactions retain existing qualification
+        // and publish cold metadata before the next phase can advance.
+        let tasks_count = self.terminalize_deletion_tasks(agent_id, job, now).await?;
         if tasks_count > 0 {
             debug!(agent_id, count = tasks_count, "terminalized active tasks");
         }
@@ -1705,7 +1720,7 @@ fn delete_agent_memory_index_projection(
 mod tests {
     use super::*;
 
-    fn metadata_test_host() -> (tempfile::TempDir, RuntimeHost) {
+    pub(super) fn metadata_test_host() -> (tempfile::TempDir, RuntimeHost) {
         let home = tempfile::tempdir().unwrap();
         std::fs::write(
             home.path().join("config.json"),
@@ -1722,7 +1737,7 @@ mod tests {
         (home, host)
     }
 
-    fn metadata_identity(host: &RuntimeHost, agent_id: &str) -> AgentIdentityRecord {
+    pub(super) fn metadata_identity(host: &RuntimeHost, agent_id: &str) -> AgentIdentityRecord {
         let identity = AgentIdentityRecord::new(
             agent_id,
             AgentKind::Named,

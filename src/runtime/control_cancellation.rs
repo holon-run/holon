@@ -8,8 +8,8 @@ use std::{
     future::{Future, IntoFuture},
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex as StdMutex, OnceLock,
     },
 };
 
@@ -18,12 +18,16 @@ use crate::{
     runtime_db::control_transition::ControlKey,
     types::{TaskRecord, TimerRecord},
 };
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use tokio::{
     sync::{oneshot, Mutex, Notify},
     task::{AbortHandle, JoinHandle},
 };
 use tokio_util::sync::CancellationToken;
+
+#[path = "control_process_exit.rs"]
+mod process_exit;
+pub(crate) use process_exit::RetiredProducerExit;
 
 /// Cloning the signal retains the same one-shot sender, never a new recipient.
 #[derive(Clone)]
@@ -73,13 +77,88 @@ pub(super) struct ControlJoinLease {
     lease_id: String,
     target_id: String,
     domain_generation: serde_json::Value,
+    task_rejoin_generation: Option<super::task_generation::TaskRejoinGeneration>,
     signal: CancellationSignal,
     monitor: StdMutex<Option<AbortHandle>>,
+    process_exit: StdMutex<Option<Arc<super::command_task::OriginalCommandProcessExit>>>,
+    original_command: StdMutex<Option<Arc<super::OriginalCommandTaskProducer>>>,
+    original_child: StdMutex<Option<Arc<super::OriginalChildTaskProducer>>>,
     join: Mutex<JoinSlot>,
     cancel_requested: AtomicBool,
+    cancel_observation: CancellationToken,
     registration: StdMutex<Option<Arc<super::control_reconcile::ControlRegistrationRecord>>>,
 }
 impl ControlJoinLease {
+    pub(super) fn install_original_command(
+        &self,
+        source: Arc<super::OriginalCommandTaskProducer>,
+    ) -> Result<()> {
+        let lease = source.original_lease()?;
+        ensure!(
+            std::ptr::eq(self, lease.as_ref()) && self.is_command_producer(),
+            "Command producer belongs to another original lease"
+        );
+        let mut slot = self
+            .original_command
+            .lock()
+            .map_err(|_| anyhow!("Command producer slot poisoned"))?;
+        ensure!(slot.is_none(), "original Command producer already attached");
+        *slot = Some(source);
+        Ok(())
+    }
+    pub(super) fn original_command(
+        &self,
+    ) -> Result<Option<Arc<super::OriginalCommandTaskProducer>>> {
+        Ok(self
+            .original_command
+            .lock()
+            .map_err(|_| anyhow!("Command producer slot poisoned"))?
+            .clone())
+    }
+    fn command_terminal_pending(&self) -> bool {
+        self.original_command
+            .lock()
+            .map(|slot| {
+                slot.as_ref()
+                    .is_some_and(|source| !source.is_durable_finished())
+            })
+            .unwrap_or(true)
+    }
+
+    pub(super) fn install_original_child(
+        &self,
+        source: Arc<super::OriginalChildTaskProducer>,
+    ) -> Result<()> {
+        let lease = source.original_lease()?;
+        ensure!(
+            std::ptr::eq(self, lease.as_ref()) && !self.is_command_producer(),
+            "child producer belongs to another original lease"
+        );
+        let mut slot = self
+            .original_child
+            .lock()
+            .map_err(|_| anyhow!("child producer slot poisoned"))?;
+        ensure!(slot.is_none(), "original child producer already attached");
+        *slot = Some(source);
+        Ok(())
+    }
+    pub(super) fn original_child(&self) -> Result<Option<Arc<super::OriginalChildTaskProducer>>> {
+        Ok(self
+            .original_child
+            .lock()
+            .map_err(|_| anyhow!("child producer slot poisoned"))?
+            .clone())
+    }
+    fn child_terminal_pending(&self) -> bool {
+        self.original_child
+            .lock()
+            .map(|slot| {
+                slot.as_ref()
+                    .is_some_and(|source| source.has_terminal_responsibility())
+            })
+            .unwrap_or(true)
+    }
+
     fn new(
         target_id: String,
         domain_generation: serde_json::Value,
@@ -89,15 +168,87 @@ impl ControlJoinLease {
             lease_id: uuid::Uuid::new_v4().to_string(),
             target_id,
             domain_generation,
+            task_rejoin_generation: None,
             signal,
             monitor: StdMutex::new(None),
+            process_exit: StdMutex::new(None),
+            original_command: StdMutex::new(None),
+            original_child: StdMutex::new(None),
             join: Mutex::new(JoinSlot::default()),
             cancel_requested: AtomicBool::new(false),
+            cancel_observation: CancellationToken::new(),
             registration: StdMutex::new(None),
         })
     }
+    fn new_task(task: &TaskRecord, signal: CancellationSignal) -> Arc<Self> {
+        let mut lease = Self::new(
+            task.id.clone(),
+            serde_json::json!({"created_at":task.created_at,"rejoin":task.rejoin_fence().ok()}),
+            signal,
+        );
+        Arc::get_mut(&mut lease)
+            .expect("unpublished Task lease")
+            .task_rejoin_generation = super::task_generation::TaskRejoinGeneration::of(task);
+        lease
+    }
+    pub(super) fn matches_task_generation(&self, task: &TaskRecord) -> bool {
+        self.target_id == task.id
+            && self.domain_generation.get("created_at") == Some(&serde_json::json!(task.created_at))
+            && self.task_rejoin_generation.is_some_and(|generation| {
+                Some(generation) == super::task_generation::TaskRejoinGeneration::of(task)
+            })
+    }
+    pub(super) fn is_command_producer(&self) -> bool {
+        matches!(&self.signal, CancellationSignal::Command { .. })
+    }
+    pub(super) fn record_original_command_process_exit(
+        &self,
+        fact: Arc<super::command_task::OriginalCommandProcessExit>,
+    ) -> Result<()> {
+        ensure!(
+            self.is_command_producer() && fact.matches_lease(self),
+            "Command exit crossed original lease/generation"
+        );
+        let mut stored = self
+            .process_exit
+            .lock()
+            .map_err(|_| anyhow!("Command exit proof poisoned"))?;
+        if let Some(original) = stored.as_ref() {
+            ensure!(
+                original.same_exit(&fact),
+                "original Command exit fact replaced"
+            );
+        } else {
+            *stored = Some(fact);
+        }
+        Ok(())
+    }
+    pub(super) fn original_command_process_exit(
+        &self,
+    ) -> Option<Arc<super::command_task::OriginalCommandProcessExit>> {
+        self.process_exit.lock().ok().and_then(|fact| fact.clone())
+    }
+    fn can_reap_original_process(&self) -> bool {
+        !self.is_command_producer()
+            || self
+                .process_exit
+                .lock()
+                .ok()
+                .is_some_and(|f| f.as_ref().is_some_and(|fact| fact.group_is_empty()))
+    }
     pub(super) fn lease_id(&self) -> &str {
         &self.lease_id
+    }
+    pub(super) fn target_id(&self) -> &str {
+        &self.target_id
+    }
+    #[cfg(test)]
+    pub(super) fn task_stop_fixture(task: &TaskRecord, lease_id: &str) -> Arc<Self> {
+        let mut lease = Self::new_task(task, CancellationSignal::Async(StdMutex::new(None)));
+        Arc::get_mut(&mut lease)
+            .expect("unpublished fixture lease")
+            .lease_id = lease_id.into();
+        lease
     }
     pub(super) fn domain_generation(&self) -> &serde_json::Value {
         &self.domain_generation
@@ -141,8 +292,15 @@ impl ControlJoinLease {
             .is_some_and(AbortHandle::is_finished)
     }
     /// Only original handles are signalled; never look up a newer task by id.
+    pub(super) fn cancellation_requested(&self) -> bool {
+        self.cancel_requested.load(Ordering::Acquire)
+    }
+    pub(super) fn cancellation_observation(&self) -> &CancellationToken {
+        &self.cancel_observation
+    }
     pub(super) fn cancel(&self) {
         self.cancel_requested.store(true, Ordering::Release);
+        self.cancel_observation.cancel();
         match &self.signal {
             CancellationSignal::Async(signal) => {
                 if let Some(abort) = signal
@@ -167,7 +325,10 @@ impl ControlJoinLease {
             return false;
         };
         if let Some(outcome) = &slot.outcome {
-            return matches!(outcome, JoinOutcome::Completed);
+            return matches!(outcome, JoinOutcome::Completed)
+                && self.can_reap_original_process()
+                && !self.command_terminal_pending()
+                && !self.child_terminal_pending();
         }
         let Some(handle) = slot.handle.as_mut().filter(|handle| handle.is_finished()) else {
             return false;
@@ -183,6 +344,9 @@ impl ControlJoinLease {
             self.record_joined();
         }
         succeeded
+            && self.can_reap_original_process()
+            && !self.command_terminal_pending()
+            && !self.child_terminal_pending()
     }
     /// The JoinHandle stays in the slot while await is pending. Dropping a
     /// drainer releases the guard, leaving the exact handle for the next one.
@@ -298,6 +462,9 @@ impl ControlRunLease {
     }
     pub(super) fn is_complete(&self) -> bool {
         self.complete.load(Ordering::Acquire)
+    }
+    pub(super) fn is_live(&self) -> bool {
+        !self.token.is_cancelled() && !self.is_complete()
     }
     pub(super) fn cancel(&self) {
         *self.reason.lock().expect("run abort reason poisoned") = "agent_stopped".into();
@@ -427,6 +594,8 @@ impl CompletionWorker {
 
 #[derive(Default)]
 pub(super) struct ControlCancellationRegistry {
+    #[cfg(test)]
+    clock_recovery_dispatch_gate: StdMutex<Option<Arc<tokio::sync::Semaphore>>>,
     joins: StdMutex<BTreeMap<String, Arc<ControlJoinLease>>>,
     runs: StdMutex<BTreeMap<String, Arc<ControlRunLease>>>,
     prepared: StdMutex<BTreeMap<PreparationKey, RetainedControlPreparation>>,
@@ -434,8 +603,73 @@ pub(super) struct ControlCancellationRegistry {
     pending_workers: StdMutex<Vec<CompletionWorker>>,
     registrations: super::control_reconcile::ControlRegistrationLedger,
     retiring: AtomicBool,
+    producer_registration_revision: AtomicU64,
+    process_registry_id: OnceLock<uuid::Uuid>,
+    managed_processes: StdMutex<BTreeMap<String, Arc<super::command_task::OriginalManagedProcess>>>,
 }
 impl ControlCancellationRegistry {
+    pub(super) fn abandon_unattached_command(&self, lease: &Arc<ControlJoinLease>) -> Result<()> {
+        ensure!(
+            lease.is_command_producer()
+                && lease
+                    .monitor
+                    .lock()
+                    .map_err(|_| anyhow!("Command monitor slot poisoned"))?
+                    .is_none()
+                && lease
+                    .join
+                    .try_lock()
+                    .map_err(|_| anyhow!("Command lease is joining"))?
+                    .handle
+                    .is_none()
+                && lease.original_command()?.is_none(),
+            "cannot abandon attached original Command"
+        );
+        let mut joins = self
+            .joins
+            .lock()
+            .map_err(|_| anyhow!("Control leases poisoned"))?;
+        ensure!(
+            joins
+                .get(lease.lease_id())
+                .is_some_and(|original| Arc::ptr_eq(original, lease)),
+            "Command registration lease changed"
+        );
+        joins.remove(lease.lease_id());
+        Ok(())
+    }
+
+    pub(super) fn abandon_unattached_child(&self, lease: &Arc<ControlJoinLease>) -> Result<()> {
+        ensure!(
+            !lease.is_command_producer()
+                && lease
+                    .monitor
+                    .lock()
+                    .map_err(|_| anyhow!("child monitor slot poisoned"))?
+                    .is_none()
+                && lease
+                    .join
+                    .try_lock()
+                    .map_err(|_| anyhow!("child lease is joining"))?
+                    .handle
+                    .is_none()
+                && lease.original_child()?.is_none(),
+            "cannot abandon attached original child"
+        );
+        let mut joins = self
+            .joins
+            .lock()
+            .map_err(|_| anyhow!("Control leases poisoned"))?;
+        ensure!(
+            joins
+                .get(lease.lease_id())
+                .is_some_and(|original| Arc::ptr_eq(original, lease)),
+            "child registration lease changed"
+        );
+        joins.remove(lease.lease_id());
+        Ok(())
+    }
+
     /// Must run before SQL. Indeterminate/lost ACK retains the exact plan without
     /// signalling it; a receipt resolver later confirms or discards this entry.
     pub(super) fn retain_prepared(
@@ -539,9 +773,57 @@ impl ControlCancellationRegistry {
         workers.retain_mut(|worker| !worker.reap_successfully());
         workers.push(CompletionWorker::new(worker, Some(original_plan_finished)));
     }
+    #[cfg(test)]
+    pub(super) fn original_child_spawn_for_test(
+        &self,
+        task_id: &str,
+    ) -> Option<(Arc<ControlJoinLease>, Arc<super::OriginalChildTaskProducer>)> {
+        self.joins.lock().unwrap().values().find_map(|lease| {
+            if lease.target_id() != task_id {
+                return None;
+            }
+            let source = lease.original_child().ok().flatten()?;
+            source
+                .original_child_spawn_pending()
+                .then(|| (lease.clone(), source))
+        })
+    }
+    #[cfg(test)]
+    pub(super) fn contains_original_child_lease_for_test(
+        &self,
+        lease: &Arc<ControlJoinLease>,
+    ) -> bool {
+        self.joins
+            .lock()
+            .expect("control leases poisoned")
+            .get(lease.lease_id())
+            .is_some_and(|actual| Arc::ptr_eq(actual, lease))
+    }
+    pub(super) fn original_child_running_status_clock(
+        &self,
+        message: &crate::types::MessageEnvelope,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let crate::types::MessageOrigin::Task { task_id } = &message.origin else {
+            return Ok(None);
+        };
+        let leases = self
+            .joins
+            .lock()
+            .map_err(|_| anyhow!("Control leases poisoned"))?;
+        for lease in leases.values().filter(|lease| lease.target_id() == task_id) {
+            if let Some(source) = lease.original_child()? {
+                if let Some(clock) = source.original_running_status_clock(message)? {
+                    return Ok(Some(clock));
+                }
+            }
+        }
+        Ok(None)
+    }
     fn retain_join(&self, lease: Arc<ControlJoinLease>) -> Arc<ControlJoinLease> {
         let mut leases = self.joins.lock().expect("control leases poisoned");
         leases.retain(|_, existing| !existing.reap_finished_successfully());
+        self.producer_registration_revision
+            .fetch_add(1, Ordering::AcqRel);
         leases.insert(lease.lease_id.clone(), lease.clone());
         if self.retiring.load(Ordering::Acquire) {
             lease.cancel();
@@ -549,9 +831,8 @@ impl ControlCancellationRegistry {
         lease
     }
     pub(super) fn task(&self, task: &TaskRecord) -> Arc<ControlJoinLease> {
-        let lease = self.retain_join(ControlJoinLease::new(
-            task.id.clone(),
-            serde_json::json!({"created_at": task.created_at, "rejoin": task.rejoin_fence().ok()}),
+        let lease = self.retain_join(ControlJoinLease::new_task(
+            task,
             CancellationSignal::Async(StdMutex::new(None)),
         ));
         if let Some(record) = self.registrations.for_task(task) {
@@ -586,9 +867,8 @@ impl ControlCancellationRegistry {
         cancel: SharedControlSignal,
         force: SharedControlSignal,
     ) -> Arc<ControlJoinLease> {
-        self.retain_join(ControlJoinLease::new(
-            task.id.clone(),
-            serde_json::json!({"created_at": task.created_at, "rejoin": task.rejoin_fence().ok()}),
+        self.retain_join(ControlJoinLease::new_task(
+            task,
             CancellationSignal::Command { cancel, force },
         ))
     }
@@ -627,6 +907,8 @@ impl ControlCancellationRegistry {
             complete: AtomicBool::new(false),
             completed: Notify::new(),
         });
+        self.producer_registration_revision
+            .fetch_add(1, Ordering::AcqRel);
         runs.insert(run_id, lease.clone());
         if self.retiring.load(Ordering::Acquire) {
             lease.cancel_locally();
@@ -693,11 +975,26 @@ impl ControlCancellationRegistry {
             lease.cancel();
         }
     }
+    #[cfg(test)]
     pub(super) async fn drain_retiring(&self) -> Result<()> {
         self.cancel_local_producers();
         self.drain().await
     }
+    #[cfg(test)]
     pub(super) async fn drain(&self) -> Result<()> {
+        self.drain_original_commands(None).await
+    }
+    pub(super) async fn drain_for_original_runtime(
+        &self,
+        runtime: &super::RuntimeHandle,
+        retiring: bool,
+    ) -> Result<()> {
+        if retiring {
+            self.cancel_local_producers();
+        }
+        self.drain_original_commands(Some(runtime)).await
+    }
+    async fn drain_original_commands(&self, runtime: Option<&super::RuntimeHandle>) -> Result<()> {
         {
             let prepared = self.prepared.lock().expect("Control preparations poisoned");
             ensure!(
@@ -749,6 +1046,30 @@ impl ControlCancellationRegistry {
             .collect::<Vec<_>>();
         for lease in leases {
             lease.join().await?;
+            if let Some(source) = lease.original_command()? {
+                if !source.is_durable_finished() {
+                    runtime
+                        .context("original Command terminal responsibility remains pending")?
+                        .continue_original_command_terminal(source.clone())
+                        .await?;
+                }
+                ensure!(
+                    source.is_durable_finished(),
+                    "original Command terminal responsibility remains pending"
+                );
+            }
+            if let Some(source) = lease.original_child()? {
+                if source.has_terminal_responsibility() {
+                    runtime
+                        .context("original child terminal responsibility remains pending")?
+                        .continue_original_child_terminal(source.clone())
+                        .await?;
+                    ensure!(
+                        source.is_durable_finished(),
+                        "original child terminal responsibility remains pending"
+                    );
+                }
+            }
             self.joins
                 .lock()
                 .expect("control leases poisoned")
@@ -995,5 +1316,35 @@ mod tests {
         assert_eq!(*reason.lock().unwrap(), "runtime_unloaded");
         lease.finish();
         registry.drain_retiring().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+impl super::RuntimeHandle {
+    pub(crate) fn set_clock_recovery_dispatch_gate_for_test(
+        &self,
+        gate: Arc<tokio::sync::Semaphore>,
+    ) {
+        *self
+            .inner
+            .control_cancellations
+            .clock_recovery_dispatch_gate
+            .lock()
+            .unwrap() = Some(gate);
+    }
+    pub(super) async fn wait_clock_recovery_dispatch_gate_for_test(
+        &self,
+    ) -> Result<Option<tokio::sync::OwnedSemaphorePermit>> {
+        let gate = self
+            .inner
+            .control_cancellations
+            .clock_recovery_dispatch_gate
+            .lock()
+            .unwrap()
+            .clone();
+        match gate {
+            Some(gate) => Ok(Some(gate.acquire_owned().await?)),
+            None => Ok(None),
+        }
     }
 }

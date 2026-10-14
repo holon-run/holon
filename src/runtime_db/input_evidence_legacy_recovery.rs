@@ -30,6 +30,20 @@ impl<'a> ExclusiveStartupInputRecovery<'a> {
             _handoff: handoff,
         })
     }
+    /// Borrowed lease/handoff plus the actual main database, never an agent ID.
+    pub(crate) fn validate_transaction(&self, tx: &Transaction<'_>) -> Result<()> {
+        let file: String = tx.query_row(
+            "SELECT file FROM pragma_database_list WHERE name='main'",
+            [],
+            |r| r.get(0),
+        )?;
+        ensure!(
+            !file.is_empty()
+                && std::fs::canonicalize(file)? == std::fs::canonicalize(&self.database)?,
+            "input startup capability transaction database mismatch"
+        );
+        Ok(())
+    }
     pub(crate) fn validate_database(&self, db: &RuntimeDb) -> Result<()> {
         ensure!(
             self.database == db.path(),
@@ -39,7 +53,7 @@ impl<'a> ExclusiveStartupInputRecovery<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 pub(crate) struct LegacySeedRecoveryScope {
     pub agent_id: String,
     pub seed_id: String,

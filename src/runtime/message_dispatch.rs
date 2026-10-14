@@ -1,3 +1,6 @@
+#[path = "task_status_clock.rs"]
+mod status_clock;
+
 use super::*;
 use crate::types::ExecutionAdmissionProvenance;
 use std::{future::Future, pin::Pin};
@@ -5,6 +8,7 @@ use std::{future::Future, pin::Pin};
 pub(super) struct MessageDispatchPlan {
     pub(super) prior_closure: ClosureDecision,
     pub(super) task: Result<Option<TaskRecord>>,
+    pub(super) _task_budget: Option<Arc<input_evidence_budget::BudgetViewGuard>>,
     pub(super) continuation_trigger: Option<ContinuationTrigger>,
     pub(super) continuation_resolution: Option<ContinuationResolution>,
     pub(super) model_turn_allowed: bool,
@@ -24,7 +28,66 @@ impl RuntimeHandle {
             .storage
             .latest_wait_conditions_for_agent(&message.agent_id)?;
         let waits = waits.iter().collect::<Vec<_>>();
-        self.build_message_dispatch_plan_with_waits(message, prior_closure, scheduler_state, &waits)
+        let task = message
+            .task_id
+            .as_deref()
+            .map(|id| self.inner.storage.latest_task_record(id))
+            .transpose()?
+            .flatten();
+        self.build_message_dispatch_plan_with_waits(
+            message,
+            prior_closure,
+            scheduler_state,
+            &waits,
+            task.as_ref(),
+        )
+    }
+
+    /// The actual loaded dispatch supplies Input/Work/Task selections from its
+    /// held owner. Existing low-level plan construction remains a pure helper.
+    pub(super) fn build_message_dispatch_plan_from_captured(
+        &self,
+        message: &MessageEnvelope,
+        prior_closure: ClosureDecision,
+        scheduler_state: &AgentState,
+        inputs: &super::resident_input_evidence::CapturedInputEvidence,
+        work: &super::resident_work::CapturedWork,
+        tasks: &super::resident_task::CapturedTasks,
+    ) -> Result<MessageDispatchPlan> {
+        let mut plan = self.build_message_dispatch_plan_from_work(
+            message,
+            prior_closure,
+            scheduler_state,
+            work,
+            tasks,
+        )?;
+        if message.kind == MessageKind::TaskStatus {
+            // The private live seal stays first. After restart only a qualified
+            // canonical Task plus this exact accepted Message can supply birth.
+            // Keep every proof error in the original deferred Task result.
+            plan.task = plan.task.and_then(|mut parsed| {
+                let exact_clock = self
+                    .inner
+                    .control_cancellations
+                    .original_child_running_status_clock(message)?;
+                if let Some(task) = parsed.as_mut() {
+                    let seal = status_clock::OriginalRunningSeal::observe(
+                        &self.inner.control_cancellations,
+                        message,
+                    )?;
+                    if let Some(original) =
+                        status_clock::qualify(inputs, tasks, message, task, seal.as_ref())?
+                    {
+                        original.preserve_rejoin_shape(task);
+                        if exact_clock.is_none() && original.preserves_original_clock() {
+                            task.created_at = original.created_at();
+                        }
+                    }
+                }
+                Ok(parsed)
+            });
+        }
+        Ok(plan)
     }
 
     pub(super) fn build_message_dispatch_plan_from_work(
@@ -33,13 +96,68 @@ impl RuntimeHandle {
         prior_closure: ClosureDecision,
         scheduler_state: &AgentState,
         work: &super::resident_work::CapturedWork,
+        tasks: &super::resident_task::CapturedTasks,
     ) -> Result<MessageDispatchPlan> {
         anyhow::ensure!(
             work.scope.agent_id == message.agent_id,
             "dispatch Wait scope differs"
         );
+        anyhow::ensure!(
+            tasks.scope == work.scope,
+            "dispatch Task/Work scopes differ"
+        );
         let waits = work.waits_triggered_by(&message.id)?;
-        self.build_message_dispatch_plan_with_waits(message, prior_closure, scheduler_state, &waits)
+        let task = if message.kind == MessageKind::TaskResult
+            && !super::task_reads::dispatch_result_is_invalid(tasks, message)?
+        {
+            message
+                .task_id
+                .as_deref()
+                .map(|id| super::task_reads::dispatch_task_record(tasks, id))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        // The plan's Task copy outlives this selected capture in ScheduledMessage.
+        // Reserve before parsing/copying either original metadata or fallback.
+        let budget = if matches!(
+            message.kind,
+            MessageKind::TaskStatus | MessageKind::TaskResult
+        ) {
+            let limits = self.inner.input_evidence_budget.limits();
+            let (bytes, records) = super::task_reads::dispatch_plan_material(message, task)?;
+            anyhow::ensure!(
+                records <= limits.record_limit
+                    && bytes
+                        <= limits
+                            .history_per_agent_bytes
+                            .checked_add(limits.pending_per_agent_bytes)
+                            .context("dispatch Task plan limits overflow")?,
+                super::resident_task::TaskReadError::ResourceExhausted(
+                    "dispatch Task plan material"
+                )
+            );
+            Some(self.inner.input_evidence_budget.register_owned_bytes(
+                &tasks.scope,
+                input_evidence_budget::InputMemoryCategory::Pins,
+                input_evidence_budget::OwnedBytesEstimate {
+                    payload_bytes: bytes,
+                    metadata_estimate_bytes: 0,
+                },
+            )?)
+        } else {
+            None
+        };
+        let mut plan = self.build_message_dispatch_plan_with_waits(
+            message,
+            prior_closure,
+            scheduler_state,
+            &waits,
+            task,
+        )?;
+        plan._task_budget = budget;
+        Ok(plan)
     }
 
     fn build_message_dispatch_plan_with_waits(
@@ -48,10 +166,23 @@ impl RuntimeHandle {
         prior_closure: ClosureDecision,
         scheduler_state: &AgentState,
         waits: &[&WaitConditionRecord],
+        durable_task: Option<&TaskRecord>,
     ) -> Result<MessageDispatchPlan> {
         let task = match message.kind {
             MessageKind::TaskStatus => {
-                tasks::task_from_message(message, &message.agent_id).map(Some)
+                tasks::task_from_message(message, &message.agent_id).and_then(|mut task| {
+                    // Only this private original producer's exact accepted
+                    // Message carries its clock; malformed status still stays
+                    // an original deferred parse error in the dispatch plan.
+                    if let Some(clock) = self
+                        .inner
+                        .control_cancellations
+                        .original_child_running_status_clock(message)?
+                    {
+                        task.created_at = clock;
+                    }
+                    Ok(Some(task))
+                })
             }
             MessageKind::TaskResult => tasks::task_from_message(message, &message.agent_id)
                 .or_else(|error| {
@@ -70,9 +201,7 @@ impl RuntimeHandle {
                                     } if origin_task_id == *task_id
                                 )
                         })
-                        .map(|task_id| self.inner.storage.latest_task_record(task_id))
-                        .transpose()?
-                        .flatten()
+                        .and_then(|task_id| durable_task.filter(|task| task.id == task_id))
                         .filter(|task| {
                             task.agent_id == message.agent_id
                                 && task.work_item_id == message.work_item_id
@@ -102,7 +231,7 @@ impl RuntimeHandle {
                         == Some(message.work_item_id.as_deref().unwrap_or_default());
                     if terminal_with_explicit_work_item || task.terminal_reentry() || wait_authority
                     {
-                        Ok(task)
+                        Ok(task.clone())
                     } else {
                         Err(error)
                     }
@@ -142,6 +271,7 @@ impl RuntimeHandle {
         Ok(MessageDispatchPlan {
             prior_closure,
             task,
+            _task_budget: None,
             continuation_trigger,
             continuation_resolution,
             model_turn_allowed,
@@ -165,11 +295,14 @@ impl RuntimeHandle {
                 self.now(),
             )
             .await?;
-        let plan = self.build_message_dispatch_plan_from_work(
+        let inputs = mutation.capture_input_evidence()?;
+        let plan = self.build_message_dispatch_plan_from_captured(
             &message,
             prior_closure,
             &read.state,
+            &inputs,
             &read.work,
+            &read.tasks,
         )?;
         let scheduler_projection = &read.projection;
         drop(mutation);
@@ -270,7 +403,24 @@ impl RuntimeHandle {
         })
     }
 
-    async fn process_message_with_plan_deferred_in_turn(
+    #[inline(never)]
+    fn process_message_with_plan_deferred_in_turn<'a>(
+        &'a self,
+        message: MessageEnvelope,
+        plan: MessageDispatchPlan,
+        scheduler_decision: &'a scheduler::SchedulerDecision,
+        turn_trace_context: Option<crate::observability::TraceContext>,
+    ) -> Pin<Box<impl Future<Output = Result<turn::TurnTerminalTransition>> + Send + 'a>> {
+        // Construct before entering the nested provider/tool polling stack.
+        Box::pin(self.process_message_with_plan_deferred_in_turn_inner(
+            message,
+            plan,
+            scheduler_decision,
+            turn_trace_context,
+        ))
+    }
+
+    async fn process_message_with_plan_deferred_in_turn_inner(
         &self,
         mut message: MessageEnvelope,
         plan: MessageDispatchPlan,
@@ -288,6 +438,7 @@ impl RuntimeHandle {
             continuation_trigger,
             continuation_resolution,
             execution_admission_provenance,
+            _task_budget,
             ..
         } = plan;
         let model_reentry = scheduler_decision.model_reentry;

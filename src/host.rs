@@ -1,6 +1,25 @@
+#[path = "host/task_stop_original.rs"]
+mod task_stop_original;
+pub(crate) use task_stop_original::OriginalTaskStopMetadataRead;
+mod child_monitor_binding;
+mod child_task_producer;
+#[cfg(test)]
+#[path = "host/child_task_summaries_read_tests.rs"]
+mod child_task_summaries_read_tests;
+mod command_task_producer;
 mod input_evidence;
+#[path = "host/child_task_spawn.rs"]
+mod original_child_spawn;
 mod pending_budget;
 mod startup_dispatch_memory;
+mod task_monitor_read;
+#[cfg(test)]
+mod task_monitor_read_tests;
+mod task_status_metadata;
+mod task_stop_phases;
+mod task_stop_worktree;
+pub(crate) use task_stop_worktree::TaskStopWorktreeCleanupObserved;
+mod task_stop_supervisor;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -311,8 +330,11 @@ pub(crate) struct HostInner {
     pub(crate) daemon_deletion_handle: Mutex<Option<JoinHandle<()>>>,
     runtime_db_maintenance_lock: Mutex<Option<crate::runtime_db::RuntimeDbLock>>,
     startup_recovery_report: Mutex<startup_dispatch_memory::RetainedStartupRecoveryReport>,
+    task_stop_supervisor: task_stop_supervisor::TaskStopSupervisor,
     skills_registry: Arc<RwLock<SkillsRegistry>>,
     static_provider: Mutex<Option<Arc<dyn AgentProvider>>>,
+    #[cfg(test)]
+    clock_recovery_dispatch_gates: Mutex<BTreeMap<String, Arc<tokio::sync::Semaphore>>>,
     bootstrap_provider_active: AtomicBool,
     bootstrap_ready_notify: Notify,
     runtimes: RwLock<HostRuntimeRegistry>,
@@ -542,7 +564,7 @@ pub(crate) struct ChildTaskSpawn {
     pub task_detail: Value,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[error("child task spawn failed after creating agent {child_agent_id}")]
 pub(crate) struct ChildTaskSpawnFailure {
     child_agent_id: String,
@@ -751,6 +773,29 @@ async fn apply_spawn_model_resolution(
     Ok(())
 }
 
+#[path = "host/task_stop_worktree_exit.rs"]
+mod task_stop_worktree_exit;
+pub(crate) use task_stop_worktree_exit::TaskStopWorktreeProducerExit;
+
+/// Construction requires original-target retirement, drain and home cleanup.
+pub(crate) struct TaskStopChildRetirement {
+    original: Arc<crate::runtime_db::task_stop::TaskStopRecord>,
+    _identity: crate::runtime_db::task_stop::PreparedTaskStopChildIdentity,
+    producer_exit: Option<Arc<TaskStopWorktreeProducerExit>>,
+}
+impl TaskStopChildRetirement {
+    pub(crate) fn producer_exit(&self) -> Option<Arc<TaskStopWorktreeProducerExit>> {
+        self.producer_exit.clone()
+    }
+    pub(crate) fn matches(&self, record: &crate::runtime_db::task_stop::TaskStopRecord) -> bool {
+        self.original.effect_seq == record.effect_seq
+            && self.original.prepared == record.prepared
+            && self.original.intent_digest == record.intent_digest
+            && self.original.generation_digest == record.generation_digest
+            && self.original.intent.child == record.intent.child
+    }
+}
+
 impl RuntimeHost {
     pub fn prepare_runtime_storage(config: &AppConfig) -> Result<()> {
         let lease =
@@ -866,8 +911,11 @@ impl RuntimeHost {
                 daemon_deletion_handle: Mutex::new(None),
                 runtime_db_maintenance_lock: Mutex::new(None),
                 startup_recovery_report: Mutex::new(Default::default()),
+                task_stop_supervisor: Default::default(),
                 skills_registry: Arc::new(RwLock::new(SkillsRegistry::new())),
                 static_provider: Mutex::new(static_provider),
+                #[cfg(test)]
+                clock_recovery_dispatch_gates: Mutex::new(BTreeMap::new()),
                 bootstrap_provider_active: AtomicBool::new(bootstrap_provider_active),
                 bootstrap_ready_notify: Notify::new(),
                 runtimes: RwLock::new(HostRuntimeRegistry {
@@ -1472,7 +1520,9 @@ impl RuntimeHost {
                     }
                     continue;
                 } else if entry_terminated {
-                    registry.agents.remove(&notice.agent_id);
+                    if let Some(entry) = registry.agents.remove(&notice.agent_id) {
+                        registry.retain_unproved_original_processes(&entry);
+                    }
                     None
                 } else {
                     accessible_runtime
@@ -2098,6 +2148,17 @@ impl RuntimeHost {
         &self,
         mutation: impl Future<Output = Result<T>> + Send + 'static,
     ) -> Result<T> {
+        self.register_owned_external_mutation(mutation, || Ok(()))
+            .await?
+            .await
+            .context("host mutation worker stopped before reporting completion")?
+    }
+
+    async fn register_owned_external_mutation<T: Send + 'static>(
+        &self,
+        mutation: impl Future<Output = Result<T>> + Send + 'static,
+        before_register: impl FnOnce() -> Result<()> + Send,
+    ) -> Result<oneshot::Receiver<Result<T>>> {
         let (result_tx, result_rx) = oneshot::channel();
         {
             let registry = self.inner.runtimes.read().await;
@@ -2105,6 +2166,7 @@ impl RuntimeHost {
                 registry.phase == HostRuntimePhase::Open,
                 "runtime admission closed"
             );
+            before_register()?;
             let mut tasks = self
                 .inner
                 .external_mutation_tasks
@@ -2116,9 +2178,7 @@ impl RuntimeHost {
                 let _ = result_tx.send(result);
             }));
         }
-        result_rx
-            .await
-            .context("host mutation worker stopped before reporting completion")?
+        Ok(result_rx)
     }
 
     pub(crate) async fn reserve_agent_mutations(
@@ -2309,12 +2369,14 @@ impl RuntimeHost {
         &self,
         reservations: &mut [MutationReservation],
     ) -> Result<()> {
-        crate::runtime::input_recovery::resolve_input_recovery(
+        let task_queries = self.task_recovery_queries_for_group(reservations).await?;
+        crate::runtime::input_recovery::resolve_input_recovery_with_queries(
             &self.inner.runtime_db,
             reservations,
             &self.inner.input_evidence_budget,
             &self.runtime_context_config(),
             &RuntimeModelCatalog::from_config(&self.config()),
+            &task_queries,
         )?;
         for reservation in reservations.iter_mut() {
             let original_runtime = self.bridge().runtime_for_mutation(reservation).await?;
@@ -2460,6 +2522,7 @@ impl RuntimeHost {
                     episodes: reservation.prepared_episodes_for_state_only_commit()?,
                     input_evidence: reservation.prepared_inputs_for_state_only_commit()?,
                     work: reservation.prepared_work_for_state_only_commit()?,
+                    tasks: reservation.prepared_tasks_for_state_only_commit()?,
                     runtime: None,
                 })
             })
@@ -2602,6 +2665,7 @@ impl RuntimeHost {
                 HostRuntimePhase::Closed => return Ok(()),
             }
         };
+        self.stop_task_stop_supervisor_discovery();
         self.shutdown_runtime_recovery_coordinator().await;
         self.shutdown_daemon_runtime_db_retention().await;
         self.shutdown_daemon_memory_indexer().await;
@@ -2680,6 +2744,12 @@ impl RuntimeHost {
                 }
             }
         }
+        self.shutdown_task_stop_supervisor().await;
+        // Original Runtime producers have joined. Continue their durable Stop
+        // responsibilities once without constructing a replacement Runtime.
+        if let Err(error) = self.sweep_pending_task_stops_after_runtime_drain().await {
+            mutation_error.get_or_insert(error);
+        }
         {
             let mut registry = self.inner.runtimes.write().await;
             registry.phase = HostRuntimePhase::Closed;
@@ -2737,7 +2807,11 @@ impl RuntimeHost {
                 .get(agent_id)
                 .is_some_and(|entry| entry.generation == generation)
             {
-                registry.agents.remove(agent_id)
+                let entry = registry.agents.remove(agent_id);
+                if let Some(entry) = &entry {
+                    registry.retain_unproved_original_processes(entry);
+                }
+                entry
             } else {
                 None
             }
@@ -3010,8 +3084,11 @@ impl RuntimeHost {
                     .await;
                 entry.task.abort();
                 let _ = entry.task.await;
-                let result = entry.runtime.join_retiring_resources().await;
-                if result.is_ok() {
+                let result = entry
+                    .runtime
+                    .join_retiring_resources_with_process_exit()
+                    .await;
+                if result.as_ref().is_ok_and(|proof| proof.is_some()) {
                     let mut registry = host.inner.runtimes.write().await;
                     if registry.phase == HostRuntimePhase::Open {
                         registry.unloading_mutations.remove(&entry.generation);
@@ -3019,7 +3096,7 @@ impl RuntimeHost {
                     }
                 }
                 host.notify_runtime_recovery(&agent_id).await;
-                result
+                result.map(|_| ())
             });
             cleanup.await.context("runtime drain worker stopped")??;
         } else {
@@ -3033,9 +3110,9 @@ impl RuntimeHost {
                         break;
                     }
                 }
-                runtime.join_retiring_resources().await?;
+                let proof = runtime.join_retiring_resources_with_process_exit().await?;
                 let mut registry = self.inner.runtimes.write().await;
-                if registry.phase == HostRuntimePhase::Open {
+                if proof.is_some() && registry.phase == HostRuntimePhase::Open {
                     registry.unloading_mutations.remove(&generation);
                     registry.unloading_exits.remove(&generation);
                 }
@@ -3083,6 +3160,9 @@ impl RuntimeHost {
         let stale_waits = self
             .reconcile_stale_waits_at_startup_inner(Some(admission))
             .await?;
+        // Any Result Queue ACK is visible to the original activation predicates
+        // below. Stop history alone never supplies an activation request.
+        self.sweep_pending_task_stops_at_startup().await?;
         for operation in self
             .runtime_db()
             .destructive_operations()
@@ -3175,6 +3255,7 @@ impl RuntimeHost {
             runtime.wait_for_bootstrap().await?;
         }
         self.finish_startup_recovery_report();
+        self.start_task_stop_supervisor();
         Ok(recovered_queue_agent_ids)
     }
 
@@ -5415,9 +5496,10 @@ impl RuntimeHost {
                 if registry.phase != HostRuntimePhase::Open {
                     return Err(anyhow::Error::new(RuntimeAdmissionClosed));
                 }
-                if let Err(error) = self.active_agent_identity(agent_id) {
-                    return Err(anyhow::Error::new(error));
-                }
+                let current_incarnation = self
+                    .active_agent_identity(agent_id)
+                    .map_err(anyhow::Error::new)?
+                    .incarnation;
                 if let Some(entry) = registry.agents.get(agent_id) {
                     if entry.accepts_host_access() {
                         return Ok(entry.runtime.clone());
@@ -5439,6 +5521,11 @@ impl RuntimeHost {
                     }
                     continue;
                 }
+                registry.validate_retiring_process_instance_budget(
+                    agent_id,
+                    current_incarnation,
+                    &self.inner.input_evidence_budget,
+                )?;
                 registry.ever_activated = true;
                 let generation = registry.next_generation;
                 let (runtime, runtime_task, phase) =
@@ -5466,6 +5553,7 @@ impl RuntimeHost {
                 let stale_entry = registry.agents.remove(agent_id);
                 if let Some(entry) = &stale_entry {
                     entry.runtime.close_execution_admission();
+                    registry.retain_unproved_original_processes(entry);
                 }
                 tracing::debug!(
                     agent_id,
@@ -5613,19 +5701,21 @@ impl RuntimeHost {
             let _ = runtime.request_service_shutdown().await;
             runtime_task.abort();
             let _ = runtime_task.await;
-            runtime.join_retiring_resources().await?;
+            let producer_exit = runtime.join_retiring_resources_with_process_exit().await?;
             host.archive_temporary_runtime_identity_owned(&agent_id)
                 .await?;
             let data_dir = host.agent_data_dir(&agent_id);
             if data_dir.exists() {
                 fs::remove_dir_all(&data_dir)?;
             }
-            host.inner
-                .runtimes
-                .write()
-                .await
-                .temporary_runtimes
-                .remove(&agent_id);
+            if producer_exit.is_some() {
+                host.inner
+                    .runtimes
+                    .write()
+                    .await
+                    .temporary_runtimes
+                    .remove(&agent_id);
+            }
             Ok(())
         })
         .await
@@ -6420,6 +6510,22 @@ impl RuntimeHost {
                 && record.kind == AgentKind::Child
                 && record.parent_agent_id.as_deref() == Some(parent_agent_id)
         }) {
+            if let Some(runtime) = self.try_get_loaded_runtime(&identity.agent_id).await {
+                let (state, active_task_count, observability) =
+                    runtime.child_agent_summary_observation().await?;
+                children.push(ChildAgentSummary {
+                    identity: AgentIdentityView::from_record(
+                        &identity,
+                        &self.config().default_agent_id,
+                    ),
+                    status: state.status.clone(),
+                    current_run_id: state.current_run_id.clone(),
+                    pending: state.pending,
+                    active_task_count,
+                    observability,
+                });
+                continue;
+            }
             let storage = self.agent_storage_read_only(&identity.agent_id)?;
             let state = storage
                 .read_agent()?
@@ -6606,6 +6712,7 @@ impl RuntimeHost {
         Ok(record)
     }
 
+    #[cfg(test)]
     async fn archive_private_agent(&self, agent_id: &str) -> Result<()> {
         let host = self.clone();
         let agent_id = agent_id.to_string();
@@ -6615,26 +6722,120 @@ impl RuntimeHost {
         .await
     }
 
+    #[cfg(test)]
     async fn archive_private_agent_owned(&self, agent_id: &str) -> Result<()> {
+        self.archive_private_agent_owned_with_original(agent_id, None)
+            .await
+            .map(|_| ())
+    }
+
+    async fn archive_private_agent_owned_with_original(
+        &self,
+        agent_id: &str,
+        original: Option<&crate::runtime_db::task_stop::TaskStopRecord>,
+    ) -> Result<(
+        Option<crate::runtime_db::task_stop::PreparedTaskStopChildIdentity>,
+        Option<task_stop_worktree_exit::CompleteOriginalChildProducerExit>,
+    )> {
         let bootstrap_lock = self.agent_bootstrap_lock(agent_id);
         let bootstrap_guard = bootstrap_lock.lock().await;
-        let mut reservations = self
-            .reserve_agent_mutations(&[agent_id.to_string()])
-            .await?;
-        let identity = self.runtime_db().agent_identities().latest(agent_id)?;
+        let child_limit = if original.is_some() {
+            usize::try_from(
+                self.inner
+                    .input_evidence_budget
+                    .limits()
+                    .history_per_agent_bytes
+                    .checked_add(
+                        self.inner
+                            .input_evidence_budget
+                            .limits()
+                            .pending_per_agent_bytes,
+                    )
+                    .context("TaskStop child owner budget overflow")?,
+            )?
+        } else {
+            0
+        };
+        let mut reservations = if let Some(record) = original {
+            let child = record
+                .intent
+                .child
+                .as_ref()
+                .context("TaskStop original child unavailable")?;
+            anyhow::ensure!(
+                child.scope.agent_id == agent_id,
+                "TaskStop child cleanup address differs"
+            );
+            self.reserve_mutation_scopes(&[
+                (
+                    record.intent.task.scope.agent_id.clone(),
+                    record.intent.task.scope.identity_incarnation,
+                ),
+                (
+                    child.scope.agent_id.clone(),
+                    child.scope.identity_incarnation,
+                ),
+            ])
+            .await?
+        } else {
+            self.reserve_agent_mutations(&[agent_id.to_string()])
+                .await?
+        };
+        let original_identity = original
+            .map(|record| {
+                self.runtime_db().transaction(|tx| {
+                    crate::runtime_db::task_stop::prepare_task_stop_child_identity_tx(
+                        tx,
+                        record,
+                        false,
+                        child_limit,
+                        &self.inner.input_evidence_budget,
+                    )
+                })
+            })
+            .transpose()?;
+        let identity = if let Some(evidence) = &original_identity {
+            Some(evidence.identity.clone())
+        } else {
+            self.runtime_db().agent_identities().latest(agent_id)?
+        };
         let incarnation = identity.as_ref().map_or(1, |identity| identity.incarnation);
+        let mut original_tombstone_evidence = None;
         if identity
             .as_ref()
             .is_some_and(|identity| identity.status != AgentRegistryStatus::Deleted)
         {
-            let mut facts = self.external_identity_facts(&reservations)?;
+            // Parent is only a held read dependency; only the child enters the
+            // metadata ACK group and receives the child identity candidate.
+            let child_index = reservations
+                .iter()
+                .position(|reservation| {
+                    reservation.agent_id() == agent_id
+                        && reservation.identity_incarnation() == incarnation
+                })
+                .context("TaskStop child write reservation missing")?;
+            let child_reservations = &mut reservations[child_index..child_index + 1];
+            let mut facts = self.external_identity_facts(child_reservations)?;
             let mut acknowledged = false;
             let committed = self
-                .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
-                    let identity = self
-                        .runtime_db()
-                        .agent_identities()
-                        .tombstone_with_closed_supervision(agent_id)?;
+                .commit_external_metadata(child_reservations, ids::audit_event_id(), || {
+                    let identity = if let Some(record) = original {
+                        let evidence = self.runtime_db().transaction(|tx| {
+                            crate::runtime_db::task_stop::tombstone_task_stop_child_tx(
+                                tx,
+                                record,
+                                child_limit,
+                                &self.inner.input_evidence_budget,
+                            )
+                        })?;
+                        let identity = evidence.identity.clone();
+                        original_tombstone_evidence = Some(evidence);
+                        identity
+                    } else {
+                        self.runtime_db()
+                            .agent_identities()
+                            .tombstone_with_closed_supervision(agent_id)?
+                    };
                     for fact in &mut facts {
                         fact.identity = Some(Arc::new(identity.clone()));
                     }
@@ -6646,18 +6847,42 @@ impl RuntimeHost {
                 if !acknowledged {
                     return Err(error);
                 }
-                self.reconcile_external_mutations(&mut reservations).await?;
+                self.reconcile_external_mutations(child_reservations)
+                    .await?;
             }
         }
         drop(reservations);
         drop(bootstrap_guard);
-        self.drain_retired_runtime(agent_id, incarnation).await?;
+        let producer_exit = if let Some(record) = original {
+            self.drain_original_task_stop_child_producers(
+                &record
+                    .intent
+                    .child
+                    .as_ref()
+                    .context("TaskStop original child unavailable")?
+                    .scope,
+            )
+            .await?
+        } else {
+            self.drain_retired_runtime(agent_id, incarnation).await?;
+            None
+        };
         // Drain without owner/bootstrap locks; then fence this original scope
         // again before touching durable rows or the shared agent home.
         let _cleanup_bootstrap_guard = bootstrap_lock.lock().await;
-        let cleanup_reservations = self
-            .reserve_mutation_scopes(&[(agent_id.to_owned(), incarnation)])
-            .await?;
+        let cleanup_reservations = if let Some(record) = original {
+            self.reserve_mutation_scopes(&[
+                (
+                    record.intent.task.scope.agent_id.clone(),
+                    record.intent.task.scope.identity_incarnation,
+                ),
+                (agent_id.to_owned(), incarnation),
+            ])
+            .await?
+        } else {
+            self.reserve_mutation_scopes(&[(agent_id.to_owned(), incarnation)])
+                .await?
+        };
         let cleanup_reservation = cleanup_reservations
             .iter()
             .find(|reservation| {
@@ -6665,6 +6890,37 @@ impl RuntimeHost {
                     && reservation.identity_incarnation() == incarnation
             })
             .context("private archive lost its original identity scope")?;
+        // Recheck this original generation after drain, before shared home data.
+        let cleanup_original = original
+            .map(|record| {
+                self.runtime_db().transaction(|tx| {
+                    crate::runtime_db::task_stop::prepare_task_stop_child_identity_tx(
+                        tx,
+                        record,
+                        true,
+                        child_limit,
+                        &self.inner.input_evidence_budget,
+                    )
+                })
+            })
+            .transpose()?;
+        let archive_material = original
+            .map(|record| {
+                self.runtime_db().transaction(|tx| {
+                    crate::runtime_db::task_stop::prepare_task_stop_archive_material_tx(
+                        tx,
+                        &record
+                            .intent
+                            .child
+                            .as_ref()
+                            .context("TaskStop child unavailable")?
+                            .scope,
+                        child_limit,
+                        &self.inner.input_evidence_budget,
+                    )
+                })
+            })
+            .transpose()?;
         self.reconcile_deleted_pending_budget(cleanup_reservation)?;
         // Cancel any active wait conditions before removing the data directory.
         // This produces audit events and avoids orphaned active waits.
@@ -6721,11 +6977,22 @@ impl RuntimeHost {
         if data_dir.exists() {
             fs::remove_dir_all(&data_dir)?;
         }
-        Ok(())
+        drop(archive_material);
+        drop(original_tombstone_evidence);
+        Ok((cleanup_original, producer_exit))
     }
 
-    async fn stop_private_agent(&self, agent_id: &str) -> Result<()> {
-        self.archive_private_agent(agent_id).await
+    #[cfg(test)]
+    async fn stop_private_agent_for_task_stop(
+        &self,
+        original: Arc<crate::runtime_db::task_stop::TaskStopRecord>,
+    ) -> Result<TaskStopChildRetirement> {
+        let host = self.clone();
+        self.run_owned_external_mutation(async move {
+            host.stop_private_agent_for_owned_task_stop_record(original)
+                .await
+        })
+        .await
     }
 
     async fn spawn_child_task(
@@ -6737,6 +7004,30 @@ impl RuntimeHost {
         worktree: bool,
         template: Option<String>,
         model_resolution: AgentModelResolution,
+    ) -> Result<ChildTaskSpawn> {
+        self.spawn_child_task_inner(
+            parent_runtime,
+            task,
+            prompt,
+            authority_class,
+            worktree,
+            template,
+            model_resolution,
+            None,
+        )
+        .await
+    }
+
+    async fn spawn_child_task_inner(
+        &self,
+        parent_runtime: RuntimeHandle,
+        task: &TaskRecord,
+        prompt: String,
+        authority_class: AuthorityClass,
+        worktree: bool,
+        template: Option<String>,
+        model_resolution: AgentModelResolution,
+        original_source: Option<&crate::runtime::OriginalChildTaskProducer>,
     ) -> Result<ChildTaskSpawn> {
         let parent_state = parent_runtime.agent_state().await?;
         let parent_agent_home = self.agent_data_dir(&parent_state.id);
@@ -6750,6 +7041,11 @@ impl RuntimeHost {
             .await?;
         let child_agent_id = child_identity.agent_id.clone();
         async {
+            if let Some(source) = original_source {
+                source.original_spawn_identity_created(&child_identity)?;
+                #[cfg(test)]
+                source.wait_original_spawn_identity_gate_for_test().await?;
+            }
             let child_runtime = self.get_or_create_agent(&child_identity.agent_id).await?;
             child_runtime
                 .inherit_from_parent_state(&parent_state)
@@ -6770,9 +7066,15 @@ impl RuntimeHost {
             });
 
             if worktree {
-                let seed = parent_runtime
-                    .prepare_managed_worktree_for_task(&task.id)
-                    .await?;
+                let seed = if let Some(source) = original_source {
+                    parent_runtime
+                        .prepare_managed_worktree_for_original_child_spawn(&task.id, source)
+                        .await?
+                } else {
+                    parent_runtime
+                        .prepare_managed_worktree_for_task(&task.id)
+                        .await?
+                };
                 parent_runtime
                     .persist_transcript_evidence(&TranscriptEntry::new(
                         parent_state.id.clone(),
@@ -6824,8 +7126,23 @@ impl RuntimeHost {
                 "parent_supervised": true,
                 "delegated_authority_class": authority_class,
             }));
+            #[cfg(test)]
+            match original_source
+                .and_then(|source| source.take_original_spawn_enqueue_fault_for_test())
+            {
+                Some(fault) => {
+                    child_runtime
+                        .enqueue_original_spawn_with_fault_for_test(message, fault)
+                        .await?;
+                }
+                None => {
+                    child_runtime.enqueue(message).await?;
+                }
+            }
+            #[cfg(not(test))]
             child_runtime.enqueue(message).await?;
 
+            task_detail["target_identity_incarnation"] = json!(child_identity.incarnation);
             Ok::<ChildTaskSpawn, anyhow::Error>(ChildTaskSpawn {
                 child_agent_id: child_identity.agent_id,
                 child_turn_baseline,
@@ -7056,6 +7373,7 @@ impl RuntimeHost {
 
         let mut task_detail = json!({
             "target_agent_id": target_agent_id,
+            "target_identity_incarnation": identity.incarnation,
             "target_agent_kind": identity.kind,
             "target_agent_visibility": identity.visibility,
             "target_agent_ownership": identity.ownership(),
@@ -7140,7 +7458,8 @@ impl RuntimeHost {
         }
         let runtime = self.get_or_create_agent(child_agent_id).await?;
         loop {
-            let state = runtime.agent_state().await?;
+            let read = runtime.child_monitor_read(identity.incarnation).await?;
+            let state = read.state();
             let events = storage.read_recent_events(32)?;
             let runtime_error = events
                 .iter()
@@ -7152,7 +7471,7 @@ impl RuntimeHost {
                 .as_ref()
                 .filter(|record| record.turn_index == state.turn_index)
                 .cloned();
-            let closure = runtime.current_closure_decision().await?;
+            let closure = read.closure();
             let observed_new_turn = state.turn_index > child_turn_baseline;
             let quiescent = state.current_run_id.is_none() && state.pending == 0;
             let terminal_signal = terminal.is_some()
@@ -7160,7 +7479,7 @@ impl RuntimeHost {
                 || state.status == AgentStatus::Stopped;
             let is_terminal = observed_new_turn
                 && quiescent
-                && !child_has_active_lifecycle_blockers(&storage, child_agent_id)?
+                && !read.has_lifecycle_blockers()?
                 && !matches!(
                     closure.outcome,
                     ClosureOutcome::Waiting | ClosureOutcome::Continuable
@@ -7271,12 +7590,18 @@ impl RuntimeHost {
         let identity = self
             .active_agent_identity(child_agent_id)
             .map_err(anyhow::Error::from)?;
-        if let Some(evidence) = self.invocation_delivery_terminal_evidence(
-            &storage,
-            child_agent_id,
-            delivery_id,
-            invocation_task_id,
-        )? {
+        let mut task_roles = Vec::new();
+        if let Some(evidence) = self
+            .invocation_delivery_terminal_evidence(
+                &storage,
+                child_agent_id,
+                delivery_id,
+                invocation_task_id,
+                identity.incarnation,
+                &mut task_roles,
+            )
+            .await?
+        {
             return self
                 .invocation_terminal_result(&storage, &identity, delivery_id, evidence, worktree)
                 .await;
@@ -7284,12 +7609,17 @@ impl RuntimeHost {
 
         let _runtime = self.get_or_create_agent(child_agent_id).await?;
         loop {
-            if let Some(evidence) = self.invocation_delivery_terminal_evidence(
-                &storage,
-                child_agent_id,
-                delivery_id,
-                invocation_task_id,
-            )? {
+            if let Some(evidence) = self
+                .invocation_delivery_terminal_evidence(
+                    &storage,
+                    child_agent_id,
+                    delivery_id,
+                    invocation_task_id,
+                    identity.incarnation,
+                    &mut task_roles,
+                )
+                .await?
+            {
                 return self
                     .invocation_terminal_result(
                         &storage,
@@ -7356,12 +7686,14 @@ impl RuntimeHost {
         }
     }
 
-    fn invocation_delivery_terminal_evidence(
+    async fn invocation_delivery_terminal_evidence(
         &self,
         storage: &AppStorage,
         child_agent_id: &str,
         delivery_id: &str,
         invocation_task_id: &str,
+        child_incarnation: u64,
+        task_roles: &mut Vec<crate::runtime::TaskParentTurnSession>,
     ) -> Result<Option<InvocationTerminalEvidence>> {
         use crate::domain::execution_protocol::{
             ConversationOutcome, ExecutionAttemptState, ExecutionBinding, ExecutionOutcome,
@@ -7553,33 +7885,17 @@ impl RuntimeHost {
                                 }));
                             };
                             let tasks = self
-                                .runtime_db()
-                                .tasks()
-                                .latest_for_agent(child_agent_id, usize::MAX)?
-                                .into_iter()
-                                .filter(|task| {
-                                    task.detail
-                                        .as_ref()
-                                        .and_then(|detail| detail.get("parent_turn_id"))
-                                        .and_then(Value::as_str)
-                                        == Some(turn_id)
-                                })
-                                .collect::<Vec<_>>();
-                            if tasks.iter().any(|task| {
-                                matches!(
-                                    task.status,
-                                    TaskStatus::Queued
-                                        | TaskStatus::Running
-                                        | TaskStatus::Cancelling
+                                .invocation_task_rows(
+                                    child_agent_id,
+                                    child_incarnation,
+                                    turn_id,
+                                    task_roles,
                                 )
-                            }) {
+                                .await?;
+                            if tasks.has_active() {
                                 return Ok(None);
                             }
                             if !tasks.is_empty() {
-                                let task_ids = tasks
-                                    .iter()
-                                    .map(|task| task.id.as_str())
-                                    .collect::<HashSet<_>>();
                                 let continuations = execution
                                     .attempts
                                     .values()
@@ -7589,18 +7905,18 @@ impl RuntimeHost {
                                             ExecutionSourceIdentity::TaskResult {
                                                 task_id,
                                                 ..
-                                            } if task_ids.contains(task_id.as_str())
+                                            } if tasks.contains(task_id.as_str())
                                         )
                                     })
                                     .collect::<Vec<_>>();
-                                if tasks.iter().any(|task| {
+                                if tasks.ids().any(|id| {
                                     !continuations.iter().any(|candidate| {
                                         matches!(
                                             &candidate.source.identity,
                                             ExecutionSourceIdentity::TaskResult {
                                                 task_id,
                                                 ..
-                                            } if task_id == &task.id
+                                            } if task_id == id
                                         )
                                     })
                                 }) {
@@ -7946,9 +8262,26 @@ impl RuntimeHost {
         evidence: InvocationTerminalEvidence,
         worktree: bool,
     ) -> Result<ChildTaskTerminalResult> {
-        let state = storage
-            .read_agent()?
-            .unwrap_or_else(|| stopped_unloaded_agent(&identity.agent_id));
+        let loaded: Option<crate::runtime::ChildMonitorRead> =
+            match self.try_get_loaded_runtime(&identity.agent_id).await {
+                Some(runtime) => Some(runtime.child_monitor_read(identity.incarnation).await?),
+                None => None,
+            };
+        let cold = if loaded.is_none() {
+            self.require_cold_monitor_scope(&identity.agent_id, identity.incarnation)?;
+            Some(
+                storage
+                    .read_agent()?
+                    .unwrap_or_else(|| stopped_unloaded_agent(&identity.agent_id)),
+            )
+        } else {
+            None
+        };
+        let state = loaded
+            .as_ref()
+            .map(|read| read.state())
+            .or(cold.as_ref())
+            .expect("loaded or genuine cold State");
         let mut metadata = json!({
             "target_agent_id": identity.agent_id,
             "target_agent_kind": identity.kind,
@@ -7998,7 +8331,18 @@ impl RuntimeHost {
         identity: &AgentIdentityRecord,
         child_turn_baseline: u64,
     ) -> Result<Option<ChildTaskTerminalResult>> {
-        let Some(state) = storage.read_agent()? else {
+        let loaded: Option<crate::runtime::ChildMonitorRead> =
+            match self.try_get_loaded_runtime(&identity.agent_id).await {
+                Some(runtime) => Some(runtime.child_monitor_read(identity.incarnation).await?),
+                None => None,
+            };
+        let cold = if loaded.is_none() {
+            self.require_cold_monitor_scope(&identity.agent_id, identity.incarnation)?;
+            storage.read_agent()?
+        } else {
+            None
+        };
+        let Some(state) = loaded.as_ref().map(|read| read.state()).or(cold.as_ref()) else {
             return Ok(None);
         };
         let Some(terminal) = state
@@ -8012,11 +8356,17 @@ impl RuntimeHost {
         };
         if state.current_run_id.is_some()
             || state.pending > 0
-            || child_has_active_lifecycle_blockers(storage, &identity.agent_id)?
+            || match &loaded {
+                Some(read) => read.has_lifecycle_blockers()?,
+                None => child_has_active_lifecycle_blockers(storage, &identity.agent_id)?,
+            }
         {
             return Ok(None);
         }
-        let closure = RuntimeHandle::closure_decision_from_storage(storage, &state)?;
+        let closure = match &loaded {
+            Some(read) => read.closure(),
+            None => RuntimeHandle::closure_decision_from_storage(storage, state)?,
+        };
         if matches!(
             closure.outcome,
             ClosureOutcome::Waiting | ClosureOutcome::Continuable
@@ -8149,6 +8499,17 @@ impl RuntimeHost {
                 self.inner.event_bus.clone(),
             )?
         };
+        #[cfg(test)]
+        if let Some(gate) = self
+            .inner
+            .clock_recovery_dispatch_gates
+            .lock()
+            .unwrap()
+            .get(agent_id)
+            .cloned()
+        {
+            runtime.set_clock_recovery_dispatch_gate_for_test(gate);
+        }
         runtime.enable_memory_index_notify(self.inner.memory_index_notify.clone());
         let (phase_tx, phase_rx) = watch::channel(AgentRuntimePhase::Bootstrapping);
         let runtime_recovery_tx = self.inner.runtime_recovery_tx.clone();
@@ -8289,6 +8650,55 @@ impl RuntimeHostBridge {
             .inner
             .mutation_owners
             .current_owner(agent_id, identity_incarnation)
+    }
+
+    pub(crate) async fn reconcile_retiring_original_scope(
+        &self,
+        agent_id: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        use crate::runtime::input_evidence_budget::{InputMemoryCategory, OwnedBytesEstimate};
+        anyhow::ensure!(
+            incarnation > 0,
+            "retirement scope has no original incarnation"
+        );
+        let host = self.host()?;
+        let limits = host.inner.input_evidence_budget.limits();
+        let bytes = agent_id
+            .len()
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(1024))
+            .context("retirement owner selector overflow")?;
+        anyhow::ensure!(
+            limits.record_limit >= 8
+                && u64::try_from(bytes)?
+                    <= limits
+                        .history_per_agent_bytes
+                        .checked_add(limits.pending_per_agent_bytes)
+                        .context("retirement selector limits overflow")?
+                        .min(64 * 1024 * 1024),
+            "retirement owner selector ResourceExhausted"
+        );
+        let _selectors = host.inner.input_evidence_budget.register_host_owned_bytes(
+            InputMemoryCategory::Candidate,
+            OwnedBytesEstimate {
+                payload_bytes: 0,
+                metadata_estimate_bytes: u64::try_from(bytes)?,
+            },
+        )?;
+        // reserve_mutation_scopes resolves the original complete witness group
+        // before returning. No activation or installation through the old token.
+        let reservations = host
+            .reserve_mutation_scopes(&[(agent_id.to_owned(), incarnation)])
+            .await?;
+        anyhow::ensure!(
+            reservations.len() == 1
+                && reservations[0].agent_id() == agent_id
+                && reservations[0].identity_incarnation() == incarnation,
+            "retirement reconciliation changed its original scope"
+        );
+        drop(reservations);
+        Ok(())
     }
 
     pub(crate) async fn install_mutation_metadata(
@@ -8608,8 +9018,14 @@ impl RuntimeHostBridge {
             .await
     }
 
-    pub(crate) async fn stop_private_agent(&self, agent_id: &str) -> Result<()> {
-        self.host()?.stop_private_agent(agent_id).await
+    #[cfg(test)]
+    pub(crate) async fn stop_private_agent_for_task_stop(
+        &self,
+        original: Arc<crate::runtime_db::task_stop::TaskStopRecord>,
+    ) -> Result<TaskStopChildRetirement> {
+        self.host()?
+            .stop_private_agent_for_task_stop(original)
+            .await
     }
 
     pub(crate) async fn deliver_child_followup(
@@ -8822,6 +9238,8 @@ mod memory_indexer_retry_tests {
 
 #[cfg(test)]
 mod tests {
+    #[path = "task_stop_cold_tests.rs"]
+    mod task_stop_cold_tests;
     use std::{
         fs,
         path::Path,
@@ -12482,9 +12900,68 @@ mod tests {
 
     #[tokio::test]
     async fn shared_reply_is_model_delivered_once_beyond_settlement_batch_limit() {
+        struct ParentGateProvider {
+            started: Notify,
+            release: Notify,
+            first: AtomicBool,
+        }
+        #[async_trait]
+        impl AgentProvider for ParentGateProvider {
+            async fn complete_turn(
+                &self,
+                request: ProviderTurnRequest,
+            ) -> anyhow::Result<ProviderTurnResponse> {
+                if !self.first.swap(true, Ordering::SeqCst) {
+                    self.started.notify_one();
+                    self.release.notified().await;
+                }
+                StubProvider::new("done").complete_turn(request).await
+            }
+        }
         for use_wait in [false, true] {
-            let (_home, host) = test_host();
+            let _home = tempdir().unwrap();
+            write_test_model_config(_home.path());
+            let mut config = AppConfig::load_with_home(Some(_home.path().to_path_buf())).unwrap();
+            config.user_home_dir = Some(_home.path().to_path_buf());
+            let provider = Arc::new(ParentGateProvider {
+                started: Notify::new(),
+                release: Notify::new(),
+                first: AtomicBool::new(false),
+            });
+            let host = RuntimeHost::new_with_provider(config, provider.clone()).unwrap();
+            host.ensure_default_agent_identity().unwrap();
             let parent = host.default_runtime().await.unwrap();
+            let setup_source = parent
+                .enqueue(MessageEnvelope::new(
+                    parent.instance_agent_id(),
+                    MessageKind::OperatorPrompt,
+                    MessageOrigin::Operator {
+                        actor_id: None,
+                        actor_display_name: None,
+                    },
+                    AuthorityClass::OperatorInstruction,
+                    Priority::Normal,
+                    MessageBody::Text {
+                        text: "open the shared reply observation parent".into(),
+                    },
+                ))
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(10), provider.started.notified())
+                .await
+                .expect("actual parent dispatch must reach the provider");
+            let started = parent.agent_state().await.unwrap();
+            let parent_turn = started
+                .current_turn_id
+                .clone()
+                .expect("actual Started parent Turn");
+            assert_eq!(
+                started
+                    .current_execution_binding
+                    .as_ref()
+                    .map(|binding| binding.source_message_id.as_str()),
+                Some(setup_source.id.as_str())
+            );
             host.create_named_agent("shared-reply-target", None)
                 .await
                 .unwrap();
@@ -12505,8 +12982,53 @@ mod tests {
                     })
                     .await
                     .unwrap();
+                let original = host
+                    .runtime_db()
+                    .tasks()
+                    .latest(&receipt.task_handle.task_id)
+                    .unwrap()
+                    .expect("actual invocation Task ACK");
+                assert_eq!(original.rejoin_fence().unwrap().parent_turn_id, parent_turn);
                 tasks.push(receipt.task_handle.task_id);
             }
+            assert_eq!(tasks.len(), 10);
+            provider.release.notify_one();
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let acked = host
+                        .runtime_db()
+                        .queue_entries()
+                        .latest(&setup_source.id)
+                        .unwrap()
+                        .is_some_and(|entry| {
+                            entry.status == crate::types::QueueEntryStatus::Processed
+                        });
+                    if acked && parent.agent_state().await.unwrap().current_run_id.is_none() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("original parent must finish its actual Queue/Memory ACK");
+            let setup_briefs = parent.storage().read_recent_briefs(100).unwrap();
+            assert_eq!(
+                setup_briefs.len(),
+                1,
+                "only the original parent setup model Brief"
+            );
+            assert_eq!(
+                setup_briefs[0].related_message_id.as_deref(),
+                Some(setup_source.id.as_str())
+            );
+            assert_eq!(
+                setup_briefs[0].turn_id.as_deref(),
+                Some(parent_turn.as_str())
+            );
+            let setup_brief_ids = setup_briefs
+                .iter()
+                .map(|brief| brief.id.clone())
+                .collect::<std::collections::BTreeSet<_>>();
             let registration = if use_wait {
                 Some(
                     parent
@@ -12606,7 +13128,13 @@ mod tests {
             })
             .await
             .expect("reply and reference signals must drain");
-            let briefs = parent.storage().read_recent_briefs(100).unwrap();
+            let briefs = parent
+                .storage()
+                .read_recent_briefs(100)
+                .unwrap()
+                .into_iter()
+                .filter(|brief| !setup_brief_ids.contains(&brief.id))
+                .collect::<Vec<_>>();
             assert_eq!(
                 briefs.len(),
                 1,
@@ -13846,9 +14374,10 @@ mod tests {
         let (_home, host) = test_host();
         let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
-        let parent_storage = host.agent_storage(&parent_agent_id).unwrap();
-        parent_storage
-            .append_task(&TaskRecord {
+        let original_parent = host.default_runtime().await.unwrap();
+        crate::runtime::tests::support::persist_task_transition(
+            &original_parent,
+            &TaskRecord {
                 id: "task-1".into(),
                 agent_id: parent_agent_id.clone(),
                 kind: crate::types::TaskKind::SubagentTask,
@@ -13863,8 +14392,11 @@ mod tests {
                     "task_status": "interrupted",
                 })),
                 recovery: None,
-            })
-            .unwrap();
+            },
+            "interrupted_child_original_task_fixture",
+        )
+        .await
+        .unwrap();
 
         let child = AgentIdentityRecord::new(
             "child_test",
@@ -13898,6 +14430,18 @@ mod tests {
             })
             .unwrap();
 
+        assert!(
+            !host
+                .inner
+                .runtimes
+                .read()
+                .await
+                .agents
+                .contains_key("child_test"),
+            "the original child remains a cold inspection fixture"
+        );
+        drop(original_parent);
+        host.shutdown().await.unwrap();
         drop(host);
 
         let restarted =
@@ -13924,32 +14468,50 @@ mod tests {
         let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
         let parent_storage = host.agent_storage(&parent_agent_id).unwrap();
-        parent_storage
-            .append_task(&TaskRecord {
-                id: "task-recover-child".into(),
-                agent_id: parent_agent_id.clone(),
-                kind: crate::types::TaskKind::ChildAgentTask,
-                status: TaskStatus::Running,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-                parent_message_id: None,
-                work_item_id: None,
-                summary: Some("delegated child".into()),
-                detail: Some(serde_json::json!({
-                    "child_agent_id": "child_recover",
-                    "child_turn_baseline": 0,
-                    "task_status": "running",
-                })),
-                recovery: Some(TaskRecoverySpec::ChildAgentTask {
-                    summary: "delegated child".into(),
-                    prompt: "continue delegated child".into(),
-                    authority_class: AuthorityClass::OperatorInstruction,
-                    workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
-                    lifecycle_disposition:
-                        crate::types::AgentLifecycleDisposition::DeleteOnTerminal,
-                }),
-            })
-            .unwrap();
+        // Bootstrap the original empty domain before its real first Task ACK.
+        let original_parent = host.default_runtime().await.unwrap();
+        let original_task = TaskRecord {
+            id: "task-recover-child".into(),
+            agent_id: parent_agent_id.clone(),
+            kind: crate::types::TaskKind::ChildAgentTask,
+            status: TaskStatus::Running,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("delegated child".into()),
+            detail: Some(serde_json::json!({
+                "child_agent_id": "child_recover",
+                "child_turn_baseline": 0,
+                "task_status": "running",
+            })),
+            recovery: Some(TaskRecoverySpec::ChildAgentTask {
+                summary: "delegated child".into(),
+                prompt: "continue delegated child".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+                workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
+                lifecycle_disposition: crate::types::AgentLifecycleDisposition::DeleteOnTerminal,
+            }),
+        };
+        crate::runtime::tests::support::persist_task_transition(
+            &original_parent,
+            &original_task,
+            "recovered_child_original_task_fixture",
+        )
+        .await
+        .unwrap();
+        assert!(original_parent
+            .active_tasks(usize::MAX)
+            .await
+            .unwrap()
+            .iter()
+            .any(|task| task == &original_task));
+        let qualified: bool = host.runtime_db().connection().unwrap().query_row(
+            "SELECT EXISTS(SELECT 1 FROM task_domain_records WHERE agent_id=?1 AND identity_incarnation=?2 AND family='task' AND record_id=?3 AND availability='present')",
+            rusqlite::params![parent_agent_id, original_parent.instance_incarnation(), original_task.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(qualified, "original Task must be admitted before restart");
 
         let child = AgentIdentityRecord::new(
             "child_recover",
@@ -13981,6 +14543,23 @@ mod tests {
         });
         child_storage.write_agent_for_fixture(&child_state).unwrap();
 
+        // Retire only the old instance; the canonical running Task survives.
+        drop(original_parent);
+        host.shutdown().await.unwrap();
+        assert_eq!(
+            parent_storage
+                .latest_task_record(&original_task.id)
+                .unwrap(),
+            Some(original_task),
+        );
+        assert_eq!(
+            host.agent_identity_record("child_recover")
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Active,
+        );
+        assert_eq!(child_storage.read_agent().unwrap(), Some(child_state));
         drop(host);
 
         let restarted =
@@ -14001,7 +14580,21 @@ mod tests {
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "timed out waiting for recovered child monitor to converge"
+                "timed out waiting for recovered child monitor to converge: task={task:?}, \
+                 parent_events={:?}, parent_state={:?}, child_state={:?}, child_identity={:?}, \
+                 runtime_finished={}, original_source={}",
+                runtime.storage().read_recent_events(100),
+                restarted
+                    .runtime_db()
+                    .agent_states()
+                    .latest(&parent_agent_id),
+                restarted
+                    .runtime_db()
+                    .agent_states()
+                    .latest("child_recover"),
+                restarted.agent_identity_record("child_recover"),
+                runtime_task.is_finished(),
+                runtime.recovered_child_monitor_diagnostics_for_test("task-recover-child"),
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -14045,7 +14638,29 @@ mod tests {
                 .agent_deletions()
                 .latest_for_agent("child_recover")
                 .unwrap()
-                .expect("terminal child cleanup should use a canonical deletion job");
+                .unwrap_or_else(|| {
+                    let receipts: anyhow::Result<Vec<(String, String)>> = (|| {
+                        let connection = restarted.runtime_db().connection()?;
+                        let mut statement = connection.prepare(
+                            "SELECT command_nonce,outcome_json FROM input_mutation_receipts
+                             WHERE family='task'
+                               AND json_extract(outcome_json,'$.result.kind')='child_task_terminal'
+                               AND json_extract(outcome_json,'$.result.ack.original.admitted.key.id')=?1
+                             ORDER BY committed_at DESC LIMIT 8",
+                        )?;
+                        let rows = statement.query_map(["task-recover-child"], |row| {
+                            Ok((row.get(0)?, row.get(1)?))
+                        })?;
+                        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+                    })();
+                    panic!(
+                        "terminal child cleanup should use a canonical deletion job: \
+                         task={task:?}, child_identity={child_identity:?}, canonical_relations={:?}, \
+                         terminal_receipts={receipts:?}, parent_events={events:?}, original_source={}",
+                        restarted.runtime_db().agent_canonical_relations().latest("child_recover"),
+                        runtime.recovered_child_monitor_diagnostics_for_test("task-recover-child"),
+                    );
+                });
             if child_identity.status == AgentRegistryStatus::Deleted
                 && deletion_job.status == crate::types::AgentDeletionStatus::Completed
             {
@@ -14436,29 +15051,85 @@ mod tests {
         let (_home, host) = test_host();
         let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
-        let parent_storage = AppStorage::new_for_agent(
-            host.agent_data_dir(&parent_agent_id),
-            &parent_agent_id,
-            host.runtime_db().clone(),
+        let identity = host.ensure_default_agent_identity().unwrap();
+        host.runtime_db()
+            .transaction(|tx| {
+                crate::runtime_db::evidence::upsert_agent_state_tx(
+                    tx,
+                    &AgentState::new(&parent_agent_id),
+                )
+            })
+            .unwrap();
+        let task = TaskRecord {
+            id: "task-stop".into(),
+            agent_id: parent_agent_id.clone(),
+            kind: crate::types::TaskKind::SubagentTask,
+            status: TaskStatus::Interrupted,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("delegated child".into()),
+            detail: Some(serde_json::json!({
+                "child_agent_id": "child_stop",
+                "task_status": "interrupted",
+            })),
+            recovery: None,
+        };
+        let command = crate::runtime_db::transitions::TaskTransitionCommand {
+            agent_id: parent_agent_id.clone(),
+            task,
+            agent_deletion: None,
+            task_result_settlement: None,
+            queue_entry: None,
+            work_items: vec![],
+            expected_wait_conditions: vec![],
+            wait_conditions: vec![],
+            agent_state: None,
+            message_evidence: vec![],
+            audit_events: vec![],
+            index_changes: vec![],
+            notify_scheduler: false,
+            commit_on_idempotent: false,
+            fault: None,
+        };
+        let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+            agent_id: parent_agent_id.clone(),
+            identity_incarnation: identity.incarnation,
+        };
+        let prepared = crate::runtime_db::transitions::PreparedInputTransition::task(
+            scope.clone(),
+            "restart-original-interrupted-task".into(),
+            chrono::Utc::now(),
+            crate::runtime_db::transitions::PreparedTaskTransition::new(
+                command,
+                Default::default(),
+                false,
+                None,
+                None,
+            )
+            .unwrap(),
         )
         .unwrap();
-        parent_storage
-            .append_task(&TaskRecord {
-                id: "task-stop".into(),
-                agent_id: parent_agent_id.clone(),
-                kind: crate::types::TaskKind::SubagentTask,
-                status: TaskStatus::Interrupted,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-                parent_message_id: None,
-                work_item_id: None,
-                summary: Some("delegated child".into()),
-                detail: Some(serde_json::json!({
-                    "child_agent_id": "child_stop",
-                    "task_status": "interrupted",
-                })),
-                recovery: None,
-            })
+        // Persist the original qualified Task before restart; a raw modern
+        // storage tail is intentionally ineligible for runtime execution.
+        host.runtime_db()
+            .transitions_in_scope(&scope)
+            .commit_prepared_transition_with_work_request_and_memory_budget(
+                &prepared,
+                &crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+                    capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
+                    record_limit: 4096,
+                    byte_limit: 16 * 1024 * 1024,
+                },
+                &host.inner.input_evidence_budget,
+                &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                    query: Default::default(),
+                    capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+                    record_limit: 4096,
+                    byte_limit: 16 * 1024 * 1024,
+                },
+            )
             .unwrap();
 
         let child = AgentIdentityRecord::new(
@@ -14491,6 +15162,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(stopped.status, TaskStatus::Cancelled);
+        tokio::time::timeout(Duration::from_secs(10), runtime.join_owned_mutations())
+            .await
+            .unwrap()
+            .unwrap();
 
         let identity = restarted
             .agent_identity_record("child_stop")
@@ -14498,6 +15173,7 @@ mod tests {
             .expect("child identity should remain recorded after archive");
         assert_eq!(identity.status, AgentRegistryStatus::Deleted);
         assert!(!restarted.agent_data_dir("child_stop").exists());
+        restarted.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -19305,10 +19981,11 @@ mod tests {
         let (_home, mut host) = canonical_test_host();
         let agent_id = "startup-task-owner";
         host.create_named_agent(agent_id, None).await.unwrap();
-        host.unload_runtime(agent_id).await;
+        let runtime = host.get_public_agent(agent_id).await.unwrap();
         let storage = host.agent_storage(agent_id).unwrap();
-        storage
-            .append_task(&TaskRecord {
+        crate::runtime::tests::support::persist_task_transition(
+            &runtime,
+            &TaskRecord {
                 id: "task-startup-owner".into(),
                 agent_id: agent_id.into(),
                 kind: crate::types::TaskKind::CommandTask,
@@ -19320,8 +19997,13 @@ mod tests {
                 summary: Some("startup owner task".into()),
                 detail: None,
                 recovery: None,
-            })
-            .unwrap();
+            },
+            "startup_original_task_fixture",
+        )
+        .await
+        .unwrap();
+        drop(runtime);
+        host.unload_runtime(agent_id).await;
 
         assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
         // Startup recovery runs on a new Host before any runtime activation.
@@ -19548,13 +20230,11 @@ mod tests {
         let (_home, mut host) = canonical_test_host();
         let agent_id = "stopped-task-owner";
         host.create_named_agent(agent_id, None).await.unwrap();
-        host.unload_runtime(agent_id).await;
+        let runtime = host.get_public_agent(agent_id).await.unwrap();
         let storage = host.agent_storage(agent_id).unwrap();
-        let mut state = storage.read_agent().unwrap().unwrap();
-        state.status = AgentStatus::Stopped;
-        storage.write_agent_for_fixture(&state).unwrap();
-        storage
-            .append_task(&TaskRecord {
+        crate::runtime::tests::support::persist_task_transition(
+            &runtime,
+            &TaskRecord {
                 id: "task-stopped-owner".into(),
                 agent_id: agent_id.into(),
                 kind: crate::types::TaskKind::CommandTask,
@@ -19566,8 +20246,16 @@ mod tests {
                 summary: Some("stopped owner task".into()),
                 detail: None,
                 recovery: None,
-            })
-            .unwrap();
+            },
+            "startup_original_task_fixture",
+        )
+        .await
+        .unwrap();
+        drop(runtime);
+        host.unload_runtime(agent_id).await;
+        let mut state = storage.read_agent().unwrap().unwrap();
+        state.status = AgentStatus::Stopped;
+        storage.write_agent_for_fixture(&state).unwrap();
 
         // Startup recovery runs on a new Host before any runtime activation.
         host = restart_fixture_host(host).await;
@@ -19968,10 +20656,11 @@ mod tests {
         let (_home, mut host) = canonical_test_host();
         let agent_id = "startup-timer-and-task";
         host.create_named_agent(agent_id, None).await.unwrap();
-        host.unload_runtime(agent_id).await;
+        let runtime = host.get_public_agent(agent_id).await.unwrap();
         let storage = host.agent_storage(agent_id).unwrap();
-        storage
-            .append_task(&TaskRecord {
+        crate::runtime::tests::support::persist_task_transition(
+            &runtime,
+            &TaskRecord {
                 id: "task-startup-timer-owner".into(),
                 agent_id: agent_id.into(),
                 kind: crate::types::TaskKind::CommandTask,
@@ -19983,8 +20672,14 @@ mod tests {
                 summary: Some("startup timer owner task".into()),
                 detail: None,
                 recovery: None,
-            })
-            .unwrap();
+            },
+            "startup_original_task_fixture",
+        )
+        .await
+        .unwrap();
+        drop(runtime);
+        host.unload_runtime(agent_id).await;
+
         let overdue = Utc::now() - chrono::Duration::minutes(10);
         host.runtime_db()
             .timers()
@@ -20647,5 +21342,24 @@ mod tests {
             ControlObligationState::Pending
         );
         host.shutdown().await.unwrap();
+    }
+    #[path = "task_stop_phase_tests.rs"]
+    mod task_stop_phase_tests;
+    #[path = "task_stop_supervisor_tests.rs"]
+    mod task_stop_supervisor_tests;
+}
+
+#[cfg(test)]
+impl RuntimeHost {
+    pub(crate) fn set_clock_recovery_dispatch_gate_for_test(
+        &self,
+        agent_id: &str,
+        gate: Arc<tokio::sync::Semaphore>,
+    ) {
+        self.inner
+            .clock_recovery_dispatch_gates
+            .lock()
+            .unwrap()
+            .insert(agent_id.to_owned(), gate);
     }
 }

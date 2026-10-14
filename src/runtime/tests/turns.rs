@@ -3252,7 +3252,7 @@ fn publish_committed_history_fixture<'a>(
                     )?;
                     Ok(TransitionCommit {
                         applied: true,
-                        effects: PostCommitEffects {
+                        effects: Box::new(PostCommitEffects {
                             agent_state: Some(AgentStateMutation {
                                 expected: Some(Box::new(expected.clone())),
                                 record: Box::new(actual_state),
@@ -3261,7 +3261,7 @@ fn publish_committed_history_fixture<'a>(
                             messages: vec![actual_message],
                             turns: vec![actual_turn],
                             ..Default::default()
-                        },
+                        }),
                         ..Default::default()
                     })
                 })
@@ -4716,6 +4716,13 @@ async fn concurrent_view_image_selection_discovers_ollama_vision_once_from_cold_
                     }
                     Err(error) => panic!("Ollama test server accept failed: {error}"),
                 };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
                 let mut request = [0_u8; 4096];
                 let read = stream.read(&mut request).unwrap();
                 let request = String::from_utf8_lossy(&request[..read]);

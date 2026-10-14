@@ -124,6 +124,7 @@ fn original_deletion(receipt: &InputMutationReceipt) -> &InputTaskDeletionResult
     let InputMutationResult::Task {
         task_id,
         deletion: Some(deletion),
+        ..
     } = &receipt.outcome.result
     else {
         panic!("Task receipt must return its original child-deletion ACK");
@@ -194,7 +195,9 @@ fn task_child_whole_receipt_returns_exact_ack_and_replay_keeps_later_identity() 
     later.updated_at += chrono::Duration::milliseconds(1);
     f.db.transaction(|tx| upsert_agent_identity_tx(tx, &later))?;
     let before = task_rows(&f)?;
-    let InputMutationExecution::Replayed { receipt: replay } =
+    let InputMutationExecution::Replayed {
+        receipt: replay, ..
+    } =
         f.db.transitions_in_scope(&f.scope)
             .commit_prepared_transition(&prepared)?
     else {

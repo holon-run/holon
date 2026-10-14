@@ -710,7 +710,7 @@ impl ResidentWorkDomain {
                     InputMemoryCategory::Pins,
                     OwnedBytesEstimate {
                         payload_bytes: 0,
-                        metadata_estimate_bytes: captured.metadata_estimate_bytes()?,
+                        metadata_estimate_bytes: captured.selected_metadata_estimate_bytes()?,
                     },
                 )?,
             ];
@@ -1027,7 +1027,7 @@ impl ResidentWorkDomain {
 }
 
 impl CapturedWork {
-    fn metadata_estimate_bytes(&self) -> Result<u64> {
+    pub(crate) fn selected_metadata_estimate_bytes(&self) -> Result<u64> {
         let metadata = serialized_bytes(&(
             &self.scope,
             self.revision,

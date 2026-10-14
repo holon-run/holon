@@ -45,11 +45,11 @@ pub(crate) async fn execute(
     let task_id = validate_non_empty(args.task_id, NAME, "task_id")?;
     let block = args.block.unwrap_or(true);
     let timeout_ms = args.timeout_ms.unwrap_or(30_000);
-    let result: TaskOutputResult = runtime
+    let read = runtime
         .managed_tasks()
-        .task_output(&task_id, block, timeout_ms)
+        .task_output_read(&task_id, block, timeout_ms)
         .await?;
-    serialize_success(NAME, &result)
+    serialize_success(NAME, &read.result)
 }
 
 pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {

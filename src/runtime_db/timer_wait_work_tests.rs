@@ -386,3 +386,112 @@ fn trigger_wait_projection_budget_follows_original_work_proof() -> Result<()> {
     })?;
     Ok(())
 }
+
+#[test]
+fn scoped_timer_fire_refreshes_observed_global_task_output_window_in_its_original_ack() -> Result<()>
+{
+    use crate::runtime::resident_task::{
+        CanonicalTaskFact, TaskCaptureRequest, TaskFamily, TaskKey,
+    };
+    use crate::runtime_db::task_snapshot::{
+        prepare_task_output_snapshot_with_budget_tx, prepare_task_write_tx,
+        register_task_writes_with_budget_tx, TaskDomainLoadRequest,
+    };
+    let f = Fixture::new()?;
+    let mut command = timer_fire_fixture(&f, "timer-observed-task-window")?;
+    let (_wait, _) = timer_wait_fixture(&f, &mut command, true)?;
+    let ledger = budget_ledger()?;
+    let request = TaskDomainLoadRequest {
+        query: Default::default(),
+        capture: TaskCaptureRequest::current(),
+        record_limit: 4096,
+        byte_limit: 1024 * 1024,
+    };
+    let before = f.db.transaction(|tx| {
+        crate::runtime_db::task_snapshot::prepare_task_domain_snapshot_with_budget_tx(
+            tx, &f.scope, &request, &ledger,
+        )?
+        .require_current()?;
+        let task = crate::types::TaskRecord {
+            id: "timer-current-task".into(),
+            agent_id: f.scope.agent_id.clone(),
+            kind: crate::types::TaskKind::CommandTask,
+            status: crate::types::TaskStatus::Running,
+            created_at: command.expected.created_at,
+            updated_at: command.expected.created_at,
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("timer current task".into()),
+            detail: None,
+            recovery: None,
+        };
+        let keys = BTreeSet::from([TaskKey::new(TaskFamily::Task, &task.id)]);
+        let proof = prepare_task_write_tx(tx, &f.scope, &keys)?;
+        crate::runtime_db::repositories::upsert_task_tx(tx, &task)?;
+        register_task_writes_with_budget_tx(
+            tx,
+            &proof,
+            &keys,
+            &command.agent_state.0,
+            &request,
+            &ledger,
+        )?;
+        Ok(
+            prepare_task_output_snapshot_with_budget_tx(tx, &f.scope, &request, &ledger)?
+                .require_current()?
+                .resident,
+        )
+    })?;
+    let initial = before.capture(&request.capture)?;
+    let original = initial
+        .lookup(&TaskKey::new(TaskFamily::Task, "timer-current-task"))?
+        .unwrap()
+        .clone();
+    assert!(matches!(&original.fact, CanonicalTaskFact::Task(_)));
+    let ack = f.db.timers().fire_with_wait_in_scope_with_task_request(
+        &f.scope,
+        &command,
+        &work_request(),
+        &request,
+        &ledger,
+        None,
+    )?;
+    assert!(ack.record.advanced && ack.record.wake_created);
+    let delta = ack
+        .task_delta
+        .as_ref()
+        .context("Timer actual Message ACK omitted Task window invalidation")?;
+    assert_eq!(delta.revision, before.coverage().revision + 1);
+    assert!(delta.records.is_empty() && delta.stop_records.is_empty());
+    let next = before.with_committed(delta)?;
+    let observed = next.capture(&request.capture)?;
+    assert_eq!(
+        observed
+            .coverage
+            .output
+            .window
+            .as_ref()
+            .unwrap()
+            .message_ids,
+        vec![command.message.id.clone()]
+    );
+    assert!(observed.output_source("timer-current-task")?.is_none());
+    assert!(std::sync::Arc::ptr_eq(
+        &original,
+        observed
+            .lookup(&TaskKey::new(TaskFamily::Task, "timer-current-task"))?
+            .unwrap()
+    ));
+    let replay = f.db.timers().fire_with_wait_in_scope_with_task_request(
+        &f.scope,
+        &command,
+        &work_request(),
+        &request,
+        &ledger,
+        None,
+    )?;
+    assert!(!replay.record.advanced && replay.task_delta.is_none());
+    drop((before, initial, next, observed, original, ack, replay));
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
+}
