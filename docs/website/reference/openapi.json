@@ -6781,9 +6781,1413 @@
         "title": "ConversationActivityResponse",
         "type": "object"
       },
+      "ConversationLocateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "source_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_ref"
+        ],
+        "title": "ConversationLocateRequest",
+        "type": "object"
+      },
+      "ConversationLocateResponse": {
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "event_log_epoch": {
+            "type": "string"
+          },
+          "query_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runtime_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source_ref": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "oneOf": [
+                  {
+                    "properties": {
+                      "activity_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "kind": {
+                        "const": "input_message",
+                        "type": "string"
+                      },
+                      "message_id": {
+                        "type": "string"
+                      },
+                      "turn_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "message_id"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "brief_id": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "brief",
+                        "type": "string"
+                      },
+                      "turn_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "brief_id"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "visibility_scope_id": {
+            "type": "string"
+          },
+          "window": {
+            "properties": {
+              "active_turns": {
+                "items": {
+                  "properties": {
+                    "attention": {
+                      "anyOf": [
+                        {
+                          "oneOf": [
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "failed",
+                                  "type": "string"
+                                },
+                                "outcome": {
+                                  "enum": [
+                                    "completed",
+                                    "aborted",
+                                    "interrupted",
+                                    "baseline_over_budget",
+                                    "deferred_to_fallback",
+                                    "provider_failed_needs_recovery"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "outcome"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "interrupted",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "waiting",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "brief_ids": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "completed_at": {
+                      "format": "date-time",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "detail_coverage": {
+                      "oneOf": [
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "complete",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "partial",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "enum": [
+                                "retention_gap",
+                                "legacy_ownership",
+                                "unknown_activity_type",
+                                "missing_canonical_linkage"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "unavailable",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "enum": [
+                                "retention_gap",
+                                "legacy_ownership",
+                                "unknown_activity_type",
+                                "missing_canonical_linkage"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "unknown",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "duration_ms": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "execution": {
+                      "oneOf": [
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "active",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "terminal",
+                              "type": "string"
+                            },
+                            "outcome": {
+                              "enum": [
+                                "completed",
+                                "aborted",
+                                "interrupted",
+                                "baseline_over_budget",
+                                "deferred_to_fallback",
+                                "provider_failed_needs_recovery"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "outcome"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "inputs": {
+                      "items": {
+                        "description": "Canonical operator input attached to a turn, for summary-level rendering\n without loading turn activity detail. Bounded per turn by the read model.",
+                        "properties": {
+                          "activity_key": {
+                            "properties": {
+                              "activity_id": {
+                                "type": "string"
+                              },
+                              "event_seq": {
+                                "format": "uint64",
+                                "minimum": 0,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "event_seq",
+                              "activity_id"
+                            ],
+                            "type": [
+                              "object",
+                              "null"
+                            ]
+                          },
+                          "actor_display_name": {
+                            "description": "Operator display name snapshotted in the canonical message origin.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "interjected": {
+                            "default": false,
+                            "type": "boolean"
+                          },
+                          "message_id": {
+                            "type": "string"
+                          },
+                          "presentation_class": {
+                            "enum": [
+                              "operator",
+                              "task",
+                              "external",
+                              "timer",
+                              "internal",
+                              "system",
+                              "operational",
+                              null
+                            ],
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "preview": {
+                            "type": "string"
+                          },
+                          "task_result": {
+                            "description": "Runtime task evidence, independently projected from any assistant response.",
+                            "properties": {
+                              "preview": {
+                                "type": "string"
+                              },
+                              "response_message_id": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "runtime_only": {
+                                "description": "True only when durable turn provenance identifies a runtime-only result.",
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ]
+                              },
+                              "status": {
+                                "enum": [
+                                  "queued",
+                                  "running",
+                                  "cancelling",
+                                  "completed",
+                                  "failed",
+                                  "cancelled",
+                                  "interrupted"
+                                ],
+                                "type": "string"
+                              },
+                              "summary": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "task_id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "task_id",
+                              "status",
+                              "preview"
+                            ],
+                            "type": [
+                              "object",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "message_id",
+                          "preview"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "inputs_truncated": {
+                      "default": false,
+                      "type": "boolean"
+                    },
+                    "key": {
+                      "properties": {
+                        "turn_id": {
+                          "type": "string"
+                        },
+                        "turn_index": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "turn_index",
+                        "turn_id"
+                      ],
+                      "type": "object"
+                    },
+                    "presentation_class": {
+                      "enum": [
+                        "operator",
+                        "task",
+                        "external",
+                        "timer",
+                        "internal",
+                        "system",
+                        "operational"
+                      ],
+                      "type": "string"
+                    },
+                    "result": {
+                      "oneOf": [
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "pending",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "available",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "none",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "oneOf": [
+                                {
+                                  "properties": {
+                                    "kind": {
+                                      "const": "reducer_only",
+                                      "type": "string"
+                                    },
+                                    "reason": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "reason"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "properties": {
+                                    "kind": {
+                                      "const": "aborted",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "properties": {
+                                    "kind": {
+                                      "const": "interrupted",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "properties": {
+                                    "kind": {
+                                      "const": "tool_only_wait",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "type": "object"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "unavailable",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "enum": [
+                                "missing_canonical_linkage",
+                                "retention_gap",
+                                "legacy_coverage"
+                              ],
+                              "type": "string"
+                            },
+                            "retryable": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason",
+                            "retryable"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "settled": {
+                      "type": "boolean"
+                    },
+                    "started_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "turn_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "turn_id",
+                    "key",
+                    "revision",
+                    "presentation_class",
+                    "inputs",
+                    "execution",
+                    "started_at",
+                    "result",
+                    "settled",
+                    "detail_coverage",
+                    "brief_ids"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "coverage": {
+                "properties": {
+                  "first_turn_key": {
+                    "properties": {
+                      "turn_id": {
+                        "type": "string"
+                      },
+                      "turn_index": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "turn_index",
+                      "turn_id"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "has_newer": {
+                    "type": "boolean"
+                  },
+                  "has_older": {
+                    "type": "boolean"
+                  },
+                  "last_turn_key": {
+                    "properties": {
+                      "turn_id": {
+                        "type": "string"
+                      },
+                      "turn_index": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "turn_index",
+                      "turn_id"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "membership_upper_bound": {
+                    "properties": {
+                      "turn_id": {
+                        "type": "string"
+                      },
+                      "turn_index": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "turn_index",
+                      "turn_id"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "reaches_latest": {
+                    "type": "boolean"
+                  },
+                  "reaches_oldest": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "has_older",
+                  "has_newer",
+                  "reaches_oldest",
+                  "reaches_latest"
+                ],
+                "type": "object"
+              },
+              "event_head_seq": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "event_log_epoch": {
+                "type": "string"
+              },
+              "has_more": {
+                "type": "boolean"
+              },
+              "next_after_cursor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "next_before_cursor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "oldest_retained_seq": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "pending_inputs": {
+                "items": {
+                  "properties": {
+                    "actor_display_name": {
+                      "description": "Operator display name snapshotted in the canonical message origin.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "message_id": {
+                      "type": "string"
+                    },
+                    "presentation_class": {
+                      "enum": [
+                        "operator",
+                        "task",
+                        "external",
+                        "timer",
+                        "internal",
+                        "system",
+                        "operational"
+                      ],
+                      "type": "string"
+                    },
+                    "preview": {
+                      "type": "string"
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "state": {
+                      "enum": [
+                        "queued",
+                        "assigning"
+                      ],
+                      "type": "string"
+                    },
+                    "task_result": {
+                      "description": "Runtime task evidence, independently projected from any assistant response.",
+                      "properties": {
+                        "preview": {
+                          "type": "string"
+                        },
+                        "response_message_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "runtime_only": {
+                          "description": "True only when durable turn provenance identifies a runtime-only result.",
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "queued",
+                            "running",
+                            "cancelling",
+                            "completed",
+                            "failed",
+                            "cancelled",
+                            "interrupted"
+                          ],
+                          "type": "string"
+                        },
+                        "summary": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "task_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "task_id",
+                        "status",
+                        "preview"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "message_id",
+                    "revision",
+                    "state",
+                    "preview",
+                    "presentation_class",
+                    "created_at"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "query_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "runtime_id": {
+                "type": "string"
+              },
+              "schema_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "snapshot_cursor": {
+                "type": "string"
+              },
+              "snapshot_through_seq": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "turns": {
+                "items": {
+                  "properties": {
+                    "attention": {
+                      "anyOf": [
+                        {
+                          "oneOf": [
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "failed",
+                                  "type": "string"
+                                },
+                                "outcome": {
+                                  "enum": [
+                                    "completed",
+                                    "aborted",
+                                    "interrupted",
+                                    "baseline_over_budget",
+                                    "deferred_to_fallback",
+                                    "provider_failed_needs_recovery"
+                                  ],
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "outcome"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "interrupted",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "waiting",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "brief_ids": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "completed_at": {
+                      "format": "date-time",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "detail_coverage": {
+                      "oneOf": [
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "complete",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "partial",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "enum": [
+                                "retention_gap",
+                                "legacy_ownership",
+                                "unknown_activity_type",
+                                "missing_canonical_linkage"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "unavailable",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "enum": [
+                                "retention_gap",
+                                "legacy_ownership",
+                                "unknown_activity_type",
+                                "missing_canonical_linkage"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "unknown",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "duration_ms": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "execution": {
+                      "oneOf": [
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "active",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "terminal",
+                              "type": "string"
+                            },
+                            "outcome": {
+                              "enum": [
+                                "completed",
+                                "aborted",
+                                "interrupted",
+                                "baseline_over_budget",
+                                "deferred_to_fallback",
+                                "provider_failed_needs_recovery"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "outcome"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "inputs": {
+                      "items": {
+                        "description": "Canonical operator input attached to a turn, for summary-level rendering\n without loading turn activity detail. Bounded per turn by the read model.",
+                        "properties": {
+                          "activity_key": {
+                            "properties": {
+                              "activity_id": {
+                                "type": "string"
+                              },
+                              "event_seq": {
+                                "format": "uint64",
+                                "minimum": 0,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "event_seq",
+                              "activity_id"
+                            ],
+                            "type": [
+                              "object",
+                              "null"
+                            ]
+                          },
+                          "actor_display_name": {
+                            "description": "Operator display name snapshotted in the canonical message origin.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "interjected": {
+                            "default": false,
+                            "type": "boolean"
+                          },
+                          "message_id": {
+                            "type": "string"
+                          },
+                          "presentation_class": {
+                            "enum": [
+                              "operator",
+                              "task",
+                              "external",
+                              "timer",
+                              "internal",
+                              "system",
+                              "operational",
+                              null
+                            ],
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "preview": {
+                            "type": "string"
+                          },
+                          "task_result": {
+                            "description": "Runtime task evidence, independently projected from any assistant response.",
+                            "properties": {
+                              "preview": {
+                                "type": "string"
+                              },
+                              "response_message_id": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "runtime_only": {
+                                "description": "True only when durable turn provenance identifies a runtime-only result.",
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ]
+                              },
+                              "status": {
+                                "enum": [
+                                  "queued",
+                                  "running",
+                                  "cancelling",
+                                  "completed",
+                                  "failed",
+                                  "cancelled",
+                                  "interrupted"
+                                ],
+                                "type": "string"
+                              },
+                              "summary": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "task_id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "task_id",
+                              "status",
+                              "preview"
+                            ],
+                            "type": [
+                              "object",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "message_id",
+                          "preview"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "inputs_truncated": {
+                      "default": false,
+                      "type": "boolean"
+                    },
+                    "key": {
+                      "properties": {
+                        "turn_id": {
+                          "type": "string"
+                        },
+                        "turn_index": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "turn_index",
+                        "turn_id"
+                      ],
+                      "type": "object"
+                    },
+                    "presentation_class": {
+                      "enum": [
+                        "operator",
+                        "task",
+                        "external",
+                        "timer",
+                        "internal",
+                        "system",
+                        "operational"
+                      ],
+                      "type": "string"
+                    },
+                    "result": {
+                      "oneOf": [
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "pending",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "available",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "none",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "oneOf": [
+                                {
+                                  "properties": {
+                                    "kind": {
+                                      "const": "reducer_only",
+                                      "type": "string"
+                                    },
+                                    "reason": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "reason"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "properties": {
+                                    "kind": {
+                                      "const": "aborted",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "properties": {
+                                    "kind": {
+                                      "const": "interrupted",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "properties": {
+                                    "kind": {
+                                      "const": "tool_only_wait",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "type": "object"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "properties": {
+                            "kind": {
+                              "const": "unavailable",
+                              "type": "string"
+                            },
+                            "reason": {
+                              "enum": [
+                                "missing_canonical_linkage",
+                                "retention_gap",
+                                "legacy_coverage"
+                              ],
+                              "type": "string"
+                            },
+                            "retryable": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason",
+                            "retryable"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "settled": {
+                      "type": "boolean"
+                    },
+                    "started_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "turn_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "turn_id",
+                    "key",
+                    "revision",
+                    "presentation_class",
+                    "inputs",
+                    "execution",
+                    "started_at",
+                    "result",
+                    "settled",
+                    "detail_coverage",
+                    "brief_ids"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "visibility_scope_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "schema_version",
+              "query_version",
+              "runtime_id",
+              "event_log_epoch",
+              "visibility_scope_id",
+              "snapshot_through_seq",
+              "event_head_seq",
+              "oldest_retained_seq",
+              "snapshot_cursor",
+              "turns",
+              "active_turns",
+              "pending_inputs",
+              "coverage",
+              "has_more"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "schema_version",
+          "query_version",
+          "agent_id",
+          "status",
+          "source_ref",
+          "runtime_id",
+          "event_log_epoch",
+          "visibility_scope_id"
+        ],
+        "title": "ConversationLocateResponse",
+        "type": "object"
+      },
       "ConversationReadQuery": {
         "additionalProperties": false,
         "properties": {
+          "after": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "before": {
             "type": [
               "string",
@@ -8615,6 +10019,89 @@
             },
             "type": "array"
           },
+          "coverage": {
+            "properties": {
+              "first_turn_key": {
+                "properties": {
+                  "turn_id": {
+                    "type": "string"
+                  },
+                  "turn_index": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "turn_index",
+                  "turn_id"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "has_newer": {
+                "type": "boolean"
+              },
+              "has_older": {
+                "type": "boolean"
+              },
+              "last_turn_key": {
+                "properties": {
+                  "turn_id": {
+                    "type": "string"
+                  },
+                  "turn_index": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "turn_index",
+                  "turn_id"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "membership_upper_bound": {
+                "properties": {
+                  "turn_id": {
+                    "type": "string"
+                  },
+                  "turn_index": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "turn_index",
+                  "turn_id"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "reaches_latest": {
+                "type": "boolean"
+              },
+              "reaches_oldest": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "has_older",
+              "has_newer",
+              "reaches_oldest",
+              "reaches_latest"
+            ],
+            "type": "object"
+          },
           "event_head_seq": {
             "format": "uint64",
             "minimum": 0,
@@ -8625,6 +10112,12 @@
           },
           "has_more": {
             "type": "boolean"
+          },
+          "next_after_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "next_before_cursor": {
             "type": [
@@ -9282,6 +10775,7 @@
           "turns",
           "active_turns",
           "pending_inputs",
+          "coverage",
           "has_more"
         ],
         "title": "ConversationSummaryResponse",
@@ -19280,6 +20774,16 @@
               "minLength": 1,
               "type": "string"
             }
+          },
+          {
+            "description": "Opaque forward history cursor. Mutually exclusive with before; not a stream checkpoint.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -19320,6 +20824,74 @@
           }
         ],
         "summary": "Conversation summary snapshot",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/agents/{agent_id}/conversation/locate": {
+      "post": {
+        "description": "Resolve exact message or Brief ownership and a bounded bidirectional history window without mutating read markers. Non-conversation and pending sources are explicit.",
+        "operationId": "agentConversationLocate",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationLocateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationLocateResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Locate a canonical conversation source",
         "tags": [
           "agents"
         ]

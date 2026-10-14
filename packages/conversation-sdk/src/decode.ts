@@ -15,6 +15,8 @@ import {
   type ConversationDetailCursor,
   type ConversationHandshake,
   type ConversationHistoryCursor,
+  type ConversationLocateResponse,
+  type ConversationLocateTarget,
   type ConversationResetReason,
   type ConversationStreamMessage,
   type ConversationSummaryResponse,
@@ -491,6 +493,14 @@ export function decodeConversationSummaryResponse(
     turns: arrayValue(source.turns, `${path}.turns`).map((turn, index) =>
       decodeTurnSummary(turn, `${path}.turns[${index}]`),
     ),
+    ...(source.next_after_cursor === undefined ? {} : {
+      next_after_cursor: source.next_after_cursor === null ? null : opaque<"conversation-history-cursor">(
+        source.next_after_cursor, `${path}.next_after_cursor`,
+      ) as ConversationHistoryCursor,
+    }),
+    ...(source.coverage === undefined ? {} : {
+      coverage: decodeHistoryCoverage(source.coverage, `${path}.coverage`),
+    }),
     active_turns: arrayValue(
       source.active_turns,
       `${path}.active_turns`,
@@ -512,6 +522,78 @@ export function decodeConversationSummaryResponse(
           ) as ConversationHistoryCursor),
     has_more: booleanValue(source.has_more, `${path}.has_more`),
   };
+}
+
+function decodeHistoryCoverage(value: unknown, path: string) {
+  const source = record(value, path);
+  return {
+    ...(source.first_turn_key === undefined ? {} : {
+      first_turn_key: source.first_turn_key === null ? null : decodeTurnKey(source.first_turn_key, `${path}.first_turn_key`),
+    }),
+    ...(source.last_turn_key === undefined ? {} : {
+      last_turn_key: source.last_turn_key === null ? null : decodeTurnKey(source.last_turn_key, `${path}.last_turn_key`),
+    }),
+    ...(source.membership_upper_bound === undefined ? {} : {
+      membership_upper_bound: source.membership_upper_bound === null ? null : decodeTurnKey(source.membership_upper_bound, `${path}.membership_upper_bound`),
+    }),
+    has_older: booleanValue(source.has_older, `${path}.has_older`),
+    has_newer: booleanValue(source.has_newer, `${path}.has_newer`),
+    reaches_oldest: booleanValue(source.reaches_oldest, `${path}.reaches_oldest`),
+    reaches_latest: booleanValue(source.reaches_latest, `${path}.reaches_latest`),
+  };
+}
+
+export function decodeConversationLocateResponse(value: unknown, path = "$"): ConversationLocateResponse {
+  const source = record(value, path);
+  const binding = {
+    source_ref: nonEmptyString(source.source_ref, `${path}.source_ref`),
+    runtime_id: nonEmptyString(source.runtime_id, `${path}.runtime_id`),
+    event_log_epoch: nonEmptyString(source.event_log_epoch, `${path}.event_log_epoch`),
+    visibility_scope_id: nonEmptyString(source.visibility_scope_id, `${path}.visibility_scope_id`),
+  };
+  const status = stringValue(source.status, `${path}.status`);
+  if (status === "source_only") {
+    if (source.window !== null) fail(`${path}.window`, "source-only response must not include a window");
+    return { ...binding, status, reason: nonEmptyString(source.reason, `${path}.reason`), target: null, window: null };
+  }
+  if (status !== "located" && status !== "pending") fail(`${path}.status`, "unknown locate status");
+  const window = decodeConversationSummaryResponse(source.window, `${path}.window`);
+  for (const field of ["runtime_id", "event_log_epoch", "visibility_scope_id"] as const) {
+    if (binding[field] !== window[field]) fail(`${path}.window.${field}`, "locate binding mismatch");
+  }
+  const raw = record(source.target, `${path}.target`);
+  const kind = stringValue(raw.kind, `${path}.target.kind`);
+  let target: ConversationLocateTarget;
+  if (kind === "input_message" || kind === "input" || kind === "pending_input") {
+    const message_id = nonEmptyString(raw.message_id, `${path}.target.message_id`);
+    target = status === "pending"
+      ? { kind: "pending_input", message_id }
+      : { kind: "input", message_id, turn_id: nonEmptyString(raw.turn_id, `${path}.target.turn_id`) };
+    if (status === "pending" && !window.pending_inputs.some((input) => input.message_id === message_id)) {
+      fail(`${path}.target`, "pending target is outside its window");
+    }
+  } else if (kind === "brief") {
+    target = { kind, brief_id: nonEmptyString(raw.brief_id, `${path}.target.brief_id`), turn_id: nonEmptyString(raw.turn_id, `${path}.target.turn_id`) };
+  } else if (kind === "activity") {
+    target = {
+      kind, activity_id: nonEmptyString(raw.activity_id, `${path}.target.activity_id`),
+      turn_id: nonEmptyString(raw.turn_id, `${path}.target.turn_id`),
+      activity_key: decodeActivityKey(raw.activity_key, `${path}.target.activity_key`),
+    };
+  } else if (kind === "turn") {
+    target = {
+      kind, turn_id: nonEmptyString(raw.turn_id, `${path}.target.turn_id`),
+      turn_key: decodeTurnKey(raw.turn_key, `${path}.target.turn_key`),
+    };
+  } else {
+    return fail(`${path}.target.kind`, "unknown canonical target");
+  }
+  if (target.kind !== "pending_input") {
+    const owner = window.turns.find((turn) => turn.turn_id === target.turn_id);
+    if (!owner) fail(`${path}.target`, "canonical target is outside its window");
+    if (target.kind === "brief" && !owner.brief_ids.includes(target.brief_id)) fail(`${path}.target`, "brief does not belong to the target turn");
+  }
+  return { ...binding, status, target, window, reason: null };
 }
 
 export function decodeConversationActivityResponse(

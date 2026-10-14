@@ -6,6 +6,74 @@ status: accepted
 
 # RFC: Conversation Read Model
 
+## Canonical source location and bidirectional history (2026-10-14)
+
+The read model also serves `agents.conversation-locate.v1` and
+`agents.conversation-history-bidirectional.v1`. Search retains canonical
+`source_ref`, not history, activity, or stream cursors. Resolving the source
+again is required after runtime, epoch, or visibility-scope changes.
+
+`POST /api/agents/{agent_id}/conversation/locate` accepts
+`{source_ref, limit?}` (`1..100`, default `30`). Message and Brief identity
+lookups are agent-scoped. Messages resolve through canonical
+`conversation_input_assignments`; Briefs resolve through their persisted
+`turn_id`. Neither timestamps, adjacent records, `message_seq`, nor a caller's
+current WorkItem can establish turn ownership.
+
+The response includes `schema_version`, `query_version`, `agent_id`, `status`,
+canonical `source_ref`, `target`, `reason`,
+`runtime_id`, `event_log_epoch`, `visibility_scope_id`, and nullable `window`.
+`target` is a tagged union: `input_message` carries `message_id`, nullable
+`turn_id` and `activity_id`; `brief` carries `brief_id` and nullable `turn_id`.
+Unrelated IDs are absent. These are hydration identities, not
+event cursors. A located source returns its exact owner in a bounded,
+approximately centered conversation summary window.
+The located message is always included in its owner turn's initial `inputs`,
+even when the ordinary summary's 128-input bound would omit it. In that case
+only the bounded visible identities and the exact canonical assignment are
+rehydrated in canonical order; the window may carry one extra input, retaining
+`inputs_truncated` to signal other omitted inputs. Brief IDs have a strict
+64-per-turn canonical limit rather than silent summary truncation.
+Pending queue input
+returns `pending`, a target without an invented owner, and a summary containing
+up to 100 pending inputs, always including the exact target in canonical order
+even beyond the ordinary pending-summary cap. This bounded locate window does
+not change the ordinary summary endpoint's count-limit error contract.
+Valid non-conversation refs return `source_only` with reason
+`non_conversation_source`; legacy sources without canonical ownership return
+`source_only` with `unattributed_source` or `owner_turn_unavailable`. Unknown
+or cross-agent message/Brief identities return the same typed 404. Invalid refs
+and limits return typed 400 errors.
+This location version resolves default message/Brief search sources; explicit
+turn/tool references return `source_only` with
+`unsupported_conversation_source`, rather than claiming to locate an input or
+result. Their existing authorized source-detail entry points remain available.
+
+`GET /api/agents/{agent_id}/conversation` accepts mutually exclusive `before`
+and `after`. Both are opaque authenticated history cursors, with distinct cursor
+kinds, bound to runtime, agent, epoch, visibility scope, schema/query versions,
+and a fixed turn membership upper bound. The `after` history cursor is **not**
+a stream checkpoint. Both directions seek directly by native
+`(turn_index, turn_id)` ordering and hydrate only bounded read-model rows;
+locating never paginates or scans the entire conversation to find its target.
+
+Summary windows retain existing fields and add `next_after_cursor` and
+`coverage: {first_turn_key, last_turn_key, membership_upper_bound, has_older,
+has_newer, reaches_oldest, reaches_latest}`.
+`has_more` retains its existing older-history meaning. Coverage and
+`reaches_latest` describe the cursor's fixed membership, not turns inserted
+after the initial window. Clients retain the independently synchronized live
+tail and explicitly reconcile to it when they reach that boundary, rather than
+promoting a focus window into a complete history cache. Active turn summaries,
+pending input, and stream checkpoints still come from the same committed view;
+stream event heads always come from the event ledger, never message sequences.
+
+Locate has the same authentication, public-Agent visibility, read transaction,
+timeout, count, and serialized-response budgets as summary reads. Activity
+reads remain older-only and reject `after`; their identities and cursors must
+not be substituted for history cursors. Neither navigation API writes Brief
+read markers or changes unread authority.
+
 ## 1. Summary and status
 
 Propose a read-only conversation surface for the Web GUI:

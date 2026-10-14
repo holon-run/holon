@@ -605,8 +605,8 @@ interface SearchResponseDto {
 }
 
 interface SearchResultItemDto {
-  type?: "message";
-  result_type?: "message";
+  type?: string;
+  result_type?: string;
   agent_id?: string;
   source_ref?: string;
   title?: string;
@@ -621,6 +621,7 @@ interface SearchResultItemDto {
   };
   locator?: {
     evidence_id?: string;
+    source_ref?: string;
     message_id?: string;
     turn_id?: string;
     task_id?: string;
@@ -1484,7 +1485,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         agent_ids: options.agentIds,
         include_all_workspaces: options.includeAllWorkspaces,
         limit: options.limit,
-        types: ["message"],
+        types: options.types ?? ["message", "brief"],
       }, requestHeaders, { timeoutMs: USER_ACTION_TIMEOUT_MS });
       return projectSearchResponse(response);
     },
@@ -2636,12 +2637,12 @@ function projectSearchResponse(response: SearchResponseDto): SearchResponse {
       agentId: result.agent_id ?? "unknown-agent",
       locator: {
         evidenceId: result.locator?.evidence_id ?? result.source_ref,
-        sourceRef: result.source_ref ?? result.locator?.evidence_id,
+        sourceRef: result.source_ref ?? result.locator?.source_ref,
         messageId: result.locator?.message_id ?? result.metadata?.message_id,
         turnId: result.locator?.turn_id ?? result.metadata?.turn_id,
         taskId: result.locator?.task_id ?? result.metadata?.task_id,
         workItemId: result.locator?.work_item_id ?? result.metadata?.work_item_id,
-        eventSeq: result.locator?.event_seq ?? result.metadata?.message_seq,
+        eventSeq: result.locator?.event_seq,
       },
       createdAt: result.created_at ?? result.updated_at,
       kind: result.kind ?? "message",

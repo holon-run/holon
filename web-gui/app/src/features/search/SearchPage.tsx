@@ -19,7 +19,7 @@ interface SearchPageProps {
   resultContentErrorBySourceRef: Record<string, string | undefined>;
   onSearch: (query: string, options?: RuntimeSearchOptions) => Promise<void>;
   onLoadResultContent: (sourceRef: string) => Promise<void>;
-  onOpenAgent: (agentId: string, eventSeq?: number) => void;
+  onOpenAgent: (agentId: string, sourceRef?: string) => void;
 }
 
 function extractMessageBodyPreview(value: string): string | undefined {
@@ -47,6 +47,7 @@ function extractMessageBodyPreview(value: string): string | undefined {
 }
 
 const DEFAULT_LIMIT = 20;
+export type SearchScope = "conversation" | "all";
 
 export function SearchPage({
   agents,
@@ -65,6 +66,7 @@ export function SearchPage({
   const [query, setQuery] = useState(() => search?.query ?? readInitialQuery());
   const [agentId, setAgentId] = useState(() => defaultSearchAgentId(selectedAgentId, agents));
   const [limit, setLimit] = useState(String(search?.limit || DEFAULT_LIMIT));
+  const [scope, setScope] = useState<SearchScope>(() => readInitialScope());
   const trimmedQuery = query.trim();
   const hasResults = Boolean(search?.results.length);
   const resultCount = search?.results.length ?? 0;
@@ -76,13 +78,13 @@ export function SearchPage({
     const initialQuery = readInitialQuery();
     if (!initialQuery || search || loading) return;
     if (!canSearchSelection(defaultAgentId, agents)) return;
-    void onSearch(initialQuery, searchOptionsForSelection(defaultAgentId, agents, limit));
-  }, [agents, defaultAgentId, limit, loading, onSearch, search]);
+    void onSearch(initialQuery, searchOptionsForSelection(defaultAgentId, agents, limit, scope));
+  }, [agents, defaultAgentId, limit, loading, onSearch, scope, search]);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    writeQueryParam(trimmedQuery);
-    void onSearch(trimmedQuery, searchOptionsForSelection(agentId, agents, limit));
+    writeQueryParam(trimmedQuery, scope);
+    void onSearch(trimmedQuery, searchOptionsForSelection(agentId, agents, limit, scope));
   }
 
   return (
@@ -109,6 +111,13 @@ export function SearchPage({
                   {agent.id}
                 </option>
               ))}
+            </select>
+          </label>
+          <label>
+            <span>{t("searchPage.scope")}</span>
+            <select value={scope} onChange={(event) => setScope(event.target.value as SearchScope)}>
+              <option value="conversation">{t("searchPage.conversationScope")}</option>
+              <option value="all">{t("searchPage.allRecordsScope")}</option>
             </select>
           </label>
           <label>
@@ -197,11 +206,11 @@ function SearchResultCard({
   contentLoading?: boolean;
   contentError?: string;
   onLoadResultContent: (sourceRef: string) => Promise<void>;
-  onOpenAgent: (agentId: string, eventSeq?: number) => void;
+  onOpenAgent: (agentId: string, sourceRef?: string) => void;
 }) {
   const { t } = useTranslation();
   const preview = formatSearchPreview(result.preview);
-  const sourceRef = result.locator.sourceRef ?? result.locator.evidenceId;
+  const sourceRef = result.locator.sourceRef;
   const locator = [
     result.locator.eventSeq != null ? `event #${result.locator.eventSeq}` : undefined,
     result.locator.turnId ? `turn ${shortId(result.locator.turnId)}` : undefined,
@@ -209,7 +218,7 @@ function SearchResultCard({
     result.locator.workItemId ? `work ${shortId(result.locator.workItemId)}` : undefined,
     result.locator.messageId ? `message ${shortId(result.locator.messageId)}` : undefined,
   ].filter(Boolean);
-  const canLocate = result.locator.eventSeq != null;
+  const locateLabel = searchLocateLabel(result);
 
   return (
     <article className="search-result-card">
@@ -218,9 +227,9 @@ function SearchResultCard({
           {result.agentId}
         </button>
         <span>{result.kind}</span>
-        {canLocate ? (
-          <button type="button" onClick={() => onOpenAgent(result.agentId, result.locator.eventSeq)}>
-            Locate event
+        {locateLabel ? (
+          <button type="button" onClick={() => onOpenAgent(result.agentId, sourceRef)}>
+            {t(locateLabel)}
           </button>
         ) : null}
         <time>{formatTimestamp(result.createdAt)}</time>
@@ -465,7 +474,12 @@ function readInitialQuery(): string {
   return new URLSearchParams(window.location.search).get("q") ?? "";
 }
 
-function writeQueryParam(query: string): void {
+function readInitialScope(): SearchScope {
+  if (typeof window === "undefined") return "conversation";
+  return new URLSearchParams(window.location.search).get("scope") === "all" ? "all" : "conversation";
+}
+
+function writeQueryParam(query: string, scope: SearchScope): void {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
   if (query) {
@@ -473,16 +487,29 @@ function writeQueryParam(query: string): void {
   } else {
     url.searchParams.delete("q");
   }
+  if (scope === "all") url.searchParams.set("scope", scope);
+  else url.searchParams.delete("scope");
   window.history.replaceState(null, "", url);
 }
 
-export function searchOptionsForSelection(agentId: string, agents: AgentSummary[], limit: string): RuntimeSearchOptions {
+export function searchOptionsForSelection(agentId: string, agents: AgentSummary[], limit: string, scope: SearchScope = "conversation"): RuntimeSearchOptions {
   const selectedAgentIds = agentId === "all" ? agents.map((agent) => agent.id).filter(Boolean) : [agentId];
   return {
     agentIds: selectedAgentIds.length > 0 ? selectedAgentIds : undefined,
     includeAllWorkspaces: agentId === "all",
     limit: numberFromInput(limit, DEFAULT_LIMIT),
+    types: scope === "all" ? [] : ["message", "brief"],
   };
+}
+
+export function searchLocateLabel(result: SearchResultItem): string | undefined {
+  const sourceRef = result.locator.sourceRef;
+  if (!sourceRef) return undefined;
+  if (/^message:.+/.test(sourceRef)) return "searchPage.locateMessage";
+  if (/^brief:.+/.test(sourceRef)) return "searchPage.locateBrief";
+  if (/^turn:.+/.test(sourceRef)) return "searchPage.locateTurn";
+  if (/^tool_execution:.+/.test(sourceRef)) return "searchPage.locateExecution";
+  return undefined;
 }
 
 export function defaultSearchAgentId(selectedAgentId: string, agents: AgentSummary[]): string {

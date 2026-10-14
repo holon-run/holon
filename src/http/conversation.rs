@@ -48,6 +48,40 @@ impl Default for ConversationReadLimits {
 pub(crate) struct ConversationReadQuery {
     pub limit: Option<usize>,
     pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ConversationLocateRequest {
+    pub source_ref: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub(crate) struct ConversationLocateResponse {
+    pub schema_version: u32,
+    pub query_version: u32,
+    pub agent_id: String,
+    pub status: String,
+    pub source_ref: String,
+    pub target: Option<crate::runtime_db::conversation::ConversationLocateTarget>,
+    pub reason: Option<String>,
+    pub runtime_id: String,
+    pub event_log_epoch: String,
+    pub visibility_scope_id: String,
+    pub window: Option<ConversationSummaryResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub(crate) struct ConversationHistoryCoverage {
+    pub first_turn_key: Option<crate::domain::conversation::TurnKey>,
+    pub last_turn_key: Option<crate::domain::conversation::TurnKey>,
+    pub membership_upper_bound: Option<crate::domain::conversation::TurnKey>,
+    pub has_older: bool,
+    pub has_newer: bool,
+    pub reaches_oldest: bool,
+    pub reaches_latest: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -79,6 +113,8 @@ pub(crate) struct ConversationSummaryResponse {
     pub active_turns: Vec<ConversationTurnSummary>,
     pub pending_inputs: Vec<PendingInput>,
     pub next_before_cursor: Option<String>,
+    pub next_after_cursor: Option<String>,
+    pub coverage: ConversationHistoryCoverage,
     pub has_more: bool,
 }
 
@@ -564,6 +600,81 @@ fn reset_message_for_error(error: &anyhow::Error) -> ConversationStreamMessage {
     }
 }
 
+pub async fn locate(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<ConversationLocateRequest>,
+) -> AxumResponse {
+    let started_at = std::time::Instant::now();
+    if let Err(error) = authorize_remote_access(&headers, &state) {
+        return auth_required(error.to_string()).into_response();
+    }
+    let (principal, entitlement) =
+        match observer_sync::observer_principal_and_entitlement(&headers, &state) {
+            Ok(authority) => authority,
+            Err(error) => return auth_required(error.to_string()).into_response(),
+        };
+    let limits = state.conversation_read_limits.clone();
+    let host = state.host.clone();
+    let response_agent_id = agent_id.clone();
+    let result = match tokio::time::timeout(
+        limits.timeout,
+        tokio::task::spawn_blocking(move || {
+            host.runtime_db().conversation().locate_source(
+                &agent_id,
+                &request.source_ref,
+                request.limit.unwrap_or(CONVERSATION_SUMMARY_DEFAULT_LIMIT),
+                &principal,
+                entitlement,
+            )
+        }),
+    )
+    .await
+    {
+        Ok(Ok(Ok(Some(result)))) => result,
+        Ok(Ok(Ok(None))) => return agent_not_found().into_response(),
+        Ok(Ok(Err(error))) => return conversation_error(error).into_response(),
+        Ok(Err(error)) => return error_response(error.into()).into_response(),
+        Err(_) => return timeout_error("locate", limits.timeout).into_response(),
+    };
+    let response = ConversationLocateResponse {
+        schema_version: CONVERSATION_SCHEMA_VERSION,
+        query_version: CONVERSATION_QUERY_VERSION,
+        agent_id: response_agent_id,
+        status: result.status.into(),
+        source_ref: result.source_ref,
+        target: result.target,
+        reason: result.reason.map(str::to_owned),
+        runtime_id: result.runtime_id,
+        event_log_epoch: result.event_log_epoch,
+        visibility_scope_id: result.visibility_scope_id,
+        window: result.window.map(summary_response),
+    };
+    if let Some(window) = &response.window {
+        if let Some(error) = oversized_turn(
+            window.turns.iter().chain(window.active_turns.iter()),
+            limits.max_turn_serialized_bytes,
+        ) {
+            return error.into_response();
+        }
+    }
+    let bytes = match serialize_json("/agents/{agent_id}/conversation/locate", &response) {
+        Ok(bytes) => bytes,
+        Err(error) => return error.into_response(),
+    };
+    if bytes.len() > limits.max_summary_serialized_bytes {
+        return payload_too_large(
+            "conversation_snapshot_too_large",
+            "conversation locate window exceeds the maximum serialized response size",
+            bytes.len(),
+            limits.max_summary_serialized_bytes,
+        )
+        .into_response();
+    }
+    traced_json_bytes("/agents/{agent_id}/conversation/locate", started_at, bytes)
+}
+
 pub async fn summary(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -577,6 +688,7 @@ pub async fn summary(
     let limits = state.conversation_read_limits.clone();
     let limit = query.limit.unwrap_or(CONVERSATION_SUMMARY_DEFAULT_LIMIT);
     let before = query.before;
+    let after = query.after;
     let host = state.host.clone();
     let (scope_principal, scope_entitlement) =
         match observer_sync::observer_principal_and_entitlement(&headers, &state) {
@@ -586,10 +698,11 @@ pub async fn summary(
     let snapshot = match tokio::time::timeout(
         limits.timeout,
         tokio::task::spawn_blocking(move || {
-            host.runtime_db().conversation().summary_snapshot(
+            host.runtime_db().conversation().summary_window_snapshot(
                 &agent_id,
                 limit,
                 before.as_deref(),
+                after.as_deref(),
                 &scope_principal,
                 scope_entitlement,
             )
@@ -640,6 +753,15 @@ pub async fn activities(
     let started_at = std::time::Instant::now();
     if let Err(error) = authorize_remote_access(&headers, &state) {
         return auth_required(error.to_string()).into_response();
+    }
+    if query.after.is_some() {
+        return conversation_error(
+            ConversationReadError::InvalidRequest(
+                "after is supported only for conversation history".into(),
+            )
+            .into(),
+        )
+        .into_response();
     }
     let limits = state.conversation_read_limits.clone();
     let limit = query.limit.unwrap_or(CONVERSATION_ACTIVITY_DEFAULT_LIMIT);
@@ -794,6 +916,10 @@ fn summary_response(
     snapshot: ConversationSnapshot<crate::domain::conversation::ConversationSummaryPage>,
 ) -> ConversationSummaryResponse {
     let page = snapshot.value;
+    let has_older = snapshot.next_before_cursor.is_some();
+    let has_newer = snapshot.next_after_cursor.is_some();
+    let first_turn_key = page.turns.first().map(|turn| turn.key.clone());
+    let last_turn_key = page.turns.last().map(|turn| turn.key.clone());
     ConversationSummaryResponse {
         schema_version: CONVERSATION_SCHEMA_VERSION,
         query_version: CONVERSATION_QUERY_VERSION,
@@ -808,6 +934,16 @@ fn summary_response(
         active_turns: page.active_turns,
         pending_inputs: page.pending_inputs,
         next_before_cursor: snapshot.next_before_cursor,
+        next_after_cursor: snapshot.next_after_cursor,
+        coverage: ConversationHistoryCoverage {
+            first_turn_key,
+            last_turn_key,
+            membership_upper_bound: page.membership_upper_bound,
+            has_older,
+            has_newer,
+            reaches_oldest: !has_older,
+            reaches_latest: !has_newer,
+        },
         has_more: page.has_more,
     }
 }
@@ -848,6 +984,14 @@ fn conversation_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
     };
     record_conversation_read_error(error);
     match error {
+        ConversationReadError::InvalidRequest(_) => http_error(
+            StatusCode::BAD_REQUEST,
+            HttpErrorEnvelope::new("conversation_invalid_request", error.to_string()),
+        ),
+        ConversationReadError::SourceNotFound => http_error(
+            StatusCode::NOT_FOUND,
+            HttpErrorEnvelope::new("conversation_source_not_found", error.to_string()),
+        ),
         ConversationReadError::InvalidLimit {
             resource,
             minimum,
@@ -962,6 +1106,7 @@ fn conversation_stream_error(error: anyhow::Error) -> (StatusCode, Json<Value>) 
 
 fn record_conversation_read_error(error: &ConversationReadError) {
     match error {
+        ConversationReadError::InvalidRequest(_) | ConversationReadError::SourceNotFound => {}
         ConversationReadError::InvalidLimit { .. }
         | ConversationReadError::CountLimitExceeded { .. } => {
             crate::diagnostics::record_conversation_limit_failure();
@@ -1162,6 +1307,396 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value = serde_json::from_slice(&body).unwrap_or(Value::Null);
         (status, value)
+    }
+
+    async fn post_locate(state: AppState, source_ref: &str, limit: usize) -> (StatusCode, Value) {
+        let response = crate::http::router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/agents/web/conversation/locate")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"source_ref": source_ref, "limit": limit}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn locate_exact_sources_and_round_trip_both_history_directions() {
+        let (_home, host) = test_host().await;
+        seed_conversation(&host);
+        let state = AppState::for_tcp(host.clone());
+        let (_, read_before) = get_json(state.clone(), "/api/agents/web/brief-read-state").await;
+        let (status, located) = post_locate(state.clone(), "brief:brief-two", 1).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(located["status"], "located");
+        assert_eq!(located["target"]["brief_id"], "brief-two");
+        assert_eq!(located["target"]["turn_id"], "turn-multi-brief");
+        assert_eq!(located["agent_id"], "web");
+        assert_eq!(located["schema_version"], CONVERSATION_SCHEMA_VERSION);
+        assert_eq!(located["query_version"], CONVERSATION_QUERY_VERSION);
+        let window = &located["window"];
+        assert_eq!(window["turns"].as_array().unwrap().len(), 1);
+        assert_eq!(window["turns"][0]["turn_id"], "turn-multi-brief");
+        assert_eq!(window["coverage"]["has_older"], true);
+        assert_eq!(window["coverage"]["has_newer"], true);
+        let before = window["next_before_cursor"].as_str().unwrap();
+        let after = window["next_after_cursor"].as_str().unwrap();
+        let (status, older) = get_json(
+            state.clone(),
+            &format!("/api/agents/web/conversation?limit=1&before={before}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(older["turns"][0]["turn_id"], "turn-zero-brief");
+        let older_after = older["next_after_cursor"].as_str().unwrap();
+        let (_, back) = get_json(
+            state.clone(),
+            &format!("/api/agents/web/conversation?limit=1&after={older_after}"),
+        )
+        .await;
+        assert_eq!(back["turns"][0]["turn_id"], "turn-multi-brief");
+        let (status, newer) = get_json(
+            state.clone(),
+            &format!("/api/agents/web/conversation?limit=1&after={after}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(newer["turns"][0]["turn_id"], "turn-legacy");
+        assert_eq!(newer["coverage"]["reaches_latest"], true);
+        let (_, centered) = post_locate(state.clone(), "brief:brief-one", 3).await;
+        assert_eq!(
+            centered["window"]["turns"][1]["turn_id"],
+            "turn-multi-brief"
+        );
+        host.runtime_db()
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE messages SET message_seq = 999999 WHERE evidence_id = 'message-active'",
+                [],
+            )
+            .unwrap();
+        let (status, input) = post_locate(state.clone(), "message:message-active", 1).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(input["target"]["kind"], "input_message");
+        assert_eq!(input["target"]["turn_id"], "turn-active");
+        assert!(input["target"]["activity_id"].is_string());
+        assert_eq!(
+            input["window"]["turns"][0]["inputs"][0]["message_id"],
+            "message-active"
+        );
+        assert!(input["window"]["event_head_seq"].as_u64().unwrap() < 999999);
+        let (_, read_after) = get_json(state.clone(), "/api/agents/web/brief-read-state").await;
+        assert_eq!(read_before, read_after, "locate does not mark Briefs read");
+        let (status, error) = get_json(
+            state.clone(),
+            &format!("/api/agents/web/conversation?before={before}&after={after}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error["code"], "conversation_invalid_request");
+        let (status, error) = get_json(
+            state,
+            &format!("/api/agents/web/conversation?after={before}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error["code"], "conversation_cursor_kind_mismatch");
+    }
+
+    #[tokio::test]
+    async fn locate_materializes_truncated_input_in_distant_owner_with_canonical_order() {
+        for with_activity in [true, false] {
+            let (_home, host) = test_host().await;
+            let db = host.runtime_db();
+            let mut owner = turn("turn-many-inputs", 1);
+            for index in 0..140 {
+                let mut input = MessageEnvelope::new(
+                    "web",
+                    MessageKind::OperatorPrompt,
+                    MessageOrigin::Operator {
+                        actor_id: None,
+                        actor_display_name: Some("Canonical operator".into()),
+                    },
+                    AuthorityClass::OperatorInstruction,
+                    Priority::Normal,
+                    MessageBody::Text {
+                        text: format!("canonical input {index}"),
+                    },
+                );
+                input.id = format!("message-many-{index:03}");
+                input.created_at = timestamp(1);
+                db.evidence().append_message(&input).unwrap();
+                owner.input_message_ids.push(input.id);
+            }
+            db.turn_records().upsert(&owner).unwrap();
+            for index in 2..52 {
+                db.turn_records()
+                    .upsert(&terminal(turn(&format!("turn-later-{index}"), index), None))
+                    .unwrap();
+            }
+            if !with_activity {
+                db.connection()
+                    .unwrap()
+                    .execute(
+                        "DELETE FROM conversation_source_revisions
+                         WHERE agent_id = 'web' AND turn_id = 'turn-many-inputs'
+                           AND source_kind = 'operator'",
+                        [],
+                    )
+                    .unwrap();
+            }
+            let state = AppState::for_tcp(host);
+            let (_, initial) = post_locate(state.clone(), "message:message-many-000", 1).await;
+            let initial_inputs = initial["window"]["turns"][0]["inputs"].as_array().unwrap();
+            assert_eq!(initial_inputs.len(), 128);
+            assert_eq!(initial["target"]["message_id"], "message-many-000");
+            assert_eq!(initial_inputs[0]["message_id"], "message-many-000");
+            assert_eq!(initial["window"]["turns"][0]["inputs_truncated"], true);
+            let (status, located) = post_locate(state, "message:message-many-139", 1).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(located["status"], "located");
+            assert_eq!(located["target"]["kind"], "input_message");
+            assert_eq!(located["target"]["turn_id"], "turn-many-inputs");
+            assert_eq!(located["target"]["message_id"], "message-many-139");
+            assert_eq!(located["target"]["activity_id"].is_string(), with_activity);
+            let turns = located["window"]["turns"].as_array().unwrap();
+            assert_eq!(turns.len(), 1, "seek directly to the distant owner");
+            let inputs = turns[0]["inputs"].as_array().unwrap();
+            assert_eq!(inputs.len(), 129, "bounded summaries plus exact target");
+            assert_eq!(&inputs[..128], initial_inputs);
+            assert_eq!(inputs[128]["message_id"], "message-many-139");
+            let preview: Value =
+                serde_json::from_str(inputs[128]["preview"].as_str().unwrap()).unwrap();
+            assert_eq!(preview["text"], "canonical input 139");
+            assert_eq!(inputs[128]["actor_display_name"], "Canonical operator");
+            assert_eq!(inputs[128]["activity_key"].is_object(), with_activity);
+            assert_eq!(turns[0]["inputs_truncated"], true);
+            assert_eq!(located["window"]["coverage"]["has_older"], false);
+            assert_eq!(located["window"]["coverage"]["has_newer"], true);
+        }
+    }
+
+    #[tokio::test]
+    async fn locate_materializes_pending_input_beyond_summary_cap() {
+        let (_home, host) = test_host().await;
+        seed_conversation(&host);
+        let db = host.runtime_db();
+        for index in 0..140 {
+            let mut input = MessageEnvelope::new(
+                "web",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: Some("Pending operator".into()),
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: format!("pending input {index}"),
+                },
+            );
+            input.id = format!("message-queued-{index:03}");
+            input.created_at = timestamp(30);
+            db.evidence().append_message(&input).unwrap();
+            db.queue_entries()
+                .upsert(&QueueEntryRecord {
+                    message_id: input.id,
+                    agent_id: "web".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: timestamp(30),
+                    updated_at: timestamp(30),
+                })
+                .unwrap();
+        }
+        let error = db
+            .conversation()
+            .summary_page("web", 1, None, None)
+            .expect_err("ordinary summary keeps its strict pending cap");
+        assert_eq!(
+            error.downcast_ref::<ConversationReadError>(),
+            Some(&ConversationReadError::CountLimitExceeded {
+                resource: "pending inputs",
+                limit: 100,
+            })
+        );
+        let state = AppState::for_tcp(host.clone());
+        for queue_status in ["queued", "dequeued"] {
+            db.connection()
+                .unwrap()
+                .execute(
+                    "UPDATE queue_entries SET status = ?1 WHERE message_id = 'message-queued-139'",
+                    [queue_status],
+                )
+                .unwrap();
+            let (status, located) =
+                post_locate(state.clone(), "message:message-queued-139", 1).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(located["status"], "pending");
+            assert_eq!(located["target"]["message_id"], "message-queued-139");
+            assert!(located["target"]["turn_id"].is_null());
+            let pending = located["window"]["pending_inputs"].as_array().unwrap();
+            assert_eq!(pending.len(), 100);
+            let target = pending.last().unwrap();
+            assert_eq!(target["message_id"], "message-queued-139");
+            assert_eq!(target["actor_display_name"], "Pending operator");
+            let preview: Value = serde_json::from_str(target["preview"].as_str().unwrap()).unwrap();
+            assert_eq!(preview["text"], "pending input 139");
+            let keys: Vec<_> = pending
+                .iter()
+                .map(|input| {
+                    (
+                        input["created_at"].as_str().unwrap(),
+                        input["message_id"].as_str().unwrap(),
+                    )
+                })
+                .collect();
+            assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
+        }
+    }
+
+    #[tokio::test]
+    async fn locate_pending_unattributed_non_conversation_and_missing_sources_are_explicit() {
+        let (_home, host) = test_host().await;
+        seed_conversation(&host);
+        let state = AppState::for_tcp(host.clone());
+        let (status, pending) = post_locate(state.clone(), "message:message-pending", 1).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(pending["status"], "pending");
+        assert!(pending["target"]["turn_id"].is_null());
+        assert_eq!(
+            pending["window"]["pending_inputs"][0]["message_id"],
+            "message-pending"
+        );
+        host.runtime_db()
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE queue_entries SET status = 'dequeued' WHERE message_id = 'message-pending'",
+                [],
+            )
+            .unwrap();
+        let (_, claimed) = post_locate(state.clone(), "message:message-pending", 1).await;
+        assert_eq!(claimed["status"], "pending");
+        host.runtime_db()
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE queue_entries SET status = 'dropped' WHERE message_id = 'message-pending'",
+                [],
+            )
+            .unwrap();
+        let (_, dropped) = post_locate(state.clone(), "message:message-pending", 1).await;
+        assert_eq!(dropped["status"], "source_only");
+        assert_eq!(dropped["reason"], "unattributed_source");
+        for source in ["brief:brief-legacy-unattributed", "work_item:work-example"] {
+            let (status, body) = post_locate(state.clone(), source, 1).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["status"], "source_only");
+            assert!(body["window"].is_null());
+            assert!(body["runtime_id"].is_string());
+        }
+        let (status, body) = post_locate(state.clone(), "message:missing", 1).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["code"], "conversation_source_not_found");
+        let (status, body) = post_locate(state.clone(), "message:../invalid", 1).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "conversation_invalid_request");
+        let (status, body) = post_locate(state, "brief:brief-one", 0).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "conversation_invalid_limit");
+    }
+
+    #[tokio::test]
+    async fn locate_forward_cursor_is_scope_bound_and_preserves_fixed_membership() {
+        let (_home, host) = test_host().await;
+        seed_conversation(&host);
+        let state = AppState::for_tcp(host.clone());
+        let (_, located) = post_locate(state.clone(), "brief:brief-one", 1).await;
+        let after = located["window"]["next_after_cursor"].as_str().unwrap();
+        host.runtime_db()
+            .turn_records()
+            .upsert(&turn("turn-later", 5))
+            .unwrap();
+        let (_, newer) = get_json(
+            state.clone(),
+            &format!("/api/agents/web/conversation?after={after}"),
+        )
+        .await;
+        assert_eq!(newer["turns"].as_array().unwrap().len(), 1);
+        assert_eq!(newer["turns"][0]["turn_id"], "turn-legacy");
+        host.runtime_db().connection().unwrap().execute(
+            "UPDATE runtime_metadata SET value = CAST(value AS INTEGER) + 1 WHERE key = 'visibility_policy_generation'", [],
+        ).unwrap();
+        let (status, error) = get_json(
+            state.clone(),
+            &format!("/api/agents/web/conversation?after={after}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error["code"], "conversation_cursor_scope_mismatch");
+        let (_, located) = post_locate(state.clone(), "brief:brief-one", 1).await;
+        let after = located["window"]["next_after_cursor"].as_str().unwrap();
+        host.runtime_db()
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE runtime_metadata SET value = 'rotated-epoch' WHERE key = 'event_log_epoch'",
+                [],
+            )
+            .unwrap();
+        let (status, error) = get_json(
+            state,
+            &format!("/api/agents/web/conversation?after={after}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error["code"],
+            "conversation_cursor_event_log_epoch_mismatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn locate_authorizes_before_resolving_and_hides_cross_agent_sources() {
+        let (_home, host) = test_host().await;
+        seed_conversation(&host);
+        let mut state = AppState::for_tcp(host.clone());
+        state.require_control_token = true;
+        let (status, error) = post_locate(state, "brief:brief-one", 1).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(error["code"], "auth_required");
+        host.runtime_db()
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE briefs SET agent_id = 'other-agent' WHERE evidence_id = 'brief-one'",
+                [],
+            )
+            .unwrap();
+        let state = AppState::for_tcp(host.clone());
+        let (status, error) = post_locate(state.clone(), "brief:brief-one", 1).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(error["code"], "conversation_source_not_found");
+        host.runtime_db()
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE agent_identities SET visibility = 'private' WHERE agent_id = 'web'",
+                [],
+            )
+            .unwrap();
+        let (status, _) = post_locate(state, "brief:brief-two", 1).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     async fn get_with_headers(
@@ -1379,11 +1914,21 @@ mod tests {
             .as_array()
             .unwrap();
         assert_eq!(
+            api["paths"]["/api/agents/{agent_id}/conversation/locate"]["post"]["responses"]["200"]
+                ["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ConversationLocateResponse"
+        );
+        assert!(
+            api["components"]["schemas"]["ConversationLocateRequest"]["properties"]
+                .get("source_ref")
+                .is_some()
+        );
+        assert_eq!(
             summary_parameters
                 .iter()
                 .map(|parameter| parameter["name"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            ["agent_id", "limit", "before"]
+            ["agent_id", "limit", "before", "after"]
         );
         let activity_parameters = api["paths"]["/api/agents/{agent_id}/turns/{turn_id}/activities"]
             ["get"]["parameters"]

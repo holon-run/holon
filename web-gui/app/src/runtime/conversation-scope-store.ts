@@ -48,6 +48,9 @@ interface ConversationScopeMirror {
   /** Presentation only; never used as a checkpoint or a read-marker gate. */
   readonly displayView: ConversationStateView | null;
   readonly version: number;
+  /** A historical viewport is not evidence that the latest head was read. */
+  readonly navigationActive?: boolean;
+  readonly browsing?: boolean;
 }
 
 interface ConversationStoreState {
@@ -69,6 +72,14 @@ export function conversationScopeSnapshot(
   key: ConversationScopeKey,
 ): ConversationScopeMirror {
   return useConversationScopeStore.getState().scopes[key] ?? EMPTY_CONVERSATION_MIRROR;
+}
+
+export function setConversationNavigationActive(key: ConversationScopeKey, active: boolean): void {
+  const previous = conversationScopeSnapshot(key);
+  if (Boolean(previous.navigationActive) === active) return;
+  useConversationScopeStore.setState((state) => ({
+    scopes: { ...state.scopes, [key]: { ...previous, navigationActive: active, version: previous.version + 1 } },
+  }));
 }
 
 export function subscribeConversationScope(
@@ -286,7 +297,7 @@ function publishScopeSnapshot(
   const previous =
     useConversationScopeStore.getState().scopes[key] ?? EMPTY_CONVERSATION_MIRROR;
   const view = controller.view();
-  const displayView = recoveryDisplayView(previous.displayView, view, controller.status);
+  const displayView = recoveryDisplayView(previous.displayView, controller.browsingView() ?? view, controller.status);
   useConversationScopeStore.setState((state) => ({
     scopes: {
       ...state.scopes,
@@ -294,6 +305,8 @@ function publishScopeSnapshot(
         status: controller.status,
         view,
         displayView,
+        navigationActive: previous.navigationActive,
+        browsing: controller.browseState() !== null && controller.browseState()?.liveConnected !== true,
         version: previous.version + 1,
       },
     },

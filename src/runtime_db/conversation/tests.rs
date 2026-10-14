@@ -1553,6 +1553,28 @@ fn keyset_queries_use_declared_indexes_without_temp_sorting() -> Result<()> {
         "history plan used a temporary sort: {history_plan:?}"
     );
 
+    let forward_plan = connection
+        .prepare(&format!(
+            "EXPLAIN QUERY PLAN {}",
+            super::locate::HISTORY_AFTER_SQL
+        ))?
+        .query_map(params![AGENT_ID, 5_i64, "m", 10_i64, "z", 10_i64], |row| {
+            row.get::<_, String>(3)
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert!(
+        forward_plan
+            .iter()
+            .any(|detail| detail.contains("idx_turn_records_agent_keyset")),
+        "forward history did not seek the native keyset index: {forward_plan:?}"
+    );
+    assert!(
+        forward_plan
+            .iter()
+            .all(|detail| !detail.contains("USE TEMP B-TREE")),
+        "forward history used a temporary sort: {forward_plan:?}"
+    );
+
     let activity_plan = connection
         .prepare(&format!(
             "EXPLAIN QUERY PLAN {CONVERSATION_ACTIVITY_BEFORE_SQL}"

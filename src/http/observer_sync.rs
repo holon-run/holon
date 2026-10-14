@@ -31,6 +31,9 @@ use axum::http::{HeaderMap, StatusCode};
 pub(crate) const ROSTER_SNAPSHOT_CAPABILITY: &str = "agents.roster-snapshot.v1";
 pub(crate) const PROJECTION_SNAPSHOT_CAPABILITY: &str = "agents.projection-snapshot.v1";
 pub(crate) const CONVERSATION_READ_CAPABILITY: &str = "agents.conversation-read.v1";
+pub(crate) const CONVERSATION_LOCATE_CAPABILITY: &str = "agents.conversation-locate.v1";
+pub(crate) const CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY: &str =
+    "agents.conversation-history-bidirectional.v1";
 pub(crate) const PROJECTION_EFFECT_CAPABILITY: &str = "events.projection-effect.v1";
 pub(crate) const ATOMIC_BRIEF_CREATED_EVENT_CAPABILITY: &str = "briefs.atomic-created-event.v1";
 
@@ -99,6 +102,8 @@ pub(crate) fn advertised_observer_sync_capabilities(
         capabilities.push(ATOMIC_BRIEF_CREATED_EVENT_CAPABILITY);
     }
     capabilities.push(CONVERSATION_READ_CAPABILITY);
+    capabilities.push(CONVERSATION_LOCATE_CAPABILITY);
+    capabilities.push(CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY);
     capabilities
 }
 
@@ -697,7 +702,14 @@ mod tests {
     #[test]
     fn evaluator_always_advertises_supported_conversation_protocol() {
         let advertised = advertised_observer_sync_capabilities(&Default::default());
-        assert_eq!(advertised, vec![CONVERSATION_READ_CAPABILITY]);
+        assert_eq!(
+            advertised,
+            vec![
+                CONVERSATION_READ_CAPABILITY,
+                CONVERSATION_LOCATE_CAPABILITY,
+                CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY,
+            ]
+        );
     }
 
     #[test]
@@ -728,7 +740,12 @@ mod tests {
         };
         assert_eq!(
             advertised_observer_sync_capabilities(&verification),
-            vec![ROSTER_SNAPSHOT_CAPABILITY, CONVERSATION_READ_CAPABILITY]
+            vec![
+                ROSTER_SNAPSHOT_CAPABILITY,
+                CONVERSATION_READ_CAPABILITY,
+                CONVERSATION_LOCATE_CAPABILITY,
+                CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY,
+            ]
         );
 
         let verification = ObserverSyncCapabilityVerification {
@@ -739,7 +756,12 @@ mod tests {
         };
         assert_eq!(
             advertised_observer_sync_capabilities(&verification),
-            vec![PROJECTION_SNAPSHOT_CAPABILITY, CONVERSATION_READ_CAPABILITY]
+            vec![
+                PROJECTION_SNAPSHOT_CAPABILITY,
+                CONVERSATION_READ_CAPABILITY,
+                CONVERSATION_LOCATE_CAPABILITY,
+                CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY,
+            ]
         );
     }
 

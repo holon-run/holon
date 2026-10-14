@@ -89,3 +89,38 @@ must revalidate before streaming. A 401/403 (or a missing conversation) clears
 both visible state and persistent cache; a missing individual brief does not
 discard the conversation. Hosts must namespace persistent adapters by verified
 login identity and clear them on authentication changes.
+
+### Canonical source navigation
+
+After the controller is ready, `await controller.locateSource(sourceRef)`
+resolves a canonical source through the additive
+`agents.conversation-locate.v1` capability. `browseState()` exposes the normalized
+typed target, `resolving` / `ready` / `source_only` / `error` status, independent
+`older` / `newer` load states, `hasOlder`, `hasNewer`, `hasLiveUpdates`, and
+`liveConnected`. Source-only results are not successful positioning.
+
+`view()` retains the canonical live tail. `displayView()` selects the independent
+bounded browsing window when present, or the live tail otherwise.
+`loadOlderHistory()` pages the current mode;
+`loadNewerHistory()` extends browsing toward the fixed snapshot's newest turn.
+Whole far-end pages are evicted at the configured turn bound, retaining real
+server cursors for reloading them. Initial positioning belongs to the host;
+after the user scrolls, preserve the current reading anchor rather than pinning
+the original target indefinitely. Existing detail/brief methods hydrate the
+selected view without raw-event or transcript fallback.
+
+The live tail keeps consuming its own stream, but new distant turns are not
+inserted into browsing. Reaching the fixed newest boundary joins live membership
+only with continuous post-locate batch coverage. At most 256 complete batches
+are retained for that bridge; expired coverage fails recoverably and requires
+an explicit re-locate. Epoch/scope resets invalidate navigation, and navigation
+generations fence responses even if a transport ignores abort.
+
+`view().checkpoint` and `through_seq` always come from the retained live tail,
+never from a historical snapshot. `browsingView()` carries no read authority.
+`displayView()` also carries no read authority while browsing. Hosts must gate
+read marking during navigation and browsing; `browseState().liveConnected`
+only reports data continuity, not read eligibility or scroll intent. Restoring
+read eligibility requires the host's physical latest-viewport policy.
+`returnToLatest()` explicitly leaves browsing. Hosts must also suppress automatic
+scroll-to-latest during browsing and resolving/source-only/error states.

@@ -221,6 +221,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/{agent_id}/conversation/locate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Locate a canonical conversation source
+         * @description Resolve exact message or Brief ownership and a bounded bidirectional history window without mutating read markers. Non-conversation and pending sources are explicit.
+         */
+        post: operations["agentConversationLocate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/{agent_id}/conversation/stream": {
         parameters: {
             query?: never;
@@ -4576,8 +4596,337 @@ export interface components {
             };
             visibility_scope_id: string;
         };
+        /** ConversationLocateRequest */
+        ConversationLocateRequest: {
+            /** Format: uint */
+            limit?: number | null;
+            source_ref: string;
+        };
+        /** ConversationLocateResponse */
+        ConversationLocateResponse: {
+            agent_id: string;
+            event_log_epoch: string;
+            /** Format: uint32 */
+            query_version: number;
+            reason?: string | null;
+            runtime_id: string;
+            /** Format: uint32 */
+            schema_version: number;
+            source_ref: string;
+            status: string;
+            target?: ({
+                activity_id?: string | null;
+                /** @constant */
+                kind: "input_message";
+                message_id: string;
+                turn_id?: string | null;
+            } | {
+                brief_id: string;
+                /** @constant */
+                kind: "brief";
+                turn_id?: string | null;
+            }) | null;
+            visibility_scope_id: string;
+            window?: {
+                active_turns: {
+                    attention?: ({
+                        /** @constant */
+                        kind: "failed";
+                        /** @enum {string} */
+                        outcome: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                    } | {
+                        /** @constant */
+                        kind: "interrupted";
+                    } | {
+                        /** @constant */
+                        kind: "waiting";
+                    }) | null;
+                    brief_ids: string[];
+                    /** Format: date-time */
+                    completed_at?: string | null;
+                    detail_coverage: {
+                        /** @constant */
+                        kind: "complete";
+                    } | {
+                        /** @constant */
+                        kind: "partial";
+                        /** @enum {string} */
+                        reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                    } | {
+                        /** @constant */
+                        kind: "unavailable";
+                        /** @enum {string} */
+                        reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                    } | {
+                        /** @constant */
+                        kind: "unknown";
+                    };
+                    /** Format: uint64 */
+                    duration_ms?: number | null;
+                    execution: {
+                        /** @constant */
+                        kind: "active";
+                    } | {
+                        /** @constant */
+                        kind: "terminal";
+                        /** @enum {string} */
+                        outcome: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                    };
+                    inputs: {
+                        activity_key?: {
+                            activity_id: string;
+                            /** Format: uint64 */
+                            event_seq: number;
+                        } | null;
+                        /** @description Operator display name snapshotted in the canonical message origin. */
+                        actor_display_name?: string | null;
+                        /** @default false */
+                        interjected: boolean;
+                        message_id: string;
+                        /** @enum {string|null} */
+                        presentation_class?: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational" | null;
+                        preview: string;
+                        /** @description Runtime task evidence, independently projected from any assistant response. */
+                        task_result?: {
+                            preview: string;
+                            response_message_id?: string | null;
+                            /** @description True only when durable turn provenance identifies a runtime-only result. */
+                            runtime_only?: boolean | null;
+                            /** @enum {string} */
+                            status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
+                            summary?: string | null;
+                            task_id: string;
+                        } | null;
+                    }[];
+                    /** @default false */
+                    inputs_truncated: boolean;
+                    key: {
+                        turn_id: string;
+                        /** Format: uint64 */
+                        turn_index: number;
+                    };
+                    /** @enum {string} */
+                    presentation_class: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational";
+                    result: {
+                        /** @constant */
+                        kind: "pending";
+                    } | {
+                        /** @constant */
+                        kind: "available";
+                    } | {
+                        /** @constant */
+                        kind: "none";
+                        reason: {
+                            /** @constant */
+                            kind: "reducer_only";
+                            reason: string;
+                        } | {
+                            /** @constant */
+                            kind: "aborted";
+                        } | {
+                            /** @constant */
+                            kind: "interrupted";
+                        } | {
+                            /** @constant */
+                            kind: "tool_only_wait";
+                        };
+                    } | {
+                        /** @constant */
+                        kind: "unavailable";
+                        /** @enum {string} */
+                        reason: "missing_canonical_linkage" | "retention_gap" | "legacy_coverage";
+                        retryable: boolean;
+                    };
+                    /** Format: uint64 */
+                    revision: number;
+                    settled: boolean;
+                    /** Format: date-time */
+                    started_at: string;
+                    turn_id: string;
+                }[];
+                coverage: {
+                    first_turn_key?: {
+                        turn_id: string;
+                        /** Format: uint64 */
+                        turn_index: number;
+                    } | null;
+                    has_newer: boolean;
+                    has_older: boolean;
+                    last_turn_key?: {
+                        turn_id: string;
+                        /** Format: uint64 */
+                        turn_index: number;
+                    } | null;
+                    membership_upper_bound?: {
+                        turn_id: string;
+                        /** Format: uint64 */
+                        turn_index: number;
+                    } | null;
+                    reaches_latest: boolean;
+                    reaches_oldest: boolean;
+                };
+                /** Format: uint64 */
+                event_head_seq: number;
+                event_log_epoch: string;
+                has_more: boolean;
+                next_after_cursor?: string | null;
+                next_before_cursor?: string | null;
+                /** Format: uint64 */
+                oldest_retained_seq: number;
+                pending_inputs: {
+                    /** @description Operator display name snapshotted in the canonical message origin. */
+                    actor_display_name?: string | null;
+                    created_at: string;
+                    message_id: string;
+                    /** @enum {string} */
+                    presentation_class: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational";
+                    preview: string;
+                    /** Format: uint64 */
+                    revision: number;
+                    /** @enum {string} */
+                    state: "queued" | "assigning";
+                    /** @description Runtime task evidence, independently projected from any assistant response. */
+                    task_result?: {
+                        preview: string;
+                        response_message_id?: string | null;
+                        /** @description True only when durable turn provenance identifies a runtime-only result. */
+                        runtime_only?: boolean | null;
+                        /** @enum {string} */
+                        status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
+                        summary?: string | null;
+                        task_id: string;
+                    } | null;
+                }[];
+                /** Format: uint32 */
+                query_version: number;
+                runtime_id: string;
+                /** Format: uint32 */
+                schema_version: number;
+                snapshot_cursor: string;
+                /** Format: uint64 */
+                snapshot_through_seq: number;
+                turns: {
+                    attention?: ({
+                        /** @constant */
+                        kind: "failed";
+                        /** @enum {string} */
+                        outcome: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                    } | {
+                        /** @constant */
+                        kind: "interrupted";
+                    } | {
+                        /** @constant */
+                        kind: "waiting";
+                    }) | null;
+                    brief_ids: string[];
+                    /** Format: date-time */
+                    completed_at?: string | null;
+                    detail_coverage: {
+                        /** @constant */
+                        kind: "complete";
+                    } | {
+                        /** @constant */
+                        kind: "partial";
+                        /** @enum {string} */
+                        reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                    } | {
+                        /** @constant */
+                        kind: "unavailable";
+                        /** @enum {string} */
+                        reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                    } | {
+                        /** @constant */
+                        kind: "unknown";
+                    };
+                    /** Format: uint64 */
+                    duration_ms?: number | null;
+                    execution: {
+                        /** @constant */
+                        kind: "active";
+                    } | {
+                        /** @constant */
+                        kind: "terminal";
+                        /** @enum {string} */
+                        outcome: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                    };
+                    inputs: {
+                        activity_key?: {
+                            activity_id: string;
+                            /** Format: uint64 */
+                            event_seq: number;
+                        } | null;
+                        /** @description Operator display name snapshotted in the canonical message origin. */
+                        actor_display_name?: string | null;
+                        /** @default false */
+                        interjected: boolean;
+                        message_id: string;
+                        /** @enum {string|null} */
+                        presentation_class?: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational" | null;
+                        preview: string;
+                        /** @description Runtime task evidence, independently projected from any assistant response. */
+                        task_result?: {
+                            preview: string;
+                            response_message_id?: string | null;
+                            /** @description True only when durable turn provenance identifies a runtime-only result. */
+                            runtime_only?: boolean | null;
+                            /** @enum {string} */
+                            status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
+                            summary?: string | null;
+                            task_id: string;
+                        } | null;
+                    }[];
+                    /** @default false */
+                    inputs_truncated: boolean;
+                    key: {
+                        turn_id: string;
+                        /** Format: uint64 */
+                        turn_index: number;
+                    };
+                    /** @enum {string} */
+                    presentation_class: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational";
+                    result: {
+                        /** @constant */
+                        kind: "pending";
+                    } | {
+                        /** @constant */
+                        kind: "available";
+                    } | {
+                        /** @constant */
+                        kind: "none";
+                        reason: {
+                            /** @constant */
+                            kind: "reducer_only";
+                            reason: string;
+                        } | {
+                            /** @constant */
+                            kind: "aborted";
+                        } | {
+                            /** @constant */
+                            kind: "interrupted";
+                        } | {
+                            /** @constant */
+                            kind: "tool_only_wait";
+                        };
+                    } | {
+                        /** @constant */
+                        kind: "unavailable";
+                        /** @enum {string} */
+                        reason: "missing_canonical_linkage" | "retention_gap" | "legacy_coverage";
+                        retryable: boolean;
+                    };
+                    /** Format: uint64 */
+                    revision: number;
+                    settled: boolean;
+                    /** Format: date-time */
+                    started_at: string;
+                    turn_id: string;
+                }[];
+                visibility_scope_id: string;
+            } | null;
+        };
         /** ConversationReadQuery */
         ConversationReadQuery: {
+            after?: string | null;
             before?: string | null;
             /** Format: uint */
             limit?: number | null;
@@ -5027,10 +5376,32 @@ export interface components {
                 started_at: string;
                 turn_id: string;
             }[];
+            coverage: {
+                first_turn_key?: {
+                    turn_id: string;
+                    /** Format: uint64 */
+                    turn_index: number;
+                } | null;
+                has_newer: boolean;
+                has_older: boolean;
+                last_turn_key?: {
+                    turn_id: string;
+                    /** Format: uint64 */
+                    turn_index: number;
+                } | null;
+                membership_upper_bound?: {
+                    turn_id: string;
+                    /** Format: uint64 */
+                    turn_index: number;
+                } | null;
+                reaches_latest: boolean;
+                reaches_oldest: boolean;
+            };
             /** Format: uint64 */
             event_head_seq: number;
             event_log_epoch: string;
             has_more: boolean;
+            next_after_cursor?: string | null;
             next_before_cursor?: string | null;
             /** Format: uint64 */
             oldest_retained_seq: number;
@@ -8357,6 +8728,8 @@ export interface operations {
                 limit?: number;
                 /** @description Opaque pagination cursor returned by the preceding page. */
                 before?: string;
+                /** @description Opaque forward history cursor. Mutually exclusive with before; not a stream checkpoint. */
+                after?: string;
             };
             header?: never;
             path: {
@@ -8374,6 +8747,51 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationSummaryResponse"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    agentConversationLocate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationLocateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationLocateResponse"];
                 };
             };
             /** @description Client error JSON response. */

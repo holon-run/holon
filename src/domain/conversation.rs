@@ -439,6 +439,13 @@ pub struct HistoryCursor {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryAfterCursor {
+    pub binding: CursorBinding,
+    pub after: TurnKey,
+    pub membership_upper_bound: TurnKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DetailCursor {
     pub binding: CursorBinding,
     pub turn_id: String,
@@ -455,6 +462,7 @@ pub struct StreamCursor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorKind {
     History,
+    HistoryAfter,
     Detail,
     Stream,
 }
@@ -463,6 +471,7 @@ impl CursorKind {
     fn name(self) -> &'static str {
         match self {
             Self::History => "history",
+            Self::HistoryAfter => "history_after",
             Self::Detail => "detail",
             Self::Stream => "stream",
         }
@@ -507,6 +516,13 @@ pub trait ConversationCursor: Serialize + DeserializeOwned {
 
 impl ConversationCursor for HistoryCursor {
     const KIND: CursorKind = CursorKind::History;
+    fn binding(&self) -> &CursorBinding {
+        &self.binding
+    }
+}
+
+impl ConversationCursor for HistoryAfterCursor {
+    const KIND: CursorKind = CursorKind::HistoryAfter;
     fn binding(&self) -> &CursorBinding {
         &self.binding
     }

@@ -34,10 +34,26 @@ import type {
   RuntimeModelOption,
 } from "../../runtime/types";
 import type { OperatorPromptAttachment } from "../../runtime/client";
+import type { ConversationHistoryLoadState } from "@holon/conversation-sdk";
+import {
+  captureConversationReadingAnchors,
+  positionConversationAnchor,
+  revealConversationAnchor,
+  restoreConversationReadingAnchor,
+  type ConversationReadingAnchor,
+  type ConversationLocation,
+} from "./conversation-location";
 
 export interface ConversationTimelineBundle extends ConversationTimelineActions {
   model: ConversationSessionModel;
   onLoadOlderHistory: () => void;
+  location?: ConversationLocation;
+  browsing?: boolean;
+  hasNewerHistory?: boolean;
+  newerHistoryState?: ConversationHistoryLoadState;
+  onLoadNewerHistory?: () => void;
+  onReturnToLatest?: () => void;
+  onRetryLocation?: () => void;
 }
 
 interface AgentPageProps {
@@ -57,6 +73,7 @@ interface AgentPageProps {
   /** Ledger-backed lower-bound unread state (W5 truncation indicator). */
   historyTruncated?: boolean;
   conversationReady: boolean;
+  navigationPending?: boolean;
   onRefreshModels: () => Promise<void>;
   onSetModel: (model: string, reasoningEffort?: string, serviceTier?: string) => Promise<void>;
   onClearModel: () => Promise<void>;
@@ -158,6 +175,7 @@ export function AgentPage({
   syncRetryAttempt,
   historyTruncated = false,
   conversationReady,
+  navigationPending = false,
   onRefreshModels,
   onSetModel,
   onClearModel,
@@ -180,8 +198,8 @@ export function AgentPage({
   const [modelMenuStyle, setModelMenuStyle] = useState<CSSProperties | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const messageContentRef = useRef<HTMLDivElement | null>(null);
-  const readingAnchorRef = useRef<{ element: HTMLElement; offset: number }[]>([]);
-  const restoringAnchorRef = useRef(false);
+  const readingAnchorRef = useRef<ConversationReadingAnchor[]>([]);
+  const restoredScrollTopRef = useRef<number | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
@@ -193,6 +211,15 @@ export function AgentPage({
   const userScrollIntentRef = useRef(false);
   const userScrollIntentTimerRef = useRef<number | null>(null);
   const scheduledBottomScrollRef = useRef<number | null>(null);
+  const positionedRequestRef = useRef<number | null>(null);
+  const [positionedRequest, setPositionedRequest] = useState<number | null>(null);
+  const location = conversation?.location;
+  const locationRef = useRef(location);
+  locationRef.current = location;
+  const browsing = navigationPending || Boolean(conversation?.browsing)
+    || (location !== undefined && location.kind !== "ready");
+  const browsingRef = useRef(browsing);
+  browsingRef.current = browsing;
 
   // The model menu renders through a portal with fixed positioning so narrow
   // main columns no longer clip it behind the sidebar. Track the picker anchor
@@ -320,6 +347,7 @@ export function AgentPage({
   }, [prompt, activeAgent.id]);
 
   function scrollToConversationBottom() {
+    if (browsingRef.current) return;
     const list = messageListRef.current;
     if (!list) return;
 
@@ -344,12 +372,25 @@ export function AgentPage({
   }
 
   useLayoutEffect(() => {
-    stickToBottomRef.current = true;
+    stickToBottomRef.current = !browsing;
+    readingAnchorRef.current = [];
+    restoredScrollTopRef.current = null;
     // A fresh conversation view must not inherit scroll intent from the
     // previously viewed agent.
     clearUserScrollIntent(userScrollIntentRef, userScrollIntentTimerRef);
-    scrollToConversationBottom();
+    if (!browsing) scrollToConversationBottom();
   }, [activeAgent.id]);
+
+  useLayoutEffect(() => {
+    if (!browsing) return;
+    stickToBottomRef.current = false;
+    autoStickToBottomRef.current = false;
+    if (scheduledBottomScrollRef.current !== null) {
+      window.cancelAnimationFrame(scheduledBottomScrollRef.current);
+      scheduledBottomScrollRef.current = null;
+    }
+    setShowJumpToLatest(true);
+  }, [browsing, location?.requestId]);
 
   const conversationContentVersion = conversation?.model.view?.through_seq ?? 0;
   const initialReadAttemptedRef = useRef(false);
@@ -357,45 +398,85 @@ export function AgentPage({
   function rememberReadingAnchor() {
     const list = messageListRef.current;
     if (!list) return;
-    const top = list.getBoundingClientRect().top;
-    readingAnchorRef.current = Array.from(list.querySelectorAll<HTMLElement>("[data-conversation-anchor]"))
-      .filter((element) => element.getBoundingClientRect().bottom > top)
-      .slice(0, 8)
-      .map((element) => ({ element, offset: element.getBoundingClientRect().top - top }));
+    readingAnchorRef.current = captureConversationReadingAnchors(list);
   }
+
+  function restoreReadingAnchor() {
+    const list = messageListRef.current;
+    const currentLocation = locationRef.current;
+    if (!list || (currentLocation && positionedRequestRef.current !== currentLocation.requestId)) return;
+    if (restoreConversationReadingAnchor(list, readingAnchorRef.current)) {
+      restoredScrollTopRef.current = list.scrollTop;
+    }
+    rememberReadingAnchor();
+  }
+
+  useLayoutEffect(() => {
+    const list = messageListRef.current;
+    if (!list) return;
+    positionedRequestRef.current = null;
+    setPositionedRequest(null);
+    for (const element of list.querySelectorAll<HTMLElement>("[data-location-target]")) {
+      delete element.dataset.locationTarget;
+    }
+  }, [activeAgent.id, location?.requestId]);
+
+  useLayoutEffect(() => {
+    const list = messageListRef.current;
+    const content = messageContentRef.current;
+    if (!list || !content || location?.kind !== "ready" || !location.anchor) return;
+    const position = () => {
+      if (positionedRequestRef.current === location.requestId) return;
+      const element = revealConversationAnchor(list, location.anchor!);
+      if (!element || !positionConversationAnchor(list, element)) return;
+      element.dataset.locationTarget = "true";
+      positionedRequestRef.current = location.requestId;
+      setPositionedRequest(location.requestId);
+      stickToBottomRef.current = false;
+      rememberReadingAnchor();
+    };
+    position();
+    const observer = new ResizeObserver(position);
+    observer.observe(content);
+    const frame = window.requestAnimationFrame(position);
+    return () => { observer.disconnect(); window.cancelAnimationFrame(frame); };
+  }, [location, conversation?.model]);
+
+  // Whole-page eviction can replace membership without changing the total
+  // height. Restore by canonical identity on commit, not only on resize.
+  useLayoutEffect(() => {
+    const list = messageListRef.current;
+    if (!list || stickToBottomRef.current) return;
+    // Input intent gates following the bottom, not preserving the latest
+    // user-selected offset across pagination or same-turn hydration.
+    restoreReadingAnchor();
+  }, [conversation?.model.view, location?.requestId]);
 
   useLayoutEffect(() => {
     const list = messageListRef.current;
     const content = messageContentRef.current;
     if (!list || !content) return;
-    readingAnchorRef.current = [];
-    let frame = 0;
+    restoredScrollTopRef.current = null;
     const observer = new ResizeObserver(() => {
       if (stickToBottomRef.current && !userScrollIntentRef.current) {
         scrollToConversationBottom();
-      } else if (!userScrollIntentRef.current) {
-        const anchor = readingAnchorRef.current.find(({ element }) =>
-          element.isConnected && element.getBoundingClientRect().height > 0 && !element.closest('[aria-hidden="true"]'),
-        );
-        if (anchor) {
-          restoringAnchorRef.current = true;
-          list.scrollTop += anchor.element.getBoundingClientRect().top - list.getBoundingClientRect().top - anchor.offset;
-          window.cancelAnimationFrame(frame);
-          frame = window.requestAnimationFrame(() => { restoringAnchorRef.current = false; });
-        }
+      } else if (!stickToBottomRef.current) {
+        restoreReadingAnchor();
       }
       setShowJumpToLatest(!stickToBottomRef.current);
       rememberReadingAnchor();
     });
     observer.observe(content);
     observer.observe(list);
-    return () => { observer.disconnect(); window.cancelAnimationFrame(frame); };
+    return () => { observer.disconnect(); };
   }, [activeAgent.id]);
 
   useEffect(() => {
     const list = messageListRef.current;
     if (
       conversationReady &&
+      !browsing &&
+      !location &&
       !initialReadAttemptedRef.current &&
       document.visibilityState === "visible" &&
       list &&
@@ -405,13 +486,14 @@ export function AgentPage({
         initialReadAttemptedRef.current = true;
       }
     }
-  }, [activeAgent.id, conversationReady, onConversationRead]);
+  }, [activeAgent.id, conversationReady, onConversationRead, browsing, location]);
 
   useEffect(() => {
     const markReadIfVisible = () => {
       const list = messageListRef.current;
       if (
         document.visibilityState === "visible" &&
+        !browsing &&
         list &&
         isScrolledNearBottom(list)
       ) {
@@ -420,7 +502,7 @@ export function AgentPage({
     };
     document.addEventListener("visibilitychange", markReadIfVisible);
     return () => document.removeEventListener("visibilitychange", markReadIfVisible);
-  }, [activeAgent.id, onConversationRead]);
+  }, [activeAgent.id, onConversationRead, browsing]);
 
   async function sendDraftPrompt() {
     if (!canSendPrompt) return;
@@ -532,7 +614,10 @@ export function AgentPage({
   function handleMessageListScroll() {
     const list = messageListRef.current;
     if (!list) return;
-    if (restoringAnchorRef.current && !userScrollIntentRef.current) return;
+    // Ignore only our own correction. A real subsequent scroll (including
+    // momentum in the same frame) must update the anchor and paginate.
+    if (restoredScrollTopRef.current !== null && Math.abs(list.scrollTop - restoredScrollTopRef.current) < 1) return;
+    restoredScrollTopRef.current = null;
     rememberReadingAnchor();
     if (userScrollIntentRef.current) {
       // Continued scrolling while intent is active (e.g. momentum after a
@@ -554,6 +639,20 @@ export function AgentPage({
     // Layout and result hydration can emit scroll events without user input.
     // Only an intentional scroll changes whether subsequent updates follow.
     if (!userScrollIntentRef.current) return;
+    if (browsing) {
+      stickToBottomRef.current = false;
+      setShowJumpToLatest(true);
+      if (list.scrollTop < 128 && conversation?.model.hasMoreHistory
+        && conversation.model.historyState.kind === "idle") {
+        conversation.onLoadOlderHistory();
+      }
+      if (nearBottom && conversation?.hasNewerHistory
+        && conversation.newerHistoryState?.kind !== "loading"
+        && conversation.newerHistoryState?.kind !== "error") {
+        conversation.onLoadNewerHistory?.();
+      }
+      return;
+    }
     stickToBottomRef.current = nearBottom;
     setShowJumpToLatest(!nearBottom);
     if (stickToBottomRef.current) onConversationRead();
@@ -635,16 +734,34 @@ export function AgentPage({
           {conversation ? <ConversationSyncStatus model={conversation.model} onRetry={conversation.onRetry} /> : <div className="conversation-sync-status" />}
           <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll} onClickCapture={handleDisclosureClick}>
             <div className="message-list-content" ref={messageContentRef}>
+              {location ? (
+                <div className={`conversation-location-status is-${location.kind}`} role={location.kind === "error" ? "alert" : "status"} aria-live="polite">
+                  <span>{t(location.kind === "source_only" ? "agentPage.location.sourceOnly"
+                    : location.kind === "error" ? location.reason === "legacy" ? "agentPage.location.legacyUnavailable"
+                      : location.reason === "unsupported" ? "agentPage.location.unsupported"
+                        : location.reason === "runtime" ? "agentPage.location.runtimeUnavailable" : "agentPage.location.failed"
+                    : location.kind === "ready" && positionedRequest === location.requestId ? "agentPage.location.located"
+                    : "agentPage.location.loading")}</span>
+                  {location.error ? <span>{location.error}</span> : null}
+                  {location.kind === "error" && !location.reason ? (
+                    <Button type="button" size="sm" variant="secondary" onClick={conversation?.onRetryLocation}>
+                      {t("agentPage.location.retry")}
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
               {conversation !== undefined ? (
                 conversation.model.hasMoreHistory ||
-                conversation.model.historyState.kind === "loading" ? (
+                conversation.model.historyState.kind === "loading" ||
+                conversation.model.historyState.kind === "error" ? (
                   <div className="history-loader">
+                    {conversation.model.historyState.kind === "error" ? <span role="alert">{t("agentPage.location.olderFailed")}</span> : null}
                     <Button
                       type="button"
                       size="sm"
                       variant="secondary"
                       disabled={conversation.model.historyState.kind === "loading"}
-                      onClick={() => conversation.onLoadOlderHistory()}
+                      onClick={() => { rememberReadingAnchor(); conversation.onLoadOlderHistory(); }}
                     >
                       {conversation.model.historyState.kind === "loading"
                         ? t("agent.loadingEarlier")
@@ -671,6 +788,9 @@ export function AgentPage({
               {conversation ? (
                 <ConversationTimeline
                   model={conversation.model}
+                  locatedAnchor={location?.kind === "ready" ? location.anchor : undefined}
+                  revealTarget={location?.kind === "ready" && location.anchor && positionedRequest !== location.requestId
+                    ? { anchor: location.anchor, turnId: location.turnId } : undefined}
                   onOpenWorkItemId={conversation.onOpenWorkItemId}
                   toolDetails={conversation.toolDetails}
                   selectedActivityId={conversation.selectedActivityId}
@@ -690,10 +810,23 @@ export function AgentPage({
                   <span>{t("common.syncing")}</span>
                 </div>
               )}
+              {conversation?.hasNewerHistory || conversation?.newerHistoryState?.kind === "loading" || conversation?.newerHistoryState?.kind === "error" ? (
+                <div className="history-loader">
+                  {conversation.newerHistoryState?.kind === "error" ? <span role="alert">{t("agentPage.location.newerFailed")}</span> : null}
+                  <Button type="button" size="sm" variant="secondary" disabled={conversation.newerHistoryState?.kind === "loading"}
+                    onClick={() => { rememberReadingAnchor(); conversation.onLoadNewerHistory?.(); }}>
+                    {t(conversation.newerHistoryState?.kind === "loading" ? "agentPage.location.loadingNewer" : "agentPage.location.loadNewer")}
+                  </Button>
+                </div>
+              ) : null}
             </div>
           </div>
-          {showJumpToLatest ? (
-            <button type="button" className="conversation-jump" onClick={scrollToConversationBottom}>
+          {showJumpToLatest || browsing ? (
+            <button type="button" className="conversation-jump" onClick={() => {
+              if (location || browsing) conversation?.onReturnToLatest?.();
+              browsingRef.current = false;
+              scrollToConversationBottom();
+            }}>
               <ArrowDown size={14} />{t("agentPage.backToLatest")}
             </button>
           ) : null}

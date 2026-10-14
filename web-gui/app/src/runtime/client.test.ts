@@ -1359,7 +1359,7 @@ describe("createRuntimeClient", () => {
           agent_ids: ["holon-pm", "worker"],
           include_all_workspaces: true,
           limit: 10,
-          types: ["message"],
+          types: ["message", "brief"],
         },
       },
     ]);
@@ -1422,10 +1422,55 @@ describe("createRuntimeClient", () => {
             sourceRef: "message:msg-1",
             messageId: "msg-1",
             turnId: "turn-1",
-            eventSeq: 42,
+            eventSeq: undefined,
           }),
         }),
       ],
+    });
+  });
+
+  it("passes explicit runtime search types through before server-side limiting", async () => {
+    const bodies: unknown[] = [];
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return Response.json({
+          query: "needle",
+          limit: 1,
+          results: [{ kind: "task", source_ref: "task:task-1", snippet: "needle" }],
+        });
+      }) as typeof fetch,
+    });
+    const all = await client.search("needle", { types: [], limit: 1 });
+    expect(all.results).toHaveLength(1);
+    expect(all.results[0].kind).toBe("task");
+    await client.search("needle", { types: ["brief"], limit: 1 });
+    expect(bodies).toEqual([
+      { query: "needle", types: [], limit: 1 },
+      { query: "needle", types: ["brief"], limit: 1 },
+    ]);
+  });
+
+  it("preserves explicit source references and canonical event sequences without evidence fallback", async () => {
+    const sourceRef = "tool_execution:exec-1:output:batch:2";
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async () => Response.json({
+        results: [
+          { source_ref: sourceRef, locator: { source_ref: "brief:other", event_seq: 9 }, metadata: { message_seq: 99 } },
+          { locator: { source_ref: "brief:brief-1" } },
+          { locator: { evidence_id: "arbitrary-evidence-id" }, metadata: { message_seq: 99 } },
+        ],
+      })) as typeof fetch,
+    });
+    const response = await client.search("needle");
+    expect(response.results[0].locator).toMatchObject({ sourceRef, eventSeq: 9 });
+    expect(response.results[1].locator.sourceRef).toBe("brief:brief-1");
+    expect(response.results[2].locator).toMatchObject({
+      sourceRef: undefined, eventSeq: undefined, evidenceId: "arbitrary-evidence-id",
     });
   });
 

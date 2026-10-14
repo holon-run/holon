@@ -78,6 +78,22 @@ const group = (turn: ConversationTurnSummary): ConversationTurnGroup => ({
 });
 
 describe("buildConversationSessionModel", () => {
+  it("renders an explicitly located background turn without changing normal conversation filtering", () => {
+    const receipt = turnSummary("hidden-receipt", 1, {
+      presentation_class: "task",
+      inputs: [{ message_id: "receipt-input", preview: "Task completed" }],
+      execution: { kind: "terminal", outcome: "completed" },
+      result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
+      settled: true,
+    });
+    const input = {
+      status: { kind: "ready" } as const, view: stateView([receipt]), historyState: { kind: "idle" } as const,
+      briefs: new Map(), briefLoadStates: new Map(), detailLoadStates: new Map(),
+    };
+    expect(buildConversationSessionModel(input).turns).toEqual([]);
+    expect(buildConversationSessionModel({ ...input, locatedTurnId: receipt.turn_id }).turns.map((turn) => turn.turnId)).toEqual([receipt.turn_id]);
+  });
+
   it("hides settled task receipts without losing canonical history, paging or input assignment", () => {
     const receipt = turnSummary("receipt", 1, {
       presentation_class: "task",
