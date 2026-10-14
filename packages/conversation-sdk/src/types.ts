@@ -10,6 +10,7 @@ export type ConversationCheckpoint = OpaqueToken<"conversation-checkpoint">;
 
 export const CONVERSATION_CAPABILITY = "agents.conversation-read.v1";
 export const CONVERSATION_LOCATE_CAPABILITY = "agents.conversation-locate.v1";
+export const CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY = "agents.conversation-history-bidirectional.v1";
 export const CONVERSATION_SCHEMA_VERSION = 2;
 export const CONVERSATION_QUERY_VERSION = 2;
 export const HOLON_CONTROL_PROTOCOL_NAME = "holon-control";

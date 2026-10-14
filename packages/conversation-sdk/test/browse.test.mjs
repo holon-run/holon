@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   ConversationController, ConversationClient, ConversationCapabilityError,
+  ConversationProtocolError, CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY,
   ConversationDecodeError, decodeConversationLocateResponse,
 } from '../dist/index.js';
 import { summary, turn, batch, detail } from './helpers.mjs';
@@ -259,6 +260,44 @@ test('newer page failures remain directionally retryable and do not change membe
   } finally { f.controller.dispose(); }
 });
 
+for (const bound of [undefined, null]) {
+  const missingBound = window => {
+    if (bound === undefined) delete window.coverage.membership_upper_bound;
+    else window.coverage.membership_upper_bound = bound;
+    return window;
+  };
+  test(`initial locate rejects a nonempty window with ${bound} membership bound`, async () => {
+    const f = await fixture({ locate: () => located(missingBound(page([4, 5], 'b4', 'a5'))) });
+    try {
+      const tail = f.controller.view();
+      const state = await f.controller.locateSource('source');
+      assert.equal(state.status, 'error');
+      assert.ok(state.error instanceof ConversationProtocolError);
+      assert.match(state.error.message, /membership upper bound/);
+      assert.equal(f.controller.browsingView(), null);
+      assert.deepEqual(f.controller.view(), tail);
+    } finally { f.controller.dispose(); }
+  });
+
+  for (const direction of ['older', 'newer']) {
+    test(`${direction} paging rejects a nonempty window with ${bound} membership bound`, async () => {
+      const f = await fixture({
+        page: () => missingBound(direction === 'older' ? page([2, 3], 'b2', 'a3') : page([6, 7], 'b6', 'a7')),
+      });
+      try {
+        await f.controller.locateSource('source');
+        const view = f.controller.displayView();
+        const result = await (direction === 'older' ? f.controller.loadOlderHistory() : f.controller.loadNewerHistory());
+        assert.equal(result.kind, 'error');
+        assert.ok(result.error instanceof ConversationProtocolError);
+        assert.match(result.error.message, /membership upper bound/);
+        assert.equal(f.controller.browseState().status, 'ready');
+        assert.deepEqual(f.controller.displayView(), view);
+      } finally { f.controller.dispose(); }
+    });
+  }
+}
+
 test('decoder normalizes canonical wire targets and rejects targets outside the window', () => {
   const wire = located(page([5]), { kind: 'input_message', message_id: 'm5', turn_id: 'turn-5', brief_id: null, activity_id: null });
   assert.equal(decodeConversationLocateResponse(wire).target.kind, 'input');
@@ -297,7 +336,7 @@ test('client encodes source identity, gates locate capability and rejects mixed 
   const calls = [];
   const client = new ConversationClient({ baseUrl: 'http://fake.local/api', fetch: async (url, init) => {
     calls.push({ url, init });
-    if (url.endsWith('/handshake')) return Response.json({ ok: true, protocol: { name: 'holon-control', version: 1 }, auth: { mode: 'none', required: false }, capabilities: ['agents.conversation-read.v1', 'agents.conversation-locate.v1'], runtime: {} });
+    if (url.endsWith('/handshake')) return Response.json({ ok: true, protocol: { name: 'holon-control', version: 1 }, auth: { mode: 'none', required: false }, capabilities: ['agents.conversation-read.v1', 'agents.conversation-locate.v1', CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY], runtime: {} });
     if (init.method === 'POST') return Response.json(located(page([5]), { kind: 'input_message', message_id: 'm5', turn_id: 'turn-5' }));
     return Response.json(page([6], 'b6', 'a6'));
   } });
@@ -309,6 +348,48 @@ test('client encodes source identity, gates locate capability and rejects mixed 
   await assert.rejects(client.summary('web', { before: 'x', after: 'y' }));
   const old = new ConversationClient({ baseUrl: 'http://fake.local', fetch: async () => Response.json({ ok: true, protocol: { name: 'holon-control', version: 1 }, auth: { mode: 'none', required: false }, capabilities: ['agents.conversation-read.v1'], runtime: {} }) });
   await assert.rejects(old.locateSource('web', 'message:x'), ConversationCapabilityError);
+});
+
+test('after history gates version-skewed servers without changing before/latest requests', async () => {
+  const calls = [];
+  const capabilities = ['agents.conversation-read.v1', 'agents.conversation-locate.v1'];
+  const client = new ConversationClient({ baseUrl: 'http://fake.local/api', fetch: async (url, init) => {
+    calls.push({ url, init });
+    if (url.endsWith('/handshake')) return Response.json({
+      ok: true, protocol: { name: 'holon-control', version: 1 },
+      auth: { mode: 'none', required: false }, capabilities, runtime: {},
+    });
+    if (init.method === 'POST') return Response.json(located(page([5]), { kind: 'input_message', message_id: 'm5', turn_id: 'turn-5' }));
+    return Response.json(page([6], 'b6', 'a6'));
+  } });
+  await client.locateSource('web', 'message:m5');
+  calls.length = 0;
+  await client.summary('web');
+  await client.summary('web', { before: 'b5' });
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(call => !call.url.endsWith('/handshake')));
+  assert.equal(new URL(calls.at(-1).url).searchParams.get('before'), 'b5');
+  calls.length = 0;
+  await assert.rejects(client.summary('web', { after: 'a5' }), error =>
+    error instanceof ConversationCapabilityError && error.capability === CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].url.endsWith('/handshake'));
+
+  capabilities.push(CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY);
+  calls.length = 0;
+  const abort = new AbortController();
+  const result = await client.summary('web', { after: 'opaque+/=', signal: abort.signal });
+  assert.equal(calls.length, 2);
+  assert.ok(calls[0].url.endsWith('/handshake'));
+  assert.equal(new URL(calls[1].url).searchParams.get('after'), 'opaque+/=');
+  assert.deepEqual(result.summary.turns.map(turn => turn.turn_id), ['turn-6']);
+
+  capabilities.splice(capabilities.indexOf('agents.conversation-read.v1'), 1);
+  calls.length = 0;
+  await assert.rejects(client.summary('web', { after: 'a5' }), error =>
+    error instanceof ConversationCapabilityError && error.capability === 'agents.conversation-read.v1');
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].url.endsWith('/handshake'));
 });
 
 test('expired bridge coverage stays historical and reports re-locate instead of stitching distant tail', async () => {
@@ -533,7 +614,7 @@ test('pages with changed fixed membership cannot join unrelated history', async 
       const displayed = f.controller.displayView().turns;
       const result = await f.controller.loadNewerHistory();
       assert.equal(result.kind, 'error');
-      assert.equal(f.controller.browseState().status, 'error');
+      assert.equal(f.controller.browseState().status, bound == null ? 'ready' : 'error');
       assert.equal(f.controller.browseState().liveConnected, false);
       assert.deepEqual(f.controller.displayView().turns, displayed);
       assert.equal(f.controller.view().checkpoint, 'checkpoint-10');

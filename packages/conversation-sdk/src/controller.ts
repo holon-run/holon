@@ -277,6 +277,9 @@ const DEFAULT_MAX_BRIEF_CACHE = 64;
 function browsePage(summary: ConversationSummaryResponse): BrowsePage {
   const window = summary.coverage;
   if (!window) throw new ConversationProtocolError("server omitted the bidirectional conversation window");
+  if (summary.turns.length > 0 && window.membership_upper_bound == null) {
+    throw new ConversationProtocolError("server omitted the conversation membership upper bound");
+  }
   if (window.has_older !== (summary.next_before_cursor !== null) || window.has_newer !== (summary.next_after_cursor != null)
     || window.reaches_oldest === window.has_older || window.reaches_latest === window.has_newer) {
     throw new ConversationProtocolError("conversation window cursor coverage is inconsistent");

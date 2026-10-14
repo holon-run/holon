@@ -19,6 +19,7 @@ import {
 import { ConversationBatchAssembler, parseSseStream } from "./sse.js";
 import {
   CONVERSATION_CAPABILITY,
+  CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY,
   CONVERSATION_LOCATE_CAPABILITY,
   HOLON_CONTROL_PROTOCOL_NAME,
   HOLON_CONTROL_PROTOCOL_VERSION,
@@ -147,6 +148,12 @@ export class ConversationClient {
   ): Promise<ConversationSummaryResult> {
     if (options.before !== undefined && options.after !== undefined) {
       throw new ConversationProtocolError("before and after are mutually exclusive");
+    }
+    if (options.after !== undefined) {
+      const handshake = await this.requireCapability(options.signal);
+      if (!handshake.capabilities.includes(CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY)) {
+        throw new ConversationCapabilityError(CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY);
+      }
     }
     const query = new URLSearchParams();
     if (options.limit !== undefined) {
