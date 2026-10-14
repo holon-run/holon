@@ -1,13 +1,15 @@
 import { ConversationProtocolError, ConversationStaleResponseError } from "./errors.js";
-import { ConversationProtocolState } from "./state.js";
+import { ConversationProtocolState, type ConversationStateView } from "./state.js";
 import type {
   ConversationHistoryCursor,
+  ConversationLocateTarget,
   PendingInput,
   ConversationRequestIdentity,
   ConversationStateLimits,
   ConversationStreamBatch,
   ConversationSummaryResponse,
   ConversationTurnSummary,
+  TurnInputSummary,
 } from "./types.js";
 
 /** Internal adapter: server window cursors must never become tail cursors. */
@@ -34,12 +36,34 @@ export class ConversationBrowseWindow {
   #pages: BrowsePage[];
   #joined = false;
   #membershipHead: ConversationTurnSummary | undefined;
+  readonly #targetInput: { turnId: string; input: TurnInputSummary } | null;
 
   constructor(
     identity: ConversationRequestIdentity,
     limits: ConversationStateLimits,
     page: BrowsePage,
+    target?: ConversationLocateTarget,
   ) {
+    const owner = target?.kind === "input"
+      ? page.summary.turns.find((turn) => turn.turn_id === target.turn_id)
+      : undefined;
+    const input = target?.kind === "input"
+      ? owner?.inputs.find((input) => input.message_id === target.message_id)
+      : undefined;
+    this.#targetInput = owner && input ? { turnId: owner.turn_id, input } : null;
+    // Locate adds one exact input beyond the canonical 128-input summary.
+    // Keep that enrichment out of strict same-revision reducer comparisons.
+    if (owner?.inputs_truncated && owner.inputs.length > 128 && input) {
+      page = {
+        ...page,
+        summary: {
+          ...page.summary,
+          turns: page.summary.turns.map((turn) => turn === owner
+            ? { ...turn, inputs: turn.inputs.filter((entry) => entry.message_id !== input.message_id) }
+            : turn),
+        },
+      };
+    }
     this.#identity = identity;
     this.snapshot = page.summary;
     this.#pages = [page];
@@ -51,6 +75,23 @@ export class ConversationBrowseWindow {
       has_more: false,
     });
     this.#membershipHead = [...page.summary.turns].sort(compareTurns).at(-1);
+  }
+
+  /** Exact-source hydration is display data, never canonical revision data. */
+  view(): ConversationStateView {
+    const view = this.state.view();
+    const target = this.#targetInput;
+    if (!target) return view;
+    return {
+      ...view,
+      turns: view.turns.map((turn) => turn.turn_id === target.turnId
+        && turn.inputs_truncated
+        && !turn.inputs.some((input) => input.message_id === target.input.message_id)
+        // Canonical truncated inputs precede the omitted target, including
+        // legacy assignments without activity keys.
+        ? { ...turn, inputs: [...turn.inputs, target.input] }
+        : turn),
+    };
   }
 
   get before(): ConversationHistoryCursor | null { return this.#pages[0]!.before; }

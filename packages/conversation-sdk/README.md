@@ -109,6 +109,12 @@ after the user scrolls, preserve the current reading anchor rather than pinning
 the original target indefinitely. Existing detail/brief methods hydrate the
 selected view without raw-event or transcript fallback.
 
+Locate may enrich a truncated turn's canonical 128-input summary with the exact
+target input. The browse adapter keeps this extra input in display hydration,
+not in the revision reducer. Canonical summary/detail/stream updates retain
+strict same-revision validation; the selected target remains visible while its
+owner is loaded and its canonical inputs are truncated.
+
 The live tail keeps consuming its own stream, but new distant turns are not
 inserted into browsing. Reaching the fixed newest boundary joins live membership
 only with continuous post-locate batch coverage. At most 256 complete batches
