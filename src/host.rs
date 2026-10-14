@@ -15289,6 +15289,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn safe_deletion_removes_nonempty_tmp_without_following_symlinks() {
+        let (home_root, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let child = retained_cleanup_fixture(&host, "cleanup-tmp-scratch");
+        let home = host.agent_data_dir(&child.agent_id);
+        let tmp = home.join("tmp");
+        fs::create_dir_all(tmp.join("nested")).unwrap();
+        fs::write(tmp.join("scratch.txt"), "stale").unwrap();
+        fs::write(tmp.join("nested/output.log"), "stale").unwrap();
+        // A symlink inside tmp must be unlinked, never followed into its target.
+        let victim = home_root.path().join("victim");
+        fs::create_dir_all(&victim).unwrap();
+        fs::write(victim.join("sentinel"), "keep").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&victim, tmp.join("escape")).unwrap();
+        let job = host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap();
+        host.execute_deletion_job(job).await.unwrap();
+        assert!(!home.exists());
+        assert_eq!(fs::read_to_string(victim.join("sentinel")).unwrap(), "keep");
+        assert_eq!(
+            host.agent_identity_record(&child.agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn parent_cleanup_exits_runtime_and_preserves_parent_result() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();

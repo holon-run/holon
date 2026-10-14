@@ -1450,7 +1450,9 @@ fn deletion_retry_delay(job: &AgentDeletionJob) -> Duration {
 /// Deletion fails closed so a tampered home cannot remove files outside the
 /// runtime data directory.
 /// Runtime-owned state/output is disposable; user deliverables require the
-/// destructive deletion policy. Both policies enforce the same path safety boundary.
+/// destructive deletion policy. The documented-disposable `tmp/` scratch
+/// directory is removable like runtime output. Both policies enforce the same
+/// path safety boundary.
 pub(crate) fn ensure_agent_home_deletion_safe(
     data_dir: &Path,
     agents_root: &Path,
@@ -1483,13 +1485,15 @@ pub(crate) fn ensure_agent_home_deletion_safe(
         if runtime_owned {
             continue;
         }
-        let empty_scaffold = matches!(
-            name.to_str(),
-            Some("notes" | "work" | "tmp" | "media" | "apps")
-        ) && kind.is_dir()
+        // `tmp/` is documented disposable scratch space, so any real
+        // directory content may go. Other user directories are protected
+        // deliverable locations unless they are empty scaffolds.
+        let disposable_tmp = name == "tmp" && kind.is_dir();
+        let empty_scaffold = matches!(name.to_str(), Some("notes" | "work" | "media" | "apps"))
+            && kind.is_dir()
             && std::fs::read_dir(entry.path())?.next().is_none();
         anyhow::ensure!(
-            empty_scaffold,
+            disposable_tmp || empty_scaffold,
             "agent_cleanup_blocked: unregistered_home_artifact {}",
             entry.path().display()
         );
@@ -1632,7 +1636,7 @@ mod tests {
     fn home_resource_policy_allows_only_empty_user_directories() {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("child");
-        for name in ["work", "notes", "tmp", "media", "apps"] {
+        for name in ["work", "notes", "media", "apps"] {
             let directory = home.join(name);
             std::fs::create_dir_all(&directory).unwrap();
             for policy in [
@@ -1665,6 +1669,54 @@ mod tests {
                 AgentDeletionPolicy::PreserveProtectedResources,
             )
             .unwrap();
+        }
+    }
+
+    #[test]
+    fn home_resource_policy_treats_tmp_directory_as_disposable_scratch() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("child");
+        let tmp = home.join("tmp");
+        std::fs::create_dir_all(tmp.join("nested")).unwrap();
+        std::fs::write(tmp.join("scratch.txt"), "stale").unwrap();
+        std::fs::write(tmp.join("nested/.hidden"), "stale").unwrap();
+        for policy in [
+            AgentDeletionPolicy::PreserveProtectedResources,
+            AgentDeletionPolicy::DeleteAgentData,
+        ] {
+            ensure_agent_home_deletion_safe(&home, root.path(), policy).unwrap();
+        }
+        // A file named tmp is not disposable scratch space.
+        std::fs::remove_dir_all(&tmp).unwrap();
+        std::fs::write(&tmp, "impostor").unwrap();
+        assert!(ensure_agent_home_deletion_safe(
+            &home,
+            root.path(),
+            AgentDeletionPolicy::PreserveProtectedResources,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("unregistered_home_artifact"));
+        std::fs::remove_file(&tmp).unwrap();
+        #[cfg(unix)]
+        {
+            // A symlink named tmp must not be classified as a disposable
+            // directory, and classification alone must never touch its target.
+            let victim = tempfile::tempdir().unwrap();
+            std::fs::write(victim.path().join("sentinel"), "keep").unwrap();
+            std::os::unix::fs::symlink(victim.path(), &tmp).unwrap();
+            assert!(ensure_agent_home_deletion_safe(
+                &home,
+                root.path(),
+                AgentDeletionPolicy::PreserveProtectedResources,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("unregistered_home_artifact"));
+            assert_eq!(
+                std::fs::read_to_string(victim.path().join("sentinel")).unwrap(),
+                "keep"
+            );
         }
     }
 

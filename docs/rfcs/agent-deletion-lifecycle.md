@@ -272,8 +272,11 @@ Home classification treats identity configuration and runtime state
 The safe policy requires their expected file/directory types, not symlinks.
 Historical terminal command output references do not retain those bytes.
 Registered protected artifacts and user deliverables, including nonempty
-`work/`, `notes/`, `tmp/`, `media/`, `apps/`, or unknown files, still block safe
-cleanup; explicit operator deletion authorizes their removal.
+`work/`, `notes/`, `media/`, `apps/`, or unknown files, still block safe
+cleanup; explicit operator deletion authorizes their removal. A real `tmp/`
+directory is documented disposable scratch space: the safe policy removes it
+like runtime-owned output, while a file or symlink named `tmp` is rejected as
+an unknown artifact.
 
 Home validation applies again at physical removal and when resuming from
 rename-to-trash. An in-progress deletion job owns its trash; the orphan sweep
