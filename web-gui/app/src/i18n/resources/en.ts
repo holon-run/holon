@@ -2,6 +2,22 @@
  * English translation resources.
  */
 const en = {
+  agentAccess: {
+    loading: "Loading agent…",
+    available: "Agent conversation",
+    unauthorized: "Authentication required to open this agent",
+    missing: "Agent not found",
+    deleting: "This agent is being cleaned up",
+    deleted: "This agent has been deleted. Its parent task result is still available.",
+    replaced: "This link belongs to an earlier agent identity",
+    error: "Could not load this agent",
+    stopped: "This agent is stopped. Viewing or sending does not restart it.",
+    subagent: "Subagent conversation",
+    backToParent: "Back to parent agent",
+    parentTask: "Parent task",
+    directInput: "Messages go directly to this subagent as operator input. Accepted means queued, not an immediate response; the parent task is unchanged.",
+    inputPlaceholder: "Message this subagent ({{id}})…",
+  },
   clipboard: {
     copied: "Copied",
     failed: "Could not copy automatically",
@@ -954,6 +970,11 @@ const en = {
     openGithub: "Open Holon on GitHub",
   },
   rightPanel: {
+    recentCompletedTasks: "Recently completed (up to {{count}})",
+    refreshRecentTasks: "Refresh recent tasks",
+    loadingRecentTasks: "Loading recent tasks…",
+    recentTasksError: "Could not load recent tasks: {{error}}",
+    noRecentTasks: "No recently completed tasks",
     runtimeSettings: "Runtime settings",
     manageAgent: "Manage agent",
     backToSource: "Back to source",
@@ -1087,6 +1108,9 @@ const en = {
     largeFileHint: "Large file ({{size}}). Consider downloading it to view locally.",
   },
   inspector: {
+    targetAgent: "Target agent",
+    openAgentConversation: "Open agent conversation",
+    unknownTargetIdentity: "Historical reference; identity not recorded",
     source: "Source",
     fullDetail: "Full detail",
     loading: "Loading…",

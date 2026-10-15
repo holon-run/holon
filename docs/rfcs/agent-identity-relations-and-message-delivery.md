@@ -421,6 +421,42 @@ If a supervision-attached ephemeral child has entered deletion, cleanup, or
 tombstoned state, a direct message is rejected by the same lifecycle fence as
 all other ingress.
 
+### Existing HTTP control adapter
+
+Authenticated `POST /api/control/agents/{id}/prompt` admits operator input to
+active private children as well as public agents. It uses the canonical message
+delivery service, including policy and transactional lifecycle fences, even when
+the client omits `client_request_id`. Keyed retries, attachments, operator origin,
+authority and interject priority keep their existing contract. Stopped agents are
+not implicitly started. This does not grant external ingress or peer access,
+change supervision, or settle the parent's task. Conversation/state/task reads
+remain non-activating.
+
+Clients may supply `expected_incarnation` on control prompts. Canonical queue
+admission compares it with the target identity inside the admission transaction,
+before idempotency replay; a mismatch returns HTTP 409 with
+`code=agent_incarnation_mismatch`. Omitting it preserves legacy behavior.
+
+Task lists, state bootstrap tasks and task detail expose optional `target` with
+`kind` (`child_agent` or `agent_message_wait`), `agent_id`, and `incarnation`.
+The target is persisted when the invocation's identity is established; read
+projections never replace its incarnation with the current identity. Legacy
+references omit incarnation and must be shown as historical/unknown, not silently
+linked to a new incarnation with the same id. A task is a discovery reference to
+an agent conversation, not an exclusive conversation log or a retention pin.
+
+The Web GUI pins a loaded conversation to its resolved incarnation. Controller
+scopes and persistent caches include that incarnation, and decoded conversation
+responses and stream items are checked against the identity before they enter
+the controller. Identity replacement or removal stops automatic retries and
+clears the controller's cached presentation. A task link to an older incarnation
+never silently switches to the replacement's conversation.
+
+`GET /api/agents/{id}/tasks` remains active-only by default. Optional
+`status=terminal` returns the most recently updated terminal tasks for that owner,
+newest first, with a default and hard maximum of 20; `limit=0` returns no records.
+It does not consume results or fetch task output.
+
 ## 5. Agent-Facing Operations And Internal Delivery
 
 ### 5.1 `CreateAgent`

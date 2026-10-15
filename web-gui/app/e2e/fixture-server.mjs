@@ -167,6 +167,7 @@ function listEntry(agentId, session) {
   return {
     identity: {
       agent_id: agentId,
+      incarnation: 1,
       visibility: "public",
       ownership: "self_owned",
       profile_preset: "public_named",
@@ -525,6 +526,24 @@ async function handleApi(req, res, url) {
   }
   if (url.pathname === "/api/agents/snapshot") {
     json(res, rosterSnapshot(session));
+    return true;
+  }
+  const identityMatch = url.pathname.match(/^\/api\/control\/agents\/([^/]+)\/detail$/);
+  if (identityMatch) {
+    const agentId = decodeURIComponent(identityMatch[1]);
+    if (!session.visibleAgentIds.includes(agentId)) {
+      json(res, { error: "agent_not_found" }, 404);
+      return true;
+    }
+    json(res, {
+      identity: { ...listEntry(agentId, session).identity, status: "active", incarnation: 1 },
+      display_name: agentId,
+      canonical_relations: {},
+    });
+    return true;
+  }
+  if (/^\/api\/agents\/[^/]+\/tasks$/.test(url.pathname)) {
+    json(res, []);
     return true;
   }
   const stateMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/state$/);

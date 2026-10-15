@@ -175,6 +175,11 @@ test("reading a maximized file keeps the live turn updating and returns to its t
   const session = sessionFor(info, "panel");
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   const panel = page.locator(".side-panel");
+  // Identity loading can leave a gap between the initial summary and SSE subscription.
+  await expect.poll(async () => {
+    const { requests } = await request.get(control("/__e2e__/requests")).then((response) => response.json());
+    return requests.includes("GET /api/agents/bootstrap-agent/conversation/stream");
+  }).toBe(true);
   const turn = { turn_id: "live-panel", key: { turn_id: "live-panel", turn_index: 1 }, revision: 1,
     presentation_class: "operator", inputs: [{ message_id: "input-panel", preview: "Check files" }],
     execution: { kind: "active" }, result: { kind: "pending" }, settled: false,
@@ -230,8 +235,13 @@ test("work item details prioritize results and keep technical fields and plan na
   } } });
   await page.reload();
   const panel = page.locator(".side-panel");
-  await expect(page.locator(".app-shell")).toBeVisible();
-  if (!await panel.isVisible()) await page.getByRole("button", { name: "Context side panel", exact: true }).click();
+  const shell = page.locator(".app-shell");
+  await expect(shell).toBeVisible();
+  // An open panel is temporarily unmounted while the route identity is loading.
+  if (await shell.getAttribute("data-panel") === "closed") {
+    await page.getByRole("button", { name: "Context side panel", exact: true }).click();
+  }
+  await expect(panel).toBeVisible();
   await panel.locator(".work-item-button").filter({ hasText: work.objective }).click();
   const detail = panel.locator(".work-item-detail");
   await expect(detail.locator(".detail-title")).toHaveText(work.objective);

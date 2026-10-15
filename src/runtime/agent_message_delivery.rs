@@ -167,6 +167,7 @@ impl AgentMessageDeliveryService<'_> {
         let record = AgentMessageDeliveryRecord {
             delivery_id,
             target_agent_id: request.target_agent_id,
+            expected_incarnation: None,
             message_id: Some(message.id.clone()),
             activation_id: None,
             turn_id: None,

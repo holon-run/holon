@@ -201,7 +201,14 @@ export interface WorkWaitSummary {
   task_ids: string[];
 }
 
+export interface TaskTargetRef {
+  kind: "child_agent" | "agent_message_wait";
+  agent_id: string;
+  incarnation?: number | null;
+}
+
 export interface TaskSummary {
+  target?: TaskTargetRef | null;
   workItemId?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -310,6 +317,7 @@ export interface TaskFailureArtifact {
 
 export interface TaskStatusSnapshot {
   task_id: string;
+  target?: TaskTargetRef | null;
   kind: string;
   status: string;
   summary?: string | null;
@@ -344,6 +352,8 @@ export interface AgentSummary {
   badgeHue?: number;
   profile: string;
   lifecycle: string;
+  acceptsInput?: boolean;
+  inputDisabledReason?: string;
   focusSummary: string;
   workspace: string;
   attention: string;

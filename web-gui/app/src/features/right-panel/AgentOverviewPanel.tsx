@@ -8,6 +8,8 @@ import { StatusBadge } from "../../components/ui/StatusChip";
 import { agentRenameErrorKey, isAgentRenameable, validateAgentDisplayName } from "./agent-rename";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { ToolExecutionContent } from "./ToolExecutionRenderers";
+import { AgentTasksPanel } from "./AgentTasksPanel";
+import { useRuntimeStore } from "../../runtime/runtime-store";
 import type { AgentSummary, AgentControlAction, AgentDeletionStatus, SkillCatalogEntry, SkillCatalogState, TaskSummary, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
@@ -111,6 +113,7 @@ export function AgentOverviewPanel({
   onRenameAgent,
 }: AgentOverviewPanelProps) {
   const { t } = useTranslation();
+  const queryAgentRecentTasks = useRuntimeStore((state) => state.queryAgentRecentTasks);
   const workspace = agent.workspaceSummary;
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
@@ -134,7 +137,6 @@ export function AgentOverviewPanel({
   const workspaceRoot = workspace?.cwd ?? workspace?.executionRoot ?? workspace?.worktree?.path ?? workspace?.anchor;
   const modeLabel = workspace?.worktree ? t("rightPanel.managedWorktree") : workspace?.projectionKind;
   const showCwd = Boolean(workspace?.cwd && workspace.cwd !== workspace.executionRoot);
-  const hasActiveTasks = agent.activeTaskCount > 0 || Boolean(agent.tasks?.length);
   const selectWorkItem = (workItem: WorkItemSummary) => {
     onOpenWorkItemDetail(workItem);
     onLoadWorkItemDetail(workItem.id);
@@ -537,28 +539,13 @@ export function AgentOverviewPanel({
         </div>
       </CollapsibleInspectorCard>
 
-      {hasActiveTasks ? (
-        <CollapsibleInspectorCard
-          title={t("rightPanel.tasks")}
-          summary={t("rightPanel.activeCount", { count: agent.activeTaskCount })}
-        >
-          {agent.tasks?.length ? (
-            <ul className="inspector-list">
-              {agent.tasks.map((task) => (
-                <li key={task.id}>
-                  <button type="button" className="inspector-list-item task-button" onClick={() => onOpenTask(task)}>
-                    <div className="inspector-list-head">
-                    <strong>{task.summary}</strong>
-                    <StatusBadge className="state-chip" kind="task" value={task.status} />
-                    </div>
-                    <small>{compactMeta([task.kind, task.command, task.workdir])}</small>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </CollapsibleInspectorCard>
-      ) : null}
+      <AgentTasksPanel
+        agentId={agent.id}
+        tasks={agent.tasks ?? []}
+        activeTaskCount={agent.activeTaskCount}
+        onOpenTask={onOpenTask}
+        loadRecentTasks={queryAgentRecentTasks}
+      />
 
       {workItems.length ? (
         <CollapsibleInspectorCard

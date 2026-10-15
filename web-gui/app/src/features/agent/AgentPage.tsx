@@ -22,6 +22,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { ComposerOptionPicker } from "./ComposerOptionPicker";
 import { CurrentWorkBar } from "./CurrentWorkBar";
+import { pathForRoute } from "../../app/routes";
 import { ConversationSyncStatus, ConversationTimeline, type ConversationTimelineActions } from "./ConversationTimeline";
 import type { ConversationSessionModel } from "../../runtime/conversation-view-model";
 import { useTranslation } from "react-i18next";
@@ -58,6 +59,10 @@ export interface ConversationTimelineBundle extends ConversationTimelineActions 
 
 interface AgentPageProps {
   agent: AgentSummary;
+  directSubagent?: boolean;
+  parentAgentId?: string;
+  parentTaskId?: string;
+  inputDisabledReason?: string;
   /** Canonical conversation read-model projection; replaces the raw timeline. */
   conversation?: ConversationTimelineBundle;
   detail: AgentDetail | null;
@@ -162,6 +167,10 @@ export function resizeComposerTextarea(textarea: HTMLTextAreaElement): void {
 
 export function AgentPage({
   agent,
+  directSubagent = false,
+  parentAgentId,
+  parentTaskId,
+  inputDisabledReason,
   conversation,
   detail,
   sendingPrompt,
@@ -274,7 +283,7 @@ export function AgentPage({
     sendingPrompt,
   });
   const canStopCurrentRun = composerAction === "stop-run" && Boolean(activeAgent.currentRunId) && !abortingRun;
-  const canSendPrompt = composerHasDraft && !sendingPrompt;
+  const canSendPrompt = composerHasDraft && !sendingPrompt && !inputDisabledReason;
   const selectedModelRoute = activeAgent.modelSelection ?? activeAgent.model;
   const selectedModelOption = modelCatalog.options.find((option) => option.routeRef === selectedModelRoute);
   const supportsFast = selectedModelOption?.serviceTierOptions?.includes("fast") ?? false;
@@ -731,6 +740,13 @@ export function AgentPage({
     <section className="page agent-page" aria-label={t("agent.conversationAria")}>
       <div className="agent-workbench">
         <section className="conversation-pane">
+          {parentAgentId ? (
+            <div className="conversation-sync-status" role="note">
+              <strong>{t("agentAccess.subagent")}</strong>{" · "}
+              <a href={pathForRoute("agent", parentAgentId)}>{t("agentAccess.backToParent")}</a>
+              {parentTaskId ? <span> · {t("agentAccess.parentTask")}: <code>{parentTaskId}</code></span> : null}
+            </div>
+          ) : null}
           {conversation ? <ConversationSyncStatus model={conversation.model} onRetry={conversation.onRetry} /> : <div className="conversation-sync-status" />}
           <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll} onClickCapture={handleDisclosureClick}>
             <div className="message-list-content" ref={messageContentRef}>
@@ -833,6 +849,8 @@ export function AgentPage({
 
           <CurrentWorkBar key={activeAgent.id} agent={activeAgent}
             conversation={conversation?.model} onOpenWorkItem={onOpenWorkItem} onOpenTask={onOpenTask} />
+          {directSubagent ? <div className="composer-status" role="note">{t("agentAccess.directInput")}</div> : null}
+          {inputDisabledReason ? <div className="composer-status" role="status">{inputDisabledReason}</div> : null}
           <form
             className={composerDragActive ? "composer composer--drag" : "composer"}
             aria-label={t("agent.sendInputAria", { id: activeAgent.id })}
@@ -850,9 +868,9 @@ export function AgentPage({
             <textarea
               ref={composerTextareaRef}
               rows={1}
-              placeholder={t("agent.sendInputPlaceholder", { id: activeAgent.id })}
+              placeholder={t(directSubagent ? "agentAccess.inputPlaceholder" : "agent.sendInputPlaceholder", { id: activeAgent.id })}
               value={prompt}
-              disabled={sendingPrompt}
+              disabled={sendingPrompt || Boolean(inputDisabledReason)}
               onChange={(event) => handlePromptChange(event.target.value)}
               onKeyDown={handleComposerKeyDown}
             />
@@ -861,7 +879,7 @@ export function AgentPage({
               className="composer-file-input"
               type="file"
               multiple
-              disabled={sendingPrompt}
+              disabled={sendingPrompt || Boolean(inputDisabledReason)}
               onChange={(event) => void handleAttachmentFiles(event.target.files)}
             />
             {attachments.length > 0 ? (

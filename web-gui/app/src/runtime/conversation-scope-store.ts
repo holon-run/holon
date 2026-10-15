@@ -10,6 +10,8 @@ import {
 
 import { createConversationBriefCache } from "./conversation-brief-cache";
 import { createConversationSnapshotCache } from "./conversation-snapshot-cache";
+import { createRuntimeClient } from "./client";
+import { pinConversationClient } from "./incarnation-conversation-client";
 
 /**
  * Runtime connection inputs needed to build a conversation client. Mirrors
@@ -24,8 +26,12 @@ export interface ConversationConnectionOptions {
 
 export type ConversationScopeKey = string;
 
-export function conversationCacheKey(remoteKey: string, user: { authMethod: string; userId: string } | undefined): string | undefined {
-  return user ? `${remoteKey}#${JSON.stringify([user.authMethod, user.userId])}` : undefined;
+function withIncarnation(key: string, incarnation: number | undefined): string {
+  return incarnation === undefined ? key : `${key}#incarnation:${incarnation}`;
+}
+
+export function conversationCacheKey(remoteKey: string, user: { authMethod: string; userId: string } | undefined, incarnation?: number): string | undefined {
+  return user ? withIncarnation(`${remoteKey}#${JSON.stringify([user.authMethod, user.userId])}`, incarnation) : undefined;
 }
 
 /** One identity-aware key for page ownership, read-marker gates and diagnostics. */
@@ -33,8 +39,9 @@ export function resolveConversationScopeKey(
   remoteKey: string,
   agentId: string,
   user: { authMethod: string; userId: string } | undefined,
+  incarnation?: number,
 ): ConversationScopeKey {
-  return conversationScopeKey(conversationCacheKey(remoteKey, user) ?? `${remoteKey}#memory`, agentId);
+  return conversationScopeKey(conversationCacheKey(remoteKey, user) ?? `${remoteKey}#memory`, agentId, incarnation);
 }
 
 export interface ConversationScopeHandle {
@@ -99,8 +106,9 @@ export function subscribeConversationScope(
 export function conversationScopeKey(
   connectionKey: string,
   agentId: string,
+  incarnation?: number,
 ): ConversationScopeKey {
-  return `${connectionKey}::${agentId}`;
+  return withIncarnation(`${connectionKey}::${agentId}`, incarnation);
 }
 
 interface RegistryEntry {
@@ -137,6 +145,7 @@ export interface AcquireConversationScopeOptions
   extends ConversationConnectionOptions {
   readonly key: ConversationScopeKey;
   readonly agentId: string;
+  readonly incarnation?: number;
   readonly remoteId?: string;
   /** Verified identity-scoped storage key; absent means memory-only. */
   readonly cacheKey?: string;
@@ -168,6 +177,8 @@ export function acquireConversationScope(
     return { key: options.key, controller: existing.controller };
   }
   const factory = options.clientFactory ?? defaultClientFactory;
+  const client = factory(options);
+  const identityClient = options.incarnation === undefined ? undefined : createRuntimeClient(options);
   const controller = new ConversationController({
     ...(options.controllerOptions ?? {}),
     // Default-inject the persistent brief/snapshot caches unless the caller
@@ -190,7 +201,11 @@ export function acquireConversationScope(
           ),
         }
       : {}),
-    client: factory(options),
+    client: identityClient === undefined || options.incarnation === undefined ? client : pinConversationClient(client, {
+      agentId: options.agentId,
+      incarnation: options.incarnation,
+      getAgentIdentity: (agentId) => identityClient.getAgentIdentity(agentId),
+    }),
     agentId: options.agentId,
     ...(options.remoteId === undefined ? {} : { remoteId: options.remoteId }),
   });

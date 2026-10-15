@@ -183,6 +183,26 @@ pub(crate) fn prepare_delivery_admission_tx(
     tx: &Transaction<'_>,
     candidate: &AgentMessageDeliveryRecord,
 ) -> Result<AgentMessageDeliveryAdmissionDecision> {
+    // Check before idempotency replay, in the same transaction as queue admission.
+    if let Some(expected_incarnation) = candidate.expected_incarnation {
+        let identity = tx
+            .query_row(
+                "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                [&candidate.target_agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| serde_json::from_str::<AgentIdentityRecord>(&payload))
+            .transpose()?;
+        let actual_incarnation = identity.map(|identity| identity.incarnation);
+        if actual_incarnation != Some(expected_incarnation) {
+            return Err(AgentMessageDeliveryError::StaleIncarnation {
+                expected_incarnation,
+                actual_incarnation,
+            }
+            .into());
+        }
+    }
     let existing = delivery_by_idempotency_scope_tx(
         tx,
         &candidate.idempotency_scope,
@@ -858,6 +878,39 @@ mod tests {
             },
             &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn delivery_incarnation_fence_rechecks_identity_before_queue_and_replay() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let mut identity = db.agent_identities().latest("target-agent")?.unwrap();
+        let mut prepared = prepare("incarnation-key", "hello")?;
+        prepared.record.expected_incarnation = Some(identity.incarnation);
+        db.transitions()
+            .commit_delivery_admission(&admission_command(&prepared), &prepared.record)?;
+
+        // Simulate replacement after preparation, including an accepted keyed retry.
+        identity.incarnation += 1;
+        identity.revision += 1;
+        db.agent_identities().upsert(&identity)?;
+        for key in ["incarnation-key", "new-incarnation-key"] {
+            let mut candidate = prepare(key, "hello")?;
+            candidate.record.expected_incarnation = prepared.record.expected_incarnation;
+            let error = db
+                .transitions()
+                .commit_delivery_admission(&admission_command(&candidate), &candidate.record)
+                .unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<AgentMessageDeliveryError>(),
+                Some(AgentMessageDeliveryError::StaleIncarnation { .. })
+            ));
+            assert!(db
+                .agent_message_deliveries()
+                .latest_for_message(&candidate.message.id)?
+                .is_none());
+        }
         Ok(())
     }
 

@@ -1065,6 +1065,38 @@ describe("createRuntimeClient", () => {
     }
   });
 
+  it("passes the verified incarnation to the authenticated operator prompt", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(Response.json({ message_id: "message-child" }));
+    const client = createRuntimeClient({ mode: "local", token: "operator-token", fetchImpl });
+    await client.sendOperatorPrompt("private/child", "operator input", [], 7);
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe("/api/control/agents/private%2Fchild/prompt");
+    expect(init.headers.Authorization).toBe("Bearer operator-token");
+    expect(JSON.parse(init.body)).toMatchObject({ text: "operator input", expected_incarnation: 7 });
+  });
+
+  it("projects bounded terminal task targets without fetching individual task output", async () => {
+    const target = { kind: "child_agent", agent_id: "child", incarnation: 3 };
+    const fetchImpl = vi.fn().mockResolvedValue(Response.json([{
+      id: "task-1", kind: "agent_task", status: "completed", summary: "done",
+      created_at: "2026-10-15T00:00:00Z", updated_at: "2026-10-15T00:01:00Z", target,
+    }]));
+    const client = createRuntimeClient({ mode: "local", fetchImpl });
+    const tasks = await client.getAgentRecentTasks("parent/one");
+    expect(tasks[0].target).toEqual(target);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0][0]).toBe("/api/agents/parent%2Fone/tasks?status=terminal&limit=20");
+  });
+
+  it("preserves stopped agent input admission independently of roster membership", async () => {
+    const state = agentStateFixture("private-child");
+    state.agent.lifecycle = { accepts_external_messages: false, operator_hint: "start before sending" };
+    const fetchImpl = vi.fn().mockResolvedValue(Response.json(state));
+    const agent = await createRuntimeClient({ mode: "local", fetchImpl }).getAgentState("private-child");
+    expect(agent.acceptsInput).toBe(false);
+    expect(agent.inputDisabledReason).toBe("start before sending");
+  });
+
   it("sends generic file attachments in operator prompts", async () => {
     let requestBody: unknown;
     const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit) => {

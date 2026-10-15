@@ -135,6 +135,9 @@ pub(crate) struct CallbackResponse {
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone, PartialEq, Eq)]
 pub struct ControlPromptRequest {
     pub text: String,
+    /// Reject stale conversation pages after an agent ID is recreated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_incarnation: Option<u64>,
     #[serde(default)]
     pub work_item_id: Option<String>,
     #[serde(default)]

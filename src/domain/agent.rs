@@ -314,6 +314,8 @@ pub struct AgentMessageDeliveryRecord {
     pub delivery_id: String,
     pub target_agent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_incarnation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation_id: Option<String>,
@@ -391,6 +393,11 @@ impl AgentMessageDeliveryRecord {
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum AgentMessageDeliveryError {
+    #[error("target agent incarnation no longer matches the expected identity")]
+    StaleIncarnation {
+        expected_incarnation: u64,
+        actual_incarnation: Option<u64>,
+    },
     #[error("agent message idempotency key was reused with different request semantics")]
     IdempotencyConflict {
         idempotency_scope: String,

@@ -12,6 +12,7 @@ import type {
   WorkItemSummary,
 } from "../../runtime/types";
 import { normalizeTaskDetailContent } from "./TaskDetailRenderers";
+import { TaskConversationLink } from "./TaskConversationLink";
 
 const ACTIVE_REFRESH_MS = 4000;
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
@@ -92,6 +93,7 @@ export function TaskDetailPanel({ task, detailState, agentId, onOpenWorkItem }: 
         onRefresh={handleRefresh}
         t={t}
       />
+      <TaskConversationLink task={task} target={task.target ?? status?.target} />
       {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
       {failureArtifact ? <TaskFailureSection failure={failureArtifact} t={t} /> : null}
       <TaskOverviewSection status={status} task={task} onOpenWorkItem={onOpenWorkItem} t={t} />
