@@ -6,6 +6,14 @@ status: draft
 
 # RFC: Interactive Command Continuation
 
+> Historical naming note (#3534 M2): `TaskOutput` mentions below record the
+> original candidate design, not an available model tool. Current observation
+> uses `TaskStatus`, bounded reads of runtime-confirmed command files, and bounded
+> `holon tail --agent` progress reads. Completion uses
+> `WaitFor(wake=task_result, resource=<task_id>, delivery=...)` and re-entry.
+> The former model/CLI output short wait is removed; tail is not its replacement.
+> See [Agent output observation](agent-output-observation.md).
+
 ## Summary
 
 This RFC proposes how Holon should support interactive terminal commands

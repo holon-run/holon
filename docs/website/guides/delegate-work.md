@@ -122,10 +122,12 @@ A typical parent-child interaction:
 
 1. **Invoke** — Parent calls `InvokeAgent` with `initial_message` describing the
    task
-2. **Monitor** — Parent uses `TaskStatus` to check if the child is still
-   working, sleeping, or waiting
-3. **Review** — Parent reads `TaskOutput` to get bounded previews or wait for
-   completion
+2. **Monitor** — Parent uses `TaskStatus` for task lifecycle and bounded
+   `holon tail --agent <child_id> --include-progress` for agent progress.
+3. **Review** — When completion is the only remaining dependency, use
+   `WaitFor(wake=task_result, resource=<task_id>, delivery=...)` and review the
+   result on re-entry. For an existing-agent invocation, review the original
+   delivered message referenced by that result.
 4. **Deliver** — Parent aggregates child results into the final user-facing
    answer
 5. **Clean up** — Once child work is incorporated, the parent owns cleanup.
@@ -138,6 +140,12 @@ The parent remains responsible for:
 - **Verification** — Child output is evidence, not authority
 - **Aggregation** — Combining results from multiple children
 - **Final delivery** — The parent produces the user-facing answer
+
+Tail is agent-scoped, not task-exclusive; it neither consumes results nor wakes
+the producer. EOF or an idle agent does not mean the task completed. For command
+logs, read only runtime-confirmed files in bounded ranges. The former
+`TaskOutput` / `holon task output` current-turn short wait is removed; see
+[Tasks](../spec/tasks.md#output-observation-is-not-completion).
 
 ### Subagent Lifecycle and Cleanup
 

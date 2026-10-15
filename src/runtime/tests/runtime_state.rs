@@ -1864,7 +1864,7 @@ async fn provider_recovery_source_validation_rejects_invalid_partitions_owners_t
     cycle.metadata.as_mut().unwrap()["provider_recovery"]["source_message_id"] =
         serde_json::json!(cycle.id);
     runtime.storage().append_message(&cycle).unwrap();
-    let mut cycle_turn = valid.source_turn.clone();
+    let mut cycle_turn = valid.source_turn().clone();
     cycle_turn.turn_id = "cycle-turn".into();
     cycle_turn.turn_index = 2;
     cycle_turn.input_message_ids = vec![cycle.id.clone()];
@@ -3972,6 +3972,7 @@ async fn enqueue_lifecycle_delivery(
             causation_id: None,
             requested_priority: None,
             forward: false,
+            reply_context_id: None,
         },
         crate::types::AgentMessageCallerContext {
             caller_principal: "runtime:agent-invocation".into(),
@@ -3988,6 +3989,7 @@ async fn enqueue_lifecycle_delivery(
             current_task_id: None,
             current_work_item_id: None,
             inherited_routing_context: None,
+            routing_activation_id: None,
         },
     )
     .unwrap();
@@ -7286,8 +7288,7 @@ async fn task_result_wait_preserves_business_blocker(
             .await
             .unwrap();
         assert!(matches!(
-            scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-                .poll()
+            Box::pin(scheduler_executor::SchedulerDecisionExecutor::new(&runtime).poll())
                 .await
                 .unwrap(),
             scheduler_executor::RunLoopPoll::Message(_)
@@ -7346,8 +7347,7 @@ async fn task_result_wait_preserves_business_blocker(
         .await
         .unwrap();
     assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
+        Box::pin(scheduler_executor::SchedulerDecisionExecutor::new(&runtime).poll())
             .await
             .unwrap(),
         scheduler_executor::RunLoopPoll::Message(_)
@@ -7464,8 +7464,7 @@ async fn task_result_wait_preserves_business_blocker(
     ));
 
     // The explicit wait resumes exactly once without releasing the business blocker.
-    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-        .poll()
+    let poll = Box::pin(scheduler_executor::SchedulerDecisionExecutor::new(&runtime).poll())
         .await
         .unwrap();
     let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
@@ -7613,8 +7612,7 @@ async fn task_result_wait_preserves_business_blocker(
         .commit_terminal_task_result(&unmatched_task, "task_completed", &unmatched_result)
         .await
         .unwrap();
-    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-        .poll()
+    let poll = Box::pin(scheduler_executor::SchedulerDecisionExecutor::new(&runtime).poll())
         .await
         .unwrap();
     if let scheduler_executor::RunLoopPoll::Message(scheduled) = poll {
@@ -8768,6 +8766,27 @@ async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
         panic!("valid message behind stale task result should be claimed");
     };
     assert_eq!(scheduled.message.id, valid.id);
+    let pending = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&stale.id)
+        .unwrap()
+        .expect("sibling result remains pending until prompt budget admission");
+    assert_eq!(
+        pending.state,
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
+    );
+    assert_eq!(pending.activation_id, None);
+    let claimed_message = scheduled.message.clone();
+    let terminal = runtime
+        .process_message_with_plan_deferred(
+            scheduled.message,
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
+        )
+        .await
+        .unwrap();
     let admitted = runtime
         .inner
         .runtime_db
@@ -8784,15 +8803,6 @@ async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
         admitted.activation_id.as_deref(),
         Some(activation_id.as_str())
     );
-    let claimed_message = scheduled.message.clone();
-    let terminal = runtime
-        .process_message_with_plan_deferred(
-            scheduled.message,
-            scheduled.dispatch_plan,
-            &scheduled.scheduler_decision,
-        )
-        .await
-        .unwrap();
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -8844,7 +8854,7 @@ async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
 #[tokio::test]
 async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_activation() {
     let mut harness = LifecycleHarness::new();
-    let (work_item_id, pending_message_id, first_message_id, first_activation_id) = {
+    let (work_item_id, pending_message_id, first_activation_id, original_admission) = {
         let runtime = harness.runtime();
         let work_item = runtime
             .create_work_item(
@@ -8861,7 +8871,13 @@ async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_
             AdmissionContext::RuntimeOwned,
         );
         task_result.work_item_id = Some(work_item.id.clone());
-        task_result.turn_id = Some("turn-interrupted-admission".into());
+        task_result.metadata = Some(serde_json::json!({
+            "task_id": "task-interrupted-admission",
+            "task_kind": "command_task",
+            "task_status": "completed",
+            "task_result_id": task_result.id,
+            "work_item_id": work_item.id,
+        }));
         append_completed_rejoin_task_for_message(
             runtime,
             "task-interrupted-admission",
@@ -8869,33 +8885,16 @@ async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_
             "turn-interrupted-admission-parent",
             &task_result.id,
         );
-        let task = runtime
+        let mut task = runtime
             .task_record("task-interrupted-admission")
             .await
             .unwrap()
             .unwrap();
+        task.detail.as_mut().unwrap()["terminal_reentry"] = serde_json::json!(true);
         runtime
-            .inner
-            .runtime_db
-            .task_result_settlements()
-            .ensure_pending(&task, &task_result, runtime.now())
-            .unwrap()
-            .expect("pending task result settlement");
-
-        let mut first = MessageEnvelope::new(
-            "default",
-            MessageKind::SystemTick,
-            MessageOrigin::System {
-                subsystem: "work_queue".into(),
-            },
-            AuthorityClass::RuntimeInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "first activation admits the task result".into(),
-            },
-        );
-        bind_autonomous_work_queue_tick(&mut first, &work_item, "continue_active");
-        let first = runtime.enqueue(first).await.unwrap();
+            .commit_terminal_task_result(&task, "task_completed", &task_result)
+            .await
+            .unwrap();
         let poll = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
             .poll()
             .await
@@ -8903,13 +8902,27 @@ async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_
         let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
             panic!("first scheduler activation should be claimed");
         };
-        assert_eq!(scheduled.message.id, first.id);
-        let first_activation_id = scheduler_executor::canonical_activation_id(&first.id);
-        let admitted = runtime
-            .inner
-            .runtime_db
-            .task_result_settlements()
-            .latest_for_message(&task_result.id)
+        assert_eq!(scheduled.message.id, task_result.id);
+        assert!(scheduled.scheduler_decision.model_reentry);
+        let first_activation_id = scheduler_executor::canonical_activation_id(&task_result.id);
+        let repository = runtime.inner.runtime_db.task_result_settlements();
+        assert_eq!(
+            repository
+                .latest_for_message(&task_result.id)
+                .unwrap()
+                .unwrap()
+                .state,
+            crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
+        );
+        // Crash at the source reducer's admission boundary, not at the
+        // scheduler claim: claiming alone no longer admits owner results.
+        let admitted = repository
+            .admit_message(
+                "default",
+                &task_result.id,
+                &first_activation_id,
+                runtime.now(),
+            )
             .unwrap()
             .expect("admitted task result settlement");
         assert_eq!(
@@ -8922,7 +8935,7 @@ async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_
         );
         finish_claimed_test_run(runtime).await;
 
-        (work_item.id, task_result.id, first.id, first_activation_id)
+        (work_item.id, task_result.id, first_activation_id, admitted)
     };
 
     harness.restart();
@@ -8950,23 +8963,37 @@ async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_
     let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
         panic!("next scheduler activation should be claimed");
     };
-    assert_eq!(scheduled.message.id, first_message_id);
+    assert_eq!(scheduled.message.id, pending_message_id);
+    assert!(scheduled.scheduler_decision.model_reentry);
+    let Some(ExecutionAdmissionProvenance::Canonical {
+        activation_id: second_activation_id,
+        ..
+    }) = scheduled
+        .dispatch_plan
+        .execution_admission_provenance
+        .as_ref()
+    else {
+        panic!("recovery must have a canonical activation");
+    };
     let rebound = runtime
         .inner
         .runtime_db
         .task_result_settlements()
-        .latest_for_message(&pending_message_id)
+        .admit_message(
+            "default",
+            &pending_message_id,
+            second_activation_id,
+            runtime.now(),
+        )
         .unwrap()
         .expect("rebound task result settlement");
     assert_eq!(
         rebound.state,
         crate::runtime_db::task_result_settlement::TaskResultSettlementState::CallerAdmitted
     );
-    let second_activation_id = rebound
-        .activation_id
-        .as_deref()
-        .expect("rebound settlement should identify the recovery activation");
-    assert_ne!(second_activation_id, first_activation_id);
+    assert_ne!(second_activation_id, &first_activation_id);
+    assert_eq!(rebound.result_identity, original_admission.result_identity);
+    assert_eq!(rebound.admitted_at, original_admission.admitted_at);
     let reclaimed = runtime
         .inner
         .runtime_db
@@ -8980,9 +9007,15 @@ async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_
     );
     assert_eq!(
         reclaimed.attempts[second_activation_id]
+            .recovery_of_attempt_id
+            .as_deref(),
+        Some(first_activation_id.as_str())
+    );
+    assert_eq!(
+        reclaimed.attempts[second_activation_id]
             .source_message_id
             .as_deref(),
-        Some(first_message_id.as_str())
+        Some(pending_message_id.as_str())
     );
     assert!(matches!(
         &reclaimed.work_items[&work_item_id].state,
@@ -8991,8 +9024,53 @@ async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_
             ..
         } if attempt_id == second_activation_id
     ));
-    assert_eq!(rebound.activation_id.as_deref(), Some(second_activation_id));
-    finish_claimed_test_run(runtime).await;
+    assert_eq!(
+        rebound.activation_id.as_deref(),
+        Some(second_activation_id.as_str())
+    );
+    let terminal = Box::pin(runtime.process_message_with_plan_deferred(
+        scheduled.message.clone(),
+        scheduled.dispatch_plan,
+        &scheduled.scheduler_decision,
+    ))
+    .await
+    .unwrap();
+    assert!(runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: scheduled.message.id,
+                agent_id: scheduled.message.agent_id,
+                priority: scheduled.message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: scheduled.message.created_at,
+                updated_at: runtime.now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap());
+    let repository = runtime.inner.runtime_db.task_result_settlements();
+    let settled = repository
+        .latest_for_message(&pending_message_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        settled.state,
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+    );
+    assert_eq!(
+        settled.disposition,
+        Some(crate::runtime_db::TaskResultSettlementDisposition::ModelDelivered)
+    );
+    assert_eq!(settled.result_identity, original_admission.result_identity);
+    assert_eq!(settled.admitted_at, original_admission.admitted_at);
+    assert!(repository
+        .unsettled_for_owner("default", Some(&work_item_id), 8)
+        .unwrap()
+        .is_empty());
+    assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
 }
 
 #[tokio::test]

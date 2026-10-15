@@ -23,6 +23,8 @@ pub(crate) struct SendAgentMessageArgs {
     pub message: String,
     #[serde(default)]
     pub forward: bool,
+    #[serde(default)]
+    pub reply_context_id: Option<String>,
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -55,6 +57,10 @@ pub(crate) async fn execute(
         ));
     }
     let message = validate_non_empty(args.message, NAME, "message")?;
+    let reply_context_id = args
+        .reply_context_id
+        .map(|id| validate_non_empty(id, NAME, "reply_context_id"))
+        .transpose()?;
     let receipt = runtime
         .agent_messaging_service()
         .send(
@@ -66,6 +72,7 @@ pub(crate) async fn execute(
                 causation_id: None,
                 requested_priority: Some(Priority::Normal),
                 forward: args.forward,
+                reply_context_id,
             },
             authority_class.clone(),
         )
@@ -94,4 +101,34 @@ fn map_send_error(error: anyhow::Error) -> anyhow::Error {
         );
     }
     error
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reply_context_selector_is_optional_without_exposing_routing_identities() {
+        let input = serde_json::json!({"agent_id": "peer", "message": "answer"});
+        let args: SendAgentMessageArgs = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(args.reply_context_id, None);
+        let mut selected = input.clone();
+        selected["reply_context_id"] = serde_json::json!("admitted-message");
+        let args: SendAgentMessageArgs = serde_json::from_value(selected).unwrap();
+        assert_eq!(args.reply_context_id.as_deref(), Some("admitted-message"));
+        for forbidden in [
+            "sender_agent_id",
+            "correlation_id",
+            "authority_class",
+            "routing_activation_id",
+        ] {
+            let mut spoofed = input.clone();
+            spoofed[forbidden] = serde_json::json!("forged");
+            assert!(serde_json::from_value::<SendAgentMessageArgs>(spoofed).is_err());
+        }
+        let spec = definition().unwrap().spec;
+        assert!(spec.input_schema["properties"]
+            .get("reply_context_id")
+            .is_some());
+    }
 }

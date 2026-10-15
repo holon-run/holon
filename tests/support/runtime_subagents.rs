@@ -55,6 +55,7 @@ use crate::support::runtime_providers::{
     VerboseRuntimeFailureProvider, WakeHintProvider, WorktreeCapturingProvider,
     WorktreeLifecycleProvider,
 };
+use crate::support::runtime_tasks::TaskResultReentryProvider;
 use crate::support::{
     attach_default_workspace, eventually, eventually_async, eventually_for, TestConfigBuilder,
 };
@@ -62,10 +63,10 @@ use crate::support::{
 // ============================================================================
 // Runtime subagents domain test support
 pub async fn task_output_returns_subagent_result_text() -> Result<()> {
-    let host = RuntimeHost::new_with_provider(
-        test_config(),
-        Arc::new(StubProvider::new("subagent final result")),
-    )?;
+    let provider = Arc::new(TaskResultReentryProvider::new(Arc::new(StubProvider::new(
+        "subagent final result",
+    ))));
+    let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
     let registry = ToolRegistry::new(runtime.workspace_root());
 
@@ -78,6 +79,9 @@ pub async fn task_output_returns_subagent_result_text() -> Result<()> {
         )
         .await?;
 
+    provider
+        .observe_result(&runtime, &task.id, "subagent final result")
+        .await?;
     let (result, _) = registry
         .execute(
             &runtime,
@@ -85,16 +89,16 @@ pub async fn task_output_returns_subagent_result_text() -> Result<()> {
             &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-subagent".into(),
-                name: "TaskOutput".into(),
+                name: "TaskStatus".into(),
                 input: json!({ "task_id": task.id }),
             },
         )
         .await?;
     let value: serde_json::Value = parse_tool_result_payload(&result)?;
-    assert_eq!(value["retrieval_status"], "success");
+    assert_eq!(value["task"]["task_id"], task.id);
     assert_eq!(value["task"]["kind"], "child_agent_task");
     assert_eq!(value["task"]["status"], "completed");
-    assert_eq!(value["task"]["output_truncated"], false);
+    assert!(value["task"].get("output_preview").is_none());
     assert!(value["task"]
         .get("exit_status")
         .is_none_or(serde_json::Value::is_null));
@@ -104,10 +108,6 @@ pub async fn task_output_returns_subagent_result_text() -> Result<()> {
         .get("artifacts")
         .and_then(|value| value.as_array())
         .is_none_or(|artifacts| artifacts.is_empty()));
-    assert!(value["task"]["output_preview"]
-        .as_str()
-        .expect("subagent output should be text")
-        .contains("subagent final result"));
     let supervision = &value["task"]["child_supervision"];
     assert_eq!(supervision["parent_agent_id"], "default");
     assert!(supervision["child_agent_id"].as_str().is_some());

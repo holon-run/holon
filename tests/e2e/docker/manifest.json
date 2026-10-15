@@ -279,8 +279,7 @@
           ],
           "forbidden_tools": [
             "ApplyPatch",
-            "TaskStatus",
-            "TaskOutput"
+            "TaskStatus"
           ],
           "prompt": "Scheduler release acceptance case {case_id}. Create exactly one WorkItem whose objective is {objective}, with plan_status ready and exactly these todos: task-continuation pending, external-continuation pending. Do not PickWorkItem, ExecCommand, WaitFor, UpdateWorkItem, or CompleteWorkItem in this operator-triggered turn. After CreateWorkItem succeeds, end this response with a concise acknowledgement. The objective governs all later autonomous continuation turns. Do not create another WorkItem and do not modify files. The expected final completion marker is {completion_marker}."
         }

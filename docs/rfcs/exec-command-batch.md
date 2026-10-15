@@ -176,7 +176,11 @@ If a command needs:
 - blocking continuation on later task result
 
 then the model should call `ExecCommand` directly and use the command-family
-task tools (`TaskStatus`, `TaskOutput`, `TaskInput`, `TaskStop`) as needed.
+task tools (`TaskStatus`, `TaskInput`, `TaskStop`) as needed. Read command output
+from runtime-confirmed files in bounded ranges; wait for completion with
+`WaitFor(wake=task_result, resource=<task_id>, delivery=...)`. See
+[Agent output observation](agent-output-observation.md) for progress observation
+and the retired model/CLI output short wait.
 
 ## Output Contract
 

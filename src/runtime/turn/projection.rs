@@ -626,6 +626,13 @@ pub(super) fn degraded_round_messages(
         .saturating_sub(non_trimmable_estimated_tokens)
         .saturating_sub(
             round
+                .follow_up_user_texts
+                .iter()
+                .map(|text| estimate_text_tokens(text))
+                .sum::<usize>(),
+        )
+        .saturating_sub(
+            round
                 .inference_time
                 .as_deref()
                 .map(estimate_text_tokens)
@@ -755,17 +762,20 @@ fn fold_repeated_tool_call_rounds(
 
     let mut folded_count = 0usize;
     let mut skip_count = 0usize;
+    let mut folded_follow_ups = Vec::new();
     let mut tool_stats = ToolResultProjectionStats::default();
     for (i, round) in rounds.iter().enumerate() {
         if i + 1 < rounds.len() && rounds_have_identical_tool_calls(round, &rounds[i + 1]) {
             skip_count += 1;
             folded_count += 1;
+            folded_follow_ups.extend(preserved_follow_up_messages(std::slice::from_ref(round)));
             continue;
         }
         if skip_count > 0 {
             conversation.push(ConversationMessage::UserText(format!(
                 "[runtime: {skip_count} repeated identical tool call round(s) omitted]"
             )));
+            conversation.append(&mut folded_follow_ups);
             skip_count = 0;
         }
         let (messages, round_stats) =
@@ -782,6 +792,7 @@ fn fold_repeated_tool_call_rounds(
         conversation.push(ConversationMessage::UserText(format!(
             "[runtime: {skip_count} repeated identical tool call round(s) omitted]"
         )));
+        conversation.append(&mut folded_follow_ups);
     }
 
     push_inference_time_message(&mut conversation, current_time);
@@ -820,6 +831,15 @@ fn fold_repeated_tool_call_rounds(
             }),
         },
     ))
+}
+
+fn preserved_follow_up_messages(rounds: &[TurnRoundRecord]) -> Vec<ConversationMessage> {
+    rounds
+        .iter()
+        .flat_map(|round| &round.follow_up_user_texts)
+        .cloned()
+        .map(ConversationMessage::UserText)
+        .collect()
 }
 
 pub(super) fn select_exact_tail_start(
@@ -1112,10 +1132,18 @@ pub(super) fn build_turn_local_projection_with_time(
 
     let minimum_exact_round_estimated_tokens =
         rounds.last().map(estimate_round_tokens).unwrap_or_default();
+    let minimum_tail_start = rounds.len().saturating_sub(1);
+    let minimum_preserved_follow_ups = preserved_follow_up_messages(&rounds[..minimum_tail_start]);
+    let minimum_preserved_follow_up_tokens = rounds[..minimum_tail_start]
+        .iter()
+        .flat_map(|round| &round.follow_up_user_texts)
+        .map(|text| estimate_text_tokens(text))
+        .sum::<usize>();
     let mut minimum_viable_conversation = vec![ConversationMessage::UserBlocks(
         prompt_frame.context_blocks.clone(),
     )];
     push_runtime_reminder_message(&mut minimum_viable_conversation, runtime_reminder);
+    minimum_viable_conversation.extend(minimum_preserved_follow_ups.clone());
     if let Some(last_round) = rounds.last() {
         minimum_viable_conversation.extend(exact_round_messages(last_round));
     }
@@ -1133,6 +1161,7 @@ pub(super) fn build_turn_local_projection_with_time(
                     prompt_frame.context_blocks.clone(),
                 )];
                 push_runtime_reminder_message(&mut compacted_conversation, runtime_reminder);
+                compacted_conversation.extend(minimum_preserved_follow_ups.clone());
                 compacted_conversation.extend(compacted_messages);
                 push_inference_time_message(&mut compacted_conversation, current_time);
                 let compacted_projection_estimated_tokens =
@@ -1191,12 +1220,14 @@ pub(super) fn build_turn_local_projection_with_time(
             }
 
             // Assistant text remains degradable when tool results are already bounded.
-            let degraded_available_tokens =
-                hard_effective_budget_estimated_tokens.saturating_sub(estimated_baseline_tokens);
+            let degraded_available_tokens = hard_effective_budget_estimated_tokens
+                .saturating_sub(estimated_baseline_tokens)
+                .saturating_sub(minimum_preserved_follow_up_tokens);
             let mut degraded_conversation = vec![ConversationMessage::UserBlocks(
                 prompt_frame.context_blocks.clone(),
             )];
             push_runtime_reminder_message(&mut degraded_conversation, runtime_reminder);
+            degraded_conversation.extend(minimum_preserved_follow_ups.clone());
             let (degraded_messages, _trimmed) =
                 degraded_round_messages(last_round, degraded_available_tokens);
             degraded_conversation.extend(degraded_messages);
@@ -1242,7 +1273,6 @@ pub(super) fn build_turn_local_projection_with_time(
     }
 
     let preferred_tail_start = select_exact_tail_start(rounds, keep_recent_budget).max(1);
-    let minimum_tail_start = rounds.len().saturating_sub(1);
 
     'tail: for tail_start in preferred_tail_start..=minimum_tail_start {
         let mut conversation = vec![ConversationMessage::UserBlocks(
@@ -1299,11 +1329,18 @@ pub(super) fn build_turn_local_projection_with_time(
         } else {
             0
         };
+        let preserved_follow_ups = preserved_follow_up_messages(&rounds[..tail_start]);
+        let preserved_follow_up_tokens = rounds[..tail_start]
+            .iter()
+            .flat_map(|round| &round.follow_up_user_texts)
+            .map(|text| estimate_text_tokens(text))
+            .sum::<usize>();
         let recap_budget = effective_budget_estimated_tokens.saturating_sub(
             system_prompt_estimated_tokens
                 .saturating_add(context_attachment_estimated_tokens)
                 .saturating_add(runtime_reminder_estimated_tokens)
                 .saturating_add(current_time_estimated_tokens)
+                .saturating_add(preserved_follow_up_tokens)
                 .saturating_add(exact_tail_tokens)
                 .saturating_add(checkpoint_estimated_tokens),
         );
@@ -1311,6 +1348,7 @@ pub(super) fn build_turn_local_projection_with_time(
         if !recap.trim().is_empty() {
             conversation.push(ConversationMessage::UserText(recap));
         }
+        conversation.extend(preserved_follow_ups);
         conversation.extend(projected_exact_tail);
         if let Some(checkpoint) = checkpoint_request.as_ref() {
             conversation.push(ConversationMessage::UserText(checkpoint.prompt.clone()));
@@ -1408,4 +1446,204 @@ pub(super) fn build_turn_local_projection_with_time(
             last_round_degraded: false,
         }),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn round(text: &str, follow_ups: &[&str]) -> TurnRoundRecord {
+        let assistant_blocks = vec![ModelBlock::Text { text: text.into() }];
+        let follow_up_user_texts: Vec<String> =
+            follow_ups.iter().map(|text| (*text).into()).collect();
+        TurnRoundRecord {
+            inference_time: None,
+            round: 1,
+            estimated_tokens: build_round_estimated_tokens(
+                &assistant_blocks,
+                &[],
+                &follow_up_user_texts,
+            ),
+            assistant_blocks,
+            text_blocks: vec![text.into()],
+            tool_calls: Vec::new(),
+            tool_results: Vec::new(),
+            tool_result_envelopes: Vec::new(),
+            follow_up_user_texts,
+        }
+    }
+
+    fn tool_round(id: &str, follow_ups: &[&str]) -> TurnRoundRecord {
+        let mut round = round("", follow_ups);
+        round.assistant_blocks = vec![ModelBlock::ToolUse {
+            id: id.into(),
+            name: "ExecCommand".into(),
+            input: serde_json::json!({"cmd": "printf ok"}),
+            kind: crate::provider::ModelToolCallKind::Function,
+            provider_data: None,
+        }];
+        round.tool_results = vec![ToolResultBlock {
+            tool_use_id: id.into(),
+            content: "ok".into(),
+            is_error: false,
+            error: None,
+        }];
+        round.estimated_tokens = build_round_estimated_tokens(
+            &round.assistant_blocks,
+            &round.tool_results,
+            &round.follow_up_user_texts,
+        );
+        round
+    }
+
+    fn prompt_frame() -> ProviderPromptFrame {
+        ProviderPromptFrame::structured("system", Vec::new(), Vec::new(), None)
+    }
+
+    fn user_text_position(conversation: &[ConversationMessage], expected: &str) -> usize {
+        let positions: Vec<_> = conversation
+            .iter()
+            .enumerate()
+            .filter_map(|(index, message)| match message {
+                ConversationMessage::UserText(text) if text == expected => Some(index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            positions.len(),
+            1,
+            "full follow-up must appear exactly once"
+        );
+        positions[0]
+    }
+
+    #[test]
+    fn compacted_prefix_preserves_full_followups_before_paired_tail() {
+        let first = format!("first-body-start{}first-body-end", "a".repeat(2400));
+        let second = format!("second-body-start{}second-body-end", "b".repeat(1600));
+        let rounds = [
+            round(&"old-a".repeat(2000), &[&first]),
+            round(&"old-b".repeat(2000), &[&second]),
+            tool_round("tail-call", &["tail follow-up"]),
+        ];
+        let frame = prompt_frame();
+        let outcome = build_turn_local_projection(
+            &frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            None,
+            1800,
+            1,
+        );
+        let TurnLocalProjectionOutcome::Projection(projection) = outcome else {
+            panic!("full follow-ups and paired tail fit the request budget");
+        };
+        let stats = projection.compaction.as_ref().unwrap();
+        assert_eq!(stats.compacted_rounds, 2);
+        assert!(stats.projected_estimated_tokens <= stats.effective_budget_estimated_tokens);
+        let first_position = user_text_position(&projection.conversation, &first);
+        let second_position = user_text_position(&projection.conversation, &second);
+        let tail_position = projection
+            .conversation
+            .iter()
+            .position(|message| matches!(message, ConversationMessage::AssistantBlocks(_)))
+            .unwrap();
+        assert!(first_position < second_position && second_position < tail_position);
+        assert!(matches!(
+            &projection.conversation[tail_position + 1],
+            ConversationMessage::UserToolResults(results) if results[0].tool_use_id == "tail-call"
+        ));
+        assert_eq!(
+            user_text_position(&projection.conversation, "tail follow-up"),
+            tail_position + 2
+        );
+    }
+
+    #[test]
+    fn minimum_projection_fails_instead_of_discarding_prefix_followups() {
+        let follow_up = "full pinned evidence".repeat(500);
+        let rounds = [round("old", &[&follow_up]), round("tail", &[])];
+        let outcome = build_turn_local_projection(
+            &prompt_frame(),
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            None,
+            1024,
+            1,
+        );
+        let TurnLocalProjectionOutcome::BaselineOverBudget(failure) = outcome else {
+            panic!("prefix evidence cannot be dropped or truncated to fit");
+        };
+        assert!(failure.minimum_projection_estimated_tokens >= estimate_text_tokens(&follow_up));
+        assert!(
+            failure.minimum_projection_estimated_tokens > failure.effective_budget_estimated_tokens
+        );
+    }
+
+    #[test]
+    fn strict_minimum_projection_keeps_prefix_followups_with_tight_trigger_budget() {
+        let follow_up = "prefix evidence".repeat(140);
+        let rounds = [
+            round(&"old assistant".repeat(2000), &[&follow_up]),
+            round("tail", &[]),
+        ];
+        let request_budget = 1400;
+        let outcome = build_turn_local_projection_with_runtime_reminder(
+            &prompt_frame(),
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            None,
+            request_budget,
+            600,
+            1,
+            usize::MAX,
+            None,
+        );
+        let TurnLocalProjectionOutcome::Projection(projection) = outcome else {
+            panic!("minimum full evidence fits the hard request budget");
+        };
+        user_text_position(&projection.conversation, &follow_up);
+        let stats = projection.compaction.as_ref().unwrap();
+        assert_eq!(stats.compacted_rounds, 1);
+        assert!(stats.checkpoint_mode.is_none());
+        assert!(
+            stats.projected_estimated_tokens
+                <= request_budget - CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
+        );
+    }
+
+    #[test]
+    fn repeated_tool_round_folding_preserves_omitted_round_followups() {
+        let follow_up = "evidence after completed tools".repeat(40);
+        let mut first = tool_round("first-call", &[&follow_up]);
+        first.assistant_blocks.insert(
+            0,
+            ModelBlock::Text {
+                text: "repeated assistant".repeat(2000),
+            },
+        );
+        first.estimated_tokens = build_round_estimated_tokens(
+            &first.assistant_blocks,
+            &first.tool_results,
+            &first.follow_up_user_texts,
+        );
+        let rounds = [first, tool_round("last-call", &[])];
+        let outcome = build_turn_local_projection(
+            &prompt_frame(),
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            None,
+            1400,
+            1,
+        );
+        let TurnLocalProjectionOutcome::Projection(projection) = outcome else {
+            panic!("folded tools and full evidence fit");
+        };
+        assert_eq!(projection.compaction.as_ref().unwrap().compacted_rounds, 1);
+        assert_eq!(user_text_position(&projection.conversation, &follow_up), 2);
+    }
 }

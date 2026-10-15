@@ -751,9 +751,10 @@ impl TaskOverlayAction {
         }
     }
 
-    pub(super) fn tool_name(self) -> &'static str {
+    pub(super) fn entry_point(self) -> &'static str {
         match self {
-            Self::FullOutput | Self::FollowOutput => crate::tool::names::TASK_OUTPUT,
+            Self::FullOutput => "bounded read of confirmed command file",
+            Self::FollowOutput => "bounded observation of confirmed command file",
             Self::Stop => crate::tool::names::TASK_STOP,
             Self::Input => crate::tool::names::TASK_INPUT,
         }
@@ -790,7 +791,7 @@ impl TaskActionAvailability {
                 "[{}] {}: available ({})",
                 self.key(),
                 self.action.label(),
-                self.action.tool_name()
+                self.action.entry_point()
             )
         } else {
             format!(
@@ -1502,8 +1503,12 @@ mod tests {
 
         let detail = render_task_detail(&task);
 
-        assert!(detail.contains("[f] full output: available (TaskOutput)"));
-        assert!(detail.contains("[l] follow/live output: available (TaskOutput)"));
+        assert!(
+            detail.contains("[f] full output: available (bounded read of confirmed command file)")
+        );
+        assert!(detail.contains(
+            "[l] follow/live output: available (bounded observation of confirmed command file)"
+        ));
         assert!(detail.contains("[x] stop/cancel: available (TaskStop)"));
         assert!(detail.contains("[i] input/continue: available (TaskInput)"));
     }

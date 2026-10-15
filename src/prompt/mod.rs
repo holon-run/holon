@@ -916,7 +916,7 @@ fn build_system_sections(
         section(
             "tool_use_contract",
             PromptStability::Stable,
-            "Tool startup input must contain only fields from that tool's input schema. Do not pass result metadata such as status, disposition, task_handle, truncation flags, previews, commentary, or prior tool receipts as startup fields. Treat structured tool results as evidence and use the smallest next tool call that answers the remaining question. Do not repeat reads, output fetches, or broad searches when current context already contains the needed evidence; refresh only the smallest relevant slice for a concrete changed-state question. For background command tasks or child task handles, use WaitFor(wake=task_result, resource=<task_id>) when ordinary completion is the only thing left; use task output/status tools only for active supervision or bounded current-turn inspection.".to_string(),
+            "Tool startup input must contain only fields from that tool's input schema. Do not pass result metadata such as status, disposition, task_handle, truncation flags, previews, commentary, or prior tool receipts as startup fields. Treat structured tool results as evidence and use the smallest next tool call that answers the remaining question. Do not repeat reads, output fetches, or broad searches when current context already contains the needed evidence; refresh only the smallest relevant slice for a concrete changed-state question. For background command tasks or child task handles, use WaitFor(wake=task_result, resource=<task_id>) when ordinary completion is the only thing left; use TaskStatus for exact task state and bounded output observation only for active supervision or bounded current-turn inspection. Confirm command runtime file paths and availability before reading command output, and use bounded read-only agent tail for agent progress, not GetAgent transcript inspection. No in-turn blocking output wait is provided.".to_string(),
         ),
         section(
             "engineering_guardrails",
@@ -1189,7 +1189,7 @@ fn delegated_task_section(identity: &AgentIdentityView) -> Option<PromptSection>
         section(
             "delegated_task",
             PromptStability::Stable,
-            "You are executing a bounded delegated task. Stay tightly scoped to the delegated work and do not create nested tasks. Return a concise final report the caller can integrate: state the conclusion first, then include relevant files or artifacts, verification performed, and any blockers. Do not include hidden reasoning, planning notes, pseudo-tool tags, exploration diaries, or narration of your internal process in the final answer.".to_string(),
+            "You are executing a bounded delegated task. Stay tightly scoped to the delegated work and do not create nested tasks. Keep routine progress, compile/retry updates, unchanged test status, and self-resolved problems in observable output or work records, not unsolicited messages to the parent. Send a message when the parent must act on a blocker, a coordination-relevant contract change, or a dependency becoming ready; still honor explicit reply obligations. Return a concise final report the caller can integrate: state the conclusion first, then include relevant files or artifacts, verification performed, and any blockers. Your final report is delivered through the existing task-result channel; do not also SendAgentMessage the same final result. Do not include hidden reasoning, planning notes, pseudo-tool tags, exploration diaries, or narration of your internal process in the final answer.".to_string(),
         )
     })
 }
@@ -1796,6 +1796,19 @@ mod tests {
         assert!(delegated_task.content.contains("files or artifacts"));
         assert!(delegated_task.content.contains("verification performed"));
         assert!(delegated_task.content.contains("exploration diaries"));
+        assert!(delegated_task.content.contains("not unsolicited messages"));
+        assert!(delegated_task
+            .content
+            .contains("parent must act on a blocker"));
+        assert!(delegated_task
+            .content
+            .contains("still honor explicit reply obligations"));
+        assert!(delegated_task
+            .content
+            .contains("existing task-result channel"));
+        assert!(delegated_task
+            .content
+            .contains("do not also SendAgentMessage the same final result"));
     }
 
     #[test]
@@ -1911,6 +1924,16 @@ mod tests {
             .contains("Treat structured tool results as evidence"));
         assert!(section.content.contains("Do not repeat reads"));
         assert!(section.content.contains("WaitFor(wake=task_result"));
+        assert!(section.content.contains("TaskStatus for exact task state"));
+        assert!(section
+            .content
+            .contains("Confirm command runtime file paths and availability"));
+        assert!(section
+            .content
+            .contains("bounded read-only agent tail for agent progress"));
+        assert!(section
+            .content
+            .contains("No in-turn blocking output wait is provided"));
         assert!(section
             .content
             .contains("only for active supervision or bounded current-turn inspection"));

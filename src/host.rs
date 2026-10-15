@@ -5795,6 +5795,7 @@ impl RuntimeHost {
             current_task_id: Some(task.id.clone()),
             current_work_item_id: task.work_item_id.clone(),
             inherited_routing_context: None,
+            routing_activation_id: None,
         };
         let mut prepared = crate::runtime::AgentMessageDeliveryService::prepare(
             AgentMessageSendRequest {
@@ -5805,6 +5806,7 @@ impl RuntimeHost {
                 causation_id: task.parent_message_id.clone(),
                 requested_priority: Some(Priority::Normal),
                 forward: false,
+                reply_context_id: None,
             },
             caller,
         )?;
@@ -8461,6 +8463,7 @@ mod tests {
                     causation_id: None,
                     requested_priority: Some(Priority::Normal),
                     forward: false,
+                    reply_context_id: None,
                 },
                 AuthorityClass::RuntimeInstruction,
             )
@@ -9695,6 +9698,7 @@ mod tests {
     async fn agent_message_wait_preserves_reply_authority_with_late_status() {
         for (use_wait, reply_authority) in [
             (false, AuthorityClass::OperatorInstruction),
+            (false, AuthorityClass::RuntimeInstruction),
             (true, AuthorityClass::RuntimeInstruction),
             (true, AuthorityClass::OperatorInstruction),
         ] {
@@ -9819,6 +9823,7 @@ mod tests {
                             causation_id: None,
                             requested_priority: Some(Priority::Normal),
                             forward: false,
+                            reply_context_id: None,
                         },
                         reply_authority,
                     )
@@ -9828,6 +9833,20 @@ mod tests {
             let terminal = wait_for_terminal_task(&parent, task_id).await;
             assert_eq!(terminal.status, TaskStatus::Completed);
             assert!(terminal.work_item_id.is_none());
+            let detail = terminal.detail.as_ref().unwrap();
+            assert_eq!(detail["business_completion"], false);
+            assert_eq!(detail["reply_content_source"], "original_message");
+            let reply = parent
+                .storage()
+                .read_message_by_id(detail["message_id"].as_str().unwrap())
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                reply.body,
+                MessageBody::Text {
+                    text: "peer report 0".into()
+                }
+            );
             assert_eq!(
                 terminal.rejoin_fence().unwrap().parent_turn_id,
                 parent_turn_id
@@ -9898,26 +9917,73 @@ mod tests {
             )
         });
             let events = parent.storage().read_recent_events(400).unwrap();
-            let claimed: Vec<_> = events
+            let status_position = events
                 .iter()
-                .filter(|event| event.kind == "queue_entry_claimed")
-                .filter_map(|event| event.data["message_id"].as_str())
-                .collect();
-            let result_position = claimed.iter().position(|id| *id == result_id).unwrap();
-            let status_position = claimed.iter().position(|id| *id == status.id).unwrap();
+                .position(|event| {
+                    event.kind == "queue_entry_claimed"
+                        && event.data["message_id"].as_str() == Some(status.id.as_str())
+                })
+                .unwrap();
+            let result_position = events
+                .iter()
+                .position(|event| {
+                    if use_wait {
+                        event.kind == "queue_entry_claimed"
+                            && event.data["message_id"].as_str() == Some(result_id.as_str())
+                    } else {
+                        event.kind == "live_input_attached"
+                            && event.data["turn_id"].as_str() == Some(parent_turn_id.as_str())
+                            && event.data["message_ids"].as_array().is_some_and(|ids| {
+                                ids.iter().any(|id| id.as_str() == Some(result_id.as_str()))
+                            })
+                    }
+                })
+                .expect("result must be admitted through its expected wait or live path");
             assert!(
                 result_position < status_position,
                 "result must precede late status"
             );
-            let result_turn = parent
-                .storage()
-                .read_turn_by_id(&format!("turn:agent-message-wait:{task_id}"))
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                result_turn.terminal.unwrap().reason.as_deref(),
-                Some("reducer_only/parent_turn_already_delivered")
-            );
+            if use_wait {
+                let result_turn = parent
+                    .storage()
+                    .read_turn_by_id(&format!("turn:agent-message-wait:{task_id}"))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    result_turn.terminal.unwrap().reason.as_deref(),
+                    Some("reducer_only/parent_turn_already_delivered")
+                );
+            } else {
+                let parent_turn = parent
+                    .storage()
+                    .read_turn_by_id(&parent_turn_id)
+                    .unwrap()
+                    .unwrap();
+                let batch = parent_turn
+                    .live_input_batches
+                    .iter()
+                    .find(|batch| batch.items.iter().any(|item| item.message_id == result_id))
+                    .expect("unwaited current-turn result must remain durably attached");
+                let reply = messages
+                    .iter()
+                    .find(|message| {
+                        matches!(&message.body, MessageBody::Text { text } if text == "peer report 0")
+                    })
+                    .unwrap();
+                assert_eq!(reply.authority_class, reply_authority);
+                assert!(batch.items.iter().any(|item| item.message_id == reply.id));
+                assert!(parent_turn.input_message_ids.contains(&reply.id));
+                assert_eq!(
+                    parent
+                        .runtime_db()
+                        .queue_entries()
+                        .latest(&result_id)
+                        .unwrap()
+                        .unwrap()
+                        .status,
+                    QueueEntryStatus::Interjected
+                );
+            }
             let stored_task = parent
                 .runtime_db()
                 .tasks()
@@ -9977,13 +10043,17 @@ mod tests {
                 .any(|attempt| attempt.source_message_id.as_deref() == Some(result_id.as_str()));
             assert!(
                 !result_has_attempt,
-                "parent-delivered result is reducer-only"
+                "live-admitted or parent-delivered result must not create a new attempt"
             );
             let settlement = parent
                 .runtime_db()
                 .task_result_settlements()
                 .latest_for_message(&result_id)
                 .unwrap();
+            assert!(
+                settlement.is_some(),
+                "result must retain its durable ledger"
+            );
             println!(
             "3484 real durable evidence: task_fence={:?}; result_has_attempt={result_has_attempt}; settlement={:?}",
             stored_task.rejoin_fence().unwrap(),
@@ -9997,7 +10067,7 @@ mod tests {
             assert!(!events
                 .iter()
                 .any(|event| event.kind == "agent_runtime_loop_failed"));
-            println!("3484 real fixture: result before late OperatorInstruction TaskStatus; parent_turn_already_delivered; status processed; task remains completed; no canonical status attempt; no loop failure");
+            println!("3484 real fixture: use_wait={use_wait}; result admitted before late OperatorInstruction TaskStatus; status processed; task remains completed; no canonical result/status attempt; no loop failure");
             host.shutdown().await.unwrap();
         }
     }
@@ -10351,7 +10421,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shared_reply_is_model_delivered_once_beyond_settlement_batch_limit() {
+    async fn shared_reply_waiter_identities_drain_in_bounded_batches() {
         for use_wait in [false, true] {
             let (_home, host) = test_host();
             let parent = host.default_runtime().await.unwrap();
@@ -10361,8 +10431,8 @@ mod tests {
             let target = host.get_public_agent("shared-reply-target").await.unwrap();
             let parent_id = parent.agent_summary().await.unwrap().identity.agent_id;
             let mut tasks = Vec::new();
-            // More than the ordinary settlement context batch (8): a single
-            // original reply must settle every same-owner observation together.
+            // The reply body is deduplicated within each batch, but every
+            // waiter counts independently toward the P1 limit of eight.
             for index in 0..10 {
                 let receipt = parent
                     .agent_invocation_service()
@@ -10456,7 +10526,7 @@ mod tests {
                 );
                 signal_ids.push(signal_id);
             }
-            tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::time::timeout(Duration::from_secs(45), async {
                 loop {
                     let entries = parent.storage().latest_queue_entries().unwrap();
                     if signal_ids
@@ -10468,6 +10538,16 @@ mod tests {
                                     && entry.status == crate::types::QueueEntryStatus::Processed
                             })
                         })
+                        && signal_ids.iter().all(|id| {
+                            host.runtime_db()
+                                .task_result_settlements()
+                                .latest_for_message(id)
+                                .unwrap()
+                                .is_some_and(|record| {
+                                    record.state
+                                        == crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+                                })
+                        })
                     {
                         break;
                     }
@@ -10475,12 +10555,16 @@ mod tests {
                 }
             })
             .await
-            .expect("reply and reference signals must drain");
+            .expect("reply and bounded waiter batches must settle");
             let briefs = parent.storage().read_recent_briefs(100).unwrap();
+            let batch_limit = crate::runtime::input_consumption::INPUT_BATCH_ITEMS;
             assert_eq!(
                 briefs.len(),
-                1,
-                "one model response, without synthetic task briefs"
+                1 + signal_ids
+                    .len()
+                    .saturating_sub(batch_limit - 1)
+                    .div_ceil(batch_limit),
+                "one model response per bounded batch, without synthetic task briefs"
             );
             if let Some(registration) = registration {
                 let wait = parent
@@ -10547,6 +10631,7 @@ mod tests {
                 causation_id: None,
                 requested_priority: Some(Priority::Normal),
                 forward: false,
+                reply_context_id: None,
             },
             AgentMessageCallerContext {
                 caller_principal: format!("agent:{parent_agent_id}"),
@@ -10563,6 +10648,7 @@ mod tests {
                 current_task_id: Some(task_id.into()),
                 current_work_item_id: None,
                 inherited_routing_context: None,
+                routing_activation_id: None,
             },
         )
         .unwrap();
@@ -15384,6 +15470,7 @@ mod tests {
     async fn parent_cleanup_exits_runtime_and_preserves_parent_result() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
+        let parent_id = parent.agent_summary().await.unwrap().identity.agent_id;
         let created = parent
             .agent_invocation_service()
             .invoke(InvokeAgentRequest {
@@ -15461,24 +15548,20 @@ mod tests {
         })
         .await
         .expect("command result must settle and runtime must sleep before the final producer turn");
-        // Idle preserves an existing timed sleep even after result settlement.
-        // Let that accepted deadline expire before admitting the final turn.
-        loop {
-            let state = host
-                .runtime_db()
-                .agent_states()
-                .latest(&created.agent_id)
-                .unwrap()
-                .unwrap();
-            let remaining = state
-                .sleeping_until
-                .and_then(|until| (until - Utc::now()).to_std().ok());
-            let Some(remaining) = remaining else {
-                break;
-            };
-            assert!(remaining < Duration::from_secs(31));
-            tokio::time::sleep(remaining + Duration::from_millis(10)).await;
-        }
+        assert_ne!(created.agent_id, parent_id);
+        assert!(host
+            .runtime_db()
+            .task_result_settlements()
+            .next_recheck_at(&parent_id)
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            host.runtime_db()
+                .task_result_settlements()
+                .next_recheck_at(&created.agent_id)
+                .unwrap(),
+            None
+        );
         let turn_before_final = host
             .runtime_db()
             .agent_states()
@@ -15507,8 +15590,33 @@ mod tests {
             .agent_identity_record(&created.agent_id)
             .unwrap()
             .unwrap();
+        let mut last_cleanup_rejection = None;
         let job = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
+                let state = host
+                    .runtime_db()
+                    .agent_states()
+                    .latest(&created.agent_id)
+                    .unwrap()
+                    .unwrap();
+                if state.turn_index <= turn_before_final
+                    || state.status != crate::types::AgentStatus::Asleep
+                    || state.current_run_id.is_some()
+                    || state.pending != 0
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    continue;
+                }
+                assert_eq!(
+                    state.sleeping_until, None,
+                    "the child's final turn must not inherit its parent's result recheck"
+                );
+                assert!(host
+                    .runtime_db()
+                    .task_result_settlements()
+                    .next_recheck_at(&parent_id)
+                    .unwrap()
+                    .is_some());
                 match host
                     .begin_parent_agent_deletion(&parent, &identity.agent_id, identity.incarnation)
                     .await
@@ -15520,6 +15628,7 @@ mod tests {
                             || error.to_string().contains("queued_or_claimed_input")
                             || error.to_string().contains("open_execution") =>
                     {
+                        last_cleanup_rejection = Some(format!("{error:#}"));
                         tokio::time::sleep(Duration::from_millis(10)).await
                     }
                     Err(error) => panic!("unexpected cleanup rejection: {error:#}"),
@@ -15535,7 +15644,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             panic!(
-                "cleanup admission timed out: {error}; status={:?}; sleeping_until={:?}; pending={}; turns={}->{}; next_result_recheck={:?}; recent_events={:?}; result_settlements={:?}",
+                "cleanup admission timed out: {error}; last_rejection={last_cleanup_rejection:?}; status={:?}; sleeping_until={:?}; pending={}; turns={}->{}; next_result_recheck={:?}; recent_events={:?}; result_settlements={:?}",
                 state.status,
                 state.sleeping_until,
                 state.pending,

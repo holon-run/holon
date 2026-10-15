@@ -1017,8 +1017,18 @@ pub async fn runtime_compaction_multi_pass_recovery_preserves_progress_and_artif
     assert!(
         tool_records
             .iter()
-            .any(|record| record.tool_name == "ExecCommand" || record.tool_name == "TaskOutput"),
-        "expected structured ExecCommand/TaskOutput tool records"
+            .any(|record| record.tool_name == "TaskStatus"),
+        "expected structured TaskStatus evidence for the seed task"
+    );
+    assert!(
+        tool_records.iter().any(|record| {
+            record.tool_name == "ExecCommand"
+                && record.input["cmd"]
+                    .as_str()
+                    .is_some_and(|cmd| cmd.starts_with("head -c 512"))
+                && record.output.to_string().contains("seed_task_output")
+        }),
+        "expected a bounded read of the confirmed seed task output"
     );
 
     let task_output = runtime.task_output(&seed_task.id, false, 0).await?;

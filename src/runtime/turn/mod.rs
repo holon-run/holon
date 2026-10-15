@@ -226,8 +226,10 @@ impl RuntimeHandle {
             record.trigger = Some(TurnTriggerSummary::from_message(message));
             record.input_message_ids = vec![message.id.clone()];
             if let Some(source_turn_id) = message
-                .turn_id
-                .as_deref()
+                .source_refs
+                .get("replay_source_turn_id")
+                .map(String::as_str)
+                .or(message.turn_id.as_deref())
                 .map(str::trim)
                 .filter(|id| !id.is_empty() && *id != turn_id)
             {

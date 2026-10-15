@@ -33,10 +33,15 @@ order: 26
 版本 2 清单当前覆盖以下工具的结果 schema：`CreateTimer`、`ListTimers`、
 `GetTimer`、`CancelTimer`、`Enqueue`、`CreateAgent`、
 `SendAgentMessage`、`InvokeAgent`、`ListTasks`、`TaskStatus`、
-`TaskInput`、`TaskOutput`、`TaskStop` 和 `GenerateImage`。未覆盖的工具保留其
+`TaskInput`、`TaskStop` 和 `GenerateImage`。未覆盖的工具保留其
 结果类型名和显式的 `null` schema；这样可以避免把推断出的或不完整的形状当作
 稳定契约。只有当具体 Rust 结果类型派生 `schemars::JsonSchema` 时，覆盖范围
 才能扩展。
+
+`TaskOutput` 已从模型工具接口移除，而非仅标记为弃用。改用 `TaskStatus`、
+运行时确认的命令输出文件的有界读取，以及 Agent 级 tail 观测；完成等待和
+重新进入使用 `WaitFor(task_result)`。底层 HTTP task-output 路由与内部
+result/capture 服务仍保留。边界详见[任务契约](../spec/tasks.md)。
 
 ## 能力家族
 

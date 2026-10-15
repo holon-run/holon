@@ -90,6 +90,18 @@ impl RuntimeQueue {
         self.interject.len() + self.next.len() + self.normal.len() + self.background.len()
     }
 
+    /// One bounded priority/FIFO snapshot; callers must not repeatedly drain it.
+    pub(crate) fn input_snapshot(&self, limit: usize) -> Vec<MessageEnvelope> {
+        self.interject
+            .iter()
+            .chain(&self.next)
+            .chain(&self.normal)
+            .chain(&self.background)
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

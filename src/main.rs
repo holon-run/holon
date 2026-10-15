@@ -1700,7 +1700,7 @@ mod tests {
         assert_eq!(task_id, "task-1");
         assert_eq!(agent.as_deref(), Some("runner"));
 
-        let cli = Cli::parse_from([
+        assert!(Cli::try_parse_from([
             "holon",
             "task",
             "output",
@@ -1708,23 +1708,8 @@ mod tests {
             "--block",
             "--timeout-ms",
             "100",
-        ]);
-        let Commands::Task {
-            command:
-                TaskCommands::Output {
-                    task_id,
-                    block,
-                    timeout_ms,
-                    agent,
-                },
-        } = cli.command
-        else {
-            panic!("expected task output command");
-        };
-        assert_eq!(task_id, "task-2");
-        assert!(block);
-        assert_eq!(timeout_ms, Some(100));
-        assert_eq!(agent, None);
+        ])
+        .is_err());
 
         let cli = Cli::parse_from(["holon", "task", "input", "task-3", "--text", "hello"]);
         let Commands::Task {
@@ -5124,19 +5109,6 @@ async fn handle_task_command(config: &AppConfig, command: TaskCommands) -> Resul
             let agent = cli_target_agent(config, agent)?;
             print_json(&serde_json::to_value(
                 client.task_status(&agent, &task_id).await?,
-            )?)
-        }
-        TaskCommands::Output {
-            task_id,
-            block,
-            timeout_ms,
-            agent,
-        } => {
-            let agent = cli_target_agent(config, agent)?;
-            print_json(&serde_json::to_value(
-                client
-                    .task_output(&agent, &task_id, block, timeout_ms)
-                    .await?,
             )?)
         }
         TaskCommands::Input {

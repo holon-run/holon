@@ -384,7 +384,7 @@ mod tests {
             "InvokeAgent",
             "ListTasks",
             "TaskInput",
-            "TaskOutput",
+            "TaskStatus",
             "CreateWorkItem",
             "PickWorkItem",
             "GetWorkItem",
@@ -549,7 +549,8 @@ mod tests {
             .map(|spec| spec.name)
             .collect::<Vec<_>>();
 
-        assert!(names.iter().any(|name| name == "TaskOutput"));
+        assert!(!names.iter().any(|name| name == "TaskOutput"));
+        assert!(names.iter().any(|name| name == "TaskStatus"));
         assert!(names.iter().any(|name| name == "ListTasks"));
         assert!(names.iter().any(|name| name == "TaskInput"));
         assert!(names.iter().any(|name| name == "CreateWorkItem"));

@@ -15,8 +15,16 @@ use crate::{
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderRecoverySource {
     pub predecessor: ExecutionAttempt,
-    pub source_turn: TurnRecord,
+    pub source_turns: Vec<TurnRecord>,
     pub root_message: MessageEnvelope,
+}
+
+impl ProviderRecoverySource {
+    pub fn source_turn(&self) -> &TurnRecord {
+        self.source_turns
+            .last()
+            .expect("validated provider recovery lineage is nonempty")
+    }
 }
 
 pub(crate) fn resolve(
@@ -27,6 +35,7 @@ pub(crate) fn resolve(
     let mut cursor = message.clone();
     let mut seen = BTreeSet::new();
     let mut first = None;
+    let mut source_turns = Vec::new();
     let mut expected_binding = None;
     loop {
         if seen.len() >= 64 || !seen.insert(cursor.id.clone()) {
@@ -113,8 +122,9 @@ pub(crate) fn resolve(
         }
         expected_binding = Some(predecessor.binding.clone());
         if first.is_none() {
-            first = Some((predecessor.clone(), source_turn));
+            first = Some(predecessor.clone());
         }
+        source_turns.push(source_turn);
         if matches!(
             predecessor.source.identity,
             ExecutionSourceIdentity::RuntimeRecovery { .. }
@@ -146,10 +156,11 @@ pub(crate) fn resolve(
             ) {
                 bail!("provider recovery root has inconsistent execution identity");
             }
-            let (predecessor, source_turn) = first.expect("first source is resolved");
+            let predecessor = first.expect("first source is resolved");
+            source_turns.reverse();
             return Ok(ProviderRecoverySource {
                 predecessor,
-                source_turn,
+                source_turns,
                 root_message: source_message,
             });
         }

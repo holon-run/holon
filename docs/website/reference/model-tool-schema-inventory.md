@@ -35,10 +35,16 @@ Each built-in tool entry records:
 The version 2 inventory currently covers result schemas for `CreateTimer`,
 `ListTimers`, `GetTimer`, `CancelTimer`, `Enqueue`, `CreateAgent`,
 `SendAgentMessage`, `InvokeAgent`, `ListTasks`, `TaskStatus`, `TaskInput`,
-`TaskOutput`, `TaskStop`, and `GenerateImage`. Uncovered tools keep their result
+`TaskStop`, and `GenerateImage`. Uncovered tools keep their result
 type name and an explicit `null` schema; this avoids presenting an inferred or
 partial shape as a stable contract. Coverage can expand only when the concrete
 Rust result type derives `schemars::JsonSchema`.
+
+`TaskOutput` has been removed from the model tool surface, not merely deprecated.
+Use `TaskStatus`, bounded reads of runtime-confirmed command output files, and
+agent-scoped tail observation; use `WaitFor(task_result)` for completion and
+re-entry. The underlying HTTP task-output route and internal result/capture
+services remain. See the [task contract](../spec/tasks.md) for the boundaries.
 
 ## Capability families
 

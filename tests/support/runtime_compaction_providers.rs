@@ -482,11 +482,10 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                             )
                         },
                         ModelBlock::ToolUse {
-                            id: "task-output-round-3".into(),
-                            name: "TaskOutput".into(),
+                            id: "task-status-round-3".into(),
+                            name: "TaskStatus".into(),
                             input: serde_json::json!({
-                                "task_id": task_id,
-                                "block": false
+                                "task_id": task_id
                             }),
                             kind: holon::provider::ModelToolCallKind::Function,
                             provider_data: None,
@@ -501,13 +500,35 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
             request_diagnostics: None
                 })
             }
-            4 => Ok(ProviderTurnResponse {
+            4 => {
+                let output_path = request.conversation.iter().find_map(|message| {
+                    let ConversationMessage::UserToolResults(blocks) = message else {
+                        return None;
+                    };
+                    blocks.iter().find_map(|block| {
+                        let value: serde_json::Value = serde_json::from_str(&block.content).ok()?;
+                        value["result"]["task"]["command"]["output_path"]
+                            .as_str()
+                            .map(str::to_owned)
+                    })
+                }).expect("TaskStatus must confirm the seed task output path");
+                Ok(ProviderTurnResponse {
                 blocks: vec![
                     ModelBlock::Text {
                         text: format!(
                             "Round 4 checkpointing {}",
                             "stable progression ".repeat(220)
                         )
+                    },
+                    ModelBlock::ToolUse {
+                        id: "read-seed-round-4".into(),
+                        name: "ExecCommand".into(),
+                        input: serde_json::json!({
+                            "cmd": format!("head -c 512 -- '{}'", output_path.replace('\'', "'\\''")),
+                            "max_output_tokens": 24
+                        }),
+                        kind: holon::provider::ModelToolCallKind::Function,
+                        provider_data: None,
                     },
                     ModelBlock::ToolUse {
                         id: "exec-round-4".into(),
@@ -527,7 +548,8 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                 provider_message_id: None,
             provider_request_id: None,
             request_diagnostics: None
-            }),
+            })
+            },
             _ => Ok(ProviderTurnResponse {
                 blocks: vec![ModelBlock::Text {
                     text: "Completed after bounded repeated compaction.".into()

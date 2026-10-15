@@ -1304,6 +1304,58 @@ async fn latest_task_list_entries_filters_to_active_statuses_only() {
 }
 
 #[tokio::test]
+async fn retired_task_output_is_not_advertised_or_dispatched() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    assert!(!crate::tool::names::ALL_TOOL_NAMES.contains(&"TaskOutput"));
+    assert!(registry.family_for_tool("TaskOutput").unwrap().is_none());
+    let inventory = crate::tool::model_tool_schema_inventory().unwrap();
+    assert!(!inventory["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| tool["name"] == "TaskOutput"));
+
+    let call = crate::tool::ToolCall {
+        id: "retired-output".into(),
+        name: "TaskOutput".into(),
+        input: serde_json::json!({"task_id": "missing", "block": true, "timeout_ms": 1}),
+    };
+    let error = registry
+        .execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &call,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<crate::tool::ToolError>().unwrap().kind,
+        "unknown_tool"
+    );
+    assert!(crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &call,
+    )
+    .await
+    .is_err());
+}
+
+#[tokio::test]
 async fn list_tasks_tool_returns_bounded_metadata_and_accepts_legacy_alias() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

@@ -12,7 +12,9 @@ mod delivery;
 pub(crate) mod execution_admission;
 mod failure;
 mod first_run_intro;
+pub(crate) mod input_consumption;
 mod lifecycle;
+pub(crate) mod live_input_consumption;
 mod message_dispatch;
 mod operator;
 mod operator_dispatch;
@@ -850,32 +852,73 @@ fn canonical_matching_terminal_turn(
     owner: &crate::types::TurnOwner,
     terminal_turn: Option<&TurnRecord>,
 ) -> Result<Option<TurnRecord>> {
-    let matches_activation = |turn: &TurnRecord| {
-        let matches_turn_identity = message
-            .turn_id
-            .as_deref()
-            .is_none_or(|turn_id| turn_id == turn.turn_id)
-            || turn.replay.as_ref().is_some_and(|replay| {
-                replay.source_message_id == record.message_id
-                    && message.turn_id.as_deref() == Some(replay.source_turn_id.as_str())
-            });
-        turn.terminal.is_some()
-            && turn
+    let matches_activation = |turn: &TurnRecord| -> Result<bool> {
+        if turn.agent_id != record.agent_id
+            || turn.terminal.is_none()
+            || turn
                 .trigger
                 .as_ref()
                 .and_then(|trigger| trigger.message_id.as_deref())
-                == Some(record.message_id.as_str())
-            && matches_turn_identity
-            && turn.effective_owner() == *owner
+                != Some(record.message_id.as_str())
+            || turn.effective_owner() != *owner
+        {
+            return Ok(false);
+        }
+        let Some(ingress_turn_id) = message.turn_id.as_deref() else {
+            return Ok(true);
+        };
+        if turn.turn_id == ingress_turn_id {
+            return Ok(true);
+        }
+        // Repeated replay keeps the ingress stamp, not the last attempt's Turn.
+        let mut replay = turn.replay.clone();
+        let mut seen = std::collections::BTreeSet::from([turn.turn_id.clone()]);
+        for _ in 0..64 {
+            let Some(source) = replay else {
+                return Ok(false);
+            };
+            if source.source_message_id != record.message_id
+                || !seen.insert(source.source_turn_id.clone())
+            {
+                return Ok(false);
+            }
+            if source.source_turn_id == ingress_turn_id {
+                return Ok(true);
+            }
+            let Some(prior) = runtime_db
+                .turn_records()
+                .by_id(Some(&record.agent_id), &source.source_turn_id)?
+            else {
+                return Ok(false);
+            };
+            if prior.agent_id != record.agent_id
+                || prior
+                    .trigger
+                    .as_ref()
+                    .and_then(|trigger| trigger.message_id.as_deref())
+                    != Some(record.message_id.as_str())
+                || prior.effective_owner() != *owner
+            {
+                return Ok(false);
+            }
+            replay = prior.replay;
+        }
+        Ok(false)
     };
-    if let Some(turn) = terminal_turn.filter(|turn| matches_activation(turn)) {
-        return Ok(Some(turn.clone()));
+    if let Some(turn) = terminal_turn {
+        if matches_activation(turn)? {
+            return Ok(Some(turn.clone()));
+        }
     }
-    Ok(runtime_db
+    for turn in runtime_db
         .turn_records()
         .recent_for_agent(&record.agent_id, usize::MAX)?
-        .into_iter()
-        .find(matches_activation))
+    {
+        if matches_activation(&turn)? {
+            return Ok(Some(turn));
+        }
+    }
+    Ok(None)
 }
 
 fn execution_protocol_settlement_transition_from_facts(
@@ -6110,7 +6153,7 @@ impl RuntimeHandle {
                         .inner
                         .runtime_db
                         .task_result_settlements()
-                        .next_recheck_at(&self.inner.default_agent_id)?;
+                        .next_recheck_at(&idle_snapshot.0.id)?;
                     let next_recheck_at = match (next_recheck_at, result_recheck_at) {
                         (Some(left), Some(right)) => Some(left.min(right)),
                         (left, right) => left.or(right),
@@ -6187,14 +6230,27 @@ impl RuntimeHandle {
 
             // Cancellation and setup failures can bypass the provider's turn timer.
             let processing_started = std::time::Instant::now();
-            let terminal_transition = match self
+            let result = self
                 .process_message_with_plan_deferred(
                     scheduled.message,
                     scheduled.dispatch_plan,
                     &scheduled.scheduler_decision,
                 )
-                .await
-            {
+                .await;
+            self.settle_processed_message(message, result, processing_started)
+                .await?;
+        }
+    }
+
+    fn settle_processed_message(
+        &self,
+        message: MessageEnvelope,
+        result: Result<turn::TurnTerminalTransition>,
+        processing_started: std::time::Instant,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + '_>> {
+        // Keep terminal construction and settlement frames off provider callbacks.
+        Box::pin(async move {
+            let terminal_transition = match result {
                 Ok(transition) => transition,
                 Err(err) => {
                     let aborted = err.downcast_ref::<CurrentRunAborted>().cloned();
@@ -6355,7 +6411,7 @@ impl RuntimeHandle {
                         if execution_settlement_conflict(&error) {
                             crate::diagnostics::record_missing_terminal_turn_detected();
                             if self.recover_scheduler_bootstrap_claims().await? > 0 {
-                                continue;
+                                return Ok(());
                             }
                         }
                         return Err(error);
@@ -6369,7 +6425,7 @@ impl RuntimeHandle {
                     self.maybe_commit_turn_end_work_item_transition().await?;
                     self.record_closure_decision_event(Some(true)).await?;
                     self.maybe_emit_pending_system_tick(None).await?;
-                    continue;
+                    return Ok(());
                 }
             };
             {
@@ -6416,13 +6472,13 @@ impl RuntimeHandle {
                         self.maybe_commit_turn_end_work_item_transition().await?;
                         self.record_closure_decision_event(Some(true)).await?;
                         self.maybe_emit_pending_system_tick(None).await?;
-                        continue;
+                        return Ok(());
                     }
                     Err(error) => {
                         if execution_settlement_conflict(&error) {
                             crate::diagnostics::record_missing_terminal_turn_detected();
                             if self.recover_scheduler_bootstrap_claims().await? > 0 {
-                                continue;
+                                return Ok(());
                             }
                         }
                         return Err(error);
@@ -6431,7 +6487,8 @@ impl RuntimeHandle {
                 self.maybe_supersede_queued_provider_recovery(&message, Some(&terminal_transition))
                     .await?;
             }
-        }
+            Ok(())
+        })
     }
 
     pub(crate) async fn record_runtime_loop_failure(&self, error: &anyhow::Error) {
@@ -6605,6 +6662,11 @@ impl RuntimeHandle {
                 (None, unsettled_claim::ReplayFence::Ambiguous)
             };
 
+            // A replay keeps its ingress turn hint; the durable attachment
+            // identifies which attempt's turn bootstrap must reconcile.
+            let attachment_turn_id = self.inner.runtime_db.transaction(|tx| {
+                crate::runtime_db::task_result_settlement::canonical_live_turn_id_tx(tx, &attempt)
+            })?;
             let terminal_turn = turns.iter().find(|turn| {
                 turn.terminal.is_some()
                     && turn
@@ -6612,7 +6674,8 @@ impl RuntimeHandle {
                         .as_ref()
                         .and_then(|trigger| trigger.message_id.as_deref())
                         == Some(entry.message_id.as_str())
-                    && message.turn_id.as_deref() == Some(turn.turn_id.as_str())
+                    && attachment_turn_id.as_deref().or(message.turn_id.as_deref())
+                        == Some(turn.turn_id.as_str())
                     && turn.effective_owner() == owner
             });
             let terminal_is_completed = terminal_turn.is_some_and(|turn| {
@@ -6620,6 +6683,30 @@ impl RuntimeHandle {
                     terminal.kind == crate::types::TurnTerminalKind::Completed
                 })
             });
+            let interrupted_attachment = if terminal_turn.is_none()
+                && matches!(
+                    attempt.state,
+                    crate::domain::execution_protocol::ExecutionAttemptState::Open
+                        | crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+                ) {
+                attachment_turn_id
+                    .map(|id| self.inner.storage.read_turn_by_id(&id))
+                    .transpose()?
+                    .flatten()
+                    .filter(|turn| turn.terminal.is_none())
+                    .map(|mut turn| {
+                        turn.terminal = Some(crate::types::TurnTerminalSummary {
+                            kind: TurnTerminalKind::Interrupted,
+                            reason: Some("interrupted_queue_claim_reentry".into()),
+                            no_brief_reason: Some(TurnNoBriefReason::Interrupted),
+                            completed_at: self.now(),
+                            duration_ms: 0,
+                        });
+                        turn
+                    })
+            } else {
+                None
+            };
             let canonical_first_attempt = attempt.attempt_id
                 == scheduler_executor::canonical_activation_id(&entry.message_id);
             let current_canonical_lifecycle = if matches!(
@@ -6822,7 +6909,7 @@ impl RuntimeHandle {
                             agent_state: None,
                             message_evidence: Vec::new(),
                             transcript_entries: Vec::new(),
-                            turn_record: None,
+                            turn_record: interrupted_attachment.clone(),
                             audit_events: vec![AuditEvent::legacy(
                                 "scheduler_bootstrap_claim_recovered",
                                 serde_json::json!({
@@ -6921,7 +7008,7 @@ impl RuntimeHandle {
                         agent_state: None,
                         message_evidence: Vec::new(),
                         transcript_entries: Vec::new(),
-                        turn_record: terminal_turn.cloned(),
+                        turn_record: terminal_turn.cloned().or(interrupted_attachment.clone()),
                         audit_events: vec![AuditEvent::legacy(
                             "scheduler_bootstrap_claim_recovered",
                             serde_json::json!({
@@ -6984,7 +7071,7 @@ impl RuntimeHandle {
                         agent_state: None,
                         message_evidence: Vec::new(),
                         transcript_entries: Vec::new(),
-                        turn_record: terminal_turn.cloned(),
+                        turn_record: terminal_turn.cloned().or(interrupted_attachment),
                         audit_events: vec![AuditEvent::legacy(
                             "scheduler_bootstrap_claim_recovered",
                             serde_json::json!({

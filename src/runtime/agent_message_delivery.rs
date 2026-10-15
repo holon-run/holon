@@ -69,24 +69,37 @@ impl AgentMessageDeliveryService<'_> {
         if request.client_idempotency_key.trim().is_empty() {
             bail!("agent message delivery requires an idempotency key");
         }
+        if let Some(selector) = request.reply_context_id.as_deref() {
+            if selector.is_empty()
+                || caller
+                    .inherited_routing_context
+                    .as_ref()
+                    .is_none_or(|route| route.message_id != selector)
+                || caller.routing_activation_id.is_none()
+            {
+                bail!("reply_context_id must select a live admitted agent message");
+            }
+        }
 
-        caller.inherited_routing_context =
-            caller.inherited_routing_context.take().filter(|route| {
-                caller.caller_agent_id.as_deref() == Some(route.recipient_agent_id.as_str())
-                    && (request.forward
-                        || route.reply_to_agent_id.as_deref()
-                            == Some(request.target_agent_id.as_str())
-                        || route.sender_agent_id.as_deref()
-                            == Some(request.target_agent_id.as_str()))
-            });
-        if request.forward && caller.inherited_routing_context.is_none() {
-            bail!("forwarding requires routing context from the latest incoming agent message");
+        let inherited_routing_context = caller.inherited_routing_context.clone().filter(|route| {
+            caller.caller_agent_id.as_deref() == Some(route.recipient_agent_id.as_str())
+                && (request.forward
+                    || route.reply_to_agent_id.as_deref() == Some(request.target_agent_id.as_str())
+                    || route.sender_agent_id.as_deref() == Some(request.target_agent_id.as_str()))
+        });
+        if request.forward && inherited_routing_context.is_none() {
+            bail!("forwarding requires a unique or explicitly selected admitted agent message");
+        }
+        if caller.routing_activation_id.is_none() {
+            caller
+                .inherited_routing_context
+                .clone_from(&inherited_routing_context);
         }
         let priority = request
             .requested_priority
             .clone()
             .unwrap_or(Priority::Normal);
-        let inherited = caller.inherited_routing_context.as_ref();
+        let inherited = inherited_routing_context.as_ref();
         let forwarded = inherited.filter(|route| {
             request.forward
                 && route.reply_to_agent_id.as_deref() != Some(request.target_agent_id.as_str())
@@ -327,6 +340,7 @@ mod tests {
             current_task_id: None,
             current_work_item_id: None,
             inherited_routing_context,
+            routing_activation_id: None,
         }
     }
 
@@ -341,7 +355,399 @@ mod tests {
             causation_id: None,
             requested_priority: None,
             forward: false,
+            reply_context_id: None,
         }
+    }
+
+    async fn start_reply_selector_turn(runtime: &RuntimeHandle) -> Result<MessageEnvelope> {
+        use crate::runtime::scheduler_executor::{RunLoopPoll, SchedulerDecisionExecutor};
+        let RunLoopPoll::Message(scheduled) =
+            SchedulerDecisionExecutor::new(runtime).poll().await?
+        else {
+            bail!("expected scheduled agent message");
+        };
+        runtime
+            .begin_interactive_turn_with_provenance(
+                Some(&scheduled.message),
+                None,
+                None,
+                scheduled.dispatch_plan.execution_admission_provenance,
+            )
+            .await?;
+        runtime.record_incoming_transcript_entry(&scheduled.message)?;
+        Ok(scheduled.message)
+    }
+
+    #[tokio::test]
+    async fn reply_selector_routes_real_p1_followers_and_their_interrupted_replay() -> Result<()> {
+        real_p1_reply_selector_followers_and_interrupted_replay(false).await
+    }
+
+    #[tokio::test]
+    async fn reply_selector_routes_real_p1_null_ingress_followers_and_interrupted_replay(
+    ) -> Result<()> {
+        real_p1_reply_selector_followers_and_interrupted_replay(true).await
+    }
+
+    async fn real_p1_reply_selector_followers_and_interrupted_replay(
+        null_ingress_turn: bool,
+    ) -> Result<()> {
+        use crate::runtime::tests::support::{
+            context_config, host_backed_test_runtime, TimelineProvider,
+        };
+        use crate::types::QueueEntryStatus;
+        use anyhow::Context;
+        use std::sync::Arc;
+
+        let (home, _host, sender) = host_backed_test_runtime().await;
+        let sender_id = sender.agent_id().await?;
+        let workspace = home.path().join("reply-selector-workspace");
+        std::fs::create_dir_all(&workspace)?;
+        let state_root = home.path().join("reply-selector-state");
+        let new_target = || {
+            RuntimeHandle::new(
+                "reply-selector-target",
+                state_root.clone(),
+                workspace.clone(),
+                "http://127.0.0.1:7878".into(),
+                Arc::new(TimelineProvider),
+                "fixture".into(),
+                context_config(),
+            )
+        };
+        let mut target = new_target()?;
+        let mut ids = Vec::new();
+        for index in 0..2 {
+            let mut source = caller(None);
+            source.caller_principal = format!("agent:{sender_id}");
+            source.caller_agent_id = Some(sender_id.clone());
+            source.current_turn_id = None;
+            let mut input = request("reply-selector-target", &format!("input-{index}"));
+            input.requested_priority = Some(Priority::Normal);
+            input.correlation_id = Some(format!("correlation-{index}"));
+            let prepared = AgentMessageDeliveryService::prepare(input, source)?;
+            ids.push(
+                target
+                    .agent_message_delivery_service()
+                    .deliver(&prepared)
+                    .await?
+                    .message_id
+                    .context("accepted message")?,
+            );
+        }
+        let original_follower = target
+            .storage()
+            .read_message_by_id(&ids[1])?
+            .context("durable follower")?;
+        assert!(original_follower.turn_id.is_some());
+        if null_ingress_turn {
+            // Restore a persisted pre-assignment input before real admission;
+            // never assign or rewrite the canonical attempt's turn.
+            let mut guard = target.inner.agent.lock().await;
+            guard
+                .queue
+                .pop_next_matching(|message| message.id == ids[0])
+                .context("queued pre-assignment anchor")?;
+            let mut message = target
+                .storage()
+                .read_message_by_id(&ids[0])?
+                .context("persisted pre-assignment anchor")?;
+            message.turn_id = None;
+            target.inner.runtime_db.transaction(|tx| {
+                crate::runtime_db::evidence::insert_message_evidence_tx(tx, &message)
+            })?;
+            let message = target
+                .storage()
+                .read_message_by_id(&message.id)?
+                .context("persisted pre-assignment anchor")?;
+            guard.queue.push_front(message);
+        }
+        let original_anchor = target
+            .storage()
+            .read_message_by_id(&ids[0])?
+            .context("durable original anchor")?;
+        assert_eq!(original_anchor.turn_id.is_none(), null_ingress_turn);
+        let mut original_activation_id = None;
+        let mut original_turn_id = None;
+
+        for replay in [false, true] {
+            if replay {
+                drop(target);
+                target = new_target()?;
+                target.recover_scheduler_bootstrap_claims().await?;
+            }
+            let anchor = start_reply_selector_turn(&target).await?;
+            assert_eq!(anchor.id, ids[0]);
+            assert_eq!(anchor.turn_id, original_anchor.turn_id);
+            if replay {
+                assert_eq!(
+                    anchor.source_refs.get("replay_source_turn_id"),
+                    original_turn_id.as_ref()
+                );
+                assert_eq!(
+                    anchor.source_refs.get("replay_reason").map(String::as_str),
+                    Some("interrupted_queue_claim_reentry")
+                );
+            } else {
+                assert!(!anchor.source_refs.contains_key("replay_source_turn_id"));
+                assert!(!anchor.source_refs.contains_key("replay_reason"));
+            }
+            assert!(target.attach_idle_sender_inputs(&anchor, 24 * 1024).await?);
+            let state = target.inner.agent.lock().await.state.clone();
+            let turn = target
+                .storage()
+                .read_turn_by_id(state.current_turn_id.as_deref().context("live turn")?)?
+                .context("live turn record")?;
+            assert_ne!(
+                original_follower.turn_id.as_deref(),
+                Some(turn.turn_id.as_str())
+            );
+            assert_eq!(turn.input_message_ids, ids);
+            assert_eq!(turn.replay.is_some(), replay);
+            let execution = target
+                .inner
+                .runtime_db
+                .transitions()
+                .load_execution_protocol_state_if_initialized("reply-selector-target")?
+                .context("canonical execution")?;
+            let binding = state
+                .current_execution_binding
+                .as_ref()
+                .context("current execution binding")?;
+            assert_eq!(binding.turn_id, turn.turn_id);
+            assert_eq!(binding.source_message_id, ids[0]);
+            let attempt = &execution.attempts[binding.activation_id.as_ref().unwrap()];
+            assert_eq!(attempt.agent_id, turn.agent_id);
+            assert_eq!(attempt.source_message_id.as_ref(), Some(&ids[0]));
+            assert!(attempt.run_id.is_none());
+            assert_eq!(attempt.turn_id, anchor.turn_id);
+            if let Some(replay) = &turn.replay {
+                assert_eq!(attempt.recovery_of_attempt_id, original_activation_id);
+                assert_eq!(replay.source_message_id, ids[0]);
+                assert_eq!(
+                    original_turn_id.as_deref(),
+                    Some(replay.source_turn_id.as_str())
+                );
+                assert_ne!(attempt.turn_id.as_deref(), Some(turn.turn_id.as_str()));
+                let prior = &execution.attempts[attempt.recovery_of_attempt_id.as_ref().unwrap()];
+                assert_eq!(
+                    prior.state,
+                    crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+                );
+                assert_eq!(prior.turn_id, original_anchor.turn_id);
+                assert_eq!(prior.turn_id.is_none(), null_ingress_turn);
+                assert_eq!(attempt.turn_id, prior.turn_id);
+                assert_eq!(attempt.source_message_id, prior.source_message_id);
+                assert_eq!(attempt.binding, prior.binding);
+                let source = target
+                    .storage()
+                    .read_turn_by_id(&replay.source_turn_id)?
+                    .context("original admission turn")?;
+                assert_ne!(source.turn_id, turn.turn_id);
+                assert_eq!(source.agent_id, turn.agent_id);
+                assert_eq!(source.input_message_ids, ids);
+                assert_eq!(
+                    source
+                        .trigger
+                        .as_ref()
+                        .and_then(|trigger| trigger.message_id.as_deref()),
+                    Some(ids[0].as_str())
+                );
+                let source_batch = source
+                    .idle_input_batch
+                    .as_ref()
+                    .context("independent source admission snapshot")?;
+                assert_eq!(source_batch.anchor_message_id, ids[0]);
+                assert_eq!(
+                    source_batch.activation_id.as_deref(),
+                    Some(prior.attempt_id.as_str())
+                );
+                assert_eq!(
+                    source_batch
+                        .items
+                        .iter()
+                        .map(|item| &item.message_id)
+                        .collect::<Vec<_>>(),
+                    ids.iter().collect::<Vec<_>>()
+                );
+                for item in &source_batch.items {
+                    assert_eq!(item.source_ref, format!("message:{}", item.message_id));
+                }
+            } else {
+                assert_eq!(attempt.turn_id, original_anchor.turn_id);
+                assert!(attempt.recovery_of_attempt_id.is_none());
+                original_activation_id = Some(attempt.attempt_id.clone());
+                original_turn_id = Some(turn.turn_id.clone());
+            }
+            assert_eq!(
+                target
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest(&ids[1])?
+                    .context("follower queue entry")?
+                    .status,
+                QueueEntryStatus::Interjected
+            );
+            assert_eq!(
+                serde_json::to_value(target.storage().read_message_by_id(&ids[1])?.unwrap())?,
+                serde_json::to_value(&original_follower)?
+            );
+            let deliveries = target.inner.runtime_db.agent_message_deliveries();
+            let follower_delivery = deliveries
+                .latest_for_message(&ids[1])?
+                .context("canonical follower delivery")?;
+            assert_eq!(
+                follower_delivery.outcome,
+                AgentMessageDeliveryOutcome::Accepted
+            );
+            assert!(follower_delivery.activation_id.is_none());
+            assert!(follower_delivery.turn_id.is_none());
+            assert_eq!(
+                follower_delivery.routing_context,
+                original_follower.routing_context
+            );
+            assert!(deliveries
+                .resolve_reply_context(
+                    "reply-selector-target",
+                    state.current_turn_id.as_deref(),
+                    None,
+                    &sender_id,
+                    false,
+                )
+                .is_err());
+            for (index, id) in ids.iter().enumerate() {
+                let selected = deliveries
+                    .resolve_reply_context(
+                        "reply-selector-target",
+                        state.current_turn_id.as_deref(),
+                        Some(id),
+                        &sender_id,
+                        false,
+                    )?
+                    .context("selected admitted input")?;
+                assert_eq!(selected.routing_context.message_id, *id);
+                assert_eq!(
+                    selected.routing_context.correlation_id,
+                    Some(format!("correlation-{index}"))
+                );
+                assert_eq!(
+                    selected.activation_id,
+                    state
+                        .current_execution_binding
+                        .as_ref()
+                        .unwrap()
+                        .activation_id
+                        .as_ref()
+                        .unwrap()
+                        .as_str()
+                );
+                let mut reply_caller = caller(Some(selected.routing_context.clone()));
+                reply_caller.caller_agent_id = Some("reply-selector-target".into());
+                reply_caller.current_turn_id = Some(selected.turn_id);
+                reply_caller.routing_activation_id = Some(selected.activation_id);
+                let mut reply = request(&sender_id, &format!("reply-{replay}-{index}"));
+                reply.reply_context_id = Some(id.clone());
+                let prepared = AgentMessageDeliveryService::prepare(reply, reply_caller)?;
+                assert_eq!(
+                    prepared.message.correlation_id,
+                    selected.routing_context.correlation_id
+                );
+                assert_eq!(prepared.message.causation_id.as_deref(), Some(id.as_str()));
+                assert_eq!(
+                    prepared
+                        .message
+                        .routing_context
+                        .unwrap()
+                        .in_reply_to_message_id
+                        .as_deref(),
+                    Some(id.as_str())
+                );
+            }
+            let assert_follower_rejected = |defect: &str| {
+                assert!(
+                    deliveries
+                        .resolve_reply_context(
+                            "reply-selector-target",
+                            state.current_turn_id.as_deref(),
+                            Some(&ids[1]),
+                            &sender_id,
+                            false,
+                        )
+                        .is_err(),
+                    "{defect}"
+                );
+            };
+            if replay {
+                let source = target
+                    .storage()
+                    .read_turn_by_id(&turn.replay.as_ref().unwrap().source_turn_id)?
+                    .context("replay source fixture")?;
+                for defect in [
+                    "missing_source_batch",
+                    "wrong_source_ref",
+                    "missing_source_admission",
+                ] {
+                    let mut invalid = source.clone();
+                    match defect {
+                        "missing_source_batch" => invalid.idle_input_batch = None,
+                        "wrong_source_ref" => {
+                            invalid.idle_input_batch.as_mut().unwrap().items[1].source_ref =
+                                "message:foreign".into();
+                        }
+                        _ => {
+                            invalid.input_message_ids.retain(|id| id != &ids[1]);
+                        }
+                    }
+                    target.inner.runtime_db.turn_records().upsert(&invalid)?;
+                    assert_follower_rejected(defect);
+                }
+                if null_ingress_turn {
+                    let mut invalid = source.clone();
+                    invalid.idle_input_batch.as_mut().unwrap().activation_id =
+                        Some(attempt.attempt_id.clone());
+                    target.inner.runtime_db.turn_records().upsert(&invalid)?;
+                    assert_follower_rejected("source_batch_bound_to_successor");
+                }
+                target.inner.runtime_db.turn_records().upsert(&source)?;
+                let mut invalid = execution.clone();
+                invalid
+                    .attempts
+                    .get_mut(&attempt.attempt_id)
+                    .unwrap()
+                    .recovery_of_attempt_id = None;
+                target.inner.runtime_db.transaction(|tx| {
+                    crate::runtime_db::transitions::persist_state_tx(tx, &invalid)
+                })?;
+                assert_follower_rejected("missing_canonical_predecessor");
+                target.inner.runtime_db.transaction(|tx| {
+                    crate::runtime_db::transitions::persist_state_tx(tx, &execution)
+                })?;
+                // The same accepted, unbound ingress ID becomes foreign once a
+                // durable turn exists; neither snapshot may authorize it now.
+                let foreign = crate::types::TurnRecord::new(
+                    "reply-selector-target",
+                    original_follower.turn_id.as_deref().unwrap(),
+                    3,
+                );
+                target.inner.runtime_db.turn_records().upsert(&foreign)?;
+                assert_follower_rejected("foreign_bound_ingress_turn");
+            } else {
+                for defect in ["input_ids_only", "wrong_source_ref"] {
+                    let mut invalid = turn.clone();
+                    if defect == "input_ids_only" {
+                        invalid.idle_input_batch = None;
+                    } else {
+                        invalid.idle_input_batch.as_mut().unwrap().items[1].source_ref =
+                            "message:foreign".into();
+                    }
+                    target.inner.runtime_db.turn_records().upsert(&invalid)?;
+                    assert_follower_rejected(defect);
+                }
+                target.inner.runtime_db.turn_records().upsert(&turn)?;
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -499,6 +905,7 @@ mod tests {
             current_task_id: Some("task-caller".into()),
             current_work_item_id: Some("work-caller".into()),
             inherited_routing_context: None,
+            routing_activation_id: None,
         };
         let mut prepared = AgentMessageDeliveryService::prepare(
             AgentMessageSendRequest {
@@ -511,6 +918,7 @@ mod tests {
                 causation_id: None,
                 requested_priority: None,
                 forward: false,
+                reply_context_id: None,
             },
             caller.clone(),
         )

@@ -2,6 +2,8 @@ use super::*;
 use chrono::{Duration, TimeZone};
 use tempfile::tempdir;
 
+mod live_turn;
+
 fn runtime_db() -> (tempfile::TempDir, RuntimeDb) {
     let dir = tempdir().unwrap();
     let db = RuntimeDb::open_and_migrate(
@@ -93,6 +95,75 @@ fn unsettled_for_owner_distinguishes_null_work_item_owner() {
         .unwrap();
     assert_eq!(work_item_records.len(), 1);
     assert_eq!(work_item_records[0].result_identity, "result-01");
+}
+
+#[test]
+fn input_admission_reserves_anchor_and_never_reclaims_its_own_slots() {
+    let (_dir, db) = runtime_db();
+    for index in 0..10 {
+        insert(&db, &pending_record(index));
+    }
+    let repository = db.task_result_settlements();
+    let admitted = repository
+        .admit_unsettled_for_input(
+            "agent-a",
+            Some("work-a"),
+            "activation-batch",
+            Some("message-00"),
+            Utc::now(),
+        )
+        .unwrap();
+    assert_eq!(admitted.len(), 7);
+    assert_eq!(admitted.first().unwrap().message_id, "message-01");
+    assert!(repository
+        .admit_message("agent-a", "message-00", "activation-batch", Utc::now())
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        repository
+            .admitted_for_activation("agent-a", "activation-batch")
+            .unwrap()
+            .len(),
+        8
+    );
+    assert!(repository
+        .admit_unsettled_for_input(
+            "agent-a",
+            Some("work-a"),
+            "activation-batch",
+            Some("message-00"),
+            Utc::now(),
+        )
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn input_admission_reserves_an_anchor_without_a_result_ledger_row() {
+    let (_dir, db) = runtime_db();
+    for index in 0..10 {
+        insert(&db, &pending_record(index));
+    }
+    let admitted = db
+        .task_result_settlements()
+        .admit_unsettled_for_input(
+            "agent-a",
+            Some("work-a"),
+            "activation-batch",
+            Some("ordinary-message"),
+            pending_record(6).created_at,
+        )
+        .unwrap();
+    assert_eq!(admitted.len(), 7);
+    assert_eq!(admitted.last().unwrap().message_id, "message-06");
+    assert_eq!(
+        db.task_result_settlements()
+            .latest_for_message("message-07")
+            .unwrap()
+            .unwrap()
+            .state,
+        TaskResultSettlementState::PersistedPending
+    );
 }
 
 #[test]
