@@ -933,6 +933,69 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertEqual(response["output"][0]["name"], "GetWorkItem")
         self.assertEqual(scenario.phase, 8)
 
+    def test_openai_stub_interject_resumes_a_immediately_after_b_completion(self) -> None:
+        scenario = stub.Scenario("scheduler-interject")
+        scenario.phase = 7
+        scenario.work_ids = [
+            "work_0123456789abcde",
+            "work_fedcba987654321",
+        ]
+        scenario.markers = {
+            "interject_complete_a": "SCHEDULER-INTERJECT-COMPLETE-A-abcd",
+            "interject_complete_b": "SCHEDULER-INTERJECT-COMPLETE-B-abcd",
+        }
+
+        status, response = scenario.consume({"input": []})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            response["output"][0]["content"][0]["text"],
+            scenario.markers["interject_complete_b"],
+        )
+        self.assertEqual(response["output"][-1]["name"], "CompleteWorkItem")
+        self.assertEqual(
+            json.loads(response["output"][-1]["arguments"]),
+            {"work_item_id": scenario.work_ids[1]},
+        )
+        self.assertEqual(scenario.phase, 8)
+
+        for phase, name in enumerate(
+            ("GetWorkItem", "UpdateWorkItem", "CompleteWorkItem"), start=8
+        ):
+            with self.subTest(phase=phase, name=name):
+                status, response = scenario.consume({"input": []})
+                self.assertEqual(status, 200)
+                self.assertEqual(
+                    [item["type"] for item in response["output"]],
+                    ["message", "function_call"]
+                    if name == "CompleteWorkItem" else ["function_call"],
+                )
+                call = response["output"][-1]
+                self.assertEqual(call["name"], name)
+                args = json.loads(call["arguments"])
+                self.assertEqual(args["work_item_id"], scenario.work_ids[0])
+                if name == "GetWorkItem":
+                    self.assertTrue(args["include_todo_list"])
+                elif name == "UpdateWorkItem":
+                    self.assertEqual(args["todo_list"], [
+                        {"text": "interject-wait", "state": "completed"},
+                        {"text": "interject-complete", "state": "completed"},
+                    ])
+                else:
+                    self.assertEqual(
+                        response["output"][0]["content"][0]["text"],
+                        scenario.markers["interject_complete_a"],
+                    )
+                self.assertEqual(scenario.phase, phase + 1)
+
+        self.assertEqual(scenario.expected_phase(), 11)
+        self.assertTrue(scenario.status()["complete"])
+        status, response = scenario.consume({"input": []})
+        self.assertEqual(status, 409)
+        self.assertEqual(response["error"]["type"], "transcript_exhausted")
+        self.assertEqual(scenario.phase, 11)
+        self.assertEqual(scenario.extra_requests, 1)
+
     def test_openai_stub_registers_every_required_scenario(self) -> None:
         selected = [
             case for case in self.manifest["cases"] if case.get("stub_scenario")
