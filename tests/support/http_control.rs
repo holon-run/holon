@@ -2176,14 +2176,14 @@ pub async fn control_agent_model_override_validates_codex_reasoning_effort() -> 
     let unsupported = client
         .post(format!("{base}/api/control/agents/default/model"))
         .json(&serde_json::json!({
-            "model": "openai-codex/gpt-5.5",
-            "reasoning_effort": "max"
+            "model": "openai-codex/gpt-6-sol",
+            "reasoning_effort": "none"
         }))
         .send()
         .await?;
     assert_eq!(unsupported.status(), reqwest::StatusCode::BAD_REQUEST);
     let unsupported_body = unsupported.text().await?;
-    assert!(unsupported_body.contains("openai-codex/gpt-5.5"));
+    assert!(unsupported_body.contains("openai-codex/gpt-6-sol"));
     assert!(unsupported_body.contains("low, medium, high, xhigh"));
 
     let ultra = client
