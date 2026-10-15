@@ -494,15 +494,6 @@ pub enum TaskCommands {
         #[arg(long)]
         agent: Option<String>,
     },
-    Output {
-        task_id: String,
-        #[arg(long)]
-        block: bool,
-        #[arg(long)]
-        timeout_ms: Option<u64>,
-        #[arg(long)]
-        agent: Option<String>,
-    },
     Input {
         task_id: String,
         #[arg(long)]
@@ -1198,5 +1189,19 @@ mod tests {
         assert!(top_level.contains(&"serve"), "serve should be in snapshot");
         assert!(top_level.contains(&"run"), "run should be in snapshot");
         assert!(top_level.contains(&"agent"), "agent should be in snapshot");
+    }
+
+    #[test]
+    fn task_output_is_absent_from_metadata_and_help() {
+        let entries = collect_snapshot();
+        assert!(!entries.iter().any(|entry| entry.path == "task.output"));
+        assert!(entries.iter().any(|entry| entry.path == "task.status"));
+        let mut tree = build_command_tree();
+        let task = tree.find_subcommand_mut("task").expect("task command");
+        assert!(task.find_subcommand("output").is_none());
+        let help = task.render_long_help().to_string();
+        assert!(help.contains("status"));
+        assert!(!help.contains("output"));
+        assert!(Cli::try_parse_from(["holon", "task", "output", "task-old"]).is_err());
     }
 }

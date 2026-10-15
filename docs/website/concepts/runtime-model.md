@@ -73,7 +73,10 @@ A task is a **supervised execution handle**. Tasks include:
 Task lifecycle is independent of the agent's user-facing answer. You can:
 
 - Inspect status (`TaskStatus`)
-- Read bounded output (`TaskOutput`)
+- Read runtime-confirmed command files in bounded ranges, or observe agent
+  progress with bounded `holon tail --agent <id> --include-progress`
+- Wait for completion and result re-entry (`WaitFor(wake=task_result,
+  resource=<task_id>, delivery=...)`); observation/EOF is not completion
 - Send continuation input (`TaskInput`)
 - Stop explicitly (`TaskStop`)
 

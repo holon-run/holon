@@ -6,6 +6,15 @@ status: draft
 
 # RFC: Tool Result Envelope
 
+> Historical surface note (#3534 M2): `TaskOutput` examples below describe the
+> former model tool, not a currently callable tool. The retained HTTP task-output
+> DTO and runtime result/capture services still use bounded output projections.
+> Current models inspect `TaskStatus`, read runtime-confirmed command files in
+> bounded ranges, observe bounded `holon tail --agent` progress, and wait through
+> `WaitFor(wake=task_result, resource=<task_id>, delivery=...)` / re-entry.
+> The former model/CLI `block`/`timeout_ms` short wait is not replaced by tail.
+> See [Agent output observation](agent-output-observation.md).
+
 ## Summary
 
 Holon should treat tool results as a dual-surface contract.

@@ -9774,6 +9774,20 @@ mod tests {
             let terminal = wait_for_terminal_task(&parent, task_id).await;
             assert_eq!(terminal.status, TaskStatus::Completed);
             assert!(terminal.work_item_id.is_none());
+            let detail = terminal.detail.as_ref().unwrap();
+            assert_eq!(detail["business_completion"], false);
+            assert_eq!(detail["reply_content_source"], "original_message");
+            let reply = parent
+                .storage()
+                .read_message_by_id(detail["message_id"].as_str().unwrap())
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                reply.body,
+                MessageBody::Text {
+                    text: "peer report 0".into()
+                }
+            );
             assert_eq!(
                 terminal.rejoin_fence().unwrap().parent_turn_id,
                 parent_turn_id

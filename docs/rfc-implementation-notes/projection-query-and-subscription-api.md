@@ -149,7 +149,9 @@ through existing or dedicated detail APIs:
 
 - messages: `messages:batchGet` or equivalent message detail endpoint;
 - briefs: brief detail endpoint by `brief_id`;
-- tasks: `TaskStatus`, `TaskOutput`, and task output artifacts;
+- tasks: `TaskStatus` for lifecycle, runtime-confirmed command artifacts for
+  bounded output reads, and terminal result re-entry after
+  `WaitFor(wake=task_result, resource=<task_id>, delivery=...)`;
 - tool executions: canonical tool execution evidence by `tool_execution_id`;
 - work items: work-item detail endpoint and plan artifact refs.
 
@@ -280,7 +282,7 @@ families. `Default item` is what normal `agent_timeline` should produce.
 | `tool_execution_failed` | `system_alert` or failed `tool_activity`. | `info` for failures, `debug` details. | Use bounded error detail as failure evidence. Link `tool_execution_id` and related task/output refs. | Raw event plus tool detail. |
 | `task_created` | Create/update `task_activity`. | `verbose` | Use `task_id` as item id. If task is command-backed, merge with command tool item when `tool_execution_id`/task handle links exist. | `debug_event`. |
 | `task_status_updated` | Replace existing `task_activity`; update active task panels. | `verbose` | Do not append one row per status. Use replace delta to show queued/running/cancelling/completed state. | `debug_event`. |
-| `task_result_received` | Complete `task_activity`; maybe append failure `system_alert`. | `verbose`/`info` on failure | Include `output_summary_preview` and output refs. Full output remains in `TaskOutput`/artifact. | `debug_event`. |
+| `task_result_received` | Complete `task_activity`; maybe append failure `system_alert`. | `verbose`/`info` on failure | Include `output_summary_preview` and output refs. Retained output stays in runtime-confirmed artifacts and the internal/HTTP output projection, not a model output tool. | `debug_event`. |
 | command/child task failures (`command_task_runner_failed`, `command_task_result_enqueue_failed`, `supervised_child_task_recovery_failed`) | `system_alert`. | `info` | These are actionable runtime failures. Link task id and recovery refs. | Raw event preserved. |
 | `task_input_delivered` | Update `task_activity` or hide. | `debug`/`verbose` | Show only when useful for interactive task timeline. Do not duplicate operator input text. | `debug_event`. |
 | task worktree events (`task_worktree_metadata_recorded`, `task_worktree_cleanup_failed`, `worktree_created_for_task`) | `workspace_activity` or `system_alert` on failure. | `verbose`/`info` on failure | Keep path/branch previews bounded. Link workspace/worktree detail where available. | `debug_event`. |

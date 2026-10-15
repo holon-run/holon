@@ -59,8 +59,11 @@ Command task status and output projections expose an optional
 - an explicit truncation flag;
 - an optional typed failure code and disk-waterline evidence.
 
-The `TaskOutput.output_truncated` field continues to describe only API preview
-truncation. Capture-time loss is reported independently through
+The retained HTTP task-output DTO's `output_truncated` field describes only API
+preview truncation, not a model tool contract. The former model tool
+`TaskOutput` and CLI `holon task output` are removed; see
+[Agent output observation](agent-output-observation.md).
+Capture-time loss is reported independently through
 `output_capture.truncated`.
 
 ## Failure behavior
@@ -79,8 +82,12 @@ classified as `low_disk_space`.
 Once an output failure occurs, the runtime stops further persistence attempts
 but continues draining already-open pipes for the bounded post-exit drain
 period. Process exit status and output persistence evidence remain separate.
-If the artifact is unavailable, `TaskOutput` falls back to the bounded
-in-memory command summary instead of failing the retrieval.
+If the artifact is unavailable, the runtime output projection falls back to the
+bounded in-memory command summary. Command receipts expose confirmed file
+availability or explicit unavailability with bounded fallback; readers must not
+guess a path. Use `TaskStatus` for lifecycle and bounded file reads for retained
+output, not the retired model/CLI output short wait. The HTTP output route and
+internal capture/result services remain.
 
 ## Configuration
 

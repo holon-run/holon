@@ -13,6 +13,31 @@ Holon 的命令行界面。所有命令都接受 `--help`，用于查看详细�
 [CLI 稳定性策略](/zh-CN/reference/cli-stability-policy.md)和
 [CLI 契约清单](/zh-CN/reference/cli-contract-inventory.md)。
 
+## Agent 输出观测
+
+`holon tail --agent <id> --limit 20` 保持默认的 JSON brief 快照。
+可显式选择持久化的 assistant 文本进度与有界观测：
+
+```bash
+holon tail --agent child --include-progress
+holon tail --agent child --include-progress --follow --timeout-ms 5000 \
+  --max-events 100 --max-bytes 65536
+holon tail --agent child --include-progress --follow --cursor '<checkpoint>'
+```
+
+可选观测输出 NDJSON，最后的 `end` 回执包含 cursor、停止原因、记录数和带时间戳的
+运行时状态。follow 的整次操作期限默认 5 秒、最多 30 秒；记录预算默认 100、
+最多 1000（不含最终回执）；序列化字节预算默认 64 KiB、最多 1 MiB（含回执）。
+单独 `--follow` 只跟随 brief；`--cursor` 从对话流检查点恢复，不重放初始文本快照。
+遇到 reset/gap 应重新获取快照。
+
+输出按 Agent 而非任务归属，可能混合多个任务；不包含原始 transcript、reasoning
+或工具 trace，但不构成隔离或脱敏保证。读取不唤醒、提示或停止生产者，不消费任务
+结果。EOF、`end` 或 Agent 空闲不等于任务完成。生命周期查
+`holon task status <TASK_ID>`（模型用 `TaskStatus`），完成重入用
+`WaitFor(wake=task_result, resource=<task_id>, delivery=...)`。
+可选观测要求运行时声明 `agents.conversation-read.v1`；默认 brief 快照不受此要求影响。
+
 ## 命令树
 
 ```text
@@ -50,7 +75,7 @@ holon (v0.50.0)
 │   ├── schema   显示所有配置键的类型和默认值
 │   └── doctor   完整系统健康检查
 ├── prompt       向 Agent 发送提示词（轻量）
-├── tail         显示最近的日志末尾
+├── tail         读取最近的 brief 或有界 Agent 进度
 ├── transcript   显示对话记录
 ├── events       读取稳定的运行时事件信封
 │   ├── tail     拉取一页有界的事件信封
@@ -59,7 +84,6 @@ holon (v0.50.0)
 │   ├── list     列出任务
 │   ├── run      把命令作为受管后台任务运行
 │   ├── status   显示任务生命周期状态
-│   ├── output   读取任务输出
 │   ├── input    向任务发送文本输入
 │   └── stop     停止任务
 ├── work-item    查看和管理 WorkItem
@@ -338,7 +362,6 @@ holon serve --access tunnel
 ```bash
 holon task run "Build project" --cmd "cargo build"
 holon task status <TASK_ID>
-holon task output <TASK_ID> --block --timeout-ms 30000
 holon task input <TASK_ID> --text "continue\n"
 holon task stop <TASK_ID>
 ```
@@ -346,6 +369,19 @@ holon task stop <TASK_ID>
 任务生命周期命令默认作用于已配置的默认 Agent。传入 `--agent <AGENT>` 可以查看
 或控制属于其他公开 Agent 的任务。所有任务生命周期命令都会打印对应的 JSON 控制
 平面或读模型响应。
+
+原 `holon task output` 命令和模型工具 `TaskOutput` 已移除，包括
+`block`/`timeout_ms` 轮内短等；不要用 tail 轮询替代。命令日志只从状态响应中
+运行时确认的文件路径有界读取，例如：
+
+```bash
+dd if="$CONFIRMED_OUTPUT_PATH" bs=1 skip=0 count=8192 status=none
+```
+
+变量必须设为精确返回路径，不能从 Agent home 或 task id 拼接。采集可能只保留
+头尾并在终态重写文件；EOF 不等于完成，需要稳定最终日志时先等任务终止。
+有界进度观测用 [`holon tail --agent`](#agent-输出观测)，不保证任务独占输出。
+底层 HTTP task-output 路由与运行时 capture/result 服务继续保留。
 
 ### WorkItem
 

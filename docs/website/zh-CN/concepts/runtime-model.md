@@ -65,7 +65,10 @@ Agent 类型：
 任务生命周期独立于 Agent 面向用户的回答。你可以：
 
 - 查看状态（`TaskStatus`）
-- 读取有界输出（`TaskOutput`）
+- 从运行时确认的命令文件路径有界读取，或用有界的
+  `holon tail --agent <id> --include-progress` 观测 Agent 进度
+- 等待完成与结果重入（`WaitFor(wake=task_result, resource=<task_id>, delivery=...)`）；
+  观测/EOF 不等于任务完成
 - 发送延续输入（`TaskInput`）
 - 显式停止（`TaskStop`）
 

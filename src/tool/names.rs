@@ -44,7 +44,6 @@ pub mod tool_names {
     pub const TASK_INPUT: &str = "TaskInput";
     /// Legacy alias kept for backward-compatible dispatch.
     pub const TASK_LIST: &str = "TaskList";
-    pub const TASK_OUTPUT: &str = "TaskOutput";
     pub const TASK_STATUS: &str = "TaskStatus";
     pub const TASK_STOP: &str = "TaskStop";
     pub const UPDATE_WORK_ITEM: &str = "UpdateWorkItem";
@@ -96,7 +95,6 @@ pub const STABLE_TOOL_NAMES: &[&str] = &[
     SLEEP,
     SWITCH_WORKSPACE,
     TASK_INPUT,
-    TASK_OUTPUT,
     TASK_STATUS,
     TASK_STOP,
     UPDATE_WORK_ITEM,
@@ -116,13 +114,12 @@ pub const CUSTOM_TEXT_RECEIPT_TOOLS: &[&str] = &[
     EXEC_COMMAND,
     EXEC_COMMAND_BATCH,
     GET_WORKSPACE_STATE,
-    TASK_OUTPUT,
     GENERATE_IMAGE,
     VIEW_IMAGE,
 ];
 
 /// Tools that produce output needing the `function_json` envelope field.
-pub const FUNCTION_JSON_ENVELOPE_TOOLS: &[&str] = &[EXEC_COMMAND, EXEC_COMMAND_BATCH, TASK_OUTPUT];
+pub const FUNCTION_JSON_ENVELOPE_TOOLS: &[&str] = &[EXEC_COMMAND, EXEC_COMMAND_BATCH];
 
 /// Tools that are **not** exposed to the model (hidden from tool specs).
 pub const HIDDEN_FROM_MODEL_TOOLS: &[&str] = &[SLEEP, TASK_LIST, USE_WORKSPACE];
@@ -167,7 +164,6 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     SWITCH_WORKSPACE,
     TASK_INPUT,
     TASK_LIST,
-    TASK_OUTPUT,
     TASK_STATUS,
     TASK_STOP,
     UPDATE_WORK_ITEM,

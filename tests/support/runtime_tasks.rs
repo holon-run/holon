@@ -8,6 +8,7 @@
 // provider implementations and shared harness helpers have been moved to
 // runtime_providers.rs and runtime_helpers.rs respectively.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -38,7 +39,7 @@ use holon::{
     },
 };
 use serde_json::json;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use tokio::time::{sleep, timeout, Duration, Instant};
 
@@ -61,6 +62,182 @@ use crate::support::{
 
 // ============================================================================
 // Runtime tasks domain test support
+
+pub(crate) fn read_confirmed_command_output(task: &serde_json::Value) -> Result<String> {
+    let capture: holon::types::CommandTaskOutputCaptureSnapshot =
+        serde_json::from_value(task["command"]["output_capture"].clone())?;
+    assert_eq!(
+        capture.failure_code, None,
+        "TaskStatus must confirm command output capture succeeded"
+    );
+    let path = task["command"]["output_path"]
+        .as_str()
+        .expect("TaskStatus must confirm the command output path");
+    let mut output = String::new();
+    std::fs::File::open(path)?
+        .take(4096)
+        .read_to_string(&mut output)?;
+    Ok(output)
+}
+
+/// Drives the model through an exact-handle wait instead of retrieving output.
+pub(crate) struct TaskResultReentryProvider {
+    delegate: Arc<dyn AgentProvider>,
+    task_id: Mutex<Option<String>>,
+    requests: Mutex<Vec<String>>,
+    child_release: Notify,
+}
+
+impl TaskResultReentryProvider {
+    pub(crate) fn new(delegate: Arc<dyn AgentProvider>) -> Self {
+        Self {
+            delegate,
+            task_id: Mutex::new(None),
+            requests: Mutex::new(Vec::new()),
+            child_release: Notify::new(),
+        }
+    }
+
+    pub(crate) async fn observe_result(
+        self: &Arc<Self>,
+        runtime: &holon::runtime::RuntimeHandle,
+        task_id: &str,
+        expected: &str,
+    ) -> Result<()> {
+        *self.task_id.lock().await = Some(task_id.into());
+        runtime
+            .enqueue(MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: format!("Wait for the exact task result: {task_id}"),
+                },
+            ))
+            .await?;
+        eventually_for(Duration::from_secs(30), || {
+            Ok(runtime
+                .storage()
+                .read_recent_tool_executions(20)?
+                .iter()
+                .any(|record| record.tool_name == "WaitFor" && record.input["resource"] == task_id))
+        })
+        .await?;
+        self.child_release.notify_one();
+        wait_until_async_for(Duration::from_secs(30), || {
+            let provider = self.clone();
+            let runtime = runtime.clone();
+            async move {
+                Ok(provider.requests.lock().await.len() >= 2
+                    && runtime
+                        .recent_briefs(10)
+                        .await?
+                        .iter()
+                        .any(|brief| brief.text == "exact task result observed"))
+            }
+        })
+        .await?;
+        let requests = self.requests.lock().await;
+        let reentry = &requests[1];
+        assert!(
+            !requests[0].contains(expected),
+            "result text must arrive through task-result reentry, not the initial prompt"
+        );
+        assert!(
+            (reentry.contains("[TaskResult]")
+                || reentry.contains("\"delivery_surface\":\"task_rejoin\""))
+                && reentry.contains(task_id)
+                && reentry.contains(expected),
+            "exact task result must reach the model: {reentry}"
+        );
+        let records = runtime.storage().read_recent_tool_executions(20)?;
+        assert!(records.iter().any(|record| {
+            record.tool_name == "WaitFor"
+                && record.input["wake"] == "task_result"
+                && record.input["resource"] == task_id
+        }));
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl AgentProvider for TaskResultReentryProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        if request
+            .prompt_frame
+            .cache
+            .as_ref()
+            .is_some_and(|cache| cache.agent_id != "default")
+        {
+            // Do not let the child's automatic result outrun the exact-handle wait.
+            self.child_release.notified().await;
+            return self.delegate.complete_turn(request).await;
+        }
+        let Some(task_id) = self.task_id.lock().await.clone() else {
+            return self.delegate.complete_turn(request).await;
+        };
+        assert!(request.tools.iter().any(|tool| tool.name == "WaitFor"));
+        assert!(!request.tools.iter().any(|tool| tool.name == "TaskOutput"));
+        let mut requests = self.requests.lock().await;
+        requests.push(
+            request
+                .conversation
+                .iter()
+                .rev()
+                .filter_map(|message| match message {
+                    ConversationMessage::UserText(text) => Some(text.clone()),
+                    ConversationMessage::UserBlocks(blocks) => Some(
+                        blocks
+                            .iter()
+                            .map(|block| block.text.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    ),
+                    _ => None,
+                })
+                .find_map(|text| {
+                    text.split_once("## current_input\n")
+                        .map(|(_, input)| input.split("\n## ").next().unwrap().to_owned())
+                })
+                .expect("the task-result continuation must have a current-input section"),
+        );
+        let call = requests.len();
+        drop(requests);
+        let blocks = match call {
+            1 => vec![ModelBlock::ToolUse {
+                id: "wait-exact-task-result".into(),
+                name: "WaitFor".into(),
+                input: json!({
+                    "wake": "task_result",
+                    "resource": task_id,
+                    "delivery": "silent",
+                    "reason": "observe the exact task result"
+                }),
+                kind: holon::provider::ModelToolCallKind::Function,
+                provider_data: None,
+            }],
+            2 => vec![ModelBlock::Text {
+                text: "exact task result observed".into(),
+            }],
+            _ => anyhow::bail!("unexpected task-result provider call {call}"),
+        };
+        Ok(ProviderTurnResponse {
+            blocks,
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
 
 struct SleepThenRecordTaskResultProvider {
     requests: Mutex<Vec<String>>,
@@ -1716,17 +1893,20 @@ pub async fn task_output_returns_completed_command_task_output() -> Result<()> {
             &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-command".into(),
-                name: "TaskOutput".into(),
+                name: "TaskStatus".into(),
                 input: json!({ "task_id": task.id }),
             },
         )
         .await?;
     let value: serde_json::Value = parse_tool_result_payload(&result)?;
-    assert_eq!(value["retrieval_status"], "success");
+    assert_eq!(value["task"]["task_id"], task.id);
+    assert_eq!(value["task"]["status"], "completed");
     assert_eq!(value["task"]["kind"], "command_task");
-    assert_eq!(value["task"]["output_preview"], "managed_task_output");
-    assert_eq!(value["task"]["exit_status"], 0);
-    assert!(value["task"]["artifacts"][0]["path"].as_str().is_some());
+    assert_eq!(value["task"]["command"]["exit_status"], 0);
+    assert_eq!(
+        read_confirmed_command_output(&value["task"])?,
+        "managed_task_output"
+    );
     Ok(())
 }
 
@@ -1761,13 +1941,17 @@ pub async fn task_output_non_blocking_reports_running_command_task() -> Result<(
             &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-running".into(),
-                name: "TaskOutput".into(),
-                input: json!({ "task_id": task.id, "block": false }),
+                name: "TaskStatus".into(),
+                input: json!({ "task_id": task.id }),
             },
         )
         .await?;
     let value: serde_json::Value = parse_tool_result_payload(&result)?;
-    assert_eq!(value["retrieval_status"], "not_ready");
+    assert_eq!(value["task"]["task_id"], task.id);
+    assert!(matches!(
+        value["task"]["status"].as_str(),
+        Some("queued" | "running")
+    ));
     assert_eq!(value["task"]["kind"], "command_task");
 
     runtime
@@ -1784,10 +1968,11 @@ pub async fn task_output_non_blocking_reports_running_command_task() -> Result<(
 }
 
 pub async fn task_output_waits_for_command_task_completion() -> Result<()> {
-    let host =
-        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    let provider = Arc::new(TaskResultReentryProvider::new(Arc::new(StubProvider::new(
+        "ignored",
+    ))));
+    let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
-    let registry = ToolRegistry::new(runtime.workspace_root());
 
     let task = runtime
         .schedule_command_task(
@@ -1807,26 +1992,11 @@ pub async fn task_output_waits_for_command_task_completion() -> Result<()> {
         )
         .await?;
 
-    let (result, _) = registry
-        .execute(
-            &runtime,
-            "default",
-            &AuthorityClass::OperatorInstruction,
-            &ToolCall {
-                id: "tool-task-output-command".into(),
-                name: "TaskOutput".into(),
-                input: json!({ "task_id": task.id }),
-            },
-        )
-        .await?;
-    let value: serde_json::Value = parse_tool_result_payload(&result)?;
-    assert_eq!(value["retrieval_status"], "success");
-    assert_eq!(value["task"]["kind"], "command_task");
-    assert!(value["task"]["output_preview"]
-        .as_str()
-        .expect("command task output should be text")
-        .contains("done"));
-    assert!(value["task"]["artifacts"][0]["path"].is_string());
+    provider.observe_result(&runtime, &task.id, "done").await?;
+    assert_eq!(
+        runtime.task_status_snapshot(&task.id).await?.status,
+        TaskStatus::Completed
+    );
     Ok(())
 }
 
@@ -1872,6 +2042,14 @@ pub async fn task_input_delivers_stdin_to_managed_command_task() -> Result<()> {
     assert_eq!(input_value["bytes_written"], 6);
     assert_eq!(input_value["task"]["kind"], "command_task");
 
+    wait_until(|| {
+        Ok(runtime
+            .storage()
+            .latest_task_records()?
+            .iter()
+            .any(|record| record.id == task.id && record.status == TaskStatus::Completed))
+    })
+    .await?;
     let (result, _) = registry
         .execute(
             &runtime,
@@ -1879,14 +2057,18 @@ pub async fn task_input_delivers_stdin_to_managed_command_task() -> Result<()> {
             &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-after-input".into(),
-                name: "TaskOutput".into(),
+                name: "TaskStatus".into(),
                 input: json!({ "task_id": task.id }),
             },
         )
         .await?;
     let value: serde_json::Value = parse_tool_result_payload(&result)?;
-    assert_eq!(value["retrieval_status"], "success");
-    assert_eq!(value["task"]["output_preview"], "heard:hello");
+    assert_eq!(
+        read_confirmed_command_output(&value["task"])?,
+        "heard:hello"
+    );
+    assert_eq!(value["task"]["task_id"], task.id);
+    assert_eq!(value["task"]["status"], "completed");
     Ok(())
 }
 
@@ -1894,7 +2076,6 @@ pub async fn task_output_times_out_for_long_running_task() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
-    let registry = ToolRegistry::new(runtime.workspace_root());
 
     let task = runtime
         .schedule_command_task(
@@ -1914,25 +2095,17 @@ pub async fn task_output_times_out_for_long_running_task() -> Result<()> {
         )
         .await?;
 
-    let (result, _) = registry
-        .execute(
-            &runtime,
-            "default",
-            &AuthorityClass::OperatorInstruction,
-            &ToolCall {
-                id: "tool-task-output-timeout".into(),
-                name: "TaskOutput".into(),
-                input: json!({ "task_id": task.id, "timeout_ms": 50 }),
-            },
-        )
-        .await?;
-    let value: serde_json::Value = parse_tool_result_payload(&result)?;
-    assert_eq!(value["retrieval_status"], "timeout");
-    assert_eq!(value["task"]["kind"], "command_task");
+    // Blocking retrieval remains an internal/HTTP contract, not a model tool.
+    let output = runtime.task_output(&task.id, true, 50).await?;
+    assert_eq!(
+        output.retrieval_status,
+        holon::types::TaskOutputRetrievalStatus::Timeout
+    );
+    assert_eq!(output.task.kind, "command_task");
     assert!(
-        matches!(value["task"]["status"].as_str(), Some("queued" | "running")),
+        matches!(output.task.status, TaskStatus::Queued | TaskStatus::Running),
         "expected active command task status, got {:?}",
-        value["task"]["status"]
+        output.task.status
     );
 
     runtime
@@ -2009,14 +2182,14 @@ pub async fn task_output_prefers_terminal_task_record_over_stale_task_message() 
             &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-stale-message".into(),
-                name: "TaskOutput".into(),
-                input: json!({ "task_id": task.id, "timeout_ms": 10 }),
+                name: "TaskStatus".into(),
+                input: json!({ "task_id": task.id }),
             },
         )
         .await?;
     let value: serde_json::Value = parse_tool_result_payload(&result)?;
-    assert_eq!(value["retrieval_status"], "success");
     assert_eq!(value["task"]["status"], "completed");
+    assert_eq!(value["task"]["task_id"], task.id);
     Ok(())
 }
 
@@ -2274,27 +2447,23 @@ pub async fn task_status_and_task_output_keep_lifecycle_and_output_boundaries() 
     assert!(status_value["task"].get("output_preview").is_none());
     assert!(status_value["task"].get("artifacts").is_none());
 
-    let (output_result, _) = registry
-        .execute(
-            &runtime,
-            "default",
-            &AuthorityClass::OperatorInstruction,
-            &ToolCall {
-                id: "tool-task-output-boundary".into(),
-                name: "TaskOutput".into(),
-                input: json!({ "task_id": task.id }),
-            },
-        )
-        .await?;
-    let output_value: serde_json::Value = parse_tool_result_payload(&output_result)?;
-    assert_eq!(output_value["retrieval_status"], "success");
-    assert_eq!(output_value["task"]["kind"], "command_task");
-    assert_eq!(output_value["task"]["status"], "completed");
-    assert_eq!(output_value["task"]["output_preview"], "boundary_ok");
-    assert_eq!(output_value["task"]["output_truncated"], false);
-    assert_eq!(output_value["task"]["output_artifact"], 0);
-    assert!(output_value["task"]["artifacts"][0]["path"].is_string());
-    assert_eq!(output_value["task"]["exit_status"], 0);
+    assert_eq!(
+        read_confirmed_command_output(&status_value["task"])?,
+        "boundary_ok"
+    );
+    // The richer output shape is retained only for internal and HTTP callers.
+    let output = runtime.task_output(&task.id, false, 0).await?;
+    assert_eq!(
+        output.retrieval_status,
+        holon::types::TaskOutputRetrievalStatus::Success
+    );
+    assert_eq!(output.task.kind, "command_task");
+    assert_eq!(output.task.status, TaskStatus::Completed);
+    assert_eq!(output.task.output_preview, "boundary_ok");
+    assert!(!output.task.output_truncated);
+    assert_eq!(output.task.output_artifact, Some(0));
+    assert!(Path::new(&output.task.artifacts[0].path).exists());
+    assert_eq!(output.task.exit_status, Some(0));
     Ok(())
 }
 
@@ -2396,15 +2565,15 @@ pub async fn command_task_stop_cancels_running_command() -> Result<()> {
             &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-cancelled-command".into(),
-                name: "TaskOutput".into(),
+                name: "TaskStatus".into(),
                 input: json!({ "task_id": &task.id }),
             },
         )
         .await?;
     let value: serde_json::Value = parse_tool_result_payload(&tool_result)?;
-    assert_eq!(value["retrieval_status"], "success");
     assert_eq!(value["task"]["status"], "cancelled");
     assert_eq!(value["task"]["kind"], "command_task");
+    assert_eq!(value["task"]["task_id"], task.id);
 
     eventually_for(Duration::from_secs(10), || {
         let messages = runtime.storage().read_recent_messages(20)?;
@@ -2922,18 +3091,21 @@ pub async fn command_task_nonzero_exit_produces_failed_output_and_runtime_state(
             &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-failed-command".into(),
-                name: "TaskOutput".into(),
+                name: "TaskStatus".into(),
                 input: json!({ "task_id": &task.id }),
             },
         )
         .await?;
     let value: serde_json::Value = parse_tool_result_payload(&tool_result)?;
-    assert_eq!(value["retrieval_status"], "success");
     assert_eq!(value["task"]["status"], "failed");
     assert_eq!(value["task"]["kind"], "command_task");
-    assert_eq!(value["task"]["output_preview"], "before_fail");
-    assert_eq!(value["task"]["exit_status"], 7);
-    assert!(value["task"]["failure_artifact"].is_object());
+    assert_eq!(value["task"]["task_id"], task.id);
+    assert_eq!(
+        read_confirmed_command_output(&value["task"])?,
+        "before_fail"
+    );
+    assert_eq!(value["task"]["command"]["exit_status"], 7);
+    assert!(output.task.failure_artifact.is_some());
 
     let active_tasks = runtime.active_tasks(10).await?;
     assert!(!active_tasks.iter().any(|record| record.id == task.id));

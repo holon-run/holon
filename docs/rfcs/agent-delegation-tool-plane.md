@@ -170,8 +170,9 @@ metadata:
 
 The `TaskHandle` returned by
 `InvokeAgent(target=new_subagent, initial_message=...)` identifies only the
-`ActorInvocation`. `TaskStatus` and `TaskOutput` report that invocation's
-lifecycle and result. They may include references to the delegated child and
+`ActorInvocation`. `TaskStatus` reports that invocation's lifecycle; terminal
+results arrive through `WaitFor(wake=task_result, resource=<task_id>,
+delivery=...)` and re-entry. These may include references to the delegated child and
 its supervision relation, but the task is not itself `child_supervision`:
 
 - `child_agent_id` is the delegated private context

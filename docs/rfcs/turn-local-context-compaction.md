@@ -6,6 +6,15 @@ status: draft
 
 # Turn-Local Context Compaction For Holon
 
+> Historical surface note (#3534 M2): `TaskOutput` in the sample recap below
+> records a former tool name; `TaskOutputResult` remains a runtime/HTTP DTO,
+> not an active model tool. Apply the command-family recap rules to retained
+> historical records as well. Current observation and completion follow
+> [Agent output observation](agent-output-observation.md): `TaskStatus`, bounded
+> runtime-confirmed file reads, bounded `holon tail --agent` progress, and
+> `WaitFor(wake=task_result, resource=<task_id>, delivery=...)` / re-entry.
+> The former model/CLI current-turn output short wait is no longer provided.
+
 This note describes a focused compaction design for one specific failure mode:
 
 - the agent stays inside one runtime turn

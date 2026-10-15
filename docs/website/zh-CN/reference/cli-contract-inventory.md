@@ -95,6 +95,13 @@ order: 11
 
 ### Agent 交互与检查
 
+`holon task output` 已移除，包括原有 `--block` 和 `--timeout-ms` 轮内短等。
+改用 `holon task status`、运行时确认的命令输出文件的有界读取，以及
+`holon tail --agent <AGENT>` 的 Agent 级观测。tail 不消费任务结果、不唤醒
+生产者，也不保证输出属于某个任务独占；流或文件 EOF 不代表完成。模型工作流
+通过 `WaitFor(task_result)` 等待完成并重新进入。底层 HTTP task-output 路由
+仍保留。迁移详见[任务契约](../spec/tasks.md)。
+
 除非另有说明，这些命令要求本地控制平面可达。
 
 | 命令 | 参数 | 选项 | 输出 | 初始稳定性 | 备注 |
@@ -105,7 +112,6 @@ order: 11
 | `holon transcript` | none | `--limit <LIMIT>` 默认 `50`；`--agent <AGENT>` | JSON transcript 条目 | `stable` 候选 | transcript 条目的稳定性需要 API 清册。 |
 | `holon task run` | `<SUMMARY>` | 必填 `--cmd <CMD>`；`--workdir <WORKDIR>`；`--shell <SHELL>`；`--login <true\|false>`；`--tty`；`--yield-time-ms <MS>`；`--max-output-tokens <N>`；`--agent <AGENT>` | 美化 JSON 控制平面响应 | `experimental` | 通过控制平面创建命令任务。 |
 | `holon task status` | `<TASK_ID>` | `--agent <AGENT>` | 美化 JSON `TaskStatusSnapshot` | `experimental` | 通过任务状态 API 读取任务生命周期状态。 |
-| `holon task output` | `<TASK_ID>` | `--block`；`--timeout-ms <MS>`；`--agent <AGENT>` | 美化 JSON `TaskOutputResult` | `experimental` | 输出预览长度遵循任务创建时的 `--max-output-tokens`；本命令只控制就绪等待。 |
 | `holon task input` | `<TASK_ID>` | 必填 `--text <TEXT>`；`--agent <AGENT>` | 美化 JSON `TaskInputResult` | `experimental` | 向命令任务 stdin/TTY 或受监督子 Agent 的后续输入发送可信操作者文本。 |
 | `holon task stop` | `<TASK_ID>` | `--agent <AGENT>` | 美化 JSON `TaskStopResult` | `experimental` | 通过控制平面请求取消受管任务。 |
 | `holon work-item list` | none | `--limit <LIMIT>` 默认 `50`；`--agent <AGENT>` | `WorkItemRecord` 的美化 JSON 数组 | `experimental` | JSON schema 归属为 HTTP/API `WorkItemRecord` 读模型，由 `/agents/:agent_id/work-items` 返回。 |

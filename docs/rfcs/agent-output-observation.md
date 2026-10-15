@@ -21,12 +21,15 @@ brief/status host reads already did. No new caller ACL is introduced. This is
 read access by explicit agent id, not roster exposure or permission to activate,
 control or delete another agent.
 
-This first delivery adds replacement observation capabilities. `TaskOutput` and
-`holon task output` remain available until the separate retirement step. Retirement
-must explicitly resolve their synchronous short-wait behavior: `tail --follow`
-does not consume task results and is not an equivalent task-completion wait.
-Use `TaskStatus` for task lifecycle and `WaitFor(task_result)` for completion
-and re-entry. This work does not implement #3530/#3523 input batching or Monitor.
+The M2 retirement removes the model-facing `TaskOutput` tool and
+`holon task output` CLI command. Their former `block`/`timeout_ms` current-turn
+short wait is no longer offered on those surfaces; `tail --follow` is observation,
+not a replacement task-completion wait. Use `TaskStatus` for task lifecycle,
+bounded reads of runtime-confirmed command files for retained output, and
+`WaitFor(wake=task_result, resource=<task_id>, delivery=...)` for completion and
+re-entry. The underlying HTTP task-output route and internal result/capture
+services remain; this is not HTTP retirement. This work does not implement
+#3530/#3523 input batching or Monitor.
 
 ## Agent tail
 
@@ -61,6 +64,8 @@ minimal execution/runtime status. It excludes operator/pending messages, tool
 arguments/results, reasoning, prompts and raw transcript/events. This is content
 selection, not a secrecy, redaction or isolation guarantee. One agent can have
 multiple tasks; observing a brief or an idle agent never completes a task.
+Neither an `end` record nor stream/file EOF proves task completion. Agent-scoped
+progress does not promise output exclusive to the task being supervised.
 Activity text retains the conversation read model's existing summary limit;
 brief text comes from the canonical brief endpoint, not a summary preview.
 
@@ -125,6 +130,7 @@ availability, or task completion. Read files in bounded ranges; for stable final
 logs wait for task termination. Never reconstruct an artifact path from an
 agent home or task id.
 
-The later retirement step updates model tools, CLI metadata, templates, skills
-and task documentation together. It does not remove the internal result/capture
-services needed for task settlement. No deployment is implied by this RFC.
+The retirement updates model tools, CLI metadata, templates, skills and task
+documentation together. Historical RFC mentions of `TaskOutput` describe the
+former model surface, unless explicitly discussing the retained HTTP DTO or
+runtime internals. No deployment is implied by this RFC.

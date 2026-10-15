@@ -55,6 +55,7 @@ use crate::support::runtime_providers::{
     VerboseRuntimeFailureProvider, WakeHintProvider, WorktreeCapturingProvider,
     WorktreeLifecycleProvider,
 };
+use crate::support::runtime_tasks::TaskResultReentryProvider;
 use crate::support::{attach_default_workspace, TestConfigBuilder};
 
 // ============================================================================
@@ -65,8 +66,10 @@ pub async fn task_output_returns_worktree_subagent_result_text() -> Result<()> {
     std::fs::create_dir_all(&workspace)?;
     init_git_repo(&workspace)?;
 
-    let provider = Arc::new(WorktreeCapturingProvider::new("worktree subagent result"));
-    let host = RuntimeHost::new_with_provider(config, provider)?;
+    let provider = Arc::new(TaskResultReentryProvider::new(Arc::new(
+        WorktreeCapturingProvider::new("worktree subagent result"),
+    )));
+    let host = RuntimeHost::new_with_provider(config, provider.clone())?;
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
     let registry = ToolRegistry::new(runtime.workspace_root());
@@ -80,6 +83,9 @@ pub async fn task_output_returns_worktree_subagent_result_text() -> Result<()> {
         )
         .await?;
 
+    provider
+        .observe_result(&runtime, &task.id, "worktree subagent result")
+        .await?;
     let (result, _) = registry
         .execute(
             &runtime,
@@ -87,20 +93,19 @@ pub async fn task_output_returns_worktree_subagent_result_text() -> Result<()> {
             &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-worktree".into(),
-                name: "TaskOutput".into(),
-                input: json!({ "task_id": task.id, "timeout_ms": 10_000 }),
+                name: "TaskStatus".into(),
+                input: json!({ "task_id": task.id }),
             },
         )
         .await?;
     let value: serde_json::Value = parse_tool_result_payload(&result)?;
-    assert_eq!(value["retrieval_status"], "success");
+    assert_eq!(value["task"]["task_id"], task.id);
     assert_eq!(value["task"]["kind"], "child_agent_task");
-    assert!(value["task"]["output_preview"]
-        .as_str()
-        .expect("worktree task output should be text")
-        .contains("worktree subagent result"));
+    assert_eq!(value["task"]["status"], "completed");
+    assert!(value["task"].get("output_preview").is_none());
     Ok(())
 }
+
 pub async fn enter_worktree_tool_switches_workspace_and_restores_on_reload() -> Result<()> {
     let config = test_config();
     let workspace = config.workspace_dir.clone();

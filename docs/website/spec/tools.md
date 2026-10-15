@@ -35,7 +35,7 @@ Tools are grouped by capability family for authority gating:
 
 | Family | Tools | Authority |
 |--------|-------|-----------|
-| `CoreAgent` | `WaitFor`, `GetAgent`, `SendAgentMessage`, `Enqueue`, `CreateTimer`, `ListTimers`, `GetTimer`, `CancelTimer`, `ListTasks`, `TaskStatus`, `TaskInput`, `TaskOutput`, `TaskStop`, `ListModelProviders`, `ListProviderModels`, WorkItem tools, `MemorySearch`, `MemoryGet` | All agent profiles |
+| `CoreAgent` | `WaitFor`, `GetAgent`, `SendAgentMessage`, `Enqueue`, `CreateTimer`, `ListTimers`, `GetTimer`, `CancelTimer`, `ListTasks`, `TaskStatus`, `TaskInput`, `TaskStop`, `ListModelProviders`, `ListProviderModels`, WorkItem tools, `MemorySearch`, `MemoryGet` | All agent profiles |
 | `LocalEnvironment` | `ExecCommand`, `ExecCommandBatch`, `ApplyPatch`, `ViewImage`, `GenerateImage`, `GetWorkspaceState`, `SwitchWorkspace`, `CreateWorktree` | All profiles |
 | `AuthorityExpanding` | `AttachWorkspace`, `DetachWorkspace`, `RemoveWorktree` | Public named agents |
 | `Web` | `WebFetch`, `WebSearch`, `XSearch` | All profiles |
@@ -71,9 +71,17 @@ out of the model-facing surface.
 | `ExecCommandBatch` | Run bounded sequential command batch |
 | `ListTasks` | Compact active-task digest with bounded output |
 | `TaskStatus` | Single-task lifecycle snapshot |
-| `TaskOutput` | Bounded output preview with optional blocking |
 | `TaskInput` | Send input to interactive task |
 | `TaskStop` | Stop a running task |
+
+`TaskOutput` and `holon task output` are retired model/CLI surfaces, including
+their `block`/`timeout_ms` current-turn short wait. Use `TaskStatus` for lifecycle,
+bounded reads of runtime-confirmed command files for output, and bounded
+`holon tail --agent <id> --include-progress` for agent-scoped progress. Tail does
+not consume results or wake the producer and does not promise task-exclusive
+output; EOF is not completion. Use `WaitFor(wake=task_result, resource=<task_id>,
+delivery=...)` for completion/re-entry. The underlying HTTP output route and
+runtime result/capture services remain. See [Tasks](tasks.md).
 
 ### Agent plane
 
@@ -164,10 +172,11 @@ free-space waterline.
 
 Retention overflow keeps a bounded raw-byte head and tail and continues
 draining stdout/stderr. Execution quota, low disk, and persistence failures are
-typed terminal failures. `TaskStatus` and `TaskOutput` expose the frozen policy,
+typed terminal failures. `TaskStatus` exposes the frozen policy,
 byte counters, dropped-byte evidence, and capture truncation through
-`output_capture`; `TaskOutput.output_truncated` remains the independent API
-preview-truncation flag.
+`output_capture`. Retained command files can be read in bounded ranges at the
+exact runtime-confirmed path. The retained HTTP output DTO's `output_truncated`
+remains an independent API preview-truncation flag, not a model tool contract.
 
 See [Command Task Output Safety](../../rfcs/command-task-output-safety.md).
 
