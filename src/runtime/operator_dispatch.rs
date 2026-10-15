@@ -193,8 +193,11 @@ impl RuntimeHandle {
             .latest(&default_external_ingress.external_trigger_id)?;
         let context_config = self.current_context_config().await;
 
-        let mut idle_results_checked = false;
-        let mut idle_batch_checked = false;
+        let live_recovered = Box::pin(self.recover_interrupted_live_inputs(message)).await?;
+        // Recovery restores the admitted snapshot; it must not select a new
+        // idle batch or reapply the per-batch limit to cumulative live evidence.
+        let mut idle_results_checked = live_recovered;
+        let mut idle_batch_checked = live_recovered;
         let built = loop {
             let mut guard = self.inner.agent.lock().await;
             let agent_changed = sync_agent_message_count(&self.inner.storage, &mut guard.state)?;
