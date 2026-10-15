@@ -8766,6 +8766,27 @@ async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
         panic!("valid message behind stale task result should be claimed");
     };
     assert_eq!(scheduled.message.id, valid.id);
+    let pending = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&stale.id)
+        .unwrap()
+        .expect("sibling result remains pending until prompt budget admission");
+    assert_eq!(
+        pending.state,
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
+    );
+    assert_eq!(pending.activation_id, None);
+    let claimed_message = scheduled.message.clone();
+    let terminal = runtime
+        .process_message_with_plan_deferred(
+            scheduled.message,
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
+        )
+        .await
+        .unwrap();
     let admitted = runtime
         .inner
         .runtime_db
@@ -8782,15 +8803,6 @@ async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
         admitted.activation_id.as_deref(),
         Some(activation_id.as_str())
     );
-    let claimed_message = scheduled.message.clone();
-    let terminal = runtime
-        .process_message_with_plan_deferred(
-            scheduled.message,
-            scheduled.dispatch_plan,
-            &scheduled.scheduler_decision,
-        )
-        .await
-        .unwrap();
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
