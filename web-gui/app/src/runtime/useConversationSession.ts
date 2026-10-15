@@ -61,6 +61,7 @@ export interface UseConversationSessionResult {
 export function useConversationSession(
   agentId: string | undefined,
   navigation?: ConversationNavigation,
+  incarnation?: number,
 ): UseConversationSessionResult {
   const currentUser = useRuntimeStore((state) => state.currentUser);
   const currentUserLoaded = useRuntimeStore((state) => state.currentUserLoaded);
@@ -80,10 +81,10 @@ export function useConversationSession(
     baseUrl: connection.baseUrl,
   });
   // Never read another login's persisted content while identity is unknown.
-  const cacheKey = conversationCacheKey(remoteKey, currentUser);
+  const cacheKey = conversationCacheKey(remoteKey, currentUser, incarnation);
   const scopeKey =
     currentUserLoaded && !connection.authRequired && agentId !== undefined && agentId.length > 0 && apiBase !== undefined
-      ? resolveConversationScopeKey(remoteKey, agentId, currentUser)
+      ? resolveConversationScopeKey(remoteKey, agentId, currentUser, incarnation)
       : null;
 
   useEffect(() => {
@@ -92,6 +93,7 @@ export function useConversationSession(
     acquireConversationScope({
       key: scopeKey,
       agentId,
+      incarnation,
       remoteId: remoteKey,
       cacheKey,
       baseUrl: apiBase ?? "",
@@ -100,7 +102,7 @@ export function useConversationSession(
     return () => {
       releaseConversationScope(scopeKey);
     };
-  }, [scopeKey, agentId, remoteKey, apiBase, cacheKey]);
+  }, [scopeKey, agentId, remoteKey, apiBase, cacheKey, incarnation]);
 
   // Subscribe to scope snapshots so brief/detail/history request states and
   // view revisions re-render even while the controller object is stable.

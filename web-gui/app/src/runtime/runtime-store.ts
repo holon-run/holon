@@ -349,7 +349,7 @@ export interface RuntimeStoreState {
 
   setRoute: (route: RouteKey) => void;
   openAgent: (agentId: string) => void;
-  markAgentConversationRead: (agentId: string) => void;
+  markAgentConversationRead: (agentId: string, scopeKey?: string) => void;
   refreshBriefReadStates: () => Promise<void>;
   openSkill: (skillId: string, agentId?: string) => void;
   openTemplate: (catalogId: string) => void;
@@ -383,6 +383,7 @@ export interface RuntimeStoreState {
   toggleNavCollapsed: () => void;
   setRuntimeConnection: (config: RuntimeConnectionConfig) => Promise<void>;
   refreshBootstrap: (options?: BootstrapRefreshOptions) => Promise<void>;
+  queryAgentRecentTasks: (agentId: string) => Promise<TaskSummary[]>;
   reconcileAfterResume: () => Promise<void>;
   refreshModelCatalog: (options?: { refresh: boolean }) => Promise<void>;
   refreshRuntimeConfig: () => Promise<void>;
@@ -420,7 +421,7 @@ export interface RuntimeStoreState {
   loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
   loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined, force?: boolean) => Promise<void>;
   loadAgentToolExecutionDetail: (agentId: string | undefined, toolExecutionId: string | undefined, fallbackActivity?: AgentTimelineActivity, conversationRevision?: number) => Promise<void>;
-  sendOperatorPrompt: (agentId: string | undefined, text: string, attachments?: OperatorPromptAttachment[]) => Promise<void>;
+  sendOperatorPrompt: (agentId: string | undefined, text: string, attachments?: OperatorPromptAttachment[], expectedIncarnation?: number) => Promise<void>;
   /** Drop locally echoed prompts once the server view carries them. */
   pruneOperatorPrompts: (agentId: string, confirmedMessageIds: readonly string[]) => void;
   abortCurrentRun: (agentId: string | undefined, runId: string | null | undefined) => Promise<void>;
@@ -642,6 +643,7 @@ function cancelClientGenerationWork(): void {
   readMarkerRetryAttempts.clear();
   pendingReadMarkerAgentIds.clear();
   pendingReadMarkerCursorByAgentId.clear();
+  readMarkerScopeKeyByAgentId.clear();
   readMarkerAdvanceQueued.clear();
   readMarkerAdvanceInFlight.clear();
   globalSyncCoordinator.cancelClientGenerationWork();
@@ -1049,6 +1051,7 @@ let briefReadStatesRefreshInFlight: Promise<void> | undefined;
 let briefReadStatesRefreshGeneration: number | undefined;
 const pendingReadMarkerAgentIds = new Set<string>();
 const pendingReadMarkerCursorByAgentId = new Map<string, number>();
+const readMarkerScopeKeyByAgentId = new Map<string, string>();
 const readMarkerAdvanceInFlight = new Set<string>();
 const readMarkerAdvanceQueued = new Set<string>();
 const readMarkerRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1190,7 +1193,7 @@ export async function retryPendingReadMarker(agentId: string): Promise<void> {
     span.end("skipped", { reason: "candidate_unavailable" });
     return;
   }
-  const scopeKey = resolveConversationScopeKey(
+  const scopeKey = readMarkerScopeKeyByAgentId.get(agentId) ?? resolveConversationScopeKey(
     currentRemoteKey(runtimeConnectionConfig),
     agentId,
     state.currentUser,
@@ -1399,10 +1402,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       selectedAgentId: agentId,
       route: "agent",
     })),
-  markAgentConversationRead: (agentId) => {
+  markAgentConversationRead: (agentId, conversationScopeKey) => {
+    if (conversationScopeKey === undefined) readMarkerScopeKeyByAgentId.delete(agentId);
+    else readMarkerScopeKeyByAgentId.set(agentId, conversationScopeKey);
     const current = get().briefReadStateByAgentId[agentId];
     const state = get();
-    const scopeKey = resolveConversationScopeKey(
+    const scopeKey = conversationScopeKey ?? resolveConversationScopeKey(
       currentRemoteKey(runtimeConnectionConfig),
       agentId,
       state.currentUser,
@@ -2955,6 +2960,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
   },
 
+  queryAgentRecentTasks: async (agentId) => {
+    const request = captureClientRequest();
+    const tasks = await request.client.getAgentRecentTasks(agentId);
+    return isCurrentClientRequest(request) ? tasks : [];
+  },
+
   refreshAgentState: async (agentId) => {
     if (!agentId || agentStateRefreshInFlight.has(agentId)) return;
     const request = captureClientRequest();
@@ -3014,8 +3025,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         request.client.getTaskOutput(agentId, taskId),
       ]);
       if (!isCurrentClientRequest(request)) return;
-      const status = statusResult.status === "fulfilled" ? statusResult.value : undefined;
-      const output = outputResult.status === "fulfilled" ? outputResult.value : undefined;
+      const status = statusResult.status === "fulfilled" ? statusResult.value : cached?.status;
+      const output = outputResult.status === "fulfilled" ? outputResult.value : cached?.output;
       const error = statusResult.status === "rejected" && outputResult.status === "rejected"
         ? (statusResult.reason instanceof Error ? statusResult.reason.message : String(statusResult.reason))
         : undefined;
@@ -3093,7 +3104,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
   },
 
-  sendOperatorPrompt: async (agentId, text, attachments = []) => {
+  sendOperatorPrompt: async (agentId, text, attachments = [], expectedIncarnation) => {
     const prompt = text.trim();
     if (!agentId || (!prompt && attachments.length === 0)) {
       return;
@@ -3139,7 +3150,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         };
       });
 
-      const { messageId } = await request.client.sendOperatorPrompt(agentId, prompt, attachments);
+      const { messageId } = await request.client.sendOperatorPrompt(agentId, prompt, attachments, expectedIncarnation);
       if (!isCurrentClientRequest(request)) return;
       scheduleBootstrapRefresh(get, 250);
       set((state) => ({

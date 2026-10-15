@@ -733,6 +733,7 @@ impl LocalClient {
             &format!("/control/agents/{agent_id}/prompt"),
             &ControlPromptRequest {
                 text: text.into(),
+                expected_incarnation: None,
                 work_item_id: None,
                 attachments: Vec::new(),
                 client_request_id: None,
@@ -751,6 +752,7 @@ impl LocalClient {
             &format!("/control/agents/{agent_id}/prompt"),
             &ControlPromptRequest {
                 text: text.into(),
+                expected_incarnation: None,
                 work_item_id: Some(work_item_id.into()),
                 attachments: Vec::new(),
                 client_request_id: None,

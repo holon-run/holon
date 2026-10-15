@@ -485,11 +485,20 @@ pub(crate) struct ChildTaskSpawn {
 #[error("child task spawn failed after creating agent {child_agent_id}")]
 pub(crate) struct ChildTaskSpawnFailure {
     child_agent_id: String,
+    child_incarnation: u64,
 }
 
 impl ChildTaskSpawnFailure {
     pub(crate) fn child_agent_id(&self) -> &str {
         &self.child_agent_id
+    }
+
+    pub(crate) fn target(&self) -> crate::types::TaskTargetRef {
+        crate::types::TaskTargetRef {
+            kind: crate::types::TaskTargetKind::ChildAgent,
+            agent_id: self.child_agent_id.clone(),
+            incarnation: Some(self.child_incarnation),
+        }
     }
 }
 
@@ -498,6 +507,7 @@ pub(crate) struct AgentMessageAdmission {
     pub identity: AgentIdentityRecord,
     pub receipt: AgentMessageDeliveryReceipt,
     pub target_turn_baseline: u64,
+    pub target_incarnation: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3373,6 +3383,31 @@ impl RuntimeHost {
         agent_id: &str,
     ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
         self.public_agent_identity(agent_id)?;
+        self.get_active_agent_for_message_ingress(
+            agent_id,
+            RuntimeActivationReason::ExternalIngress,
+        )
+        .await
+    }
+
+    /// Operator visibility is not an external/peer ingress grant.
+    pub(crate) async fn get_agent_for_operator_prompt(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
+        self.active_agent_identity(agent_id)?;
+        self.get_active_agent_for_message_ingress(
+            agent_id,
+            RuntimeActivationReason::OperatorControl,
+        )
+        .await
+    }
+
+    async fn get_active_agent_for_message_ingress(
+        &self,
+        agent_id: &str,
+        reason: RuntimeActivationReason,
+    ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
         let state = self
             .agent_storage(agent_id)
             .map_err(PublicAgentError::Runtime)?
@@ -3385,7 +3420,7 @@ impl RuntimeHost {
             });
         }
         let runtime = self
-            .activate_agent(agent_id, RuntimeActivationReason::ExternalIngress)
+            .activate_agent(agent_id, reason)
             .await
             .map_err(Self::public_activation_error)?;
         runtime
@@ -5482,6 +5517,7 @@ impl RuntimeHost {
             )
             .await?;
         let child_agent_id = child_identity.agent_id.clone();
+        let child_incarnation = child_identity.incarnation;
         async {
             let child_runtime = self.get_or_create_agent(&child_identity.agent_id).await?;
             child_runtime
@@ -5492,6 +5528,11 @@ impl RuntimeHost {
 
             let mut task_detail = json!({
                 "child_agent_id": child_identity.agent_id,
+                "target": {
+                    "kind": "child_agent",
+                    "agent_id": child_identity.agent_id,
+                    "incarnation": child_identity.incarnation,
+                },
                 "child_turn_baseline": child_turn_baseline,
                 "child_kind": AgentKind::Child,
                 "child_visibility": AgentVisibility::Private,
@@ -5567,7 +5608,10 @@ impl RuntimeHost {
             })
         }
         .await
-        .context(ChildTaskSpawnFailure { child_agent_id })
+        .context(ChildTaskSpawnFailure {
+            child_agent_id,
+            child_incarnation,
+        })
     }
 
     async fn deliver_to_current_runtime(
@@ -5681,7 +5725,7 @@ impl RuntimeHost {
                 "use an agent id already available through the caller's authorized agent context",
             ))
         })?;
-        runtime.ok_or_else(|| {
+        let runtime = runtime.ok_or_else(|| {
             anyhow!(
                 "accepted delivery {} targets an inactive agent",
                 receipt.delivery_id
@@ -5698,6 +5742,7 @@ impl RuntimeHost {
             identity,
             receipt,
             target_turn_baseline,
+            target_incarnation: runtime.instance_incarnation(),
         })
     }
 
@@ -5791,6 +5836,11 @@ impl RuntimeHost {
 
         let mut task_detail = json!({
             "target_agent_id": target_agent_id,
+            "target": {
+                "kind": "agent_message_wait",
+                "agent_id": target_agent_id,
+                "incarnation": admission.target_incarnation,
+            },
             "target_agent_kind": identity.kind,
             "target_agent_visibility": identity.visibility,
             "target_agent_ownership": identity.ownership(),
@@ -9514,6 +9564,15 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(task.kind, TaskKind::AgentMessageWait);
+
+        assert_eq!(
+            task.target(),
+            Some(crate::types::TaskTargetRef {
+                kind: crate::types::TaskTargetKind::AgentMessageWait,
+                agent_id: "canonical-existing".into(),
+                incarnation: Some(before_summary.identity.incarnation),
+            })
+        );
 
         let after_summary = target.agent_summary().await.unwrap();
         let after_relations = host

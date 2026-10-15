@@ -1567,6 +1567,13 @@
         ],
         "type": "object"
       },
+      "AgentLifecycleDisposition": {
+        "enum": [
+          "retain",
+          "delete_on_terminal"
+        ],
+        "type": "string"
+      },
       "AgentLifecycleHint": {
         "properties": {
           "accepts_external_messages": {
@@ -3161,6 +3168,37 @@
                 "summary": {
                   "type": [
                     "string",
+                    "null"
+                  ]
+                },
+                "target": {
+                  "properties": {
+                    "agent_id": {
+                      "type": "string"
+                    },
+                    "incarnation": {
+                      "description": "Absent for legacy evidence; must not be filled from a current identity.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "kind": {
+                      "enum": [
+                        "child_agent",
+                        "agent_message_wait"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "agent_id"
+                  ],
+                  "type": [
+                    "object",
                     "null"
                   ]
                 },
@@ -5319,6 +5357,15 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "AuthorityClass": {
+        "enum": [
+          "operator_instruction",
+          "runtime_instruction",
+          "integration_signal",
+          "external_evidence"
+        ],
+        "type": "string"
+      },
       "BatchGetBriefsRequest": {
         "properties": {
           "brief_ids": {
@@ -5705,6 +5752,13 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "ChildAgentWorkspaceMode": {
+        "enum": [
+          "inherit",
+          "worktree"
+        ],
+        "type": "string"
+      },
       "ClearAgentModelRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -5713,6 +5767,62 @@
       "ClearAgentTimezoneRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "type": "object"
+      },
+      "CommandTaskSpec": {
+        "properties": {
+          "accepts_input": {
+            "default": false,
+            "type": "boolean"
+          },
+          "cmd": {
+            "type": "string"
+          },
+          "login": {
+            "type": "boolean"
+          },
+          "max_output_tokens": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "shell": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "terminal_reentry": {
+            "default": false,
+            "type": "boolean"
+          },
+          "tty": {
+            "default": false,
+            "type": "boolean"
+          },
+          "workdir": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "yield_time_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cmd",
+          "login",
+          "yield_time_ms"
+        ],
         "type": "object"
       },
       "CompleteWorkItemRequest": {
@@ -5882,6 +5992,15 @@
             "description": "Stable caller-generated identity used to safely retry a prompt after\n the client loses the HTTP response. Older clients may omit it.",
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "expected_incarnation": {
+            "description": "Reject stale conversation pages after an agent ID is recreated.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
               "null"
             ]
           },
@@ -16582,6 +16701,37 @@
               "null"
             ]
           },
+          "target": {
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "incarnation": {
+                "description": "Absent for legacy evidence; must not be filled from a current identity.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kind": {
+                "enum": [
+                  "child_agent",
+                  "agent_message_wait"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "agent_id"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "updated_at": {
             "format": "date-time",
             "type": "string"
@@ -17507,6 +17657,37 @@
                   "null"
                 ]
               },
+              "target": {
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "incarnation": {
+                    "description": "Absent for legacy evidence; must not be filled from a current identity.",
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "kind": {
+                    "enum": [
+                      "child_agent",
+                      "agent_message_wait"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "agent_id"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "task_id": {
                 "type": "string"
               },
@@ -17608,6 +17789,25 @@
         ],
         "title": "TaskInputResult",
         "type": "object"
+      },
+      "TaskKind": {
+        "enum": [
+          "agent_message_wait",
+          "actor_invocation",
+          "command_task",
+          "child_agent_task",
+          "sleep_job",
+          "subagent_task",
+          "worktree_subagent_task"
+        ],
+        "type": "string"
+      },
+      "TaskListResponse": {
+        "items": {
+          "$ref": "#/components/schemas/TaskRecordDto"
+        },
+        "title": "Array_of_TaskRecordDto",
+        "type": "array"
       },
       "TaskOutputResult": {
         "properties": {
@@ -18182,6 +18382,297 @@
         "title": "TaskOutputResult",
         "type": "object"
       },
+      "TaskRecordDto": {
+        "description": "Keep the original task-list fields while sharing the state/detail target contract.",
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "detail": {
+            "default": null
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TaskKind"
+          },
+          "parent_message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recovery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskRecoverySpec"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskTargetRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "work_item_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "agent_id",
+          "kind",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "TaskRecoverySpec": {
+        "oneOf": [
+          {
+            "properties": {
+              "after_delivery_rowid": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "authority_class": {
+                "$ref": "#/components/schemas/AuthorityClass"
+              },
+              "delivery_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "const": "agent_message_wait",
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              },
+              "target_agent_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "summary",
+              "message",
+              "target_agent_id",
+              "authority_class"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "authority_class": {
+                "$ref": "#/components/schemas/AuthorityClass"
+              },
+              "created_new_subagent": {
+                "type": "boolean"
+              },
+              "kind": {
+                "const": "agent_invocation",
+                "type": "string"
+              },
+              "lifecycle_disposition": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/AgentLifecycleDisposition"
+                  }
+                ],
+                "default": "retain"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              },
+              "target_agent_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "workspace_mode": {
+                "$ref": "#/components/schemas/ChildAgentWorkspaceMode"
+              }
+            },
+            "required": [
+              "kind",
+              "summary",
+              "prompt",
+              "authority_class",
+              "created_new_subagent",
+              "workspace_mode"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "authority_class": {
+                "$ref": "#/components/schemas/AuthorityClass"
+              },
+              "kind": {
+                "const": "child_agent_task",
+                "type": "string"
+              },
+              "lifecycle_disposition": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/AgentLifecycleDisposition"
+                  }
+                ],
+                "default": "delete_on_terminal"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              },
+              "workspace_mode": {
+                "$ref": "#/components/schemas/ChildAgentWorkspaceMode"
+              }
+            },
+            "required": [
+              "kind",
+              "summary",
+              "prompt",
+              "authority_class",
+              "workspace_mode"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "authority_class": {
+                "$ref": "#/components/schemas/AuthorityClass"
+              },
+              "kind": {
+                "const": "subagent_task",
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "summary",
+              "prompt",
+              "authority_class"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "authority_class": {
+                "$ref": "#/components/schemas/AuthorityClass"
+              },
+              "kind": {
+                "const": "worktree_subagent_task",
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "summary",
+              "prompt",
+              "authority_class"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "authority_class": {
+                "$ref": "#/components/schemas/AuthorityClass"
+              },
+              "kind": {
+                "const": "command_task",
+                "type": "string"
+              },
+              "promoted_from_exec_command": {
+                "type": "boolean"
+              },
+              "spec": {
+                "$ref": "#/components/schemas/CommandTaskSpec"
+              },
+              "summary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "summary",
+              "spec",
+              "authority_class",
+              "promoted_from_exec_command"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "TaskStatus": {
+        "enum": [
+          "queued",
+          "running",
+          "cancelling",
+          "completed",
+          "failed",
+          "cancelled",
+          "interrupted"
+        ],
+        "type": "string"
+      },
       "TaskStatusSnapshot": {
         "properties": {
           "child_agent_id": {
@@ -18698,6 +19189,37 @@
           "summary": {
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "target": {
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "incarnation": {
+                "description": "Absent for legacy evidence; must not be filled from a current identity.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kind": {
+                "enum": [
+                  "child_agent",
+                  "agent_message_wait"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "agent_id"
+            ],
+            "type": [
+              "object",
               "null"
             ]
           },
@@ -19334,6 +19856,37 @@
                   "null"
                 ]
               },
+              "target": {
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "incarnation": {
+                    "description": "Absent for legacy evidence; must not be filled from a current identity.",
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "kind": {
+                    "enum": [
+                      "child_agent",
+                      "agent_message_wait"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "agent_id"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "task_id": {
                 "type": "string"
               },
@@ -19435,6 +19988,37 @@
           "force_stop_requested"
         ],
         "title": "TaskStopResult",
+        "type": "object"
+      },
+      "TaskTargetKind": {
+        "enum": [
+          "child_agent",
+          "agent_message_wait"
+        ],
+        "type": "string"
+      },
+      "TaskTargetRef": {
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "incarnation": {
+            "description": "Absent for legacy evidence; must not be filled from a current identity.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TaskTargetKind"
+          }
+        },
+        "required": [
+          "kind",
+          "agent_id"
+        ],
         "type": "object"
       },
       "TimerRecord": {
@@ -21615,7 +22199,7 @@
     },
     "/api/agents/{agent_id}/tasks": {
       "get": {
-        "description": "Return active task records. Query parameter: limit.",
+        "description": "Return active task records by default, or bounded terminal task records. Query parameters: status (active or terminal), limit (terminal defaults to and is capped at 20).",
         "operationId": "agentTasks",
         "parameters": [
           {
@@ -21626,6 +22210,30 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Select active tasks or terminal history.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "active",
+              "enum": [
+                "active",
+                "terminal"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Active tasks default to 50; terminal tasks default to and are capped at 20.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -21633,11 +22241,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
+                  "$ref": "#/components/schemas/TaskListResponse"
                 }
               }
             },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+            "description": "Successful JSON response using a stable DTO schema."
           },
           "4XX": {
             "content": {
@@ -21665,7 +22273,7 @@
             "BearerAuth": []
           }
         ],
-        "summary": "List active tasks",
+        "summary": "List tasks",
         "tags": [
           "tasks"
         ]

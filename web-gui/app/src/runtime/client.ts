@@ -41,6 +41,7 @@ import type {
   SearchResponse,
   TaskStatusSnapshot,
   TaskSummary,
+  TaskTargetRef,
   WorkItemSummary,
   WorkspaceSummary,
   DisplayLevel,
@@ -1011,6 +1012,13 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       // roster row and detail agent held in the store.
       return fetchAgentState(baseUrl, fetchImpl, requestHeaders, agentId);
     },
+    async getAgentIdentity(agentId: string): Promise<AgentDetailDto> {
+      if (!baseUrl) throw new Error("Agent identity requires a runtime connection.");
+      return getJson<AgentDetailDto>(
+        fetchImpl, baseUrl, `/control/agents/${encodeURIComponent(agentId)}/detail`,
+        { headers: requestHeaders, timeoutMs: PROJECTION_READ_TIMEOUT_MS },
+      );
+    },
     async getAgentWorkItems(agentId: string, options: { limit?: number } = {}): Promise<WorkItemSummary[]> {
       if (!baseUrl) {
         return [];
@@ -1125,6 +1133,14 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         `/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}`,
         { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers: requestHeaders },
       );
+    },
+    async getAgentRecentTasks(agentId: string): Promise<TaskSummary[]> {
+      if (!baseUrl) throw new Error("Task history requires a runtime connection.");
+      const tasks = await getJson<NonNullable<AgentStateDto["tasks"]>>(
+        fetchImpl, baseUrl, `/agents/${encodeURIComponent(agentId)}/tasks?status=terminal&limit=20`,
+        { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers: requestHeaders },
+      );
+      return projectTasks(tasks).slice(0, 20);
     },
     async getModels(): Promise<RuntimeModelCatalog> {
       if (!baseUrl) {
@@ -1511,6 +1527,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       agentId: string,
       text: string,
       attachments: OperatorPromptAttachment[] = [],
+      expectedIncarnation?: number,
     ): Promise<OperatorPromptResponse> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
@@ -1521,6 +1538,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         `/control/agents/${encodeURIComponent(agentId)}/prompt`,
         {
           text,
+          expected_incarnation: expectedIncarnation,
           attachments: attachments.map((attachment) => ({
             kind: attachment.kind,
             name: attachment.name,
@@ -2704,6 +2722,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const serviceTierModel = state?.agent?.model ?? entry.model;
   const modelReasoningEffort = state?.agent?.model?.override_reasoning_effort ?? entry.model?.override_reasoning_effort ?? undefined;
   const lifecycle = stringifyLifecycle(state?.agent?.lifecycle ?? entry.lifecycle ?? status);
+  const lifecycleHint = state?.agent?.lifecycle ?? (typeof entry.lifecycle === "object" ? entry.lifecycle : undefined);
   const currentRunId = state?.session?.current_run_id ?? entry.current_run_id ?? null;
 
   return {
@@ -2726,6 +2745,8 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     modelServiceTier: serviceTierModel?.effective_service_tier ?? undefined,
     modelServiceTierOverride: serviceTierModel?.override_service_tier ?? undefined,
     footer: `${lifecycle} · ${posture}`,
+    acceptsInput: lifecycleHint?.accepts_external_messages !== false,
+    inputDisabledReason: typeof lifecycleHint?.operator_hint === "string" ? lifecycleHint.operator_hint : undefined,
     subtitle: `${status} · ${workspace}`,
     lastBrief: brief?.text ?? "",
     lastTurnTime: formatTime(brief?.created_at ?? state?.agent?.agent?.last_brief_at),
@@ -2868,7 +2889,7 @@ function basename(path: string): string | undefined {
   return normalized.split("/").pop();
 }
 
-function projectTasks(tasks: NonNullable<AgentStateDto["tasks"]>): TaskSummary[] {
+function projectTasks(tasks: (NonNullable<AgentStateDto["tasks"]>[number] & { target?: TaskTargetRef | null })[]): TaskSummary[] {
   return tasks
     .filter((task) => task.id)
     .map((task) => ({
@@ -2879,6 +2900,7 @@ function projectTasks(tasks: NonNullable<AgentStateDto["tasks"]>): TaskSummary[]
       workItemId: task.work_item_id ?? undefined,
       createdAt: task.created_at,
       updatedAt: task.updated_at,
+      target: task.target,
     }));
 }
 

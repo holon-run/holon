@@ -5,6 +5,22 @@ import type { EnResource } from "./en";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const zh: Record<string, any> = {
+  agentAccess: {
+    loading: "正在加载智能体…",
+    available: "智能体会话",
+    unauthorized: "请先认证再打开此智能体",
+    missing: "未找到智能体",
+    deleting: "此智能体正在清理中",
+    deleted: "此智能体已删除，仍可查看父任务的交付结果。",
+    replaced: "此链接属于较早的智能体身份实例",
+    error: "无法加载此智能体",
+    stopped: "此智能体已停止；查看或发送不会自动启动它。",
+    subagent: "子智能体会话",
+    backToParent: "返回父智能体",
+    parentTask: "父任务",
+    directInput: "消息将以 operator 身份直接发送给此子智能体。已接受仅表示入队，不保证立即响应，也不改变父任务。",
+    inputPlaceholder: "直接给此子智能体（{{id}}）发消息…",
+  },
   clipboard: {
     copied: "已复制",
     failed: "无法自动复制",
@@ -955,6 +971,11 @@ const zh: Record<string, any> = {
     openGithub: "在 GitHub 上打开 Holon",
   },
   rightPanel: {
+    recentCompletedTasks: "最近完成（最多 {{count}} 条）",
+    refreshRecentTasks: "刷新最近任务",
+    loadingRecentTasks: "正在加载最近任务…",
+    recentTasksError: "无法加载最近任务：{{error}}",
+    noRecentTasks: "暂无最近完成的任务",
     runtimeSettings: "运行设置",
     manageAgent: "管理 Agent",
     backToSource: "返回来源",
@@ -1088,6 +1109,9 @@ const zh: Record<string, any> = {
     largeFileHint: "大文件（{{size}}），建议下载后本地查看。",
   },
   inspector: {
+    targetAgent: "目标智能体",
+    openAgentConversation: "打开智能体会话",
+    unknownTargetIdentity: "历史引用，未记录身份实例",
     source: "来源",
     fullDetail: "完整详情",
     loading: "加载中…",

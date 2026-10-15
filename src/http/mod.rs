@@ -2260,6 +2260,9 @@ pub async fn serve_unix(
 }
 
 #[cfg(test)]
+mod subagent_observability_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         add_retry_after_to_service_unavailable, auth_error_code, auth_required,
@@ -2845,7 +2848,7 @@ mod tests {
         }
     }
 
-    async fn invoke_new_subagent(
+    pub(super) async fn invoke_new_subagent(
         runtime: &crate::runtime::RuntimeHandle,
         message: String,
         authority_class: AuthorityClass,
@@ -2892,7 +2895,7 @@ mod tests {
         (home, host)
     }
 
-    fn control_token_test_host() -> (tempfile::TempDir, RuntimeHost) {
+    pub(super) fn control_token_test_host() -> (tempfile::TempDir, RuntimeHost) {
         let home = tempdir().unwrap();
         fs::write(
             home.path().join("config.json"),

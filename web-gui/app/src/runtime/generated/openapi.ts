@@ -469,8 +469,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List active tasks
-         * @description Return active task records. Query parameter: limit.
+         * List tasks
+         * @description Return active task records by default, or bounded terminal task records. Query parameters: status (active or terminal), limit (terminal defaults to and is capped at 20).
          */
         get: operations["agentTasks"];
         put?: never;
@@ -3219,6 +3219,8 @@ export interface components {
             /** @description Bounded to 512 UTF-8 bytes. Full Brief content remains available from the canonical Brief APIs. */
             preview: string;
         };
+        /** @enum {string} */
+        AgentLifecycleDisposition: "retain" | "delete_on_terminal";
         AgentLifecycleHint: {
             accepts_external_messages: boolean;
             operator_hint?: string | null;
@@ -3639,6 +3641,16 @@ export interface components {
                 /** @enum {string} */
                 status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
                 summary?: string | null;
+                target?: {
+                    agent_id: string;
+                    /**
+                     * Format: uint64
+                     * @description Absent for legacy evidence; must not be filled from a current identity.
+                     */
+                    incarnation?: number | null;
+                    /** @enum {string} */
+                    kind: "child_agent" | "agent_message_wait";
+                } | null;
                 /** Format: date-time */
                 updated_at: string;
                 work_item_id?: string | null;
@@ -4194,6 +4206,8 @@ export interface components {
         AttachWorkspaceRequest: {
             [key: string]: unknown;
         };
+        /** @enum {string} */
+        AuthorityClass: "operator_instruction" | "runtime_instruction" | "integration_signal" | "external_evidence";
         /** BatchGetBriefsRequest */
         BatchGetBriefsRequest: {
             /** @default [] */
@@ -4309,6 +4323,8 @@ export interface components {
         CheckTemplateRequest: {
             [key: string]: unknown;
         };
+        /** @enum {string} */
+        ChildAgentWorkspaceMode: "inherit" | "worktree";
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         ClearAgentModelRequest: {
             [key: string]: unknown;
@@ -4316,6 +4332,27 @@ export interface components {
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         ClearAgentTimezoneRequest: {
             [key: string]: unknown;
+        };
+        CommandTaskSpec: {
+            /** @default false */
+            accepts_input: boolean;
+            cmd: string;
+            login: boolean;
+            /**
+             * Format: uint64
+             * @default null
+             */
+            max_output_tokens: number | null;
+            /** @default null */
+            shell: string | null;
+            /** @default false */
+            terminal_reentry: boolean;
+            /** @default false */
+            tty: boolean;
+            /** @default null */
+            workdir: string | null;
+            /** Format: uint64 */
+            yield_time_ms: number;
         };
         /** CompleteWorkItemRequest */
         CompleteWorkItemRequest: {
@@ -4369,6 +4406,11 @@ export interface components {
              * @default null
              */
             client_request_id: string | null;
+            /**
+             * Format: uint64
+             * @description Reject stale conversation pages after an agent ID is recreated.
+             */
+            expected_incarnation?: number | null;
             text: string;
             /** @default null */
             work_item_id: string | null;
@@ -7433,6 +7475,16 @@ export interface components {
             /** @enum {string} */
             status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
             summary?: string | null;
+            target?: {
+                agent_id: string;
+                /**
+                 * Format: uint64
+                 * @description Absent for legacy evidence; must not be filled from a current identity.
+                 */
+                incarnation?: number | null;
+                /** @enum {string} */
+                kind: "child_agent" | "agent_message_wait";
+            } | null;
             /** Format: date-time */
             updated_at: string;
             work_item_id?: string | null;
@@ -7655,6 +7707,16 @@ export interface components {
                 /** @enum {string} */
                 status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
                 summary?: string | null;
+                target?: {
+                    agent_id: string;
+                    /**
+                     * Format: uint64
+                     * @description Absent for legacy evidence; must not be filled from a current identity.
+                     */
+                    incarnation?: number | null;
+                    /** @enum {string} */
+                    kind: "child_agent" | "agent_message_wait";
+                } | null;
                 task_id: string;
                 token_usage?: {
                     last_turn?: {
@@ -7682,6 +7744,10 @@ export interface components {
                 wait_policy: "background";
             };
         };
+        /** @enum {string} */
+        TaskKind: "agent_message_wait" | "actor_invocation" | "command_task" | "child_agent_task" | "sleep_job" | "subagent_task" | "worktree_subagent_task";
+        /** Array_of_TaskRecordDto */
+        TaskListResponse: components["schemas"]["TaskRecordDto"][];
         /** TaskOutputResult */
         TaskOutputResult: {
             /** @enum {string} */
@@ -7807,6 +7873,77 @@ export interface components {
                 } | null;
             };
         };
+        /** @description Keep the original task-list fields while sharing the state/detail target contract. */
+        TaskRecordDto: {
+            agent_id: string;
+            /** Format: date-time */
+            created_at: string;
+            /** @default null */
+            detail: unknown;
+            id: string;
+            kind: components["schemas"]["TaskKind"];
+            parent_message_id?: string | null;
+            /** @default null */
+            recovery: components["schemas"]["TaskRecoverySpec"] | null;
+            status: components["schemas"]["TaskStatus"];
+            summary?: string | null;
+            target?: components["schemas"]["TaskTargetRef"] | null;
+            /** Format: date-time */
+            updated_at: string;
+            work_item_id?: string | null;
+        };
+        TaskRecoverySpec: {
+            /** Format: int64 */
+            after_delivery_rowid?: number | null;
+            authority_class: components["schemas"]["AuthorityClass"];
+            delivery_id?: string | null;
+            /** @constant */
+            kind: "agent_message_wait";
+            message: string;
+            summary: string;
+            target_agent_id: string;
+        } | {
+            authority_class: components["schemas"]["AuthorityClass"];
+            created_new_subagent: boolean;
+            /** @constant */
+            kind: "agent_invocation";
+            /** @default retain */
+            lifecycle_disposition: components["schemas"]["AgentLifecycleDisposition"];
+            prompt: string;
+            summary: string;
+            target_agent_id?: string | null;
+            workspace_mode: components["schemas"]["ChildAgentWorkspaceMode"];
+        } | {
+            authority_class: components["schemas"]["AuthorityClass"];
+            /** @constant */
+            kind: "child_agent_task";
+            /** @default delete_on_terminal */
+            lifecycle_disposition: components["schemas"]["AgentLifecycleDisposition"];
+            prompt: string;
+            summary: string;
+            workspace_mode: components["schemas"]["ChildAgentWorkspaceMode"];
+        } | {
+            authority_class: components["schemas"]["AuthorityClass"];
+            /** @constant */
+            kind: "subagent_task";
+            prompt: string;
+            summary: string;
+        } | {
+            authority_class: components["schemas"]["AuthorityClass"];
+            /** @constant */
+            kind: "worktree_subagent_task";
+            prompt: string;
+            summary: string;
+        } | {
+            authority_class: components["schemas"]["AuthorityClass"];
+            /** @constant */
+            kind: "command_task";
+            promoted_from_exec_command: boolean;
+            spec: components["schemas"]["CommandTaskSpec"];
+            summary: string;
+        };
+        /** @enum {string} */
+        TaskStatus: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
         /** TaskStatusSnapshot */
         TaskStatusSnapshot: {
             child_agent_id?: string | null;
@@ -7915,6 +8052,16 @@ export interface components {
             /** @enum {string} */
             status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
             summary?: string | null;
+            target?: {
+                agent_id: string;
+                /**
+                 * Format: uint64
+                 * @description Absent for legacy evidence; must not be filled from a current identity.
+                 */
+                incarnation?: number | null;
+                /** @enum {string} */
+                kind: "child_agent" | "agent_message_wait";
+            } | null;
             task_id: string;
             token_usage?: {
                 last_turn?: {
@@ -8057,6 +8204,16 @@ export interface components {
                 /** @enum {string} */
                 status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
                 summary?: string | null;
+                target?: {
+                    agent_id: string;
+                    /**
+                     * Format: uint64
+                     * @description Absent for legacy evidence; must not be filled from a current identity.
+                     */
+                    incarnation?: number | null;
+                    /** @enum {string} */
+                    kind: "child_agent" | "agent_message_wait";
+                } | null;
                 task_id: string;
                 token_usage?: {
                     last_turn?: {
@@ -8083,6 +8240,17 @@ export interface components {
                 /** @enum {string} */
                 wait_policy: "background";
             };
+        };
+        /** @enum {string} */
+        TaskTargetKind: "child_agent" | "agent_message_wait";
+        TaskTargetRef: {
+            agent_id: string;
+            /**
+             * Format: uint64
+             * @description Absent for legacy evidence; must not be filled from a current identity.
+             */
+            incarnation?: number | null;
+            kind: components["schemas"]["TaskTargetKind"];
         };
         /** TimerRecord */
         TimerRecord: {
@@ -9274,7 +9442,12 @@ export interface operations {
     };
     agentTasks: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Select active tasks or terminal history. */
+                status?: "active" | "terminal";
+                /** @description Active tasks default to 50; terminal tasks default to and are capped at 20. */
+                limit?: number;
+            };
             header?: never;
             path: {
                 /** @description Agent id. */
@@ -9284,13 +9457,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized. */
+            /** @description Successful JSON response using a stable DTO schema. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonValue"];
+                    "application/json": components["schemas"]["TaskListResponse"];
                 };
             };
             /** @description Client error JSON response. */

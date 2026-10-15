@@ -35,6 +35,7 @@ import kotlinx.serialization.Contextual
  * @param text
  * @param attachments
  * @param clientRequestId Stable caller-generated identity used to safely retry a prompt after  the client loses the HTTP response. Older clients may omit it.
+ * @param expectedIncarnation Reject stale conversation pages after an agent ID is recreated.
  * @param workItemId
  */
 @Serializable
@@ -50,6 +51,10 @@ data class ControlPromptRequest (
     /* Stable caller-generated identity used to safely retry a prompt after  the client loses the HTTP response. Older clients may omit it. */
     @SerialName(value = "client_request_id")
     val clientRequestId: kotlin.String? = "null",
+
+    /* Reject stale conversation pages after an agent ID is recreated. */
+    @SerialName(value = "expected_incarnation")
+    val expectedIncarnation: kotlin.Int? = null,
 
     @SerialName(value = "work_item_id")
     val workItemId: kotlin.String? = "null"

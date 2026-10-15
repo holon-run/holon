@@ -1313,7 +1313,7 @@ pub async fn control_prompt(
     let actor = control_actor(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
-        .get_public_agent_for_external_ingress(&agent_id)
+        .get_agent_for_operator_prompt(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let client_request_id = request
@@ -1332,6 +1332,7 @@ pub async fn control_prompt(
         return Err(bad_request("client_request_id must not exceed 200 bytes"));
     }
     let work_item_id = request.work_item_id.clone().and_then(non_empty_opt);
+    let expected_incarnation = request.expected_incarnation;
     let semantic_content = serde_json::to_value(&request)
         .map_err(anyhow::Error::from)
         .map_err(error_response)?;
@@ -1345,120 +1346,135 @@ pub async fn control_prompt(
     let created_attachment_paths = materialized.created_paths;
     let admission_context = control_admission_context(&state);
 
-    if let Some(client_request_id) = client_request_id {
-        let caller_principal = actor.principal_id();
-        let preparation = crate::runtime::AgentMessageDeliveryService::prepare(
-            crate::types::AgentMessageSendRequest {
-                target_agent_id: agent_id.clone(),
-                content: MessageBody::Json {
-                    value: semantic_content,
-                },
-                client_idempotency_key: client_request_id.clone(),
-                correlation_id: None,
-                causation_id: None,
-                requested_priority: Some(Priority::Interject),
-                forward: false,
-                reply_context_id: None,
+    // Even without a client key, use canonical operator policy/lifecycle admission.
+    let delivery_key = client_request_id
+        .clone()
+        .unwrap_or_else(crate::ids::message_id);
+    let caller_principal = actor.principal_id();
+    let preparation = crate::runtime::AgentMessageDeliveryService::prepare(
+        crate::types::AgentMessageSendRequest {
+            target_agent_id: agent_id.clone(),
+            content: MessageBody::Json {
+                value: semantic_content,
             },
-            crate::types::AgentMessageCallerContext {
-                caller_principal,
-                caller_agent_id: None,
-                principal_kind: crate::types::AgentMessagePrincipalKind::Operator,
-                route: "operator_control".into(),
-                origin: actor.operator_origin(),
-                authority_class: AuthorityClass::OperatorInstruction,
-                delivery_surface: MessageDeliverySurface::HttpControlPrompt,
-                admission_context,
-                current_turn_id: None,
-                current_task_id: None,
-                current_work_item_id: None,
-                inherited_routing_context: None,
-                routing_activation_id: None,
-            },
-        );
-        let mut prepared = match preparation {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                remove_materialized_control_prompt_attachments(&created_attachment_paths);
-                return Err(bad_request(error.to_string()));
-            }
-        };
-        prepared.message.kind = MessageKind::OperatorPrompt;
-        prepared.message.body = MessageBody::Text { text };
-        prepared.message.work_item_id = work_item_id;
-        prepared.message.metadata = Some(json!({
-            "control": true,
-            "client_request_id": client_request_id,
-        }));
-        let delivery = runtime
-            .agent_message_delivery_service()
-            .deliver(&prepared)
-            .await;
-        let receipt = match delivery {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                remove_materialized_control_prompt_attachments(&created_attachment_paths);
-                if error
-                    .downcast_ref::<crate::types::AgentMessageDeliveryError>()
-                    .is_some()
-                {
-                    return Err((
-                        StatusCode::CONFLICT,
-                        Json(json!({
-                            "ok": false,
-                            "code": "idempotency_conflict",
-                            "error": "client_request_id was reused with different prompt content",
-                            "retryable": false,
-                        })),
-                    ));
-                } else {
-                    return Err(error_response(error));
-                }
-            }
-        };
-        let message_id = receipt
-            .message_id
-            .ok_or_else(|| error_response(anyhow!("accepted prompt receipt omitted message_id")))?;
-        return Ok(Json(EnqueueResponse {
-            ok: true,
-            agent_id,
-            message_id,
-            disposition: Some(if receipt.idempotent_replay {
-                "duplicate".into()
-            } else {
-                "accepted".into()
-            }),
-        }));
-    }
-
-    let message = InboundRequest {
-        agent_id: agent_id.clone(),
-        kind: MessageKind::OperatorPrompt,
-        priority: Priority::Interject,
-        origin: actor.operator_origin(),
-        authority_class: AuthorityClass::OperatorInstruction,
-        body: MessageBody::Text { text },
-        delivery_surface: MessageDeliverySurface::HttpControlPrompt,
-        admission_context,
-        work_item_id,
-        metadata: Some(json!({ "control": true })),
-        correlation_id: None,
-        causation_id: None,
-        trace_context: None,
-    }
-    .into_message();
-    let queued = match runtime.enqueue(message).await {
-        Ok(queued) => queued,
+            client_idempotency_key: delivery_key,
+            correlation_id: None,
+            causation_id: None,
+            requested_priority: Some(Priority::Interject),
+            forward: false,
+            reply_context_id: None,
+        },
+        crate::types::AgentMessageCallerContext {
+            caller_principal,
+            caller_agent_id: None,
+            principal_kind: crate::types::AgentMessagePrincipalKind::Operator,
+            route: "operator_control".into(),
+            origin: actor.operator_origin(),
+            authority_class: AuthorityClass::OperatorInstruction,
+            delivery_surface: MessageDeliverySurface::HttpControlPrompt,
+            admission_context,
+            current_turn_id: None,
+            current_task_id: None,
+            current_work_item_id: None,
+            inherited_routing_context: None,
+            routing_activation_id: None,
+        },
+    );
+    let mut prepared = match preparation {
+        Ok(prepared) => prepared,
         Err(error) => {
             remove_materialized_control_prompt_attachments(&created_attachment_paths);
-            return Err(error_response(error));
+            return Err(bad_request(error.to_string()));
         }
     };
+    prepared.message.kind = MessageKind::OperatorPrompt;
+    prepared.record.expected_incarnation = expected_incarnation;
+    prepared.message.body = MessageBody::Text { text };
+    prepared.message.work_item_id = work_item_id;
+    prepared.message.metadata = Some(json!({
+        "control": true,
+        "client_request_id": client_request_id,
+    }));
+    let delivery = runtime
+        .agent_message_delivery_service()
+        .deliver(&prepared)
+        .await;
+    let receipt = match delivery {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            remove_materialized_control_prompt_attachments(&created_attachment_paths);
+            if let Some(crate::types::AgentMessageDeliveryError::StaleIncarnation {
+                expected_incarnation,
+                actual_incarnation,
+            }) = error.downcast_ref::<crate::types::AgentMessageDeliveryError>()
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "ok": false,
+                        "code": "agent_incarnation_mismatch",
+                        "error": "target agent identity changed; reload the conversation",
+                        "expected_incarnation": expected_incarnation,
+                        "actual_incarnation": actual_incarnation,
+                        "retryable": false,
+                    })),
+                ));
+            } else if error
+                .downcast_ref::<crate::types::AgentMessageDeliveryError>()
+                .is_some()
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "ok": false,
+                        "code": "idempotency_conflict",
+                        "error": "client_request_id was reused with different prompt content",
+                        "retryable": false,
+                    })),
+                ));
+            } else {
+                return Err(error_response(error));
+            }
+        }
+    };
+    if receipt.outcome != crate::types::AgentMessageDeliveryOutcome::Accepted {
+        remove_materialized_control_prompt_attachments(&created_attachment_paths);
+        use crate::types::AgentMessageDeliveryRejectionCode as Rejection;
+        return Err(match receipt.rejection_code {
+            Some(Rejection::AgentStopped) => {
+                stopped_agent_conflict("target agent is stopped", &agent_id)
+            }
+            Some(Rejection::AgentDeleting) => agent_access_error(PublicAgentError::Deleting {
+                agent_id: agent_id.clone(),
+            }),
+            Some(Rejection::AgentDeleted) => agent_access_error(PublicAgentError::Deleted {
+                agent_id: agent_id.clone(),
+            }),
+            Some(Rejection::TargetNotFound) => not_found("target agent was not found"),
+            Some(Rejection::MessageNotAuthorized) => http_error(
+                StatusCode::FORBIDDEN,
+                HttpErrorEnvelope::new(
+                    "message_not_authorized",
+                    "operator input is denied by the target message policy",
+                ),
+            ),
+            _ => error_response(anyhow!("operator prompt admission rejected")),
+        });
+    }
+    let message_id = receipt
+        .message_id
+        .ok_or_else(|| error_response(anyhow!("accepted prompt receipt omitted message_id")))?;
     Ok(Json(EnqueueResponse {
         ok: true,
         agent_id,
-        message_id: queued.id,
-        disposition: None,
+        message_id,
+        disposition: client_request_id.map(|_| {
+            if receipt.idempotent_replay {
+                "duplicate".into()
+            } else {
+                "accepted".into()
+            }
+        }),
     }))
 }
 
@@ -1891,6 +1907,7 @@ mod tests {
             home.path(),
             ControlPromptRequest {
                 text: "look".into(),
+                expected_incarnation: None,
                 work_item_id: None,
                 attachments: vec![ControlPromptAttachment::Image(
                     ControlPromptImageAttachment {
@@ -1923,6 +1940,7 @@ mod tests {
             home.path(),
             ControlPromptRequest {
                 text: "read this".into(),
+                expected_incarnation: None,
                 work_item_id: None,
                 attachments: vec![ControlPromptAttachment::File(ControlPromptFileAttachment {
                     name: Some("report.pdf".into()),
@@ -1974,6 +1992,7 @@ mod tests {
             home.path(),
             ControlPromptRequest {
                 text: String::new(),
+                expected_incarnation: None,
                 work_item_id: None,
                 attachments: vec![ControlPromptAttachment::File(ControlPromptFileAttachment {
                     name: Some("empty.txt".into()),
@@ -2009,6 +2028,7 @@ mod tests {
             };
             let request = |attachments| ControlPromptRequest {
                 text: String::new(),
+                expected_incarnation: None,
                 work_item_id: None,
                 attachments,
                 client_request_id: None,
@@ -2057,6 +2077,7 @@ mod tests {
             home.path(),
             ControlPromptRequest {
                 text: String::new(),
+                expected_incarnation: None,
                 work_item_id: None,
                 attachments: vec![ControlPromptAttachment::File(ControlPromptFileAttachment {
                     name: Some("../../secret[name].md".into()),

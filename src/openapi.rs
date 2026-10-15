@@ -25,7 +25,7 @@ use crate::{
         SessionExchangeRequest, SessionResponse, TailscaleServeStatus, UpdateWorkItemRequest,
         CONVERSATION_SHADOW_DEFAULT_LIMIT,
     },
-    http_dto::{AgentStateSnapshotDto, SlimTaskDto, SlimWorkItemDto},
+    http_dto::{AgentStateSnapshotDto, SlimTaskDto, SlimWorkItemDto, TaskRecordDto},
     memory::MemoryGetResult,
     model_config_migration::ModelConfigMigrationReport,
     observability::{RecentTrace, RecentTraceSummary},
@@ -111,7 +111,7 @@ const ROUTES: &[RouteSpec] = &[
     aide_route("get", "/agents/{agent_id}/transcript", "agentTranscript", "agents", "Recent transcript", "Return recent transcript entries. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/transcript/{entry_id}", "agentTranscriptEntry", "agents", "Transcript entry detail", "Return a persisted transcript entry by id for the selected agent.", None, AuthKind::RemoteAccess),
     route_with_response("post", "/agents/{agent_id}/transcript:batchGet", "agentTranscriptBatchGet", "agents", "Batch get transcript entries", "Return persisted transcript entries for the selected agent. Missing or cross-agent ids are reported in missing_entry_ids.", Some("BatchGetTranscriptEntriesRequest"), "BatchGetTranscriptEntriesResponse", AuthKind::RemoteAccess),
-    route("get", "/agents/{agent_id}/tasks", "agentTasks", "tasks", "List active tasks", "Return active task records. Query parameter: limit.", None, AuthKind::RemoteAccess),
+    route_with_response("get", "/agents/{agent_id}/tasks", "agentTasks", "tasks", "List tasks", "Return active task records by default, or bounded terminal task records. Query parameters: status (active or terminal), limit (terminal defaults to and is capped at 20).", None, "TaskListResponse", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/tasks/{task_id}", "agentTaskStatus", "tasks", "Task status", "Return a task lifecycle snapshot by id.", None, "TaskStatusSnapshot", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/tasks/{task_id}/output", "agentTaskOutput", "tasks", "Task output", "Return a task output snapshot. Query parameters: block, timeout_ms.", None, "TaskOutputResult", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/tool-executions/{tool_execution_id}", "agentToolExecution", "tools", "Tool execution detail", "Return a persisted tool execution record by id.", None, "ToolExecutionRecord", AuthKind::RemoteAccess),
@@ -490,6 +490,24 @@ fn aide_operation(spec: &RouteSpec) -> Operation {
 
 fn operation(spec: &RouteSpec) -> Value {
     let mut parameters = path_parameters(spec.path);
+    if spec.operation_id == "agentTasks" {
+        parameters.extend([
+            json!({
+                "name": "status",
+                "in": "query",
+                "required": false,
+                "description": "Select active tasks or terminal history.",
+                "schema": { "type": "string", "enum": ["active", "terminal"], "default": "active" }
+            }),
+            json!({
+                "name": "limit",
+                "in": "query",
+                "required": false,
+                "description": "Active tasks default to 50; terminal tasks default to and are capped at 20.",
+                "schema": { "type": "integer", "minimum": 0 }
+            }),
+        ]);
+    }
     if spec.operation_id == "listAgents" {
         parameters.push(json!({
             "name": "parent",
@@ -881,6 +899,10 @@ fn component_schemas() -> Value {
     schemas.insert(
         "TaskStatusSnapshot".into(),
         component_schema::<TaskStatusSnapshot>(),
+    );
+    schemas.insert(
+        "TaskListResponse".into(),
+        component_schema_with_refs::<Vec<TaskRecordDto>>(),
     );
     schemas.insert(
         "AgentStateSnapshotDto".into(),

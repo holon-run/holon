@@ -3573,7 +3573,7 @@ pub struct ChildAgentObservabilitySnapshot {
     pub last_result_brief: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TaskRecord {
     pub id: String,
     #[serde(alias = "session_id")]
@@ -3593,6 +3593,31 @@ pub struct TaskRecord {
 }
 
 impl TaskRecord {
+    /// Resolve only persisted task evidence, never the current identity for an id.
+    pub fn target(&self) -> Option<TaskTargetRef> {
+        if let Some(value) = task_detail_value(&self.detail, "target") {
+            return serde_json::from_value(value.clone()).ok();
+        }
+        let (kind, agent_id) = if self.kind == TaskKind::AgentMessageWait {
+            (
+                TaskTargetKind::AgentMessageWait,
+                task_detail_string(&self.detail, "target_agent_id")?,
+            )
+        } else if self.is_child_agent_task() {
+            (
+                TaskTargetKind::ChildAgent,
+                task_detail_string(&self.detail, "child_agent_id")?,
+            )
+        } else {
+            return None;
+        };
+        Some(TaskTargetRef {
+            kind,
+            agent_id,
+            incarnation: None,
+        })
+    }
+
     pub fn rejoin_fence(
         &self,
     ) -> std::result::Result<crate::domain::execution_protocol::RejoinFence, String> {
@@ -3696,6 +3721,22 @@ impl TaskRecord {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskTargetKind {
+    ChildAgent,
+    AgentMessageWait,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct TaskTargetRef {
+    pub kind: TaskTargetKind,
+    pub agent_id: String,
+    /// Absent for legacy evidence; must not be filled from a current identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incarnation: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TaskListEntry {
     pub id: String,
@@ -3707,6 +3748,8 @@ pub struct TaskListEntry {
     pub wait_policy: TaskWaitPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<CommandTaskStatusSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<TaskTargetRef>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -4008,6 +4051,8 @@ pub struct TaskStatusSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<TaskTargetRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_observability: Option<ChildAgentObservabilitySnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_supervision: Option<ChildSupervisionProjection>,
@@ -4040,6 +4085,7 @@ impl TaskStatusSnapshot {
             parent_message_id: task.parent_message_id.clone(),
             command,
             child_agent_id,
+            target: task.target(),
             child_observability,
             child_supervision,
             token_usage,
@@ -4627,7 +4673,7 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TaskRecoverySpec {
     AgentMessageWait {
@@ -4765,7 +4811,7 @@ impl TaskRecoverySpec {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct CommandTaskSpec {
     pub cmd: String,
     #[serde(default)]
@@ -6603,6 +6649,52 @@ mod tests {
             serde_json::to_value(TaskKind::SleepJob).unwrap(),
             serde_json::json!("sleep_job")
         );
+    }
+
+    #[test]
+    fn task_target_projection_keeps_legacy_identity_unknown_and_rejects_malformed_evidence() {
+        let mut task: TaskRecord = serde_json::from_value(serde_json::json!({
+            "id": "historical-task",
+            "agent_id": "parent",
+            "kind": "actor_invocation",
+            "status": "completed",
+            "created_at": "2026-10-15T00:00:00Z",
+            "updated_at": "2026-10-15T00:00:00Z",
+            "parent_message_id": null,
+            "summary": null,
+            "detail": {
+                "created_new_subagent": true,
+                "child_agent_id": "reused-id"
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            task.target(),
+            Some(TaskTargetRef {
+                kind: TaskTargetKind::ChildAgent,
+                agent_id: "reused-id".into(),
+                incarnation: None,
+            })
+        );
+        assert_eq!(
+            TaskStatusSnapshot::from_task_record(&task).target,
+            task.target()
+        );
+        task.kind = TaskKind::AgentMessageWait;
+        task.detail = Some(serde_json::json!({"target_agent_id": "reused-id"}));
+        assert_eq!(
+            task.target().unwrap().kind,
+            TaskTargetKind::AgentMessageWait
+        );
+        assert_eq!(task.target().unwrap().incarnation, None);
+        task.kind = TaskKind::CommandTask;
+        assert_eq!(task.target(), None);
+        task.kind = TaskKind::ChildAgentTask;
+        task.detail = Some(serde_json::json!({
+            "child_agent_id": "reused-id",
+            "target": {"kind": "invalid", "agent_id": "must-not-fallback"}
+        }));
+        assert_eq!(task.target(), None);
     }
 
     #[test]

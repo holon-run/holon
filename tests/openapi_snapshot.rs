@@ -10,6 +10,31 @@
 const SNAPSHOT_PATH: &str = "docs/website/reference/openapi.json";
 
 #[test]
+fn task_observability_contract_includes_targets_and_terminal_query() {
+    let openapi = holon::openapi::generate_openapi_json();
+    let schemas = &openapi["components"]["schemas"];
+    let tasks = &openapi["paths"]["/api/agents/{agent_id}/tasks"]["get"];
+    assert_eq!(
+        tasks["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/TaskListResponse"
+    );
+    let status = tasks["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|parameter| parameter["name"] == "status")
+        .unwrap();
+    assert_eq!(
+        status["schema"]["enum"],
+        serde_json::json!(["active", "terminal"])
+    );
+    assert!(schemas["TaskRecordDto"]["properties"]["target"].is_object());
+    assert!(schemas["SlimTaskDto"]["properties"]["target"].is_object());
+    assert!(schemas["TaskStatusSnapshot"]["properties"]["target"].is_object());
+    assert!(schemas["ControlPromptRequest"]["properties"]["expected_incarnation"].is_object());
+}
+
+#[test]
 fn timezone_clear_uses_a_dedicated_request_schema() {
     let openapi = holon::openapi::generate_openapi_json();
     for (resource, request) in [
