@@ -1,0 +1,49 @@
+{
+  "apply_reverse": [
+    {
+      "cmd": [
+        "git",
+        "apply",
+        "--check",
+        "/private/tmp/holon-d7-delivery-resource-stage/resource.patch"
+      ],
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "cmd": [
+        "git",
+        "apply",
+        "/private/tmp/holon-d7-delivery-resource-stage/resource.patch"
+      ],
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "cmd": [
+        "git",
+        "apply",
+        "--reverse",
+        "--check",
+        "/private/tmp/holon-d7-delivery-resource-stage/resource.patch"
+      ],
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "cmd": [
+        "git",
+        "apply",
+        "--reverse",
+        "/private/tmp/holon-d7-delivery-resource-stage/resource.patch"
+      ],
+      "exit": 0,
+      "stderr": ""
+    }
+  ],
+  "exact_forward": "PASS",
+  "exact_reverse": "PASS",
+  "whitespace": "PASS",
+  "parse": "rustfmt edition2021 skip_children PASS",
+  "native": "UNRUN"
+}

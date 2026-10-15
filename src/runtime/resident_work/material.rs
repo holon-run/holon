@@ -3,8 +3,100 @@ use super::*;
 use crate::runtime::input_evidence_budget::OwnedCompletionBudget;
 use anyhow::Context;
 
-pub(crate) type WorkMaterialObserver<'a> =
-    dyn FnMut(&Arc<BudgetViewGuard>, usize, usize) -> Result<()> + 'a;
+/// Only the actual Host-address registration below can provide this borrowed
+/// origin. It has no record, lookup, mutation or business authority.
+pub(crate) struct OriginalWorkHostAddress<'a> {
+    scope: &'a InputEvidenceScope,
+    ledger: &'a InputEvidenceBudgetLedger,
+    guard: &'a Arc<BudgetViewGuard>,
+}
+/// Retains the same actual guard after the original observer admits this new
+/// scope/keeper metadata. Private fields prevent DTO/boolean reconstruction.
+pub(crate) struct OriginalWorkHostAddressLoan {
+    scope: InputEvidenceScope,
+    ledger: InputEvidenceBudgetLedger,
+    guard: Arc<BudgetViewGuard>,
+}
+impl OriginalWorkHostAddress<'_> {
+    pub(crate) fn validate_binding(
+        &self,
+        scope: &InputEvidenceScope,
+        ledger: &InputEvidenceBudgetLedger,
+        guard: &Arc<BudgetViewGuard>,
+    ) -> Result<()> {
+        ensure!(
+            self.scope == scope
+                && self.ledger.same_ledger(ledger)
+                && Arc::ptr_eq(self.guard, guard),
+            "original Work Host-address origin differs"
+        );
+        guard.validate_host_owned_material_binding(ledger, 0)?;
+        Ok(())
+    }
+    pub(crate) fn retained_material_estimate(&self) -> Result<(u64, usize)> {
+        let (bytes, nodes) =
+            crate::runtime::input_evidence_budget::borrowed_json_material(self.scope)?;
+        let nodes = nodes
+            .checked_add(8)
+            .context("Work Host-address keeper nodes overflow")?;
+        Ok((
+            bytes
+                .checked_add(
+                    u64::try_from(nodes)?
+                        .checked_mul(256)
+                        .context("Work Host-address keeper bytes overflow")?,
+                )
+                .and_then(|value| {
+                    value.checked_add(std::mem::size_of::<OriginalWorkHostAddressLoan>() as u64)
+                })
+                .context("Work Host-address keeper bytes overflow")?,
+            nodes,
+        ))
+    }
+    pub(crate) fn retain(
+        &self,
+        scope: &InputEvidenceScope,
+        ledger: &InputEvidenceBudgetLedger,
+        guard: &Arc<BudgetViewGuard>,
+    ) -> Result<OriginalWorkHostAddressLoan> {
+        self.validate_binding(scope, ledger, guard)?;
+        Ok(OriginalWorkHostAddressLoan {
+            scope: scope.clone(),
+            ledger: ledger.clone(),
+            guard: guard.clone(),
+        })
+    }
+}
+impl OriginalWorkHostAddressLoan {
+    pub(crate) fn validate_binding(
+        &self,
+        scope: &InputEvidenceScope,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<()> {
+        ensure!(
+            self.scope == *scope && self.ledger.same_ledger(ledger),
+            "retained Work Host-address origin differs"
+        );
+        self.guard.validate_host_owned_material_binding(ledger, 0)?;
+        Ok(())
+    }
+    pub(crate) fn matches_guard(&self, guard: &Arc<BudgetViewGuard>) -> bool {
+        Arc::ptr_eq(&self.guard, guard)
+    }
+    #[cfg(test)]
+    pub(crate) fn guard_for_test(&self) -> &Arc<BudgetViewGuard> {
+        &self.guard
+    }
+}
+impl std::fmt::Debug for OriginalWorkHostAddressLoan {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OriginalWorkHostAddressLoan")
+            .finish_non_exhaustive()
+    }
+}
+pub(crate) type WorkMaterialObserver<'a> = dyn FnMut(&Arc<BudgetViewGuard>, usize, usize, Option<&OriginalWorkHostAddress<'_>>) -> Result<()>
+    + 'a;
 
 struct Material<'a> {
     bytes: usize,
@@ -67,7 +159,12 @@ impl<'a> Material<'a> {
             .map(|ledger| ledger.register_host_owned_bytes(category, address_estimate))
             .transpose()?;
         if let (Some(observer), Some(address)) = (&mut material.observer, &address) {
-            observer(address, address_bytes, 1)?;
+            let origin = OriginalWorkHostAddress {
+                scope: &domain.scope,
+                ledger: ledger.context("Work address has no actual ledger")?,
+                guard: address,
+            };
+            observer(address, address_bytes, 1, Some(&origin))?;
         }
         (material.bytes, material.records) = next;
         material.owned = ledger
@@ -107,7 +204,7 @@ impl<'a> Material<'a> {
             // observer debits this already registered allocation, never twice.
             owned.observe_material(0, u64::try_from(bytes)?);
             if let Some(observer) = &mut self.observer {
-                observer(&owned.guard(), bytes, records)?;
+                observer(&owned.guard(), bytes, records, None)?;
             }
         } else {
             ensure!(

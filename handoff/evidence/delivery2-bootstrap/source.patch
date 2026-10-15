@@ -1,0 +1,630 @@
+diff --git a/src/runtime/tasks.rs b/src/runtime/tasks.rs
+index 6b66cf70..3dd35790 100644
+--- a/src/runtime/tasks.rs
++++ b/src/runtime/tasks.rs
+@@ -336,6 +336,29 @@ pub(super) fn restart_task_result_message_id(task_id: &str) -> String {
+     format!("message:task-restart:{task_id}")
+ }
+ 
++// Interruption observes the original Task. A Result's own synthetic Turn must
++// not promote a real creator's parent-less obligation into a rejoin fence.
++fn task_with_original_interrupted_result(
++    task: &TaskRecord,
++    result_message: &MessageEnvelope,
++) -> TaskRecord {
++    let mut terminal = task_with_result_message(
++        task,
++        TaskStatus::Interrupted,
++        task.detail.clone(),
++        result_message,
++    );
++    if unbound_task_rejoin_generation(task).is_some() {
++        terminal
++            .detail
++            .as_mut()
++            .and_then(serde_json::Value::as_object_mut)
++            .expect("validated original unbound Task detail")
++            .remove(PARENT_TURN_ID_DETAIL);
++    }
++    terminal
++}
++
+ fn interrupted_task_result_message(
+     task: &TaskRecord,
+     interrupted_reason: &'static str,
+@@ -2292,12 +2315,8 @@ impl RuntimeHandle {
+             };
+             let result_message =
+                 interrupted_task_result_message(&interrupted_task, "runtime_restarted");
+-            let interrupted_task = task_with_result_message(
+-                &interrupted_task,
+-                TaskStatus::Interrupted,
+-                interrupted_task.detail.clone(),
+-                &result_message,
+-            );
++            let interrupted_task =
++                task_with_original_interrupted_result(&interrupted_task, &result_message);
+             self.commit_terminal_task_result(
+                 &interrupted_task,
+                 "task_interrupted_on_restart",
+@@ -2345,13 +2364,18 @@ impl RuntimeHandle {
+                 detail_map.insert("interrupted_at".into(), to_json_value(&Utc::now()));
+             }
+             if task.is_worktree_child_agent_task() {
+-                let _ = self
+-                    .cleanup_task_owned_worktree_in_detail(
+-                        &task.id,
+-                        &mut detail,
+-                        "agent_lifecycle_stop",
+-                    )
+-                    .await;
++                // Parent monitor cancellation does not prove original child exit.
++                if let Some(worktree) = detail
++                    .get_mut("worktree")
++                    .and_then(serde_json::Value::as_object_mut)
++                {
++                    worktree.insert("cleanup_status".into(), serde_json::json!("retained"));
++                    worktree.insert(
++                        "cleanup_reason".into(),
++                        serde_json::json!("original_child_exit_unproven"),
++                    );
++                    worktree.insert("retained_for_review".into(), serde_json::json!(true));
++                }
+             }
+ 
+             let interrupted_task = TaskRecord {
+@@ -2369,12 +2393,8 @@ impl RuntimeHandle {
+             };
+             let result_message =
+                 interrupted_task_result_message(&interrupted_task, "agent_stopped");
+-            let interrupted_task = task_with_result_message(
+-                &interrupted_task,
+-                TaskStatus::Interrupted,
+-                interrupted_task.detail.clone(),
+-                &result_message,
+-            );
++            let interrupted_task =
++                task_with_original_interrupted_result(&interrupted_task, &result_message);
+             self.commit_terminal_task_result(
+                 &interrupted_task,
+                 "task_interrupted_on_agent_stop",
+@@ -5582,4 +5602,43 @@ mod control_task_result_tests {
+         );
+         assert_eq!(result.task.rejoin_fence().unwrap().generation, 1);
+     }
++
++    #[test]
++    fn original_interruption_preserves_unbound_bound_and_invalid_parent_contracts() {
++        for parent in [
++            None,
++            Some(serde_json::Value::Null),
++            Some(serde_json::json!("original-parent")),
++        ] {
++            let mut task = running_task(serde_json::json!({
++                "rejoin_obligation_id":"control-task", "rejoin_generation":1, "custom":"preserved"
++            }));
++            if let Some(parent) = &parent {
++                task.detail.as_mut().unwrap()[PARENT_TURN_ID_DETAIL] = parent.clone();
++            }
++            let result = interrupted_task_result_message(&task, "agent_stopped");
++            let frozen = serde_json::to_value(&result).unwrap();
++            let normalized = task_with_original_interrupted_result(&task, &result);
++            let mut expected = task_with_result_message(
++                &task,
++                TaskStatus::Interrupted,
++                task.detail.clone(),
++                &result,
++            );
++            if parent.is_none() {
++                expected
++                    .detail
++                    .as_mut()
++                    .unwrap()
++                    .as_object_mut()
++                    .unwrap()
++                    .remove(PARENT_TURN_ID_DETAIL);
++                assert_eq!(unbound_task_rejoin_generation(&normalized), Some(1));
++                assert!(normalized.rejoin_fence().is_err());
++            }
++            expected.updated_at = normalized.updated_at;
++            assert_eq!(normalized, expected);
++            assert_eq!(serde_json::to_value(&result).unwrap(), frozen);
++        }
++    }
+ }
+diff --git a/src/runtime/worktree.rs b/src/runtime/worktree.rs
+index 53e43ae4..91e30bea 100644
+--- a/src/runtime/worktree.rs
++++ b/src/runtime/worktree.rs
+@@ -525,21 +525,6 @@ impl RuntimeHandle {
+         Ok(())
+     }
+ 
+-    pub(super) async fn cleanup_task_owned_worktree_in_detail(
+-        &self,
+-        task_id: &str,
+-        detail: &mut serde_json::Value,
+-        reason: &str,
+-    ) -> Result<Option<TaskOwnedWorktreeCleanup>> {
+-        let Some(worktree) = detail.get_mut("worktree") else {
+-            return Ok(None);
+-        };
+-        let cleanup = self
+-            .cleanup_task_owned_worktree_metadata(task_id, worktree, reason)
+-            .await?;
+-        Ok(Some(cleanup))
+-    }
+-
+     pub(super) async fn cleanup_original_control_worktree_in_detail(
+         &self,
+         task_id: &str,
+@@ -557,15 +542,6 @@ impl RuntimeHandle {
+         .await
+         .map(Some)
+     }
+-    async fn cleanup_task_owned_worktree_metadata(
+-        &self,
+-        task_id: &str,
+-        worktree: &mut serde_json::Value,
+-        reason: &str,
+-    ) -> Result<TaskOwnedWorktreeCleanup> {
+-        cleanup::cleanup_runtime_metadata(self, task_id, worktree, reason).await
+-    }
+-
+     pub async fn summarize_worktree_tasks(&self) -> Result<String> {
+         let tasks = self.latest_task_records().await?;
+         let worktree_tasks: Vec<_> = tasks
+@@ -714,163 +690,6 @@ impl RuntimeHandle {
+ 
+         Ok(summary_lines.join("\n"))
+     }
+-
+-    async fn remove_task_owned_worktree(
+-        &self,
+-        artifact: &TaskOwnedWorktreeArtifact,
+-    ) -> Result<TaskOwnedWorktreeRemoveOutcome> {
+-        let execution = self
+-            .effective_execution(ExecutionScopeKind::AgentTurn)
+-            .await?;
+-        let remove_output = self
+-            .system()
+-            .run(
+-                &execution,
+-                ProcessRequest {
+-                    program: ProgramInvocation::Argv {
+-                        program: "git".into(),
+-                        args: vec![
+-                            OsString::from("worktree"),
+-                            OsString::from("remove"),
+-                            artifact.worktree_path.as_os_str().to_os_string(),
+-                        ],
+-                    },
+-                    cwd: Some(self.workspace_root()),
+-                    env: vec![],
+-                    stdin: StdioSpec::Null,
+-                    tty: false,
+-                    capture: CaptureSpec::BOTH,
+-                    timeout: None,
+-                    purpose: ProcessPurpose::WorktreeSetup,
+-                },
+-            )
+-            .await
+-            .context("failed to remove git worktree")?;
+-
+-        if !remove_output.exit_status.success() {
+-            let stderr = String::from_utf8_lossy(&remove_output.stderr)
+-                .trim()
+-                .to_string();
+-            return Err(anyhow!("git worktree remove failed: {stderr}"));
+-        }
+-
+-        if !self
+-            .local_branch_exists(&artifact.worktree_branch, &execution)
+-            .await?
+-        {
+-            return Ok(TaskOwnedWorktreeRemoveOutcome {
+-                branch_deleted: false,
+-                branch_delete_error: None,
+-            });
+-        }
+-
+-        let branch_output = self
+-            .system()
+-            .run(
+-                &execution,
+-                ProcessRequest {
+-                    program: ProgramInvocation::Argv {
+-                        program: "git".into(),
+-                        args: vec![
+-                            OsString::from("branch"),
+-                            OsString::from("-D"),
+-                            OsString::from(&artifact.worktree_branch),
+-                        ],
+-                    },
+-                    cwd: Some(self.workspace_root()),
+-                    env: vec![],
+-                    stdin: StdioSpec::Null,
+-                    tty: false,
+-                    capture: CaptureSpec::BOTH,
+-                    timeout: None,
+-                    purpose: ProcessPurpose::InternalGit,
+-                },
+-            )
+-            .await
+-            .context("failed to remove worktree branch")?;
+-        if !branch_output.exit_status.success() {
+-            let stderr = String::from_utf8_lossy(&branch_output.stderr)
+-                .trim()
+-                .to_string();
+-            return Ok(TaskOwnedWorktreeRemoveOutcome {
+-                branch_deleted: false,
+-                branch_delete_error: Some(format!("git branch -D failed: {stderr}")),
+-            });
+-        }
+-
+-        Ok(TaskOwnedWorktreeRemoveOutcome {
+-            branch_deleted: true,
+-            branch_delete_error: None,
+-        })
+-    }
+-
+-    async fn local_branch_exists(
+-        &self,
+-        branch: &str,
+-        execution: &crate::system::EffectiveExecution,
+-    ) -> Result<bool> {
+-        let branch_ref = format!("refs/heads/{branch}");
+-        let output = self
+-            .system()
+-            .run(
+-                execution,
+-                ProcessRequest {
+-                    program: ProgramInvocation::Argv {
+-                        program: "git".into(),
+-                        args: vec![
+-                            OsString::from("show-ref"),
+-                            OsString::from("--verify"),
+-                            OsString::from("--quiet"),
+-                            OsString::from(branch_ref),
+-                        ],
+-                    },
+-                    cwd: Some(self.workspace_root()),
+-                    env: vec![],
+-                    stdin: StdioSpec::Null,
+-                    tty: false,
+-                    capture: CaptureSpec::BOTH,
+-                    timeout: None,
+-                    purpose: ProcessPurpose::InternalGit,
+-                },
+-            )
+-            .await
+-            .context("failed to inspect worktree branch ref")?;
+-        Ok(output.exit_status.success())
+-    }
+-
+-    async fn current_worktree_branch(&self, worktree_path: &Path) -> Result<String> {
+-        git_stdout(
+-            self,
+-            worktree_path,
+-            &["rev-parse", "--abbrev-ref", "HEAD"],
+-            "failed to inspect worktree branch",
+-        )
+-        .await
+-    }
+-
+-    async fn changed_files_for_worktree(&self, worktree_path: &Path) -> Result<Vec<String>> {
+-        let status = git_stdout(
+-            self,
+-            worktree_path,
+-            &["status", "--porcelain"],
+-            "failed to inspect worktree status",
+-        )
+-        .await?;
+-        let mut changed_files = status
+-            .lines()
+-            .filter(|line| !line.trim().is_empty())
+-            .map(|line| {
+-                let trimmed = line.trim();
+-                trimmed
+-                    .get(3..)
+-                    .filter(|path| !path.trim().is_empty())
+-                    .unwrap_or(trimmed)
+-                    .to_string()
+-            })
+-            .collect::<Vec<_>>();
+-        changed_files.sort();
+-        Ok(changed_files)
+-    }
+ }
+ pub(super) fn format_worktree_task_result(result: &WorktreeSubagentResult) -> String {
+     let mut lines = Vec::new();
+diff --git a/src/runtime/worktree_cleanup.rs b/src/runtime/worktree_cleanup.rs
+index eb03e46b..0f8ee1da 100644
+--- a/src/runtime/worktree_cleanup.rs
++++ b/src/runtime/worktree_cleanup.rs
+@@ -161,20 +161,6 @@ pub(crate) async fn cleanup_frozen_worktree(
+         guards: frozen.guards,
+     })
+ }
+-pub(super) async fn cleanup_runtime_metadata(
+-    runtime: &RuntimeHandle,
+-    task_id: &str,
+-    metadata: &mut serde_json::Value,
+-    reason: &str,
+-) -> Result<TaskOwnedWorktreeCleanup> {
+-    cleanup_metadata(
+-        &mut CleanupAdapter::Runtime(runtime),
+-        task_id,
+-        metadata,
+-        reason,
+-    )
+-    .await
+-}
+ /// The original Control owns this pre-registered output reservation. Reuse the
+ /// same cleanup policy/Git adapter; keep its historical audit behavior intact.
+ pub(super) async fn cleanup_original_control_metadata(
+@@ -232,14 +218,12 @@ pub(crate) async fn cleanup_completion_worktree_for_test(
+ }
+ 
+ enum CleanupAdapter<'a> {
+-    Runtime(&'a RuntimeHandle),
+     Completion(&'a mut FrozenWorktreeCleanup),
+     Frozen(&'a mut FrozenWorktreeCleanup),
+ }
+ impl CleanupAdapter<'_> {
+     fn audit(&mut self, event: &AuditEvent) -> Result<()> {
+         match self {
+-            Self::Runtime(runtime) => runtime.inner.storage.append_event(event),
+             Self::Completion(frozen) => {
+                 // This reservation predates FS. Audit persistence belongs to the
+                 // saved completion capsule, so a later SQL failure cannot redo Git.
+@@ -261,7 +245,6 @@ impl CleanupAdapter<'_> {
+     }
+     async fn current_branch(&mut self, path: &Path) -> Result<String> {
+         match self {
+-            Self::Runtime(runtime) => runtime.current_worktree_branch(path).await,
+             Self::Frozen(frozen) | Self::Completion(frozen) => {
+                 frozen
+                     .git(
+@@ -276,7 +259,6 @@ impl CleanupAdapter<'_> {
+     }
+     async fn changed_files(&mut self, path: &Path) -> Result<Vec<String>> {
+         match self {
+-            Self::Runtime(runtime) => runtime.changed_files_for_worktree(path).await,
+             Self::Frozen(frozen) | Self::Completion(frozen) => {
+                 let status = frozen
+                     .git(
+@@ -323,7 +305,6 @@ impl CleanupAdapter<'_> {
+         artifact: &TaskOwnedWorktreeArtifact,
+     ) -> Result<TaskOwnedWorktreeRemoveOutcome> {
+         match self {
+-            Self::Runtime(runtime) => runtime.remove_task_owned_worktree(artifact).await,
+             Self::Frozen(frozen) | Self::Completion(frozen) => {
+                 let repo = frozen.repo_root.clone();
+                 let path = artifact
+diff --git a/src/runtime/worktree_cleanup_tests.rs b/src/runtime/worktree_cleanup_tests.rs
+index 55d25427..65cf1f90 100644
+--- a/src/runtime/worktree_cleanup_tests.rs
++++ b/src/runtime/worktree_cleanup_tests.rs
+@@ -166,3 +166,221 @@ async fn frozen_cleanup_keeps_a_registered_worktree_when_git_remove_fails() -> R
+     assert_eq!(ledger.report()?.observed_bytes, 0);
+     Ok(())
+ }
++
++fn bootstrap_runtime(repo: &Repo) -> Result<RuntimeHandle> {
++    RuntimeHandle::new(
++        "bootstrap-worktree-owner",
++        repo._dir.path().join("agent-home"),
++        repo.root.clone(),
++        "http://127.0.0.1:7878".into(),
++        Arc::new(crate::provider::StubProvider::new("unused")),
++        "default".into(),
++        crate::runtime::tests::support::context_config(),
++    )
++}
++async fn bootstrap_worktree_task(
++    runtime: &RuntimeHandle,
++    repo: &Repo,
++) -> Result<crate::types::TaskRecord> {
++    use crate::types::{TaskKind, TaskRecord, TaskStatus};
++    let id = crate::ids::task_id();
++    let at = runtime.now();
++    let task = TaskRecord {
++        id: id.clone(),
++        agent_id: runtime.instance_agent_id().into(),
++        kind: TaskKind::WorktreeSubagentTask,
++        status: TaskStatus::Running,
++        created_at: at,
++        updated_at: at,
++        parent_message_id: None,
++        work_item_id: None,
++        summary: Some("original bootstrap child".into()),
++        recovery: None,
++        detail: Some(
++            runtime
++                .task_creation_detail(
++                    &id,
++                    serde_json::json!({
++                        "workspace_mode":"worktree", "custom":"preserved",
++                        "worktree":{"worktree_path":repo.path,"worktree_branch":"original-stop"}
++                    }),
++                )
++                .await?,
++        ),
++    };
++    assert_eq!(
++        crate::runtime::tasks::unbound_task_rejoin_generation(&task),
++        Some(1)
++    );
++    runtime
++        .persist_task_transition(&task, "bootstrap_worktree_actual_fixture")
++        .await?;
++    Ok(task)
++}
++async fn stop_bootstrap_agent(runtime: &RuntimeHandle) -> Result<()> {
++    let mut owner = runtime.begin_mutation().await?;
++    owner.state.status = crate::types::AgentStatus::Stopped;
++    owner.persist_state(&runtime.inner.storage).await?;
++    Ok(())
++}
++fn assert_bootstrap_worktree_retained(
++    runtime: &RuntimeHandle,
++    repo: &Repo,
++    original: &crate::types::TaskRecord,
++    stopped: bool,
++) -> Result<crate::types::TaskRecord> {
++    use crate::types::{MessageKind, QueueEntryStatus, TaskStatus};
++    let task = runtime
++        .runtime_db()
++        .tasks()
++        .latest(&original.id)?
++        .context("original Task missing")?;
++    assert_eq!(task.status, TaskStatus::Interrupted);
++    assert_eq!(task.created_at, original.created_at);
++    assert_eq!(task.agent_id, original.agent_id);
++    assert_eq!(task.recovery, original.recovery);
++    assert_eq!(
++        crate::runtime::tasks::unbound_task_rejoin_generation(&task),
++        Some(1)
++    );
++    assert!(task.rejoin_fence().is_err());
++    let detail = task.detail.as_ref().unwrap();
++    assert_eq!(detail["custom"], "preserved");
++    assert_eq!(
++        detail["interrupted_reason"],
++        if stopped {
++            "agent_stopped"
++        } else {
++            "runtime_restarted"
++        }
++    );
++    assert_eq!(
++        detail["worktree"]["worktree_path"],
++        serde_json::json!(repo.path)
++    );
++    assert_eq!(detail["worktree"]["worktree_branch"], "original-stop");
++    if stopped {
++        assert_eq!(detail["worktree"]["cleanup_status"], "retained");
++        assert_eq!(
++            detail["worktree"]["cleanup_reason"],
++            "original_child_exit_unproven"
++        );
++        assert_eq!(detail["worktree"]["retained_for_review"], true);
++    } else {
++        assert_eq!(
++            detail["worktree"],
++            original.detail.as_ref().unwrap()["worktree"]
++        );
++    }
++    assert!(detail["worktree"].get("auto_cleaned_up").is_none());
++    let result_id = task
++        .parent_message_id
++        .as_deref()
++        .context("original Result missing")?;
++    let result = runtime
++        .storage()
++        .read_message_by_id(result_id)?
++        .context("original Result body missing")?;
++    assert_eq!(result.kind, MessageKind::TaskResult);
++    assert_eq!(result.metadata.as_ref().unwrap()["task_detail"], *detail);
++    assert!(runtime
++        .storage()
++        .read_turn_by_id(result.turn_id.as_deref().unwrap())?
++        .is_none());
++    assert_eq!(
++        runtime
++            .runtime_db()
++            .queue_entries()
++            .latest(result_id)?
++            .unwrap()
++            .status,
++        QueueEntryStatus::Queued
++    );
++    assert_eq!(runtime.runtime_db().connection()?.query_row("SELECT COUNT(*) FROM audit_events WHERE kind IN ('worktree_auto_cleaned_up','task_worktree_cleanup_already_removed')", [], |row|row.get::<_,usize>(0))?, 0);
++    assert!(repo.path.exists());
++    let status = Command::new("git")
++        .args(["status", "--porcelain"])
++        .current_dir(&repo.path)
++        .output()?;
++    assert!(status.status.success() && status.stdout.is_empty());
++    git(
++        &repo.root,
++        &["show-ref", "--verify", "refs/heads/original-stop"],
++    )?;
++    Ok(task)
++}
++fn bootstrap_business_counts(runtime: &RuntimeHandle) -> Result<(usize, usize, usize)> {
++    Ok(runtime.runtime_db().connection()?.query_row("SELECT (SELECT COUNT(*) FROM messages),(SELECT COUNT(*) FROM queue_entries),(SELECT COUNT(*) FROM audit_events)", [], |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?)
++}
++#[tokio::test]
++async fn original_bootstrap_interruption_keeps_clean_worktree_and_unbound_contract_across_restart(
++) -> Result<()> {
++    for stopped in [false, true] {
++        let repo = Repo::new()?;
++        let runtime = bootstrap_runtime(&repo)?;
++        let task = bootstrap_worktree_task(&runtime, &repo).await?;
++        if stopped {
++            stop_bootstrap_agent(&runtime).await?;
++        }
++        drop(runtime);
++        let runtime = bootstrap_runtime(&repo)?;
++        assert!(runtime.inner.recovered_tasks.lock().await.is_some());
++        runtime.bootstrap_recovery().await?;
++        let interrupted = assert_bootstrap_worktree_retained(&runtime, &repo, &task, stopped)?;
++        let counts = bootstrap_business_counts(&runtime)?;
++        runtime.bootstrap_recovery().await?;
++        assert_eq!(bootstrap_business_counts(&runtime)?, counts);
++        drop(runtime);
++        let runtime = bootstrap_runtime(&repo)?;
++        runtime.bootstrap_recovery().await?;
++        assert_eq!(
++            assert_bootstrap_worktree_retained(&runtime, &repo, &task, stopped)?,
++            interrupted
++        );
++        assert_eq!(bootstrap_business_counts(&runtime)?, counts);
++    }
++    Ok(())
++}
++#[tokio::test]
++async fn stopped_bootstrap_parent_monitor_abort_does_not_prove_independent_child_exit() -> Result<()>
++{
++    use crate::runtime::{
++        command_task::ManagedTaskHandle, control_cancellation::SharedControlTaskHandle,
++    };
++    let repo = Repo::new()?;
++    let runtime = bootstrap_runtime(&repo)?;
++    let task = bootstrap_worktree_task(&runtime, &repo).await?;
++    let registration = runtime
++        .admit_control_task_handle_registration(&task)
++        .await?;
++    let lease = runtime.inner.control_cancellations.task(&task);
++    lease.attach(tokio::spawn(std::future::pending::<()>()));
++    runtime.inner.task_handles.lock().await.insert(
++        task.id.clone(),
++        ManagedTaskHandle::Async(SharedControlTaskHandle(lease.clone())),
++    );
++    drop(registration);
++    let (exit, wait) = tokio::sync::oneshot::channel::<()>();
++    let (started, observed) = tokio::sync::oneshot::channel::<()>();
++    let path = repo.path.clone();
++    let child = tokio::spawn(async move {
++        let _ = started.send(());
++        let _ = wait.await;
++        path.exists()
++    });
++    observed.await?;
++    stop_bootstrap_agent(&runtime).await?;
++    runtime
++        .interrupt_active_tasks_for_lifecycle_stop(vec![task.clone()])
++        .await?;
++    tokio::time::timeout(std::time::Duration::from_secs(5), lease.join()).await??;
++    assert!(
++        !child.is_finished(),
++        "parent monitor join is not child physical exit"
++    );
++    assert_bootstrap_worktree_retained(&runtime, &repo, &task, true)?;
++    exit.send(())
++        .map_err(|_| anyhow!("independent child exited early"))?;
++    assert!(child.await?);
++    Ok(())
++}

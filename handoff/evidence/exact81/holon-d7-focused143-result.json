@@ -1,0 +1,16 @@
+{
+  "exit": 101,
+  "elapsed": 49.89,
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "selected": 37,
+  "library_total": 5948,
+  "summary": [
+    "test result: FAILED. 34 passed; 3 failed; 0 ignored; 0 measured; 5911 filtered out; finished in 49.59s"
+  ],
+  "failures": [
+    "runtime::cold_child_domains_tests::cold_child_actual_qualified_domains_share_state_view_and_keep_original_guards_without_ready_install",
+    "runtime::cold_child_domains_tests::cold_child_held_actual_prior_is_joint_before_every_domain_decoder_and_at_measured_peak",
+    "runtime::state_mutation::lifecycle_state_audits::runtime_observation_audits::tests::actual_command_request_audit_precedes_task_created_and_keeps_original_process_payload"
+  ]
+}

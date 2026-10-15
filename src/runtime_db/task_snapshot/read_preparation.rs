@@ -15,6 +15,9 @@ mod scalar_material;
 #[path = "decoder_material.rs"]
 mod decoder_material;
 pub(in crate::runtime_db) use readback_material::ReleasedTaskReadbackMaterial;
+#[path = "result_execution_material.rs"]
+mod result_execution_material;
+pub(in crate::runtime_db) use result_execution_material::retire_consumed_original_result_material;
 #[path = "read_body_material.rs"]
 mod read_body_material;
 pub(in crate::runtime_db) use preflight_material::ReleasedTaskPreflightMaterial;

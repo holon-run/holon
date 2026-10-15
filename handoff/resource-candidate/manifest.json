@@ -1,0 +1,83 @@
+{
+  "base_commit": "d53d270785cc88fd59d75b556718739e20d71221",
+  "patch": "/private/tmp/holon-d7-delivery-resource-stage/resource.patch",
+  "sha256": "3aad6f3f882d358c91296a005b680e29aa071fa3a898b774ec19ad9722d0b2d6",
+  "files": [
+    {
+      "path": "docs/rfcs/agent-runtime-state-and-context-snapshots.md",
+      "base_sha256": "5d1f4f10ad7b2aae984e51398ba762e4a0b1d8981c920b8fbb0f721f8ec05ed6",
+      "new_sha256": "3f84d04ab37d43c80fa66737952467518b0e95104763b08f73c07f1a340fe9a6"
+    },
+    {
+      "path": "src/agent_template.rs",
+      "base_sha256": "530fe1aa37790dc7f791b673ee978bbb3676fb9950bc10bacc41434776521294",
+      "new_sha256": "a675d773d211e6f23bd951a3fc4bdbf203ed5a6c2b896027ee2ddcb55c77dd7d"
+    },
+    {
+      "path": "src/diagnostics/io_probe.rs",
+      "base_sha256": "d8d2ae5fd72b6723ad8b6bf2f28bc1693405c4d02009f6b3a79c36b8a2d7d754",
+      "new_sha256": "10238c3cd012fdafaa0dbc76edba0465752a1e4338456f692b0cfa430f985ea4"
+    },
+    {
+      "path": "src/diagnostics/resource_io.rs",
+      "base_sha256": null,
+      "new_sha256": "b8cee830b00abdfa74f79ebbbaa117d2607f9754fb96121774a5deabdf52fa4b"
+    },
+    {
+      "path": "src/diagnostics.rs",
+      "base_sha256": "f2abbf9ba6649fa378d51c4678bf98c720c581deffdc017b5898263204542336",
+      "new_sha256": "91716b571bc6428116ae3ef9c84674c00ad79b8335c1ec3292b6473ad9f7448d"
+    },
+    {
+      "path": "src/notes_catalog.rs",
+      "base_sha256": "0ea05052915d493d76ae50817bd34834ae70547f8f849c37bb36df97e92ddf7a",
+      "new_sha256": "c258297a81b88e65f1ce5f849458a88cd77b12479c914fe383625598d5e4e3ab"
+    },
+    {
+      "path": "src/projection_eval/baseline.rs",
+      "base_sha256": "cdd34ace2d274c25d0b71ad3be195048ac0a39952789768fb8caa4934bb595cb",
+      "new_sha256": "c40cb31cc2e15c6b05afba2bef83bc1721acf1b70fc5adb7e19f4dcdf92bd5ce"
+    },
+    {
+      "path": "src/prompt/mod.rs",
+      "base_sha256": "857e67da6d87fcbe7692135d31a5d1851b41e749e0572c70149b3a1ceff8c42f",
+      "new_sha256": "7e0a5257a933c40b648634435e1f1c23666c09d0d880e4cbf24820c020e4dce7"
+    },
+    {
+      "path": "src/runtime/context_capture.rs",
+      "base_sha256": "bf37df2b426db6fc0aa24c58523570d4f516f781758962787284d57f79757a4f",
+      "new_sha256": "ed9318348a2584feec6c839454347addfc8b6403730b404635f98ec4771dd1e9"
+    },
+    {
+      "path": "src/runtime/provider_turn.rs",
+      "base_sha256": "125f2b300708ff23b7f5318676e0c660ced237d1ddaad3fbb9c06026c4d5de30",
+      "new_sha256": "9d47f2cb9f62d81d24d6ca4c6cbc0fbd939c6a3202df641392a2bac5cf42fa21"
+    },
+    {
+      "path": "src/runtime/tests/agent_and_tools.rs",
+      "base_sha256": "6cd909aaa34ae2b49c9e7c70c7b4e0a6053f9c3d5b5c27ec441ddb0b50a309c6",
+      "new_sha256": "790f82d36204ca9d5aef5d233b5c4a07341b12e7bae164dfcec7d1ae834586a8"
+    },
+    {
+      "path": "src/runtime/tests/support.rs",
+      "base_sha256": "e195e2b6b6fcc95486ab002d3f712555462ba52284c60b7a434d306b609028aa",
+      "new_sha256": "186dfda4e57c83b01056cb38c4c103d9d7a7d4255996252b8c94c362e811b5fb"
+    },
+    {
+      "path": "src/runtime.rs",
+      "base_sha256": "976b9b8b6ce78ffa26aafe9a30a7f9ff958895ef7e7b9dd91133188f473a6d0d",
+      "new_sha256": "2962fd57070f0190c5ea5e604c24891b6c86416e156fea9fdae1f998ca0ab836"
+    },
+    {
+      "path": "src/skills/base.rs",
+      "base_sha256": "0f4426e2091811dc0d874d92423403a804e116e9edff000edae2f46c0dca4ad9",
+      "new_sha256": "437a65fb5e7907890c4963313b25ee193161cba289b24c621524b3a4f9189952"
+    },
+    {
+      "path": "src/skills/registry.rs",
+      "base_sha256": "b98d8fe50c2062443cfc07f7957ea0d68a4fa05b86de02d9a5611fb0e6392fa0",
+      "new_sha256": "86e98bae078e13e897a303bb05bee948bb4e3ee81e09b04554214ce4828c48ea"
+    }
+  ],
+  "native": "UNRUN; Root sole Cargo/native"
+}

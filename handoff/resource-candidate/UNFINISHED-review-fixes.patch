@@ -1,0 +1,408 @@
+--- a/docs/rfcs/agent-runtime-state-and-context-snapshots.md
++++ b/docs/rfcs/agent-runtime-state-and-context-snapshots.md
+@@ -1552,8 +1552,13 @@
+ activation, identity mutation or historical Input authority.
+ 
+ 
+-### D7 独立前置：现有 Context 文件准备的分配门禁
+-
+-现有 loaded Context 的 skills/catalog、plan/notes、AGENTS/agent memory 文件阶段复用同一个实际 InputEvidenceBudgetLedger completion guard，按原 hard bounds（至多 64 MiB/65536 native records）在文件 buffer、目录项和解析集合分配之前检查。同步 TLS 入口仅包住实际同步文件阶段，不跨 await；可选 reader 吞掉文件错误时仍由原 phase 的最终检查拒绝预算失败。guard 保留原峰值至 EffectivePrompt 最后 holder/reprojection 释放，不新注册同份材料。
+-
+-本前置保留原文件读取、plan 创建、错误和业务权限，不建立 Ready/resource registry，不宣称 ordinary zero-file-read 或整个 Context 的跨领域累计预算已完成。版本观察、known-write/物理完成与安装 fence 另行接入。
++### Context resource read allowance
++
++Synchronous catalog, plan, notes, guidance and agent-memory reads share one
++resource allowance backed by the Runtime's existing ledger. File buffers,
++directory entries, parser collections and cached catalog copies are admitted
++before allocation. Thread-local entries cover synchronous operations only;
++latched quota failures remain typed and retryable even when an optional reader
++omits an unreadable source. The original guard retains the observed peak through
++the last prompt or reprojection holder. File permissions, optional absence,
++plan creation, business outcomes and ordinary read behavior are preserved.
+--- a/src/diagnostics/resource_io.rs
++++ b/src/diagnostics/resource_io.rs
+@@ -39,14 +39,14 @@
+     pub(crate) fn new(
+         ledger: &InputEvidenceBudgetLedger,
+         scope: &InputEvidenceScope,
+-    ) -> io::Result<Self> {
++    ) -> anyhow::Result<Self> {
+         let limits = ledger.limits();
+         let bytes = limits
+             .history_per_agent_bytes
+             .checked_add(limits.pending_per_agent_bytes)
+-            .ok_or_else(|| io::Error::other("resource byte limit overflow"))?
++            .ok_or_else(resource_exhausted)?
+             .min(64 * 1024 * 1024);
+-        let records = usize::try_from(limits.record_limit.min(65_536)).map_err(io::Error::other)?;
++        let records = usize::try_from(limits.record_limit.min(65_536))?;
+         Self::with_limits(ledger, scope, bytes, records)
+     }
+     fn with_limits(
+@@ -54,31 +54,34 @@
+         scope: &InputEvidenceScope,
+         bytes: u64,
+         records: usize,
+-    ) -> io::Result<Self> {
+-        if bytes == 0 || records == 0 {
+-            return Err(io::Error::other(
+-                "ResourceExhausted: zero resource allowance",
+-            ));
+-        }
+-        let material = ledger
+-            .reserve_owned_completion(
+-                scope,
+-                InputMemoryCategory::Candidate,
+-                OwnedBytesEstimate::default(),
+-            )
+-            .map_err(io::Error::other)?;
++    ) -> anyhow::Result<Self> {
++        // Gate the exact original header before ScopeKey clones or Arc/Mutex allocation.
++        let header_bytes = u64::try_from(scope.agent_id.len())?
++            .checked_add(256)
++            .and_then(|bytes| bytes.checked_mul(8))
++            .ok_or_else(resource_exhausted)?;
++        let header_records = 8 * 8;
++        if header_bytes > bytes || header_records > records {
++            return Err(resource_exhausted());
++        }
++        let material = ledger.reserve_owned_completion(
++            scope,
++            InputMemoryCategory::Candidate,
++            OwnedBytesEstimate {
++                payload_bytes: 0,
++                metadata_estimate_bytes: header_bytes,
++            },
++        )?;
+         let result = Self {
+             active: Arc::new(Mutex::new(ReadMaterial {
+-                bytes: 0,
+-                records: 0,
++                bytes: header_bytes,
++                records: header_records,
+                 byte_limit: bytes,
+                 record_limit: records,
+                 material,
+                 failed: false,
+             })),
+         };
+-        // The one phase/header allocation, including its original scope address.
+-        charge(&result.active, scope.agent_id.len() as u64 + 256, 8, false)?;
+         Ok(result)
+     }
+     pub(crate) fn enter(&self) -> ResourceReadBudget {
+@@ -88,17 +91,17 @@
+             _thread: PhantomData,
+         }
+     }
+-    pub(crate) fn finish(&self) -> io::Result<(u64, usize)> {
+-        let mut material = self
++    pub(crate) fn finish(&self) -> anyhow::Result<(u64, usize)> {
++        let material = self
+             .active
+             .lock()
+             .unwrap_or_else(|error| error.into_inner());
+         if material.failed {
+-            return Err(exhausted(&mut material));
++            return Err(resource_exhausted());
+         }
+         Ok((material.bytes, material.records))
+     }
+-    pub(crate) fn guard(&self) -> io::Result<Arc<BudgetViewGuard>> {
++    pub(crate) fn guard(&self) -> anyhow::Result<Arc<BudgetViewGuard>> {
+         self.finish()?;
+         Ok(self
+             .active
+@@ -112,6 +115,15 @@
+     fn drop(&mut self) {
+         ACTIVE.with(|slot| slot.replace(self.previous.take()));
+     }
++}
++fn resource_exhausted() -> anyhow::Error {
++    crate::runtime_error::RuntimeError::new(
++        crate::runtime_error::RuntimeErrorDomain::Io,
++        "context_resource_exhausted",
++        "ResourceExhausted: context resource read material",
++    )
++    .with_retryable(true)
++    .into()
+ }
+ fn exhausted(material: &mut ReadMaterial) -> io::Error {
+     material.failed = true;
+@@ -239,6 +251,32 @@
+     };
+     charge(&active, bytes, records, false)
+ }
++pub(crate) fn charge_skill_catalog_entry(
++    entry: &crate::types::SkillCatalogEntry,
++) -> io::Result<()> {
++    let Some(active) = ACTIVE.with(|slot| slot.borrow().clone()) else {
++        return Ok(());
++    };
++    let bytes = [
++        entry.skill_id.len(),
++        entry.root_id.len(),
++        entry.skill_dir.len(),
++        entry.name.len(),
++        entry.description.len(),
++        entry.path.as_os_str().len(),
++        std::mem::size_of::<crate::types::SkillCatalogEntry>(),
++    ]
++    .into_iter()
++    .try_fold(0usize, |total, length| total.checked_add(length))
++    .ok_or_else(|| exhausted(&mut active.lock().unwrap_or_else(|error| error.into_inner())))?;
++    charge(
++        &active,
++        u64::try_from(bytes).map_err(io::Error::other)?,
++        16,
++        false,
++    )
++}
++
+ pub(crate) fn charge_structured_text(text: &str) -> io::Result<()> {
+     let Some(active) = ACTIVE.with(|slot| slot.borrow().clone()) else {
+         return Ok(());
+@@ -385,4 +423,133 @@
+         drop(phase);
+         assert_eq!(ledger.report().unwrap().observed_bytes, 0);
+     }
+-}
++    fn assert_retryable_resource_error(error: &anyhow::Error) {
++        let descriptor = crate::runtime_error::describe_runtime_error(error);
++        assert_eq!(
++            descriptor.domain,
++            crate::runtime_error::RuntimeErrorDomain::Io
++        );
++        assert_eq!(descriptor.code, "context_resource_exhausted");
++        assert!(descriptor.retryable);
++    }
++
++    #[test]
++    fn original_header_is_gated_before_scope_registration_and_exhaustion_is_typed() {
++        let (ledger, scope) = fixture();
++        let bytes = (scope.agent_id.len() as u64 + 256) * 8;
++        for (limit_bytes, limit_nodes) in [(bytes - 1, 64), (bytes, 63), (0, 0)] {
++            let error =
++                ResourceReadMaterial::with_limits(&ledger, &scope, limit_bytes, limit_nodes)
++                    .err()
++                    .expect("header must reject before registration");
++            assert_retryable_resource_error(&error);
++            assert_eq!(ledger.report().unwrap().observed_bytes, 0);
++            assert!(ledger.report().unwrap().scopes.is_empty());
++        }
++        let large_scope = InputEvidenceScope {
++            agent_id: "a".repeat(1024 * 1024),
++            identity_incarnation: 1,
++        };
++        let error = ResourceReadMaterial::with_limits(&ledger, &large_scope, 1024, 64)
++            .err()
++            .unwrap();
++        assert_retryable_resource_error(&error);
++        assert!(ledger.report().unwrap().scopes.is_empty());
++        let exact = ResourceReadMaterial::with_limits(&ledger, &scope, bytes, 64).unwrap();
++        assert_eq!(exact.finish().unwrap(), (bytes, 64));
++        drop(exact);
++        assert_eq!(ledger.report().unwrap().observed_bytes, 0);
++    }
++
++    #[test]
++    fn original_file_quota_latch_reaches_the_actual_runtime_error_describer() {
++        let directory = tempfile::tempdir().unwrap();
++        let file = directory.path().join("AGENTS.md");
++        std::fs::write(&file, vec![0xff; 128 * 1024]).unwrap();
++        let (ledger, scope) = fixture();
++        let phase = ResourceReadMaterial::with_limits(&ledger, &scope, 64 * 1024, 1024).unwrap();
++        let read = {
++            let _entry = phase.enter();
++            crate::agents_md::load_agents_md(None, directory.path(), None)
++        };
++        assert!(read.is_err());
++        let error = phase
++            .finish()
++            .unwrap_err()
++            .context("actual context resource preparation");
++        assert_retryable_resource_error(&error);
++        drop((read, phase));
++        assert_eq!(ledger.report().unwrap().observed_bytes, 0);
++    }
++
++    #[test]
++    fn cached_catalog_name_entry_and_view_copies_share_the_original_allowance() {
++        use crate::types::{
++            SkillRootRegistration, SkillRootScanStatus, SkillRootSourceKind, SkillRootWatchStatus,
++        };
++        let directory = tempfile::tempdir().unwrap();
++        let root = directory.path().join("skills");
++        let skill = root.join("sample/SKILL.md");
++        std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
++        std::fs::write(
++            &skill,
++            format!(
++                "---\nname: Sample\ndescription: {}\n---\nbody",
++                "c".repeat(128 * 1024)
++            ),
++        )
++        .unwrap();
++        let roots = vec![SkillRootRegistration {
++            source_kind: SkillRootSourceKind::AgentHome,
++            owner_agent_id: None,
++            root_path: root.clone(),
++            scan_status: SkillRootScanStatus::NeverScanned,
++            watch_status: SkillRootWatchStatus::NotWatched,
++        }];
++        let mut registry = crate::skills::SkillsRegistry::new();
++        registry.replace_roots(roots.clone()).unwrap();
++        let original = registry.catalog();
++        assert_eq!(original.len(), 1);
++        // The real catalog path is cache-only; the guard must not rely on file reads.
++        std::fs::remove_file(&skill).unwrap();
++        let (ledger, scope) = fixture();
++        let project = |phase: &ResourceReadMaterial| {
++            let _entry = phase.enter();
++            crate::skills::skills_runtime_view_from_catalog(
++                registry.catalog_for_roots(&roots, None),
++                &roots,
++                &[],
++            )
++        };
++        let measured = ResourceReadMaterial::new(&ledger, &scope).unwrap();
++        let view = project(&measured);
++        assert_eq!(view.discoverable_skills, original);
++        assert_eq!(view.attached_skills, original);
++        let usage = measured.finish().unwrap();
++        drop((view, measured));
++        for (bytes, nodes) in [(usage.0 - 1, usage.1), (usage.0, usage.1 - 1)] {
++            let phase = ResourceReadMaterial::with_limits(&ledger, &scope, bytes, nodes).unwrap();
++            let view = project(&phase);
++            assert_retryable_resource_error(&phase.finish().unwrap_err());
++            drop((view, phase));
++            assert_eq!(ledger.report().unwrap().observed_bytes, 0);
++        }
++        let exact = ResourceReadMaterial::with_limits(&ledger, &scope, usage.0, usage.1).unwrap();
++        let view = project(&exact);
++        assert_eq!(view.discoverable_skills, original);
++        assert_eq!(view.attached_skills, original);
++        assert_eq!(exact.finish().unwrap(), usage);
++        let guard = exact.guard().unwrap();
++        let weak = Arc::downgrade(&guard);
++        drop((view, exact));
++        assert!(weak.upgrade().is_some());
++        drop(guard);
++        assert!(weak.upgrade().is_none());
++        assert_eq!(ledger.report().unwrap().observed_bytes, 0);
++        assert_eq!(
++            registry.catalog(),
++            original,
++            "without a phase catalog behavior is unchanged"
++        );
++    }
++}
+--- a/src/runtime/context_capture.rs
++++ b/src/runtime/context_capture.rs
+@@ -277,7 +277,9 @@
+         )?;
+         let skills = self
+             .skills_runtime_view_for_state_with_material(state, &identity, Some(&resource_material))
+-            .await?;
++            .await;
++        resource_material.finish()?;
++        let skills = skills?;
+ 
+         let acquisition_timer = crate::diagnostics::attribution::CONTEXT_ACQUIRE.start();
+         let (durable, execution, control_revision) = {
+@@ -380,9 +382,9 @@
+                     agent_home: &agent_home,
+                 },
+                 observation,
+-            )?;
++            );
+             resource_material.finish()?;
+-            snapshot
++            snapshot?
+         };
+         drop(acquisition_timer);
+         #[cfg(test)]
+@@ -401,10 +403,12 @@
+         }
+         let (loaded_agents_md, loaded_agent_memory) = {
+             let _resource_io = resource_material.enter();
+-            let guidance = self.loaded_agents_md_for_state(state)?;
+-            let memory = self.loaded_agent_memory_for_state()?;
++            let guidance = self.loaded_agents_md_for_state(state);
+             resource_material.finish()?;
+-            (guidance, memory)
++            let guidance = guidance?;
++            let memory = self.loaded_agent_memory_for_state();
++            resource_material.finish()?;
++            (guidance, memory?)
+         };
+         anyhow::ensure!(
+             mutation
+--- a/src/skills/base.rs
++++ b/src/skills/base.rs
+@@ -77,7 +77,14 @@
+ 
+     discoverable_skills = retain_highest_precedence_skills(discoverable_skills);
+     discoverable_skills.sort_by(|left, right| left.skill_id.cmp(&right.skill_id));
+-    let attached_skills = discoverable_skills.clone();
++    let attached_skills = if discoverable_skills
++        .iter()
++        .all(|entry| crate::diagnostics::resource_io::charge_skill_catalog_entry(entry).is_ok())
++    {
++        discoverable_skills.clone()
++    } else {
++        Vec::new()
++    };
+     let active_skills = retain_active_skills_for_catalog(&discoverable_skills, active_skills);
+ 
+     Ok(SkillsRuntimeView {
+@@ -271,10 +278,18 @@
+             .then_with(|| left.path.cmp(&right.path))
+     });
+     let active_skills = retain_active_skills_for_catalog(&catalog, active_skills);
++    let discoverable_skills = if catalog
++        .iter()
++        .all(|entry| crate::diagnostics::resource_io::charge_skill_catalog_entry(entry).is_ok())
++    {
++        catalog.clone()
++    } else {
++        Vec::new()
++    };
+     SkillsRuntimeView {
+         agent_templates_catalog: Vec::new(),
+         discovered_roots: collect_discovered_roots_from_registrations(roots),
+-        discoverable_skills: catalog.clone(),
++        discoverable_skills,
+         attached_skills: catalog,
+         active_skills,
+     }
+--- a/src/skills/registry.rs
++++ b/src/skills/registry.rs
+@@ -332,11 +332,26 @@
+                 if existing.map_or(true, |existing| {
+                     crate::skills::skill_wins_catalog_selection(entry, existing)
+                 }) {
++                    if crate::diagnostics::resource_io::charge_owned_metadata(
++                        entry.name.len() as u64
++                            + std::mem::size_of::<(String, &SkillCatalogEntry)>() as u64,
++                        4,
++                    )
++                    .is_err()
++                    {
++                        return acc;
++                    }
+                     acc.insert(entry.name.clone(), entry);
+                 }
+                 acc
+             });
+-        selected_by_name.into_values().cloned().collect()
++        selected_by_name
++            .into_values()
++            .filter_map(|entry| {
++                crate::diagnostics::resource_io::charge_skill_catalog_entry(entry).ok()?;
++                Some(entry.clone())
++            })
++            .collect()
+     }
+ 
+     /// Get all registered roots.

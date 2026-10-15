@@ -1,0 +1,14 @@
+{
+  "exit": 101,
+  "elapsed": 1.03,
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "selected": 1,
+  "library_total": 5948,
+  "summary": [
+    "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5947 filtered out; finished in 0.74s"
+  ],
+  "failures": [
+    "runtime_db::transitions::prepared_input::tests::task_result_writer_tests::original_admit_token_shares_remaining_material_allowance_and_rolls_back_before_business"
+  ]
+}

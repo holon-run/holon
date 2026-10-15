@@ -54,6 +54,7 @@ pub(crate) struct ColdChildDomains {
     scope: InputEvidenceScope,
     ledger: InputEvidenceBudgetLedger,
     own: (u64, usize),
+    original_work_host_material: Vec<crate::runtime::resident_work::OriginalWorkHostAddressLoan>,
     guards: Vec<Arc<BudgetViewGuard>>,
 }
 impl ColdChildDomains {
@@ -105,10 +106,31 @@ impl ColdChildDomains {
                     .is_some_and(|state| state.id == scope.agent_id),
             ColdChildReadError::ForeignMaterial
         );
-        for guard in &self.guards {
-            guard
-                .validate_owned_material_binding(scope, ledger, 0)
+        for origin in &self.original_work_host_material {
+            origin
+                .validate_binding(scope, ledger)
                 .context(ColdChildReadError::ForeignMaterial)?;
+            ensure!(
+                self.guards.iter().any(|guard| origin.matches_guard(guard)),
+                ColdChildReadError::ForeignMaterial
+            );
+        }
+        for guard in &self.guards {
+            if self
+                .original_work_host_material
+                .iter()
+                .any(|origin| origin.matches_guard(guard))
+            {
+                // Only the exact actual factory marker grants this accounting
+                // classification. A failed scoped check never falls back here.
+                guard
+                    .validate_host_owned_material_binding(ledger, 0)
+                    .context(ColdChildReadError::ForeignMaterial)?;
+            } else {
+                guard
+                    .validate_owned_material_binding(scope, ledger, 0)
+                    .context(ColdChildReadError::ForeignMaterial)?;
+            }
         }
         Ok(())
     }
@@ -116,6 +138,14 @@ impl ColdChildDomains {
     pub(crate) fn material_estimate(&self) -> Result<(u64, usize)> {
         self.validate_accounting(&self.scope, &self.ledger)?;
         Ok(self.own)
+    }
+    #[cfg(test)]
+    pub(crate) fn original_work_host_guards_for_test(
+        &self,
+    ) -> impl Iterator<Item = &Arc<BudgetViewGuard>> {
+        self.original_work_host_material
+            .iter()
+            .map(|origin| origin.guard_for_test())
     }
     #[cfg(test)]
     pub(crate) fn first_guard_for_test(&self) -> &Arc<BudgetViewGuard> {
@@ -416,6 +446,7 @@ pub(crate) fn prepare_cold_child_domains_tx(
         ledger: ledger.clone(),
         own,
         guards,
+        original_work_host_material: work.original_host_material,
     };
     source.validate_accounting(scope, ledger)?;
     Ok(source)

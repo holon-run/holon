@@ -1,0 +1,21 @@
+{
+  "exit": 0,
+  "elapsed": 159.19,
+  "source_unchanged": true,
+  "artifacts": [
+    {
+      "path": "/Users/jolestar/opensource/worktrees/github.com/holon-run/holon/agent-runtime-state-rfc/target/debug/deps/holon-b169571810a77548",
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "holon",
+      "sha256": "d714947ce773e563e411b5eca663df430b1c036d0aef236628503c488f124806"
+    }
+  ],
+  "type_errors": 0,
+  "native": "UNRUN"
+}

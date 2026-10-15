@@ -1,0 +1,530 @@
+{
+  "goal": "active; D0-D8 approved overall, independent review, final e2e/new actual LLM and one overall draft PR; no self merge/deploy",
+  "authority": "Formal committed HEAD e44c17fe46a27b8f9d2b33226f4499a602af1af8; clean after two D7 incremental deliveries. exact81 is historical private inventory only.",
+  "formal_worktree": "/Users/jolestar/opensource/worktrees/github.com/holon-run/holon/agent-runtime-state-rfc branch codex/agent-runtime-state-rfc clean HEAD e44c17fe46a27b8f9d2b33226f4499a602af1af8",
+  "testing_policy": "User explicitly requests meaningful related core/affected module tests per change; fmt, strict all-target compile and independent review per stage; one final full library/e2e/performance/fault/new actual LLM acceptance on final integrated composition",
+  "latest_D5_snapshot": "/Users/jolestar/Documents/Codex/2026-10-12/holon-agent-runtime-state-d5-composite-20261014-021335",
+  "D5_composite_sha256": "8491ef498944d70a927f2441254e1c1f7f02245dda6d4df038ac8f4ab54c844f",
+  "D5_validation": "exact133 fmt/strict/build PASS, related3/3 PASS, fixed socket fixture 8 repeats PASS; full55 exact132 5135PASS1socket WouldBlockFAIL4ignored then unchanged binary isolated PASS. Do not claim full55 all green.",
+  "D6_source": "/private/tmp/holon-d6-integration142.json",
+  "D6_patch": "/private/tmp/holon-d6-composite139.patch",
+  "D6_validation": "formal committed: relevant focused85 242PASS, last3 focused86 26PASS plus87 sole remainingPASS; strict141 alltarget zero warnings.142 onlyreviewedRFCdiff, everycompilerinputidentical141. No fullrerun.",
+  "live_root_session": null,
+  "D6_review": "D6 source142 d53d committed/clean; independent reviews closed including all fixtures",
+  "D7_work": "068c/5a/aa024/2c9f/544 reviewed;0fd completion full Root peer static clear now; selected/candidate/refresh WIP Context.",
+  "D7_resource": "8e4d observation +3097 A2 physical leases +dbb9 A3 Host stamp +e03d F3 bounded actual retained nodes +cb227 F4 drain error; Roadmap full independent peers static clear, RustUNRUN. Episode9Work file source paths WIP",
+  "Root_D7": "4ca9 unified registration independent peer closed, actual2native PASS115. Root cfg refresh order a1744 frozen2files peer Roadmap pending. Unified capture/RunOnce remain unimplemented; Episode Input purecapture material WIP.",
+  "D7_execution": "20302 C1 plusa995 exact Work prep reviewed;8afd scheduler actual material estimate Root fullpeer complete; ordinary CurrentReadFacts foundation/writers WIP Roadmap reserved migration90; C3/C4 still required",
+  "upstream": "localmain6af0c9bc347c5711d84fc4f0ca4b3c7db108b698 v0.52.0; mainmax82 featuremax89 CurrentReadFacts90. Final integrate beforeD8 preserving startup/deletion/archive/projection fixes. Migration82 collision needs actual audit; no canonical modification",
+  "next": "Receive Episode single companion + Roadmap full independent review; Root review final bounded resource composition, apply to current formal branch, fmt/strict/related native then commit. Do not compile old private82/145 or bulk apply468files. Continue original D7/D8 exits afterward.",
+  "D7_source": "/private/tmp/holon-d7-partial81-source.json",
+  "D7_partial1": "initial libcheck19 typeerrors, grouped mechanical merges fixed ea9d/e282 and independently reviewed; no native tests yet",
+  "D7_snapshot": "/Users/jolestar/Documents/Codex/2026-10-12/holon-agent-runtime-state-d7-design-evidence/partial58-partial58-focused121",
+  "D7_partial2_validation": "cargo check --lib PASS; source/binary inputs unchanged, no strict or tests claimed",
+  "D7_identity": "9760 full25file Root peer static clear; integrated private/authority only",
+  "D7_current_read": "29015 foundation+4927 scoped/consumed proof full Root peers static clear; root/writers not yet wired",
+  "D7_partial3_validation": "check --lib --tests75.4s failed; 26lib/35cfg errors grouped to 5 fallible facts propagation and 2 cfg imports, cd5 full Context peer static clear integrated partial4",
+  "D7_A4": "0909 full15 peer; eb80+d5d+652 full9+2+1 peer; F1/TOCTOU closed; Root manual unions Episode narrow peer clear; native pending",
+  "D7_partial4_validation": "lib build PASS167.6s/0 type errors; focused88 actual48 related in22.52s=33PASS15FAIL, source/binaryunchanged; no full5374",
+  "D7_native_next": "exact70 defaultstack new/failed69/directcores; no full/100001/10MiB rerun",
+  "D7_A5": "actual schema/native recall PASS;2foreign failures末尾cfg查错已35b私有闭；Closed13094定位seedactualWorkACK finishdelta residentSelected剩余cap，需真实usage诊断不能扩cap",
+  "D7_core": "Current publication4actualnativePASS exact14; existingControllostACK canonicaldigest/rawCAS andStop2sparseCurrentunknown fail -> actualwriter/recovery WIP. M2 defaultledger48M actuallysucceeds,40M privatecandidate UNRUN stricttyped+64Mpositive must prove",
+  "D7_partial5_validation": "32.02s lib build: one cfg private sync sibling call error, no native; fixed reviewed2b429 existing async refresh+6await callsites inpartial6",
+  "D7_next_native": "Focused110: previous4failures + new Nativeadvance/EpisodePending/Terminal + affected Task core/Output/fixed/Inputprep. Scheduling2a822 OPEN actual State JSON object keys/native preprojection; wait reviewed companion. No full/100001.",
+  "D7_workselected": "Root18d preflight and962 decoder lifetime fixes independently clear, source17 actual130/128 plus all new/affected lifetime negatives PASS. d4f positive cfg actual64M/65536 source18 PASS;4096 node exact negative remains next.",
+  "D7_partial6_validation": "test lib build85.79sPASS; 30 related native allPASS16.64s; source andbinary unchanged",
+  "D7_A6": "10/10 actualRuntime resultsPASS at exact9; fullfourentry carrier+coherent55c integrated; SQLloan416f staticRootclear/private, outerselectedprior pendingContext",
+  "D7_Root_C3": "Tool7eb 4nativePASS and Taskheld91b nativePASS exact12; Input92/Eventactualbirth/unifiedsession/RunOnce actualhook stillrequired",
+  "D7_private_ahead": {
+    "authority": "81",
+    "actions": 964,
+    "new": "a7a8+c32,bb2e,83e+daea,41b+mandatoryf83+213 allprivate applied Rust/static peers; actualnativeUNRUN for successors",
+    "pending_rfc": "375b currentprefix +41b/f83 originaltails frozen; not applied during scope audit",
+    "frozen_unapplied": "NoState4404;Rootcanonical prototype andOwnedRunOnce;ContextWork/M2/finiteunion;runner_failed WIP",
+    "do_not_run": "82freeze/build and prepared145 runner NOT run; no newly added producer or main integration"
+  },
+  "D7_private_snapshot": "/Users/jolestar/Documents/Codex/2026-10-12/holon-agent-runtime-state-d7-design-evidence/partial17-frozen-build-pending",
+  "D7_pending_peers": [
+    "Cold source origin narrow fix author Episode",
+    "Result operation/predicate retirement author Context then Root/Roadmap independent peers",
+    "formal bounded D7 checkpoint source review after focused green"
+  ],
+  "D7_context_C3": "e4+90213+2file Inputlivequery/heldRoot registry peerclosed/private; SourceNone strictIncomplete, notactiveconsumer. Actualnative TX beforeSQLproof+allkernel/protocol/maintenance writers+samephase prior/perTurn/report/attachments stillrequired",
+  "D7_roadmap_C2": "publication4groups exact14 new4nativePASS; actualControlCurrentwriter+sparse trueReceipt recovery WIP with3nativefailures. ordinarypure512/Eventactualbirth stillrequired",
+  "D7_episode_C3": "Legacy91foundation source12; actualimport f7 wholeVec P2 OPEN, real originalSQLstreaming plus TurnRecord upstream100k chain required. heads/owning/protocol WIP",
+  "D7_partial15_validation": {
+    "build": "FAIL 88.49s; E0507 cfg two only",
+    "source_unchanged": true,
+    "artifacts": [],
+    "native": "UNRUN",
+    "fixes": "7982 transaction_once nonClone proof,7ccd borrowed raw JSON; source16 both applied"
+  },
+  "D7_partial16_validation": {
+    "build": "FAIL81.26s one cfg E0507, no artifact/native",
+    "fix": "c898 finite status.clone only in source17"
+  },
+  "D7_partial17_validation": {
+    "build": "PASS178.40s zero types; not strict all-target",
+    "source_sha256": "8837a69dc2feb760836e3eef1597ba26f48a5642cdbdcd87c4def442d8f31c25",
+    "native": "97:275PASS6FAIL171.08s,281 selected/5522 inventory",
+    "unchanged": true,
+    "large_sources": "All new original Delivery/StorageEvidence/Turn actual100001 import, scratch-release and rollback cases PASS; actual130 Work/Brief ACK and128window PASS."
+  },
+  "D7_partial18_validation": {
+    "build": "PASS62.0s zero types; not strict all-target",
+    "source_sha256": "fcbb8ca09f80aa9f60013d55a7c9e4248eda1c4b8ec28589fd76abf60a175cd2",
+    "native": "98:51PASS2FAIL13.09s,53 selected/5522 inventory",
+    "unchanged": true,
+    "closed": "DB Work oldcap positive fixtures and full original Turn byte/normalized/bookkeeping parity PASS; two exact negative fixture targets remain."
+  },
+  "D7_partial19_validation": {
+    "build": "FAIL78.91s nine mechanical macro/accessor/import errors, sourceunchanged, noartifact/native",
+    "fixed": "63ad 3file nonauthor Root peer, frozen20"
+  },
+  "D7_partial20_validation": {
+    "build": "PASS156.28s zero types, not strict alltarget",
+    "patch_sha256": "5d89906ec104f09dd9cd8bcfea94fda24fe6a97b0bbe60be4ab81e49b223804e",
+    "binary_sha256": "953ca0cefd57ab93a189a0efb40934441b7edbf8753c72b4899e7017b27b421e",
+    "native": "99 131PASS4FAIL/135selected75.27s/5550inventory, sourcebinaryunchanged",
+    "large": "Two new full actual100001 Work source and truev81 firstcontext PASS; completev1 raw/keys/origins parity PASS;531 Event actualACK+native frontier PASS;8actualprotocol migration callers PASS;5 Legacyhead source tests PASS;Toolkeys/newInputexecution not yet native",
+    "failures": "ResidentInput history old300 byte bootstrap nowactual24032 =>cfg2bd; M224M reachesWork notM2 =>two actualsource48M/probe023; staleState test changed synchronized messagecount =>actualpersistedlastwakereason37a; malformedWorksource errors beforedigest =>two boundary049 cfg. All fixes independently clear but native pending."
+  },
+  "D7_partial21_validation": {
+    "source_sha256": "e1aa146d2b5186a898c961a6646e8a6065898bffa5400a5f0c47c9d878c76df7",
+    "build": "PASS167.25s zero types; not strict all-target",
+    "binary_sha256": "b0868189bd13dc2a038f5f9df62b2feb2ec9fdce0e2bd54a52e9853927a40c09",
+    "native": "100 93PASS2FAIL/95 selected34.53s/5563 inventory",
+    "unchanged": true,
+    "closed": "Event531 complete body, Event sequence negative, Input82ed3, Toolkeys5, all4 previous99 failures including actual M2 phase",
+    "remaining": "2 Stop Audit fixture setup unchanged State seed no-op;9d cfg frozen unrun"
+  },
+  "D7_partial22_validation": {
+    "build": "FAIL84.12s one missing ensure macro scope, sourceunchanged noartifact/native",
+    "fixed": "33af independentContextpeer source23"
+  },
+  "D7_partial23_validation": {
+    "build": "FAIL89.84s four cfg private report_sources accesses, sourceunchanged noartifact/native",
+    "fixed": "f770 Rootpeer test-only borrowed getter source24"
+  },
+  "D7_partial24_validation": {
+    "build": "FAIL85.34s two changed window helper call adapters and two nonexistent cfg coverage getter, sourceunchanged noartifact/native",
+    "fixed": "c30 Rootpeer/fullcallsite inventory source25"
+  },
+  "D7_partial25_validation": {
+    "source_sha256": "b50f5286542bee6f4de0722027db1bb6515b29308a13d63b7601f10083319fd3",
+    "build": "PASS172.78s zero types; not strict alltarget",
+    "binary_sha256": "fd35151e73d944411b18d666018932c8734f1dae996d94ddef4545c8d4d4eb3a",
+    "native": "101146selected/5602 inventory:135PASS11FAIL107.72s, source/binary unchanged; all11 fixture causes diagnosed and independently reviewed fixes frozen26"
+  },
+  "D7_partial26_validation": {
+    "build": "FAIL76.04s two cfg imports/field adapters; sourceunchanged noartifact/native",
+    "fixed": "4307 Root authored Context peerclosed exact27"
+  },
+  "D7_partial27_validation": {
+    "source_sha256": "0fee2dd25ff33b309b8850a5ed8a5f76b65b0680d47bf087e57231a988a87724",
+    "build": "PASS155.51s zero types; not strict all-target",
+    "binary_sha256": "7d5b75486aa413729b769aa882757c8e40062005989bb20afbe122eb780e3cef",
+    "native": "10265selected/5619 inventory57PASS8FAIL28.51s; source/binary unchanged; no full/large rerun",
+    "closed": "RootInput3/ControllastArc/KnownAudit/Dense priorfails PASS; all Auditowned/routes4, native Evidence3/Control3, Memorybridge3 PASS; foreign explicitGet/foreignDBreport PASS",
+    "remaining": "five report v81fixture modernwriter missingblocked_by; origin fixture realAdmit missingactualClaim;2 explicitreport cfgimmutableBrief/reset malformeddata"
+  },
+  "D7_partial28_validation": {
+    "build": "FAIL76.18s solecfg E0507 nonCopyWorkItemState serialization; sourceunchanged noartifact/native",
+    "fixed": "708e nonauthorRootpeer exact29"
+  },
+  "D7_partial29_validation": {
+    "source_sha256": "209275ce6dfcea21d3224f6840c4a37b88155f01d5e837993a4570a05b7164f1",
+    "build": "PASS159.03s zero types, not strict alltarget",
+    "binary_sha256": "f49fbe35f4e1e71904c119716d6f79b63aaedf18affa90d4ac7d8effc40e6903",
+    "native": "10379selected/5626inventory68PASS11FAIL45.02s source/binary unchanged",
+    "closed": "Rootactualunknown70/namedReadback/budgetpreStateSQL; Posture4 realwhole/rollback/Known/Unknown/noop; all23StopResult; currentoriginclaim,2explicitreport negatives nowPASS",
+    "remaining": "6reportactualcanonicalFP drift stillopen despitev81column fix;3Prepared Work timeout/wireNull/Closed; TaskResult originalreducer CurrentNeedsPrep; oldSchedulingbudget expectedgateRootcfg4c"
+  },
+  "D7_partial30_validation": {
+    "build": "FAIL23.85s sole E0308 original commit returns TransitionCommit, Scheduler tuple adapter; sourceunchanged noartifact/native",
+    "author_fix": "Roadmap producing narrow immutable adapter, Root independent review next31"
+  },
+  "D7_partial31_validation": {
+    "build": "PASS86.25s zero type errors; not strict all-target",
+    "patch_sha256": "14b2ee77628c198341f7249adeb5ca4304409b8ee1498a8f2fa02a27f4468e8b",
+    "binary_sha256": "2530fd99d9850e155b8807b08d2940922937f010f4f43903ca5d46e7c196c11e",
+    "native": "10440selected/5631inventory35PASS5FAIL25.30s; source/binaryunchanged",
+    "closed": "e00all3Scheduler; c5newcontinuationStatefastpath and originalTaskResult reducer; c641Control70lostACK/Child/StopPartial/Controlcores;4cSchedulingnegative;680marker/PreparedNull/Legacysources PASS",
+    "remaining": "3reports Message ProjectionChanged,1Legacy len1vs2; WorkPlan turnEnd DirtyWorkspaceChange timeout"
+  },
+  "D7_partial32_validation": {
+    "build": "FAIL73.24s sole cfg E0597 rows tail; sourceunchanged noartifact/native",
+    "fix": "cc9e Rootpeer closed exact33"
+  },
+  "D7_partial33_validation": {
+    "build": "PASS152.26s zero types; not strict alltarget",
+    "patch_sha256": "92db9629d793bda83aff198d486ad0d1d3b906fdeca9df404977426ab859bb45",
+    "binary_sha256": "7e20b7af9f3a3228203351e73c8cb7b2793241b603919d537813f1a591ec843b",
+    "native": "10583selected/5635inventory64PASS19FAIL50.56s source/binaryunchanged",
+    "closed": "actualTurnEnd original deniedReaders and exactcorebody Arc reuse PASS; reportMessage canonical drift fixed; EventRole2unitPASS; originalruntime_error two regressionsPASS",
+    "remaining": "2Eventactual0events seedPostureNoop suspected;11Continuation resourcesTimeout/rawQueueState fixtures;2WorkKnown/noop;4reports missingtombstone/resourceSourceChanged; authors fixing"
+  },
+  "D7_partial34_validation": {
+    "build": "FAIL39.63s eightcfg privateRuntime boundary errors; noartifact/native",
+    "fix": "Rootee523+7ee cfgboundary Roadmapfullpeer closed exact35"
+  },
+  "D7_partial35_validation": {
+    "build": "PASS160.51s zero types; notstrictalltarget",
+    "patch_sha256": "6be71bbe5f91c0fa4e2e9e9abfdbe74a8cc4af9c9cb069e70d0c500422af351d",
+    "binary_sha256": "90ab7c7bdd4ec0a205fbc094828f40a436231d015343f7cf17a25d76bcc0ab4d",
+    "native": "10669selected/5642inventory53PASS16FAIL54.57s source/binaryunchanged",
+    "closed": "all3RootInputCurrentMemoryactualSQL/lastguards; all3Schedulerpair+oldAuditmodule; Event531top512/130native125; WorkKnown material; reportoptionalabsence+strictnegative",
+    "remaining": "11continuationfix0d2pending; originalWorknoopincorrectexpectation84afpending;4reportinitialWatchRestartReadyfixfc86pending"
+  },
+  "D7_partial36_validation": {
+    "build": "FAIL75.35s sixcfg errors2Arc/4privatefreshness; sourceunchanged noartifact/native",
+    "fix": "0d24+f4ed Rootpeerclosed exact37"
+  },
+  "D7_partial37_validation": {
+    "build": "PASS163.06s zero types; notstrictalltarget",
+    "patch_sha256": "41a3dcf9ed93bd78018d95a4196f6a13c22c0452c9d37f887c571ff0914434cb",
+    "binary_sha256": "6af1de1ec43e611146a3e9f6f097d06b458e49d3314aced8fe37aeae9f5806f4",
+    "native": "10738selected/5653inventory27PASS11FAIL39.23s; source/binaryunchanged;4reportfixtures+Toolreport/hash/M2/12large/childusePASS;8continuationResourceTimeout+2clockprecision+1noopincorrectexpected remained"
+  },
+  "D7_partial38_validation": {
+    "build": "FAIL26.82s solecfg Arc Serialize; noartifact/native",
+    "fix": "864ba actual.as_ref Rootindependentpeer closed39"
+  },
+  "D7_partial39_validation": {
+    "build": "PASS87.73s zero types; not strict alltarget",
+    "patch_sha256": "0e0b8b3ef003d4b7e324ed441198841e8e4b05c81090054d08e484e11fa4d2ee",
+    "binary_sha256": "b713c84a594c9f9b1cc86df062c87bb256a63ef194baa71b7f41bf8f07c72628",
+    "native": "10852selected/5658inventory42PASS10FAIL41.78s source/binaryunchanged",
+    "closed": "Task Toolbridge3actualSQL+oldOutput9/fixed10 and Toolclocks2; SleepwholeACK2 and State native/copygate; relevantAuditcores",
+    "remaining": "8Continuation actualDirtyWatchOverflow+foregroundResourceExhausted from actualdefaultuserhome fixture, not observer dead; Claim RootArc boundary initialpoll namedprepare; businessnoop expectedoldrevision wrong because WorkDelivery twoAbsence observation legitimatelyadvancesmetadata once"
+  },
+  "D7_fresh_Source_phase": "/private/tmp/holon-d7-original-report-fresh-phase-stage/INTERFACE.zh-CN.md; actualopaque sameInput firstreceipt Source/Eventprior, raw/native receipt, retiredidentity noState, usingmaterial e13 allfresh read, validatedpostconfirm reborrow, retainedG until ownerinstall; no liveInput Source-role prior yet. Peer pending; UNRUN.",
+  "D7_work_Source_chain": "All2bc/557/754/0024/620/8222 + Rooteb95 fresh fullphase independently reviewed and NOW actualauthority43, plus645 modules and4a nonClonecfg. NativeUNRUN as42 typefailed. Source query stillIncomplete untilContext allwriter actualsharedphase/incremental closed.",
+  "D7_partial43_validation": {
+    "source_sha256": "7e64e50b0ff16187031e7089a0cdaacca966525d3cc9a9c8d1ec20f7b027a0e0",
+    "build": "PASS182.38s zero types; not strict alltarget",
+    "native": "111:211selected210PASS1FAIL101.45s; source/binary unchanged",
+    "closed": "all Source ACK/Unknown/consumer-drop/fresh/replay, ReceivedTurn6, Scheduling joint/nativekeys/rawfirst, Terminal actual3 and lifecycle observations passed",
+    "remaining": "history128 positive local4096 cap repaired d4 with production default65536, PASS112"
+  },
+  "D7_partial44_validation": {
+    "build": "FAIL40.09s three cfg adapters only; no artifact/native",
+    "fixed": "a768 Episode fullpeerclosed, production unchanged"
+  },
+  "D7_partial45_validation": {
+    "source_sha256": "a22f36dca2b3826297ab12a12829c742b16eb5d12252ac23be2f9ec98beea1a2",
+    "build": "PASS124.01s zero types; not strict alltarget",
+    "binary_sha256": "2f95eb8c5ec4e5bb8177e27f482d9d7d75d51c8863a1f3b1d2ab7b93cd9e5ceb",
+    "native": "112:55selected54PASS1FAIL41.25s; source/binary unchanged; no full/large rerun",
+    "closed": "history128 prior failure, actual changedState Workspace detach/prune tails3, Event actuallease/slot3 and externalTaskMemory exact loans passed",
+    "remaining": "external_task wholeInput byte/node combined-minus-one returns success; Root diagnostic102100 pending peer/run to identify actual measured delta"
+  },
+  "D7_partial46_validation": {
+    "patch_sha256": "6676b2c03026fbcbcb6d4f44e4410176327aac1ead01e664b495ccf54951f0dc",
+    "build": "PASS99.04s",
+    "native": "1133selected2PASS1FAIL1.47s; source/binary unchanged",
+    "closed": "actual Native preSQL original Input/Memory SQL fixture PASS",
+    "remaining": "diagnostic shows narrower Current numeric limit encoded2chars shorter, actual16bytes less; old highcap-minusone fixture invalid;3044samecap correction passes114"
+  },
+  "D7_partial47_validation": {
+    "build": "PASS169.35s; no native, NOT accepted combined Model stage",
+    "composition_note": "union applier stopped on RFC EOF conflict; Root erroneously froze before inspecting result.84production in47 but required e55companion/3044 absent; no native run on47. Independently reviewed4c39RFC union+e55+3044 fully applied before48."
+  },
+  "D7_partial48_validation": {
+    "patch_sha256": "c2a14a2aeea5826b71052c9e69cb6dab60755d2900d85953d30c2b33fdfaafee",
+    "build": "PASS117.79s zero types; not strictalltarget",
+    "binary_sha256": "4b6578d8637725b271dfcdde6c4b197f258277ae477f13092cba644a1d903826",
+    "native": "11439selected/5736inventory39PASS0FAIL20.65s; source/binary unchanged; no full/large rerun",
+    "closed": "Root fresh report/liveInput firstprior a9+f040 all3; Model84+e55 original six+one actualSQL/P2F1F2; externalTask samecap byte/node-minusone and exact; affected Native/InputQuerySource/core allPASS"
+  },
+  "D7_unified_registration_pending": "/Users/jolestar/Documents/Codex/2026-10-12/holon-agent-runtime-state-d7-design-evidence/unified-registration-4ca9-pending-peer",
+  "D7_partial49_validation": {
+    "patch_sha256": "fab03736242c9a7ac1eb679df6cc47a94de17ed4591e49bbdd1574a05d357efa",
+    "build": "PASS153.5s",
+    "binary_sha256": "329f897b473ef8bc9651ff0ed2f4ab65c9cd7e82d2a3a2024cb7f86e25276ce5",
+    "native": "11524/24PASS40.19s,5738inventory; source/binary unchanged",
+    "closed": "Unified birth registration2actualRuntime + directlyaffected registration and Event writer core"
+  },
+  "D7_partial50_validation": {
+    "patch_sha256": "e20c883e60eb5a877e1556bb3511b63ee995e8fe367033aad6544705bc28dfdb",
+    "build": "PASS144.53s",
+    "binary_sha256": "a8f90baecee01ea7b8c2f505e75b34e0d3400b626d7c1a5bdcb6c67063e346f1",
+    "native": "11619selected17PASS2unfinished360.43s; Root terminated exact test child; source/binaryunchanged",
+    "diagnosis": "Two cfg Task fixtures hold refresh mutex across foreground Task writes requiring same mutex. No product deadlock claim. Move pause after all writes before read-side capture; purecfg a1744 pendingpeer/native."
+  },
+  "D7_partial51_validation": {
+    "patch_sha256": "7db7c6c2843dff41f62653d0881a574e352b3db3fa5f1378d16ed1a9ba66da3c",
+    "build": "PASS172.06s",
+    "native": "11722selected21PASS1FAIL32.19s/5756inventory; source/binaryunchanged",
+    "closed": "Both unfinishedTaskfixtures nowPASS; all4Shutdown/4Operator/7Model/newTool rewritten2/M2 andno-op drift negativePASS",
+    "remaining": "oldqualifiedTool currentalias no-op positive rejects Input birth lacks exact actual D3 writer ACK. Exactnamedalias legacy_prepared is correctly retained by original samealias earlyreturn; opaque sameTX no-op D3 readback companion14182 Rootfullpeerstaticclosed/privateapplied, nativeUNRUN."
+  },
+  "D7_partial52_validation": {
+    "patch_sha256": "4fa47172a8b841e119a3d811c4f54c5926fbb03ec251be570cdcbb8cc6d1dfea",
+    "build": "PASS154.39s",
+    "binary_sha256": "bb79a48a47bb4b8f4856d0ecc3f37e54e491da3e6cfb3c3701819a9becc9039a",
+    "native": "11849selected47PASS2FAIL16.26s,5763inventory; source/binaryunchanged",
+    "closed": "All3actualInputpurecapture, RootState2/Queryjoint1, failedoldToolalias plus forgedfirstbirth negative, all Native/Query/Execution/ToolM2 directlyaffected PASS",
+    "remaining": "Old2Inputbudget tests fail ResourceExhausted: logical4096 bodybyte limit conflated with nativephase cap, same issue fixed forlogical8records earlier. Need production unit separation companion, NOT just raise fixtures."
+  },
+  "D7_partial53_validation": {
+    "patch_sha256": "34ee4535c7b8865759a3c43b33140f842918d8b2f179091eb2c226000b32570a",
+    "build": "FAIL88.07s2cfgE0433 WorkspaceProjectionMetadata missing import",
+    "artifact": "none",
+    "native": "UNRUN",
+    "fix": "507a cfg1line nonauthorRootpeer+mechanical closed54"
+  },
+  "D7_partial54_validation": {
+    "patch_sha256": "1624eb958558d7f1e22a2931897fd8b802260cca00aafc4d14f7a1a8933dc570",
+    "build": "PASS163.57s; library test build, not strict alltarget",
+    "binary_sha256": "72c9fd88d0b0cb17f9622086142af7e7b9fd4b6718310fbcde87825ed2404030",
+    "native": "11950selected39PASS11FAIL35.38s/5786inventory",
+    "unchanged": true,
+    "remaining": "6resource fixture defaultuserHome isolation d3ce peerclosed;5Workspace count/finishedhandle/quiesce cfg fb977 Rootreviewclosing; nativeUNRUN"
+  },
+  "D7_partial55_validation": {
+    "patch_sha256": "ec7df8a4bea9caf25f2bca27825eeefd1070c76715a7998401eefe28d16ea71d",
+    "build": "FAIL82.80s sole E0425 InputEvidenceBudgetLedger missing import in agent_skills_read.rs",
+    "source_unchanged": true,
+    "artifacts": [],
+    "native": "UNRUN"
+  },
+  "D7_partial56_validation": {
+    "patch_sha256": "a19bb7bd2abb821505931dc0baa25595885b152fd437f5387204cc9948486f6d",
+    "build": "PASS171.33s librarytest only",
+    "binary_sha256": "312d6f61212e035a9dc40e2d8986789ff6f3ef37d46c810349b463aa7bec1372",
+    "native": "12040selected39PASS1FAIL51.30s/5798inventory",
+    "unchanged": true,
+    "closed": "all11 prior119failures; Control5 actualGit; SummaryHTTP3 lastBytes/cold/exact; Memory3 actualStarted/Deferred/rawkeys and directlyaffectedM2",
+    "remaining": "new Input/Memory prefix exactusage fixture difference32bytes1node at1854; Contextdiagnosing"
+  },
+  "D7_partial57_validation": {
+    "patch_sha256": "22deaff48197f55ad11f6e39b1521abcefacc8a00dd04b4f23b6a4450ffd7fd2",
+    "build": "FAIL77.95s12errors: Physical WorktreeSession import2, cfg ledger.snapshot nonexistent2, Task cfg modulealias8",
+    "source_unchanged": true,
+    "artifacts": [],
+    "native": "UNRUN",
+    "fixes": "authors immediate narrow frozen companions requested;58 Rootpeer/rebuild next"
+  },
+  "Root_RunOnce_WIP": "59bb+3c pure samecut coordinator integrated69; src/run_once.rs main stilllegacy. Root next response builder should move original TaskOutputSnapshot into final DTO while retaining closed original output lifetimes, not clone bodies into another full budget. Final wire carrier/actualmain activation remainRequired; ContextSourceinstaller+genuine Task/oldTranscript union prerequisites.",
+  "D7_partial58_validation": {
+    "patch_sha256": "07afcfd5374e3c22522947314d29ee1636844ea31d3a1cabd0da5e0adf83d0fa",
+    "build": "PASS113.47s librarytest only, not strictalltarget",
+    "binary_sha256": "94fb7433c49389321519e64fe081382437a1207cbb3713ece656934c53102b82",
+    "source_unchanged": true,
+    "native": "12136selected35PASS1FAIL22.62s/5807inventory; sourcebinary unchanged",
+    "closed": "Task4a raw/native3; Root270934 actualscopekeys; Physical4 realGit,3Hostchild originals; solefailed120 guard-slot nowPASS",
+    "remaining": "PhysicalSource gate model no attached monitor atleasejoin, Roadmapdiagnosingcfg, all assertions apparently beforejoin; not yetfixed dynamically"
+  },
+  "D7_partial59_validation": {
+    "patch_sha256": "fe262d14f87d14d2f1951b21a5addc1af1d2151bb96c07883866a4136ce83b58",
+    "build": "FAIL85.45s 7 errors: selected/compact missing ensure macros6 and original TaskStop observation type1",
+    "source_unchanged": true,
+    "artifacts": [],
+    "native": "UNRUN",
+    "next": "authors narrow import/type companions requested; Root independent peer then60 rebuild/focused122"
+  },
+  "D7_partial60_validation": {
+    "patch_sha256": "516ff875ac5d27e1c6354140605b6eb6eb3a902c70aba2931bdf692391c4caf6",
+    "build": "PASS290.53s library test build, not strict all-target",
+    "binary_sha256": "40e7f4ac6c1c2c4a1d6379e78607bb19891f4cc928ba1ad6408375a126321195",
+    "source_unchanged": true,
+    "native": "122:43selected42PASS1FAIL60.09s/5818inventory source/binary unchanged",
+    "remaining": "4d cfg ordinary_task_actual_phase_survives_whole_ack_clones_and_fault_rolls_back line309 lastledger11368 expected0; Context investigating holder/production"
+  },
+  "D7_partial61_validation": {
+    "patch_sha256": "c6de55f691d125568ba0e2725c3039206fe4820c886de7b6092ed9e70a4da76e",
+    "build": "PASS379.42s library test build only, not strict all-target",
+    "binary_sha256": "ea865864063aebd802d6a26cfba8d494700344fd20175b149e911d18a3b027fb",
+    "native": "123:29selected25PASS4FAIL125.45s/5828inventory sourcebinary unchanged",
+    "remaining": "4actual parentPhysical fail same production Workspace closed predicate rejection; Context/Roadmap jointly investigate Runtime commonattach. NoMemory4/failed122/Core25 PASS"
+  },
+  "D7_partial62_validation": {
+    "patch_sha256": "c8ab1cf32ed986d6d380fc526b8cc61482f1da13015e706f23c3013915401c0b",
+    "build": "FAIL52.92s6Sleep only: Option fields2 +cfg private fields/methods4",
+    "source_unchanged": true,
+    "artifacts": [],
+    "native": "UNRUN"
+  },
+  "D7_partial63_validation": {
+    "patch_sha256": "0fce0cf0bb169778be329280a19e8078a4739dd4580af78e41c6123ebcc11ef0",
+    "build": "FAIL62.22s solemissing roots compatibility wrapper, Episode c4 frozen Rootpeerclosed/privateapplied",
+    "source_unchanged": true,
+    "artifacts": [],
+    "native": "UNRUN"
+  },
+  "D7_partial64_validation": {
+    "patch_sha256": "f7a1fd39d659c5482698da786ee9ae243c7fc756627a778874e11aa632497991",
+    "build": "PASS453.49s library test build, not strict all-target",
+    "binary_sha256": "52b38e3fd570bc7d2c238f94527c941d6628922e9a650f4291b18a65ccd63390",
+    "source_unchanged": true,
+    "native": "124:44selected37PASS7FAIL206.3s/5854inventory sourcebinaryunchanged",
+    "closed": "prior123 physical4 allPASS; Sleep4/Cleanup5/Scheduling3/M2State1/Tasksource4 and affected core PASS",
+    "remaining": "Taskcanonicalcfg1 Episode690+37 pendingpeer; RootbornReport3 genuineCurrentcfg640 pendingRoadmappeer; restart2 trueResultsync74be pendingRootpeer; completedReply CurrentResource1 Contextdiagnosing"
+  },
+  "D7_partial64_reply_diagnostic": {
+    "native": "solefailed samebinary backtrace FAIL13.39s unchanged",
+    "location": "Current Material.native at stored::read69→loader477→CurrentBusiness.finish245→genericNative.with_input_phase during Task seed",
+    "next": "bb925 actualcounter included65; Context no cap increase or reduced130 test"
+  },
+  "D7_partial65_validation": {
+    "patch_sha256": "6fbc9f37aaa0c871ce7f09c1eed34b5c94ba32ec8dbab0ab1c634dfeb02c61b1",
+    "build": "FAIL84.52s four mechanical type/cfg boundaries",
+    "source_unchanged": true,
+    "artifacts": [],
+    "native": "UNRUN",
+    "fixes": "84a Root two Result conversion + cfg field Episode peerclosed;626 cfg selfcontained realfixture Root peerclosed/privateapplied. No caps/assertions/algorithm changed."
+  },
+  "D7_partial66_validation": {
+    "patch_sha256": "1a96f326745099769520610b18cecd4de6de1c1f385ff65adb6197144c01019a",
+    "build": "PASS684.54s libtest only, notstrictalltarget",
+    "binary_sha256": "305f67781e09067f27d9c81b063969487f9276bd24d5bf87b40597b6d0aaf253",
+    "source_unchanged": true,
+    "native": "125:52selected38PASS14FAIL35.9s/5875inventory; source/binary unchanged",
+    "remaining": "Task/Current seed26 actual Task suffix; six originalResult/HostTask preflight material; Bootstrap4 two cfg boundaries frozen effa Rootpeerclosed; Restart2 actualResource error Episode isolatingfixture; Rootpoll cfg typedInputCapture+actualpeak805 Episodepeerclosed"
+  },
+  "D7_partial67_validation": {
+    "patch_sha256": "1913ac13a226931a3381b966e2c28c3fe1e394a05734ea2cd14fccd067e081db",
+    "build": "PASS183.07s library test build only, notstrictalltarget",
+    "binary_sha256": "e129885fbce0373d2c8b4e697b33a57797771e5596e92e7adf5ad6a3e7dbfb8b",
+    "source_unchanged": true,
+    "native": "126:43selected35PASS8FAIL37.21s/5888inventory; source/binary unchanged",
+    "supplement": "same67 binary direct6 original TaskOutput core + sole Result backtrace:7selected3PASS4FAIL4.33s; source/binary unchanged"
+  },
+  "D7_partial68_validation": {
+    "source": "bfc850f9538ed3fc4e5c7170c25b667d9a40f6260fd223e687dfbf2c07ece831",
+    "build": "FAIL59.25s two scheduler type seams; source unchanged noartifact/native; fc7 mandatory peerclosed fixed69"
+  },
+  "D7_partial69_validation": {
+    "build": "PASS145.72s libtest only; not strict alltarget",
+    "source": "a4bc83da94f05f5cc80622753b3de7ba95f76b72818f66c2cab6c18f6b798057",
+    "binary": "d58d1b61971036b2181f037932cb7830118fcf8ccd6c1e13b6caa62e59eae889",
+    "127": "ABORT25.56s after18PASS4FAIL; new Bootstrap defaultstack overflow. No full summary.",
+    "128": "32PASS3FAIL/35selected20.78s, source/binaryunchanged",
+    "diagnostics": "129b LLDB defaultstack real production bootstrap/interruptedTask/InputTX/Task read/State deserialization stack;130 soleResult actual written-row Current material bytes failure",
+    "remaining": "132 Task seed37 Resource; 96KiBResult4MiB written-row bytes; newBootstrap defaultstack; recall canonicalseq cfg; 4 Scheduler/Run fixtures +actual Taskstatus-versus-WorkWait fixedprivate unrun",
+    "evidence": "/Users/jolestar/Documents/Codex/2026-10-12/holon-agent-runtime-state-d7-design-evidence/partial69-partial69-focused127-128-diagnostics"
+  },
+  "D7_partial70_validation": {
+    "source": "f7a37137c7b3ca8671810ee18f3a422eb69404a9f44f703f7623a2814cdc0a63",
+    "build": "PASS182.13s zero types, libtest notstrict",
+    "native131": "36PASS3FAIL/39selected58.58s; sourcebinaryunchanged",
+    "closed": "Bootstrap new2+original4 defaultstack;Compact all6;Root samecut2+Taskmove/Task-only status;oldreply canonical;deepTask new3+readback3+StartedM2;allTaskOutput6",
+    "remaining": "Scheduler actual Closed resource after close;132 fullTaskseed121 records;96KiBResult4MiB bytes (do not shrink or widen)",
+    "inventory": 5908,
+    "diagnostic132": "2 actual failures backtrace2.04s: Scheduler actual Wait preparation aftercfgobservercancel; Result withinfinalreadback→writtenrow decoder295→raw firstadmission charge173"
+  },
+  "D7_partial71_validation": {
+    "source": "46f393e68f2451fe81dca08a6fc478cbdd05e38b1adc486a7c065a00aed25fc3",
+    "build": "PASS79.29s libtest notstrict",
+    "native133": "18PASS2FAIL/20selected20.08s, sourcebinaryunchanged",
+    "closed": "newactualFullSummarymodel SQLdeny and wirekeep; oldencoder2; originalselectedModel4; ordinarySummary/Current/Skills",
+    "remaining": "originalSummary concurrent ledgerbaseline declined; sole134samebinary SummaryPASS; Scheduler actual Wait resourcepending timeout",
+    "diagnostic134": "same71 serial2 1PASS1FAIL6.85s; realSchedulerWait phase",
+    "diagnostic135": "sole original132-row case32.63s actualseed121 resident ctor borrowed entire movedTaskCoverage→charge records; 1a33 repairs actualkey-only working set, native pending",
+    "evidence": "/Users/jolestar/Documents/Codex/2026-10-12/holon-agent-runtime-state-d7-design-evidence/partial71-partial71-focused133-134"
+  },
+  "D7_partial72_validation": {
+    "source": "b9d16d004742b144c396e228dd7747d590968d1e15770a60d3d8b336e6b63434",
+    "build": "FAIL64.12s 3type seams, sourceunchanged noartifact/native",
+    "fix": "020 child actualStateid +sequentialdrop and88da windowsstruct staticpeersclosed"
+  },
+  "D7_partial73_validation": {
+    "source": "400e92b3c2ba039ce54f5e0edd6602b3cd5aa1d76ab2b5710df685d92317a7fd",
+    "build": "FAIL90.33s onlycfg InputWindowRequest missingqualification; Rootpriorreviewomission; sourceunchanged noartifact/native",
+    "fix": "9b276 fullyqualifiedexistingtype fullpeerclosed74"
+  },
+  "D7_inherited_source_note": "D7 selective manifest1647 excludes94 unchanged trackedD6 Rust/build leaves e.gtests/support/mod.rs/build.rs; separatelyactualauthority vs cleanformalD6 SHAverified all94, no mismatch: /private/tmp/holon-d7-partial73-inherited-d6-source.json. Finalfullsourceproofmustinclude them; do notcall1647allcompilerinputs.",
+  "D7_partial74_validation": {
+    "source": "8b8f4bbe9f7d1257d2fbe264cb9cf058ce798e59624e45bcf3c32448beb5355a",
+    "build": "PASS153.35s libtest; notstrictalltarget",
+    "native136": "27PASS2FAIL/29 selected58.74s; sourcebinary plus94 inherited D6 Rust/build unchanged",
+    "binary": "3c6675b284e95664ef133febe893b4b1a0b098e78ffc71cc4b0014fad39e9b61",
+    "closed": "original complete132 terminal/reply PASS at unchanged132/128/caps; Source3/child3/Taskloader+readback/NoMemory7/RunRead2/Scheduler+Summary affected cores PASS",
+    "remaining": "child new longID failed before closure duemissing WorkExecution prep; Source f9 exposed cc897 premature future forecast gate P2. a50 and2d57 Rootfullpeers closed/private applied nativeUNRUN. OriginalResult4MiB96KiB notrerununchanged; ba1 peerpending",
+    "evidence": "/Users/jolestar/Documents/Codex/2026-10-12/holon-agent-runtime-state-d7-design-evidence/partial74-partial74-focused136"
+  },
+  "D7_partial75_validation": {
+    "source": "8934bf7eb973e77be264636051b6a6434b0ce4c7bc65fdabb4fea1a0e89cda7d",
+    "build": "FAIL51.59s oneasync Result inference expression =>5typeerrors; sourceunchanged noartifact/native",
+    "fixed": "10f888 explicitanyhow error only fullRootpeerclosed/76"
+  },
+  "D7_partial76_validation": {
+    "source": "5c1a53ab5ee95b9e1b37e605fb77c41d96db3c5aac2e2c16c0b56e0716ea0025",
+    "build": "FAIL4.11s solecfg modulepath; sourceunchanged noartifact/native",
+    "fixed": "Roadmap preparing ../task_input_followup_tests.rs mechanicalcompanion",
+    "contains": "fullRootjointpeer33d/f674/4aac +9885Hostguard; ba1+cc038Root/RoadmapjointtwoP2closed;RFC1d47 closed/applied"
+  },
+  "D7_partial77_validation": {
+    "build": "FAIL86.74s119diagnostics grouped4cfg mechanical issues, noartifact/native, sourceunchanged",
+    "fixed": "da1dad new11Result annotations/import/cfgprivacy/errorconversion Rootfullpeer closed78"
+  },
+  "D7_partial78_validation": {
+    "build": "PASS151.86s libtest zero types notstrict",
+    "binary": "dbbffe4218b83074a1b4742719e0f7baadc3e50c1ba4f63471b6be5d0a8f3687",
+    "native137": "48selected ABORT(-6)4.44s first newHost childTaskInput defaultstack; no pass/suite summary",
+    "lldb138": "sole samebinary defaultstack actualState deserialize→Workproof→centralTX→newQueueMaterialwrapper→enqueue_attempt→neworiginalChildinputwrapper→enqueue_internal; no locals;4.44s",
+    "native139": "remaining40 nonHost39PASS1ResultFAIL59.82s; sourcebinary+inherited94 unchanged; complete132PASS, childlongIDPASS, Sourceforecastf9PASS, newCommandTaskInput5+writtenRow3 PASS",
+    "native140": "sole remaining original96KiBResult4MiB actualstage backtrace; see140 result",
+    "evidence": "/Users/jolestar/Documents/Codex/2026-10-12/holon-agent-runtime-state-d7-design-evidence/partial78-partial78-focused137-140-defaultstack"
+  },
+  "D7_partial79_validation": {
+    "build": "PASS96.61s libtest zero types notstrict",
+    "binary": "85a7ef356e0922143f227678f46f2eb5031174353cf8b8f050bb5da1c4f2115b",
+    "native141": "22selected partial18PASS2FAIL2unfinished SIGTERMownedpid after188.75s nonstarted-run bootstrapwait; nofullsuite conclusion; sourcebinary+94unchanged",
+    "closed": "productionenqueueBox defaultstack actual7/8Host PASS: Hostloadedwire2+ChildTaskInput5 inclcallerdrop/Unknown/idleReplacement;NoMemory7+Source3+RunReadpositive",
+    "failed": "Hostrawdrift fixture readcachewrong (actualDBnotrewritten) d1d9 Rootfullpeerclosed/private; RunReadnegative oldinitialNone nowlegallyReady6a Rootfullpeerclosed/private",
+    "unfinished": "genuinebootstrap2 wait_for_bootstrap expectsstartedRuntime::run butHarnessdoesnotrun;3d removeswait Rootfullpeerclosed/private;f11Sourcefixtures samefix"
+  },
+  "D7_partial80_validation": {
+    "build": "FAIL81.70s; exactly two cold cfg seams: missing json macro and Option borrowed Arc mismatch; no artifact/native; source unchanged",
+    "fix": "839a cfg-only import/as_ref Root full peer closed/private applied; d065 all8Rust Root full peer closed/private clean, only RFC append conflict pending pure union"
+  },
+  "D7_partial81_validation": {
+    "build": "PASS159.19s libtest only; zero types; not strict/alltarget",
+    "source": "d5296504200a1e28c0780c48f3c8acf1f9475e5b320932baa619db9c39026294",
+    "binary": "d714947ce773e563e411b5eca663df430b1c036d0aef236628503c488f124806",
+    "142": "sole original96KiBResult4MiB FAIL1.03s written sizing prior3970281 nodes4670; P98867 N98512 E98936 fixed6272 fields17 guards17; bounds unchanged",
+    "143": "37selected34PASS3FAIL49.89s, source/binary plus94inherited unchanged; no large/full/132 rerun",
+    "closed": "all genuinebootstrap/Core/f11/93projector/Host8/NoMemory7/RunRead2/Source3 and repaired141 tests PASS; d065 actual5/6PASS",
+    "remaining": "Cold2 typedForeign author isolating; Commandfixture originalevent taskid path authorchecking; Resultdead operation/predicate scratch Root requested Context closedretirement patch",
+    "evidence": "/Users/jolestar/Documents/Codex/2026-10-12/holon-agent-runtime-state-d7-design-evidence/partial81-partial81-focused142-143-core-audits",
+    "144": "sole failedCold source backtrace1.13s; construct final source.validate_accounting at cold_child_domains420->111; original Work capture Host-address guard is real origin; no wide fallback"
+  },
+  "checkpoint_document": "/Users/jolestar/Documents/Codex/2026-10-12/holon-agent-runtime-state-current-checkpoint.zh-CN.md",
+  "user_latest_decision": "2026-10-15 explicit: do not use code-health-audit; converge existing D7 implementation and commit incrementally. Prior overall goal remains active.",
+  "current_work": "User-directed incremental convergence, no code-health-audit. Two bounded batches committed; resource-only15leaf535+/22- frozen remains private. Episode preparing one narrow companion and Roadmap reviewing whole original+companion. No live compiler/native.",
+  "D7_delivery1": {
+    "commit": "67bf0a956a665acb313a6bece12dc4913d5655cd",
+    "scope": "four Task/Work qualify/validate sites reuse existing streaming byte count; escaped exact/+1/-1 floor test; no new material helper/phase/Source",
+    "fmt": "PASS5.29s",
+    "strict": "PASS90.0s all-targets -Dwarnings",
+    "build": "PASS154.17s libtest",
+    "native": "9/9PASS1.62s; defaultstack; source/binary unchanged",
+    "review": "independent Roadmap static clear before native",
+    "evidence": "/Users/jolestar/Documents/Codex/2026-10-12/holon-agent-runtime-state-d7-delivery1-validation"
+  },
+  "D7_delivery2_bootstrap": {
+    "commit": "e44c17fe46a27b8f9d2b33226f4499a602af1af8",
+    "scope": "4existing files296+/219-; retain worktree without original child-exit proof; preserve original interruption rejoin contract; remove unreachable Runtime-only Git cleanup; Frozen/Completion policy unchanged",
+    "fmt": "PASS5.15s",
+    "strict": "PASS29.66s all-targets -Dwarnings",
+    "build": "PASS76.09s libtest",
+    "native": "7/7PASS2.05s defaultstack source/binaryunchanged",
+    "review": "Episode independent static clear final diff332c50546b0add6b9a0ecc17b13b8a4be079d4f4da4c29d2659a7ffdba104363",
+    "evidence": "/Users/jolestar/Documents/Codex/2026-10-12/holon-agent-runtime-state-d7-delivery2-bootstrap-validation"
+  },
+  "resource_next": {
+    "stage": "/private/tmp/holon-d7-delivery-resource-stage",
+    "patch": "/private/tmp/holon-d7-delivery-resource-stage/resource.patch",
+    "sha256": "3aad6f3f882d358c91296a005b680e29aa071fa3a898b774ec19ad9722d0b2d6",
+    "status": "Root full original diff read, not applied; independent review OPEN",
+    "fixes": [
+      "before reserve_owned_completion ScopeKey clone/ArcMutex allocation: scalar header byte/record precheck",
+      "quota typed retryable runtime descriptor, actual describe_runtime_error test; Other string alone currently io_error/retryablefalse",
+      "pure-scheme English RFC paragraph, no D7/current-stage/next-step prose",
+      "warm SkillsRegistry catalog_from_entries name clone and entry clone; future skills view clones must be covered or exact file-only contract narrowing, no false wholephase claim"
+    ],
+    "boundary": "resource-only allowance, fullContext State/Work/Task/Input/SQL live prior remains OPEN; no registry/observer/Source/RunOnce/Summary"
+  }
+}

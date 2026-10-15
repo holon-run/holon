@@ -270,6 +270,12 @@ impl InputQuerySnapshot {
         self.material=(bytes,nodes);
         Ok(self)
     }
+    pub(crate) fn original_publication_copy_plan(
+        &self,scope:&InputEvidenceScope,epoch:u64,ledger:&InputEvidenceBudgetLedger,
+    )->Result<Option<super::resident_input_evidence::OriginalInputPublicationPlan>> {
+        self.validate_binding(scope,epoch,ledger)?;
+        Ok(self.original_publication.as_ref().map(|material|material.final_copy_plan()))
+    }
     pub(crate) fn original_publication_matches(
         &self, inputs: &super::resident_input_evidence::ResidentInputEvidence,
         ledger: &InputEvidenceBudgetLedger,
@@ -1043,3 +1049,7 @@ mod original_base_tests;
 #[cfg(test)]
 #[path = "input_acquisition_source_tests.rs"]
 mod acquisition_source_tests;
+
+#[cfg(test)]
+#[path = "input_query_publication_tests.rs"]
+mod publication_tests;

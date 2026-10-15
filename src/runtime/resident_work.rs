@@ -23,6 +23,7 @@ use crate::types::{
 
 #[path = "resident_work/material.rs"]
 mod material;
+pub(crate) use material::{OriginalWorkHostAddress, OriginalWorkHostAddressLoan};
 pub(crate) const WORK_NONOPEN_WINDOW: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -2126,18 +2127,31 @@ mod tests {
         let resident = domain(vec![record.clone()], coverage(&[record.clone()], 1));
         let strong = Arc::strong_count(&record);
         let mut calls = 0;
-        let mut observer = |owned: &Arc<BudgetViewGuard>, bytes: usize, _: usize| {
-            assert!(owned.matches_resource_ledger(&ledger));
-            assert!(owned.owned_material_bytes()? >= u64::try_from(bytes)?);
-            assert_eq!(Arc::strong_count(&record), strong);
-            if calls == 0 {
-                assert!(
-                    ledger.report()?.host_owned.metadata_estimate_bytes >= u64::try_from(bytes)?
-                );
-            }
-            calls += 1;
-            Ok(())
-        };
+        let mut observer =
+            |owned: &Arc<BudgetViewGuard>,
+             bytes: usize,
+             _: usize,
+             origin: Option<&OriginalWorkHostAddress<'_>>| {
+                assert!(owned.matches_resource_ledger(&ledger));
+                assert!(owned.owned_material_bytes()? >= u64::try_from(bytes)?);
+                assert_eq!(Arc::strong_count(&record), strong);
+                if calls == 0 {
+                    assert!(
+                        ledger.report()?.host_owned.metadata_estimate_bytes
+                            >= u64::try_from(bytes)?
+                    );
+                }
+                if calls == 0 {
+                    origin
+                        .context("first callback lost actual Host origin")?
+                        .validate_binding(resident.scope(), &ledger, owned)?;
+                } else {
+                    assert!(origin.is_none());
+                    owned.validate_owned_material_binding(resident.scope(), &ledger, 0)?;
+                }
+                calls += 1;
+                Ok(())
+            };
         let selected = resident.capture_with_material(
             &WorkCaptureRequest::current(),
             &ledger,

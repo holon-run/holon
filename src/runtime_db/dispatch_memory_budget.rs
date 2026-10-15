@@ -329,6 +329,16 @@ impl DispatchMemoryTransactionBudget {
         Ok(())
     }
 
+    pub(in crate::runtime_db) fn exchange_original_result_material(&mut self,
+        exchange:crate::runtime_db::task_snapshot::read_preparation::ReleasedTaskReadbackMaterial<'_>,
+    )->Result<()> {
+        let (released,additional)=exchange.validate_original_result_exchange(&self.scope,&self.ledger)?;
+        let next=(self.bytes.checked_sub(released.0).and_then(|n|n.checked_add(additional.0)).context("Result Memory bytes overflow")?,
+            self.records.checked_sub(released.1).and_then(|n|n.checked_add(additional.1)).context("Result Memory nodes overflow")?);
+        ensure!(next.0<=self.byte_limit&&next.1<=self.record_limit,DispatchMemoryError::ResourceExhausted);
+        self.bytes=next.0;self.records=next.1;Ok(())
+    }
+
     pub(in crate::runtime_db) fn release_task_readback_material(
         &mut self,
         released:crate::runtime_db::task_snapshot::read_preparation::ReleasedTaskReadbackMaterial<'_>,

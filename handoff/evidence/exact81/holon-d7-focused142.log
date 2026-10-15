@@ -1,0 +1,121 @@
+
+running 1 test
+Task written sizing actual phase: prior=(3970281, 4670) limit=(4194304, 65536) payload=98867 normalized=98512 escaped=98936 fixed=6272 fields=17 guards=17
+Error: Task domain ResourceExhausted: bytes
+
+Caused by:
+    Task domain ResourceExhausted: bytes
+
+Stack backtrace:
+   0: std::backtrace_rs::backtrace::libunwind::trace
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/../../backtrace/src/backtrace/libunwind.rs:117:9
+   1: std::backtrace_rs::backtrace::trace_unsynchronized::<<std::backtrace::Backtrace>::create::{closure#0}>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/../../backtrace/src/backtrace/mod.rs:66:14
+   2: <std::backtrace::Backtrace>::create
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/backtrace.rs:331:13
+   3: <std::backtrace::Backtrace>::capture
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/backtrace.rs:296:9
+   4: <anyhow::Error as core::convert::From<holon::runtime_db::task_snapshot::TaskSnapshotError>>::from
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anyhow-1.0.102/src/backtrace.rs:10:14
+   5: <holon::runtime_db::task_snapshot::TaskSnapshotError as core::convert::Into<anyhow::Error>>::into
+             at /Users/jolestar/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/convert/mod.rs:780:9
+   6: holon::runtime_db::task_snapshot::bound
+             at ./src/runtime_db/task_snapshot.rs:282:14
+   7: <holon::runtime_db::task_snapshot::read_preparation::TaskReadMaterial>::charge
+             at ./src/runtime_db/task_snapshot/read_preparation.rs:173:9
+   8: <holon::runtime_db::task_snapshot::read_preparation::TaskReadMaterial>::original_written_columns_tx
+             at ./src/runtime_db/task_snapshot/written_row_material.rs:59:14
+   9: <holon::runtime_db::task_snapshot::read_preparation::TaskReadMaterial>::with_original_written_row::<holon::runtime_db::task_snapshot::writes::register_task_writes_inner::{closure#1}>
+             at ./src/runtime_db/task_snapshot/decoder_material.rs:298:28
+  10: holon::runtime_db::task_snapshot::writes::register_task_writes_inner
+             at ./src/runtime_db/task_snapshot/writes.rs:519:22
+  11: holon::runtime_db::task_snapshot::writes::register_original_task_writes_using_material_tx::{closure#0}
+             at ./src/runtime_db/task_snapshot/writes.rs:394:54
+  12: <holon::runtime_db::task_snapshot::read_preparation::TaskReadMaterial>::with_original_final_readback::<holon::runtime_db::task_snapshot::writes::register_original_task_writes_using_material_tx::{closure#0}>
+             at ./src/runtime_db/task_snapshot/readback_material.rs:142:21
+  13: holon::runtime_db::task_snapshot::writes::register_original_task_writes_using_material_tx
+             at ./src/runtime_db/task_snapshot/writes.rs:394:14
+  14: <holon::runtime_db::transitions::prepared_input::task_writes::TaskTransaction>::finish_inner
+             at ./src/runtime_db/transitions/prepared_input_task_writes.rs:533:21
+  15: <holon::runtime_db::transitions::prepared_input::task_writes::TaskTransaction>::finish_using_original_material
+             at ./src/runtime_db/transitions/prepared_input_task_writes.rs:437:14
+  16: <holon::runtime_db::transitions::prepared_input::task_writes::TaskTransaction>::finish
+             at ./src/runtime_db/transitions/prepared_input_task_writes.rs:407:14
+  17: <holon::runtime_db::transitions::RuntimeTransitionRepository>::commit_prepared_transition_with_domain_requests_and_input_source::{closure#0}
+             at ./src/runtime_db/transitions/prepared_input.rs:2715:35
+  18: <holon::runtime_db::write_queue::RuntimeDbWriterState>::append_wait_with_context::<holon::runtime_db::transitions::prepared_input::InputMutationExecution<holon::runtime_db::transitions::TransitionCommit>, <holon::runtime_db::transitions::RuntimeTransitionRepository>::commit_prepared_transition_with_domain_requests_and_input_source::{closure#0}>::{closure#1}
+             at ./src/runtime_db/write_queue.rs:414:22
+  19: holon::runtime_db::connection::run_transaction_on_connection::<holon::runtime_db::transitions::prepared_input::InputMutationExecution<holon::runtime_db::transitions::TransitionCommit>, <holon::runtime_db::write_queue::RuntimeDbWriterState>::append_wait_with_context<holon::runtime_db::transitions::prepared_input::InputMutationExecution<holon::runtime_db::transitions::TransitionCommit>, <holon::runtime_db::transitions::RuntimeTransitionRepository>::commit_prepared_transition_with_domain_requests_and_input_source::{closure#0}>::{closure#1}>
+             at ./src/runtime_db/connection.rs:577:11
+  20: <holon::runtime_db::write_queue::RuntimeDbWriterState>::append_wait_with_context::<holon::runtime_db::transitions::prepared_input::InputMutationExecution<holon::runtime_db::transitions::TransitionCommit>, <holon::runtime_db::transitions::RuntimeTransitionRepository>::commit_prepared_transition_with_domain_requests_and_input_source::{closure#0}>
+             at ./src/runtime_db/write_queue.rs:408:26
+  21: <holon::runtime_db::write_queue::RuntimeDbWriterState>::append_wait::<holon::runtime_db::transitions::prepared_input::InputMutationExecution<holon::runtime_db::transitions::TransitionCommit>, <holon::runtime_db::transitions::RuntimeTransitionRepository>::commit_prepared_transition_with_domain_requests_and_input_source::{closure#0}>
+             at ./src/runtime_db/write_queue.rs:382:14
+  22: <holon::runtime_db::write_queue::RuntimeDbWriter>::append_wait::<holon::runtime_db::transitions::prepared_input::InputMutationExecution<holon::runtime_db::transitions::TransitionCommit>, <holon::runtime_db::transitions::RuntimeTransitionRepository>::commit_prepared_transition_with_domain_requests_and_input_source::{closure#0}>
+             at ./src/runtime_db/write_queue.rs:244:20
+  23: <holon::runtime_db::RuntimeDb>::transaction::<holon::runtime_db::transitions::prepared_input::InputMutationExecution<holon::runtime_db::transitions::TransitionCommit>, <holon::runtime_db::transitions::RuntimeTransitionRepository>::commit_prepared_transition_with_domain_requests_and_input_source::{closure#0}>
+             at ./src/runtime_db/mod.rs:958:21
+  24: <holon::runtime_db::transitions::RuntimeTransitionRepository>::commit_prepared_transition_with_domain_requests_and_input_source
+             at ./src/runtime_db/transitions/prepared_input.rs:2088:17
+  25: <holon::runtime_db::transitions::RuntimeTransitionRepository>::commit_prepared_transition_with_domain_requests
+             at ./src/runtime_db/transitions/prepared_input.rs:2058:14
+  26: <holon::runtime_db::transitions::RuntimeTransitionRepository>::commit_prepared_transition_with_work_request_and_memory_budget
+             at ./src/runtime_db/transitions/prepared_input.rs:2025:14
+  27: holon::runtime_db::transitions::prepared_input::tests::task_result_writer_tests::execute
+             at ./src/runtime_db/transitions/prepared_task_result_tests.rs:45:10
+  28: holon::runtime_db::transitions::prepared_input::tests::task_result_writer_tests::original_admit_token_shares_remaining_material_allowance_and_rolls_back_before_business
+             at ./src/runtime_db/transitions/prepared_task_result_tests.rs:571:10
+  29: holon::runtime_db::transitions::prepared_input::tests::task_result_writer_tests::original_admit_token_shares_remaining_material_allowance_and_rolls_back_before_business::{closure#0}
+             at ./src/runtime_db/transitions/prepared_task_result_tests.rs:557:6
+  30: <holon::runtime_db::transitions::prepared_input::tests::task_result_writer_tests::original_admit_token_shares_remaining_material_allowance_and_rolls_back_before_business::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /Users/jolestar/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+  31: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+  32: test::__rust_begin_short_backtrace::<core::result::Result<(), alloc::string::String>, fn() -> core::result::Result<(), alloc::string::String>>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/test/src/lib.rs:724:18
+  33: test::run_test_in_process::{closure#0}
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/test/src/lib.rs:747:74
+  34: <core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panic/unwind_safe.rs:275:9
+  35: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}>, core::result::Result<(), alloc::string::String>>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:576:43
+  36: std::panicking::catch_unwind::<core::result::Result<(), alloc::string::String>, core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}>>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:544:19
+  37: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}>, core::result::Result<(), alloc::string::String>>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panic.rs:359:14
+  38: test::run_test_in_process
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/test/src/lib.rs:747:27
+  39: test::run_test::{closure#0}
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/test/src/lib.rs:668:43
+  40: test::run_test::{closure#1}
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/test/src/lib.rs:698:41
+  41: std::sys::backtrace::__rust_begin_short_backtrace::<test::run_test::{closure#1}, ()>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/sys/backtrace.rs:166:18
+  42: std::thread::lifecycle::spawn_unchecked::<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/thread/lifecycle.rs:70:13
+  43: <core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panic/unwind_safe.rs:275:9
+  44: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:576:43
+  45: std::panicking::catch_unwind::<(), core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:544:19
+  46: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panic.rs:359:14
+  47: std::thread::lifecycle::spawn_unchecked::<test::run_test::{closure#1}, ()>::{closure#1}
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/thread/lifecycle.rs:68:26
+  48: <std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+  49: <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/alloc/src/boxed.rs:2319:9
+  50: <std::sys::thread::unix::Thread>::new::thread_start
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/sys/thread/unix.rs:123:17
+  51: __pthread_cond_wait
+test runtime_db::transitions::prepared_input::tests::task_result_writer_tests::original_admit_token_shares_remaining_material_allowance_and_rolls_back_before_business ... FAILED
+
+failures:
+
+failures:
+    runtime_db::transitions::prepared_input::tests::task_result_writer_tests::original_admit_token_shares_remaining_material_allowance_and_rolls_back_before_business
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5947 filtered out; finished in 0.74s
+

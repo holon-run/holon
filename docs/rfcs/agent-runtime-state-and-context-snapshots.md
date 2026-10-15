@@ -2231,6 +2231,8 @@ Source, or ACK holder releases it.
 
 Inactive child inspection is a named cold cause under its original exact Active-incarnation owner and one SQL transaction. Its bounded identity/State header precedes ordinary qualified Task active/unsettled selection, Work current/owning selection, Scheduling, Current Queue/Event and the finite Input Brief/WorkExecution/owning closure. All selectors, native trees and decoders share the actual Host ledger and one Input material allowance after the caller's still-held prior. Qualification sidecars may advance only existing fixed/current membership; inspection cannot adopt raw late records, use receipt/recovery authority, create a Runtime or publish Ready. The finite selected source and its original guards escape together; its material estimate excludes the caller's prior and retains no Root/Runtime/Host/DB or owner reservation.
 
+Original Work capture first registers an actual Host-owned address view before scoped ledger-key copies. Its private factory lends a sealed scope/ledger/exact-guard origin to the original Work observer. Retaining that origin metadata is admitted by the same Work/Memory phase before cloning; the original address guard and its cost are never registered again. Cold material validates only those exact marked Host views with the Host validator; every other guard retains strict scoped validation. Failed scoped checks do not fall back to Host validation.
+
 The StateSome source foundation requires the same original pure Scheduler/child projection and actual Host/wire consumer before activation. A missing State is an explicit unavailable observation here; original freshly empty child display requires an independent complete all-domain empty proof. Pure selection must loan only the same already guarded physical body Arcs from the cold source, while admitting every new selector/header/Vec/DTO before copying. Separate full-domain limits or a final after-clone total cannot replace that shared phase.
 
 ### 原 Command、Work warning 与 Skill activation 审计观察
@@ -2238,3 +2240,17 @@ The StateSome source foundation requires the same original pure Scheduler/child 
 process_execution_requested 保持在实际 Command TaskCreated 之前；work_item_completion_warning 保留原任意观察 Work ID 与六字段 payload；skill_activated 保持实际 activeSkills State ACK 之后的独立 Audit ACK，审计失败不撤回先前 State。固定 family 源凭据在事件 JSON、command display/boundary 或 Skill 审计 DTO 首次复制前借用计量字段，封存原事件 ID/time/body 与同实例 scope/owner epoch/实际 ledger，完整实际 guard 成本进入原 Audit 首 receipt/Current phase 余量。其权限仅原 Active 身份，不继承 Lifecycle 的 Deleting、NoState 或 Task/Work/物理操作权限。
 
 公开 Work warning 请求在执行准入后由原 owned worker 持有到原 ACK；已经接纳的 turn 内部继续沿具名 owned 入口，不在内层重复 Open 准入。所有回滚、Known/Unknown 收据和后继 publication 遵循同一原 wholeACK 规则，普通 Current 读取不查询审计正文。
+
+
+### Final-phase Input query publication
+
+A complete original birth advance may retain a query only when its original
+accepted cursor, live roles, required roots and concrete-TX native membership
+remain complete. The original final Input phase admits publication scratch and
+the next metadata allocation before the first key/map copy. Actual final State
+selectors are part of this sealed forecast. The owner derives mandatory roots
+from borrowed qualified records, and preserves old query roots through recall
+invalidation until the new frontier can be trimmed. The new Root retains only
+its bounded metadata guard and selected body allocations; Source, request
+loans, writer phase and transient scratch remain ACK responsibilities. Missing
+proof or an unsupported compound writer preserves Incomplete.

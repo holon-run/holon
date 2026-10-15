@@ -1,0 +1,18 @@
+{
+  "exit": 0,
+  "elapsed": 154.17,
+  "source_unchanged": true,
+  "command": [
+    "cargo",
+    "test",
+    "--lib",
+    "--no-run",
+    "--message-format=json"
+  ],
+  "artifacts": [
+    {
+      "path": "/Users/jolestar/opensource/worktrees/github.com/holon-run/holon/agent-runtime-state-rfc/target/debug/deps/holon-7fbfac9cf9757b08",
+      "sha256": "0be086876b29a5c270cdc854b1157433ea95803adebaa9d5791156a81814ffcf"
+    }
+  ]
+}

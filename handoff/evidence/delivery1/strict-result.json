@@ -1,0 +1,10 @@
+{
+  "exit": 0,
+  "elapsed": 90.0,
+  "source_unchanged": true,
+  "command": [
+    "cargo",
+    "check",
+    "--all-targets"
+  ]
+}

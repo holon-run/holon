@@ -1,5 +1,4 @@
 use super::*;
-use serde_json::json;
 use crate::runtime::input_evidence_budget::{
     InputEvidenceBudgetLedger, InputMemoryCategory, OwnedBytesEstimate,
 };
@@ -9,6 +8,7 @@ use crate::runtime_db::{
     input_evidence_snapshot::InputEvidenceSnapshotError,
     scheduling_snapshot::SchedulingSnapshotError,
 };
+use serde_json::json;
 const LIMITS: (usize, usize) = (64 * 1024 * 1024, 65536);
 
 async fn fixture() -> Result<(tempfile::TempDir, RuntimeHandle, WorkItemRecord, TaskRecord)> {
@@ -98,6 +98,18 @@ async fn cold_child_actual_qualified_domains_share_state_view_and_keep_original_
     assert!(source.inputs().belongs_to(scope));
     assert_eq!(source.current().scope(), scope);
     assert!(source.material_estimate()?.0 > 0);
+    let hosts = source
+        .original_work_host_guards_for_test()
+        .collect::<Vec<_>>();
+    assert!(!hosts.is_empty());
+    for guard in &hosts {
+        guard.validate_host_owned_material_binding(ledger, 0)?;
+        assert!(guard
+            .validate_owned_material_binding(scope, ledger, 0)
+            .is_err());
+    }
+    let host_weak = Arc::downgrade(hosts[0]);
+    drop(hosts);
     assert_eq!(Arc::strong_count(&root), strong);
     assert!(Arc::ptr_eq(
         &root,
@@ -114,6 +126,7 @@ async fn cold_child_actual_qualified_domains_share_state_view_and_keep_original_
     let guard = source.first_guard_for_test().clone();
     let weak = Arc::downgrade(&guard);
     drop(source);
+    assert!(host_weak.upgrade().is_none());
     assert!(weak.upgrade().is_some());
     drop(guard);
     assert!(weak.upgrade().is_none());

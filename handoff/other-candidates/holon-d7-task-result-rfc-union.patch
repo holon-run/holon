@@ -1,0 +1,32 @@
+diff --git a/docs/rfcs/agent-runtime-state-and-context-snapshots.md b/docs/rfcs/agent-runtime-state-and-context-snapshots.md
+--- a/docs/rfcs/agent-runtime-state-and-context-snapshots.md
++++ b/docs/rfcs/agent-runtime-state-and-context-snapshots.md
+@@ -2254,3 +2254,28 @@
+ its bounded metadata guard and selected body allocations; Source, request
+ loans, writer phase and transient scratch remain ACK responsibilities. Missing
+ proof or an unsupported compound writer preserves Incomplete.
++
++
++### Consumed standalone Result execution material
++
++The original Result selection and predicate keep their full raw/native execution
++peak until the closed operation has been consumed in its concrete transaction.
++After its actual ACK exists, only their uniquely held decoder guards may be
++replaced by the actual outcome and effect-key receipt envelope. The command,
++W1 before proof, external priors and other domains remain held. The same sealed
++release reduces the already borrowed Input and Memory counters once; it neither
++registers the retained ACK again in Memory nor changes qualification or receipt
++ordering. EnsurePending, ordinary Task and Queue pending paths keep their
++existing material responsibility. Real copy caps and SQLite realloc bounds stay
++unchanged.
++
++
++The consumed Result exchange retains the complete still-live frozen command as
++a separate native/body allocation alongside the actual ACK envelope. If the new
++ACK is larger than the old selected row, its additional future-copy material
++is admitted to the same Task/Input/Memory allowance before receipt copies; a
++small old selection never makes that ACK free. The former post-business
++row-growth forecast is replaced only for this closed Result: it held no DTO,
++and each subsequent exact readback/qualified/coverage allocation is admitted
++at its own first copy. Original before bodies and actual State growth remain
++held and charged.

@@ -360,7 +360,7 @@ async fn actual_command_request_audit_precedes_task_created_and_keeps_original_p
         assert_eq!(event.data["promoted_from_exec_command"],false);
         assert!(event.data["execution"].is_object());assert!(event.data["boundary"].is_object());
         let created: u64=runtime.runtime_db().connection()?.query_row(
-            "SELECT MIN(event_seq) FROM audit_events WHERE kind='task_created' AND json_extract(data_json,'$.task_id')=?1",
+            "SELECT MIN(event_seq) FROM audit_events WHERE kind='task_created' AND json_extract(data_json,'$.data.task_id')=?1",
             [&task.id],|r|r.get(0))?;
         assert!(event.event_seq < created);
         assert_eq!(runtime.runtime_db().connection()?.query_row(

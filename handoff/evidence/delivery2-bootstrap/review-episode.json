@@ -1,0 +1,35 @@
+{
+  "result": "STATIC_CLEAR",
+  "base": "67bf0a956a665acb313a6bece12dc4913d5655cd",
+  "diff_sha256": "332c50546b0add6b9a0ecc17b13b8a4be079d4f4da4c29d2659a7ffdba104363",
+  "files": [
+    {
+      "path": "src/runtime/tasks.rs",
+      "base_matches_formal_HEAD": true,
+      "formal_exact_formatted_frozen": true,
+      "formal_sha256": "4d1497817aeda1db9abbcea08950dfadbc40262159d64d686e41fecfa4a30f59"
+    },
+    {
+      "path": "src/runtime/worktree.rs",
+      "base_matches_formal_HEAD": true,
+      "formal_exact_formatted_frozen": true,
+      "formal_sha256": "d48ca1bdd2c692f9e9437d82c34fb3adac697420a0bdafee0ef5f152f2f26c56"
+    },
+    {
+      "path": "src/runtime/worktree_cleanup.rs",
+      "base_matches_formal_HEAD": true,
+      "formal_exact_formatted_frozen": true,
+      "formal_sha256": "b35e464495c8db6800247511bab3a35a837c7472d16d84079ab363ed81532833"
+    },
+    {
+      "path": "src/runtime/worktree_cleanup_tests.rs",
+      "base_matches_formal_HEAD": true,
+      "formal_exact_formatted_frozen": true,
+      "formal_sha256": "e75e623cd2f2454408d85fd34c1e7fbe291d4a86831bc609deeb4088bf3fb4d1"
+    }
+  ],
+  "cleanup_metadata_policy_exact": true,
+  "frozen_cleanup_prefix_exact": true,
+  "native": "Not run by reviewer; Root sole runner; result pending",
+  "findings": []
+}

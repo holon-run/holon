@@ -1,0 +1,27 @@
+{
+  "source_manifest": "/private/tmp/holon-d7-partial81-source.json",
+  "patch_sha256": "d5296504200a1e28c0780c48f3c8acf1f9475e5b320932baa619db9c39026294",
+  "binary": {
+    "path": "/Users/jolestar/opensource/worktrees/github.com/holon-run/holon/agent-runtime-state-rfc/target/debug/deps/holon-b169571810a77548",
+    "profile": {
+      "opt_level": "0",
+      "debuginfo": 2,
+      "debug_assertions": true,
+      "overflow_checks": true,
+      "test": true
+    },
+    "target": "holon",
+    "sha256": "d714947ce773e563e411b5eca663df430b1c036d0aef236628503c488f124806"
+  },
+  "command": [
+    "/Users/jolestar/opensource/worktrees/github.com/holon-run/holon/agent-runtime-state-rfc/target/debug/deps/holon-b169571810a77548",
+    "--exact",
+    "--test-threads=4",
+    "--nocapture",
+    "runtime_db::transitions::prepared_input::tests::task_result_writer_tests::original_admit_token_shares_remaining_material_allowance_and_rolls_back_before_business"
+  ],
+  "selected": 1,
+  "library_total": 5948,
+  "default_stack": true,
+  "scope": "sole original96KiBResult4MiB positive/3MiB negative/8MiB retry; cfg scalar phase diagnostic; no cap or assertion changes"
+}

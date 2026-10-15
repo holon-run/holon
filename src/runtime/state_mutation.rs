@@ -2489,6 +2489,9 @@ fn runtime_input_mandatory_roots(
         InputEvidenceFamily as Family, InputEvidenceKey as Key, PreparedInputEvidence,
     };
     use crate::domain::execution_protocol::{ExecutionAttemptState, WorkItemExecutionState};
+    if delta.query_advance.as_ref().and_then(|advance|advance.publication()).is_some() {
+        return inputs.mandatory_roots_for_publication(delta,state,queue,work);
+    }
     let captured = inputs.capture()?;
     let mut records = captured
         .records

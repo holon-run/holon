@@ -4,6 +4,12 @@ use crate::runtime::input_evidence_budget::{
     BudgetViewGuard, InputEvidenceBudgetLedger, InputMemoryCategory, OwnedBytesEstimate,
 };
 
+#[path = "input_query_publication.rs"]
+mod publication;
+pub(crate) use publication::CommittedInputQueryPublication;
+#[cfg(test)]
+pub(crate) use publication::exercise_original_publication_for_fixture;
+
 pub(in crate::runtime_db) const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS input_query_birth_cursors (
  agent_id TEXT NOT NULL, identity_incarnation INTEGER NOT NULL CHECK(typeof(identity_incarnation)='integer' AND identity_incarnation>0),
@@ -381,6 +387,37 @@ impl<'tx, 'conn> NativeInputWriteProof<'tx, 'conn> {
         delta.query_advance = Some(Arc::new(self.finish_advance_tx(tx, &delta.records)?));
         Ok(())
     }
+    /// Only this actual shared phase can reserve the future publication copy.
+    /// Specialized callers keep the old invalidating finish until migrated.
+    pub(in crate::runtime_db) fn finish_delta_with_publication_tx(
+        self,tx:&Transaction<'_>,delta:&mut CommittedInputEvidenceDelta,
+        ledger:&InputEvidenceBudgetLedger,
+        memory:Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+        future_state:&crate::types::AgentState,
+    )->Result<()> {
+        ensure!(delta.query_advance.is_none(),"Input delta already has an original birth advance");
+        let phase=match (self.input_phase_usage,self.input_phase_limits) {
+            (Some(usage),Some(limits))=>{
+                ensure!(usage.0<=limits.0 && usage.1<=limits.1 && !self._material.is_empty(),
+                    "original Native Input phase lost its admitted material");
+                Some((usage,limits))
+            },
+            (None,None)=>None,
+            _=>anyhow::bail!("original Native Input phase is incomplete"),
+        };
+        let mut advance=self.finish_advance_tx(tx,&delta.records)?;
+        if let Some((usage,limits))=phase {
+            let source=advance._query_source.clone();
+            if let Some(source)=source {
+                let mut material=read_material::InputReadMaterial::resume_native_phase(
+                    &advance.scope,ledger,limits,usage,std::mem::take(&mut advance._material),memory)?;
+                advance.publication=publication::prepare_tx(tx,&advance,delta,&source,ledger,&mut material,future_state)?;
+                advance._material=material.into_guards();
+            }
+        }
+        delta.query_advance=Some(Arc::new(advance));
+        Ok(())
+    }
     fn finish_advance_tx(
         self,
         tx: &Transaction<'_>,
@@ -454,6 +491,7 @@ impl<'tx, 'conn> NativeInputWriteProof<'tx, 'conn> {
             base_cursor: self.base_cursor,
             cursor,
             born,
+            publication:None,
             _material: self._material,
             _query_source: self.query_source,
         })
@@ -470,8 +508,10 @@ pub(crate) struct CommittedInputQueryAdvance {
     born: BTreeMap<Key, (u64, crate::runtime::resident_input_evidence::EvidenceLocator)>,
     _material: Vec<Arc<BudgetViewGuard>>,
     _query_source: Option<Arc<crate::runtime::mutation_owner::OriginalInputQuerySource>>,
+    publication:Option<CommittedInputQueryPublication>,
 }
 impl CommittedInputQueryAdvance {
+    pub(crate) fn publication(&self)->Option<&CommittedInputQueryPublication> {self.publication.as_ref()}
     pub(crate) fn validate_delta(
         &self,
         scope: &InputEvidenceScope,

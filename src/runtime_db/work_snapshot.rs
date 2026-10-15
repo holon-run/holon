@@ -131,6 +131,8 @@ pub(crate) struct WorkCurrentSnapshot {
     pub resident: ResidentWorkDomain,
     /// D3 owning roots, prepared by the caller in this same original transaction.
     pub owning_input_roots: BTreeSet<InputEvidenceKey>,
+    pub(crate) original_host_material:
+        Vec<crate::runtime::resident_work::OriginalWorkHostAddressLoan>,
     /// Actual temporary/derived allocations retained through caller consumption.
     pub material_views: Vec<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
     /// Same-phase Work cost already covered by the retained actual guards.

@@ -1,0 +1,10 @@
+{
+  "exit": 0,
+  "elapsed": 2.05,
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "selected": 7,
+  "summary": [
+    "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 5275 filtered out; finished in 1.81s"
+  ]
+}

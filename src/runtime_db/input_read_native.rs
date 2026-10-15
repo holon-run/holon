@@ -27,6 +27,21 @@ impl InputReadMaterial<'_> {
         Ok(())
     }
 
+    /// A private Result execution token proves its selected rows/predicate have
+    /// exited. Their guards belonged to Task; only this borrowed prior is reduced.
+    pub(in crate::runtime_db) fn release_consumed_task_result_prior(
+        &mut self, released: crate::runtime_db::task_snapshot::read_preparation::ReleasedTaskReadbackMaterial<'_>,
+    ) -> Result<()> {
+        let ((bytes,records),additional)=released.validate_original_result_exchange(self.scope,self.ledger)?;
+        let next=(self.bytes.checked_sub(bytes).and_then(|n|n.checked_add(additional.0)).context("Result Input prior bytes overflow")?,
+            self.records.checked_sub(records).and_then(|n|n.checked_add(additional.1)).context("Result Input prior nodes overflow")?);
+        ensure!(next.0<=self.byte_limit&&next.1<=self.record_limit,
+            InputEvidenceSnapshotError::ResourceExhausted("Result ACK remaining allowance"));
+        if let Some(memory)=self.memory.as_deref_mut() {memory.exchange_original_result_material(released)?;}
+        self.bytes=next.0;self.records=next.1;
+        Ok(())
+    }
+
     pub(in crate::runtime_db::input_evidence_snapshot) fn observe_native_footprint(
         &mut self,
         bytes: usize,

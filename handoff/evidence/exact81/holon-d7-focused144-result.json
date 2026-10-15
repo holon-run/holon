@@ -1,0 +1,14 @@
+{
+  "exit": 101,
+  "elapsed": 1.13,
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "selected": 1,
+  "library_total": 5948,
+  "summary": [
+    "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5947 filtered out; finished in 0.83s"
+  ],
+  "failures": [
+    "runtime::cold_child_domains_tests::cold_child_actual_qualified_domains_share_state_view_and_keep_original_guards_without_ready_install"
+  ]
+}

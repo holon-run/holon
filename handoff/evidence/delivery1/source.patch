@@ -1,0 +1,96 @@
+diff --git a/src/runtime/resident_task.rs b/src/runtime/resident_task.rs
+index ea5753c8..b211b2e7 100644
+--- a/src/runtime/resident_task.rs
++++ b/src/runtime/resident_task.rs
+@@ -181,7 +181,8 @@ impl QualifiedTaskFact {
+             "Task fact locator invalid"
+         );
+         ensure!(
+-            self.resident_bytes >= serde_json::to_vec(&self.fact)?.len(),
++            self.resident_bytes
++                >= usize::try_from(super::input_evidence_budget::serialized_bytes(&self.fact)?)?,
+             "Task fact body estimate incomplete"
+         );
+         Ok(())
+diff --git a/src/runtime/resident_work.rs b/src/runtime/resident_work.rs
+index fbecc557..784acea0 100644
+--- a/src/runtime/resident_work.rs
++++ b/src/runtime/resident_work.rs
+@@ -119,7 +119,10 @@ impl QualifiedWorkRecord {
+             "qualified Work record revision/digest invalid"
+         );
+         ensure!(
+-            self.resident_bytes >= serde_json::to_vec(&self.record)?.len(),
++            self.resident_bytes
++                >= usize::try_from(super::input_evidence_budget::serialized_bytes(
++                    &self.record
++                )?)?,
+             "qualified Work body estimate is incomplete"
+         );
+         Ok(())
+@@ -1255,6 +1258,35 @@ mod tests {
+             record,
+         })
+     }
++    #[test]
++    fn encoded_body_floor_preserves_escaped_exact_and_one_byte_short_boundaries() -> Result<()> {
++        let mut record = Arc::try_unwrap(qualified("escaped-floor", WorkItemState::Open, 1))
++            .expect("test fact has one holder");
++        let CanonicalWorkRecord::Work(work) = &mut record.record else {
++            unreachable!()
++        };
++        work.objective = "line\n\t\"\u{0000}中😀\\".repeat(32);
++        let original_encoded = serde_json::to_vec(&record.record)?.len();
++        record.resident_bytes = original_encoded;
++        record.validate(&scope())?;
++        record.resident_bytes = original_encoded - 1;
++        assert!(record
++            .validate(&scope())
++            .unwrap_err()
++            .to_string()
++            .contains("body estimate is incomplete"));
++        record.resident_bytes = original_encoded + 1;
++        record.validate(&scope())?;
++        let mut foreign = scope();
++        foreign.identity_incarnation += 1;
++        assert!(record
++            .validate(&foreign)
++            .unwrap_err()
++            .to_string()
++            .contains("scope/key mismatch"));
++        Ok(())
++    }
++
+     fn coverage(records: &[Arc<QualifiedWorkRecord>], revision: u64) -> WorkCoverage {
+         let mut value = WorkCoverage {
+             revision,
+diff --git a/src/runtime_db/task_snapshot.rs b/src/runtime_db/task_snapshot.rs
+index 1bd54ec8..b85d2245 100644
+--- a/src/runtime_db/task_snapshot.rs
++++ b/src/runtime_db/task_snapshot.rs
+@@ -215,7 +215,9 @@ impl StoredTask {
+                 content_digest: self.digest(),
+                 projection_digest: self.projection_digest.clone(),
+             },
+-            resident_bytes: serde_json::to_vec(&self.fact)?.len(),
++            resident_bytes: usize::try_from(
++                crate::runtime::input_evidence_budget::serialized_bytes(&self.fact)?,
++            )?,
+             fact: self.fact.clone(),
+         });
+         fact.validate(scope)?;
+diff --git a/src/runtime_db/work_snapshot.rs b/src/runtime_db/work_snapshot.rs
+index 3328b448..9bdc42ce 100644
+--- a/src/runtime_db/work_snapshot.rs
++++ b/src/runtime_db/work_snapshot.rs
+@@ -160,7 +160,9 @@ impl StoredRecord {
+             key: self.record.key(),
+             revision,
+             content_digest: self.digest(),
+-            resident_bytes: serde_json::to_vec(&self.record)?.len(),
++            resident_bytes: usize::try_from(
++                crate::runtime::input_evidence_budget::serialized_bytes(&self.record)?,
++            )?,
+             record: self.record.clone(),
+         });
+         result.validate(scope)?;

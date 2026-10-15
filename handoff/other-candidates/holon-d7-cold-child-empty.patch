@@ -1,0 +1,572 @@
+diff --git a/docs/rfcs/agent-runtime-state-and-context-snapshots.md b/docs/rfcs/agent-runtime-state-and-context-snapshots.md
+--- a/docs/rfcs/agent-runtime-state-and-context-snapshots.md
++++ b/docs/rfcs/agent-runtime-state-and-context-snapshots.md
+@@ -2232,3 +2232,10 @@
+ Inactive child inspection is a named cold cause under its original exact Active-incarnation owner and one SQL transaction. Its bounded identity/State header precedes ordinary qualified Task active/unsettled selection, Work current/owning selection, Scheduling, Current Queue/Event and the finite Input Brief/WorkExecution/owning closure. All selectors, native trees and decoders share the actual Host ledger and one Input material allowance after the caller's still-held prior. Qualification sidecars may advance only existing fixed/current membership; inspection cannot adopt raw late records, use receipt/recovery authority, create a Runtime or publish Ready. The finite selected source and its original guards escape together; its material estimate excludes the caller's prior and retains no Root/Runtime/Host/DB or owner reservation.
+ 
+ The StateSome source foundation requires the same original pure Scheduler/child projection and actual Host/wire consumer before activation. A missing State is an explicit unavailable observation here; original freshly empty child display requires an independent complete all-domain empty proof. Pure selection must loan only the same already guarded physical body Arcs from the cold source, while admitting every new selector/header/Vec/DTO before copying. Separate full-domain limits or a final after-clone total cannot replace that shared phase.
++
++
++### 冷 Child 的 NoState 空集观察边界
++
++显式冷读取可借原 Scheduling 冷身份入口，在成员 selector 前核当前 Active incarnation 与 Host 已选 Child/parent 地址；原入口无门禁的调用保持原算法。缺少 State 本身不证明空集。新有限 source 只接受原 fresh_empty 绑定、原 Scheduling 完整空态证明，以及 Task/Work/Input/Queue/Event/执行协议全部相关 canonical/current/fixed/import 成员均为空；只查 normalized ownership/membership，不解正文，不把 Pruned 或 raw late 当空，也不静默跳缺表。source 保原身份、scope、实际 ledger 与 guards，不建 State/Runtime/Root/Ready。
++
++首身份及 selector 材料与 caller 实际 held prior 共用原额度，Source 的 own 费用不重复包含 caller prior。旧完整 legacy 空态仍须完整 observed-table 证明，不能借 fresh_empty 承接旧 namespace。此 actor 本身不启用普通 Host 消费；后续 cold 纯投影必须保持原无 State 的 Booting→Waiting 展示含义，携原 source 到实际 wire，并在混合 loaded/cold 聚合中累计首复制费用。
+diff --git a/src/host/child_summary_read_tests.rs b/src/host/child_summary_read_tests.rs
+--- a/src/host/child_summary_read_tests.rs
++++ b/src/host/child_summary_read_tests.rs
+@@ -349,3 +349,266 @@
+     host.shutdown().await?;
+     Ok(())
+ }
++
++#[tokio::test]
++async fn actual_fresh_cold_child_without_state_requires_complete_empty_source_and_keeps_actual_material(
++) -> Result<()> {
++    use crate::runtime::input_evidence_budget::{InputMemoryCategory, OwnedBytesEstimate};
++    use crate::runtime::resident_input_evidence::InputEvidenceScope;
++    use crate::runtime_db::cold_child_domains::prepare_empty_cold_child_tx;
++    let (_home, host, parent) = host_backed_test_runtime().await;
++    let identity = add_child(&host, &parent, false).await?;
++    assert!(host
++        .try_get_loaded_runtime(&identity.agent_id)
++        .await
++        .is_none());
++    assert!(host
++        .runtime_db()
++        .agent_states()
++        .latest(&identity.agent_id)?
++        .is_none());
++    parent.refresh_context_resources().await?;
++    parent.quiesce_child_summary_observer_for_test().await?;
++    let owner = parent.reserve_original_task_input_owner_for_test().await?;
++    let root = owner.capture_ready_snapshot()?.unwrap();
++    let strong = Arc::strong_count(&root);
++    let scope = InputEvidenceScope {
++        agent_id: identity.agent_id.clone(),
++        identity_incarnation: identity.incarnation,
++    };
++    let ledger = &host.inner.input_evidence_budget;
++    let baseline = ledger.report()?.observed_bytes;
++    let held = vec![17u8; 128 * 1024];
++    let prior_guard = ledger.register_owned_bytes(
++        &scope,
++        InputMemoryCategory::Pins,
++        OwnedBytesEstimate {
++            payload_bytes: held.len() as u64,
++            metadata_estimate_bytes: 256,
++        },
++    )?;
++    let prior = (prior_guard.owned_material_bytes()?, 1);
++    let held_baseline = ledger.report()?.observed_bytes;
++    let capture = |limits| {
++        host.runtime_db().transaction(|tx| {
++            prepare_empty_cold_child_tx(tx, &scope, &identity, ledger, limits, prior)
++        })
++    };
++    let source = capture(LIMITS)?;
++    assert_eq!(source.identity(), &identity);
++    assert!(source.material_estimate()?.0 > 0);
++    let weak = Arc::downgrade(source.first_guard_for_test());
++    let foreign = InputEvidenceBudgetLedger::new(ledger.limits())?;
++    assert!(source.validate_accounting(&scope, &foreign).is_err());
++    assert_eq!(Arc::strong_count(&root), strong);
++    assert!(Arc::ptr_eq(
++        &root,
++        &owner.capture_ready_snapshot()?.unwrap()
++    ));
++    drop(source);
++    assert!(weak.upgrade().is_none());
++    assert_eq!(ledger.report()?.observed_bytes, held_baseline);
++    let mut nodes = (prior.1, LIMITS.1);
++    while nodes.0 + 1 < nodes.1 {
++        let middle = nodes.0 + (nodes.1 - nodes.0) / 2;
++        match capture((LIMITS.0, middle)) {
++            Ok(source) => {
++                drop(source);
++                nodes.1 = middle;
++            }
++            Err(error) => {
++                assert!(empty_source_exhausted(&error), "{error:#}");
++                nodes.0 = middle;
++            }
++        }
++        assert_eq!(ledger.report()?.observed_bytes, held_baseline);
++    }
++    let mut bytes = (usize::try_from(prior.0)?, LIMITS.0);
++    while bytes.0 + 1 < bytes.1 {
++        let middle = bytes.0 + (bytes.1 - bytes.0) / 2;
++        match capture((middle, nodes.1)) {
++            Ok(source) => {
++                drop(source);
++                bytes.1 = middle;
++            }
++            Err(error) => {
++                assert!(empty_source_exhausted(&error), "{error:#}");
++                bytes.0 = middle;
++            }
++        }
++        assert_eq!(ledger.report()?.observed_bytes, held_baseline);
++    }
++    assert!(empty_source_exhausted(
++        &capture((bytes.1 - 1, nodes.1))
++            .err()
++            .context("byte-minus-one must reject")?
++    ));
++    assert!(empty_source_exhausted(
++        &capture((bytes.1, nodes.1 - 1))
++            .err()
++            .context("node-minus-one must reject")?
++    ));
++    let exact = capture((bytes.1, nodes.1))?;
++    let last = Arc::downgrade(exact.first_guard_for_test());
++    assert!(last.upgrade().is_some());
++    drop(exact);
++    assert!(last.upgrade().is_none());
++    assert_eq!(ledger.report()?.observed_bytes, held_baseline);
++    assert!(host
++        .runtime_db()
++        .agent_states()
++        .latest(&identity.agent_id)?
++        .is_none());
++    assert!(host
++        .try_get_loaded_runtime(&identity.agent_id)
++        .await
++        .is_none());
++    assert!(Arc::ptr_eq(
++        &root,
++        &owner.capture_ready_snapshot()?.unwrap()
++    ));
++    drop((prior_guard, held));
++    assert_eq!(ledger.report()?.observed_bytes, baseline);
++    Ok(())
++}
++
++fn empty_source_exhausted(error: &anyhow::Error) -> bool {
++    use crate::runtime_db::{
++        cold_child_domains::ColdChildReadError,
++        input_evidence_snapshot::InputEvidenceSnapshotError,
++        scheduling_snapshot::SchedulingSnapshotError,
++    };
++    matches!(
++        error.downcast_ref::<ColdChildReadError>(),
++        Some(ColdChildReadError::ResourceExhausted)
++    ) || matches!(
++        error.downcast_ref::<InputEvidenceSnapshotError>(),
++        Some(InputEvidenceSnapshotError::ResourceExhausted(_))
++    ) || matches!(
++        error.downcast_ref::<SchedulingSnapshotError>(),
++        Some(SchedulingSnapshotError::ResourceExhausted(_))
++    )
++}
++
++#[tokio::test]
++async fn actual_cold_empty_child_rejects_foreign_parent_before_selectors_and_raw_or_pruned_members_without_decoding(
++) -> Result<()> {
++    use crate::runtime::resident_input_evidence::InputEvidenceScope;
++    use crate::runtime_db::cold_child_domains::{
++        prepare_empty_cold_child_tx, ColdChildReadError, EmptyColdChildError,
++    };
++    let (_home, host, parent) = host_backed_test_runtime().await;
++    let identity = add_child(&host, &parent, false).await?;
++    parent.refresh_context_resources().await?;
++    parent.quiesce_child_summary_observer_for_test().await?;
++    let owner = parent.reserve_original_task_input_owner_for_test().await?;
++    let root = owner.capture_ready_snapshot()?.unwrap();
++    let scope = InputEvidenceScope {
++        agent_id: identity.agent_id.clone(),
++        identity_incarnation: identity.incarnation,
++    };
++    let ledger = &host.inner.input_evidence_budget;
++    let baseline = ledger.report()?.observed_bytes;
++    let mut foreign_parent = identity.clone();
++    foreign_parent.parent_agent_id = Some("another-original-parent".into());
++    host.runtime_db()
++        .connection()?
++        .execute_batch("ALTER TABLE tasks RENAME TO cold_empty_forbidden_tasks")?;
++    let error = host
++        .runtime_db()
++        .transaction(|tx| {
++            prepare_empty_cold_child_tx(tx, &scope, &foreign_parent, ledger, LIMITS, (0, 0))
++        })
++        .err()
++        .context("foreign parent must fail before Task selector")?;
++    assert!(
++        matches!(
++            error.downcast_ref::<ColdChildReadError>(),
++            Some(ColdChildReadError::ForeignMaterial)
++        ),
++        "{error:#}"
++    );
++    host.runtime_db()
++        .connection()?
++        .execute_batch("ALTER TABLE cold_empty_forbidden_tasks RENAME TO tasks")?;
++    assert_eq!(ledger.report()?.observed_bytes, baseline);
++    let now = Utc::now();
++    let raw = TaskRecord {
++        id: crate::ids::task_id(),
++        agent_id: identity.agent_id.clone(),
++        kind: TaskKind::AgentMessageWait,
++        status: TaskStatus::Running,
++        created_at: now,
++        updated_at: now,
++        parent_message_id: None,
++        work_item_id: None,
++        summary: Some("raw late child body".into()),
++        detail: Some(json!({"unqualified": "x".repeat(9 * 1024 * 1024)})),
++        recovery: None,
++    };
++    host.runtime_db().transaction(|tx| {
++        crate::runtime_db::repositories::upsert_task_tx(tx, &raw)?;
++        tx.execute(
++            "UPDATE tasks SET payload_json=?2 WHERE task_id=?1",
++            rusqlite::params![raw.id, format!("{{{}", " ".repeat(9 * 1024 * 1024))],
++        )?;
++        Ok(())
++    })?;
++    let error = host
++        .runtime_db()
++        .transaction(|tx| {
++            prepare_empty_cold_child_tx(tx, &scope, &identity, ledger, LIMITS, (0, 0))
++        })
++        .err()
++        .context("raw late body cannot be empty")?;
++    assert!(
++        matches!(
++            error.downcast_ref::<EmptyColdChildError>(),
++            Some(EmptyColdChildError::Incomplete)
++        ),
++        "{error:#}"
++    );
++    host.runtime_db().transaction(|tx| {
++        tx.execute("DELETE FROM tasks WHERE task_id=?1", [&raw.id])?;
++        tx.execute("INSERT INTO work_domain_records(agent_id,identity_incarnation,family,record_id,revision,availability,content_digest,fingerprint_json) VALUES(?1,?2,'work','original-pruned',1,'pruned',NULL,NULL)", rusqlite::params![scope.agent_id,scope.identity_incarnation])?;
++        Ok(())
++    })?;
++    let error = host
++        .runtime_db()
++        .transaction(|tx| {
++            prepare_empty_cold_child_tx(tx, &scope, &identity, ledger, LIMITS, (0, 0))
++        })
++        .err()
++        .context("Pruned member cannot be empty")?;
++    assert!(
++        matches!(
++            error.downcast_ref::<EmptyColdChildError>(),
++            Some(EmptyColdChildError::Incomplete)
++        ),
++        "{error:#}"
++    );
++    host.runtime_db().transaction(|tx| {
++        tx.execute("DELETE FROM work_domain_records WHERE agent_id=?1 AND identity_incarnation=?2 AND record_id='original-pruned'", rusqlite::params![scope.agent_id,scope.identity_incarnation])?;
++        Ok(())
++    })?;
++    let source = host.runtime_db().transaction(|tx| {
++        prepare_empty_cold_child_tx(tx, &scope, &identity, ledger, LIMITS, (0, 0))
++    })?;
++    assert_eq!(source.identity(), &identity);
++    drop(source);
++    assert_eq!(ledger.report()?.observed_bytes, baseline);
++    assert!(host
++        .runtime_db()
++        .agent_states()
++        .latest(&identity.agent_id)?
++        .is_none());
++    assert!(host
++        .try_get_loaded_runtime(&identity.agent_id)
++        .await
++        .is_none());
++    assert!(Arc::ptr_eq(
++        &root,
++        &owner.capture_ready_snapshot()?.unwrap()
++    ));
++    Ok(())
++}
+diff --git a/src/runtime_db/cold_child_domains.rs b/src/runtime_db/cold_child_domains.rs
+--- a/src/runtime_db/cold_child_domains.rs
++++ b/src/runtime_db/cold_child_domains.rs
+@@ -420,3 +420,7 @@
+     source.validate_accounting(scope, ledger)?;
+     Ok(source)
+ }
++
++#[path = "cold_child_empty.rs"]
++mod empty;
++pub(crate) use empty::{prepare_empty_cold_child_tx, EmptyColdChildError, ProvenEmptyColdChild};
+diff --git a/src/runtime_db/cold_child_empty.rs b/src/runtime_db/cold_child_empty.rs
+new file mode 100644
+--- /dev/null
++++ b/src/runtime_db/cold_child_empty.rs
+@@ -0,0 +1,227 @@
++//! A missing State is displayable only with the original complete empty proof.
++use super::{
++    phase_limits, selector, ColdChildReadError, InputEvidenceBudgetLedger, InputEvidenceScope,
++    InputReadMaterial,
++};
++use crate::{
++    runtime::input_evidence_budget::BudgetViewGuard,
++    runtime_db::{
++        input_evidence_snapshot::InputEvidenceLoadRequest,
++        scheduling_snapshot::{
++            prepare_cold_scheduling_query_with_identity_tx, ColdSchedulingQuery,
++            SchedulingDomainLoadRequest,
++        },
++    },
++    types::{AgentIdentityRecord, AgentKind, AgentRegistryStatus},
++};
++use anyhow::{ensure, Context, Result};
++use rusqlite::{params, Transaction};
++use std::{collections::BTreeSet, sync::Arc};
++
++#[derive(Debug, thiserror::Error)]
++pub(crate) enum EmptyColdChildError {
++    #[error("cold child has no complete original empty source")]
++    Incomplete,
++}
++
++/// Only this actor can construct the proof. Identity and its actual material
++/// remain together; no State, Root, database handle or business grant is stored.
++pub(crate) struct ProvenEmptyColdChild {
++    identity: AgentIdentityRecord,
++    scope: InputEvidenceScope,
++    ledger: InputEvidenceBudgetLedger,
++    own: (u64, usize),
++    guards: Vec<Arc<BudgetViewGuard>>,
++}
++impl ProvenEmptyColdChild {
++    pub(crate) fn identity(&self) -> &AgentIdentityRecord {
++        &self.identity
++    }
++    pub(crate) fn validate_accounting(
++        &self,
++        scope: &InputEvidenceScope,
++        ledger: &InputEvidenceBudgetLedger,
++    ) -> Result<()> {
++        ensure!(
++            self.scope == *scope
++                && self.ledger.same_ledger(ledger)
++                && self.identity.agent_id == scope.agent_id
++                && self.identity.incarnation == scope.identity_incarnation
++                && self.identity.status == AgentRegistryStatus::Active
++                && self.identity.kind == AgentKind::Child
++                && self.identity.parent_agent_id.is_some()
++                && !self.guards.is_empty(),
++            ColdChildReadError::ForeignMaterial
++        );
++        for guard in &self.guards {
++            guard
++                .validate_owned_material_binding(scope, ledger, 0)
++                .context(ColdChildReadError::ForeignMaterial)?;
++        }
++        Ok(())
++    }
++    pub(crate) fn material_estimate(&self) -> Result<(u64, usize)> {
++        self.validate_accounting(&self.scope, &self.ledger)?;
++        Ok(self.own)
++    }
++    #[cfg(test)]
++    pub(crate) fn first_guard_for_test(&self) -> &Arc<BudgetViewGuard> {
++        &self.guards[0]
++    }
++}
++
++// Only normalized ownership/membership scalars are inspected. A raw late body,
++// a tombstone or an old fixed member cannot turn into an empty current view.
++// Table absence is an error, never evidence of complete empty observation.
++const COMPLETE_EMPTY: &str = "SELECT
++ EXISTS(SELECT 1 FROM agent_episode_continuity WHERE agent_id=?1 AND identity_incarnation=?2 AND policy_version=1 AND mode='fresh_empty' AND seed_id IS NULL)
++ AND NOT EXISTS(SELECT 1 FROM tasks WHERE owner_agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM task_result_settlements WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM work_items WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM wait_conditions WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM work_item_continuations WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM messages WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM briefs WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM delivery_summaries WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM transcript_entries WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM tool_executions WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM turn_records WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM audit_events WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM execution_protocol_partitions WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM execution_protocol_work_items WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM execution_protocol_attempts WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM execution_protocol_outcomes WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM execution_protocol_command_results WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM task_domain_current WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM task_domain_records WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM task_domain_import_inventory WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM task_message_sources WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM task_message_order_headers WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM task_query_task_members WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM task_query_task_births WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM work_domain_current WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM work_domain_records WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM work_domain_result_heads WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM work_domain_wait_edges WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM current_read_current WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM current_read_members WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM current_read_fixed_members WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM current_read_import_inventory WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM current_event_native_births WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM input_evidence_execution_current_sources WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM input_evidence_execution_current_work WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM input_query_birth_members WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM input_legacy_delivery_current_sources WHERE agent_id=?1 AND identity_incarnation=?2)
++ AND NOT EXISTS(SELECT 1 FROM input_legacy_delivery_fixed_members WHERE agent_id=?1)
++ AND NOT EXISTS(SELECT 1 FROM episode_continuity_seeds WHERE agent_id=?1)";
++
++/// Explicit cold inspection under the caller's already-held child reservation.
++/// Fresh original emptiness does not create canonical State or a ready domain.
++/// Legacy complete-empty facets need their own full observed-table proof; this
++/// actor does not borrow fresh semantics for an unbound/legacy namespace.
++pub(crate) fn prepare_empty_cold_child_tx(
++    tx: &Transaction<'_>,
++    scope: &InputEvidenceScope,
++    expected: &AgentIdentityRecord,
++    ledger: &InputEvidenceBudgetLedger,
++    requested: (usize, usize),
++    caller_prior: (u64, usize),
++) -> Result<ProvenEmptyColdChild> {
++    let limits = phase_limits(ledger, requested)?;
++    let prior = (usize::try_from(caller_prior.0)?, caller_prior.1);
++    let remaining = (
++        limits
++            .0
++            .checked_sub(prior.0)
++            .context(ColdChildReadError::ResourceExhausted)?,
++        limits
++            .1
++            .checked_sub(prior.1)
++            .context(ColdChildReadError::ResourceExhausted)?,
++    );
++    let query = prepare_cold_scheduling_query_with_identity_tx(
++        tx,
++        scope,
++        &SchedulingDomainLoadRequest {
++            capture: crate::runtime::resident_scheduling::SchedulingCaptureRequest::current(),
++            byte_limit: remaining.0,
++            record_limit: remaining.1,
++        },
++        ledger,
++        |identity, has_state| {
++            ensure!(
++                identity.agent_id == expected.agent_id
++                    && identity.incarnation == expected.incarnation
++                    && identity.kind == expected.kind
++                    && identity.parent_agent_id == expected.parent_agent_id
++                    && identity.kind == AgentKind::Child
++                    && identity.parent_agent_id.is_some()
++                    && expected.status == AgentRegistryStatus::Active,
++                ColdChildReadError::ForeignMaterial
++            );
++            ensure!(!has_state, ColdChildReadError::StateUnavailable);
++            Ok(())
++        },
++    )?;
++    let ColdSchedulingQuery::ProvenEmptyNoState {
++        identity,
++        material_usage,
++        mut guards,
++    } = query
++    else {
++        return Err(ColdChildReadError::StateUnavailable.into());
++    };
++    let admitted = (
++        prior
++            .0
++            .checked_add(material_usage.0)
++            .context(ColdChildReadError::ResourceExhausted)?,
++        prior
++            .1
++            .checked_add(material_usage.1)
++            .context(ColdChildReadError::ResourceExhausted)?,
++    );
++    let request = InputEvidenceLoadRequest {
++        windows: Vec::new(),
++        mandatory_roots: BTreeSet::new(),
++        interrupted_sources: BTreeSet::new(),
++        selected_completion_brief_ids: BTreeSet::new(),
++        byte_limit: limits.0,
++        record_limit: limits.1,
++    };
++    let mut material = InputReadMaterial::new(scope, &request, ledger, admitted)?;
++    material.validate_accounting(scope, ledger)?;
++    // Admit the source's scope, keeper Vec and scalar-proof headers first.
++    selector(&mut material, scope)?;
++    let complete: bool = tx.query_row(
++        COMPLETE_EMPTY,
++        params![scope.agent_id, scope.identity_incarnation],
++        |row| row.get(0),
++    )?;
++    ensure!(complete, EmptyColdChildError::Incomplete);
++    let usage = material.usage();
++    let own = (
++        u64::try_from(
++            usage
++                .0
++                .checked_sub(prior.0)
++                .context(ColdChildReadError::ResourceExhausted)?,
++        )?,
++        usage
++            .1
++            .checked_sub(prior.1)
++            .context(ColdChildReadError::ResourceExhausted)?,
++    );
++    guards.extend(material.into_guards());
++    let source = ProvenEmptyColdChild {
++        identity,
++        scope: scope.clone(),
++        ledger: ledger.clone(),
++        own,
++        guards,
++    };
++    source.validate_accounting(scope, ledger)?;
++    Ok(source)
++}
+diff --git a/src/runtime_db/scheduling_snapshot/cold_query.rs b/src/runtime_db/scheduling_snapshot/cold_query.rs
+--- a/src/runtime_db/scheduling_snapshot/cold_query.rs
++++ b/src/runtime_db/scheduling_snapshot/cold_query.rs
+@@ -15,6 +15,18 @@
+     request: &SchedulingDomainLoadRequest,
+     ledger: &InputEvidenceBudgetLedger,
+ ) -> Result<ColdSchedulingQuery> {
++    prepare_cold_scheduling_query_with_identity_tx(tx, scope, request, ledger, |_, _| Ok(()))
++}
++
++/// An explicit cold caller can validate its selected identity before any domain
++/// member is read. This gate does not grant Scheduling or State authority.
++pub(crate) fn prepare_cold_scheduling_query_with_identity_tx(
++    tx: &Transaction<'_>,
++    scope: &InputEvidenceScope,
++    request: &SchedulingDomainLoadRequest,
++    ledger: &InputEvidenceBudgetLedger,
++    identity_gate: impl FnOnce(&crate::types::AgentIdentityRecord, bool) -> Result<()>,
++) -> Result<ColdSchedulingQuery> {
+     bound(0, 0, request)?;
+     let mut material = Material::new(scope, request, ledger);
+     let identity = loader::scope_identity(tx, scope, &mut material, false)?
+@@ -24,6 +36,7 @@
+         [&scope.agent_id],
+         |row| row.get(0),
+     )?;
++    identity_gate(&identity, has_state)?;
+     if has_state {
+         let mut current = loader::load_with_revision(
+             tx,
+diff --git a/src/runtime_db/scheduling_snapshot.rs b/src/runtime_db/scheduling_snapshot.rs
+--- a/src/runtime_db/scheduling_snapshot.rs
++++ b/src/runtime_db/scheduling_snapshot.rs
+@@ -29,8 +29,9 @@
+ mod cold_query;
+ mod token_discovery;
+ pub(crate) use cold_query::{
+-    prepare_cold_scheduling_query_tx, read_cold_resource_identity_tx, read_cold_resource_scope_tx,
+-    read_cold_scheduling_scope_tx, ColdSchedulingQuery,
++    prepare_cold_scheduling_query_tx, prepare_cold_scheduling_query_with_identity_tx,
++    read_cold_resource_identity_tx, read_cold_resource_scope_tx, read_cold_scheduling_scope_tx,
++    ColdSchedulingQuery,
+ };
+ pub(crate) use token_discovery::{
+     discover_external_trigger_token_tx, read_external_trigger_token_compatibility_tx,

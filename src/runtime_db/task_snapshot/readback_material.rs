@@ -7,11 +7,21 @@ pub(in crate::runtime_db) struct ReleasedTaskReadbackMaterial<'a> {
     ledger: &'a InputEvidenceBudgetLedger,
     bytes: usize,
     records: usize,
+    additional: (usize,usize),
 }
 impl<'a> ReleasedTaskReadbackMaterial<'a> {
     // Only sibling closed decoders construct this after actual DTO/scratch exit.
     pub(super) fn completed_decoder(scope: &'a InputEvidenceScope, ledger: &'a InputEvidenceBudgetLedger, bytes: usize, records: usize) -> Self {
-        Self { scope, ledger, bytes, records }
+        Self { scope, ledger, bytes, records, additional:(0,0) }
+    }
+    // A consumed Result can leave a larger actual ACK than its old selected row.
+    pub(super) fn completed_result_exchange(scope:&'a InputEvidenceScope,ledger:&'a InputEvidenceBudgetLedger,
+        released:(usize,usize),additional:(usize,usize))->Self {
+        Self {scope,ledger,bytes:released.0,records:released.1,additional}
+    }
+    pub(in crate::runtime_db) fn validate_original_result_exchange(&self,
+        scope:&InputEvidenceScope,ledger:&InputEvidenceBudgetLedger)->Result<((usize,usize),(usize,usize))> {
+        Ok((self.validate_accounting(scope,ledger)?,self.additional))
     }
     pub(in crate::runtime_db) fn validate_accounting(
         &self,
@@ -218,6 +228,7 @@ impl TaskReadMaterial<'_> {
                 ledger,
                 bytes: suffix.0 - retained,
                 records: suffix.1 - nodes,
+                additional:(0,0),
             })?;
         }
         self.guards.truncate(mark.2);

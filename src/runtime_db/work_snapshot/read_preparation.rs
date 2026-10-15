@@ -145,6 +145,7 @@ pub(super) struct WorkReadMaterial<'a> {
     bytes: usize,
     records: usize,
     original_prior: (usize, usize),
+    original_host_material: Vec<crate::runtime::resident_work::OriginalWorkHostAddressLoan>,
     guards: Vec<Arc<BudgetViewGuard>>,
     wait_pool_observed: bool,
 }
@@ -204,6 +205,7 @@ impl<'a> WorkReadMaterial<'a> {
             records: prior.1,
             original_prior: prior,
             guards: Vec::new(),
+            original_host_material: Vec::new(),
             wait_pool_observed: false,
         };
         // Constant query/guard-vector scratch is observed before constructing
@@ -357,9 +359,12 @@ impl<'a> WorkReadMaterial<'a> {
             "Work capture material scope differs"
         );
         let ledger = self.ledger.clone();
-        let mut observer = |guard: &Arc<BudgetViewGuard>, bytes: usize, records: usize| {
-            self.resident_observed(guard, bytes, records)
-        };
+        let mut observer = |guard: &Arc<BudgetViewGuard>,
+                            bytes: usize,
+                            records: usize,
+                            origin: Option<
+            &crate::runtime::resident_work::OriginalWorkHostAddress<'_>,
+        >| { self.resident_observed(guard, bytes, records, origin) };
         resident.capture_with_material(request, &ledger, &mut observer)
     }
     fn resident_observed(
@@ -367,7 +372,13 @@ impl<'a> WorkReadMaterial<'a> {
         guard: &Arc<BudgetViewGuard>,
         bytes: usize,
         records: usize,
+        origin: Option<&crate::runtime::resident_work::OriginalWorkHostAddress<'_>>,
     ) -> Result<()> {
+        if let Some(origin) = origin {
+            origin.validate_binding(self.scope, self.ledger, guard)?;
+        } else {
+            guard.validate_owned_material_binding(self.scope, self.ledger, 0)?;
+        }
         ensure!(
             guard.matches_resource_ledger(self.ledger)
                 && guard.owned_material_bytes()? >= u64::try_from(bytes)?,
@@ -411,6 +422,14 @@ impl<'a> WorkReadMaterial<'a> {
         }
         self.bytes = next_bytes;
         self.records = next_records;
+        if let Some(origin) = origin {
+            let (bytes, nodes) = origin.retained_material_estimate()?;
+            // This is new keeper metadata, not a second registration of the
+            // original Host view. Joint Work/Memory admission precedes cloning.
+            self.charge(usize::try_from(bytes)?, 0, nodes)?;
+            self.original_host_material
+                .push(origin.retain(self.scope, self.ledger, guard)?);
+        }
         Ok(())
     }
     pub(super) fn owning_roots_copy(&mut self, resident: &ResidentWorkDomain) -> Result<()> {
@@ -479,6 +498,14 @@ impl<'a> WorkReadMaterial<'a> {
     pub(super) fn into_guards(self) -> Vec<Arc<BudgetViewGuard>> {
         self.guards
     }
+    pub(super) fn into_original_parts(
+        self,
+    ) -> (
+        Vec<Arc<BudgetViewGuard>>,
+        Vec<crate::runtime::resident_work::OriginalWorkHostAddressLoan>,
+    ) {
+        (self.guards, self.original_host_material)
+    }
 
     /// The caller has dropped the complete preflight view. Keep the original
     /// proof's material debited; this phase owns only the additional guards.
@@ -491,6 +518,7 @@ impl<'a> WorkReadMaterial<'a> {
             records: self.records.checked_sub(self.original_prior.1)
                 .context("Work transient record debit underflow")?,
         };
+        drop(self.original_host_material);
         drop(self.guards);
         if let Some(memory) = self.memory {
             memory.release_work_transient_material(released)?;

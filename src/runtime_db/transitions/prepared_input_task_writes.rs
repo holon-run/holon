@@ -133,6 +133,16 @@ impl Material<'_, '_> {
     }
 }
 
+// W1 before proof lives outside this interval. The frozen command's actual
+// allocation survives in its replacement alongside the actual ACK.
+struct ResultExecutionMaterial {
+    selection: std::ops::Range<usize>,
+    selected: tasks::TaskMaintenanceMaterial,
+    predicate: tasks::TaskMaintenanceMaterial,
+    completed_predicate: Option<std::ops::Range<usize>>,
+    consumed: bool,
+}
+
 pub(super) struct TaskTransaction<'tx, 'connection, 'command> {
     proof: tasks::TaskWriteProof,
     cleanup: Option<tasks::OriginalTaskResultCleanupProof<'tx, 'connection, 'command>>,
@@ -145,6 +155,9 @@ pub(super) struct TaskTransaction<'tx, 'connection, 'command> {
     original_material: (usize, usize),
     material_total: (usize, usize),
     original_state_material: usize,
+    result_execution_material: Option<ResultExecutionMaterial>,
+    result_command: Option<&'command super::super::prepared_task_result::TaskResultOperation>,
+    result_ack_retained: bool,
     child_phase: bool,
 }
 impl<'tx, 'connection, 'command> TaskTransaction<'tx, 'connection, 'command> {
@@ -389,11 +402,43 @@ impl<'tx, 'connection, 'command> TaskTransaction<'tx, 'connection, 'command> {
             .context("TaskResult omitted its closed operation")?;
         if let Some(predicate) = self.predicate.take() {
             let (ack, retained) = operation.execute_with_original_predicate(predicate)?;
+            let start = self.guards.len();
             self.guards.extend(retained.into_budget_views());
+            if let Some(material) = &mut self.result_execution_material {
+                material.completed_predicate = Some(start..self.guards.len());
+                material.consumed = true;
+            }
             Ok(ack)
         } else {
-            operation.execute()
+            let ack = operation.execute()?;
+            if let Some(material) = &mut self.result_execution_material { material.consumed = true; }
+            Ok(ack)
         }
+    }
+    /// Only the consumed standalone Result operation owns this decoder interval.
+    /// The returned token reduces an already-borrowed Input/Memory prior once.
+    pub(super) fn retire_result_execution<'a>(
+        &mut self, scope: &'a InputEvidenceScope, ledger: &'a InputEvidenceBudgetLedger,
+        outcome: &result::TaskResultWriteOutcome, actual: &BTreeSet<TaskKey>,
+    ) -> Result<Option<tasks::read_preparation::ReleasedTaskReadbackMaterial<'a>>> {
+        let Some(material) = self.result_execution_material.as_ref() else { return Ok(None); };
+        anyhow::ensure!(material.consumed && self.result.is_none() && self.predicate.is_none()
+            && self.proof.scope() == scope, "Result decoder is still live or changed scope");
+        let mut usage = tasks::TaskMaintenanceMaterial { bytes:self.material_total.0, records:self.material_total.1 };
+        let released = tasks::read_preparation::retire_consumed_original_result_material(
+            scope, &self.request, ledger, &mut usage, &mut self.guards,
+            material.selection.clone(), material.selected,
+            material.completed_predicate.clone(), material.predicate,
+            self.result_command.context("Result lost its still-live frozen command")?, outcome, actual)?;
+        self.material_total = (usage.bytes,usage.records);
+        self.result_execution_material = None;
+        self.result_ack_retained = true;
+        Ok(Some(released))
+    }
+    #[cfg(test)]
+    pub(super) fn result_selection_guard_for_test(&self) -> Result<Arc<BudgetViewGuard>> {
+        let selected=self.result_execution_material.as_ref().context("Result selection missing")?;
+        self.guards.get(selected.selection.start).cloned().context("Result selection guard missing")
     }
     pub(super) fn finish(
         self,
@@ -493,12 +538,17 @@ impl<'tx, 'connection, 'command> TaskTransaction<'tx, 'connection, 'command> {
         phase.admit_original_aliases_tx(tx, &original_scope, &self.allowed)?;
         let after = phase.original_maintenance_size_tx(tx, self.proof.scope(), &self.allowed)?;
         let state_material = state_material_tx(tx, self.proof.scope())?;
-        let additional_bytes = after
-            .bytes
-            .saturating_sub(self.original_material.0)
+        // A consumed standalone Result now retains its actual command + ACK.
+        // The old eight-copy row-growth forecast is not another live DTO: all
+        // future Stored/qualified/coverage allocations admit in their own closed
+        // decoder below. W1 before and actual State growth remain in the prefix.
+        let row_growth = if self.result_ack_retained { 0 }
+            else { after.bytes.saturating_sub(self.original_material.0) };
+        let additional_bytes = row_growth
             .checked_add(state_material.saturating_sub(self.original_state_material))
             .context("Task final State material overflow")?;
-        let additional_records = after.records.saturating_sub(self.original_material.1);
+        let additional_records = if self.result_ack_retained { 0 }
+            else { after.records.saturating_sub(self.original_material.1) };
         if additional_bytes > 0 || additional_records > 0 {
             phase.charge_writer_material(additional_bytes, additional_records, 1)?;
         }
@@ -738,10 +788,13 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command>(
             material.message(tx, message)?;
         }
     }
+    let selection_mark = (material.bytes,material.records,material.guards.len());
+    if let InputTransitionCommand::TaskResult(command) = prepared.command.as_ref() {
+        let (bytes,nodes)=crate::runtime::input_evidence_budget::borrowed_json_material(&command.operation)?;
+        material.charge(usize::try_from(bytes)?,nodes,8)?;
+    }
     let operation = match prepared.command.as_ref() {
         InputTransitionCommand::TaskResult(command) => {
-            let (bytes,nodes)=crate::runtime::input_evidence_budget::borrowed_json_material(&command.operation)?;
-            material.charge(usize::try_from(bytes)?,nodes,8)?;
             use super::super::prepared_task_result::TaskResultOperation as C;
             let operation = match &command.operation {
                 C::EnsurePending {
@@ -805,6 +858,13 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command>(
         },
         _ => None,
     };
+    // EnsurePending includes Message/D3 responsibilities and keeps its old envelope.
+    let result_selection = matches!(prepared.command.as_ref(), InputTransitionCommand::TaskResult(command)
+        if !matches!(command.operation, super::super::prepared_task_result::TaskResultOperation::EnsurePending { .. }))
+        .then(|| -> Result<_> {Ok((selection_mark.2..material.guards.len(), tasks::TaskMaintenanceMaterial {
+            bytes:material.bytes.checked_sub(selection_mark.0).context("Result selection bytes underflow")?,
+            records:material.records.checked_sub(selection_mark.1).context("Result selection nodes underflow")?,
+        }))}).transpose()?;
     let predicate = if matches!(prepared.command.as_ref(), InputTransitionCommand::TaskResult(command)
         if matches!(command.operation,
             super::super::prepared_task_result::TaskResultOperation::AdmitUnsettled { .. }
@@ -828,6 +888,11 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command>(
     } else {
         None
     };
+    let result_execution_material = result_selection.map(|(selection,selected)| ResultExecutionMaterial {
+        selection, selected,
+        predicate:predicate.as_ref().map(|proof|proof.material_estimate()).unwrap_or(tasks::TaskMaintenanceMaterial {bytes:0,records:0}),
+        completed_predicate:None,consumed:false,
+    });
     let mut candidates = BTreeSet::new();
     if let Some(operation) = &operation {
         candidates.extend(
@@ -1035,6 +1100,11 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command>(
         original_material: (before_material.bytes, before_material.records),
         material_total: (material.bytes, material.records),
         original_state_material,
+        result_execution_material,
+        result_command:match prepared.command.as_ref() {
+            InputTransitionCommand::TaskResult(command)=>Some(&command.operation),_=>None,
+        },
+        result_ack_retained:false,
         child_phase,
         guards: material.guards,
     }))

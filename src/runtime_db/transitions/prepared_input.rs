@@ -2514,6 +2514,24 @@ impl RuntimeTransitionRepository<'_> {
                     } else { execute(None)? }
                 } else { execute(None)? }
             };
+            // Execution consumed/dropped the standalone Result selection and
+            // predicate. Its actual outcome remains in result through receipt.
+            if let InputMutationResult::TaskResult {outcome} = &result {
+                let tasks=task_transaction.as_mut().context("Result lost its original Task phase")?;
+                if has_first_input {
+                    input_birth.as_mut().context("Result lost its original Input phase")?
+                        .with_input_phase(tx,memory_ledger,memory_budget.as_mut(),|material| {
+                            if let Some(released)=tasks.retire_result_execution(scope,memory_ledger,
+                                outcome,&value.effects.task_write_keys)? {
+                                material.release_consumed_task_result_prior(released)?;
+                            }
+                            Ok(())
+                        })?;
+                } else if let Some(released)=tasks.retire_result_execution(scope,memory_ledger,
+                    outcome,&value.effects.task_write_keys)? {
+                    if let Some(memory)=memory_budget.as_mut() {memory.exchange_original_result_material(released)?;}
+                }
+            }
             if shared_nomemory {
                 if let Some(current)=current_read_transaction.as_ref() {
                     let observed=current.input_writer_material(tx)?;
@@ -2765,7 +2783,18 @@ impl RuntimeTransitionRepository<'_> {
 
 
             if let Some(proof) = input_birth {
-                proof.finish_delta_tx(tx, &mut value.effects.input_evidence_delta)?;
+                // Work's later owning-input preparation has its own live usage;
+                // do not label that unsupported compound frontier complete yet.
+                if has_first_input && memory_budget.is_none()
+                    && value.effects.work_input_preparation.is_none()
+                    && value.effects.work_delta.is_none() {
+                    let final_state=value.effects.agent_state.as_ref().map(|state|state.record.as_ref())
+                        .or(facts.state.as_ref()).context("Input publication final State is unavailable")?;
+                    proof.finish_delta_with_publication_tx(tx,&mut value.effects.input_evidence_delta,
+                        memory_ledger,memory_budget.as_mut(),final_state)?;
+                } else {
+                    proof.finish_delta_tx(tx, &mut value.effects.input_evidence_delta)?;
+                }
             }
 
             if let (Some(preparation),Some(work),Some(selection))=(

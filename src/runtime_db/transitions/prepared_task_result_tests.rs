@@ -722,3 +722,6 @@ fn result_receipt_all_normalized_columns_are_bounded_before_direct_and_fresh_dec
     }
     Ok(())
 }
+
+#[path = "prepared_task_result_execution_material_tests.rs"]
+mod execution_material_tests;

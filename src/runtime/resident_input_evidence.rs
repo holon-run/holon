@@ -647,6 +647,7 @@ pub(crate) struct CommittedInputEvidenceDelta {
 #[path = "input_publication_material.rs"]
 mod publication_material;
 pub(in crate::runtime) use publication_material::OriginalInputPublicationMaterial;
+pub(crate) use publication_material::OriginalInputPublicationPlan;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResidentInputEvidence {
@@ -977,6 +978,11 @@ impl ResidentInputEvidence {
     }
 
     fn refresh_budget_views(&mut self) -> Result<()> {
+        self.refresh_budget_views_using_publication(None)
+    }
+    fn refresh_budget_views_using_publication(&mut self,
+        publication:Option<&crate::runtime_db::input_evidence_snapshot::CommittedInputQueryPublication>,
+    ) -> Result<()> {
         let Some(budget) = &self.budget else {
             return Ok(());
         };
@@ -1016,14 +1022,13 @@ impl ResidentInputEvidence {
         let views = vec![
             budget.register_view(&self.scope, InputMemoryCategory::Current, &records(current))?,
             budget.register_view(&self.scope, InputMemoryCategory::History, &records(history))?,
-            budget.register_owned_bytes(
-                &self.scope,
-                InputMemoryCategory::Current,
-                OwnedBytesEstimate {
-                    payload_bytes: 0,
-                    metadata_estimate_bytes: self.metadata_estimate_bytes()?,
-                },
-            )?,
+            match publication {
+                Some(publication)=>publication.metadata_guard(self,budget)?,
+                None=>budget.register_owned_bytes(
+                    &self.scope,InputMemoryCategory::Current,
+                    OwnedBytesEstimate{payload_bytes:0,metadata_estimate_bytes:self.metadata_estimate_bytes()?},
+                )?,
+            },
         ];
         self.budget_views = views;
         Ok(())
@@ -1715,6 +1720,10 @@ impl ResidentInputEvidence {
         if let Some(advance) = &delta.query_advance {
             advance.validate_delta(&self.scope, &delta.records)?;
         }
+        let publication=delta.query_advance.as_ref().and_then(|advance|advance.publication());
+        if let Some(publication)=publication {
+            publication.validate_original(self,self.budget.as_ref().context("Input publication has no actual ledger")?)?;
+        }
         if let Some(prepared) = work_sources {
             ensure!(
                 prepared.scope == self.scope
@@ -1731,14 +1740,13 @@ impl ResidentInputEvidence {
             .as_ref()
             .map(|budget| -> Result<_> {
                 Ok(vec![
-                    budget.register_owned_bytes(
-                        &self.scope,
-                        InputMemoryCategory::Candidate,
-                        OwnedBytesEstimate {
-                            payload_bytes: 0,
-                            metadata_estimate_bytes: self.metadata_estimate_bytes()?,
-                        },
-                    )?,
+                    match publication {
+                        Some(publication)=>publication.copy_guard(&self.scope,budget)?,
+                        None=>budget.register_owned_bytes(
+                            &self.scope,InputMemoryCategory::Candidate,
+                            OwnedBytesEstimate{payload_bytes:0,metadata_estimate_bytes:self.metadata_estimate_bytes()?},
+                        )?,
+                    },
                     budget.register_view(
                         &self.scope,
                         InputMemoryCategory::Candidate,
@@ -1748,7 +1756,7 @@ impl ResidentInputEvidence {
             })
             .transpose()?;
         let mut next = self.clone();
-        if !delta.records.is_empty() || !delta.removals.is_empty() {
+        if publication.is_none() && (!delta.records.is_empty() || !delta.removals.is_empty()) {
             next.coverage.query = Default::default();
         }
         // A real D3 write invalidates read-only recall. Old captures keep their
@@ -2002,10 +2010,15 @@ impl ResidentInputEvidence {
                 .map(|record| record.locator.key.clone())
                 .collect();
         }
+        if let Some(publication)=publication {
+            // Preserve the old strong roots through recall invalidation, then
+            // install only the consumed actual frontier before final trimming.
+            next.coverage.query=publication.coverage().clone();
+        }
         if next.trim_and_validate().is_err() {
             return Ok(None);
         }
-        next.refresh_budget_views()?;
+        next.refresh_budget_views_using_publication(publication)?;
         if let Some(budget) = &next.budget {
             budget.check_history_budget()?;
         }

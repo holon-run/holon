@@ -1,0 +1,841 @@
+diff --git a/docs/rfcs/agent-runtime-state-and-context-snapshots.md b/docs/rfcs/agent-runtime-state-and-context-snapshots.md
+--- a/docs/rfcs/agent-runtime-state-and-context-snapshots.md
++++ b/docs/rfcs/agent-runtime-state-and-context-snapshots.md
+@@ -1550,3 +1550,10 @@
+ finite accepted heads are revalidated so drift cannot hide a previously observed
+ member below a later cutoff. None of these observations grants new membership,
+ activation, identity mutation or historical Input authority.
++
++
++### D7 独立前置：现有 Context 文件准备的分配门禁
++
++现有 loaded Context 的 skills/catalog、plan/notes、AGENTS/agent memory 文件阶段复用同一个实际 InputEvidenceBudgetLedger completion guard，按原 hard bounds（至多 64 MiB/65536 native records）在文件 buffer、目录项和解析集合分配之前检查。同步 TLS 入口仅包住实际同步文件阶段，不跨 await；可选 reader 吞掉文件错误时仍由原 phase 的最终检查拒绝预算失败。guard 保留原峰值至 EffectivePrompt 最后 holder/reprojection 释放，不新注册同份材料。
++
++本前置保留原文件读取、plan 创建、错误和业务权限，不建立 Ready/resource registry，不宣称 ordinary zero-file-read 或整个 Context 的跨领域累计预算已完成。版本观察、known-write/物理完成与安装 fence 另行接入。
+diff --git a/src/agent_template.rs b/src/agent_template.rs
+--- a/src/agent_template.rs
++++ b/src/agent_template.rs
+@@ -856,7 +856,7 @@
+     source: AgentTemplateSourceKind,
+     use_absolute_selector: bool,
+ ) -> Vec<AgentTemplateCatalogEntry> {
+-    let Ok(read_dir) = fs::read_dir(root) else {
++    let Ok(read_dir) = crate::diagnostics::io_probe::read_dir(root) else {
+         return Vec::new();
+     };
+     let mut entries = Vec::new();
+@@ -872,7 +872,7 @@
+             continue;
+         }
+         let agents_md_path = path.join(TEMPLATE_AGENTS_FILENAME);
+-        let Ok(agents_md) = fs::read_to_string(&agents_md_path) else {
++        let Ok(agents_md) = crate::diagnostics::io_probe::read_to_string(&agents_md_path) else {
+             continue;
+         };
+         if agents_md.trim().is_empty() {
+@@ -1329,6 +1329,7 @@
+ 
+ /// Parse a `template.toml` manifest string (e.g., from a builtin template).
+ fn parse_template_manifest(content: &str) -> Option<TemplateManifest> {
++    crate::diagnostics::resource_io::charge_structured_text(content).ok()?;
+     toml::from_str(content)
+         .map_err(|error| {
+             tracing::warn!(%error, "failed to parse template.toml manifest");
+@@ -1339,7 +1340,7 @@
+ /// Parse `template.toml` from a local template directory.
+ fn parse_local_template_manifest(template_dir: &Path) -> Option<TemplateManifest> {
+     let manifest_path = template_dir.join(TEMPLATE_MANIFEST_FILENAME);
+-    fs::read_to_string(&manifest_path)
++    crate::diagnostics::io_probe::read_to_string(&manifest_path)
+         .ok()
+         .and_then(|content| parse_template_manifest(&content))
+ }
+@@ -1927,8 +1928,9 @@
+     if !path.exists() {
+         return Ok(Vec::new());
+     }
+-    let content =
+-        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
++    let content = crate::diagnostics::io_probe::read_to_string(&path)
++        .with_context(|| format!("failed to read {}", path.display()))?;
++    crate::diagnostics::resource_io::charge_structured_text(&content)?;
+     let manifest: TemplateSkillsManifest =
+         toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
+     let skill_refs: Vec<TemplateSkillRef> = manifest
+diff --git a/src/diagnostics/io_probe.rs b/src/diagnostics/io_probe.rs
+--- a/src/diagnostics/io_probe.rs
++++ b/src/diagnostics/io_probe.rs
+@@ -225,7 +225,8 @@
+         FILE_OPENS.fetch_add(1, Ordering::Relaxed);
+         FILE_READS.fetch_add(1, Ordering::Relaxed);
+     }
+-    let result = std::fs::read_to_string(path);
++    let result = super::resource_io::read_to_string(path.as_ref())
++        .unwrap_or_else(|| std::fs::read_to_string(path));
+     if measured {
+         match &result {
+             Ok(body) => {
+@@ -259,12 +260,12 @@
+     result
+ }
+ 
+-pub(crate) fn read_dir(path: impl AsRef<Path>) -> io::Result<std::fs::ReadDir> {
++pub(crate) fn read_dir(path: impl AsRef<Path>) -> io::Result<super::resource_io::ResourceReadDir> {
+     let measured = enabled();
+     if measured {
+         DIRECTORY_READS.fetch_add(1, Ordering::Relaxed);
+     }
+-    let result = std::fs::read_dir(path);
++    let result = std::fs::read_dir(path).map(super::resource_io::ResourceReadDir::new);
+     if measured && result.is_err() {
+         FILE_ERRORS.fetch_add(1, Ordering::Relaxed);
+     }
+@@ -293,7 +294,10 @@
+         FILE_READS.fetch_add(1, Ordering::Relaxed);
+     }
+     let before = buffer.len();
+-    let result = reader.read_to_end(buffer);
++    let result = match super::resource_io::read_to_end(reader, buffer) {
++        Some(result) => result,
++        None => reader.read_to_end(buffer),
++    };
+     if measured {
+         FILE_BYTES.fetch_add(
+             buffer.len().saturating_sub(before) as u64,
+diff --git a/src/diagnostics/resource_io.rs b/src/diagnostics/resource_io.rs
+new file mode 100644
+--- /dev/null
++++ b/src/diagnostics/resource_io.rs
+@@ -0,0 +1,388 @@
++//! Allocation gate for the existing synchronous context-resource preparation.
++use crate::runtime::{
++    input_evidence_budget::{
++        BudgetViewGuard, InputEvidenceBudgetLedger, InputMemoryCategory, OwnedBytesEstimate,
++        OwnedCompletionBudget,
++    },
++    resident_input_evidence::InputEvidenceScope,
++};
++use std::{
++    cell::RefCell,
++    fs::{DirEntry, File, ReadDir},
++    io::{self, Read},
++    marker::PhantomData,
++    path::Path,
++    rc::Rc,
++    sync::{Arc, Mutex},
++};
++
++thread_local! { static ACTIVE: RefCell<Option<Arc<Mutex<ReadMaterial>>>> = const { RefCell::new(None) }; }
++struct ReadMaterial {
++    bytes: u64,
++    records: usize,
++    byte_limit: u64,
++    record_limit: usize,
++    material: OwnedCompletionBudget,
++    failed: bool,
++}
++/// Resource-only allowance across catalog, resource files and private guidance.
++/// It does not certify the whole Context/SQL/State/selected-domain phase budget.
++/// The synchronous TLS entry is never held across an await.
++pub(crate) struct ResourceReadMaterial {
++    active: Arc<Mutex<ReadMaterial>>,
++}
++pub(crate) struct ResourceReadBudget {
++    previous: Option<Arc<Mutex<ReadMaterial>>>,
++    _thread: PhantomData<Rc<()>>,
++}
++impl ResourceReadMaterial {
++    pub(crate) fn new(
++        ledger: &InputEvidenceBudgetLedger,
++        scope: &InputEvidenceScope,
++    ) -> io::Result<Self> {
++        let limits = ledger.limits();
++        let bytes = limits
++            .history_per_agent_bytes
++            .checked_add(limits.pending_per_agent_bytes)
++            .ok_or_else(|| io::Error::other("resource byte limit overflow"))?
++            .min(64 * 1024 * 1024);
++        let records = usize::try_from(limits.record_limit.min(65_536)).map_err(io::Error::other)?;
++        Self::with_limits(ledger, scope, bytes, records)
++    }
++    fn with_limits(
++        ledger: &InputEvidenceBudgetLedger,
++        scope: &InputEvidenceScope,
++        bytes: u64,
++        records: usize,
++    ) -> io::Result<Self> {
++        if bytes == 0 || records == 0 {
++            return Err(io::Error::other(
++                "ResourceExhausted: zero resource allowance",
++            ));
++        }
++        let material = ledger
++            .reserve_owned_completion(
++                scope,
++                InputMemoryCategory::Candidate,
++                OwnedBytesEstimate::default(),
++            )
++            .map_err(io::Error::other)?;
++        let result = Self {
++            active: Arc::new(Mutex::new(ReadMaterial {
++                bytes: 0,
++                records: 0,
++                byte_limit: bytes,
++                record_limit: records,
++                material,
++                failed: false,
++            })),
++        };
++        // The one phase/header allocation, including its original scope address.
++        charge(&result.active, scope.agent_id.len() as u64 + 256, 8, false)?;
++        Ok(result)
++    }
++    pub(crate) fn enter(&self) -> ResourceReadBudget {
++        let previous = ACTIVE.with(|slot| slot.replace(Some(self.active.clone())));
++        ResourceReadBudget {
++            previous,
++            _thread: PhantomData,
++        }
++    }
++    pub(crate) fn finish(&self) -> io::Result<(u64, usize)> {
++        let mut material = self
++            .active
++            .lock()
++            .unwrap_or_else(|error| error.into_inner());
++        if material.failed {
++            return Err(exhausted(&mut material));
++        }
++        Ok((material.bytes, material.records))
++    }
++    pub(crate) fn guard(&self) -> io::Result<Arc<BudgetViewGuard>> {
++        self.finish()?;
++        Ok(self
++            .active
++            .lock()
++            .unwrap_or_else(|error| error.into_inner())
++            .material
++            .guard())
++    }
++}
++impl Drop for ResourceReadBudget {
++    fn drop(&mut self) {
++        ACTIVE.with(|slot| slot.replace(self.previous.take()));
++    }
++}
++fn exhausted(material: &mut ReadMaterial) -> io::Error {
++    material.failed = true;
++    io::Error::other("ResourceExhausted: context resource read material")
++}
++fn charge(
++    active: &Arc<Mutex<ReadMaterial>>,
++    bytes: u64,
++    records: usize,
++    payload: bool,
++) -> io::Result<()> {
++    let mut material = active.lock().unwrap_or_else(|error| error.into_inner());
++    if material.failed {
++        return Err(exhausted(&mut material));
++    }
++    let added = bytes
++        .checked_mul(8)
++        .ok_or_else(|| exhausted(&mut material))?;
++    let next = material
++        .bytes
++        .checked_add(added)
++        .ok_or_else(|| exhausted(&mut material))?;
++    let count = records
++        .checked_mul(8)
++        .and_then(|n| material.records.checked_add(n))
++        .ok_or_else(|| exhausted(&mut material))?;
++    if next > material.byte_limit || count > material.record_limit {
++        return Err(exhausted(&mut material));
++    }
++    material.material.observe_material(
++        if payload { added } else { 0 },
++        if payload { 0 } else { added },
++    );
++    material.bytes = next;
++    material.records = count;
++    Ok(())
++}
++pub(crate) fn read_to_string(path: &Path) -> Option<io::Result<String>> {
++    let active = ACTIVE.with(|slot| slot.borrow().clone())?;
++    Some((|| {
++        charge(
++            &active,
++            (path.as_os_str().len() as u64)
++                .checked_mul(4)
++                .and_then(|n| n.checked_add(512))
++                .ok_or_else(|| io::Error::other("resource path overflow"))?,
++            1,
++            false,
++        )?;
++        let mut file = File::open(path)?;
++        let declared = file.metadata()?.len();
++        let remaining = {
++            let material = active.lock().unwrap_or_else(|error| error.into_inner());
++            material.byte_limit.saturating_sub(material.bytes) / 8
++        };
++        if declared > remaining {
++            return Err(exhausted(
++                &mut active.lock().unwrap_or_else(|error| error.into_inner()),
++            ));
++        }
++        let mut bytes = Vec::new();
++        let mut chunk = [0u8; 8192];
++        loop {
++            let count = file.read(&mut chunk)?;
++            if count == 0 {
++                break;
++            }
++            charge(&active, count as u64, 0, true)?;
++            bytes.extend_from_slice(&chunk[..count]);
++        }
++        String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
++    })())
++}
++pub(crate) fn read_to_end(
++    reader: &mut impl Read,
++    buffer: &mut Vec<u8>,
++) -> Option<io::Result<usize>> {
++    let active = ACTIVE.with(|slot| slot.borrow().clone())?;
++    Some((|| {
++        let before = buffer.len();
++        let mut chunk = [0u8; 8192];
++        loop {
++            let count = reader.read(&mut chunk)?;
++            if count == 0 {
++                break;
++            }
++            charge(&active, count as u64, 0, true)?;
++            buffer.extend_from_slice(&chunk[..count]);
++        }
++        Ok(buffer.len() - before)
++    })())
++}
++pub(crate) struct ResourceReadDir {
++    inner: ReadDir,
++    active: Option<Arc<Mutex<ReadMaterial>>>,
++    stopped: bool,
++}
++impl ResourceReadDir {
++    pub(crate) fn new(inner: ReadDir) -> Self {
++        Self {
++            inner,
++            active: ACTIVE.with(|slot| slot.borrow().clone()),
++            stopped: false,
++        }
++    }
++}
++impl Iterator for ResourceReadDir {
++    type Item = io::Result<DirEntry>;
++    fn next(&mut self) -> Option<Self::Item> {
++        if self.stopped {
++            return None;
++        }
++        if let Some(active) = &self.active {
++            if let Err(error) = charge(active, 8192, 8, false) {
++                self.stopped = true;
++                return Some(Err(error));
++            }
++        }
++        self.inner.next()
++    }
++}
++pub(crate) fn charge_owned_metadata(bytes: u64, records: usize) -> io::Result<()> {
++    let Some(active) = ACTIVE.with(|slot| slot.borrow().clone()) else {
++        return Ok(());
++    };
++    charge(&active, bytes, records, false)
++}
++pub(crate) fn charge_structured_text(text: &str) -> io::Result<()> {
++    let Some(active) = ACTIVE.with(|slot| slot.borrow().clone()) else {
++        return Ok(());
++    };
++    let structural = text
++        .bytes()
++        .filter(|b| {
++            matches!(
++                b,
++                b'=' | b':' | b',' | b'[' | b']' | b'{' | b'}' | b'.' | b'\n'
++            )
++        })
++        .count();
++    let nodes = structural
++        .checked_mul(4)
++        .and_then(|n| n.checked_add(16))
++        .ok_or_else(|| exhausted(&mut active.lock().unwrap_or_else(|error| error.into_inner())))?;
++    let bytes = u64::try_from(nodes)
++        .ok()
++        .and_then(|n| n.checked_mul(256))
++        .ok_or_else(|| exhausted(&mut active.lock().unwrap_or_else(|error| error.into_inner())))?;
++    charge(&active, bytes, nodes, false)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn fixture() -> (InputEvidenceBudgetLedger, InputEvidenceScope) {
++        (
++            InputEvidenceBudgetLedger::new(Default::default()).unwrap(),
++            InputEvidenceScope {
++                agent_id: "resource-read".into(),
++                identity_incarnation: 1,
++            },
++        )
++    }
++    #[test]
++    fn actual_file_allowance_precedes_utf8_and_keeps_original_error_without_a_phase() {
++        let dir = tempfile::tempdir().unwrap();
++        let file = dir.path().join("AGENTS.md");
++        std::fs::write(&file, vec![0xff; 128 * 1024]).unwrap();
++        let (ledger, scope) = fixture();
++        let phase = ResourceReadMaterial::with_limits(&ledger, &scope, 64 * 1024, 1024).unwrap();
++        {
++            let _entry = phase.enter();
++            assert!(crate::diagnostics::io_probe::read_to_string(&file)
++                .unwrap_err()
++                .to_string()
++                .contains("ResourceExhausted"));
++        }
++        assert!(phase.finish().is_err());
++        drop(phase);
++        assert_eq!(ledger.report().unwrap().owned.payload_bytes, 0);
++        assert_eq!(
++            crate::diagnostics::io_probe::read_to_string(&file)
++                .unwrap_err()
++                .kind(),
++            io::ErrorKind::InvalidData
++        );
++    }
++    #[test]
++    fn real_guidance_and_catalog_share_exact_allowance_and_last_guard() {
++        let dir = tempfile::tempdir().unwrap();
++        let home = dir.path();
++        std::fs::write(home.join("AGENTS.md"), "original guidance").unwrap();
++        let root = home.join("skills");
++        std::fs::create_dir_all(root.join("sample")).unwrap();
++        std::fs::write(
++            root.join("sample/SKILL.md"),
++            "---\nname: Sample\ndescription: Original catalog\n---\nbody",
++        )
++        .unwrap();
++        let (ledger, scope) = fixture();
++        let load = |phase: &ResourceReadMaterial| {
++            let _entry = phase.enter();
++            let guidance = crate::agents_md::load_agents_md(None, home, None).unwrap();
++            let catalog =
++                crate::skills::load_catalog_for_scope(crate::types::SkillScope::Agent, &root)
++                    .unwrap();
++            (guidance, catalog)
++        };
++        let measured = ResourceReadMaterial::new(&ledger, &scope).unwrap();
++        let (guidance, catalog) = load(&measured);
++        assert_eq!(
++            guidance.agent_source.as_ref().unwrap().content,
++            "original guidance"
++        );
++        assert_eq!(catalog.len(), 1);
++        let usage = measured.finish().unwrap();
++        drop((guidance, catalog, measured));
++        for limits in [(usage.0 - 1, usage.1), (usage.0, usage.1 - 1)] {
++            let phase =
++                ResourceReadMaterial::with_limits(&ledger, &scope, limits.0, limits.1).unwrap();
++            let result = {
++                let _entry = phase.enter();
++                let guidance = crate::agents_md::load_agents_md(None, home, None);
++                let catalog =
++                    crate::skills::load_catalog_for_scope(crate::types::SkillScope::Agent, &root);
++                (guidance, catalog)
++            };
++            assert!(
++                phase.finish().is_err(),
++                "optional catalog omissions cannot hide a quota error"
++            );
++            drop((result, phase));
++        }
++        let exact = ResourceReadMaterial::with_limits(&ledger, &scope, usage.0, usage.1).unwrap();
++        let values = load(&exact);
++        assert_eq!(exact.finish().unwrap(), usage);
++        let guard = exact.guard().unwrap();
++        let weak = Arc::downgrade(&guard);
++        let clone = guard.clone();
++        drop((values, exact, guard));
++        assert!(weak.upgrade().is_some());
++        drop(clone);
++        assert!(weak.upgrade().is_none());
++        assert_eq!(ledger.report().unwrap().observed_bytes, 0);
++    }
++    #[test]
++    fn one_material_can_resume_sync_reads_without_leaking_tls_across_the_gap() {
++        let dir = tempfile::tempdir().unwrap();
++        let file = dir.path().join("AGENTS.md");
++        std::fs::write(&file, "observed").unwrap();
++        let (ledger, scope) = fixture();
++        let phase = ResourceReadMaterial::new(&ledger, &scope).unwrap();
++        {
++            let _entry = phase.enter();
++            assert_eq!(
++                crate::diagnostics::io_probe::read_to_string(&file).unwrap(),
++                "observed"
++            );
++        }
++        let before = phase.finish().unwrap();
++        assert!(ACTIVE.with(|slot| slot.borrow().is_none()));
++        {
++            let _entry = phase.enter();
++            assert_eq!(
++                crate::diagnostics::io_probe::read_to_string(&file).unwrap(),
++                "observed"
++            );
++        }
++        let after = phase.finish().unwrap();
++        assert!(after.0 > before.0 && after.1 > before.1);
++        drop(phase);
++        assert_eq!(ledger.report().unwrap().observed_bytes, 0);
++    }
++}
+diff --git a/src/diagnostics.rs b/src/diagnostics.rs
+--- a/src/diagnostics.rs
++++ b/src/diagnostics.rs
+@@ -8,6 +8,7 @@
+ 
+ pub mod attribution;
+ pub mod io_probe;
++pub(crate) mod resource_io;
+ 
+ const HISTOGRAM_UPPER_BOUNDS_MS: [u64; 27] = [
+     0,
+diff --git a/src/notes_catalog.rs b/src/notes_catalog.rs
+--- a/src/notes_catalog.rs
++++ b/src/notes_catalog.rs
+@@ -181,6 +181,9 @@
+         // A non-blank character right after `---` (without newline)
+         // means the fence was a substring; treat the file as no
+         // frontmatter to be conservative.
++        return (None, content);
++    }
++    if crate::diagnostics::resource_io::charge_structured_text(block).is_err() {
+         return (None, content);
+     }
+     let parsed = parse_frontmatter_block(block);
+diff --git a/src/projection_eval/baseline.rs b/src/projection_eval/baseline.rs
+--- a/src/projection_eval/baseline.rs
++++ b/src/projection_eval/baseline.rs
+@@ -251,6 +251,7 @@
+         frozen_history_policy: crate::context::ContextHistoryPreparation::default(),
+         frozen_projection_budget: None,
+         frozen_recent_message_limit: None,
++        _resource_read_material: None,
+     }
+ }
+ 
+diff --git a/src/prompt/mod.rs b/src/prompt/mod.rs
+--- a/src/prompt/mod.rs
++++ b/src/prompt/mod.rs
+@@ -98,6 +98,8 @@
+     pub(crate) frozen_history_policy: ContextHistoryPreparation,
+     pub(crate) frozen_projection_budget: Option<usize>,
+     pub(crate) frozen_recent_message_limit: Option<usize>,
++    pub(crate) _resource_read_material:
++        Option<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+ }
+ 
+ #[derive(Debug, Clone)]
+@@ -814,6 +816,7 @@
+         frozen_history_policy: built_context.history_policy,
+         frozen_projection_budget: Some(built_context.projection_budget),
+         frozen_recent_message_limit: Some(built_context.recent_message_limit),
++        _resource_read_material: None,
+     })
+ }
+ 
+@@ -2847,6 +2850,7 @@
+             frozen_history_policy: ContextHistoryPreparation::default(),
+             frozen_projection_budget: None,
+             frozen_recent_message_limit: None,
++            _resource_read_material: None,
+         };
+ 
+         let dump = prompt.render_dump();
+@@ -2926,6 +2930,7 @@
+             frozen_history_policy: ContextHistoryPreparation::default(),
+             frozen_projection_budget: None,
+             frozen_recent_message_limit: None,
++            _resource_read_material: None,
+         };
+ 
+         assert_eq!(prompt.history_reprojection_budget(64), 30);
+@@ -2967,6 +2972,7 @@
+             frozen_history_policy: ContextHistoryPreparation::default(),
+             frozen_projection_budget: None,
+             frozen_recent_message_limit: None,
++            _resource_read_material: None,
+         };
+ 
+         let dump = prompt.render_dump();
+@@ -3033,6 +3039,7 @@
+             frozen_history_policy: ContextHistoryPreparation::default(),
+             frozen_projection_budget: None,
+             frozen_recent_message_limit: None,
++            _resource_read_material: None,
+         };
+ 
+         let dump = prompt.render_dump();
+diff --git a/src/runtime/context_capture.rs b/src/runtime/context_capture.rs
+--- a/src/runtime/context_capture.rs
++++ b/src/runtime/context_capture.rs
+@@ -271,7 +271,13 @@
+             .provider_tool_selection_for_turn(&identity, fallback_model)
+             .await?;
+         let prompt_tools = provider.prompt_tool_specs(&tools);
+-        let skills = self.skills_runtime_view_for_state(state, &identity).await?;
++        let resource_material = crate::diagnostics::resource_io::ResourceReadMaterial::new(
++            &self.inner.input_evidence_budget,
++            &resident.scope,
++        )?;
++        let skills = self
++            .skills_runtime_view_for_state_with_material(state, &identity, Some(&resource_material))
++            .await?;
+ 
+         let acquisition_timer = crate::diagnostics::attribution::CONTEXT_ACQUIRE.start();
+         let (durable, execution, control_revision) = {
+@@ -365,14 +371,19 @@
+             .map_err(|_| anyhow!("context resource observation generation exhausted"))?
+             + 1;
+         let agent_home = self.agent_home();
+-        let snapshot = observe_context_resources(
+-            durable,
+-            &FilesystemContextResources {
+-                data_dir: self.inner.storage.data_dir(),
+-                agent_home: &agent_home,
+-            },
+-            observation,
+-        )?;
++        let snapshot = {
++            let _resource_io = resource_material.enter();
++            let snapshot = observe_context_resources(
++                durable,
++                &FilesystemContextResources {
++                    data_dir: self.inner.storage.data_dir(),
++                    agent_home: &agent_home,
++                },
++                observation,
++            )?;
++            resource_material.finish()?;
++            snapshot
++        };
+         drop(acquisition_timer);
+         #[cfg(test)]
+         if self
+@@ -388,8 +399,13 @@
+                 .notified()
+                 .await;
+         }
+-        let loaded_agents_md = self.loaded_agents_md_for_state(state)?;
+-        let loaded_agent_memory = self.loaded_agent_memory_for_state()?;
++        let (loaded_agents_md, loaded_agent_memory) = {
++            let _resource_io = resource_material.enter();
++            let guidance = self.loaded_agents_md_for_state(state)?;
++            let memory = self.loaded_agent_memory_for_state()?;
++            resource_material.finish()?;
++            (guidance, memory)
++        };
+         anyhow::ensure!(
+             mutation
+                 .capture_context(config.recent_episode_candidates)?
+@@ -410,7 +426,7 @@
+             "prepared context from resident input evidence and explicit remaining domain adapters"
+         );
+         drop(mutation);
+-        build_effective_prompt_from_context_snapshot(
++        let mut prompt = build_effective_prompt_from_context_snapshot(
+             &snapshot,
+             &execution.execution_root,
+             &agent_home,
+@@ -421,7 +437,9 @@
+             ToolPromptContext {
+                 apply_patch_surface: Some(apply_patch_surface),
+             },
+-        )
++        )?;
++        prompt._resource_read_material = Some(resource_material.guard()?);
++        Ok(prompt)
+     }
+ }
+ 
+@@ -1466,3 +1484,63 @@
+         }
+     }
+ }
++
++#[cfg(test)]
++mod resource_read_tests {
++    use super::*;
++    use crate::runtime::tests::support::{context_config, StubProvider};
++
++    #[tokio::test]
++    async fn loaded_context_keeps_one_resource_guard_through_prompt_clones() -> Result<()> {
++        let home = tempfile::tempdir()?;
++        let runtime = RuntimeHandle::new(
++            "resource-prompt",
++            home.path().to_path_buf(),
++            None::<crate::types::WorkspaceEntry>,
++            String::new(),
++            Arc::new(StubProvider::new("unused")),
++            "resource-prompt".into(),
++            context_config(),
++        )?;
++        // Fixture resources are local, independent of the machine's skill catalog.
++        let mut config = (*runtime.inner.config_snapshot.load_full()).clone();
++        config.user_home_dir = None;
++        runtime.inner.config_snapshot.store(Arc::new(config));
++        std::fs::write(home.path().join("AGENTS.md"), "original bounded guidance")?;
++        std::fs::create_dir_all(home.path().join("skills/sample"))?;
++        std::fs::write(
++            home.path().join("skills/sample/SKILL.md"),
++            "---\nname: Sample\ndescription: bounded catalog\n---\nbody",
++        )?;
++        let prompt = runtime
++            .preview_prompt("inspect".into(), AuthorityClass::OperatorInstruction)
++            .await?;
++        assert_eq!(
++            prompt
++                .loaded_agents_md
++                .agent_source
++                .as_ref()
++                .unwrap()
++                .content,
++            "original bounded guidance"
++        );
++        let weak = Arc::downgrade(
++            prompt
++                ._resource_read_material
++                .as_ref()
++                .expect("actual loaded resource material"),
++        );
++        let clone = prompt.clone();
++        drop(prompt);
++        assert!(weak.upgrade().is_some());
++        assert!(clone
++            .rendered_system_prompt
++            .contains("original bounded guidance"));
++        drop(clone);
++        assert!(
++            weak.upgrade().is_none(),
++            "the final prompt releases its original file material"
++        );
++        Ok(())
++    }
++}
+diff --git a/src/runtime/provider_turn.rs b/src/runtime/provider_turn.rs
+--- a/src/runtime/provider_turn.rs
++++ b/src/runtime/provider_turn.rs
+@@ -745,6 +745,7 @@
+             frozen_history_policy: crate::context::ContextHistoryPreparation::default(),
+             frozen_projection_budget: None,
+             frozen_recent_message_limit: None,
++            _resource_read_material: None,
+         }
+     }
+ 
+@@ -836,6 +837,7 @@
+             frozen_history_policy: crate::context::ContextHistoryPreparation::default(),
+             frozen_projection_budget: None,
+             frozen_recent_message_limit: None,
++            _resource_read_material: None,
+         };
+ 
+         let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, true);
+diff --git a/src/runtime/tests/agent_and_tools.rs b/src/runtime/tests/agent_and_tools.rs
+--- a/src/runtime/tests/agent_and_tools.rs
++++ b/src/runtime/tests/agent_and_tools.rs
+@@ -1525,6 +1525,7 @@
+         frozen_history_policy: crate::context::ContextHistoryPreparation::default(),
+         frozen_projection_budget: None,
+         frozen_recent_message_limit: None,
++        _resource_read_material: None,
+     };
+ 
+     assert_eq!(
+diff --git a/src/runtime/tests/support.rs b/src/runtime/tests/support.rs
+--- a/src/runtime/tests/support.rs
++++ b/src/runtime/tests/support.rs
+@@ -331,6 +331,7 @@
+         frozen_history_policy: crate::context::ContextHistoryPreparation::default(),
+         frozen_projection_budget: None,
+         frozen_recent_message_limit: None,
++        _resource_read_material: None,
+     }
+ }
+ 
+diff --git a/src/runtime.rs b/src/runtime.rs
+--- a/src/runtime.rs
++++ b/src/runtime.rs
+@@ -3732,6 +3732,16 @@
+         state: &AgentState,
+         identity: &AgentIdentityView,
+     ) -> Result<SkillsRuntimeView> {
++        self.skills_runtime_view_for_state_with_material(state, identity, None)
++            .await
++    }
++
++    async fn skills_runtime_view_for_state_with_material(
++        &self,
++        state: &AgentState,
++        identity: &AgentIdentityView,
++        material: Option<&crate::diagnostics::resource_io::ResourceReadMaterial>,
++    ) -> Result<SkillsRuntimeView> {
+         let skill_roots = effective_skill_root_registrations(
+             self.skill_visibility(identity),
+             self.user_home().as_deref(),
+@@ -3745,6 +3755,7 @@
+         let mut view = if let Some(bridge) = self.inner.host_bridge.as_ref() {
+             let registry = bridge.skills_registry()?;
+             let mut registry = registry.write().await;
++            let _resource_io = material.map(|material| material.enter());
+             registry.sync_effective_roots(skill_roots.clone())?;
+             skills_runtime_view_from_catalog(
+                 registry.catalog_for_roots(&skill_roots, None),
+@@ -3752,14 +3763,19 @@
+                 &state.active_skills,
+             )
+         } else {
++            let _resource_io = material.map(|material| material.enter());
+             let mut registry = crate::skills::SkillsRegistry::new();
+             registry.replace_roots(skill_roots.clone())?;
+             skills_runtime_view_from_catalog(registry.catalog(), &skill_roots, &state.active_skills)
+         };
++        let _resource_io = material.map(|material| material.enter());
+         view.agent_templates_catalog = discover_agent_templates_catalog(
+             self.user_home().as_deref(),
+             self.agent_home().as_path(),
+         );
++        if let Some(material) = material {
++            material.finish()?;
++        }
+         Ok(view)
+     }
+ 
+diff --git a/src/skills/base.rs b/src/skills/base.rs
+--- a/src/skills/base.rs
++++ b/src/skills/base.rs
+@@ -211,6 +211,7 @@
+         let description = parsed
+             .description
+             .unwrap_or_else(|| first_body_paragraph(&content));
++        crate::diagnostics::resource_io::charge_owned_metadata(1024, 12)?;
+         entries.push(SkillCatalogEntry {
+             skill_id: format!("{root_id}:{skill_name}"),
+             root_id: root_id.clone(),
+diff --git a/src/skills/registry.rs b/src/skills/registry.rs
+--- a/src/skills/registry.rs
++++ b/src/skills/registry.rs
+@@ -250,6 +250,7 @@
+             } else {
+                 None
+             };
++            crate::diagnostics::resource_io::charge_owned_metadata(512, 8).ok()?;
+             children.push(RootChildFingerprint {
+                 path: child_path,
+                 kind,

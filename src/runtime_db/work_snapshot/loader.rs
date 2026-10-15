@@ -70,7 +70,9 @@ pub(crate) fn prepare_work_domain_snapshot_with_budget_tx(
     )?;
     if let WorkBootstrapSnapshot::Current(current) = &mut snapshot {
         current.material_usage = material.usage();
-        current.material_views = material.into_guards();
+        let (guards, original_host_material) = material.into_original_parts();
+        current.material_views = guards;
+        current.original_host_material = original_host_material;
     }
     Ok(snapshot)
 }
@@ -529,6 +531,7 @@ fn load(
             owning_input_roots,
             material_usage: material.as_deref().map_or((0, 0), WorkReadMaterial::usage),
             material_views: Vec::new(),
+            original_host_material: Vec::new(),
         },
     )))
 }

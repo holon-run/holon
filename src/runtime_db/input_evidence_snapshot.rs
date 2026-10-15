@@ -37,7 +37,9 @@ pub(in crate::runtime_db) mod tool_run_report;
 
 #[path = "input_native_birth.rs"]
 pub(in crate::runtime_db) mod native_birth;
-pub(crate) use native_birth::CommittedInputQueryAdvance;
+pub(crate) use native_birth::{CommittedInputQueryAdvance,CommittedInputQueryPublication};
+#[cfg(test)]
+pub(crate) use native_birth::exercise_original_publication_for_fixture;
 
 #[path = "input_query_source.rs"]
 mod query_source;

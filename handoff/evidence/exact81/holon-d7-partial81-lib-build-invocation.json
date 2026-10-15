@@ -1,0 +1,15 @@
+{
+  "source_manifest": "/private/tmp/holon-d7-partial81-source.json",
+  "patch_sha256": "d5296504200a1e28c0780c48f3c8acf1f9475e5b320932baa619db9c39026294",
+  "cwd": "/private/tmp/holon-d5-compile-check-20261013-0332",
+  "command": [
+    "cargo",
+    "test",
+    "--lib",
+    "--no-run",
+    "--message-format=json"
+  ],
+  "rustflags": null,
+  "default_stack": true,
+  "validation": "library test build only; no native execution"
+}

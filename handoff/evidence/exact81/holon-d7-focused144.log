@@ -1,0 +1,139 @@
+
+running 1 test
+Error: cold child domains belong to another original scope or ledger
+
+Caused by:
+    0: cold child domains belong to another original scope or ledger
+    1: invalid memory budget input: owned material allocation absent
+
+Stack backtrace:
+   0: std::backtrace_rs::backtrace::libunwind::trace
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/../../backtrace/src/backtrace/libunwind.rs:117:9
+   1: std::backtrace_rs::backtrace::trace_unsynchronized::<<std::backtrace::Backtrace>::create::{closure#0}>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/../../backtrace/src/backtrace/mod.rs:66:14
+   2: <std::backtrace::Backtrace>::create
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/backtrace.rs:331:13
+   3: <std::backtrace::Backtrace>::capture
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/backtrace.rs:296:9
+   4: <holon::runtime::input_evidence_budget::InputEvidenceBudgetError as anyhow::context::ext::StdError>::ext_context::<holon::runtime_db::cold_child_domains::ColdChildReadError>
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anyhow-1.0.102/src/backtrace.rs:10:14
+   5: <core::result::Result<(), holon::runtime::input_evidence_budget::InputEvidenceBudgetError> as anyhow::Context<(), holon::runtime::input_evidence_budget::InputEvidenceBudgetError>>::context::<holon::runtime_db::cold_child_domains::ColdChildReadError>
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anyhow-1.0.102/src/context.rs:54:37
+   6: <holon::runtime_db::cold_child_domains::ColdChildDomains>::validate_accounting
+             at ./src/runtime_db/cold_child_domains.rs:111:18
+   7: holon::runtime_db::cold_child_domains::prepare_cold_child_domains_tx
+             at ./src/runtime_db/cold_child_domains.rs:420:12
+   8: holon::runtime::cold_child_domains_tests::cold_child_actual_qualified_domains_share_state_view_and_keep_original_guards_without_ready_install::{closure#0}::{closure#0}
+             at ./src/runtime/cold_child_domains_tests.rs:88:27
+   9: <holon::runtime_db::write_queue::RuntimeDbWriterState>::append_wait_with_context::<holon::runtime_db::cold_child_domains::ColdChildDomains, holon::runtime::cold_child_domains_tests::cold_child_actual_qualified_domains_share_state_view_and_keep_original_guards_without_ready_install::{closure#0}::{closure#0}>::{closure#1}
+             at ./src/runtime_db/write_queue.rs:414:22
+  10: holon::runtime_db::connection::run_transaction_on_connection::<holon::runtime_db::cold_child_domains::ColdChildDomains, <holon::runtime_db::write_queue::RuntimeDbWriterState>::append_wait_with_context<holon::runtime_db::cold_child_domains::ColdChildDomains, holon::runtime::cold_child_domains_tests::cold_child_actual_qualified_domains_share_state_view_and_keep_original_guards_without_ready_install::{closure#0}::{closure#0}>::{closure#1}>
+             at ./src/runtime_db/connection.rs:577:11
+  11: <holon::runtime_db::write_queue::RuntimeDbWriterState>::append_wait_with_context::<holon::runtime_db::cold_child_domains::ColdChildDomains, holon::runtime::cold_child_domains_tests::cold_child_actual_qualified_domains_share_state_view_and_keep_original_guards_without_ready_install::{closure#0}::{closure#0}>
+             at ./src/runtime_db/write_queue.rs:408:26
+  12: <holon::runtime_db::write_queue::RuntimeDbWriterState>::append_wait::<holon::runtime_db::cold_child_domains::ColdChildDomains, holon::runtime::cold_child_domains_tests::cold_child_actual_qualified_domains_share_state_view_and_keep_original_guards_without_ready_install::{closure#0}::{closure#0}>
+             at ./src/runtime_db/write_queue.rs:382:14
+  13: <holon::runtime_db::write_queue::RuntimeDbWriter>::append_wait::<holon::runtime_db::cold_child_domains::ColdChildDomains, holon::runtime::cold_child_domains_tests::cold_child_actual_qualified_domains_share_state_view_and_keep_original_guards_without_ready_install::{closure#0}::{closure#0}>
+             at ./src/runtime_db/write_queue.rs:244:20
+  14: <holon::runtime_db::RuntimeDb>::transaction::<holon::runtime_db::cold_child_domains::ColdChildDomains, holon::runtime::cold_child_domains_tests::cold_child_actual_qualified_domains_share_state_view_and_keep_original_guards_without_ready_install::{closure#0}::{closure#0}>
+             at ./src/runtime_db/mod.rs:958:21
+  15: holon::runtime::cold_child_domains_tests::cold_child_actual_qualified_domains_share_state_view_and_keep_original_guards_without_ready_install::{closure#0}
+             at ./src/runtime/cold_child_domains_tests.rs:88:10
+  16: <core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>> as core::future::future::Future>::poll
+             at /Users/jolestar/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/future/future.rs:133:9
+  17: <core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>> as core::future::future::Future>::poll
+             at /Users/jolestar/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/future/future.rs:133:9
+  18: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}::{closure#0}::{closure#0}
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:830:70
+  19: tokio::task::coop::with_budget::<core::task::poll::Poll<core::result::Result<(), anyhow::Error>>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:167:5
+  20: tokio::task::coop::budget::<core::task::poll::Poll<core::result::Result<(), anyhow::Error>>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:133:5
+  21: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}::{closure#0}
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:830:25
+  22: <tokio::runtime::scheduler::current_thread::Context>::enter::<core::task::poll::Poll<core::result::Result<(), anyhow::Error>>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}::{closure#0}>
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:488:19
+  23: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:829:44
+  24: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}, core::option::Option<core::result::Result<(), anyhow::Error>>>::{closure#0}
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:68
+  25: <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<<tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}, core::option::Option<core::result::Result<(), anyhow::Error>>>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<core::result::Result<(), anyhow::Error>>)>
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/scoped.rs:40:9
+  26: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<core::result::Result<(), anyhow::Error>>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}, core::option::Option<core::result::Result<(), anyhow::Error>>>::{closure#0}>::{closure#0}
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:38
+  27: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::try_with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<core::result::Result<(), anyhow::Error>>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}, core::option::Option<core::result::Result<(), anyhow::Error>>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<core::result::Result<(), anyhow::Error>>)>
+             at /Users/jolestar/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/std/src/thread/local.rs:463:12
+  28: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<core::result::Result<(), anyhow::Error>>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}, core::option::Option<core::result::Result<(), anyhow::Error>>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<core::result::Result<(), anyhow::Error>>)>
+             at /Users/jolestar/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/std/src/thread/local.rs:427:20
+  29: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<core::result::Result<(), anyhow::Error>>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}, core::option::Option<core::result::Result<(), anyhow::Error>>>::{closure#0}>
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:17
+  30: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>::{closure#0}, core::option::Option<core::result::Result<(), anyhow::Error>>>
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:27
+  31: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>>
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:817:24
+  32: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>::{closure#0}
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:218:33
+  33: tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::current_thread::CurrentThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>::{closure#0}, core::result::Result<(), anyhow::Error>>
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/runtime.rs:65:16
+  34: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:206:9
+  35: <tokio::runtime::runtime::Runtime>::block_on_inner::<core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:374:52
+  36: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = core::result::Result<(), anyhow::Error>>>>
+             at /Users/jolestar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:343:18
+  37: holon::runtime::cold_child_domains_tests::cold_child_actual_qualified_domains_share_state_view_and_keep_original_guards_without_ready_install
+             at ./src/runtime/cold_child_domains_tests.rs:148:7
+  38: holon::runtime::cold_child_domains_tests::cold_child_actual_qualified_domains_share_state_view_and_keep_original_guards_without_ready_install::{closure#0}
+             at ./src/runtime/cold_child_domains_tests.rs:78:6
+  39: <holon::runtime::cold_child_domains_tests::cold_child_actual_qualified_domains_share_state_view_and_keep_original_guards_without_ready_install::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /Users/jolestar/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+  40: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+  41: test::__rust_begin_short_backtrace::<core::result::Result<(), alloc::string::String>, fn() -> core::result::Result<(), alloc::string::String>>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/test/src/lib.rs:724:18
+  42: test::run_test_in_process::{closure#0}
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/test/src/lib.rs:747:74
+  43: <core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panic/unwind_safe.rs:275:9
+  44: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}>, core::result::Result<(), alloc::string::String>>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:576:43
+  45: std::panicking::catch_unwind::<core::result::Result<(), alloc::string::String>, core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}>>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:544:19
+  46: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}>, core::result::Result<(), alloc::string::String>>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panic.rs:359:14
+  47: test::run_test_in_process
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/test/src/lib.rs:747:27
+  48: test::run_test::{closure#0}
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/test/src/lib.rs:668:43
+  49: test::run_test::{closure#1}
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/test/src/lib.rs:698:41
+  50: std::sys::backtrace::__rust_begin_short_backtrace::<test::run_test::{closure#1}, ()>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/sys/backtrace.rs:166:18
+  51: std::thread::lifecycle::spawn_unchecked::<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/thread/lifecycle.rs:70:13
+  52: <core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/panic/unwind_safe.rs:275:9
+  53: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:576:43
+  54: std::panicking::catch_unwind::<(), core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panicking.rs:544:19
+  55: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/panic.rs:359:14
+  56: std::thread::lifecycle::spawn_unchecked::<test::run_test::{closure#1}, ()>::{closure#1}
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/thread/lifecycle.rs:68:26
+  57: <std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/core/src/ops/function.rs:250:5
+  58: <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/alloc/src/boxed.rs:2319:9
+  59: <std::sys::thread::unix::Thread>::new::thread_start
+             at /rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library/std/src/sys/thread/unix.rs:123:17
+  60: __pthread_cond_wait
+test runtime::cold_child_domains_tests::cold_child_actual_qualified_domains_share_state_view_and_keep_original_guards_without_ready_install ... FAILED
+
+failures:
+
+failures:
+    runtime::cold_child_domains_tests::cold_child_actual_qualified_domains_share_state_view_and_keep_original_guards_without_ready_install
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5947 filtered out; finished in 0.83s
+
