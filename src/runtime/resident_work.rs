@@ -119,7 +119,10 @@ impl QualifiedWorkRecord {
             "qualified Work record revision/digest invalid"
         );
         ensure!(
-            self.resident_bytes >= serde_json::to_vec(&self.record)?.len(),
+            self.resident_bytes
+                >= usize::try_from(super::input_evidence_budget::serialized_bytes(
+                    &self.record
+                )?)?,
             "qualified Work body estimate is incomplete"
         );
         Ok(())
@@ -1255,6 +1258,35 @@ mod tests {
             record,
         })
     }
+    #[test]
+    fn encoded_body_floor_preserves_escaped_exact_and_one_byte_short_boundaries() -> Result<()> {
+        let mut record = Arc::try_unwrap(qualified("escaped-floor", WorkItemState::Open, 1))
+            .expect("test fact has one holder");
+        let CanonicalWorkRecord::Work(work) = &mut record.record else {
+            unreachable!()
+        };
+        work.objective = "line\n\t\"\u{0000}中😀\\".repeat(32);
+        let original_encoded = serde_json::to_vec(&record.record)?.len();
+        record.resident_bytes = original_encoded;
+        record.validate(&scope())?;
+        record.resident_bytes = original_encoded - 1;
+        assert!(record
+            .validate(&scope())
+            .unwrap_err()
+            .to_string()
+            .contains("body estimate is incomplete"));
+        record.resident_bytes = original_encoded + 1;
+        record.validate(&scope())?;
+        let mut foreign = scope();
+        foreign.identity_incarnation += 1;
+        assert!(record
+            .validate(&foreign)
+            .unwrap_err()
+            .to_string()
+            .contains("scope/key mismatch"));
+        Ok(())
+    }
+
     fn coverage(records: &[Arc<QualifiedWorkRecord>], revision: u64) -> WorkCoverage {
         let mut value = WorkCoverage {
             revision,

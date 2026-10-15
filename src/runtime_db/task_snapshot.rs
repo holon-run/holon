@@ -215,7 +215,9 @@ impl StoredTask {
                 content_digest: self.digest(),
                 projection_digest: self.projection_digest.clone(),
             },
-            resident_bytes: serde_json::to_vec(&self.fact)?.len(),
+            resident_bytes: usize::try_from(
+                crate::runtime::input_evidence_budget::serialized_bytes(&self.fact)?,
+            )?,
             fact: self.fact.clone(),
         });
         fact.validate(scope)?;

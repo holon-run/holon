@@ -181,7 +181,8 @@ impl QualifiedTaskFact {
             "Task fact locator invalid"
         );
         ensure!(
-            self.resident_bytes >= serde_json::to_vec(&self.fact)?.len(),
+            self.resident_bytes
+                >= usize::try_from(super::input_evidence_budget::serialized_bytes(&self.fact)?)?,
             "Task fact body estimate incomplete"
         );
         Ok(())

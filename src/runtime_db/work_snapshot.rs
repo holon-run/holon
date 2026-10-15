@@ -160,7 +160,9 @@ impl StoredRecord {
             key: self.record.key(),
             revision,
             content_digest: self.digest(),
-            resident_bytes: serde_json::to_vec(&self.record)?.len(),
+            resident_bytes: usize::try_from(
+                crate::runtime::input_evidence_budget::serialized_bytes(&self.record)?,
+            )?,
             record: self.record.clone(),
         });
         result.validate(scope)?;
