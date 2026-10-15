@@ -13,17 +13,17 @@ pub(crate) const BATCH_HEADER: &str =
     "Current input batch (receive order; each item retains its own authority and reply route):\n";
 
 #[derive(Debug, Clone, PartialEq)]
-struct SenderScope {
-    sender: String,
-    principal_kind: crate::types::AgentMessagePrincipalKind,
-    origin: MessageOrigin,
-    authority: AuthorityClass,
-    surface: Option<crate::types::MessageDeliverySurface>,
-    admission: Option<crate::types::AdmissionContext>,
+pub(super) struct SenderScope {
+    pub(super) sender: String,
+    pub(super) principal_kind: crate::types::AgentMessagePrincipalKind,
+    pub(super) origin: MessageOrigin,
+    pub(super) authority: AuthorityClass,
+    pub(super) surface: Option<crate::types::MessageDeliverySurface>,
+    pub(super) admission: Option<crate::types::AdmissionContext>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum InputScope {
+pub(super) enum InputScope {
     ReceiverOwner(String),
     AgentLifecycle(String),
     Sender(SenderScope),
@@ -68,7 +68,10 @@ fn mixed_result_capacity(
     admitted_results + results
 }
 
-fn item_evidence(message: &MessageEnvelope, limit: usize) -> Result<Option<IdleInputBatchItem>> {
+pub(super) fn item_evidence(
+    message: &MessageEnvelope,
+    limit: usize,
+) -> Result<Option<IdleInputBatchItem>> {
     let source_ref = format!("message:{}", message.id);
     let provenance = serde_json::to_string(&serde_json::json!({
         "id": message.id,
@@ -130,6 +133,60 @@ pub(crate) fn render_batch(batch: &IdleInputBatchRecord) -> String {
         text.push_str(&item.rendered);
     }
     text
+}
+
+pub(crate) fn render_recovered_operator_inputs(
+    storage: &AppStorage,
+    turn: &TurnRecord,
+    seen_messages: &mut std::collections::BTreeSet<String>,
+) -> Result<Option<String>> {
+    if turn.replay.is_none() || turn.live_input_batches.is_empty() {
+        return Ok(None);
+    }
+    let batched: std::collections::BTreeSet<_> = turn
+        .idle_input_batch
+        .iter()
+        .flat_map(|batch| &batch.items)
+        .chain(
+            turn.live_input_batches
+                .iter()
+                .flat_map(|batch| &batch.items),
+        )
+        .map(|item| &item.message_id)
+        .collect();
+    let mut parts = Vec::new();
+    for id in &turn.input_message_ids {
+        if batched.contains(id)
+            || seen_messages.contains(id)
+            || turn
+                .trigger
+                .as_ref()
+                .and_then(|trigger| trigger.message_id.as_ref())
+                == Some(id)
+        {
+            continue;
+        }
+        let Some(message) = storage.read_message_by_id(id)? else {
+            continue;
+        };
+        if message.agent_id != turn.agent_id
+            || !scheduler::is_operator_interjection_message(&message)
+        {
+            continue;
+        }
+        // Only the recovery transition may restore these independent input IDs.
+        // Keep their complete envelope provenance without inventing a live batch.
+        let mut provenance = serde_json::to_value(&message)?;
+        provenance.as_object_mut().unwrap().remove("body");
+        parts.push(format!(
+            "Recovered operator interjection (original admission and provenance):\nsource_ref: message:{}\nprovenance: {}\nbody:\n{}\n",
+            message.id,
+            serde_json::to_string(&provenance)?,
+            message_text(&message.body),
+        ));
+        seen_messages.insert(id.clone());
+    }
+    Ok((!parts.is_empty()).then(|| parts.join("\n")))
 }
 
 #[cfg(test)]
@@ -206,12 +263,34 @@ impl RuntimeHandle {
         &self,
         queue: &crate::queue::RuntimeQueue,
     ) -> Result<Option<String>> {
+        let mut result_anchor: Option<String> = None;
         for message in queue.input_snapshot(INPUT_BATCH_SCAN) {
             if message.priority == Priority::Interject
                 || message.authority_class == AuthorityClass::OperatorInstruction
-                || message.delivery_surface == Some(MessageDeliverySurface::TaskRejoin)
             {
                 break;
+            }
+            if message.delivery_surface == Some(MessageDeliverySurface::TaskRejoin) {
+                let Some(anchor) = self
+                    .inner
+                    .runtime_db
+                    .task_result_settlements()
+                    .interrupted_admitted_result_anchor(
+                        &message.agent_id,
+                        &message.id,
+                        self.now(),
+                    )?
+                else {
+                    break;
+                };
+                if result_anchor.as_ref().is_some_and(|prior| prior != &anchor) {
+                    break;
+                }
+                if anchor == message.id {
+                    return Ok(Some(anchor));
+                }
+                result_anchor = Some(anchor);
+                continue;
             }
             if self
                 .inner
@@ -223,6 +302,12 @@ impl RuntimeHandle {
                     .idle_batch_source_turn(&message.agent_id, &message.id)?
                     .is_some()
             {
+                if result_anchor
+                    .as_ref()
+                    .is_some_and(|anchor| anchor != &message.id)
+                {
+                    break;
+                }
                 return Ok(Some(message.id));
             }
         }
@@ -230,7 +315,7 @@ impl RuntimeHandle {
     }
 
     /// Receiver bindings precede sender fallback; invalid bindings never fall back.
-    fn idle_input_scope(&self, message: &MessageEnvelope) -> Result<Option<InputScope>> {
+    pub(super) fn idle_input_scope(&self, message: &MessageEnvelope) -> Result<Option<InputScope>> {
         if message.kind == MessageKind::TaskResult {
             let Some(record) = self
                 .inner
@@ -828,6 +913,81 @@ impl RuntimeHandle {
             }),
         ))?;
         Ok(!admitted.is_empty())
+    }
+
+    /// Restore durable live evidence before any idle-start selection can claim input.
+    pub(super) async fn recover_interrupted_live_inputs(
+        &self,
+        anchor: &MessageEnvelope,
+    ) -> Result<bool> {
+        let guard = self.inner.agent.lock().await;
+        let expected = &guard.state;
+        let Some(binding) = expected.current_execution_binding.as_ref() else {
+            return Ok(false);
+        };
+        let Some(activation_id) = binding.activation_id.as_deref() else {
+            return Ok(false);
+        };
+        if expected.status != AgentStatus::AwakeRunning
+            || binding.source_message_id != anchor.id
+            || expected.current_turn_id.as_deref() != Some(binding.turn_id.as_str())
+            || !matches!(
+                binding.admission_provenance.as_ref(),
+                Some(ExecutionAdmissionProvenance::Canonical {
+                    activation_id: provenance_id, ..
+                }) if provenance_id == activation_id
+            )
+            || guard
+                .current_run_abort
+                .as_ref()
+                .is_some_and(|abort| abort.token.is_cancelled())
+        {
+            return Ok(false);
+        }
+        let Some(execution) = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized(&anchor.agent_id)?
+        else {
+            return Ok(false);
+        };
+        let Some(attempt) = execution.attempts.get(activation_id).filter(|attempt| {
+            attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
+                && attempt.agent_id == anchor.agent_id
+                && attempt.source_message_id.as_deref() == Some(anchor.id.as_str())
+                && attempt.recovery_of_attempt_id.is_some()
+        }) else {
+            return Ok(false);
+        };
+        let Some(turn) = self.inner.storage.read_turn_by_id(&binding.turn_id)? else {
+            return Ok(false);
+        };
+        let Some(replay) = turn.replay.as_ref() else {
+            return Ok(false);
+        };
+        let Some(predecessor) = self.inner.storage.read_turn_by_id(&replay.source_turn_id)? else {
+            return Ok(false);
+        };
+        if predecessor.live_input_batches.is_empty() {
+            return Ok(false);
+        }
+        let commit = self
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_live_input_recovery(
+                attempt,
+                &turn,
+                &predecessor,
+                self.take_transition_fault(),
+            )?;
+        if !commit.applied {
+            bail!("live input recovery does not match canonical predecessor evidence");
+        }
+        drop(guard);
+        self.apply_transition_commit(commit).await;
+        Ok(true)
     }
 
     /// Called once, after canonical turn start and before the first provider request.

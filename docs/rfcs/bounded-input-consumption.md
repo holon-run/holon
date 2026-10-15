@@ -114,6 +114,10 @@ queue settlement resolves that stamp through a bounded durable replay chain;
 each intermediate turn must retain the same agent, source message, and owner.
 Missing intermediate turns, foreign bindings, and cyclic lineage fail closed.
 
+Provider fallback carries input evidence from the complete bounded, validated
+turn lineage in original order, deduplicated by message identity, without
+readmitting sources or migrating their ownership or settlement identities.
+
 ## Replies and forwarding
 
 `SendAgentMessage.reply_context_id` selects a runtime-provided, durably admitted
@@ -161,6 +165,50 @@ invent a request. Unconsumed inputs retain their subsequent delivery path.
 Terminal transitions and `WaitFor`/`CompleteWorkItem` pending-report stages stop
 new attachment. Later results use existing continuation/reentry; they cannot
 reopen the old turn or override its report binding.
+
+### Live attachment transaction
+
+P2 uses a separate durable live batch, never an enlarged idle-start batch.
+Each batch records its current canonical ledger activation, immutable safe point
+(original attachment activation and attempt-local target provider round), fixed
+cutoff, exact settlement identities, source evidence, and rendered byte budget.
+The source's same-parent grant is checked against the durable task's rejoin
+fence, not an envelope's claimed turn or the current focus. Reply-wait results
+retain the original reply body and independent grants for each waiter.
+
+Source revalidation and admission, queue/delivery consumption, the agent-state
+CAS, turn attachment, transcript, and audit commit atomically. A competing claim
+or stale execution cannot leave an admitted result without its attachment.
+New admission is bounded before claiming by both the live-batch budget and the
+next request's context/round capacity. Already-admitted evidence is replayed from
+the durable snapshot, not clipped by the idle pending-results display limit.
+Recovery preserves the predecessor's source identities and budgets; it does not
+grant new inputs merely because an old attempt has closed or disappeared.
+Recovery rebinds the ledger activation atomically, but preserves each batch's
+original safe point and all predecessor snapshots. New batches use the current
+attempt's actual provider-round ordinal, not an offset from inherited rounds.
+Both boundaries targeting the same request share one attempt-scoped safe point;
+a recovered attempt's round two cannot collide with its predecessor's round two.
+Context deduplication uses that immutable identity, and the four-batch, 32-identity,
+96-KiB cumulative budget includes all inherited batches across every attempt.
+Bootstrap closes the canonical attached turn with the interrupted queue/attempt
+transition, not an ingress turn selected by its envelope ID. Retained queue
+claims recover the validated interrupted lineage leaf rather than the original
+attempt. Direct predecessor selection accepts canonical live or idle attachment;
+invalid or ambiguous attachment cannot fall back to an ingress turn. Only a
+predecessor without any attachment retains the older P1 envelope fallback.
+An attached recovery ancestor requires an explicit interrupted turn terminal.
+A legacy batchless ancestor may lack that terminal only when an interrupted
+attempt and the exact persisted successor replay edge identify it; any existing
+non-interrupted terminal remains ineligible.
+This does not relax the existing bounded-replay policy for non-lifecycle
+attempts. An already-admitted
+notification may yield only to its own interrupted anchor after canonical
+source validation; independent rejoin, operator, and exact-waiter barriers remain.
+Initial result identities come from that activation's admission ledger, while
+live identities also require membership in its persisted batch.
+Recovery follows the persisted successor replay edge; claim-local envelope
+annotations are not immutable source evidence.
 
 ## Ordinary wake hints and external events
 

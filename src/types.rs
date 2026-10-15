@@ -2401,6 +2401,9 @@ pub struct TurnRecord {
     /// Source-neutral, durable evidence for the idle-start input snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_input_batch: Option<IdleInputBatchRecord>,
+    /// Source-specific safe-point admissions, separate from the idle snapshot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub live_input_batches: Vec<LiveInputBatchRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_execution_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2437,6 +2440,7 @@ impl TurnRecord {
             trigger: None,
             input_message_ids: Vec::new(),
             idle_input_batch: None,
+            live_input_batches: Vec::new(),
             tool_execution_ids: Vec::new(),
             produced_brief_ids: Vec::new(),
             delivery_summary_ids: Vec::new(),
@@ -2483,6 +2487,49 @@ pub struct IdleInputBatchItem {
     pub message_id: String,
     pub source_ref: String,
     pub rendered: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct LiveInputBatchRecord {
+    /// Current ledger binding; recovery may rebind admission without changing its safe point.
+    pub activation_id: String,
+    pub safe_point: LiveInputSafePoint,
+    pub cutoff: DateTime<Utc>,
+    pub max_items: usize,
+    pub max_bytes: usize,
+    pub rendered_bytes: usize,
+    pub result_identities: Vec<String>,
+    pub ordinary_message_ids: Vec<String>,
+    pub items: Vec<IdleInputBatchItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LiveInputSafePoint {
+    /// Original attachment attempt, retained across recovery.
+    pub activation_id: String,
+    pub provider_round: usize,
+}
+
+impl LiveInputSafePoint {
+    pub(crate) fn new(activation_id: impl Into<String>, provider_round: usize) -> Self {
+        Self {
+            activation_id: activation_id.into(),
+            provider_round,
+        }
+    }
+}
+
+impl LiveInputBatchRecord {
+    pub(crate) const HEADER: &'static str =
+        "Current live input batch (receive order; original authority and reply routes preserved):\n";
+
+    pub(crate) fn rendered_text(&self) -> String {
+        let mut text = String::from(Self::HEADER);
+        for item in &self.items {
+            text.push_str(&item.rendered);
+        }
+        text
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

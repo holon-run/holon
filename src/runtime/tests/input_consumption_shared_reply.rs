@@ -641,7 +641,11 @@ async fn p1_shared_reply_restart_replays_admitted_identities_before_fresh_source
         .collect::<BTreeSet<_>>();
     assert_eq!(previous.len(), 7);
     assert!(provider.requests.lock().await.is_empty());
-    harness.advance(std::time::Duration::from_secs(1)).await;
+    let after_turn_creation = (original_turn.created_at - harness.now())
+        .to_std()
+        .unwrap_or_default()
+        + std::time::Duration::from_secs(1);
+    harness.advance(after_turn_creation).await;
     let late = reply(
         harness.runtime(),
         Some(&work),
@@ -655,6 +659,27 @@ async fn p1_shared_reply_restart_replays_admitted_identities_before_fresh_source
         .recover_scheduler_bootstrap_claims()
         .await
         .unwrap();
+    let interrupted_turn = harness
+        .runtime()
+        .storage()
+        .read_turn_by_id(&original_turn.turn_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        interrupted_turn.terminal.as_ref().unwrap().kind,
+        TurnTerminalKind::Interrupted
+    );
+    let execution = harness
+        .runtime()
+        .runtime_db()
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        execution.attempts[original_activation].state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+    );
     let batch = process_next(harness.runtime())
         .await
         .expect("interrupted source must resume");

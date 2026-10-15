@@ -230,12 +230,28 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let selected = select_queue_message(queue, waits);
         if selected.1
             || selected.0.is_none_or(|message| {
-                !crate::wake_contract::is_agent_message(message)
-                    || message.priority == Priority::Interject
+                message.priority == Priority::Interject
                     || message.authority_class == AuthorityClass::OperatorInstruction
             })
         {
             return Ok(selected);
+        }
+        if let Some(message) = selected.0 {
+            if !crate::wake_contract::is_agent_message(message)
+                && self
+                    .runtime
+                    .inner
+                    .runtime_db
+                    .task_result_settlements()
+                    .interrupted_admitted_result_anchor(
+                        &message.agent_id,
+                        &message.id,
+                        self.runtime.now(),
+                    )?
+                    .is_none()
+            {
+                return Ok(selected);
+            }
         }
         // A recovered, already attached snapshot precedes fresh ordinary input.
         // This is selection only; canonical admission still validates its source.
@@ -823,18 +839,20 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         }
                     })
                 });
-                self.runtime
-                    .idle_batch_source_turn(&persisted_message.agent_id, &persisted_message.id)?
-                    .filter(|turn| {
-                        prior_id.is_some()
-                            && turn
-                                .idle_input_batch
-                                .as_ref()
-                                .and_then(|batch| batch.activation_id.as_deref())
-                                == prior_id
-                    })
-                    .map(|turn| turn.turn_id)
-                    .or_else(|| persisted_message.turn_id.clone())
+                let attached_turn_id = if let Some(prior_id) = prior_id {
+                    self.runtime
+                        .inner
+                        .runtime_db
+                        .task_result_settlements()
+                        .interrupted_attached_turn_id(
+                            &persisted_message.agent_id,
+                            prior_id,
+                            &persisted_message.id,
+                        )?
+                } else {
+                    None
+                };
+                attached_turn_id.or_else(|| persisted_message.turn_id.clone())
             } else {
                 None
             };
@@ -2350,8 +2368,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 },
             )
         };
-        // Retained first-attempt queue input must keep its replay lineage too,
-        // even when it has no lifecycle delivery or TaskResult rejoin record.
+        // Retained queue input resumes the interrupted lineage leaf, including
+        // repeated recovery without a lifecycle delivery or TaskResult record.
         let interrupted_queue = recovery_of_attempt_id.is_none()
             && self
                 .runtime
@@ -2364,10 +2382,19 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             if !interrupted_queue {
                 return None;
             }
-            existing.as_ref()?.attempts.values().find_map(|prior| {
-                (prior.attempt_id == canonical_activation_id(&message.id)
-                    && prior.state == ExecutionAttemptState::Interrupted
-                    && prior.recovery_of_attempt_id.is_none()
+            let existing = existing.as_ref()?;
+            existing.attempts.values().find_map(|prior| {
+                (prior.state == ExecutionAttemptState::Interrupted
+                    && canonical_lifecycle_attempt_lineage_is_valid(
+                        existing,
+                        message,
+                        scenario,
+                        &prior.attempt_id,
+                    )
+                    && !existing.attempts.values().any(|successor| {
+                        successor.recovery_of_attempt_id.as_deref()
+                            == Some(prior.attempt_id.as_str())
+                    })
                     && prior.source_message_id.as_deref() == Some(message.id.as_str())
                     && (prior.source.identity == source_identity
                         || execution_attempt_matches_scenario(prior, message, scenario))
@@ -2836,6 +2863,17 @@ fn execution_attempt_matches_scenario(
                 agent_id: expected_agent,
             },
         ) => message_id == &message.id && agent_id == expected_agent,
+        (
+            ExecutionSourceIdentity::QueueMessage { message_id },
+            ExecutionBinding::Conversation { interaction_id },
+            scheduler::CanonicalActivationScenario::LifecycleExternalNudge {
+                agent_id: expected_agent,
+            },
+        ) => {
+            message_id == &message.id
+                && expected_agent == &message.agent_id
+                && message.trusted_interaction_id().as_ref() == Some(interaction_id)
+        }
         (
             ExecutionSourceIdentity::QueueMessage { message_id },
             ExecutionBinding::WorkItem { work_item_id },
@@ -3930,6 +3968,76 @@ mod tests {
             panic!("trusted operator prompt should use Conversation owner");
         };
         assert_eq!(first_id, second_id);
+    }
+
+    #[test]
+    fn conversation_replay_lineage_requires_exact_trusted_source_and_owner() {
+        use crate::domain::execution_protocol::*;
+
+        let home = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            home.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let mut message = operator_prompt("retained conversation");
+        message.message_seq = Some(1);
+        let scenario = scheduler::CanonicalActivationScenario::LifecycleExternalNudge {
+            agent_id: message.agent_id.clone(),
+        };
+        let root_id = canonical_activation_id(&message.id);
+        let planned = SchedulerDecisionExecutor::new(&runtime)
+            .plan_execution_protocol_claim(&message, &scenario, &root_id, None, None, None)
+            .unwrap();
+        let ExecutionProtocolCommand::Admit(command) = planned.commands.last().unwrap() else {
+            panic!("expected conversation admission");
+        };
+        let admitted = admit_execution(&ExecutionProtocolState::empty("default"), command).unwrap();
+        assert!(canonical_lifecycle_attempt_lineage_is_valid(
+            &admitted.state,
+            &message,
+            &scenario,
+            &root_id,
+        ));
+        for case in ["owner", "agent", "message", "source", "trust"] {
+            let mut state = admitted.state.clone();
+            let attempt = state.attempts.get_mut(&root_id).unwrap();
+            match case {
+                "owner" => {
+                    attempt.binding = ExecutionBinding::Conversation {
+                        interaction_id: "foreign-conversation".into(),
+                    }
+                }
+                "agent" => attempt.agent_id = "foreign-agent".into(),
+                "message" => attempt.source_message_id = Some("foreign-message".into()),
+                "source" => {
+                    attempt.source.identity = ExecutionSourceIdentity::QueueMessage {
+                        message_id: "foreign-message".into(),
+                    }
+                }
+                "trust" => attempt.provenance.trust = ExecutionTrust::ExternalEvidence,
+                _ => unreachable!(),
+            }
+            assert!(
+                !canonical_lifecycle_attempt_lineage_is_valid(
+                    &state, &message, &scenario, &root_id,
+                ),
+                "{case}",
+            );
+        }
+        message.authority_class = AuthorityClass::ExternalEvidence;
+        assert!(!canonical_lifecycle_attempt_lineage_is_valid(
+            &admitted.state,
+            &message,
+            &scenario,
+            &root_id,
+        ));
     }
 
     #[test]

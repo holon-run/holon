@@ -2,6 +2,8 @@ use super::*;
 use chrono::{Duration, TimeZone};
 use tempfile::tempdir;
 
+mod live_turn;
+
 fn runtime_db() -> (tempfile::TempDir, RuntimeDb) {
     let dir = tempdir().unwrap();
     let db = RuntimeDb::open_and_migrate(

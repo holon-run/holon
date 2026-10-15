@@ -38,18 +38,16 @@ use crate::{
         AgentState, AuthorityClass, BriefRecord, CallbackDeliveryMode, ChildSupervisionProjection,
         CommandTaskStatusSnapshot, ContextEpisodeRecord, ContinuationClass, ContinuationResolution,
         ContinuationTriggerKind, ExternalTriggerRecord, ExternalTriggerScope,
-        ExternalTriggerStatus, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
-        SkillsRuntimeView, TaskRecord, TodoItemState, ToolExecutionRecord, ToolExecutionStatus,
-        TranscriptEntry, TranscriptEntryKind, TurnRecord, WaitConditionRecord, WorkItemRecord,
-        WorkItemRefStatus,
+        ExternalTriggerStatus, LiveInputBatchRecord, MessageBody, MessageEnvelope, MessageKind,
+        MessageOrigin, SkillsRuntimeView, TaskRecord, TodoItemState, ToolExecutionRecord,
+        ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, TurnRecord, WaitConditionRecord,
+        WorkItemRecord, WorkItemRefStatus,
     },
 };
 
 const ACTIVE_TASKS_CONTEXT_LIMIT: usize = 5;
 const ACTIVE_TASK_SUMMARY_CHAR_BUDGET: usize = 240;
 const ACTIVE_TASK_CMD_PREVIEW_CHAR_BUDGET: usize = 240;
-const PENDING_TASK_RESULTS_CONTEXT_LIMIT: usize =
-    crate::runtime_db::task_result_settlement::TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT;
 
 #[derive(Debug, Clone)]
 pub struct ContextConfig {
@@ -203,9 +201,9 @@ pub(crate) fn reproject_work_item_scoped_with_limit(
     )? {
         if !turn_records
             .iter()
-            .any(|record| record.turn_id == source.source_turn.turn_id)
+            .any(|record| record.turn_id == source.source_turn().turn_id)
         {
-            turn_records.push(source.source_turn);
+            turn_records.push(source.source_turn().clone());
         }
     }
     if turn_records.is_empty() {
@@ -309,6 +307,8 @@ fn context_candidate_policy(id: &str, pinned: bool) -> ContextCandidatePolicy {
         "continuation_context" => (RetentionPriority::High, DropTier::Last, 180),
         "pending_task_results" => (RetentionPriority::Critical, DropTier::Last, 185),
         "current_input" => (RetentionPriority::Critical, DropTier::Last, 190),
+        "recovery_input_batches" => (RetentionPriority::Critical, DropTier::Last, 192),
+        "current_live_input_batches" => (RetentionPriority::Critical, DropTier::Last, 195),
         _ => (RetentionPriority::Normal, DropTier::Normal, u16::MAX),
     };
     ContextCandidatePolicy {
@@ -352,9 +352,9 @@ pub fn build_context_with_default_external_ingress(
     if let Some(source) = recovery_source.as_ref() {
         if !turn_records
             .iter()
-            .any(|record| record.turn_id == source.source_turn.turn_id)
+            .any(|record| record.turn_id == source.source_turn().turn_id)
         {
-            turn_records.push(source.source_turn.clone());
+            turn_records.push(source.source_turn().clone());
         }
     }
     hydrate_recent_turn_references(
@@ -366,7 +366,7 @@ pub fn build_context_with_default_external_ingress(
     )?;
     let mut transcript = storage.read_recent_transcript(config.recent_messages)?;
     if let Some(source) = recovery_source.as_ref() {
-        for entry in storage.read_transcript_for_turns(&[source.source_turn.turn_id.clone()])? {
+        for entry in storage.read_transcript_for_turns(&[source.source_turn().turn_id.clone()])? {
             if !transcript.iter().any(|existing| existing == &entry) {
                 transcript.push(entry);
             }
@@ -648,7 +648,7 @@ pub fn build_context_with_default_external_ingress(
         let root = &source.root_message;
         let anchor = format!(
             "Provider recovery: continue the task of source turn {}, predecessor attempt {}. The current focus is not the recovery authority.\nRoot task input {} (original provenance):\n{}\n{}",
-            source.source_turn.turn_id,
+            source.source_turn().turn_id,
             source.predecessor.attempt_id,
             root.id,
             message_header(root),
@@ -741,26 +741,51 @@ pub fn build_context_with_default_external_ingress(
     let wake_hint_fallback = (!continuation_present)
         .then(|| render_wake_hint_context(current_message))
         .flatten();
-    if let Some(content) = render_pending_task_results(storage, agent, current_message)? {
-        let section = turn_section("pending_task_results", content);
-        candidates.push(context_candidate(section.clone(), Some(section), true));
-    }
-    let batch = agent
+    let current_turn = agent
         .current_turn_id
         .as_deref()
         .map(|turn_id| storage.read_turn_by_id(turn_id))
         .transpose()?
-        .flatten()
-        .and_then(|turn| turn.idle_input_batch)
+        .flatten();
+    let input_turns: Vec<_> = current_turn
+        .iter()
+        .chain(
+            recovery_source
+                .iter()
+                .flat_map(|source| &source.source_turns),
+        )
+        .collect();
+    let mut seen_messages: BTreeSet<_> = recovery_source
+        .iter()
+        .map(|source| source.root_message.id.clone())
+        .collect();
+    if let Some(content) = render_pending_task_results_for_turns(
+        storage,
+        agent,
+        current_message,
+        &input_turns,
+        seen_messages.clone(),
+    )? {
+        let section = turn_section("pending_task_results", content);
+        candidates.push(context_candidate(section.clone(), Some(section), true));
+    }
+    let batch = current_turn
+        .as_ref()
+        .and_then(|turn| turn.idle_input_batch.as_ref())
         .filter(|batch| batch.anchor_message_id == current_message.id);
     let (current_input_full, current_input_compact) = if let Some(batch) = batch {
+        let mut visible = batch.clone();
+        visible
+            .items
+            .retain(|item| seen_messages.insert(item.message_id.clone()));
         let section = turn_section(
             "current_input",
-            crate::runtime::input_consumption::render_batch(&batch),
+            crate::runtime::input_consumption::render_batch(&visible),
         );
         // Already admitted evidence cannot be dropped to make room for new input.
         (section.clone(), section)
     } else {
+        seen_messages.insert(current_message.id.clone());
         (
             render_current_input_section(
                 current_message,
@@ -775,6 +800,33 @@ pub fn build_context_with_default_external_ingress(
         Some(current_input_compact),
         true,
     ));
+    if let Some(source) = recovery_source.as_ref() {
+        let parts: Vec<_> = source
+            .source_turns
+            .iter()
+            .filter_map(|turn| render_recovery_input_batches(turn, &mut seen_messages))
+            .collect();
+        if !parts.is_empty() {
+            let section = turn_section("recovery_input_batches", parts.join("\n"));
+            candidates.push(context_candidate(section.clone(), Some(section), true));
+        }
+    }
+    if let Some(turn) = current_turn.as_ref() {
+        if let Some(content) =
+            render_live_input_batches(&turn.live_input_batches, &mut seen_messages)
+        {
+            let section = turn_section("current_live_input_batches", content);
+            candidates.push(context_candidate(section.clone(), Some(section), true));
+        }
+        if let Some(content) = crate::runtime::input_consumption::render_recovered_operator_inputs(
+            storage,
+            turn,
+            &mut seen_messages,
+        )? {
+            let section = turn_section("recovered_operator_inputs", content);
+            candidates.push(context_candidate(section.clone(), Some(section), true));
+        }
+    }
 
     let plan = plan_context(candidates, config.prompt_budget_estimated_tokens)?;
     let drop_recent_turns_reprojection =
@@ -1289,6 +1341,23 @@ pub(crate) fn render_pending_task_results(
     agent: &AgentState,
     current_message: &MessageEnvelope,
 ) -> Result<Option<String>> {
+    let turn = agent
+        .current_turn_id
+        .as_deref()
+        .map(|turn_id| storage.read_turn_by_id(turn_id))
+        .transpose()?
+        .flatten();
+    let turns: Vec<_> = turn.iter().collect();
+    render_pending_task_results_for_turns(storage, agent, current_message, &turns, BTreeSet::new())
+}
+
+fn render_pending_task_results_for_turns(
+    storage: &AppStorage,
+    agent: &AgentState,
+    current_message: &MessageEnvelope,
+    turns: &[&TurnRecord],
+    mut seen_messages: BTreeSet<String>,
+) -> Result<Option<String>> {
     let Some(activation_id) = agent
         .current_execution_binding
         .as_ref()
@@ -1299,10 +1368,29 @@ pub(crate) fn render_pending_task_results(
     let Some(runtime_db) = storage.runtime_db()? else {
         return Ok(None);
     };
-    let records = runtime_db
+    let mut records = runtime_db
         .task_result_settlements()
         .admitted_for_activation(&agent.id, activation_id)?;
-    render_pending_task_result_records(storage, current_message, &records)
+    let live_identities: BTreeSet<_> = turns
+        .iter()
+        .flat_map(|turn| &turn.live_input_batches)
+        .flat_map(|batch| &batch.result_identities)
+        .collect();
+    records.retain(|record| !live_identities.contains(&record.result_identity));
+    seen_messages.extend(
+        turns
+            .iter()
+            .flat_map(|turn| &turn.live_input_batches)
+            .flat_map(|batch| &batch.items)
+            .map(|item| item.message_id.clone()),
+    );
+    for batch in turns
+        .iter()
+        .filter_map(|turn| turn.idle_input_batch.as_ref())
+    {
+        seen_messages.extend(batch.items.iter().map(|item| item.message_id.clone()));
+    }
+    render_pending_task_result_records_excluding(storage, current_message, &records, seen_messages)
 }
 
 pub(crate) fn render_pending_task_result_records(
@@ -1310,9 +1398,21 @@ pub(crate) fn render_pending_task_result_records(
     current_message: &MessageEnvelope,
     records: &[crate::runtime_db::task_result_settlement::TaskResultSettlementRecord],
 ) -> Result<Option<String>> {
+    render_pending_task_result_records_excluding(storage, current_message, records, BTreeSet::new())
+}
+
+fn render_pending_task_result_records_excluding(
+    storage: &AppStorage,
+    current_message: &MessageEnvelope,
+    records: &[crate::runtime_db::task_result_settlement::TaskResultSettlementRecord],
+    mut seen_messages: BTreeSet<String>,
+) -> Result<Option<String>> {
     let mut pending = Vec::new();
+    let mut seen_identities = BTreeSet::new();
     for record in records {
-        if record.message_id == current_message.id {
+        if record.message_id == current_message.id
+            || !seen_identities.insert(&record.result_identity)
+        {
             continue;
         }
         let message = storage.read_message_by_id(&record.message_id)?;
@@ -1322,11 +1422,11 @@ pub(crate) fn render_pending_task_result_records(
         return Ok(None);
     }
 
-    let mut lines = vec![format!(
-        "Previously received terminal task results admitted to this execution (bounded to {PENDING_TASK_RESULTS_CONTEXT_LIMIT}; each result identity appears once):"
-    )];
-    let mut seen_reply_messages = std::collections::BTreeSet::from([current_message.id.clone()]);
-    for (record, message) in pending.iter().take(PENDING_TASK_RESULTS_CONTEXT_LIMIT) {
+    let mut lines = vec![
+        "Previously received terminal task results admitted to this execution (each result identity appears once):".to_string()
+    ];
+    seen_messages.insert(current_message.id.clone());
+    for (record, message) in &pending {
         lines.push(format!(
             "- result_identity: {}",
             sanitize_inline(&record.result_identity)
@@ -1350,7 +1450,7 @@ pub(crate) fn render_pending_task_result_records(
                     "  reply_source_ref: message:{}",
                     sanitize_inline(reply_id)
                 ));
-                if seen_reply_messages.insert(reply_id.to_owned()) {
+                if seen_messages.insert(reply_id.to_owned()) {
                     if let Some(reply) = storage.read_message_by_id(reply_id)? {
                         lines.push(format!(
                             "  received_agent_message: {}",
@@ -1366,10 +1466,12 @@ pub(crate) fn render_pending_task_result_records(
                     }
                 }
             }
-            lines.push(format!(
-                "  summary: {}",
-                sanitize_inline(&body_preview(&message.body))
-            ));
+            if seen_messages.insert(message.id.clone()) {
+                lines.push(format!(
+                    "  summary: {}",
+                    sanitize_inline(&body_preview(&message.body))
+                ));
+            }
             if let Some(output_ref) = message
                 .source_refs
                 .get("output_ref")
@@ -1383,13 +1485,62 @@ pub(crate) fn render_pending_task_result_records(
             sanitize_inline(&record.task_id)
         ));
     }
-    if pending.len() > PENDING_TASK_RESULTS_CONTEXT_LIMIT {
-        lines.push(format!(
-            "- omitted_results: {} (use task query tools for the full set)",
-            pending.len() - PENDING_TASK_RESULTS_CONTEXT_LIMIT
-        ));
-    }
     Ok(Some(lines.join("\n")))
+}
+
+fn render_recovery_input_batches(
+    turn: &TurnRecord,
+    seen_messages: &mut BTreeSet<String>,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(batch) = turn.idle_input_batch.as_ref() {
+        let mut visible = batch.clone();
+        visible
+            .items
+            .retain(|item| seen_messages.insert(item.message_id.clone()));
+        if !visible.items.is_empty() {
+            parts.push(crate::runtime::input_consumption::render_batch(&visible));
+        }
+    }
+    if let Some(content) = render_live_input_batches(&turn.live_input_batches, seen_messages) {
+        parts.push(content);
+    }
+    (!parts.is_empty()).then(|| {
+        format!(
+            "Provider recovery evidence from source turn {} (original provenance):\n{}",
+            turn.turn_id,
+            parts.join("\n")
+        )
+    })
+}
+
+fn render_live_input_batches(
+    batches: &[LiveInputBatchRecord],
+    seen_messages: &mut BTreeSet<String>,
+) -> Option<String> {
+    let mut seen_batches = BTreeSet::new();
+    let mut text = String::new();
+    for batch in batches {
+        if !seen_batches.insert(&batch.safe_point) {
+            continue;
+        }
+        let items: Vec<_> = batch
+            .items
+            .iter()
+            .filter(|item| seen_messages.insert(item.message_id.clone()))
+            .cloned()
+            .collect();
+        if items.is_empty() {
+            continue;
+        }
+        let mut visible = batch.clone();
+        visible.items = items;
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&visible.rendered_text());
+    }
+    (!text.is_empty()).then_some(text)
 }
 
 fn render_active_task_command(lines: &mut Vec<String>, command: &CommandTaskStatusSnapshot) {
@@ -7638,6 +7789,341 @@ mod tests {
             render_pending_task_results(&storage, &agent, &current_message)
                 .unwrap()
                 .is_none()
+        );
+
+        agent
+            .current_execution_binding
+            .as_mut()
+            .unwrap()
+            .activation_id = Some("activation-pending".into());
+        agent.current_turn_id = Some("turn-current".into());
+        let records = runtime_db
+            .task_result_settlements()
+            .admitted_for_activation("default", "activation-pending")
+            .unwrap();
+        let mut turn = TurnRecord::new("default", "turn-current", 1);
+        turn.live_input_batches.push(LiveInputBatchRecord {
+            activation_id: "activation-pending".into(),
+            safe_point: crate::types::LiveInputSafePoint::new("activation-pending", 1),
+            cutoff: chrono::Utc::now(),
+            max_items: 8,
+            max_bytes: 24 * 1024,
+            rendered_bytes: 0,
+            result_identities: records
+                .iter()
+                .map(|record| record.result_identity.clone())
+                .collect(),
+            ordinary_message_ids: Vec::new(),
+            items: Vec::new(),
+        });
+        storage.append_turn(&turn).unwrap();
+        assert!(
+            render_pending_task_results(&storage, &agent, &current_message)
+                .unwrap()
+                .is_none(),
+            "live evidence must not also appear in cumulative pending results"
+        );
+    }
+
+    #[test]
+    fn pending_task_results_do_not_truncate_cumulative_admissions() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let mut records = Vec::new();
+        for index in 0..12 {
+            let task_id = format!("cumulative-task-{index}");
+            let task = active_task(
+                &task_id,
+                "default",
+                TaskStatus::Completed,
+                Some(json!({
+                    "rejoin_obligation_id": task_id,
+                    "rejoin_generation": 1,
+                    "parent_turn_id": "parent-turn",
+                })),
+            );
+            let mut message = MessageEnvelope::new(
+                "default",
+                MessageKind::TaskResult,
+                MessageOrigin::Task {
+                    task_id: task.id.clone(),
+                },
+                AuthorityClass::RuntimeInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: format!("cumulative-body-{index}"),
+                },
+            );
+            message.work_item_id = task.work_item_id.clone();
+            storage.append_message(&message).unwrap();
+            records.push(
+                crate::runtime_db::task_result_settlement::TaskResultSettlementRecord::pending(
+                    &task,
+                    &message,
+                    chrono::Utc::now(),
+                )
+                .unwrap()
+                .unwrap(),
+            );
+        }
+        records.push(records[0].clone());
+        let current = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "continue".into(),
+            },
+        );
+        let rendered = render_pending_task_result_records(&storage, &current, &records)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rendered.matches("- result_identity:").count(), 12);
+        assert_eq!(rendered.matches("summary: cumulative-body-0\n").count(), 1);
+        assert!(rendered.contains("summary: cumulative-body-11"));
+        assert!(!rendered.contains("omitted_results"));
+    }
+
+    #[test]
+    fn live_input_recovery_renders_each_persisted_batch_and_body_once() {
+        use crate::types::IdleInputBatchItem;
+
+        let mut first = LiveInputBatchRecord {
+            activation_id: "recovered-activation".into(),
+            safe_point: crate::types::LiveInputSafePoint::new("original-activation", 2),
+            cutoff: chrono::Utc::now(),
+            max_items: 8,
+            max_bytes: 24 * 1024,
+            rendered_bytes: 0,
+            result_identities: Vec::new(),
+            ordinary_message_ids: Vec::new(),
+            items: vec![IdleInputBatchItem {
+                message_id: "reply-original".into(),
+                source_ref: "message:reply-original".into(),
+                rendered: "persisted original reply body\n".into(),
+            }],
+        };
+        first.rendered_bytes = first.rendered_text().len();
+        let mut second = first.clone();
+        second.safe_point = crate::types::LiveInputSafePoint::new("recovered-activation", 2);
+        second.items.push(IdleInputBatchItem {
+            message_id: "later-result".into(),
+            source_ref: "message:later-result".into(),
+            rendered: "persisted later result body\n".into(),
+        });
+        second.rendered_bytes = second.rendered_text().len();
+        let rendered =
+            render_live_input_batches(&[first.clone(), first, second], &mut BTreeSet::new())
+                .unwrap();
+        assert_eq!(rendered.matches("Current live input batch").count(), 2);
+        assert_eq!(rendered.matches("persisted original reply body").count(), 1);
+        assert_eq!(rendered.matches("persisted later result body").count(), 1);
+        assert!(rendered.find("original reply").unwrap() < rendered.find("later result").unwrap());
+    }
+
+    #[test]
+    fn recovery_input_projection_keeps_full_source_evidence_and_shared_message_deduplication() {
+        use crate::types::{IdleInputBatchItem, IdleInputBatchRecord};
+
+        let item = |id: &str, body: &str| IdleInputBatchItem {
+            message_id: id.into(),
+            source_ref: format!("message:{id}"),
+            rendered: format!("source_ref: message:{id}\n{body}\n"),
+        };
+        let full_body = format!("live-body-start{}live-body-end", "evidence".repeat(400));
+        let mut source = TurnRecord::new("default", "validated-source-turn", 1);
+        source.idle_input_batch = Some(IdleInputBatchRecord {
+            anchor_message_id: "root".into(),
+            activation_id: Some("source-activation".into()),
+            sender_agent_id: "sender".into(),
+            cutoff: chrono::Utc::now(),
+            max_items: 8,
+            max_bytes: 24 * 1024,
+            rendered_bytes: 0,
+            items: vec![
+                item("root", "root body already anchored"),
+                item("idle-follower", "idle follower full body"),
+                item("current-idle", "current idle body already projected"),
+            ],
+        });
+        let live = LiveInputBatchRecord {
+            activation_id: "source-activation".into(),
+            safe_point: crate::types::LiveInputSafePoint::new("source-activation", 2),
+            cutoff: chrono::Utc::now(),
+            max_items: 8,
+            max_bytes: 24 * 1024,
+            rendered_bytes: 0,
+            result_identities: Vec::new(),
+            ordinary_message_ids: vec!["live-follower".into()],
+            items: vec![
+                item("root", "root body already anchored"),
+                item("idle-follower", "idle follower full body"),
+                item("live-follower", &full_body),
+            ],
+        };
+        source.live_input_batches = vec![live.clone()];
+        source.input_message_ids = vec![
+            "root".into(),
+            "idle-follower".into(),
+            "current-idle".into(),
+            "live-follower".into(),
+        ];
+        let mut seen =
+            BTreeSet::from(["root".into(), "current-input".into(), "current-idle".into()]);
+        let rendered = render_recovery_input_batches(&source, &mut seen).unwrap();
+        assert!(rendered.contains("source turn validated-source-turn (original provenance)"));
+        assert!(!rendered.contains("already anchored"));
+        assert!(!rendered.contains("already projected"));
+        assert_eq!(rendered.matches("idle follower full body").count(), 1);
+        assert_eq!(rendered.matches(full_body.as_str()).count(), 1);
+        assert!(rendered.contains("source_ref: message:live-follower"));
+        assert!(render_live_input_batches(&[live], &mut seen).is_none());
+
+        let section = turn_section("recovery_input_batches", rendered.clone());
+        let candidate = context_candidate(section.clone(), Some(section), true);
+        assert!(candidate.policy.pinned);
+        assert_eq!(
+            candidate.full.content,
+            candidate.compact.as_ref().unwrap().content
+        );
+        let budget = estimate_section_tokens(&candidate.full);
+        let plan = plan_context(vec![candidate.clone()], budget).unwrap();
+        assert_eq!(plan.sections[0].content, rendered);
+        assert!(plan_context(vec![candidate], budget.saturating_sub(1)).is_err());
+    }
+
+    #[test]
+    fn recovered_operator_context_preserves_full_body_provenance_and_shared_deduplication() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let current = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "recovery anchor".into(),
+            },
+        );
+        let full_body = format!(
+            "operator-body-start{}operator-body-end",
+            "evidence".repeat(800)
+        );
+        let operator = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("recovered-operator".into()),
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Interject,
+            MessageBody::Text {
+                text: full_body.clone(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::HttpControlPrompt,
+            AdmissionContext::ControlAuthenticated,
+        );
+        storage.append_message(&operator).unwrap();
+        let mut turn = TurnRecord::new("default", "turn-recovered-operator", 2);
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&current));
+        turn.replay = Some(crate::types::TurnReplayProvenance {
+            source_message_id: current.id.clone(),
+            source_turn_id: "turn-operator-predecessor".into(),
+            reason: "interrupted_queue_claim_reentry".into(),
+            prior_terminal: None,
+        });
+        turn.input_message_ids = vec![current.id.clone(), operator.id.clone(), "live-input".into()];
+        turn.live_input_batches.push(LiveInputBatchRecord {
+            activation_id: "recovered-activation".into(),
+            safe_point: crate::types::LiveInputSafePoint::new("original-activation", 2),
+            cutoff: chrono::Utc::now(),
+            max_items: 8,
+            max_bytes: 24 * 1024,
+            rendered_bytes: 0,
+            result_identities: Vec::new(),
+            ordinary_message_ids: vec!["live-input".into()],
+            items: vec![crate::types::IdleInputBatchItem {
+                message_id: "live-input".into(),
+                source_ref: "message:live-input".into(),
+                rendered: "persisted live evidence\n".into(),
+            }],
+        });
+        storage.append_turn(&turn).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_turn_id = Some(turn.turn_id.clone());
+        let built = build_context(
+            &storage,
+            &agent,
+            &execution_snapshot_for(&agent),
+            &SkillsRuntimeView::default(),
+            &current,
+            None,
+            &ContextConfig {
+                prompt_budget_estimated_tokens: 16 * 1024,
+                ..ContextConfig::default()
+            },
+            storage.data_dir(),
+        )
+        .unwrap();
+        let content = built
+            .sections
+            .iter()
+            .map(|section| section.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(content.matches(full_body.as_str()).count(), 1);
+        let evidence = built
+            .sections
+            .iter()
+            .find(|section| section.name == "recovered_operator_inputs")
+            .expect("independent recovered operator evidence");
+        assert!(evidence
+            .content
+            .contains(&format!("source_ref: message:{}", operator.id)));
+        for provenance in [
+            "recovered-operator",
+            "operator_instruction",
+            "http_control_prompt",
+            "control_authenticated",
+        ] {
+            assert!(evidence.content.contains(provenance));
+        }
+        let live = built
+            .sections
+            .iter()
+            .find(|section| section.name == "current_live_input_batches")
+            .unwrap();
+        assert!(!live.content.contains(&operator.id));
+        assert_eq!(turn.live_input_batches[0].items.len(), 1);
+        let candidate = context_candidate(evidence.clone(), Some(evidence.clone()), true);
+        let budget = estimate_section_tokens(evidence);
+        assert_eq!(
+            plan_context(vec![candidate.clone()], budget)
+                .unwrap()
+                .sections[0]
+                .content,
+            evidence.content
+        );
+        assert!(plan_context(vec![candidate], budget.saturating_sub(1)).is_err());
+        let mut seen = BTreeSet::from([operator.id.clone()]);
+        assert!(
+            crate::runtime::input_consumption::render_recovered_operator_inputs(
+                &storage, &turn, &mut seen,
+            )
+            .unwrap()
+            .is_none()
         );
     }
 

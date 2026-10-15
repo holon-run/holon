@@ -39,6 +39,12 @@ struct ReplyRouteRegistry {
     latest_input_routed: bool,
 }
 
+#[derive(serde::Deserialize)]
+struct ReplyRouteExecutionState {
+    current_turn_id: Option<String>,
+    current_execution_binding: Option<crate::types::WorkItemExecutionBinding>,
+}
+
 fn invalid_reply_context(reason: &str) -> anyhow::Error {
     RuntimeError::policy("agent_reply_context_invalid", reason)
         .with_recovery_hint(
@@ -50,19 +56,26 @@ fn invalid_reply_context(reason: &str) -> anyhow::Error {
 fn batch_admits_reply_source(
     tx: &Transaction<'_>,
     turn: &TurnRecord,
+    activation_id: &str,
     anchor_id: &str,
     message: &MessageEnvelope,
 ) -> Result<bool> {
-    if !turn.input_message_ids.contains(&message.id)
-        || !turn.idle_input_batch.as_ref().is_some_and(|batch| {
-            batch.anchor_message_id == anchor_id
-                && batch.items.iter().any(|item| item.message_id == anchor_id)
-                && batch.items.iter().any(|item| {
-                    item.message_id == message.id
-                        && item.source_ref == format!("message:{}", message.id)
-                })
-        })
-    {
+    let idle_admitted = turn.idle_input_batch.as_ref().is_some_and(|batch| {
+        batch.anchor_message_id == anchor_id
+            && batch.items.iter().any(|item| item.message_id == anchor_id)
+            && batch.items.iter().any(|item| {
+                item.message_id == message.id
+                    && item.source_ref == format!("message:{}", message.id)
+            })
+    });
+    let live_admitted = turn.live_input_batches.iter().any(|batch| {
+        batch.activation_id == activation_id
+            && batch.items.iter().any(|item| {
+                item.message_id == message.id
+                    && item.source_ref == format!("message:{}", message.id)
+            })
+    });
+    if !turn.input_message_ids.contains(&message.id) || !(idle_admitted || live_admitted) {
         return Ok(false);
     }
     let Some(ingress_turn_id) = message.turn_id.as_deref() else {
@@ -71,8 +84,8 @@ fn batch_admits_reply_source(
     if ingress_turn_id == turn.turn_id {
         return Ok(true);
     }
-    // Enqueue assigns a turn ID before execution. Only a real, still-unbound
-    // admitted delivery can use that ingress ID as a batched follower.
+    // Enqueue assigns an ingress turn ID before execution. A live follower
+    // still needs its real accepted delivery, not just a copied input ID.
     let delivery = tx
         .query_row(
             "SELECT payload_json FROM agent_message_deliveries WHERE message_id = ?1",
@@ -86,8 +99,11 @@ fn batch_admits_reply_source(
         delivery.target_agent_id != message.agent_id
             || delivery.message_id.as_deref() != Some(message.id.as_str())
             || delivery.outcome != AgentMessageDeliveryOutcome::Accepted
-            || delivery.activation_id.is_some()
-            || delivery.turn_id.is_some()
+            || (live_admitted && delivery.accepted_at.is_none())
+            || !((delivery.activation_id.is_none() && delivery.turn_id.is_none())
+                || (live_admitted
+                    && delivery.activation_id.as_deref() == Some(activation_id)
+                    && delivery.turn_id.as_deref() == Some(turn.turn_id.as_str())))
             || delivery.routing_context != message.routing_context
     }) {
         return Ok(false);
@@ -126,7 +142,7 @@ fn load_reply_routes_tx(
             |row| row.get::<_, String>(0),
         )
         .optional()?
-        .map(|payload| serde_json::from_str::<AgentState>(&payload))
+        .map(|payload| serde_json::from_str::<ReplyRouteExecutionState>(&payload))
         .transpose()?;
     let Some(state) = state else {
         return Ok(None);
@@ -280,6 +296,24 @@ fn load_reply_routes_tx(
                                             .and_then(|trigger| trigger.message_id.as_deref())
                                             == Some(binding.source_message_id.as_str())
                                 }
+                                None if !source.live_input_batches.is_empty() => {
+                                    (prior.turn_id.as_deref() == Some(source.turn_id.as_str())
+                                        || prior.turn_id.is_none()
+                                        || anchor.as_ref().is_some_and(|anchor| {
+                                            anchor.agent_id == agent_id
+                                                && anchor.id == binding.source_message_id
+                                                && anchor.turn_id == prior.turn_id
+                                        }))
+                                        && source
+                                            .live_input_batches
+                                            .iter()
+                                            .any(|batch| batch.activation_id == prior.attempt_id)
+                                        && source
+                                            .trigger
+                                            .as_ref()
+                                            .and_then(|trigger| trigger.message_id.as_deref())
+                                            == Some(binding.source_message_id.as_str())
+                                }
                                 None => prior.turn_id.as_deref() == Some(source.turn_id.as_str()),
                             }
                         })
@@ -309,14 +343,39 @@ fn load_reply_routes_tx(
             })?;
         let message: MessageEnvelope = serde_json::from_str(&payload)?;
         latest_input_routed = false;
-        // A copied replay snapshot is not independent admission evidence.
-        let batch_source = (turn.replay.is_none()
-            && attempt.recovery_of_attempt_id.is_none()
-            && batch_admits_reply_source(tx, &turn, &binding.source_message_id, &message)?)
+        // Copied replay evidence uses its predecessor. New live admissions
+        // after recovery are proved by the current canonical attachment.
+        let current_batch_source = (turn.replay.is_none()
+            && attempt.recovery_of_attempt_id.is_none())
+            || replay_source.as_ref().is_some_and(|source| {
+                !source.input_message_ids.contains(message_id)
+                    && turn.live_input_batches.iter().any(|batch| {
+                        batch.activation_id == attempt.attempt_id
+                            && batch
+                                .items
+                                .iter()
+                                .any(|item| &item.message_id == message_id)
+                    })
+            });
+        let batch_source = (current_batch_source
+            && batch_admits_reply_source(
+                tx,
+                &turn,
+                &attempt.attempt_id,
+                &binding.source_message_id,
+                &message,
+            )?)
             || match replay_source.as_ref() {
-                Some(source) => {
-                    batch_admits_reply_source(tx, source, &binding.source_message_id, &message)?
-                }
+                Some(source) => batch_admits_reply_source(
+                    tx,
+                    source,
+                    attempt
+                        .recovery_of_attempt_id
+                        .as_deref()
+                        .unwrap_or_default(),
+                    &binding.source_message_id,
+                    &message,
+                )?,
                 None => false,
             };
         // Batched followers retain their ingress turn assignment. The existing
@@ -348,6 +407,7 @@ fn load_reply_routes_tx(
                         && source.input_message_ids.contains(message_id)
                 }))
             || message.kind != MessageKind::InternalFollowup
+            || message.authority_class == crate::types::AuthorityClass::OperatorInstruction
             || message.admission_context != Some(AdmissionContext::RuntimeOwned)
             || message.delivery_surface != Some(MessageDeliverySurface::RuntimeSystem)
             || !matches!(
@@ -1288,6 +1348,15 @@ mod tests {
         senders: &[&str],
         trigger_index: usize,
     ) -> Result<(TurnRecord, Vec<MessageEnvelope>)> {
+        seed_reply_turn_with_config(db, senders, trigger_index, |_| {})
+    }
+
+    fn seed_reply_turn_with_config(
+        db: &RuntimeDb,
+        senders: &[&str],
+        trigger_index: usize,
+        configure: impl FnOnce(&mut TurnRecord),
+    ) -> Result<(TurnRecord, Vec<MessageEnvelope>)> {
         use crate::domain::execution_protocol::{
             AdmittedFences, ExecutionOrigin, ExecutionPriority, ExecutionProtocolState,
             ExecutionProvenance, ExecutionSource, ExecutionSourceIdentity, ExecutionTrust,
@@ -1338,6 +1407,7 @@ mod tests {
             &inputs[trigger_index],
         ));
         turn.input_message_ids = inputs.iter().map(|message| message.id.clone()).collect();
+        configure(&mut turn);
         db.turn_records().upsert(&turn)?;
         let fences = db
             .transitions()
@@ -2012,7 +2082,9 @@ mod tests {
         use crate::domain::execution_protocol::{
             admit_execution, interrupt_execution, AdmitExecution, InterruptExecution,
         };
-        use crate::types::{IdleInputBatchItem, IdleInputBatchRecord, TurnReplayProvenance};
+        use crate::types::{
+            IdleInputBatchItem, IdleInputBatchRecord, LiveInputBatchRecord, TurnReplayProvenance,
+        };
 
         for defect in [
             "none",
@@ -2030,6 +2102,12 @@ mod tests {
             "missing_claim",
             "foreign_bound_turn",
             "foreign_bound_attempt",
+            "live_none",
+            "live_new",
+            "live_wrong_activation",
+            "live_wrong_ref",
+            "live_closed_predecessor",
+            "live_missing_predecessor",
         ] {
             let (_dir, db) = runtime_db()?;
             let (mut source_turn, mut inputs) = seed_reply_turn(&db, &["sender-a"])?;
@@ -2074,6 +2152,27 @@ mod tests {
                     })
                     .collect(),
             });
+            if defect.starts_with("live_") {
+                let idle = source_turn.idle_input_batch.take().unwrap();
+                source_turn.live_input_batches.push(LiveInputBatchRecord {
+                    safe_point: crate::types::LiveInputSafePoint::new(
+                        idle.activation_id.as_ref().unwrap().clone(),
+                        1,
+                    ),
+                    activation_id: idle.activation_id.unwrap(),
+                    cutoff: idle.cutoff,
+                    max_items: idle.max_items,
+                    max_bytes: idle.max_bytes,
+                    rendered_bytes: idle.rendered_bytes,
+                    result_identities: Vec::new(),
+                    ordinary_message_ids: idle
+                        .items
+                        .iter()
+                        .map(|item| item.message_id.clone())
+                        .collect(),
+                    items: idle.items,
+                });
+            }
             for input in &inputs[1..] {
                 let mut claimed = db.queue_entries().latest(&input.id)?.unwrap();
                 claimed.status = QueueEntryStatus::Interjected;
@@ -2111,9 +2210,13 @@ mod tests {
                 let prior_id = source_turn
                     .idle_input_batch
                     .as_ref()
-                    .unwrap()
-                    .activation_id
-                    .clone()
+                    .and_then(|batch| batch.activation_id.clone())
+                    .or_else(|| {
+                        source_turn
+                            .live_input_batches
+                            .first()
+                            .map(|batch| batch.activation_id.clone())
+                    })
                     .unwrap();
                 execution = interrupt_execution(
                     &execution,
@@ -2162,16 +2265,92 @@ mod tests {
                 }
                 replay.input_message_ids = source_turn.input_message_ids.clone();
                 replay.idle_input_batch = source_turn.idle_input_batch.clone();
-                replay.idle_input_batch.as_mut().unwrap().activation_id =
-                    Some(attempt.attempt_id.clone());
+                if let Some(batch) = replay.idle_input_batch.as_mut() {
+                    batch.activation_id = Some(attempt.attempt_id.clone());
+                }
+                replay.live_input_batches = source_turn.live_input_batches.clone();
+                for batch in &mut replay.live_input_batches {
+                    batch.activation_id = attempt.attempt_id.clone();
+                }
                 replay.replay = Some(TurnReplayProvenance {
                     source_message_id: inputs[0].id.clone(),
                     source_turn_id: source_turn.turn_id.clone(),
                     reason: "interrupted_queue_claim_reentry".into(),
                     prior_terminal: None,
                 });
+                if defect == "live_new" && replay_index == 1 {
+                    let mut input = request("new-after-recovery", "new live input");
+                    input.target_agent_id = "caller-agent".into();
+                    input.correlation_id = Some("replay-correlation-2".into());
+                    let mut sender = peer_caller();
+                    sender.caller_principal = "agent:sender-a".into();
+                    sender.caller_agent_id = Some("sender-a".into());
+                    sender.origin = inputs[0].origin.clone();
+                    let mut prepared = AgentMessageDeliveryService::prepare(input, sender)?;
+                    prepared.message.turn_id = Some("new-after-recovery-ingress".into());
+                    let admitted = db.transitions().commit_delivery_admission(
+                        &admission_command(&prepared),
+                        &prepared.record,
+                    )?;
+                    assert_eq!(
+                        admitted.delivery_receipt.unwrap().outcome,
+                        AgentMessageDeliveryOutcome::Accepted
+                    );
+                    let input = db
+                        .messages()
+                        .by_id(Some("caller-agent"), &prepared.message.id)?
+                        .unwrap();
+                    replay.input_message_ids.push(input.id.clone());
+                    replay.live_input_batches.push(LiveInputBatchRecord {
+                        activation_id: attempt.attempt_id.clone(),
+                        safe_point: crate::types::LiveInputSafePoint::new(
+                            attempt.attempt_id.clone(),
+                            2,
+                        ),
+                        cutoff: Utc::now(),
+                        max_items: 8,
+                        max_bytes: 24 * 1024,
+                        rendered_bytes: 5,
+                        result_identities: Vec::new(),
+                        ordinary_message_ids: vec![input.id.clone()],
+                        items: vec![IdleInputBatchItem {
+                            message_id: input.id.clone(),
+                            source_ref: format!("message:{}", input.id),
+                            rendered: "input".into(),
+                        }],
+                    });
+                    let mut queue = db.queue_entries().latest(&input.id)?.unwrap();
+                    queue.status = QueueEntryStatus::Interjected;
+                    db.transitions().commit_queue(&QueueTransitionCommand {
+                        agent_id: "caller-agent".into(),
+                        operation: QueueOperation::Interject,
+                        mutation: QueueMutation::Consume(queue),
+                        scheduler_claim_work_item: None,
+                        agent_state: None,
+                        message_evidence: Vec::new(),
+                        transcript_entries: Vec::new(),
+                        turn_record: Some(replay.clone()),
+                        audit_events: Vec::new(),
+                        notify_scheduler: false,
+                        fault: None,
+                        brief_evidence: Vec::new(),
+                    })?;
+                    inputs.push(input);
+                }
                 if replay_index == 2 {
                     match defect {
+                        "live_wrong_activation" => {
+                            source_turn.live_input_batches[0].activation_id =
+                                "foreign-activation".into();
+                        }
+                        "live_wrong_ref" => {
+                            source_turn.live_input_batches[0].items[2].source_ref =
+                                "message:foreign".into();
+                        }
+                        "live_closed_predecessor" => {
+                            execution.attempts.get_mut(&prior_id).unwrap().state =
+                                ExecutionAttemptState::Settled;
+                        }
                         "wrong_prior_turn" => {
                             execution.attempts.get_mut(&prior_id).unwrap().turn_id =
                                 Some("foreign-turn".into());
@@ -2256,7 +2435,27 @@ mod tests {
                     }
                 }
                 db.transaction(|tx| {
-                    crate::runtime_db::transitions::persist_state_tx(tx, &execution)
+                    crate::runtime_db::transitions::persist_state_tx(tx, &execution)?;
+                    if replay_index == 2 && defect == "live_missing_predecessor" {
+                        // State persistence upserts; explicitly remove both reciprocal records.
+                        assert_eq!(
+                            tx.execute(
+                                "DELETE FROM execution_protocol_outcomes
+                                 WHERE agent_id = ?1 AND attempt_id = ?2",
+                                params!["caller-agent", prior_id],
+                            )?,
+                            1
+                        );
+                        assert_eq!(
+                            tx.execute(
+                                "DELETE FROM execution_protocol_attempts
+                                 WHERE agent_id = ?1 AND attempt_id = ?2",
+                                params!["caller-agent", prior_id],
+                            )?,
+                            1
+                        );
+                    }
+                    Ok(())
                 })?;
                 db.turn_records().upsert(&source_turn)?;
                 db.turn_records().upsert(&replay)?;
@@ -2270,7 +2469,7 @@ mod tests {
                         false,
                         "recovered-reply",
                     );
-                    if replay_index == 2 && defect != "none" {
+                    if replay_index == 2 && !matches!(defect, "none" | "live_none" | "live_new") {
                         if index == 1 {
                             let error = route.err().expect(defect);
                             assert_eq!(
@@ -2457,6 +2656,139 @@ mod tests {
                 assert_eq!(
                     route.in_reply_to_message_id.as_deref(),
                     Some(follower.id.as_str())
+                );
+            } else {
+                assert!(result.is_err(), "{defect}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn live_reply_routes_require_canonical_batch_and_accepted_ingress() -> Result<()> {
+        use crate::types::{IdleInputBatchItem, LiveInputBatchRecord};
+
+        for defect in [
+            "none",
+            "bound_current",
+            "missing_delivery",
+            "rejected_delivery",
+            "bound_foreign",
+            "wrong_route",
+            "wrong_activation",
+            "wrong_ref",
+            "missing_claim",
+            "foreign_turn",
+            "copied_replay",
+            "pure_task_result",
+            "operator_authority",
+            "external_admission",
+        ] {
+            let (_dir, db) = runtime_db()?;
+            let (mut turn, inputs) = seed_reply_turn_with_config(&db, &["sender-a"], 0, |turn| {
+                if defect == "copied_replay" {
+                    turn.replay = Some(crate::types::TurnReplayProvenance {
+                        source_message_id: turn.input_message_ids[0].clone(),
+                        source_turn_id: "unproven-source-turn".into(),
+                        reason: "interrupted_queue_claim_reentry".into(),
+                        prior_terminal: None,
+                    });
+                }
+            })?;
+            let mut follower = inputs[0].clone();
+            follower.id = format!("live-source-{defect}");
+            follower.turn_id = Some("live-ingress-turn".into());
+            follower.message_seq = None;
+            follower.routing_context.as_mut().unwrap().message_id = follower.id.clone();
+            if defect == "pure_task_result" {
+                follower.kind = MessageKind::TaskResult;
+            } else if defect == "operator_authority" {
+                follower.authority_class = AuthorityClass::OperatorInstruction;
+            } else if defect == "external_admission" {
+                follower.admission_context = Some(AdmissionContext::ExternalTriggerCapability);
+            }
+            let follower = db.messages().append_with_index_changes(&follower, &[])?;
+            if defect != "missing_delivery" {
+                let mut input = request(defect, "live follower");
+                input.target_agent_id = "caller-agent".into();
+                let mut source = caller();
+                source.caller_agent_id = Some("sender-a".into());
+                let mut delivery = AgentMessageDeliveryService::prepare(input, source)?.record;
+                delivery.message_id = Some(follower.id.clone());
+                delivery.routing_context = follower.routing_context.clone();
+                delivery.outcome = AgentMessageDeliveryOutcome::Accepted;
+                delivery.state = AgentMessageDeliveryState::Queued;
+                delivery.accepted_at = Some(Utc::now());
+                if defect == "rejected_delivery" {
+                    delivery.outcome = AgentMessageDeliveryOutcome::Rejected;
+                    delivery.accepted_at = None;
+                } else if defect == "bound_current" {
+                    delivery.activation_id = Some("routing-activation".into());
+                    delivery.turn_id = Some(turn.turn_id.clone());
+                } else if defect == "bound_foreign" {
+                    delivery.activation_id = Some("foreign-activation".into());
+                    delivery.turn_id = Some("foreign-turn".into());
+                } else if defect == "wrong_route" {
+                    delivery.routing_context.as_mut().unwrap().correlation_id =
+                        Some("other-correlation".into());
+                }
+                db.transaction(|tx| insert_delivery_tx(tx, &delivery))?;
+            }
+            if defect == "foreign_turn" {
+                db.turn_records().upsert(&TurnRecord::new(
+                    "caller-agent",
+                    "live-ingress-turn",
+                    2,
+                ))?;
+            }
+            db.queue_entries().upsert(&QueueEntryRecord {
+                message_id: follower.id.clone(),
+                agent_id: follower.agent_id.clone(),
+                priority: follower.priority,
+                status: if defect == "missing_claim" {
+                    QueueEntryStatus::Queued
+                } else {
+                    QueueEntryStatus::Interjected
+                },
+                created_at: follower.created_at,
+                updated_at: Utc::now(),
+            })?;
+            turn.input_message_ids.push(follower.id.clone());
+            turn.live_input_batches.push(LiveInputBatchRecord {
+                activation_id: if defect == "wrong_activation" {
+                    "foreign-activation".into()
+                } else {
+                    "routing-activation".into()
+                },
+                safe_point: crate::types::LiveInputSafePoint::new("routing-activation", 1),
+                cutoff: Utc::now(),
+                max_items: 8,
+                max_bytes: 24 * 1024,
+                rendered_bytes: 0,
+                result_identities: Vec::new(),
+                ordinary_message_ids: vec![follower.id.clone()],
+                items: vec![IdleInputBatchItem {
+                    message_id: follower.id.clone(),
+                    source_ref: if defect == "wrong_ref" {
+                        "message:other".into()
+                    } else {
+                        format!("message:{}", follower.id)
+                    },
+                    rendered: "live follower".into(),
+                }],
+            });
+            db.turn_records().upsert(&turn)?;
+            let result = prepare_reply(&db, "sender-a", Some(&follower.id), false, "live-reply");
+            if matches!(defect, "none" | "bound_current") {
+                assert_eq!(
+                    result?
+                        .message
+                        .routing_context
+                        .unwrap()
+                        .in_reply_to_message_id
+                        .as_deref(),
+                    Some(follower.id.as_str()),
+                    "{defect}"
                 );
             } else {
                 assert!(result.is_err(), "{defect}");

@@ -1864,7 +1864,7 @@ async fn provider_recovery_source_validation_rejects_invalid_partitions_owners_t
     cycle.metadata.as_mut().unwrap()["provider_recovery"]["source_message_id"] =
         serde_json::json!(cycle.id);
     runtime.storage().append_message(&cycle).unwrap();
-    let mut cycle_turn = valid.source_turn.clone();
+    let mut cycle_turn = valid.source_turn().clone();
     cycle_turn.turn_id = "cycle-turn".into();
     cycle_turn.turn_index = 2;
     cycle_turn.input_message_ids = vec![cycle.id.clone()];
