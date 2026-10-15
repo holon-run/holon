@@ -336,6 +336,29 @@ pub(super) fn restart_task_result_message_id(task_id: &str) -> String {
     format!("message:task-restart:{task_id}")
 }
 
+// Interruption observes the original Task. A Result's own synthetic Turn must
+// not promote a real creator's parent-less obligation into a rejoin fence.
+fn task_with_original_interrupted_result(
+    task: &TaskRecord,
+    result_message: &MessageEnvelope,
+) -> TaskRecord {
+    let mut terminal = task_with_result_message(
+        task,
+        TaskStatus::Interrupted,
+        task.detail.clone(),
+        result_message,
+    );
+    if unbound_task_rejoin_generation(task).is_some() {
+        terminal
+            .detail
+            .as_mut()
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("validated original unbound Task detail")
+            .remove(PARENT_TURN_ID_DETAIL);
+    }
+    terminal
+}
+
 fn interrupted_task_result_message(
     task: &TaskRecord,
     interrupted_reason: &'static str,
@@ -2292,12 +2315,8 @@ impl RuntimeHandle {
             };
             let result_message =
                 interrupted_task_result_message(&interrupted_task, "runtime_restarted");
-            let interrupted_task = task_with_result_message(
-                &interrupted_task,
-                TaskStatus::Interrupted,
-                interrupted_task.detail.clone(),
-                &result_message,
-            );
+            let interrupted_task =
+                task_with_original_interrupted_result(&interrupted_task, &result_message);
             self.commit_terminal_task_result(
                 &interrupted_task,
                 "task_interrupted_on_restart",
@@ -2345,13 +2364,18 @@ impl RuntimeHandle {
                 detail_map.insert("interrupted_at".into(), to_json_value(&Utc::now()));
             }
             if task.is_worktree_child_agent_task() {
-                let _ = self
-                    .cleanup_task_owned_worktree_in_detail(
-                        &task.id,
-                        &mut detail,
-                        "agent_lifecycle_stop",
-                    )
-                    .await;
+                // Parent monitor cancellation does not prove original child exit.
+                if let Some(worktree) = detail
+                    .get_mut("worktree")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    worktree.insert("cleanup_status".into(), serde_json::json!("retained"));
+                    worktree.insert(
+                        "cleanup_reason".into(),
+                        serde_json::json!("original_child_exit_unproven"),
+                    );
+                    worktree.insert("retained_for_review".into(), serde_json::json!(true));
+                }
             }
 
             let interrupted_task = TaskRecord {
@@ -2369,12 +2393,8 @@ impl RuntimeHandle {
             };
             let result_message =
                 interrupted_task_result_message(&interrupted_task, "agent_stopped");
-            let interrupted_task = task_with_result_message(
-                &interrupted_task,
-                TaskStatus::Interrupted,
-                interrupted_task.detail.clone(),
-                &result_message,
-            );
+            let interrupted_task =
+                task_with_original_interrupted_result(&interrupted_task, &result_message);
             self.commit_terminal_task_result(
                 &interrupted_task,
                 "task_interrupted_on_agent_stop",
@@ -5581,5 +5601,44 @@ mod control_task_result_tests {
             result.task.detail.clone().unwrap()
         );
         assert_eq!(result.task.rejoin_fence().unwrap().generation, 1);
+    }
+
+    #[test]
+    fn original_interruption_preserves_unbound_bound_and_invalid_parent_contracts() {
+        for parent in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!("original-parent")),
+        ] {
+            let mut task = running_task(serde_json::json!({
+                "rejoin_obligation_id":"control-task", "rejoin_generation":1, "custom":"preserved"
+            }));
+            if let Some(parent) = &parent {
+                task.detail.as_mut().unwrap()[PARENT_TURN_ID_DETAIL] = parent.clone();
+            }
+            let result = interrupted_task_result_message(&task, "agent_stopped");
+            let frozen = serde_json::to_value(&result).unwrap();
+            let normalized = task_with_original_interrupted_result(&task, &result);
+            let mut expected = task_with_result_message(
+                &task,
+                TaskStatus::Interrupted,
+                task.detail.clone(),
+                &result,
+            );
+            if parent.is_none() {
+                expected
+                    .detail
+                    .as_mut()
+                    .unwrap()
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(PARENT_TURN_ID_DETAIL);
+                assert_eq!(unbound_task_rejoin_generation(&normalized), Some(1));
+                assert!(normalized.rejoin_fence().is_err());
+            }
+            expected.updated_at = normalized.updated_at;
+            assert_eq!(normalized, expected);
+            assert_eq!(serde_json::to_value(&result).unwrap(), frozen);
+        }
     }
 }

@@ -161,20 +161,6 @@ pub(crate) async fn cleanup_frozen_worktree(
         guards: frozen.guards,
     })
 }
-pub(super) async fn cleanup_runtime_metadata(
-    runtime: &RuntimeHandle,
-    task_id: &str,
-    metadata: &mut serde_json::Value,
-    reason: &str,
-) -> Result<TaskOwnedWorktreeCleanup> {
-    cleanup_metadata(
-        &mut CleanupAdapter::Runtime(runtime),
-        task_id,
-        metadata,
-        reason,
-    )
-    .await
-}
 /// The original Control owns this pre-registered output reservation. Reuse the
 /// same cleanup policy/Git adapter; keep its historical audit behavior intact.
 pub(super) async fn cleanup_original_control_metadata(
@@ -232,14 +218,12 @@ pub(crate) async fn cleanup_completion_worktree_for_test(
 }
 
 enum CleanupAdapter<'a> {
-    Runtime(&'a RuntimeHandle),
     Completion(&'a mut FrozenWorktreeCleanup),
     Frozen(&'a mut FrozenWorktreeCleanup),
 }
 impl CleanupAdapter<'_> {
     fn audit(&mut self, event: &AuditEvent) -> Result<()> {
         match self {
-            Self::Runtime(runtime) => runtime.inner.storage.append_event(event),
             Self::Completion(frozen) => {
                 // This reservation predates FS. Audit persistence belongs to the
                 // saved completion capsule, so a later SQL failure cannot redo Git.
@@ -261,7 +245,6 @@ impl CleanupAdapter<'_> {
     }
     async fn current_branch(&mut self, path: &Path) -> Result<String> {
         match self {
-            Self::Runtime(runtime) => runtime.current_worktree_branch(path).await,
             Self::Frozen(frozen) | Self::Completion(frozen) => {
                 frozen
                     .git(
@@ -276,7 +259,6 @@ impl CleanupAdapter<'_> {
     }
     async fn changed_files(&mut self, path: &Path) -> Result<Vec<String>> {
         match self {
-            Self::Runtime(runtime) => runtime.changed_files_for_worktree(path).await,
             Self::Frozen(frozen) | Self::Completion(frozen) => {
                 let status = frozen
                     .git(
@@ -323,7 +305,6 @@ impl CleanupAdapter<'_> {
         artifact: &TaskOwnedWorktreeArtifact,
     ) -> Result<TaskOwnedWorktreeRemoveOutcome> {
         match self {
-            Self::Runtime(runtime) => runtime.remove_task_owned_worktree(artifact).await,
             Self::Frozen(frozen) | Self::Completion(frozen) => {
                 let repo = frozen.repo_root.clone();
                 let path = artifact

@@ -525,21 +525,6 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub(super) async fn cleanup_task_owned_worktree_in_detail(
-        &self,
-        task_id: &str,
-        detail: &mut serde_json::Value,
-        reason: &str,
-    ) -> Result<Option<TaskOwnedWorktreeCleanup>> {
-        let Some(worktree) = detail.get_mut("worktree") else {
-            return Ok(None);
-        };
-        let cleanup = self
-            .cleanup_task_owned_worktree_metadata(task_id, worktree, reason)
-            .await?;
-        Ok(Some(cleanup))
-    }
-
     pub(super) async fn cleanup_original_control_worktree_in_detail(
         &self,
         task_id: &str,
@@ -557,15 +542,6 @@ impl RuntimeHandle {
         .await
         .map(Some)
     }
-    async fn cleanup_task_owned_worktree_metadata(
-        &self,
-        task_id: &str,
-        worktree: &mut serde_json::Value,
-        reason: &str,
-    ) -> Result<TaskOwnedWorktreeCleanup> {
-        cleanup::cleanup_runtime_metadata(self, task_id, worktree, reason).await
-    }
-
     pub async fn summarize_worktree_tasks(&self) -> Result<String> {
         let tasks = self.latest_task_records().await?;
         let worktree_tasks: Vec<_> = tasks
@@ -713,163 +689,6 @@ impl RuntimeHandle {
         summary_lines.push("=".repeat(60));
 
         Ok(summary_lines.join("\n"))
-    }
-
-    async fn remove_task_owned_worktree(
-        &self,
-        artifact: &TaskOwnedWorktreeArtifact,
-    ) -> Result<TaskOwnedWorktreeRemoveOutcome> {
-        let execution = self
-            .effective_execution(ExecutionScopeKind::AgentTurn)
-            .await?;
-        let remove_output = self
-            .system()
-            .run(
-                &execution,
-                ProcessRequest {
-                    program: ProgramInvocation::Argv {
-                        program: "git".into(),
-                        args: vec![
-                            OsString::from("worktree"),
-                            OsString::from("remove"),
-                            artifact.worktree_path.as_os_str().to_os_string(),
-                        ],
-                    },
-                    cwd: Some(self.workspace_root()),
-                    env: vec![],
-                    stdin: StdioSpec::Null,
-                    tty: false,
-                    capture: CaptureSpec::BOTH,
-                    timeout: None,
-                    purpose: ProcessPurpose::WorktreeSetup,
-                },
-            )
-            .await
-            .context("failed to remove git worktree")?;
-
-        if !remove_output.exit_status.success() {
-            let stderr = String::from_utf8_lossy(&remove_output.stderr)
-                .trim()
-                .to_string();
-            return Err(anyhow!("git worktree remove failed: {stderr}"));
-        }
-
-        if !self
-            .local_branch_exists(&artifact.worktree_branch, &execution)
-            .await?
-        {
-            return Ok(TaskOwnedWorktreeRemoveOutcome {
-                branch_deleted: false,
-                branch_delete_error: None,
-            });
-        }
-
-        let branch_output = self
-            .system()
-            .run(
-                &execution,
-                ProcessRequest {
-                    program: ProgramInvocation::Argv {
-                        program: "git".into(),
-                        args: vec![
-                            OsString::from("branch"),
-                            OsString::from("-D"),
-                            OsString::from(&artifact.worktree_branch),
-                        ],
-                    },
-                    cwd: Some(self.workspace_root()),
-                    env: vec![],
-                    stdin: StdioSpec::Null,
-                    tty: false,
-                    capture: CaptureSpec::BOTH,
-                    timeout: None,
-                    purpose: ProcessPurpose::InternalGit,
-                },
-            )
-            .await
-            .context("failed to remove worktree branch")?;
-        if !branch_output.exit_status.success() {
-            let stderr = String::from_utf8_lossy(&branch_output.stderr)
-                .trim()
-                .to_string();
-            return Ok(TaskOwnedWorktreeRemoveOutcome {
-                branch_deleted: false,
-                branch_delete_error: Some(format!("git branch -D failed: {stderr}")),
-            });
-        }
-
-        Ok(TaskOwnedWorktreeRemoveOutcome {
-            branch_deleted: true,
-            branch_delete_error: None,
-        })
-    }
-
-    async fn local_branch_exists(
-        &self,
-        branch: &str,
-        execution: &crate::system::EffectiveExecution,
-    ) -> Result<bool> {
-        let branch_ref = format!("refs/heads/{branch}");
-        let output = self
-            .system()
-            .run(
-                execution,
-                ProcessRequest {
-                    program: ProgramInvocation::Argv {
-                        program: "git".into(),
-                        args: vec![
-                            OsString::from("show-ref"),
-                            OsString::from("--verify"),
-                            OsString::from("--quiet"),
-                            OsString::from(branch_ref),
-                        ],
-                    },
-                    cwd: Some(self.workspace_root()),
-                    env: vec![],
-                    stdin: StdioSpec::Null,
-                    tty: false,
-                    capture: CaptureSpec::BOTH,
-                    timeout: None,
-                    purpose: ProcessPurpose::InternalGit,
-                },
-            )
-            .await
-            .context("failed to inspect worktree branch ref")?;
-        Ok(output.exit_status.success())
-    }
-
-    async fn current_worktree_branch(&self, worktree_path: &Path) -> Result<String> {
-        git_stdout(
-            self,
-            worktree_path,
-            &["rev-parse", "--abbrev-ref", "HEAD"],
-            "failed to inspect worktree branch",
-        )
-        .await
-    }
-
-    async fn changed_files_for_worktree(&self, worktree_path: &Path) -> Result<Vec<String>> {
-        let status = git_stdout(
-            self,
-            worktree_path,
-            &["status", "--porcelain"],
-            "failed to inspect worktree status",
-        )
-        .await?;
-        let mut changed_files = status
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| {
-                let trimmed = line.trim();
-                trimmed
-                    .get(3..)
-                    .filter(|path| !path.trim().is_empty())
-                    .unwrap_or(trimmed)
-                    .to_string()
-            })
-            .collect::<Vec<_>>();
-        changed_files.sort();
-        Ok(changed_files)
     }
 }
 pub(super) fn format_worktree_task_result(result: &WorktreeSubagentResult) -> String {
