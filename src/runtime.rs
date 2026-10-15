@@ -12,6 +12,7 @@ mod delivery;
 pub(crate) mod execution_admission;
 mod failure;
 mod first_run_intro;
+pub(crate) mod input_consumption;
 mod lifecycle;
 mod message_dispatch;
 mod operator;
@@ -850,32 +851,73 @@ fn canonical_matching_terminal_turn(
     owner: &crate::types::TurnOwner,
     terminal_turn: Option<&TurnRecord>,
 ) -> Result<Option<TurnRecord>> {
-    let matches_activation = |turn: &TurnRecord| {
-        let matches_turn_identity = message
-            .turn_id
-            .as_deref()
-            .is_none_or(|turn_id| turn_id == turn.turn_id)
-            || turn.replay.as_ref().is_some_and(|replay| {
-                replay.source_message_id == record.message_id
-                    && message.turn_id.as_deref() == Some(replay.source_turn_id.as_str())
-            });
-        turn.terminal.is_some()
-            && turn
+    let matches_activation = |turn: &TurnRecord| -> Result<bool> {
+        if turn.agent_id != record.agent_id
+            || turn.terminal.is_none()
+            || turn
                 .trigger
                 .as_ref()
                 .and_then(|trigger| trigger.message_id.as_deref())
-                == Some(record.message_id.as_str())
-            && matches_turn_identity
-            && turn.effective_owner() == *owner
+                != Some(record.message_id.as_str())
+            || turn.effective_owner() != *owner
+        {
+            return Ok(false);
+        }
+        let Some(ingress_turn_id) = message.turn_id.as_deref() else {
+            return Ok(true);
+        };
+        if turn.turn_id == ingress_turn_id {
+            return Ok(true);
+        }
+        // Repeated replay keeps the ingress stamp, not the last attempt's Turn.
+        let mut replay = turn.replay.clone();
+        let mut seen = std::collections::BTreeSet::from([turn.turn_id.clone()]);
+        for _ in 0..64 {
+            let Some(source) = replay else {
+                return Ok(false);
+            };
+            if source.source_message_id != record.message_id
+                || !seen.insert(source.source_turn_id.clone())
+            {
+                return Ok(false);
+            }
+            if source.source_turn_id == ingress_turn_id {
+                return Ok(true);
+            }
+            let Some(prior) = runtime_db
+                .turn_records()
+                .by_id(Some(&record.agent_id), &source.source_turn_id)?
+            else {
+                return Ok(false);
+            };
+            if prior.agent_id != record.agent_id
+                || prior
+                    .trigger
+                    .as_ref()
+                    .and_then(|trigger| trigger.message_id.as_deref())
+                    != Some(record.message_id.as_str())
+                || prior.effective_owner() != *owner
+            {
+                return Ok(false);
+            }
+            replay = prior.replay;
+        }
+        Ok(false)
     };
-    if let Some(turn) = terminal_turn.filter(|turn| matches_activation(turn)) {
-        return Ok(Some(turn.clone()));
+    if let Some(turn) = terminal_turn {
+        if matches_activation(turn)? {
+            return Ok(Some(turn.clone()));
+        }
     }
-    Ok(runtime_db
+    for turn in runtime_db
         .turn_records()
         .recent_for_agent(&record.agent_id, usize::MAX)?
-        .into_iter()
-        .find(matches_activation))
+    {
+        if matches_activation(&turn)? {
+            return Ok(Some(turn));
+        }
+    }
+    Ok(None)
 }
 
 fn execution_protocol_settlement_transition_from_facts(
@@ -6110,7 +6152,7 @@ impl RuntimeHandle {
                         .inner
                         .runtime_db
                         .task_result_settlements()
-                        .next_recheck_at(&self.inner.default_agent_id)?;
+                        .next_recheck_at(&idle_snapshot.0.id)?;
                     let next_recheck_at = match (next_recheck_at, result_recheck_at) {
                         (Some(left), Some(right)) => Some(left.min(right)),
                         (left, right) => left.or(right),

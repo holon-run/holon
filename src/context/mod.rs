@@ -745,13 +745,31 @@ pub fn build_context_with_default_external_ingress(
         let section = turn_section("pending_task_results", content);
         candidates.push(context_candidate(section.clone(), Some(section), true));
     }
-    let current_input_full = render_current_input_section(
-        current_message,
-        config.prompt_budget_estimated_tokens,
-        wake_hint_fallback.as_deref(),
-    );
-    let current_input_compact =
-        render_current_input_section(current_message, 48, wake_hint_fallback.as_deref());
+    let batch = agent
+        .current_turn_id
+        .as_deref()
+        .map(|turn_id| storage.read_turn_by_id(turn_id))
+        .transpose()?
+        .flatten()
+        .and_then(|turn| turn.idle_input_batch)
+        .filter(|batch| batch.anchor_message_id == current_message.id);
+    let (current_input_full, current_input_compact) = if let Some(batch) = batch {
+        let section = turn_section(
+            "current_input",
+            crate::runtime::input_consumption::render_batch(&batch),
+        );
+        // Already admitted evidence cannot be dropped to make room for new input.
+        (section.clone(), section)
+    } else {
+        (
+            render_current_input_section(
+                current_message,
+                config.prompt_budget_estimated_tokens,
+                wake_hint_fallback.as_deref(),
+            ),
+            render_current_input_section(current_message, 48, wake_hint_fallback.as_deref()),
+        )
+    };
     candidates.push(context_candidate(
         current_input_full,
         Some(current_input_compact),
@@ -1266,7 +1284,7 @@ fn render_active_tasks(tasks: &[TaskRecord], total_count: usize) -> String {
     lines.join("\n")
 }
 
-fn render_pending_task_results(
+pub(crate) fn render_pending_task_results(
     storage: &AppStorage,
     agent: &AgentState,
     current_message: &MessageEnvelope,
@@ -1284,19 +1302,20 @@ fn render_pending_task_results(
     let records = runtime_db
         .task_result_settlements()
         .admitted_for_activation(&agent.id, activation_id)?;
+    render_pending_task_result_records(storage, current_message, &records)
+}
+
+pub(crate) fn render_pending_task_result_records(
+    storage: &AppStorage,
+    current_message: &MessageEnvelope,
+    records: &[crate::runtime_db::task_result_settlement::TaskResultSettlementRecord],
+) -> Result<Option<String>> {
     let mut pending = Vec::new();
-    for record in &records {
+    for record in records {
         if record.message_id == current_message.id {
             continue;
         }
         let message = storage.read_message_by_id(&record.message_id)?;
-        if message
-            .as_ref()
-            .and_then(crate::wake_contract::agent_message_reply_reference)
-            == Some(current_message.id.as_str())
-        {
-            continue;
-        }
         pending.push((record, message));
     }
     if pending.is_empty() {
@@ -1306,7 +1325,7 @@ fn render_pending_task_results(
     let mut lines = vec![format!(
         "Previously received terminal task results admitted to this execution (bounded to {PENDING_TASK_RESULTS_CONTEXT_LIMIT}; each result identity appears once):"
     )];
-    let mut seen_reply_messages = std::collections::BTreeSet::new();
+    let mut seen_reply_messages = std::collections::BTreeSet::from([current_message.id.clone()]);
     for (record, message) in pending.iter().take(PENDING_TASK_RESULTS_CONTEXT_LIMIT) {
         lines.push(format!(
             "- result_identity: {}",
@@ -1327,6 +1346,10 @@ fn render_pending_task_results(
         ));
         if let Some(message) = message {
             if let Some(reply_id) = crate::wake_contract::agent_message_reply_reference(message) {
+                lines.push(format!(
+                    "  reply_source_ref: message:{}",
+                    sanitize_inline(reply_id)
+                ));
                 if seen_reply_messages.insert(reply_id.to_owned()) {
                     if let Some(reply) = storage.read_message_by_id(reply_id)? {
                         lines.push(format!(

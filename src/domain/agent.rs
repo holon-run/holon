@@ -237,6 +237,8 @@ pub struct AgentMessageSendRequest {
     pub requested_priority: Option<Priority>,
     #[serde(default)]
     pub forward: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_context_id: Option<String>,
 }
 
 /// Trusted runtime routing metadata for an agent-to-agent message.
@@ -280,6 +282,9 @@ pub struct AgentMessageCallerContext {
     pub current_work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherited_routing_context: Option<AgentMessageRoutingContext>,
+    /// Runtime-only fence for the execution that admitted the selected route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_activation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

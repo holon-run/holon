@@ -14,15 +14,6 @@ use crate::types::{
     TaskRecord, TaskStatus,
 };
 
-fn routing_context_from_latest_input(
-    mut messages: Vec<crate::types::MessageEnvelope>,
-) -> Option<crate::types::AgentMessageRoutingContext> {
-    let message = messages.pop()?;
-    let route = message.routing_context?;
-    (route.message_id == message.id && route.recipient_agent_id == message.agent_id)
-        .then_some(route)
-}
-
 pub(crate) struct AgentCreationService<'a> {
     runtime: &'a RuntimeHandle,
 }
@@ -101,17 +92,35 @@ impl AgentMessagingService<'_> {
             .ok_or_else(|| anyhow!("agent messaging requires a host bridge"))?;
         let caller_agent_id = self.runtime.agent_id().await?;
         let state = self.runtime.agent_state().await?;
-        let inherited_routing_context = state
-            .current_turn_id
-            .as_deref()
-            .map(|turn_id| {
-                self.runtime
-                    .inner
-                    .storage
-                    .read_messages_for_turn(turn_id, None)
-            })
-            .transpose()?
-            .and_then(routing_context_from_latest_input);
+        let reply_context = self
+            .runtime
+            .inner
+            .runtime_db
+            .agent_message_deliveries()
+            .resolve_reply_context(
+                &caller_agent_id,
+                state
+                    .current_execution_binding
+                    .as_ref()
+                    .map(|binding| binding.turn_id.as_str())
+                    .or(state.current_turn_id.as_deref()),
+                request.reply_context_id.as_deref(),
+                &request.target_agent_id,
+                request.forward,
+            )?;
+        if let (Some(context), Some(binding)) = (&reply_context, &state.current_execution_binding) {
+            if binding
+                .activation_id
+                .as_deref()
+                .is_some_and(|id| id != context.activation_id)
+            {
+                return Err(RuntimeError::policy(
+                    "agent_reply_context_invalid",
+                    "current execution binding no longer matches the selected route activation",
+                )
+                .into());
+            }
+        }
         let principal_kind = bridge
             .canonical_relations_for_agent(&request.target_agent_id)
             .await?
@@ -141,12 +150,18 @@ impl AgentMessagingService<'_> {
             authority_class,
             delivery_surface: MessageDeliverySurface::RuntimeSystem,
             admission_context: AdmissionContext::RuntimeOwned,
-            current_turn_id: state.current_turn_id,
+            current_turn_id: reply_context
+                .as_ref()
+                .map(|context| context.turn_id.clone())
+                .or(state.current_turn_id),
             current_task_id: None,
             current_work_item_id: state
                 .current_turn_work_item_id
                 .or(state.current_work_item_id),
-            inherited_routing_context,
+            inherited_routing_context: reply_context
+                .as_ref()
+                .map(|context| context.routing_context.clone()),
+            routing_activation_id: reply_context.map(|context| context.activation_id),
         };
         let prepared = crate::runtime::AgentMessageDeliveryService::prepare(request, caller)?;
         Ok(bridge.deliver_agent_message(&prepared).await?.receipt)
@@ -337,56 +352,5 @@ pub(super) fn failed_invocation_task(task: &TaskRecord, error: &anyhow::Error) -
         updated_at: chrono::Utc::now(),
         detail: Some(detail),
         ..task.clone()
-    }
-}
-
-#[cfg(test)]
-mod routing_tests {
-    use super::routing_context_from_latest_input;
-    use crate::types::{AgentMessageRoutingContext, MessageBody, MessageEnvelope, MessageKind};
-    use crate::types::{AuthorityClass, MessageOrigin, Priority};
-
-    #[test]
-    fn unrouted_latest_input_does_not_inherit_an_older_route() {
-        let mut routed = MessageEnvelope::new(
-            "caller-agent",
-            MessageKind::InternalFollowup,
-            MessageOrigin::System {
-                subsystem: "agent_message".into(),
-            },
-            AuthorityClass::RuntimeInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "request".into(),
-            },
-        );
-        let route = AgentMessageRoutingContext {
-            message_id: routed.id.clone(),
-            sender_agent_id: Some("origin-agent".into()),
-            recipient_agent_id: routed.agent_id.clone(),
-            reply_to_agent_id: Some("origin-agent".into()),
-            correlation_id: None,
-            in_reply_to_message_id: None,
-            original_sender_agent_id: None,
-            original_reply_to_agent_id: None,
-        };
-        routed.routing_context = Some(route.clone());
-        assert_eq!(
-            routing_context_from_latest_input(vec![routed.clone()]),
-            Some(route)
-        );
-        let mut interjection = routed.clone();
-        interjection.id = "operator-interjection".into();
-        interjection.origin = MessageOrigin::Operator {
-            actor_id: None,
-            actor_display_name: None,
-        };
-        interjection.routing_context = None;
-        assert_eq!(
-            routing_context_from_latest_input(vec![routed.clone(), interjection]),
-            None
-        );
-        routed.routing_context.as_mut().unwrap().message_id = "wrong-message".into();
-        assert_eq!(routing_context_from_latest_input(vec![routed]), None);
     }
 }
