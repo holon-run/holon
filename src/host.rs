@@ -15490,6 +15490,7 @@ mod tests {
             .try_get_loaded_runtime(&created.agent_id)
             .await
             .unwrap();
+        let delivered_briefs = old.storage().read_recent_briefs(10).unwrap();
         // Use the runtime writers, not just an output_path database reference.
         let artifact = old
             .persist_tool_text_artifact("cleanup-result", "tool output")
@@ -15547,7 +15548,45 @@ mod tests {
             }
         })
         .await
-        .expect("command result must settle and runtime must sleep before the final producer turn");
+        .unwrap_or_else(|error| {
+            panic!(
+                "command result must settle and runtime must sleep before the final producer turn: \
+                 {error}; settlement={:?}; state={:?}",
+                host.runtime_db()
+                    .task_result_settlements()
+                    .latest_for_message(command.parent_message_id.as_deref().unwrap()),
+                host.runtime_db().agent_states().latest(&created.agent_id).map(|state|
+                    state.map(|state| (state.status, state.current_run_id, state.pending,
+                        state.current_execution_binding, state.last_turn_terminal))),
+            )
+        });
+        assert_eq!(
+            old.storage().read_recent_briefs(10).unwrap(),
+            delivered_briefs,
+            "settling a delivered-parent result must not publish another brief"
+        );
+        assert_eq!(
+            host.runtime_db()
+                .task_result_settlements()
+                .latest_for_message(command.parent_message_id.as_deref().unwrap())
+                .unwrap()
+                .unwrap()
+                .disposition,
+            Some(crate::runtime_db::TaskResultSettlementDisposition::InvalidOrStale),
+            "a suppressed result must not be recorded as delivered to the model"
+        );
+        let state = old.agent_state().await.unwrap();
+        assert_eq!(
+            state.last_turn_terminal.unwrap().reason.as_deref(),
+            Some("reducer_only/parent_turn_already_delivered")
+        );
+        assert!(matches!(
+            state
+                .current_execution_binding
+                .unwrap()
+                .admission_provenance,
+            Some(crate::types::ExecutionAdmissionProvenance::Canonical { .. })
+        ));
         assert_ne!(created.agent_id, parent_id);
         assert!(host
             .runtime_db()

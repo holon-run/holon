@@ -46,6 +46,7 @@ runtime_async_tests!(
     tool_only_wait_for_persists_turn_without_result_brief,
     silent_wait_for_with_assistant_text_does_not_publish_brief,
     queued_task_result_wait_settles_tool_only_turn_and_reenters_model,
+    live_task_result_consumption_continues_after_late_wait_for,
     turn_execution_boundary_persists_queue_transcript_and_briefs,
     message_processing_creates_briefs_and_sleeps,
     terminal_brief_uses_last_assistant_message_without_terminal_delivery_round,

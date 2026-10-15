@@ -1,4 +1,4 @@
-//! Cancellable pipe/terminal stdout writes. Regular files use Tokio's adapter.
+//! Cancellable pipe/socket/terminal writes. Other stdout targets use Tokio's adapter.
 use std::{
     io,
     pin::Pin,
@@ -12,7 +12,10 @@ mod unix {
     use std::{
         fs::File,
         io::Write,
-        os::fd::{AsRawFd, FromRawFd},
+        os::{
+            fd::{AsRawFd, FromRawFd},
+            unix::fs::FileTypeExt,
+        },
     };
     use tokio::io::unix::AsyncFd;
 
@@ -55,7 +58,11 @@ mod unix {
 
         fn from_file(file: File) -> io::Result<Self> {
             let fd = file.as_raw_fd();
-            if file.metadata()?.is_file() {
+            let file_type = file.metadata()?.file_type();
+            // Non-regular targets such as /dev/null may not support readiness.
+            let is_stream =
+                file_type.is_fifo() || file_type.is_socket() || unsafe { libc::isatty(fd) } == 1;
+            if !is_stream {
                 return Ok(Self::File(tokio::fs::File::from_std(file)));
             }
             let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -105,11 +112,53 @@ mod unix {
         use tokio::io::AsyncWriteExt;
 
         #[tokio::test]
+        async fn null_device_output_succeeds_without_changing_descriptor_flags() {
+            let file = File::options().write(true).open("/dev/null").unwrap();
+            let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+            let mut output = Stdout::from_file(file.try_clone().unwrap()).unwrap();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                output.write_all(b"tail progress\n").await?;
+                output.flush().await
+            })
+            .await
+            .unwrap()
+            .unwrap();
+            drop(output);
+            assert_eq!(
+                unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) },
+                flags,
+            );
+        }
+
+        #[tokio::test]
+        async fn unread_pipe_output_times_out_and_restores_descriptor_flags() {
+            let mut fds = [-1; 2];
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            let _unread_peer = unsafe { File::from_raw_fd(fds[0]) };
+            let file = unsafe { File::from_raw_fd(fds[1]) };
+            let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+            let mut output = Stdout::from_file(file.try_clone().unwrap()).unwrap();
+            assert!(matches!(&output, Stdout::Ready(_)));
+            let bytes = vec![b'x'; 4 * 1024 * 1024];
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), output.write_all(&bytes),)
+                    .await
+                    .is_err()
+            );
+            drop(output);
+            assert_eq!(
+                unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) },
+                flags,
+            );
+        }
+
+        #[tokio::test]
         async fn unread_socket_output_times_out_and_restores_descriptor_flags() {
             let (socket, _unread_peer) = UnixStream::pair().unwrap();
             let flags = unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_GETFL) };
             let file = File::from(OwnedFd::from(socket.try_clone().unwrap()));
             let mut output = Stdout::from_file(file).unwrap();
+            assert!(matches!(&output, Stdout::Ready(_)));
             let bytes = vec![b'x'; 4 * 1024 * 1024];
             assert!(
                 tokio::time::timeout(Duration::from_millis(20), output.write_all(&bytes),)

@@ -176,6 +176,22 @@ The source's same-parent grant is checked against the durable task's rejoin
 fence, not an envelope's claimed turn or the current focus. Reply-wait results
 retain the original reply body and independent grants for each waiter.
 
+After the consuming turn completes, an interjected reply follower is consumed
+only when its accepted delivery and canonical completed live/idle attachment
+agree on the original reply identity. Bare queue state, an unfinished,
+interrupted or aborted turn, and an invalid attachment are not consumption
+evidence. Remaining waiter recovery still rechecks each captured owner or
+exact-wait grant independently; consuming one reply never admits all waiters.
+
+Reducer-only suppression after a parent turn has already delivered a result
+preserves canonical admission through terminal settlement. The result settles
+as invalid or stale, not model-delivered, without another model call or brief.
+An admitted exact-task wait remains authoritative even when the parent
+published a waiting report: only its open canonical triggered-wait attempt
+or same-owner exact-task rejoin, with the matching resolved durable task wait,
+permits model reentry. The source, task, message, and captured owner must agree;
+a replaced wait or an unrelated result grants no exception.
+
 Source revalidation and admission, queue/delivery consumption, the agent-state
 CAS, turn attachment, transcript, and audit commit atomically. A competing claim
 or stale execution cannot leave an admitted result without its attachment.

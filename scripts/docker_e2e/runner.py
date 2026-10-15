@@ -10,6 +10,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import sqlite3
 import stat
@@ -1551,12 +1552,48 @@ class CaseHarness:
             if event["type"] == "tool_execution_failed" and in_scope(event)
         ]
         require(not failures, f"tool failures occurred in {label}: {failures}")
+        completed_items: dict[str, dict[str, Any]] | None = None
+
+        def completed_tool(event: dict[str, Any]) -> bool:
+            nonlocal completed_items
+            payload = event["payload"]
+            if payload.get("status") == "success":
+                return True
+            if (
+                payload.get("status") != "deferred"
+                or payload.get("tool_name") != "CompleteWorkItem"
+            ):
+                return False
+            # A deferred receipt is not success until its exact report commits.
+            work_item_id = payload.get("input", {}).get("work_item_id")
+            turn_id = payload.get("turn_id")
+            if (
+                not work_item_id or work_item_id != payload.get("work_item_id")
+                or not turn_id
+            ):
+                return False
+            if completed_items is None:
+                completed_items = {
+                    item["id"]: item
+                    for item in self.work_items(f"{label}-completion-check")
+                    if item.get("state") == "completed" and item.get("result_brief_id")
+                }
+            item = completed_items.get(work_item_id)
+            if item is None:
+                return False
+            brief = self.brief(item["result_brief_id"], f"{label}-completion-check")
+            return (
+                brief.get("work_item_id") == work_item_id
+                and brief.get("turn_id") == turn_id
+                and bool((brief.get("text") or "").strip())
+            )
+
         return [
             event
             for event in events
             if event["type"] == "tool_executed"
-            and event["payload"].get("status") == "success"
             and in_scope(event)
+            and completed_tool(event)
         ]
 
     def assert_tools(
@@ -3777,13 +3814,24 @@ def run_scheduler_task_wait_resume_case(
     task_marker = f"SCHEDULER-TASK-RESULT-{marker}"
     completion_marker = f"SCHEDULER-TASK-WAIT-COMPLETE-{marker}"
     objective = (
-        f"{objective_marker}. On the first autonomous work_queue turn, call "
-        f"ExecCommand with command `sleep 15; printf {task_marker}`, "
+        f"{objective_marker}. This is an intentional crash/restart acceptance "
+        "drill, not a command-success task. Across the entire WorkItem lifecycle, "
+        "only one ExecCommand call is allowed. On the first autonomous work_queue "
+        "turn only, call "
+        f"ExecCommand exactly once with command `sleep 15; printf {task_marker}`, "
         "yield_time_ms=50, and a bounded output limit. Use the returned promoted "
-        "task_id to call WaitFor with wake=task_result. Do not poll the task or "
-        "complete the WorkItem. On the task-result rejoin, call GetWorkItem for "
-        "the current WorkItem, then call WaitFor with wake=external, "
-        f"resource=docker-e2e:{marker}, and a concrete reason. On the external "
+        "task_id to call WaitFor with wake=task_result and resource set to that "
+        "exact task_id. The harness will crash the runtime while that task is "
+        "pending. Its restart TaskResult saying the task was interrupted is the "
+        "expected result; command success and the stdout marker are not required. "
+        "Do not repeat or retry ExecCommand after restart, even if the result is "
+        "interrupted, and do not run a replacement command. Do not call TaskStatus "
+        "or TaskOutput in any turn, including through CLI workarounds. Do not poll "
+        "the task or complete the WorkItem before the external wake. On that interrupted "
+        "task-result rejoin, call GetWorkItem for "
+        "the current WorkItem first, then call WaitFor with wake=external, "
+        f"resource=docker-e2e:{marker}, and a concrete reason. Do not run diagnostic "
+        "or recovery commands on that rejoin. On the external "
         "wake, call GetWorkItem, update both existing todos to completed, then "
         "emit a concise completion result containing "
         f"{completion_marker} immediately followed by CompleteWorkItem for the "
@@ -4184,9 +4232,11 @@ def run_scheduler_multi_workitem_case(
         "this WorkItem is the active focus. Complete this WorkItem only after "
         "the Runtime resumes it through an autonomous work_queue SystemTick. "
         "On that autonomous turn, perform the inspection steps, update both "
-        f"existing todos to completed, then emit a concise completion result "
-        f"containing {completion_a} immediately followed by CompleteWorkItem "
-        "for that exact item. Do not wait for more operator input."
+        "existing todos to completed, then provide a concise completion report "
+        f"containing the exact marker {completion_a} in the same assistant "
+        "response as CompleteWorkItem for that exact item. If the tool instead "
+        "requests a deferred final report, repeat that exact marker in the "
+        "final report. Do not wait for more operator input."
     )
     objective_b = (
         f"{objective_b_marker}. Review the agent workspace by calling "
@@ -4194,10 +4244,11 @@ def run_scheduler_multi_workitem_case(
         "ListWorkItems to verify the work item queue. Complete this WorkItem "
         "only after the Runtime resumes it through an autonomous work_queue "
         "SystemTick. On that autonomous turn, perform the review steps, "
-        f"update both existing todos to completed, then emit a concise "
-        f"completion result containing {completion_b} immediately followed "
-        "by CompleteWorkItem for that exact item. Do not wait for more "
-        "operator input."
+        "update both existing todos to completed, then provide a concise "
+        f"completion report containing the exact marker {completion_b} in "
+        "the same assistant response as CompleteWorkItem for that exact item. "
+        "If the tool instead requests a deferred final report, repeat that "
+        "exact marker in the final report. Do not wait for more operator input."
     )
     phase = case["phases"][0]
     baseline, _ = harness.prompt(
@@ -4734,6 +4785,196 @@ def run_scheduler_concurrent_claim_fencing_case(
         )
 
 
+def require_scheduler_interject_setup(
+    harness: CaseHarness,
+    snapshot: dict[str, Any],
+    *,
+    work_item_id: str,
+    create_message_id: str,
+    resume_message_id: str,
+) -> tuple[str, str]:
+    """Bind the setup wait to its Conversation or exact A continuation."""
+    waits = [
+        row for row in snapshot["wait_conditions"]
+        if row["work_item_id"] == work_item_id
+    ]
+    require(
+        len(waits) == 1
+        and waits[0]["agent_id"] == harness.agent_id
+        and waits[0]["kind"] == "operator"
+        and waits[0]["status"] == "resolved"
+        and waits[0]["trigger_message_id"] == resume_message_id,
+        f"interject setup wait identity mismatch: {waits}",
+    )
+    wait = waits[0]
+    turns = {
+        row["turn_id"]: row for row in snapshot["turn_records"]
+        if row["agent_id"] == harness.agent_id
+    }
+    setup = turns.get(wait["last_turn_id"], {})
+    autonomous_setup = setup.get("owner_kind") == "work_item"
+    attempts = require_execution_attempt_chain(
+        snapshot,
+        agent_id=harness.agent_id,
+        work_item_id=work_item_id,
+        expected_source_kinds=(
+            ("work_item_continuation", "triggered_wait")
+            if autonomous_setup else ("triggered_wait",)
+        ),
+        conversation_message_ids={create_message_id},
+    )
+    conversation = next(
+        attempt for attempt in attempts
+        if attempt.get("source_message_id") == create_message_id
+        and attempt["binding"]["kind"] == "conversation"
+    )
+    seed = turns.get(conversation.get("turn_id"), {})
+    require(
+        seed.get("owner_kind") == "conversation"
+        and seed.get("owner_id") == conversation["binding"]["interaction_id"]
+        and seed.get("current_work_item_id") is None
+        and seed.get("trigger_message_id") == create_message_id
+        and conversation["source"]["identity"]
+        == {"kind": "queue_message", "message_id": create_message_id},
+        f"interject setup Conversation mismatch: {conversation}, {seed}",
+    )
+    setup_attempts = [
+        attempt for attempt in attempts
+        if attempt.get("turn_id") == setup.get("turn_id")
+    ]
+    require(
+        len(setup_attempts) == 1,
+        f"interject wait lacks its exact canonical setup attempt: {setup}",
+    )
+    setup_attempt = setup_attempts[0]
+    if autonomous_setup:
+        require(
+            setup.get("owner_id") == work_item_id
+            and setup.get("current_work_item_id") == work_item_id
+            and setup_attempt["binding"]
+            == {"kind": "work_item", "work_item_id": work_item_id}
+            and setup_attempt["source"]["identity"]
+            == {"kind": "work_item_continuation", "work_item_id": work_item_id}
+            and setup_attempt["source_message_id"] == setup["trigger_message_id"]
+            and seed["turn_index"] < setup["turn_index"],
+            f"interject wait is not A's ordered canonical continuation: {setup_attempt}",
+        )
+    else:
+        require(
+            setup_attempt == conversation,
+            f"interject wait belongs to an unrelated Conversation: {setup_attempt}",
+        )
+    expected_outcomes = {
+        conversation["attempt_id"]: ({
+            "owner": "conversation", "outcome": {"kind": "replied"}
+        } if autonomous_setup else {
+            "owner": "conversation",
+            "outcome": {
+                "kind": "handoff_to_work_item_wait",
+                "work_item_id": work_item_id,
+                "wait": {"wait_id": wait["wait_condition_id"]},
+            },
+        }),
+    }
+    if autonomous_setup:
+        expected_outcomes[setup_attempt["attempt_id"]] = {
+            "owner": "work_item",
+            "outcome": {
+                "kind": "wait", "wait": {"wait_id": wait["wait_condition_id"]}
+            },
+        }
+    outcome_by_id = {
+        row["outcome_id"]: execution_outcome(row)
+        for row in snapshot["execution_protocol_outcomes"]
+        if row["agent_id"] == harness.agent_id
+    }
+    for row in snapshot["execution_protocol_attempts"]:
+        if row["agent_id"] == harness.agent_id and row["attempt_id"] in expected_outcomes:
+            require(
+                outcome_by_id[row["terminal_outcome_id"]]["outcome"]
+                == expected_outcomes[row["attempt_id"]],
+                f"interject setup did not commit its exact wait/handoff: {row}",
+            )
+    resume = next(
+        attempt for attempt in attempts
+        if attempt.get("source", {}).get("identity", {}).get("kind") == "triggered_wait"
+    )
+    resumed_turn = turns.get(resume.get("turn_id"), {})
+    require(
+        resume["source_message_id"] == resume_message_id
+        and resume["source"]["identity"] == {
+            "kind": "triggered_wait",
+            "wait_id": wait["wait_condition_id"],
+            "trigger_message_id": resume_message_id,
+        }
+        and resumed_turn.get("owner_kind") == "work_item"
+        and resumed_turn.get("owner_id") == work_item_id
+        and resumed_turn.get("current_work_item_id") == work_item_id
+        and resumed_turn.get("trigger_message_id") == resume_message_id
+        and setup["turn_index"] < resumed_turn["turn_index"],
+        f"interject resume is not the exact ordered A wait activation: {resume}",
+    )
+    events = harness.events("scheduler-interject-setup-lineage")
+    wait_events = [
+        event for event in events
+        if event["type"] == "tool_executed"
+        and event["payload"].get("tool_name") == "WaitFor"
+    ]
+    require(len(wait_events) == 1, f"interject expected one setup WaitFor: {wait_events}")
+    payload = wait_events[0]["payload"]
+    require(
+        payload.get("status") in {"success", "deferred"}
+        and payload.get("turn_id") == setup["turn_id"]
+        and payload.get("work_item_id") == work_item_id
+        and payload.get("input", {}).get("work_item_id", work_item_id) == work_item_id
+        and payload.get("input", {}).get("wake") == "operator_input",
+        f"interject WaitFor is not associated with the canonical setup: {payload}",
+    )
+    if payload["status"] == "deferred":
+        briefs = [
+            json.loads(row["payload_json"]) for row in snapshot["briefs"]
+            if row["agent_id"] == harness.agent_id
+            and row["turn_id"] == setup["turn_id"] and row["kind"] == "result"
+        ]
+        require(
+            payload["input"].get("delivery") == "final"
+            and len(briefs) == 1
+            and briefs[0].get("turn_id") == setup["turn_id"]
+            and briefs[0].get("work_item_id") == work_item_id
+            and bool((briefs[0].get("text") or "").strip()),
+            f"interject deferred WaitFor has no committed exact Result brief: {briefs}",
+        )
+    seed_tools = [
+        event for event in events
+        if event["type"] == "tool_executed"
+        and event["payload"].get("turn_id") == seed["turn_id"]
+        and event["payload"].get("tool_name") in {"CreateWorkItem", "PickWorkItem"}
+    ]
+    require(
+        not autonomous_setup or not any(
+            event["type"] == "tool_executed"
+            and event["payload"].get("turn_id") == setup["turn_id"]
+            and event["payload"].get("tool_name") in {"CreateWorkItem", "PickWorkItem"}
+            for event in events
+        ),
+        "interject autonomous setup repeated CreateWorkItem/PickWorkItem",
+    )
+    require(
+        [event["payload"]["tool_name"] for event in seed_tools]
+        == ["CreateWorkItem", "PickWorkItem"]
+        and all(
+            event["payload"].get("status") == "success"
+            and event["payload"].get("work_item_id") == work_item_id
+            for event in seed_tools
+        )
+        and seed_tools[1]["payload"]["input"].get("work_item_id") == work_item_id
+        and seed_tools[0]["event_seq"] < seed_tools[1]["event_seq"]
+        < wait_events[0]["event_seq"],
+        f"interject Create/Pick/WaitFor setup order mismatch: {seed_tools}",
+    )
+    return setup["turn_id"], resumed_turn["turn_id"]
+
+
 def run_scheduler_operator_interject_during_wait_case(
     harness: CaseHarness, case: dict[str, Any]
 ) -> None:
@@ -4808,7 +5049,7 @@ def run_scheduler_operator_interject_during_wait_case(
     harness.assert_tools(
         "scheduler-interject-create",
         baseline,
-        ["CreateWorkItem", "PickWorkItem", "WaitFor"],
+        ["CreateWorkItem", "PickWorkItem"],
         forbidden + ["GetWorkItem", "UpdateWorkItem", "CompleteWorkItem"],
         message_id=harness.prompt_scope("scheduler-interject-create")["message_id"],
     )
@@ -4840,11 +5081,20 @@ def run_scheduler_operator_interject_during_wait_case(
             f"WorkItem {letter} brief mismatch: {brief}",
         )
     snapshot = harness.runtime_db_snapshot("scheduler-interject")
-    a_turn_ids = {
-        row["turn_id"]
-        for row in snapshot["turn_records"]
-        if row["current_work_item_id"] == work_item_a_id
-    }
+    setup_turn_id, resume_turn_id = require_scheduler_interject_setup(
+        harness,
+        snapshot,
+        work_item_id=work_item_a_id,
+        create_message_id=harness.prompt_scope("scheduler-interject-create")["message_id"],
+        resume_message_id=harness.prompt_scope("scheduler-interject-resume")["message_id"],
+    )
+    harness.assert_tools(
+        "scheduler-interject-a-setup",
+        baseline,
+        [],
+        forbidden + ["GetWorkItem", "UpdateWorkItem", "CompleteWorkItem"],
+        turn_ids={setup_turn_id},
+    )
     b_turn_ids = {
         row["turn_id"]
         for row in snapshot["turn_records"]
@@ -4855,7 +5105,7 @@ def run_scheduler_operator_interject_during_wait_case(
         baseline,
         ["GetWorkItem", "UpdateWorkItem", "CompleteWorkItem"],
         forbidden + ["CreateWorkItem", "PickWorkItem", "WaitFor"],
-        turn_ids=a_turn_ids,
+        turn_ids={resume_turn_id},
     )
     harness.assert_tools(
         "scheduler-interject-b-autonomous",
@@ -4864,17 +5114,7 @@ def run_scheduler_operator_interject_during_wait_case(
         forbidden + ["CreateWorkItem", "PickWorkItem", "WaitFor"],
         turn_ids=b_turn_ids,
     )
-    # The autonomous continuation claims the WorkItem before the interjection is
-    # delivered, so it completes the item while the triggered wait still settles.
-    require_scheduler_engine_activation_chain(
-        harness,
-        snapshot,
-        work_item_id=work_item_a_id,
-        expected_source_kinds=("work_item_continuation", "triggered_wait"),
-        conversation_message_ids={
-            harness.prompt_scope("scheduler-interject-create")["message_id"]
-        },
-    )
+    # A's setup wait was bound above; B has its independent continuation.
     require_scheduler_engine_activation_chain(
         harness,
         snapshot,
@@ -5394,6 +5634,638 @@ def run_scheduler_checkpoint_replay_case(
     )
 
 
+def wait_live_check(check: Any, deadline: float, description: str) -> Any:
+    """Poll an observable gate, never infer completion from a model's prose."""
+    while time.monotonic() < deadline:
+        value = check()
+        if value:
+            return value
+        time.sleep(0.25)
+    raise TimeoutError(f"live acceptance timed out waiting for {description}")
+
+
+def live_events(harness: CaseHarness, after_seq: int) -> list[dict[str, Any]]:
+    events = harness.event_batch("live-observation", after_seq=after_seq)["events"]
+    require(
+        not [
+            event for event in events
+            if event["type"] in {"runtime_error", "tool_execution_failed"}
+            or event.get("payload", {}).get("tool_name") == "TaskOutput"
+        ],
+        "live acceptance encountered a runtime/tool failure or forbidden TaskOutput",
+    )
+    return events
+
+
+def wait_live_turn(
+    harness: CaseHarness, after_seq: int, message_id: str, deadline: float
+) -> list[dict[str, Any]]:
+    def completed() -> list[dict[str, Any]] | None:
+        events = live_events(harness, after_seq)
+        turns = {
+            event["payload"]["turn_id"]
+            for event in events
+            if event["type"] == "turn_started"
+            and event["payload"].get("message_id") == message_id
+        }
+        terminals = [
+            event for event in events
+            if event["type"] == "turn_terminal"
+            and event["payload"].get("turn_id") in turns
+        ]
+        if not terminals:
+            return None
+        require(
+            len(turns) == len(terminals) == 1
+            and terminals[0]["payload"]["kind"] == "completed",
+            f"live input did not complete exactly one turn: {terminals}",
+        )
+        return events
+
+    return wait_live_check(completed, deadline, f"terminal for {message_id}")
+
+
+def live_snapshot(harness: CaseHarness, label: str) -> dict[str, Any]:
+    """Add current-schema evidence without changing old-release snapshot readers."""
+    snapshot = harness.runtime_db_snapshot(label)
+    database = harness.evidence / f"{label}-runtime-state" / "runtime.sqlite"
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    try:
+        connection.row_factory = sqlite3.Row
+        for table in (
+            "tasks", "task_result_settlements", "agent_message_deliveries",
+            "transcript_entries",
+        ):
+            snapshot[table] = sqlite_rows(connection, f"SELECT * FROM {table}")
+    finally:
+        connection.close()
+    write_json(harness.evidence / f"{label}-live-db.json", snapshot)
+    return snapshot
+
+
+def bounded_command_read(path: str) -> str:
+    return (
+        f"p={shlex.quote(path)}; n=$(stat -c %s -- \"$p\"); "
+        'h=$(head -c 1024 -- "$p" | wc -c); '
+        't=$(tail -c 1024 -- "$p" | wc -c); '
+        'e=$(dd if="$p" bs=1 skip="$n" count=1 status=none | wc -c); '
+        "printf '{\"path\":%s,\"size\":%s,\"head_bytes\":%s,"
+        "\"tail_bytes\":%s,\"eof\":%s}\\n' "
+        f"{shlex.quote(json.dumps(path))} "
+        '"$n" "$h" "$t" "$(test "$e" -eq 0 && echo true || echo false)"'
+    )
+
+
+def gated_output_command(gate: str) -> str:
+    return (
+        "head -c 524288 /dev/zero | tr '\\000' x; exec 1>&- 2>&-; "
+        f"for i in $(seq 1 4500); do test ! -e {shlex.quote(gate)} "
+        "|| exit 0; sleep 0.1; done; exit 93"
+    )
+
+
+def require_live_command_waiting_report(
+    snapshot: dict[str, Any], *, agent_id: str, task_id: str,
+    parent_turn_id: str, waiting_marker: str,
+) -> None:
+    require(
+        bool(parent_turn_id) and bool(waiting_marker.strip()),
+        "command waiting report requires a parent turn and non-empty marker",
+    )
+    waits = [
+        row for row in snapshot["wait_conditions"]
+        if row["agent_id"] == agent_id and row["subject_ref"] == task_id
+    ]
+    require(
+        len(waits) == 1 and waits[0]["status"] == "active"
+        and waits[0]["kind"] == "task"
+        and waits[0]["last_turn_id"] == parent_turn_id
+        and waits[0]["work_item_id"] is None
+        and not [row for row in snapshot["task_result_settlements"]
+                 if row["task_id"] == task_id],
+        f"command exact wait was not active before gate release: {waits}",
+    )
+    reports = [
+        (row, json.loads(row["payload_json"])) for row in snapshot["briefs"]
+    ]
+    matching = [
+        (row, brief) for row, brief in reports
+        if waiting_marker in (brief.get("text") or "")
+    ]
+    require(
+        len(matching) == 1
+        and matching[0][0]["agent_id"] == matching[0][1].get("agent_id") == agent_id
+        and matching[0][0]["turn_id"] == matching[0][1].get("turn_id")
+        == parent_turn_id
+        and matching[0][0]["kind"] == matching[0][1].get("kind") == "result"
+        and matching[0][0]["evidence_id"] == matching[0][1].get("id")
+        and matching[0][1].get("text", "").strip() == waiting_marker,
+        f"missing unique parent-turn waiting Result brief: {matching}",
+    )
+
+
+def require_live_task_reentry(
+    snapshot: dict[str, Any], *, agent_id: str, task_id: str, parent_turn_id: str
+) -> dict[str, Any]:
+    settlements = [
+        row for row in snapshot["task_result_settlements"]
+        if row["task_id"] == task_id and row["agent_id"] == agent_id
+    ]
+    require(
+        len(settlements) == 1
+        and bool(settlements[0]["result_identity"])
+        and settlements[0]["state"] == "settled"
+        and settlements[0]["disposition"] == "model_delivered"
+        and settlements[0]["parent_turn_id"] == parent_turn_id,
+        f"task result was not settled exactly once by its original parent: {settlements}",
+    )
+    settlement = settlements[0]
+    waits = [
+        row for row in snapshot["wait_conditions"]
+        if row["agent_id"] == agent_id and row["subject_ref"] == task_id
+    ]
+    require(
+        len(waits) == 1 and waits[0]["status"] == "resolved"
+        and waits[0]["last_turn_id"] == parent_turn_id
+        and waits[0]["trigger_message_id"] == settlement["message_id"],
+        f"exact task wait did not resolve through its result identity: {waits}",
+    )
+    messages = [
+        json.loads(row["payload_json"]) for row in snapshot["messages"]
+        if row["message_id"] == settlement["message_id"]
+    ]
+    require(
+        len(messages) == 1 and messages[0]["kind"] == "task_result"
+        and messages[0]["origin"] == {"kind": "task", "task_id": task_id}
+        and messages[0]["metadata"]["task_id"] == task_id,
+        f"task result identity/provenance mismatch: {messages}",
+    )
+    turns = [
+        row for row in snapshot["turn_records"]
+        if row["agent_id"] == agent_id
+        and row["trigger_message_id"] == settlement["message_id"]
+    ]
+    require(
+        len(turns) == 1 and turns[0]["turn_id"] != parent_turn_id
+        and turns[0]["terminal_kind"] == "completed",
+        f"task result did not cause a real, distinct completed re-entry: {turns}",
+    )
+    tasks = [
+        json.loads(row["payload_json"]) for row in snapshot["tasks"]
+        if row["task_id"] == task_id
+    ]
+    require(
+        len(tasks) == 1
+        and tasks[0]["id"] == task_id
+        and tasks[0]["detail"]["rejoin_obligation_id"] == task_id
+        and tasks[0]["detail"]["rejoin_generation"] == settlement["rejoin_generation"]
+        and tasks[0]["detail"]["parent_turn_id"] == parent_turn_id
+        and tasks[0].get("work_item_id") == settlement["work_item_id"]
+        == waits[0]["work_item_id"],
+        f"task/wait/result owner migrated: {tasks}",
+    )
+    return tasks[0]
+
+
+def run_live_command_observation_case(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
+    harness.initialize_workspace()
+    harness.start()
+    deadline = time.monotonic() + case["timeout_seconds"]
+    marker = secrets.token_hex(4)
+    waiting_marker = f"COMMAND-WAITING-{marker}"
+    gate = harness.workspace_parent / f".command-release-{marker}"
+    remote_gate = f"/acceptance/{gate.name}"
+    command = gated_output_command(remote_gate)
+    cursor = harness.event_cursor()
+    try:
+        harness.request(
+            "POST", harness.agent_path("prompt", control=True),
+            {"text": case["phases"][0]["prompt"].format(
+                command=command,
+                read_command=bounded_command_read("CONFIRMED_OUTPUT_PATH"),
+                waiting_marker=waiting_marker,
+                completion_marker=f"COMMAND-REENTERED-{marker}",
+            )},
+        )
+
+        def waiting() -> dict[str, Any] | None:
+            for event in live_events(harness, cursor):
+                if event["type"] == "tool_executed" and (
+                    event["payload"].get("tool_name") == "WaitFor"
+                ):
+                    detail = harness.tool_detail(event, "command-wait")
+                    if detail.get("status") == "success":
+                        return detail
+            return None
+
+        wait_detail = wait_live_check(waiting, deadline, "committed task wait")
+        wait = result_value(wait_detail)
+        task_id = wait.get("resource")
+        require(
+            wait.get("wake") == "task_result"
+            and wait.get("continuation") == "yield_and_wait" and task_id
+            and wait_detail["input"].get("delivery") == "final",
+            f"WaitFor did not actually yield for the running command: {wait}",
+        )
+        before = live_snapshot(harness, "command-before-release")
+        require_live_command_waiting_report(
+            before, agent_id=harness.agent_id, task_id=task_id,
+            parent_turn_id=wait_detail["turn_id"], waiting_marker=waiting_marker,
+        )
+        details = [
+            harness.tool_detail(event, "command-before-release")
+            for event in live_events(harness, cursor)
+            if event["type"] == "tool_executed"
+        ]
+        statuses = [
+            result_value(detail)["task"] for detail in details
+            if detail["tool_name"] == "TaskStatus"
+            and result_value(detail).get("task", {}).get("task_id") == task_id
+        ]
+        require(
+            len(statuses) == 2 and all(s["status"] == "running" for s in statuses),
+            f"EOF was not bracketed by running TaskStatus receipts: {statuses}",
+        )
+        path = statuses[0].get("command", {}).get("output_path")
+        require(
+            isinstance(path, str) and path.startswith("/")
+            and statuses[1]["command"]["output_path"] == path,
+            f"TaskStatus did not confirm a stable absolute output path: {statuses}",
+        )
+        reads = [
+            detail for detail in details
+            if detail["tool_name"] == "ExecCommand"
+            and detail["input"].get("cmd") == bounded_command_read(path)
+        ]
+        require(len(reads) == 1, "missing exact bounded read of confirmed output path")
+        status_positions = [
+            index for index, detail in enumerate(details)
+            if detail["tool_name"] == "TaskStatus"
+        ]
+        require(
+            status_positions[0] < details.index(reads[0]) < status_positions[1],
+            "running TaskStatus receipts did not bracket the bounded EOF read",
+        )
+        read_result = result_value(reads[0])
+        observed = json.loads(read_result.get("stdout_preview") or "{}")
+        require(
+            read_result.get("exit_status") == 0 and observed.get("path") == path
+            and observed.get("size", 0) >= 524288
+            and observed.get("head_bytes") == observed.get("tail_bytes") == 1024
+            and observed.get("eof") is True,
+            f"bounded running-output EOF evidence is invalid: {read_result}",
+        )
+        promoted = [
+            result_value(detail) for detail in details
+            if detail["tool_name"] == "ExecCommand"
+            and detail["input"].get("cmd") == command
+        ]
+        require(
+            len(promoted) == 1
+            and promoted[0].get("task_handle", {}).get("task_id") == task_id
+            and promoted[0].get("initial_output_truncated") is True,
+            f"large output command did not promote with bounded preview: {promoted}",
+        )
+        gate.touch()
+
+        def reentry_started() -> str | None:
+            for event in live_events(harness, cursor):
+                if event["type"] == "turn_started" and (
+                    event["payload"].get("message_kind") == "task_result"
+                ):
+                    return event["payload"]["message_id"]
+            return None
+
+        message_id = wait_live_check(reentry_started, deadline, "task-result re-entry")
+        wait_live_turn(harness, cursor, message_id, deadline)
+        after = live_snapshot(harness, "command-after-reentry")
+        task = require_live_task_reentry(
+            after, agent_id=harness.agent_id, task_id=task_id,
+            parent_turn_id=wait_detail["turn_id"],
+        )
+        terminal = harness.request("GET", harness.agent_path(f"tasks/{task_id}"))
+        capture = terminal.get("command", {}).get("output_capture") or {}
+        require(
+            task["status"] == terminal["status"] == "completed"
+            and terminal["command"].get("exit_status") == 0
+            and terminal["command"].get("output_path") == path
+            and capture.get("emitted_bytes", 0) >= 524288
+            and 0 < capture.get("retained_bytes", 0)
+            <= capture.get("retention_limit_bytes", 0),
+            f"terminal command state/exit/path mismatch: {terminal}",
+        )
+        all_details = [
+            harness.tool_detail(event, "command-final")
+            for event in live_events(harness, cursor)
+            if event["type"] == "tool_executed"
+        ]
+        require(
+            [detail["tool_name"] for detail in all_details] == [
+                "ExecCommand", "TaskStatus", "ExecCommand", "TaskStatus",
+                "WaitFor", "TaskStatus",
+            ]
+            and result_value(all_details[-1]).get("task") == terminal,
+            "model did not verify the same terminal task after genuine re-entry",
+        )
+    finally:
+        gate.touch()
+        gate.unlink(missing_ok=True)
+
+
+def require_live_agent_tail(harness: CaseHarness, *, deadline: float) -> None:
+    def remaining_timeout() -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("live acceptance timed out observing agent tail")
+        return min(DOCKER_CONTROL_TIMEOUT_SECONDS, remaining)
+
+    cursor: str | None = None
+    for follow in (False, True):
+        args = [
+            "holon", "tail", "--agent", harness.agent_id, "--include-progress",
+            "--limit", "2", "--max-bytes", "4096", "--max-events", "8",
+            "--timeout-ms", "200",
+        ]
+        if follow:
+            args.extend(["--follow", "--cursor", cursor])
+        result = harness.docker(
+            "exec", harness.container, *args, check=False,
+            timeout=remaining_timeout(),
+        )
+        label = "agent-tail-follow" if follow else "agent-tail-snapshot"
+        write_json(harness.evidence / f"{label}.json", {
+            "exit_status": result.returncode,
+            "stdout": result.stdout, "stderr": result.stderr,
+        })
+        require(result.returncode == 0, f"{label} failed: {result.stderr}")
+        records = [json.loads(line) for line in result.stdout.splitlines()]
+        require(
+            0 < len(result.stdout.encode()) <= 4096 and records
+            and records[-1].get("type") == "end"
+            and records[-1].get("stop_reason") in {"snapshot", "timeout", "budget"}
+            and isinstance(records[-1].get("cursor"), str)
+            and all(
+                record.get("scope") == "agent"
+                and record.get("agent_id") == harness.agent_id
+                and "task_id" not in record
+                for record in records
+            ),
+            f"{label} violated bounded agent-only observation: {records}",
+        )
+        cursor = records[-1]["cursor"]
+    null = harness.docker(
+        "exec", harness.container, "sh", "-c",
+        'holon tail --agent "$1" --include-progress --max-bytes 4096 >/dev/null',
+        "sh", harness.agent_id, check=False, timeout=remaining_timeout(),
+    )
+    write_json(harness.evidence / "agent-tail-null-device.json", {
+        "exit_status": null.returncode, "stderr": null.stderr,
+    })
+    require(null.returncode == 0, f"tail to /dev/null failed: {null.stderr}")
+
+
+def require_live_input_batch(
+    snapshot: dict[str, Any], *, recipient: str, sender: str, message_ids: list[str],
+    reply_details: list[dict[str, Any]],
+) -> None:
+    require(
+        [detail["input"].get("reply_context_id") for detail in reply_details]
+        == message_ids
+        and all(detail["input"].get("agent_id") == sender for detail in reply_details),
+        "replies did not select every original route in receive order",
+    )
+    turns = [
+        json.loads(row["payload_json"]) for row in snapshot["turn_records"]
+        if row["agent_id"] == recipient and row["trigger_message_id"] == message_ids[0]
+    ]
+    require(len(turns) == 1, f"ordinary burst did not have one anchor turn: {turns}")
+    turn = turns[0]
+    initial = turn.get("idle_input_batch") or {}
+    live = turn.get("live_input_batches") or []
+    initial_items = initial.get("items", [])
+    live_items = [item for batch in live for item in batch["items"]]
+    require(
+        [item["message_id"] for item in initial_items] == message_ids[:2]
+        and [item["message_id"] for item in live_items] == message_ids[2:]
+        and turn["input_message_ids"] == message_ids
+        and (turn.get("trigger") or {}).get("message_id") == message_ids[0]
+        and initial.get("sender_agent_id") == sender
+        and initial.get("rendered_bytes", 0) <= 24576
+        and 1 <= len(live) <= 4
+        and sum(batch["rendered_bytes"] for batch in live) <= 98304
+        and initial.get("activation_id")
+        and all(
+            batch["safe_point"]["provider_round"] > 1
+            and batch["safe_point"]["activation_id"]
+            == batch["activation_id"] == initial["activation_id"]
+            for batch in live
+        ),
+        f"initial/live batching, ordering, safe-point or budgets mismatch: {turn}",
+    )
+    originals = {
+        row["message_id"]: json.loads(row["payload_json"])
+        for row in snapshot["messages"] if row["message_id"] in message_ids
+    }
+    require(len(originals) == 4, "original ordinary messages were lost")
+    receive_order = [
+        original["id"] for original in sorted(
+            originals.values(), key=lambda original: original["message_seq"]
+        )
+    ]
+    require(receive_order == message_ids, f"receive order changed: {receive_order}")
+    for item, detail in zip(initial_items + live_items, reply_details):
+        message_id = item["message_id"]
+        original = originals[message_id]
+        marker = original["body"]["text"].split(":", 1)[0]
+        expected_ack = f"ACK {marker}"
+        require(
+            marker.startswith("BATCH-")
+            and detail["input"].get("message") == expected_ack,
+            f"reply tool input did not acknowledge original {message_id}: {detail}",
+        )
+        provenance_line = next(
+            line for line in item["rendered"].splitlines()
+            if line.startswith("  provenance: ")
+        )
+        provenance = json.loads(provenance_line.removeprefix("  provenance: "))
+        require(
+            item["source_ref"] == f"message:{message_id}"
+            and item["rendered"].endswith(original["body"]["text"] + "\n")
+            and original.get("work_item_id") is None
+            and original["authority_class"] == "runtime_instruction"
+            and original["routing_context"]["sender_agent_id"] == sender
+            and original["routing_context"]["recipient_agent_id"] == recipient
+            and provenance.get("source_refs") == original.get("source_refs", {})
+            and all(provenance.get(key) == original.get(key) for key in (
+                "id", "created_at", "origin", "authority_class", "priority",
+                "delivery_surface", "admission_context", "routing_context",
+                "correlation_id", "causation_id",
+            )),
+            f"original identity/provenance was not preserved: {item}",
+        )
+        incoming = [
+            row for row in snapshot["transcript_entries"]
+            if row["message_id"] == message_id and row["kind"] == "incoming_message"
+            and row["agent_id"] == recipient
+        ]
+        deliveries = [
+            row for row in snapshot["agent_message_deliveries"]
+            if row["message_id"] == message_id
+        ]
+        consumed = [
+            row for row in snapshot["queue_entries"]
+            if row["message_id"] == message_id
+            and row["status"] in {"processed", "interjected"}
+        ]
+        require(
+            len(incoming) == len(deliveries) == len(consumed) == 1
+            # The anchor's ingress transcript precedes turn creation. Followers
+            # instead persist their exact canonical attachment turn atomically.
+            and (
+                incoming[0]["turn_id"] == turn["turn_id"]
+                or (message_id == message_ids[0] and incoming[0]["turn_id"] is None)
+            )
+            and consumed[0]["status"]
+            == ("processed" if message_id == message_ids[0] else "interjected")
+            and deliveries[0]["state"] == "consumed",
+            f"input was not consumed exactly once in the batched turn: {message_id}",
+        )
+        replies = [
+            json.loads(row["payload_json"]) for row in snapshot["messages"]
+            if row["agent_id"] == sender
+            and (json.loads(row["payload_json"]).get("routing_context") or {}).get(
+                "in_reply_to_message_id"
+            ) == message_id
+        ]
+        require(
+            len(replies) == 1
+            and replies[0]["routing_context"]["sender_agent_id"] == recipient
+            and replies[0]["routing_context"]["recipient_agent_id"] == sender
+            and replies[0]["routing_context"].get("correlation_id")
+            == original["routing_context"].get("correlation_id"),
+            f"original reply route was lost or duplicated: {replies}",
+        )
+        require(
+            (replies[0].get("body") or {}).get("text") == expected_ack,
+            f"canonical reply did not acknowledge original {message_id}: {replies}",
+        )
+    require(
+        not [row for row in snapshot["turn_records"]
+             if row["agent_id"] == recipient
+             and row["trigger_message_id"] in message_ids[1:]],
+        "a batched follower was activated a second time",
+    )
+
+
+def run_live_input_batch_case(harness: CaseHarness, case: dict[str, Any]) -> None:
+    harness.initialize_workspace()
+    harness.start()
+    deadline = time.monotonic() + case["timeout_seconds"]
+    marker = secrets.token_hex(4)
+    sender = copy.copy(harness)
+    sender.agent_id = f"batch-sender-{marker}"
+    harness.request("POST", sender.agent_path("create", control=True), {})
+    gates = [
+        harness.workspace_parent / f".{stage}-{marker}"
+        for stage in ("initial-release", "initial-ready", "live-release", "live-ready")
+    ]
+    initial_release, initial_ready, live_release, live_ready = gates
+
+    def command(release: Path, ready: Path) -> str:
+        return (
+            f"touch /acceptance/{ready.name}; "
+            f"for i in $(seq 1 4500); do test ! -e /acceptance/{release.name} "
+            "|| exit 0; sleep 0.1; done; exit 94"
+        )
+
+    cursor = harness.event_cursor()
+    message_ids: list[str] = []
+    try:
+        setup = harness.request(
+            "POST", harness.agent_path("prompt", control=True),
+            {"text": case["phases"][0]["prompt"].format(
+                sender_id=sender.agent_id,
+                initial_command=command(initial_release, initial_ready),
+                live_command=command(live_release, live_ready),
+            )},
+        )
+        wait_live_check(initial_ready.is_file, deadline, "initial foreground gate")
+        for stage in range(2):
+            sender.timeout_seconds = max(1, int(deadline - time.monotonic()))
+            label = f"batch-send-{stage}"
+            sender_cursor = sender.event_cursor()
+            objective_marker = f"BATCH-SEND-{marker}-{stage}"
+            created = sender.request(
+                "POST", sender.agent_path("work-items", control=True),
+                {"objective": f"{objective_marker}. On the autonomous work_queue turn, "
+                f"send exactly two ordinary messages sequentially to agent "
+                f"{harness.agent_id} with SendAgentMessage. First message text: "
+                f"'BATCH-{marker}-{stage * 2 + 1}: value={stage * 2 + 1}'. "
+                f"Second: 'BATCH-{marker}-{stage * 2 + 2}: correction value="
+                f"{stage * 2 + 2}'. Do not use InvokeAgent or forward. "
+                "Do not create another WorkItem. After both sends, CompleteWorkItem "
+                "for this exact item with a concise report. Any later acknowledgements "
+                "are informational: do not reply to them or send further messages.",
+                "plan_status": "ready"},
+            )
+            sender.wait_work_item(
+                objective_marker=objective_marker, expected_state="completed",
+                label=label,
+            )
+            events = live_events(sender, sender_cursor)
+            sends = [
+                sender.tool_detail(event, label) for event in events
+                if event["type"] == "tool_executed"
+                and event["payload"].get("tool_name") == "SendAgentMessage"
+            ]
+            require(len(sends) == 2, f"sender did not send exactly two inputs: {sends}")
+            for detail in sends:
+                result = result_value(detail)
+                require(
+                    result.get("outcome") == "accepted"
+                    and detail["work_item_id"] == created["id"],
+                    f"send rejected or was not in the autonomous sender WorkItem: {detail}",
+                )
+                message_ids.append(result["message_id"])
+            if stage == 0:
+                queued = live_snapshot(harness, "batch-initial-queued")
+                require(
+                    all(any(row["message_id"] == mid and row["status"] == "queued"
+                            for row in queued["queue_entries"]) for mid in message_ids),
+                    "initial messages were not both queued behind the foreground gate",
+                )
+                initial_release.touch()
+                wait_live_turn(harness, cursor, setup["message_id"], deadline)
+                wait_live_check(live_ready.is_file, deadline, "ordinary-turn safe-point gate")
+        queued = live_snapshot(harness, "batch-live-queued")
+        require(
+            all(any(row["message_id"] == mid and row["status"] == "queued"
+                    for row in queued["queue_entries"]) for mid in message_ids[2:]),
+            "live inputs were not queued while the ordinary turn was in its tool gate",
+        )
+        live_release.touch()
+        events = wait_live_turn(harness, cursor, message_ids[0], deadline)
+        sends = [
+            harness.tool_detail(event, "batch-reply")
+            for event in events
+            if event["type"] == "tool_executed"
+            and event["payload"].get("tool_name") == "SendAgentMessage"
+        ]
+        require_live_input_batch(
+            live_snapshot(harness, "batch-completed"),
+            recipient=harness.agent_id, sender=sender.agent_id, message_ids=message_ids,
+            reply_details=sends,
+        )
+        require_live_agent_tail(harness, deadline=deadline)
+    finally:
+        for gate in (initial_release, live_release):
+            gate.touch()
+        for gate in gates:
+            gate.unlink(missing_ok=True)
+
+
 CASE_RUNNERS = {
     "runtime-auth-model-delivery": run_runtime_case,
     "runtime-agent-lifecycle": run_runtime_agent_lifecycle_case,
@@ -5418,6 +6290,8 @@ CASE_RUNNERS = {
     "scheduler-worktree-isolation": run_scheduler_worktree_isolation_case,
     "scheduler-spawn-agent-supervision": run_scheduler_spawn_agent_supervision_case,
     "scheduler-checkpoint-replay": run_scheduler_checkpoint_replay_case,
+    "live-command-output-reentry": run_live_command_observation_case,
+    "live-input-batch-safe-point": run_live_input_batch_case,
 }
 
 

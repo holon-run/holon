@@ -1177,125 +1177,508 @@ fn attached_recovery_ancestors_require_an_interrupted_turn_terminal() {
 
 #[test]
 fn consumed_reply_witness_uses_persisted_batch_not_attempt_ingress() {
+    for reply_queue_status in [QueueEntryStatus::Processed, QueueEntryStatus::Interjected] {
+        for case in [
+            "null-ingress",
+            "different-ingress",
+            "anchor-null",
+            "anchor-different",
+            "missing-batch",
+            "unbound-missing-batch",
+            "turn-only-missing-batch",
+            "activation",
+            "owner",
+            "trigger",
+            "foreign-turn",
+            "missing-reply",
+            "incomplete-turn",
+            "interrupted-turn",
+            "aborted-turn",
+        ] {
+            let (_dir, db) = runtime_db();
+            let boundary = reply_source(&db);
+            let initial = live_reply(&db, 0, "older-parent", None, boundary);
+            let sibling = live_reply(&db, 1, "older-parent", None, boundary);
+            let live = live_result(&db, 2, TaskKind::CommandTask, "live-parent", None);
+            admit_initial(&db, &initial);
+            prepare_recovery(&db, &[live.clone()], false);
+            let (mut completed, mut attempt) = completed_reply_source(&db);
+            if matches!(case, "null-ingress" | "anchor-null") {
+                attempt.turn_id = None;
+            }
+            match case {
+                "anchor-null" | "anchor-different" => {
+                    attempt.source_message_id = Some("live-reply".into());
+                    attempt.source.identity =
+                        crate::domain::execution_protocol::ExecutionSourceIdentity::QueueMessage {
+                            message_id: "live-reply".into(),
+                        };
+                    completed.trigger.as_mut().unwrap().message_id = Some("live-reply".into());
+                    completed.input_message_ids = vec!["live-reply".into()];
+                    completed.live_input_batches.clear();
+                }
+                "missing-batch" | "unbound-missing-batch" | "turn-only-missing-batch" => {
+                    completed.live_input_batches.clear()
+                }
+                "activation" => completed.live_input_batches[0].activation_id = "foreign".into(),
+                "owner" => {
+                    completed.current_work_item_id = Some("other-owner".into());
+                    attempt.binding =
+                        crate::domain::execution_protocol::ExecutionBinding::WorkItem {
+                            work_item_id: "other-owner".into(),
+                        };
+                }
+                "trigger" => {
+                    completed.trigger.as_mut().unwrap().message_id = Some("foreign".into())
+                }
+                "missing-reply" => completed.live_input_batches[0].items.clear(),
+                "incomplete-turn" => completed.terminal = None,
+                "interrupted-turn" => {
+                    completed.terminal.as_mut().unwrap().kind =
+                        crate::types::TurnTerminalKind::Interrupted;
+                }
+                "aborted-turn" => {
+                    completed.terminal.as_mut().unwrap().kind =
+                        crate::types::TurnTerminalKind::Aborted;
+                }
+                _ => {}
+            }
+            save_recovery_attempt(&db, &attempt);
+            db.turn_records().upsert(&completed).unwrap();
+            queue(&db, "live-reply", reply_queue_status.clone());
+            let mut response = db
+                .agent_message_deliveries()
+                .latest("live-response-delivery")
+                .unwrap()
+                .unwrap();
+            response.state = crate::types::AgentMessageDeliveryState::Consumed;
+            // Live followers do not pass through Claim, so both bindings
+            // legitimately remain NULL. Keep P1's bound delivery coverage.
+            if reply_queue_status == QueueEntryStatus::Processed
+                && !matches!(case, "unbound-missing-batch" | "turn-only-missing-batch")
+            {
+                response.activation_id = Some(attempt.attempt_id.clone());
+                response.turn_id = Some(completed.turn_id.clone());
+            }
+            if case == "turn-only-missing-batch" {
+                response.turn_id = Some(completed.turn_id.clone());
+            }
+            if case == "foreign-turn" {
+                response.turn_id = Some("foreign".into());
+            }
+            rewrite_delivery(&db, &response);
+            let queue_before = db.queue_entries().latest("live-reply").unwrap().unwrap();
+            let valid = matches!(case, "null-ingress" | "different-ingress",)
+                || (reply_queue_status == QueueEntryStatus::Processed
+                    && matches!(case, "anchor-null" | "anchor-different"));
+            assert_eq!(
+                db.task_result_settlements()
+                    .reply_source_is_recoverable(&sibling)
+                    .unwrap(),
+                valid,
+                "reply recovery ({reply_queue_status:?}): {case}",
+            );
+            assert_eq!(
+                recover(&db, "live-activation", "recovery-a", &[live.clone()]),
+                valid,
+                "{case}"
+            );
+            let activation = if valid {
+                "recovery-a"
+            } else {
+                "live-activation"
+            };
+            assert_admitted_to(&db, &initial, activation);
+            assert_admitted_to(&db, &live, activation);
+            assert_pending(&db, &sibling);
+            assert_eq!(
+                db.agent_message_deliveries()
+                    .latest("live-response-delivery")
+                    .unwrap()
+                    .unwrap(),
+                response
+            );
+            assert_eq!(
+                db.queue_entries().latest("live-reply").unwrap().unwrap(),
+                queue_before
+            );
+        }
+    }
+}
+
+fn completed_reply_source(db: &RuntimeDb) -> (TurnRecord, ExecutionAttempt) {
+    let mut turn = interrupted_turn("completed-reply-source", &[], true);
+    turn.trigger.as_mut().unwrap().message_id = Some("consumed-anchor".into());
+    turn.input_message_ids = vec!["consumed-anchor".into(), "live-reply".into()];
+    turn.terminal.as_mut().unwrap().kind = crate::types::TurnTerminalKind::Completed;
+    let batch = &mut turn.live_input_batches[0];
+    batch.activation_id = "consumed-activation".into();
+    batch.safe_point = crate::types::LiveInputSafePoint::new("consumed-activation", 2);
+    batch.ordinary_message_ids = vec!["live-reply".into()];
+    let mut attempt = recovery_attempt(
+        db,
+        "consumed-activation",
+        &turn.turn_id,
+        ExecutionAttemptState::Settled,
+        None,
+    );
+    attempt.source_message_id = Some("consumed-anchor".into());
+    attempt.source.identity =
+        crate::domain::execution_protocol::ExecutionSourceIdentity::QueueMessage {
+            message_id: "consumed-anchor".into(),
+        };
+    (turn, attempt)
+}
+
+#[test]
+fn consumed_reply_owner_grants_use_the_canonical_turn_and_resolved_exact_task() {
+    for status in [QueueEntryStatus::Processed, QueueEntryStatus::Interjected] {
+        for exact_waiter in [false, true] {
+            let (_dir, db) = runtime_db();
+            let boundary = reply_source(&db);
+            let initial = live_reply(&db, 0, "older-parent", None, boundary);
+            let sibling = live_reply(&db, 1, "older-parent", None, boundary);
+            let live = live_result(&db, 2, TaskKind::CommandTask, "live-parent", None);
+            admit_initial(&db, &initial);
+            prepare_recovery(&db, &[live.clone()], false);
+            let captured_task = db.tasks().latest(&initial.task_id).unwrap().unwrap();
+            let (mut turn, mut attempt) = completed_reply_source(&db);
+            // This completed turn mentions the same reply and has a compatible
+            // owner, but is not the delivery's canonical consumption witness.
+            let mut other = turn.clone();
+            other.turn_id = "other-completed-owner".into();
+            other.live_input_batches.clear();
+            db.turn_records().upsert(&other).unwrap();
+            turn.current_work_item_id = Some("consuming-owner".into());
+            attempt.binding = crate::domain::execution_protocol::ExecutionBinding::WorkItem {
+                work_item_id: "consuming-owner".into(),
+            };
+            if exact_waiter {
+                // An already resolved wait names this original reply and only
+                // this captured task; it does not grant its shared-reply sibling.
+                let wait = serde_json::from_value(serde_json::json!({
+                    "id": "consuming-exact-wait", "agent_id": "agent-a",
+                    "work_item_id": "consuming-owner",
+                    "status": "resolved", "kind": "task", "waiting_for": "reply",
+                    "wake_sources": [{"kind": "task_result", "task_id": initial.task_id}],
+                    "trigger_message_id": "live-reply",
+                    "created_at": Utc::now(), "updated_at": Utc::now(),
+                }))
+                .unwrap();
+                db.wait_conditions().upsert(&wait).unwrap();
+            }
+            save_recovery_attempt(&db, &attempt);
+            db.turn_records().upsert(&turn).unwrap();
+            let mut response = db
+                .agent_message_deliveries()
+                .latest("live-response-delivery")
+                .unwrap()
+                .unwrap();
+            response.state = crate::types::AgentMessageDeliveryState::Consumed;
+            response.activation_id = Some(attempt.attempt_id.clone());
+            response.turn_id = Some(turn.turn_id.clone());
+            rewrite_delivery(&db, &response);
+            queue(&db, "live-reply", status.clone());
+            let queue_before = db.queue_entries().latest("live-reply").unwrap().unwrap();
+            let repository = db.task_result_settlements();
+            assert!(repository.reply_source_is_consumed(&initial).unwrap());
+            assert!(repository.reply_source_is_consumed(&sibling).unwrap());
+            assert_eq!(
+                repository
+                    .reply_source_is_consumed_for_owner(&initial)
+                    .unwrap(),
+                exact_waiter,
+                "owner grant ({status:?}, exact waiter: {exact_waiter})",
+            );
+            assert_eq!(
+                repository.reply_source_is_recoverable(&initial).unwrap(),
+                exact_waiter,
+            );
+            assert!(!repository.reply_source_is_recoverable(&sibling).unwrap());
+            assert_eq!(
+                recover(&db, "live-activation", "recovery-a", &[live.clone()]),
+                exact_waiter,
+                "transaction admission ({status:?}, exact waiter: {exact_waiter})",
+            );
+            let activation = if exact_waiter {
+                "recovery-a"
+            } else {
+                "live-activation"
+            };
+            assert_admitted_to(&db, &initial, activation);
+            assert_admitted_to(&db, &live, activation);
+            assert_pending(&db, &sibling);
+            assert_eq!(
+                db.tasks()
+                    .latest(&initial.task_id)
+                    .unwrap()
+                    .unwrap()
+                    .work_item_id,
+                captured_task.work_item_id,
+            );
+            assert_eq!(
+                db.agent_message_deliveries()
+                    .latest("live-response-delivery")
+                    .unwrap()
+                    .unwrap(),
+                response,
+            );
+            assert_eq!(
+                db.queue_entries().latest("live-reply").unwrap().unwrap(),
+                queue_before,
+            );
+        }
+    }
+}
+
+#[test]
+fn interjected_reply_requires_one_completed_canonical_attachment_even_without_delivery_bindings() {
     for case in [
-        "null-ingress",
-        "different-ingress",
-        "anchor-null",
-        "anchor-different",
-        "missing-batch",
-        "activation",
-        "owner",
-        "trigger",
+        "null-bindings",
+        "bound-activation",
+        "bound-turn",
+        "bound-both",
+        "idle",
+        "replayed",
+        "foreign-activation",
         "foreign-turn",
-        "missing-reply",
+        "not-consumed",
+        "not-accepted",
+        "wrong-delivery-source",
+        "missing-attempt",
+        "open-attempt",
+        "interrupted-attempt",
+        "wrong-source",
+        "wrong-run",
+        "wrong-binding",
+        "wrong-source-ref",
+        "result-attached",
+        "missing-item",
+        "duplicate-item",
+        "duplicate-batch",
+        "missing-input",
+        "wrong-turn-id",
+        "incomplete",
+        "interrupted",
+        "aborted",
+        "idle-unbound",
+        "idle-wrong-anchor",
+        "foreign-owner",
+        "exact-waiter",
+        "other-waiter",
+        "wrong-wait-trigger",
+        "active-waiter",
+        "duplicate-completed",
+        "unrelated-completed-owner",
     ] {
         let (_dir, db) = runtime_db();
         let boundary = reply_source(&db);
-        let initial = live_reply(&db, 0, "older-parent", None, boundary);
-        let sibling = live_reply(&db, 1, "older-parent", None, boundary);
-        let live = live_result(&db, 2, TaskKind::CommandTask, "live-parent", None);
-        admit_initial(&db, &initial);
-        prepare_recovery(&db, &[live.clone()], false);
-        let mut completed = db
-            .turn_records()
-            .by_id(Some("agent-a"), "live-parent")
-            .unwrap()
-            .unwrap();
-        completed.turn_id = "completed-reply-source".into();
-        completed.trigger.as_mut().unwrap().message_id = Some("consumed-anchor".into());
-        completed.input_message_ids = vec!["consumed-anchor".into(), "live-reply".into()];
-        completed.terminal.as_mut().unwrap().kind = crate::types::TurnTerminalKind::Completed;
-        let batch = &mut completed.live_input_batches[0];
-        batch.activation_id = "consumed-activation".into();
-        batch.result_identities.clear();
-        batch.ordinary_message_ids = vec!["live-reply".into()];
-        batch.items = vec![crate::types::IdleInputBatchItem {
-            message_id: "live-reply".into(),
-            source_ref: "message:live-reply".into(),
-            rendered: String::new(),
-        }];
-        let mut attempt = recovery_attempt(
-            &db,
-            "consumed-activation",
-            "completed-reply-source",
-            ExecutionAttemptState::Settled,
-            None,
-        );
-        attempt.source_message_id = Some("consumed-anchor".into());
-        attempt.source.identity =
-            crate::domain::execution_protocol::ExecutionSourceIdentity::QueueMessage {
-                message_id: "consumed-anchor".into(),
-            };
-        if matches!(case, "null-ingress" | "anchor-null") {
-            attempt.turn_id = None;
-        }
-        match case {
-            "anchor-null" | "anchor-different" => {
-                attempt.source_message_id = Some("live-reply".into());
-                attempt.source.identity =
-                    crate::domain::execution_protocol::ExecutionSourceIdentity::QueueMessage {
-                        message_id: "live-reply".into(),
-                    };
-                completed.trigger.as_mut().unwrap().message_id = Some("live-reply".into());
-                completed.input_message_ids = vec!["live-reply".into()];
-                completed.live_input_batches.clear();
-            }
-            "missing-batch" => completed.live_input_batches.clear(),
-            "activation" => completed.live_input_batches[0].activation_id = "foreign".into(),
-            "owner" => {
-                completed.current_work_item_id = Some("other-owner".into());
-                attempt.binding = crate::domain::execution_protocol::ExecutionBinding::WorkItem {
-                    work_item_id: "other-owner".into(),
-                };
-            }
-            "trigger" => completed.trigger.as_mut().unwrap().message_id = Some("foreign".into()),
-            "missing-reply" => completed.live_input_batches[0].items.clear(),
-            _ => {}
-        }
-        save_recovery_attempt(&db, &attempt);
-        db.turn_records().upsert(&completed).unwrap();
-        queue(&db, "live-reply", QueueEntryStatus::Processed);
+        let waiter = live_reply(&db, 0, "older-parent", None, boundary);
+        let (mut turn, mut attempt) = completed_reply_source(&db);
         let mut response = db
             .agent_message_deliveries()
             .latest("live-response-delivery")
             .unwrap()
             .unwrap();
         response.state = crate::types::AgentMessageDeliveryState::Consumed;
-        response.activation_id = Some(attempt.attempt_id.clone());
-        response.turn_id = Some(if case == "foreign-turn" {
-            "foreign".into()
-        } else {
-            completed.turn_id.clone()
-        });
+        assert!(response.activation_id.is_none());
+        assert!(response.turn_id.is_none());
+        match case {
+            "bound-activation" | "bound-both" => {
+                response.activation_id = Some(attempt.attempt_id.clone())
+            }
+            "foreign-activation" => response.activation_id = Some("foreign".into()),
+            "foreign-turn" => response.turn_id = Some("foreign".into()),
+            "not-consumed" => response.state = crate::types::AgentMessageDeliveryState::Queued,
+            "not-accepted" => {
+                response.outcome = crate::types::AgentMessageDeliveryOutcome::Rejected
+            }
+            "wrong-delivery-source" => response.message_id = Some("foreign".into()),
+            "open-attempt" => attempt.state = ExecutionAttemptState::Open,
+            "interrupted-attempt" => attempt.state = ExecutionAttemptState::Interrupted,
+            "wrong-source" => attempt.source_message_id = Some("foreign".into()),
+            "wrong-run" => attempt.run_id = Some("foreign".into()),
+            "wrong-binding" => {
+                attempt.binding = crate::domain::execution_protocol::ExecutionBinding::WorkItem {
+                    work_item_id: "foreign".into(),
+                }
+            }
+            "wrong-source-ref" => {
+                turn.live_input_batches[0].items[0].source_ref = "message:foreign".into()
+            }
+            "result-attached" => turn.live_input_batches[0].ordinary_message_ids.clear(),
+            "missing-item" => turn.live_input_batches[0].items.clear(),
+            "duplicate-item" => {
+                let item = turn.live_input_batches[0].items[0].clone();
+                turn.live_input_batches[0].items.push(item);
+            }
+            "duplicate-batch" => turn
+                .live_input_batches
+                .push(turn.live_input_batches[0].clone()),
+            "missing-input" => turn.input_message_ids.retain(|id| id != "live-reply"),
+            "incomplete" => turn.terminal = None,
+            "interrupted" => {
+                turn.terminal.as_mut().unwrap().kind = crate::types::TurnTerminalKind::Interrupted
+            }
+            "aborted" => {
+                turn.terminal.as_mut().unwrap().kind = crate::types::TurnTerminalKind::Aborted
+            }
+            "idle" | "idle-unbound" | "idle-wrong-anchor" => {
+                let items = turn.live_input_batches.remove(0).items;
+                turn.idle_input_batch = Some(crate::types::IdleInputBatchRecord {
+                    anchor_message_id: if case == "idle-wrong-anchor" {
+                        "foreign".into()
+                    } else {
+                        "consumed-anchor".into()
+                    },
+                    activation_id: (case != "idle-unbound").then(|| attempt.attempt_id.clone()),
+                    sender_agent_id: "peer-b".into(),
+                    cutoff: Utc::now(),
+                    max_items: 8,
+                    max_bytes: 24 * 1024,
+                    rendered_bytes: 0,
+                    items: std::iter::once(crate::types::IdleInputBatchItem {
+                        message_id: "consumed-anchor".into(),
+                        source_ref: "message:consumed-anchor".into(),
+                        rendered: String::new(),
+                    })
+                    .chain(items)
+                    .collect(),
+                });
+            }
+            "replayed" => {
+                let mut predecessor = turn.clone();
+                predecessor.turn_id = "interrupted-reply-source".into();
+                let terminal = predecessor.terminal.as_mut().unwrap();
+                terminal.kind = crate::types::TurnTerminalKind::Interrupted;
+                predecessor.live_input_batches[0].activation_id = "prior-activation".into();
+                predecessor.live_input_batches[0].safe_point =
+                    crate::types::LiveInputSafePoint::new("prior-activation", 2);
+                let mut prior = attempt.clone();
+                prior.attempt_id = "prior-activation".into();
+                prior.state = ExecutionAttemptState::Interrupted;
+                save_recovery_attempt(&db, &prior);
+                db.turn_records().upsert(&predecessor).unwrap();
+                attempt.recovery_of_attempt_id = Some(prior.attempt_id);
+                turn.live_input_batches[0].safe_point =
+                    predecessor.live_input_batches[0].safe_point.clone();
+                turn.replay = Some(crate::types::TurnReplayProvenance {
+                    source_message_id: "consumed-anchor".into(),
+                    source_turn_id: predecessor.turn_id,
+                    reason: "interrupted_queue_claim_reentry".into(),
+                    prior_terminal: None,
+                });
+            }
+            "foreign-owner" | "exact-waiter" | "other-waiter" | "wrong-wait-trigger"
+            | "active-waiter" => {
+                turn.current_work_item_id = Some("consuming-owner".into());
+                attempt.binding = crate::domain::execution_protocol::ExecutionBinding::WorkItem {
+                    work_item_id: "consuming-owner".into(),
+                };
+                if case != "foreign-owner" {
+                    let wait = serde_json::from_value(serde_json::json!({
+                        "id": "consuming-exact-wait", "agent_id": "agent-a",
+                        "work_item_id": "consuming-owner",
+                        "status": if case == "active-waiter" { "active" } else { "resolved" },
+                        "kind": "task", "waiting_for": "reply",
+                        "wake_sources": [{
+                            "kind": "task_result",
+                            "task_id": if case == "other-waiter" { "foreign" } else { &waiter.task_id },
+                        }],
+                        "trigger_message_id": if case == "wrong-wait-trigger" {
+                            "foreign"
+                        } else {
+                            "live-reply"
+                        },
+                        "created_at": Utc::now(), "updated_at": Utc::now(),
+                    }))
+                    .unwrap();
+                    db.wait_conditions().upsert(&wait).unwrap();
+                }
+            }
+            "duplicate-completed" | "unrelated-completed-owner" => {
+                let mut other = turn.clone();
+                other.turn_id = "other-completed".into();
+                if case == "unrelated-completed-owner" {
+                    // This turn satisfies the old broad owner SQL, but never
+                    // canonically attached the reply that the delivery consumed.
+                    other.live_input_batches.clear();
+                    turn.current_work_item_id = Some("foreign-owner".into());
+                    attempt.binding =
+                        crate::domain::execution_protocol::ExecutionBinding::WorkItem {
+                            work_item_id: "foreign-owner".into(),
+                        };
+                }
+                db.turn_records().upsert(&other).unwrap();
+            }
+            _ => {}
+        }
+        if matches!(case, "bound-turn" | "bound-both") {
+            response.turn_id = Some(turn.turn_id.clone());
+        }
+        save_recovery_attempt(&db, &attempt);
+        if case == "missing-attempt" {
+            db.transaction(|tx| {
+                tx.execute(
+                    "DELETE FROM execution_protocol_attempts WHERE agent_id = ?1 AND attempt_id = ?2",
+                    params!["agent-a", attempt.attempt_id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        }
+        db.turn_records().upsert(&turn).unwrap();
+        if case == "wrong-turn-id" {
+            db.transaction(|tx| {
+                assert_eq!(
+                    tx.execute(
+                        "UPDATE turn_records
+                         SET payload_json = json_set(payload_json, '$.turn_id', 'foreign')
+                         WHERE agent_id = ?1 AND turn_id = ?2",
+                        params![turn.agent_id, turn.turn_id],
+                    )?,
+                    1,
+                );
+                Ok(())
+            })
+            .unwrap();
+        }
         rewrite_delivery(&db, &response);
-        let queue_before = db.queue_entries().latest("live-reply").unwrap().unwrap();
-        let valid = matches!(
+        queue(&db, "live-reply", QueueEntryStatus::Interjected);
+        let expected = matches!(
             case,
-            "null-ingress" | "different-ingress" | "anchor-null" | "anchor-different",
+            "null-bindings"
+                | "result-attached"
+                | "bound-activation"
+                | "bound-turn"
+                | "bound-both"
+                | "idle"
+                | "replayed"
+                | "exact-waiter"
         );
         assert_eq!(
-            recover(&db, "live-activation", "recovery-a", &[live.clone()]),
-            valid,
-            "{case}"
+            db.task_result_settlements()
+                .reply_source_is_recoverable(&waiter)
+                .unwrap(),
+            expected,
+            "{case}",
         );
-        let activation = if valid {
-            "recovery-a"
-        } else {
-            "live-activation"
-        };
-        assert_admitted_to(&db, &initial, activation);
-        assert_admitted_to(&db, &live, activation);
-        assert_pending(&db, &sibling);
+        if case == "exact-waiter" {
+            let sibling = live_reply(&db, 1, "older-parent", None, boundary);
+            assert!(!db
+                .task_result_settlements()
+                .reply_source_is_recoverable(&sibling)
+                .unwrap());
+            assert_pending(&db, &sibling);
+        }
+        assert_pending(&db, &waiter);
         assert_eq!(
             db.agent_message_deliveries()
                 .latest("live-response-delivery")
                 .unwrap()
                 .unwrap(),
-            response
-        );
-        assert_eq!(
-            db.queue_entries().latest("live-reply").unwrap().unwrap(),
-            queue_before
+            response,
+            "recovery must not claim or reconsume the delivery: {case}",
         );
     }
 }
@@ -1443,15 +1826,8 @@ fn initial_recovery_does_not_reconsume_or_admit_a_shared_reply_sibling() {
     prepare_recovery(&db, &[live.clone()], false);
     lifecycle_recovery_binding(&db, "live-activation");
     lifecycle_recovery_binding(&db, "recovery-a");
-    let mut completed = TurnRecord::new("agent-a", "completed-reply-source", 1);
-    completed.input_message_ids.push("live-reply".into());
-    completed.terminal = Some(
-        serde_json::from_value(serde_json::json!({
-            "turn_id": completed.turn_id, "turn_index": 1, "kind": "completed",
-            "completed_at": Utc::now(), "duration_ms": 0,
-        }))
-        .unwrap(),
-    );
+    let (completed, attempt) = completed_reply_source(&db);
+    save_recovery_attempt(&db, &attempt);
     db.turn_records().upsert(&completed).unwrap();
     queue(&db, "live-reply", QueueEntryStatus::Processed);
     let mut response = db

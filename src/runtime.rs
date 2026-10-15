@@ -5316,7 +5316,14 @@ impl RuntimeHandle {
                         } if admitted_activation_id == activation_id => {
                             Some(crate::runtime_db::task_result_settlement::TaskResultActivationSettlement {
                                 activation_id: activation_id.clone(),
-                                disposition: crate::runtime_db::TaskResultSettlementDisposition::ModelDelivered,
+                                disposition: if terminal_transition.is_some_and(|transition|
+                                    transition.terminal.reason.as_deref()
+                                        == Some("reducer_only/parent_turn_already_delivered"))
+                                {
+                                    crate::runtime_db::TaskResultSettlementDisposition::InvalidOrStale
+                                } else {
+                                    crate::runtime_db::TaskResultSettlementDisposition::ModelDelivered
+                                },
                                 settled_at: self.now(),
                             })
                         }

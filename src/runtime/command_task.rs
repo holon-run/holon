@@ -1227,12 +1227,14 @@ impl RuntimeHandle {
             terminal.cancel_requested,
             terminal.force_stop_requested,
         );
+        let mut detail = self.task_detail_preserving_rejoin_contract(&task_record, detail);
+        // The result has its own turn; its rejoin fence stays with task creation.
         let result_turn_id = crate::ids::turn_id();
         if let Some(detail) = detail.as_object_mut() {
-            detail.insert(
-                "parent_turn_id".to_string(),
-                serde_json::json!(result_turn_id.clone()),
-            );
+            // Turnless callers retain the legacy result-turn fence.
+            detail
+                .entry("parent_turn_id")
+                .or_insert_with(|| serde_json::json!(result_turn_id.clone()));
         }
         let result_text = build_command_task_result_text(
             task_record.summary.as_deref().unwrap_or(&resolved.spec.cmd),
@@ -2404,6 +2406,659 @@ mod tests {
         assert!(artifact_text.ends_with(&"Z".repeat(output.tail_limit)));
         assert!(artifact_text.contains("dropped_bytes=2160"));
         assert_eq!(retained_bytes, output.head_limit + output.tail_limit as u64);
+    }
+
+    #[tokio::test]
+    async fn real_turnless_command_terminal_retains_result_fence() {
+        let (_home, _workspace, runtime) = test_runtime();
+        let task = runtime
+            .schedule_command_task(
+                "turnless command".into(),
+                CommandTaskSpec {
+                    cmd: "printf turnless-command-result".into(),
+                    shell: Some("sh".into()),
+                    login: false,
+                    ..command_spec(false, true)
+                },
+                AuthorityClass::RuntimeInstruction,
+            )
+            .await
+            .unwrap();
+        assert!(task
+            .detail
+            .as_ref()
+            .unwrap()
+            .get("parent_turn_id")
+            .is_none());
+        let latest = wait_for_latest_task(&runtime, &task.id, TaskStatus::Completed).await;
+        let result = runtime
+            .storage()
+            .read_message_by_id(latest.parent_message_id.as_deref().unwrap())
+            .unwrap()
+            .unwrap();
+        let fence = latest.rejoin_fence().unwrap();
+        assert_eq!(
+            Some(fence.parent_turn_id.as_str()),
+            result.turn_id.as_deref()
+        );
+        let settlement = runtime
+            .runtime_db()
+            .task_result_settlements()
+            .latest_for_message(&result.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(settlement.parent_turn_id, fence.parent_turn_id);
+        assert_eq!(settlement.task_id, task.id);
+        assert_eq!(
+            settlement.state,
+            crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
+        );
+    }
+
+    #[tokio::test]
+    async fn real_command_terminal_preserves_creation_fence_and_wait_reentry() {
+        use crate::{
+            domain::execution_protocol::ExecutionSourceIdentity,
+            runtime::{
+                scheduler_executor::{RunLoopPoll, SchedulerDecisionExecutor},
+                WaitForWakeKind,
+            },
+            runtime_db::task_result_settlement::{
+                TaskResultSettlementDisposition, TaskResultSettlementState,
+            },
+            types::{QueueEntryRecord, QueueEntryStatus, WaitConditionStatus},
+        };
+
+        for (exit_status, status) in [(0, TaskStatus::Completed), (7, TaskStatus::Failed)] {
+            let (_home, workspace, runtime) = test_runtime();
+            let parent_turn_id = "turn-command-creation";
+            {
+                let mut guard = runtime.inner.agent.lock().await;
+                guard.state.current_turn_id = Some(parent_turn_id.into());
+                guard.persist_state(&runtime.inner.storage).unwrap();
+            }
+            let spec = CommandTaskSpec {
+                cmd: format!(
+                    "while [ ! -f command-release ]; do sleep 0.01; done; \
+                     printf command-terminal-result; exit {exit_status}"
+                ),
+                shell: Some("sh".into()),
+                login: false,
+                yield_time_ms: 0,
+                ..command_spec(false, false)
+            };
+            let result = runtime
+                .execute_exec_command(
+                    spec,
+                    ExecCommandDuplicatePolicy::ReuseRunning,
+                    &AuthorityClass::OperatorInstruction,
+                    None,
+                )
+                .await
+                .unwrap();
+            let ExecCommandOutcome::PromotedToTask { task_handle, .. } = result.outcome else {
+                panic!("gated real command must become a managed task");
+            };
+            let created = runtime
+                .task_record(&task_handle.task_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let creation_fence = created.rejoin_fence().unwrap();
+            assert_eq!(creation_fence.parent_turn_id, parent_turn_id);
+            assert_eq!(creation_fence.obligation_id, created.id);
+            assert_eq!(creation_fence.generation, 1);
+
+            let registration = runtime
+                .register_wait_for(
+                    "default",
+                    None,
+                    WaitForWakeKind::TaskResult,
+                    Some(created.id.clone()),
+                    "wait for real command termination".into(),
+                    None,
+                )
+                .await
+                .unwrap();
+            std::fs::write(workspace.path().join("command-release"), "").unwrap();
+            let latest = wait_for_latest_task(&runtime, &created.id, status).await;
+            assert_eq!(latest.rejoin_fence().unwrap(), creation_fence);
+            let result_message_id = latest.parent_message_id.as_deref().unwrap();
+            let result_message = runtime
+                .storage()
+                .read_message_by_id(result_message_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(result_message.kind, MessageKind::TaskResult);
+            assert!(result_message.turn_id.is_some());
+            assert_ne!(result_message.turn_id.as_deref(), Some(parent_turn_id));
+            let metadata = result_message.metadata.as_ref().unwrap();
+            assert_eq!(metadata["task_id"], created.id);
+            assert_eq!(
+                metadata["task_detail"]["parent_turn_id"],
+                creation_fence.parent_turn_id
+            );
+            assert_eq!(
+                metadata["task_detail"]["rejoin_obligation_id"],
+                creation_fence.obligation_id
+            );
+            assert_eq!(
+                metadata["task_detail"]["rejoin_generation"],
+                creation_fence.generation
+            );
+            let settlement = runtime
+                .runtime_db()
+                .task_result_settlements()
+                .latest_for_message(result_message_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(settlement.task_id, created.id);
+            assert_eq!(settlement.message_id, result_message.id);
+            assert_eq!(settlement.parent_turn_id, creation_fence.parent_turn_id);
+            assert_eq!(settlement.rejoin_generation, creation_fence.generation);
+            assert_eq!(
+                settlement.state,
+                TaskResultSettlementState::PersistedPending
+            );
+            let condition = runtime
+                .storage()
+                .latest_wait_conditions()
+                .unwrap()
+                .into_iter()
+                .find(|condition| condition.id == registration.condition.id)
+                .unwrap();
+            assert_eq!(condition.status, WaitConditionStatus::Triggered);
+            assert_eq!(condition.trigger_message_id(), Some(result_message_id));
+
+            let RunLoopPoll::Message(scheduled) = SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap()
+            else {
+                panic!("real command result must resume its explicit waiter");
+            };
+            assert_eq!(scheduled.message.id, result_message.id);
+            assert!(scheduled.scheduler_decision.model_reentry);
+            let execution = runtime
+                .runtime_db()
+                .transitions()
+                .load_execution_protocol_state_if_initialized("default")
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                &execution.open_attempt().unwrap().source.identity,
+                ExecutionSourceIdentity::TriggeredWait { .. }
+            ));
+            let message = scheduled.message;
+            let terminal = runtime
+                .process_message_with_plan_deferred(
+                    message.clone(),
+                    scheduled.dispatch_plan,
+                    &scheduled.scheduler_decision,
+                )
+                .await
+                .unwrap();
+            assert!(runtime
+                .commit_queue_terminal_settlement(
+                    QueueEntryRecord {
+                        message_id: message.id.clone(),
+                        agent_id: message.agent_id,
+                        priority: message.priority,
+                        status: QueueEntryStatus::Processed,
+                        created_at: message.created_at,
+                        updated_at: Utc::now(),
+                    },
+                    Vec::new(),
+                    true,
+                    Some(&terminal),
+                )
+                .await
+                .unwrap());
+            let settled = runtime
+                .runtime_db()
+                .task_result_settlements()
+                .latest_for_message(result_message_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(settled.result_identity, settlement.result_identity);
+            assert_eq!(settled.parent_turn_id, creation_fence.parent_turn_id);
+            assert_eq!(settled.state, TaskResultSettlementState::Settled);
+            assert_eq!(
+                settled.disposition,
+                Some(TaskResultSettlementDisposition::ModelDelivered)
+            );
+            assert_eq!(
+                runtime
+                    .task_record(&created.id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .rejoin_fence()
+                    .unwrap(),
+                creation_fence
+            );
+            let turns = runtime.storage().read_recent_turns(1).unwrap();
+            assert_eq!(turns[0].turn_id, result_message.turn_id.unwrap());
+            assert!(turns[0].input_message_ids.contains(&message.id));
+            assert!(turns[0].terminal.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn real_command_final_wait_report_does_not_suppress_exact_wait_reentry() {
+        Box::pin(real_command_final_wait_report_reentry_case(false)).await;
+    }
+
+    #[tokio::test]
+    async fn real_command_final_wait_report_preserves_same_owner_task_result_reentry() {
+        Box::pin(real_command_final_wait_report_reentry_case(true)).await;
+    }
+
+    async fn real_command_final_wait_report_reentry_case(work_item_owned: bool) {
+        use crate::{
+            domain::execution_protocol::{
+                ExecutionAttemptState, ExecutionBinding, ExecutionSourceIdentity,
+            },
+            provider::{
+                AgentProvider, ConversationMessage, ModelBlock, ModelToolCallKind,
+                ProviderTurnRequest, ProviderTurnResponse,
+            },
+            runtime::scheduler_executor::{
+                RunLoopPoll, ScheduledMessage, SchedulerDecisionExecutor,
+            },
+            runtime_db::task_result_settlement::{
+                TaskResultSettlementDisposition, TaskResultSettlementState,
+            },
+            types::{
+                AdmissionContext, BriefKind, MessageDeliverySurface, QueueEntryRecord,
+                QueueEntryStatus, ToolExecutionStatus, WaitConditionKind, WaitConditionStatus,
+                WakeSource,
+            },
+        };
+
+        const WAIT_REPORT: &str = "Waiting for the gated command to finish.";
+
+        #[derive(Default)]
+        struct FinalWaitCommandProvider {
+            calls: Mutex<usize>,
+            task_id: Mutex<Option<String>>,
+        }
+
+        #[async_trait]
+        impl AgentProvider for FinalWaitCommandProvider {
+            async fn complete_turn(
+                &self,
+                request: ProviderTurnRequest,
+            ) -> Result<ProviderTurnResponse> {
+                let mut calls = self.calls.lock().await;
+                *calls += 1;
+                let blocks = match *calls {
+                    1 => {
+                        assert!(request.tools.iter().any(|tool| tool.name == "ExecCommand"));
+                        vec![ModelBlock::ToolUse {
+                            id: "final-wait-command".into(),
+                            name: "ExecCommand".into(),
+                            input: json!({
+                                "cmd": "while [ ! -f command-final-wait-release ]; do sleep 0.01; done; printf command-final-wait-output",
+                                "shell": "sh",
+                                "login": false,
+                                "yield_time_ms": 0
+                            }),
+                            kind: ModelToolCallKind::Function,
+                            provider_data: None,
+                        }]
+                    }
+                    2 => {
+                        assert!(request.tools.iter().any(|tool| tool.name == "WaitFor"));
+                        let result = request
+                            .conversation
+                            .iter()
+                            .filter_map(|message| match message {
+                                ConversationMessage::UserToolResults(results) => Some(results),
+                                _ => None,
+                            })
+                            .flatten()
+                            .find(|result| result.tool_use_id == "final-wait-command")
+                            .expect("ExecCommand must return its real managed task");
+                        assert!(!result.is_error, "{}", result.content);
+                        let task_id = result
+                            .content
+                            .lines()
+                            .find_map(|line| line.strip_prefix("Task: "))
+                            .expect("gated command must be promoted")
+                            .to_string();
+                        *self.task_id.lock().await = Some(task_id.clone());
+                        vec![ModelBlock::ToolUse {
+                            id: "final-wait-exact-task".into(),
+                            name: "WaitFor".into(),
+                            input: json!({
+                                "wake": "task_result",
+                                "resource": task_id,
+                                "reason": "wait for the real gated command",
+                                "delivery": "final"
+                            }),
+                            kind: ModelToolCallKind::Function,
+                            provider_data: None,
+                        }]
+                    }
+                    3 => vec![ModelBlock::Text {
+                        text: WAIT_REPORT.into(),
+                    }],
+                    4 => vec![ModelBlock::Text {
+                        text: "The command completed after the waiting report.".into(),
+                    }],
+                    _ => panic!("command exact wait must reenter the provider only once"),
+                };
+                Ok(ProviderTurnResponse {
+                    blocks,
+                    stop_reason: None,
+                    input_tokens: 10,
+                    output_tokens: 10,
+                    cache_usage: None,
+                    provider_message_id: None,
+                    provider_request_id: None,
+                    request_diagnostics: None,
+                })
+            }
+        }
+
+        async fn process_claimed(runtime: &RuntimeHandle, scheduled: ScheduledMessage) {
+            let message = scheduled.message;
+            let terminal = runtime
+                .process_message_with_plan_deferred(
+                    message.clone(),
+                    scheduled.dispatch_plan,
+                    &scheduled.scheduler_decision,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                terminal.terminal.kind,
+                crate::types::TurnTerminalKind::Completed,
+                "unexpected command lifecycle terminal: {:#?}",
+                terminal.terminal
+            );
+            assert!(runtime
+                .commit_queue_terminal_settlement(
+                    QueueEntryRecord {
+                        message_id: message.id,
+                        agent_id: message.agent_id,
+                        priority: message.priority,
+                        status: QueueEntryStatus::Processed,
+                        created_at: message.created_at,
+                        updated_at: Utc::now(),
+                    },
+                    Vec::new(),
+                    true,
+                    Some(&terminal),
+                )
+                .await
+                .unwrap());
+        }
+
+        Box::pin(async {
+            let home = tempdir().unwrap();
+            let workspace = tempdir().unwrap();
+            let provider = Arc::new(FinalWaitCommandProvider::default());
+            let runtime = RuntimeHandle::new(
+                "default",
+                home.path().to_path_buf(),
+                workspace.path().to_path_buf(),
+                "http://127.0.0.1:7878".into(),
+                provider.clone(),
+                "default".into(),
+                ContextConfig {
+                    // Exercise lifecycle settlement, not continuation prompt-budget limits.
+                    prompt_budget_estimated_tokens: 128_000,
+                    turn_projection_min_budget: 128_000,
+                    turn_projection_max_budget: 128_000,
+                    compaction_trigger_estimated_tokens: 128_000,
+                    ..crate::runtime::tests::support::context_config()
+                },
+            )
+            .unwrap();
+            let work_item = if work_item_owned {
+                Some(
+                    runtime
+                        .create_work_item("command final wait owner".into(), None, None, Vec::new())
+                        .await
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            let expected_work_item_id = work_item.as_ref().map(|record| record.id.as_str());
+            let mut creation_message = MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: Some("control".into()),
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "Run the gated command and publish a final waiting report.".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::HttpControlPrompt,
+                AdmissionContext::ControlAuthenticated,
+            );
+            creation_message.work_item_id = work_item.as_ref().map(|record| record.id.clone());
+            runtime.enqueue(creation_message.clone()).await.unwrap();
+            let RunLoopPoll::Message(creation) = SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap()
+            else {
+                panic!("operator input must start the command creation turn");
+            };
+            assert_eq!(creation.message.id, creation_message.id);
+            Box::pin(process_claimed(&runtime, creation)).await;
+            assert_eq!(*provider.calls.lock().await, 3);
+
+            let task_id = provider.task_id.lock().await.clone().unwrap();
+            let created = wait_for_latest_task(&runtime, &task_id, TaskStatus::Running).await;
+            assert_eq!(created.status, TaskStatus::Running);
+            assert_eq!(created.work_item_id.as_deref(), expected_work_item_id);
+            let creation_fence = created.rejoin_fence().unwrap();
+            assert_eq!(creation_fence.obligation_id, task_id);
+            assert_eq!(creation_fence.generation, 1);
+            let creation_turn = runtime
+                .storage()
+                .read_turn_by_id(&creation_fence.parent_turn_id)
+                .unwrap()
+                .unwrap();
+            assert!(creation_turn
+                .input_message_ids
+                .contains(&creation_message.id));
+            assert!(creation_turn.terminal.is_some());
+            let briefs = runtime
+                .storage()
+                .read_briefs_by_ids(&creation_turn.produced_brief_ids)
+                .unwrap();
+            let reports = briefs
+                .iter()
+                .filter(|brief| brief.kind == BriefKind::Result && brief.text == WAIT_REPORT)
+                .collect::<Vec<_>>();
+            assert_eq!(reports.len(), 1);
+            assert_eq!(
+                reports[0].turn_id.as_deref(),
+                Some(creation_fence.parent_turn_id.as_str())
+            );
+            assert!(reports[0].finalizes_assistant_round_id.is_some());
+            let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
+            assert_eq!(
+                tools
+                    .iter()
+                    .filter(|tool| {
+                        tool.tool_name == "WaitFor" && tool.status == ToolExecutionStatus::Success
+                    })
+                    .count(),
+                1
+            );
+            let waits = runtime
+                .storage()
+                .active_wait_conditions_for_agent("default")
+                .unwrap();
+            assert_eq!(waits.len(), 1);
+            let wait = &waits[0];
+            assert_eq!(wait.kind, WaitConditionKind::Task);
+            assert_eq!(wait.status, WaitConditionStatus::Active);
+            assert_eq!(wait.work_item_id.as_deref(), expected_work_item_id);
+            assert_eq!(
+                wait.turn_id.as_deref(),
+                Some(creation_fence.parent_turn_id.as_str())
+            );
+            assert!(wait.wake_sources.iter().any(|source| {
+                matches!(source, WakeSource::TaskResult { task_id: exact } if exact == &task_id)
+            }));
+
+            std::fs::write(workspace.path().join("command-final-wait-release"), "").unwrap();
+            let latest = wait_for_latest_task(&runtime, &task_id, TaskStatus::Completed).await;
+            assert_eq!(latest.rejoin_fence().unwrap(), creation_fence);
+            assert_eq!(latest.work_item_id.as_deref(), expected_work_item_id);
+            let result_message_id = latest.parent_message_id.as_ref().unwrap();
+            let pending = runtime
+                .runtime_db()
+                .task_result_settlements()
+                .latest_for_message(result_message_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(pending.state, TaskResultSettlementState::PersistedPending);
+            assert_eq!(pending.task_id, task_id);
+            assert_eq!(pending.parent_turn_id, creation_fence.parent_turn_id);
+            let triggered = runtime
+                .storage()
+                .latest_wait_conditions()
+                .unwrap()
+                .into_iter()
+                .find(|condition| condition.id == wait.id)
+                .unwrap();
+            assert_eq!(triggered.status, WaitConditionStatus::Triggered);
+            assert_eq!(
+                triggered.trigger_message_id(),
+                Some(result_message_id.as_str())
+            );
+
+            let RunLoopPoll::Message(reentry) = SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap()
+            else {
+                panic!("final waiting report must not suppress the command's exact waiter");
+            };
+            assert_eq!(reentry.message.id, *result_message_id);
+            assert_eq!(reentry.message.kind, MessageKind::TaskResult);
+            assert_eq!(
+                reentry.message.work_item_id.as_deref(),
+                expected_work_item_id
+            );
+            assert!(reentry.scheduler_decision.model_reentry);
+            let execution = runtime
+                .runtime_db()
+                .transitions()
+                .load_execution_protocol_state_if_initialized("default")
+                .unwrap()
+                .unwrap();
+            let attempt = execution.open_attempt().unwrap();
+            assert_eq!(attempt.state, ExecutionAttemptState::Open);
+            assert_eq!(attempt.source_message_id.as_ref(), Some(result_message_id));
+            if let Some(work_item_id) = expected_work_item_id {
+                assert_eq!(
+                    attempt.admitted_fences.rejoin.as_ref(),
+                    Some(&creation_fence)
+                );
+                assert!(matches!(
+                    &attempt.source.identity,
+                    ExecutionSourceIdentity::TaskResult {
+                        task_id: claimed_task_id,
+                        result_message_id: claimed_message_id,
+                    } if claimed_task_id == &task_id && claimed_message_id == result_message_id
+                ));
+                assert!(matches!(
+                    &attempt.binding,
+                    ExecutionBinding::WorkItem { work_item_id: claimed_owner }
+                        if claimed_owner == work_item_id
+                ));
+            } else {
+                assert_eq!(attempt.admitted_fences.rejoin, None);
+                assert!(matches!(
+                    &attempt.source.identity,
+                    ExecutionSourceIdentity::TriggeredWait { wait_id, trigger_message_id, .. }
+                        if wait_id == &wait.id && trigger_message_id == result_message_id
+                ));
+            }
+            let resolved = runtime
+                .storage()
+                .latest_wait_conditions()
+                .unwrap()
+                .into_iter()
+                .find(|condition| condition.id == wait.id)
+                .unwrap();
+            assert_eq!(resolved.status, WaitConditionStatus::Resolved);
+            assert_eq!(
+                resolved.trigger_message_id(),
+                Some(result_message_id.as_str())
+            );
+            assert_eq!(resolved.work_item_id.as_deref(), expected_work_item_id);
+            assert_eq!(resolved.turn_id, wait.turn_id);
+            assert!(resolved.wake_sources.iter().any(|source| {
+                matches!(source, WakeSource::TaskResult { task_id: exact } if exact == &task_id)
+            }));
+            Box::pin(process_claimed(&runtime, reentry)).await;
+            assert_eq!(*provider.calls.lock().await, 4);
+
+            let settled = runtime
+                .runtime_db()
+                .task_result_settlements()
+                .latest_for_message(result_message_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(settled.result_identity, pending.result_identity);
+            assert_eq!(settled.task_id, task_id);
+            assert_eq!(settled.parent_turn_id, creation_fence.parent_turn_id);
+            assert_eq!(settled.rejoin_generation, creation_fence.generation);
+            assert_eq!(settled.state, TaskResultSettlementState::Settled);
+            assert_eq!(
+                settled.disposition,
+                Some(TaskResultSettlementDisposition::ModelDelivered)
+            );
+            assert_eq!(
+                runtime
+                    .task_record(&task_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .rejoin_fence()
+                    .unwrap(),
+                creation_fence
+            );
+            let turns = runtime.storage().read_recent_turns(10).unwrap();
+            assert_eq!(
+                turns
+                    .iter()
+                    .filter(|turn| turn.input_message_ids.contains(result_message_id))
+                    .count(),
+                1
+            );
+            let result_turn = turns
+                .iter()
+                .find(|turn| turn.input_message_ids.contains(result_message_id))
+                .unwrap();
+            assert_ne!(result_turn.turn_id, creation_fence.parent_turn_id);
+            assert!(result_turn.terminal.is_some());
+            assert!(matches!(
+                SchedulerDecisionExecutor::new(&runtime)
+                    .poll()
+                    .await
+                    .unwrap(),
+                RunLoopPoll::Idle
+            ));
+            assert_eq!(*provider.calls.lock().await, 4);
+        })
+        .await;
     }
 
     #[tokio::test]
