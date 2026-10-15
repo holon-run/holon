@@ -818,6 +818,14 @@ pub fn build_context_with_default_external_ingress(
             let section = turn_section("current_live_input_batches", content);
             candidates.push(context_candidate(section.clone(), Some(section), true));
         }
+        if let Some(content) = crate::runtime::input_consumption::render_recovered_operator_inputs(
+            storage,
+            turn,
+            &mut seen_messages,
+        )? {
+            let section = turn_section("recovered_operator_inputs", content);
+            candidates.push(context_candidate(section.clone(), Some(section), true));
+        }
     }
 
     let plan = plan_context(candidates, config.prompt_budget_estimated_tokens)?;
@@ -7987,6 +7995,136 @@ mod tests {
         let plan = plan_context(vec![candidate.clone()], budget).unwrap();
         assert_eq!(plan.sections[0].content, rendered);
         assert!(plan_context(vec![candidate], budget.saturating_sub(1)).is_err());
+    }
+
+    #[test]
+    fn recovered_operator_context_preserves_full_body_provenance_and_shared_deduplication() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let current = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "recovery anchor".into(),
+            },
+        );
+        let full_body = format!(
+            "operator-body-start{}operator-body-end",
+            "evidence".repeat(800)
+        );
+        let operator = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("recovered-operator".into()),
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Interject,
+            MessageBody::Text {
+                text: full_body.clone(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::HttpControlPrompt,
+            AdmissionContext::ControlAuthenticated,
+        );
+        storage.append_message(&operator).unwrap();
+        let mut turn = TurnRecord::new("default", "turn-recovered-operator", 2);
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&current));
+        turn.replay = Some(crate::types::TurnReplayProvenance {
+            source_message_id: current.id.clone(),
+            source_turn_id: "turn-operator-predecessor".into(),
+            reason: "interrupted_queue_claim_reentry".into(),
+            prior_terminal: None,
+        });
+        turn.input_message_ids = vec![current.id.clone(), operator.id.clone(), "live-input".into()];
+        turn.live_input_batches.push(LiveInputBatchRecord {
+            activation_id: "recovered-activation".into(),
+            safe_point: crate::types::LiveInputSafePoint::new("original-activation", 2),
+            cutoff: chrono::Utc::now(),
+            max_items: 8,
+            max_bytes: 24 * 1024,
+            rendered_bytes: 0,
+            result_identities: Vec::new(),
+            ordinary_message_ids: vec!["live-input".into()],
+            items: vec![crate::types::IdleInputBatchItem {
+                message_id: "live-input".into(),
+                source_ref: "message:live-input".into(),
+                rendered: "persisted live evidence\n".into(),
+            }],
+        });
+        storage.append_turn(&turn).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_turn_id = Some(turn.turn_id.clone());
+        let built = build_context(
+            &storage,
+            &agent,
+            &execution_snapshot_for(&agent),
+            &SkillsRuntimeView::default(),
+            &current,
+            None,
+            &ContextConfig {
+                prompt_budget_estimated_tokens: 16 * 1024,
+                ..ContextConfig::default()
+            },
+            storage.data_dir(),
+        )
+        .unwrap();
+        let content = built
+            .sections
+            .iter()
+            .map(|section| section.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(content.matches(full_body.as_str()).count(), 1);
+        let evidence = built
+            .sections
+            .iter()
+            .find(|section| section.name == "recovered_operator_inputs")
+            .expect("independent recovered operator evidence");
+        assert!(evidence
+            .content
+            .contains(&format!("source_ref: message:{}", operator.id)));
+        for provenance in [
+            "recovered-operator",
+            "operator_instruction",
+            "http_control_prompt",
+            "control_authenticated",
+        ] {
+            assert!(evidence.content.contains(provenance));
+        }
+        let live = built
+            .sections
+            .iter()
+            .find(|section| section.name == "current_live_input_batches")
+            .unwrap();
+        assert!(!live.content.contains(&operator.id));
+        assert_eq!(turn.live_input_batches[0].items.len(), 1);
+        let candidate = context_candidate(evidence.clone(), Some(evidence.clone()), true);
+        let budget = estimate_section_tokens(evidence);
+        assert_eq!(
+            plan_context(vec![candidate.clone()], budget)
+                .unwrap()
+                .sections[0]
+                .content,
+            evidence.content
+        );
+        assert!(plan_context(vec![candidate], budget.saturating_sub(1)).is_err());
+        let mut seen = BTreeSet::from([operator.id.clone()]);
+        assert!(
+            crate::runtime::input_consumption::render_recovered_operator_inputs(
+                &storage, &turn, &mut seen,
+            )
+            .unwrap()
+            .is_none()
+        );
     }
 
     #[test]

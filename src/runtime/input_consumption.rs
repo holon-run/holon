@@ -135,6 +135,60 @@ pub(crate) fn render_batch(batch: &IdleInputBatchRecord) -> String {
     text
 }
 
+pub(crate) fn render_recovered_operator_inputs(
+    storage: &AppStorage,
+    turn: &TurnRecord,
+    seen_messages: &mut std::collections::BTreeSet<String>,
+) -> Result<Option<String>> {
+    if turn.replay.is_none() || turn.live_input_batches.is_empty() {
+        return Ok(None);
+    }
+    let batched: std::collections::BTreeSet<_> = turn
+        .idle_input_batch
+        .iter()
+        .flat_map(|batch| &batch.items)
+        .chain(
+            turn.live_input_batches
+                .iter()
+                .flat_map(|batch| &batch.items),
+        )
+        .map(|item| &item.message_id)
+        .collect();
+    let mut parts = Vec::new();
+    for id in &turn.input_message_ids {
+        if batched.contains(id)
+            || seen_messages.contains(id)
+            || turn
+                .trigger
+                .as_ref()
+                .and_then(|trigger| trigger.message_id.as_ref())
+                == Some(id)
+        {
+            continue;
+        }
+        let Some(message) = storage.read_message_by_id(id)? else {
+            continue;
+        };
+        if message.agent_id != turn.agent_id
+            || !scheduler::is_operator_interjection_message(&message)
+        {
+            continue;
+        }
+        // Only the recovery transition may restore these independent input IDs.
+        // Keep their complete envelope provenance without inventing a live batch.
+        let mut provenance = serde_json::to_value(&message)?;
+        provenance.as_object_mut().unwrap().remove("body");
+        parts.push(format!(
+            "Recovered operator interjection (original admission and provenance):\nsource_ref: message:{}\nprovenance: {}\nbody:\n{}\n",
+            message.id,
+            serde_json::to_string(&provenance)?,
+            message_text(&message.body),
+        ));
+        seen_messages.insert(id.clone());
+    }
+    Ok((!parts.is_empty()).then(|| parts.join("\n")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

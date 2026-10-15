@@ -14,6 +14,7 @@ pub(crate) const TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT: usize = 8;
 mod live_turn;
 pub(crate) use live_turn::{
     admit_live_task_results_tx, canonical_live_turn_id_tx, recover_live_task_results_tx,
+    recovery_turn_for_activation_tx,
 };
 
 #[cfg(test)]

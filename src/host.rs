@@ -9639,6 +9639,7 @@ mod tests {
     async fn agent_message_wait_preserves_reply_authority_with_late_status() {
         for (use_wait, reply_authority) in [
             (false, AuthorityClass::OperatorInstruction),
+            (false, AuthorityClass::RuntimeInstruction),
             (true, AuthorityClass::RuntimeInstruction),
             (true, AuthorityClass::OperatorInstruction),
         ] {
@@ -9843,26 +9844,73 @@ mod tests {
             )
         });
             let events = parent.storage().read_recent_events(400).unwrap();
-            let claimed: Vec<_> = events
+            let status_position = events
                 .iter()
-                .filter(|event| event.kind == "queue_entry_claimed")
-                .filter_map(|event| event.data["message_id"].as_str())
-                .collect();
-            let result_position = claimed.iter().position(|id| *id == result_id).unwrap();
-            let status_position = claimed.iter().position(|id| *id == status.id).unwrap();
+                .position(|event| {
+                    event.kind == "queue_entry_claimed"
+                        && event.data["message_id"].as_str() == Some(status.id.as_str())
+                })
+                .unwrap();
+            let result_position = events
+                .iter()
+                .position(|event| {
+                    if use_wait {
+                        event.kind == "queue_entry_claimed"
+                            && event.data["message_id"].as_str() == Some(result_id.as_str())
+                    } else {
+                        event.kind == "live_input_attached"
+                            && event.data["turn_id"].as_str() == Some(parent_turn_id.as_str())
+                            && event.data["message_ids"].as_array().is_some_and(|ids| {
+                                ids.iter().any(|id| id.as_str() == Some(result_id.as_str()))
+                            })
+                    }
+                })
+                .expect("result must be admitted through its expected wait or live path");
             assert!(
                 result_position < status_position,
                 "result must precede late status"
             );
-            let result_turn = parent
-                .storage()
-                .read_turn_by_id(&format!("turn:agent-message-wait:{task_id}"))
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                result_turn.terminal.unwrap().reason.as_deref(),
-                Some("reducer_only/parent_turn_already_delivered")
-            );
+            if use_wait {
+                let result_turn = parent
+                    .storage()
+                    .read_turn_by_id(&format!("turn:agent-message-wait:{task_id}"))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    result_turn.terminal.unwrap().reason.as_deref(),
+                    Some("reducer_only/parent_turn_already_delivered")
+                );
+            } else {
+                let parent_turn = parent
+                    .storage()
+                    .read_turn_by_id(&parent_turn_id)
+                    .unwrap()
+                    .unwrap();
+                let batch = parent_turn
+                    .live_input_batches
+                    .iter()
+                    .find(|batch| batch.items.iter().any(|item| item.message_id == result_id))
+                    .expect("unwaited current-turn result must remain durably attached");
+                let reply = messages
+                    .iter()
+                    .find(|message| {
+                        matches!(&message.body, MessageBody::Text { text } if text == "peer report 0")
+                    })
+                    .unwrap();
+                assert_eq!(reply.authority_class, reply_authority);
+                assert!(batch.items.iter().any(|item| item.message_id == reply.id));
+                assert!(parent_turn.input_message_ids.contains(&reply.id));
+                assert_eq!(
+                    parent
+                        .runtime_db()
+                        .queue_entries()
+                        .latest(&result_id)
+                        .unwrap()
+                        .unwrap()
+                        .status,
+                    QueueEntryStatus::Interjected
+                );
+            }
             let stored_task = parent
                 .runtime_db()
                 .tasks()
@@ -9922,13 +9970,17 @@ mod tests {
                 .any(|attempt| attempt.source_message_id.as_deref() == Some(result_id.as_str()));
             assert!(
                 !result_has_attempt,
-                "parent-delivered result is reducer-only"
+                "live-admitted or parent-delivered result must not create a new attempt"
             );
             let settlement = parent
                 .runtime_db()
                 .task_result_settlements()
                 .latest_for_message(&result_id)
                 .unwrap();
+            assert!(
+                settlement.is_some(),
+                "result must retain its durable ledger"
+            );
             println!(
             "3484 real durable evidence: task_fence={:?}; result_has_attempt={result_has_attempt}; settlement={:?}",
             stored_task.rejoin_fence().unwrap(),
@@ -9942,7 +9994,7 @@ mod tests {
             assert!(!events
                 .iter()
                 .any(|event| event.kind == "agent_runtime_loop_failed"));
-            println!("3484 real fixture: result before late OperatorInstruction TaskStatus; parent_turn_already_delivered; status processed; task remains completed; no canonical status attempt; no loop failure");
+            println!("3484 real fixture: use_wait={use_wait}; result admitted before late OperatorInstruction TaskStatus; status processed; task remains completed; no canonical result/status attempt; no loop failure");
             host.shutdown().await.unwrap();
         }
     }

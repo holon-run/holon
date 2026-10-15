@@ -1021,6 +1021,161 @@ fn an_older_p1_turn_without_live_batches_requires_an_exact_replay_edge() {
 }
 
 #[test]
+fn batchless_recovery_ancestor_requires_bound_unambiguous_interrupted_evidence() {
+    for case in [
+        "valid",
+        "legacy-no-terminal",
+        "missing-replay",
+        "source-turn",
+        "source-message",
+        "terminal",
+        "aborted",
+        "agent",
+        "trigger",
+        "source-input",
+        "run",
+        "owner",
+        "cycle",
+        "ambiguous-canonical",
+        "invalid-canonical",
+    ] {
+        let (_dir, db) = runtime_db();
+        let record = live_result(&db, 0, TaskKind::CommandTask, "live-parent", None);
+        let mut turn = interrupted_turn("live-parent", &[record.clone()], false);
+        let mut older = interrupted_turn("older-p1-turn", &[], false);
+        older.live_input_batches.clear();
+        older.run_id = Some("older-run".into());
+        older.owner = Some(crate::types::TurnOwner::AgentLifecycle {
+            agent_id: "agent-a".into(),
+        });
+        let mut attempt = recovery_attempt(
+            &db,
+            "older-p1-activation",
+            "older-p1-turn",
+            ExecutionAttemptState::Interrupted,
+            None,
+        );
+        attempt.run_id = Some("older-run".into());
+        turn.replay = Some(crate::types::TurnReplayProvenance {
+            source_message_id: "live-anchor".into(),
+            source_turn_id: older.turn_id.clone(),
+            reason: "interrupted_queue_claim_reentry".into(),
+            prior_terminal: None,
+        });
+        db.turn_records().upsert(&older).unwrap();
+        match case {
+            "valid" => {}
+            "legacy-no-terminal" => older.terminal = None,
+            "missing-replay" => turn.replay = None,
+            "source-turn" => {
+                turn.replay.as_mut().unwrap().source_turn_id = "foreign-turn".into();
+            }
+            "source-message" => {
+                turn.replay.as_mut().unwrap().source_message_id = "foreign-message".into();
+            }
+            "terminal" => {
+                older.terminal.as_mut().unwrap().kind = crate::types::TurnTerminalKind::Completed;
+            }
+            "aborted" => {
+                older.terminal.as_mut().unwrap().kind = crate::types::TurnTerminalKind::Aborted;
+            }
+            "agent" => older.agent_id = "foreign-agent".into(),
+            "trigger" => {
+                older.trigger.as_mut().unwrap().message_id = Some("foreign-message".into());
+            }
+            "source-input" => older.input_message_ids.clear(),
+            "run" => older.run_id = Some("foreign-run".into()),
+            "owner" => older.owner = Some(crate::types::TurnOwner::Command),
+            "cycle" => attempt.recovery_of_attempt_id = Some("live-activation".into()),
+            "ambiguous-canonical" | "invalid-canonical" => {
+                let count = if case == "ambiguous-canonical" { 2 } else { 1 };
+                for index in 0..count {
+                    let mut attached = interrupted_turn("other-canonical", &[], false);
+                    attached.turn_id = format!("other-canonical-{index}");
+                    attached.run_id = Some(
+                        if case == "invalid-canonical" {
+                            "foreign-run"
+                        } else {
+                            "older-run"
+                        }
+                        .into(),
+                    );
+                    attached.live_input_batches[0].activation_id = attempt.attempt_id.clone();
+                    db.turn_records().upsert(&attached).unwrap();
+                }
+            }
+            _ => unreachable!(),
+        }
+        // Corrupt payload evidence without changing the persisted input's agent.
+        db.transaction(|tx| {
+            assert_eq!(
+                tx.execute(
+                    "UPDATE turn_records SET payload_json = ?2
+                     WHERE agent_id = 'agent-a' AND turn_id = ?1",
+                    params![older.turn_id, serde_json::to_string(&older)?],
+                )?,
+                1,
+            );
+            Ok(())
+        })
+        .unwrap();
+        save_recovery_attempt(&db, &attempt);
+        prepare_recovery_with_turn(&db, &[record.clone()], false, &turn);
+        recovery_attempt(
+            &db,
+            "live-activation",
+            "live-parent",
+            ExecutionAttemptState::Interrupted,
+            Some("older-p1-activation"),
+        );
+        let valid = matches!(case, "valid" | "legacy-no-terminal");
+        assert_eq!(
+            recover(&db, "live-activation", "recovery-a", &[record.clone()]),
+            valid,
+            "{case}",
+        );
+        assert_admitted_to(
+            &db,
+            &record,
+            if valid {
+                "recovery-a"
+            } else {
+                "live-activation"
+            },
+        );
+    }
+}
+
+#[test]
+fn attached_recovery_ancestors_require_an_interrupted_turn_terminal() {
+    for idle in [false, true] {
+        for terminal in [
+            None,
+            Some(crate::types::TurnTerminalKind::Completed),
+            Some(crate::types::TurnTerminalKind::Aborted),
+        ] {
+            let (_dir, db) = runtime_db();
+            let record = live_result(&db, 0, TaskKind::CommandTask, "live-parent", None);
+            let mut turn = interrupted_turn("live-parent", &[record.clone()], false);
+            if idle {
+                turn = initial_only_turn(turn, "live-activation");
+            }
+            if let Some(kind) = terminal {
+                turn.terminal.as_mut().unwrap().kind = kind;
+            } else {
+                turn.terminal = None;
+            }
+            prepare_recovery_with_turn(&db, &[record.clone()], false, &turn);
+            assert!(
+                !recover(&db, "live-activation", "recovery-a", &[record.clone()]),
+                "idle={idle}, terminal={terminal:?}",
+            );
+            assert_admitted_to(&db, &record, "live-activation");
+        }
+    }
+}
+
+#[test]
 fn consumed_reply_witness_uses_persisted_batch_not_attempt_ingress() {
     for case in [
         "null-ingress",

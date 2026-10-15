@@ -23,6 +23,49 @@ struct RecoverySources {
 }
 
 impl TaskResultSettlementRepository<'_> {
+    /// Select the exact interrupted predecessor, including live-only turns.
+    pub(crate) fn interrupted_attached_turn_id(
+        &self,
+        agent_id: &str,
+        activation_id: &str,
+        source_message_id: &str,
+    ) -> Result<Option<String>> {
+        self.db.transaction(|tx| {
+            let Some(attempt) = super::reply_admission_attempt_tx(tx, agent_id, activation_id)?
+            else {
+                anyhow::bail!("interrupted replay source attempt is missing");
+            };
+            if attempt.agent_id != agent_id
+                || attempt.source_message_id.as_deref() != Some(source_message_id)
+                || attempt.state
+                    != crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+            {
+                anyhow::bail!("interrupted replay source attempt does not match");
+            }
+            if let Some(turn) = attached_turn_for_activation_tx(tx, &attempt, true)? {
+                if turn.terminal.as_ref().map(|terminal| terminal.kind)
+                    != Some(crate::types::TurnTerminalKind::Interrupted)
+                {
+                    anyhow::bail!("interrupted replay source turn is not interrupted");
+                }
+                return Ok(Some(turn.turn_id));
+            }
+            let has_attachment: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM turn_records
+                 WHERE agent_id = ?1 AND (
+                   EXISTS(SELECT 1 FROM json_each(payload_json, '$.live_input_batches') batch
+                     WHERE json_extract(batch.value, '$.activation_id') = ?2)
+                   OR json_extract(payload_json, '$.idle_input_batch.activation_id') = ?2))",
+                params![agent_id, activation_id],
+                |row| row.get(0),
+            )?;
+            if has_attachment {
+                anyhow::bail!("interrupted replay source attachment is invalid or ambiguous");
+            }
+            Ok(None)
+        })
+    }
+
     /// Selection only: an attached result must replay with its interrupted anchor.
     pub(crate) fn interrupted_admitted_result_anchor(
         &self,
@@ -277,15 +320,12 @@ pub(crate) fn recover_live_task_results_tx(
         let Some(turn) = recovery_turn_for_activation_tx(tx, &prior, younger_turn.as_ref())? else {
             return Ok(false);
         };
-        if turn.terminal.as_ref().map(|terminal| terminal.kind)
-            != Some(crate::types::TurnTerminalKind::Interrupted)
-            || younger_turn.as_ref().is_some_and(|younger| {
-                younger.replay.as_ref().is_none_or(|replay| {
-                    replay.source_turn_id != turn.turn_id
-                        || Some(&replay.source_message_id) != current.source_message_id.as_ref()
-                })
+        if younger_turn.as_ref().is_some_and(|younger| {
+            younger.replay.as_ref().is_none_or(|replay| {
+                replay.source_turn_id != turn.turn_id
+                    || Some(&replay.source_message_id) != current.source_message_id.as_ref()
             })
-        {
+        }) {
             return Ok(false);
         }
         if recovery.activation_turns.is_empty() {
@@ -368,13 +408,21 @@ pub(crate) fn canonical_live_turn_id_tx(
     Ok(attached_turn_for_activation_tx(tx, attempt, true)?.map(|turn| turn.turn_id))
 }
 
-fn recovery_turn_for_activation_tx(
+pub(crate) fn recovery_turn_for_activation_tx(
     tx: &Transaction<'_>,
     attempt: &crate::domain::execution_protocol::ExecutionAttempt,
     younger: Option<&TurnRecord>,
 ) -> Result<Option<TurnRecord>> {
+    use crate::domain::execution_protocol::ExecutionAttemptState;
+    use crate::types::TurnTerminalKind;
+
+    if attempt.state != ExecutionAttemptState::Interrupted {
+        return Ok(None);
+    }
     if let Some(turn) = attached_turn_for_activation_tx(tx, attempt, true)? {
-        return Ok(Some(turn));
+        return Ok((turn.terminal.as_ref().map(|terminal| terminal.kind)
+            == Some(TurnTerminalKind::Interrupted))
+        .then_some(turn));
     }
     // Older P1 turns can lack any batch. Only the persisted replay edge and
     // explicit recovery_of attempt chain can identify that predecessor.
@@ -384,10 +432,17 @@ fn recovery_turn_for_activation_tx(
     if Some(&replay.source_message_id) != attempt.source_message_id.as_ref() {
         return Ok(None);
     }
+    // An invalid or ambiguous attachment must not fall back to a batchless turn.
     let payload: Option<String> = tx
         .query_row(
-            "SELECT payload_json FROM turn_records WHERE agent_id = ?1 AND turn_id = ?2",
-            params![attempt.agent_id, replay.source_turn_id],
+            "SELECT payload_json FROM turn_records WHERE agent_id = ?1 AND turn_id = ?2
+             AND NOT EXISTS (
+               SELECT 1 FROM turn_records AS attached WHERE attached.agent_id = ?1 AND (
+                 EXISTS (
+                   SELECT 1 FROM json_each(attached.payload_json, '$.live_input_batches') batch
+                   WHERE json_extract(batch.value, '$.activation_id') = ?3)
+                 OR json_extract(attached.payload_json, '$.idle_input_batch.activation_id') = ?3))",
+            params![attempt.agent_id, replay.source_turn_id, attempt.attempt_id],
             |row| row.get(0),
         )
         .optional()?;
@@ -398,6 +453,10 @@ fn recovery_turn_for_activation_tx(
     Ok((turn.turn_id == replay.source_turn_id
         && turn.live_input_batches.is_empty()
         && turn.idle_input_batch.is_none()
+        // Legacy batchless turns may predate bootstrap terminal persistence.
+        && turn.terminal.as_ref().is_none_or(|terminal| {
+            terminal.kind == TurnTerminalKind::Interrupted
+        })
         && turn_matches_attempt_source(&turn, attempt))
     .then_some(turn))
 }

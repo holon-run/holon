@@ -92,17 +92,38 @@ impl RuntimeTransitionRepository<'_> {
             let mut identities = BTreeSet::new();
             let mut messages = BTreeSet::new();
             let mut safe_points = BTreeSet::new();
-            let mut attachment_attempts = BTreeSet::new();
+            let mut attachment_attempts = BTreeMap::new();
+            let mut attachment_turns = BTreeSet::new();
             let mut ancestor = prior;
+            let mut younger_turn: Option<TurnRecord> = None;
             loop {
                 if ancestor.agent_id != *agent_id
                     || ancestor.source_message_id != expected_attempt.source_message_id
                     || ancestor.binding != expected_attempt.binding
                     || ancestor.state != ExecutionAttemptState::Interrupted
-                    || !attachment_attempts.insert(ancestor.attempt_id.as_str())
+                    || attachment_attempts.contains_key(&ancestor.attempt_id)
                 {
                     return Ok(TransitionCommit::default());
                 }
+                let Some(ancestor_turn) =
+                    crate::runtime_db::task_result_settlement::recovery_turn_for_activation_tx(
+                        tx, ancestor, younger_turn.as_ref(),
+                    )?
+                else {
+                    return Ok(TransitionCommit::default());
+                };
+                if younger_turn.as_ref().is_some_and(|younger| {
+                        younger.replay.as_ref().is_none_or(|replay| {
+                            replay.source_turn_id != ancestor_turn.turn_id
+                                || Some(&replay.source_message_id) != expected_attempt.source_message_id.as_ref()
+                        })
+                    })
+                {
+                    return Ok(TransitionCommit::default());
+                }
+                attachment_turns.insert(ancestor_turn.turn_id.clone());
+                attachment_attempts.insert(ancestor.attempt_id.clone(), ancestor_turn.turn_id.clone());
+                younger_turn = Some(ancestor_turn);
                 let Some(id) = &ancestor.recovery_of_attempt_id else { break };
                 let Some(previous) = state.attempts.get(id) else {
                     return Ok(TransitionCommit::default());
@@ -111,14 +132,14 @@ impl RuntimeTransitionRepository<'_> {
             }
             let mut turn = expected_turn.clone();
             if !restore_initial_snapshot_tx(
-                tx, expected_attempt, prior, predecessor, source, &mut turn,
+                tx, expected_attempt, prior, predecessor, source, &attachment_attempts, &mut turn,
             )? {
                 return Ok(TransitionCommit::default());
             }
             messages.extend(turn.input_message_ids.iter().cloned());
             for batch in &predecessor.live_input_batches {
                 if batch.activation_id != prior.attempt_id || batch.max_items > 8
-                    || !attachment_attempts.contains(batch.safe_point.activation_id.as_str())
+                    || !attachment_attempts.contains_key(batch.safe_point.activation_id.as_str())
                     || batch.max_bytes > 24 * 1024
                     || live_identity_count(batch) > batch.max_items
                     || batch.rendered_bytes != batch.rendered_text().len()
@@ -150,9 +171,15 @@ impl RuntimeTransitionRepository<'_> {
                 batch.activation_id = expected_attempt.attempt_id.clone();
                 turn.live_input_batches.push(batch);
             }
-            if predecessor.input_message_ids.iter().any(|id| !turn.input_message_ids.contains(id)) {
+            if !restore_operator_inputs_tx(tx, predecessor, &attachment_turns, &mut turn)? {
                 return Ok(TransitionCommit::default());
             }
+            if predecessor.input_message_ids.iter().any(|id| !turn.input_message_ids.contains(id))
+                || turn.input_message_ids.iter().any(|id| !predecessor.input_message_ids.contains(id))
+            {
+                return Ok(TransitionCommit::default());
+            }
+            turn.input_message_ids.clone_from(&predecessor.input_message_ids);
             if let Some(batch) = &turn.idle_input_batch {
                 let initial: Vec<(String, String)> = tx.prepare(
                     "SELECT result_identity, message_id FROM task_result_settlements
@@ -382,12 +409,121 @@ fn live_identity_count(batch: &LiveInputBatchRecord) -> usize {
     batch.result_identities.len() + batch.ordinary_message_ids.len()
 }
 
+fn restore_operator_inputs_tx(
+    tx: &Transaction<'_>,
+    predecessor: &TurnRecord,
+    attachment_turns: &BTreeSet<String>,
+    turn: &mut TurnRecord,
+) -> Result<bool> {
+    let mut seen = BTreeSet::new();
+    for message_id in &predecessor.input_message_ids {
+        if !seen.insert(message_id) {
+            return Ok(false);
+        }
+        if turn.input_message_ids.contains(message_id) {
+            continue;
+        }
+        let payload: Option<String> = tx
+            .query_row(
+                "SELECT payload_json FROM messages WHERE agent_id = ?1 AND message_id = ?2",
+                params![turn.agent_id, message_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(message) = payload
+            .map(|payload| serde_json::from_str::<MessageEnvelope>(&payload))
+            .transpose()?
+        else {
+            return Ok(false);
+        };
+        if message.id != *message_id
+            || message.agent_id != turn.agent_id
+            || message.kind != MessageKind::OperatorPrompt
+            || !matches!(message.origin, crate::types::MessageOrigin::Operator { .. })
+            || message.authority_class != AuthorityClass::OperatorInstruction
+            || message.priority != Priority::Interject
+        {
+            return Ok(false);
+        }
+        let interjected: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id = ?1
+             AND message_id = ?2 AND status = 'interjected')",
+            params![turn.agent_id, message_id],
+            |row| row.get(0),
+        )?;
+        if !interjected {
+            return Ok(false);
+        }
+        let expected = serde_json::json!({
+            "authority_class": message.authority_class,
+            "delivery_surface": message.delivery_surface,
+            "admission_context": message.admission_context,
+            "trigger_kind": message.trigger_kind,
+            "work_item_id": message.work_item_id,
+            "task_id": message.task_id,
+            "source_refs": message.source_refs,
+            "correlation_id": message.correlation_id,
+            "causation_id": message.causation_id,
+        });
+        let entries: Vec<(String, String)> = tx
+            .prepare(
+                "SELECT transcript.payload_json, turn.payload_json
+             FROM transcript_entries AS transcript
+             JOIN turn_records AS turn ON turn.turn_id = transcript.turn_id
+             WHERE transcript.agent_id = ?1 AND transcript.message_id = ?2
+             AND transcript.kind = 'incoming_message'",
+            )?
+            .query_map(params![turn.agent_id, message_id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut admitted = false;
+        for (entry, source_turn) in entries {
+            let entry: crate::types::TranscriptEntry = serde_json::from_str(&entry)?;
+            let source_turn: TurnRecord = serde_json::from_str(&source_turn)?;
+            if attachment_turns.contains(&source_turn.turn_id)
+                && source_turn.agent_id == turn.agent_id
+                && source_turn.effective_owner() == turn.effective_owner()
+                && source_turn.input_message_ids.contains(message_id)
+                && entry.agent_id == turn.agent_id
+                && entry.kind == TranscriptEntryKind::IncomingMessage
+                && entry.related_message_id.as_ref() == Some(message_id)
+                && entry.round.is_some()
+                && entry.data["turn_id"].as_str() == Some(source_turn.turn_id.as_str())
+                && matches!(
+                    entry.data["boundary"].as_str(),
+                    Some(
+                        "after_provider_round"
+                            | "before_tool_execution"
+                            | "after_tool_results"
+                            | "before_provider_continuation"
+                    )
+                )
+                && expected
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .all(|(key, value)| entry.data.get(key) == Some(value))
+            {
+                admitted = true;
+                break;
+            }
+        }
+        if !admitted {
+            return Ok(false);
+        }
+        turn.input_message_ids.push(message_id.clone());
+    }
+    Ok(true)
+}
+
 fn restore_initial_snapshot_tx(
     tx: &Transaction<'_>,
     current: &ExecutionAttempt,
     prior: &ExecutionAttempt,
     predecessor: &TurnRecord,
     source: &MessageEnvelope,
+    ancestors: &BTreeMap<String, String>,
     turn: &mut TurnRecord,
 ) -> Result<bool> {
     if predecessor
@@ -420,30 +556,6 @@ fn restore_initial_snapshot_tx(
         || batch.cutoff > predecessor.created_at
     {
         return Ok(false);
-    }
-    let state = execution_protocol_repository::load_state_tx(tx, &current.agent_id)?;
-    let mut ancestors = BTreeMap::new();
-    let mut next = Some(prior.attempt_id.as_str());
-    while let Some(id) = next {
-        if ancestors.contains_key(id) {
-            return Ok(false);
-        }
-        let Some(attempt) = state.attempts.get(id) else {
-            return Ok(false);
-        };
-        if attempt.state != ExecutionAttemptState::Interrupted
-            || attempt.binding != current.binding
-            || attempt.source_message_id != current.source_message_id
-        {
-            break;
-        }
-        let Some(turn_id) =
-            crate::runtime_db::task_result_settlement::canonical_live_turn_id_tx(tx, attempt)?
-        else {
-            return Ok(false);
-        };
-        ancestors.insert(id.to_owned(), turn_id);
-        next = attempt.recovery_of_attempt_id.as_deref();
     }
     let mut seen = BTreeSet::new();
     for item in &batch.items {

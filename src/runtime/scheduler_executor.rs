@@ -839,18 +839,20 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         }
                     })
                 });
-                self.runtime
-                    .idle_batch_source_turn(&persisted_message.agent_id, &persisted_message.id)?
-                    .filter(|turn| {
-                        prior_id.is_some()
-                            && turn
-                                .idle_input_batch
-                                .as_ref()
-                                .and_then(|batch| batch.activation_id.as_deref())
-                                == prior_id
-                    })
-                    .map(|turn| turn.turn_id)
-                    .or_else(|| persisted_message.turn_id.clone())
+                let attached_turn_id = if let Some(prior_id) = prior_id {
+                    self.runtime
+                        .inner
+                        .runtime_db
+                        .task_result_settlements()
+                        .interrupted_attached_turn_id(
+                            &persisted_message.agent_id,
+                            prior_id,
+                            &persisted_message.id,
+                        )?
+                } else {
+                    None
+                };
+                attached_turn_id.or_else(|| persisted_message.turn_id.clone())
             } else {
                 None
             };

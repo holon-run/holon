@@ -351,7 +351,10 @@ fn load_reply_routes_tx(
                 !source.input_message_ids.contains(message_id)
                     && turn.live_input_batches.iter().any(|batch| {
                         batch.activation_id == attempt.attempt_id
-                            && batch.ordinary_message_ids.contains(message_id)
+                            && batch
+                                .items
+                                .iter()
+                                .any(|item| &item.message_id == message_id)
                     })
             });
         let batch_source = (current_batch_source
@@ -404,6 +407,7 @@ fn load_reply_routes_tx(
                         && source.input_message_ids.contains(message_id)
                 }))
             || message.kind != MessageKind::InternalFollowup
+            || message.authority_class == crate::types::AuthorityClass::OperatorInstruction
             || message.admission_context != Some(AdmissionContext::RuntimeOwned)
             || message.delivery_surface != Some(MessageDeliverySurface::RuntimeSystem)
             || !matches!(
@@ -2676,6 +2680,9 @@ mod tests {
             "missing_claim",
             "foreign_turn",
             "copied_replay",
+            "pure_task_result",
+            "operator_authority",
+            "external_admission",
         ] {
             let (_dir, db) = runtime_db()?;
             let (mut turn, inputs) = seed_reply_turn_with_config(&db, &["sender-a"], 0, |turn| {
@@ -2693,6 +2700,13 @@ mod tests {
             follower.turn_id = Some("live-ingress-turn".into());
             follower.message_seq = None;
             follower.routing_context.as_mut().unwrap().message_id = follower.id.clone();
+            if defect == "pure_task_result" {
+                follower.kind = MessageKind::TaskResult;
+            } else if defect == "operator_authority" {
+                follower.authority_class = AuthorityClass::OperatorInstruction;
+            } else if defect == "external_admission" {
+                follower.admission_context = Some(AdmissionContext::ExternalTriggerCapability);
+            }
             let follower = db.messages().append_with_index_changes(&follower, &[])?;
             if defect != "missing_delivery" {
                 let mut input = request(defect, "live follower");

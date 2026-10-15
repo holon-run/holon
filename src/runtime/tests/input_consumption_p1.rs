@@ -3168,6 +3168,61 @@ async fn p1_recovery_rejects_missing_or_foreign_snapshot_admission() {
         )
         .unwrap();
         target.recover_scheduler_bootstrap_claims().await.unwrap();
+        if invalid_evidence == "owner" {
+            // Canonical predecessor selection rejects this before a replay
+            // turn or any source admission can be committed.
+            let turns = target.storage().read_recent_turns(2).unwrap();
+            let entries = [&first, &second].map(|id| {
+                target
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest(id)
+                    .unwrap()
+                    .unwrap()
+            });
+            let settlements = target
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .unsettled_for_agent("batch-target", 8)
+                .unwrap();
+            let error = scheduler_executor::SchedulerDecisionExecutor::new(&target)
+                .poll()
+                .await
+                .err()
+                .expect("foreign predecessor owner must be rejected");
+            assert!(error
+                .to_string()
+                .contains("interrupted replay source attachment is invalid or ambiguous"));
+            assert_eq!(turns.len(), 1);
+            assert_eq!(turns[0].turn_id, source.turn_id);
+            assert_eq!(target.storage().read_recent_turns(2).unwrap(), turns);
+            assert_eq!(
+                [&first, &second].map(|id| {
+                    target
+                        .inner
+                        .runtime_db
+                        .queue_entries()
+                        .latest(id)
+                        .unwrap()
+                        .unwrap()
+                }),
+                entries
+            );
+            assert_eq!(entries[1].status, QueueEntryStatus::Interjected);
+            assert_eq!(
+                target
+                    .inner
+                    .runtime_db
+                    .task_result_settlements()
+                    .unsettled_for_agent("batch-target", 8)
+                    .unwrap(),
+                settlements
+            );
+            assert!(provider.requests.lock().await.is_empty());
+            continue;
+        }
         let anchor = start_without_provider(&target).await;
         assert_eq!(anchor.id, first);
         let mut recovered = target.storage().read_recent_turns(1).unwrap().remove(0);

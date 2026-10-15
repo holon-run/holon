@@ -1,6 +1,7 @@
 //! Live inputs enter real provider requests only at bounded, paired safe points.
 use super::super::*;
 use super::support::*;
+use crate::runtime::message_dispatch::message_text;
 use crate::runtime_db::task_result_settlement::{
     TaskResultSettlementDisposition, TaskResultSettlementState,
 };
@@ -13,6 +14,7 @@ use std::collections::BTreeSet;
 
 #[derive(Clone, Copy)]
 enum Source {
+    Operator,
     Message {
         sender: &'static str,
         valid_sender: bool,
@@ -98,6 +100,26 @@ impl AgentProvider for LiveProvider {
                 let key = format!("p2-{round}-{}-{index}", self.sources.lock().await.len());
                 let body = format!("{key}:{}", "x".repeat(injection.body_bytes));
                 let id = match injection.source {
+                    Source::Operator => {
+                        let message = MessageEnvelope::new(
+                            "default",
+                            MessageKind::OperatorPrompt,
+                            MessageOrigin::Operator {
+                                actor_id: Some("p2-operator".into()),
+                                actor_display_name: None,
+                            },
+                            AuthorityClass::OperatorInstruction,
+                            Priority::Interject,
+                            MessageBody::Text { text: body },
+                        )
+                        .with_admission(
+                            MessageDeliverySurface::HttpControlPrompt,
+                            AdmissionContext::ControlAuthenticated,
+                        );
+                        let id = message.id.clone();
+                        runtime.enqueue(message).await.unwrap();
+                        id
+                    }
                     Source::Message {
                         sender,
                         valid_sender,
@@ -144,10 +166,37 @@ impl AgentProvider for LiveProvider {
             Reply::CheckLiveReplyRoute => {
                 let source = self.sources.lock().await.last().cloned().unwrap();
                 let batch = turn.live_input_batches.last().unwrap();
-                assert_eq!(batch.ordinary_message_ids, [source.clone()]);
+                let source_message = runtime.storage().read_message_by_id(&source)?.unwrap();
+                let reply_source =
+                    crate::wake_contract::agent_message_reply_reference(&source_message)
+                        .unwrap_or(&source);
+                if source_message.kind == MessageKind::TaskResult {
+                    assert!(batch.ordinary_message_ids.is_empty());
+                    assert!(batch
+                        .items
+                        .iter()
+                        .any(|item| item.message_id == reply_source));
+                    assert!(
+                        runtime
+                            .inner
+                            .runtime_db
+                            .agent_message_deliveries()
+                            .resolve_reply_context(
+                                "default",
+                                Some(&turn.turn_id),
+                                Some(&source),
+                                "p2-peer",
+                                false,
+                            )
+                            .is_err(),
+                        "a task-result notification is not a reply route"
+                    );
+                } else {
+                    assert_eq!(batch.ordinary_message_ids, [source.clone()]);
+                }
                 let original = runtime
                     .storage()
-                    .read_message_by_id(&source)
+                    .read_message_by_id(reply_source)
                     .unwrap()
                     .unwrap();
                 assert_eq!(
@@ -161,7 +210,7 @@ impl AgentProvider for LiveProvider {
                     .resolve_reply_context(
                         "default",
                         Some(&turn.turn_id),
-                        Some(&source),
+                        Some(reply_source),
                         "p2-peer",
                         false,
                     )
@@ -832,15 +881,464 @@ async fn restart_live_runtime(
 
 #[tokio::test]
 async fn p2_restart_reuses_local_round_two_for_same_owner_task_result() {
-    assert_restart_reuses_local_round_two(true).await;
+    assert_restart_reuses_local_round_two(Some(TaskKind::CommandTask)).await;
 }
 
 #[tokio::test]
 async fn p2_restart_reuses_local_round_two_for_ordinary_input() {
-    assert_restart_reuses_local_round_two(false).await;
+    assert_restart_reuses_local_round_two(None).await;
 }
 
-async fn assert_restart_reuses_local_round_two(is_result: bool) {
+#[tokio::test]
+async fn p2_restart_routes_new_message_wait_reply() {
+    assert_restart_reuses_local_round_two(Some(TaskKind::AgentMessageWait)).await;
+}
+
+#[tokio::test]
+async fn p2_batchless_ancestor_survives_live_attachment_and_another_restart() {
+    assert_batchless_ancestor_restart(None).await;
+}
+
+#[tokio::test]
+async fn p2_batchless_ancestor_requires_exact_replay_source() {
+    for defect in ["source_turn", "source_message"] {
+        assert_batchless_ancestor_restart(Some(defect)).await;
+    }
+}
+
+async fn assert_batchless_ancestor_restart(defect: Option<&str>) {
+    let (data, workspace, mut runtime, provider) = fixture().await;
+    *provider.steps.lock().await = vec![
+        Step {
+            inputs: Vec::new(),
+            reply: Reply::PairedTools,
+        },
+        Step {
+            inputs: Vec::new(),
+            reply: Reply::Interrupt,
+        },
+        Step {
+            inputs: vec![result(None, TaskKind::CommandTask, true, 1)],
+            reply: Reply::PairedTools,
+        },
+        Step {
+            inputs: Vec::new(),
+            reply: Reply::Interrupt,
+        },
+        Step {
+            inputs: Vec::new(),
+            reply: Reply::Final,
+        },
+    ];
+    let anchor = message(
+        &runtime,
+        None,
+        "p2-peer",
+        "batchless-anchor",
+        "p2 old P1 anchor",
+        true,
+    )
+    .await;
+    let mut predecessors = Vec::<TurnRecord>::new();
+    let mut original_settlement = None;
+    for index in 0..3 {
+        if index > 0 {
+            runtime = restart_live_runtime(&data, &workspace, runtime, &provider).await;
+        }
+        let scheduled = Box::pin(claim(&runtime)).await;
+        assert_eq!(scheduled.message.id, anchor.id);
+        if index == 2 {
+            let predecessor = predecessors.last().unwrap();
+            let result_id = &provider.sources.lock().await[0];
+            original_settlement = runtime
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .latest_for_message(result_id)
+                .unwrap();
+            if let Some(defect) = defect {
+                let mut invalid = runtime
+                    .storage()
+                    .read_turn_by_id(&predecessor.turn_id)
+                    .unwrap()
+                    .unwrap();
+                let replay = invalid.replay.as_mut().unwrap();
+                match defect {
+                    "source_turn" => replay.source_turn_id = "unrelated-turn".into(),
+                    "source_message" => replay.source_message_id = "unrelated-message".into(),
+                    _ => unreachable!(),
+                }
+                runtime
+                    .inner
+                    .runtime_db
+                    .transaction(|tx| {
+                        assert_eq!(
+                            tx.execute(
+                                "UPDATE turn_records SET payload_json = ?2 WHERE turn_id = ?1",
+                                rusqlite::params![
+                                    invalid.turn_id,
+                                    serde_json::to_string(&invalid)?
+                                ],
+                            )?,
+                            1
+                        );
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+        }
+        let source = scheduled.message.clone();
+        let mut processing = Box::pin(runtime.process_message_with_plan_deferred(
+            scheduled.message,
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
+        ));
+        if index < 2 {
+            tokio::select! {
+                outcome = &mut processing => panic!(
+                    "batchless lineage attempt {index} must remain in flight: {:?}", outcome.err(),
+                ),
+                ready = tokio::time::timeout(
+                    std::time::Duration::from_secs(10), provider.interrupted.notified(),
+                ) => ready.unwrap(),
+            }
+        } else if defect.is_some() {
+            let error = processing.as_mut().await.unwrap_err();
+            assert!(
+                error.to_string().contains("live input recovery"),
+                "{error:#}"
+            );
+            let result_id = &provider.sources.lock().await[0];
+            assert_eq!(
+                runtime
+                    .inner
+                    .runtime_db
+                    .task_result_settlements()
+                    .latest_for_message(result_id)
+                    .unwrap(),
+                original_settlement,
+            );
+            assert!(latest_turn(&runtime).live_input_batches.is_empty());
+            assert_eq!(provider.requests.lock().await.len(), 4);
+            return;
+        } else {
+            let terminal = processing.as_mut().await.unwrap();
+            Box::pin(settle(&runtime, source, &terminal)).await;
+        }
+        drop(processing);
+        let mut turn = latest_turn(&runtime);
+        assert_eq!(turn.live_input_batches.len(), usize::from(index > 0));
+        if index == 0 {
+            // Simulate a persisted pre-batch P1 turn, without changing its
+            // source, owner, attempt, queue claim, or transcript evidence.
+            turn.idle_input_batch = None;
+            runtime
+                .inner
+                .runtime_db
+                .turn_records()
+                .upsert(&turn)
+                .unwrap();
+        } else {
+            assert!(turn.idle_input_batch.is_none());
+            assert_eq!(turn.effective_owner(), predecessors[0].effective_owner());
+            assert_eq!(
+                turn.replay.as_ref().unwrap().source_turn_id,
+                predecessors.last().unwrap().turn_id
+            );
+            assert_live_bounds(&turn);
+        }
+        predecessors.push(turn);
+    }
+    let result_id = &provider.sources.lock().await[0];
+    let settled = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(result_id)
+        .unwrap()
+        .unwrap();
+    let original = original_settlement.unwrap();
+    assert_eq!(settled.result_identity, original.result_identity);
+    assert_eq!(settled.parent_turn_id, predecessors[1].turn_id);
+    assert_eq!(settled.work_item_id, original.work_item_id);
+    assert_eq!(settled.state, TaskResultSettlementState::Settled);
+    assert_eq!(
+        settled.disposition,
+        Some(TaskResultSettlementDisposition::ModelDelivered)
+    );
+    assert_eq!(
+        predecessors[2].input_message_ids,
+        predecessors[1].input_message_ids
+    );
+    assert_eq!(
+        predecessors[2].live_input_batches[0].safe_point,
+        predecessors[1].live_input_batches[0].safe_point
+    );
+    let requests = provider.requests.lock().await;
+    assert_eq!(requests.len(), 5);
+    let rendered = &predecessors[1].live_input_batches[0].items[0].rendered;
+    assert_eq!(visible(&requests[4]).matches(rendered.as_str()).count(), 1);
+    assert_request_tool_pairs(&requests[4]);
+}
+
+#[tokio::test]
+async fn p2_interrupted_restart_restores_mixed_operator_and_live_inputs() {
+    assert_mixed_operator_live_restart(None, false).await;
+}
+
+#[tokio::test]
+async fn p2_repeated_lifecycle_restart_restores_mixed_operator_and_live_inputs() {
+    assert_mixed_operator_live_restart(None, true).await;
+}
+
+#[tokio::test]
+async fn p2_mixed_operator_recovery_requires_admission_evidence() {
+    for defect in [
+        "missing_transcript",
+        "foreign_transcript",
+        "queued",
+        "wrong_authority",
+    ] {
+        assert_mixed_operator_live_restart(Some(defect), false).await;
+    }
+}
+
+async fn assert_mixed_operator_live_restart(defect: Option<&str>, repeated: bool) {
+    let (data, workspace, runtime, provider) = fixture().await;
+    let producer = owner(&runtime, "p2 mixed original task owner").await;
+    // Bound WorkItem claims retain their one-replay poison-message fence.
+    let receiver = if repeated {
+        None
+    } else {
+        Some(owner(&runtime, "p2 mixed interrupted owner").await)
+    };
+    *provider.steps.lock().await = vec![
+        Step {
+            inputs: vec![result(Some(&producer), TaskKind::CommandTask, true, 1)],
+            reply: Reply::PairedTools,
+        },
+        Step {
+            inputs: vec![Injection {
+                source: Source::Operator,
+                owner: None,
+                count: 1,
+                body_bytes: 6000,
+            }],
+            reply: Reply::PairedTools,
+        },
+        Step {
+            inputs: Vec::new(),
+            reply: Reply::Interrupt,
+        },
+        Step {
+            inputs: vec![ordinary(receiver.as_deref(), "p2-peer", true)],
+            reply: Reply::PairedTools,
+        },
+        Step {
+            inputs: Vec::new(),
+            reply: if repeated {
+                Reply::Interrupt
+            } else {
+                Reply::Final
+            },
+        },
+        Step {
+            inputs: Vec::new(),
+            reply: Reply::PairedTools,
+        },
+        Step {
+            inputs: Vec::new(),
+            reply: Reply::Final,
+        },
+    ];
+    if !repeated {
+        provider.steps.lock().await.truncate(5);
+    }
+    let anchor = message(
+        &runtime,
+        receiver.as_deref(),
+        "p2-peer",
+        "mixed-anchor",
+        "p2 mixed anchor",
+        true,
+    )
+    .await;
+    let scheduled = Box::pin(claim(&runtime)).await;
+    let mut processing = Box::pin(runtime.process_message_with_plan_deferred(
+        scheduled.message,
+        scheduled.dispatch_plan,
+        &scheduled.scheduler_decision,
+    ));
+    tokio::select! {
+        _ = &mut processing => panic!("mixed predecessor must remain in flight"),
+        ready = tokio::time::timeout(std::time::Duration::from_secs(10), provider.interrupted.notified()) => ready.unwrap(),
+    }
+    drop(processing);
+    let predecessor = latest_turn(&runtime);
+    let sources = provider.sources.lock().await.clone();
+    let result_id = &sources[0];
+    let operator_id = &sources[1];
+    let operator = runtime
+        .storage()
+        .read_message_by_id(operator_id)
+        .unwrap()
+        .unwrap();
+    let operator_body = message_text(&operator.body);
+    assert_eq!(predecessor.live_input_batches.len(), 1);
+    assert!(!live_ids(&predecessor).contains(operator_id));
+    assert!(predecessor.input_message_ids.contains(operator_id));
+    assert!(scheduler::is_operator_interjection_message(&operator));
+    let original_activation = predecessor.live_input_batches[0].activation_id.clone();
+    let original_settlement = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(result_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        original_settlement.state,
+        TaskResultSettlementState::CallerAdmitted
+    );
+    assert_eq!(
+        original_settlement.work_item_id.as_deref(),
+        Some(producer.as_str())
+    );
+    assert_eq!(
+        visible(&provider.requests.lock().await[2])
+            .matches(operator_body.as_str())
+            .count(),
+        1
+    );
+    let runtime = restart_live_runtime(&data, &workspace, runtime, &provider).await;
+    let scheduled = Box::pin(claim(&runtime)).await;
+    assert_eq!(scheduled.message.id, anchor.id);
+    if let Some(defect) = defect {
+        runtime.inner.runtime_db.transaction(|tx| {
+            match defect {
+                "missing_transcript" => {
+                    tx.execute("DELETE FROM transcript_entries WHERE message_id = ?1", [operator_id])?;
+                }
+                "foreign_transcript" => {
+                    tx.execute("UPDATE transcript_entries SET turn_id = 'unrelated-turn' WHERE message_id = ?1", [operator_id])?;
+                }
+                "queued" => {
+                    tx.execute("UPDATE queue_entries SET status = 'queued' WHERE message_id = ?1", [operator_id])?;
+                }
+                "wrong_authority" => {
+                    let mut invalid = operator.clone();
+                    invalid.authority_class = AuthorityClass::ExternalEvidence;
+                    tx.execute("UPDATE messages SET payload_json = ?2 WHERE message_id = ?1",
+                        rusqlite::params![operator_id, serde_json::to_string(&invalid)?])?;
+                }
+                _ => unreachable!(),
+            }
+            Ok(())
+        }).unwrap();
+    }
+    let recovered_source = scheduled.message.clone();
+    let mut processing = Box::pin(runtime.process_message_with_plan_deferred(
+        scheduled.message,
+        scheduled.dispatch_plan,
+        &scheduled.scheduler_decision,
+    ));
+    if defect.is_some() {
+        let error = processing.await.unwrap_err();
+        assert!(
+            error.to_string().contains("live input recovery"),
+            "{error:#}"
+        );
+        let unchanged = runtime
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .latest_for_message(result_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged, original_settlement);
+        let failed = latest_turn(&runtime);
+        assert!(failed.live_input_batches.is_empty());
+        assert!(!failed.input_message_ids.contains(operator_id));
+        assert_eq!(provider.requests.lock().await.len(), 3);
+        return;
+    }
+    let runtime = if repeated {
+        tokio::select! {
+            outcome = &mut processing => panic!(
+                "mixed recovered turn must remain in flight: {:?}", outcome.err(),
+            ),
+            ready = tokio::time::timeout(std::time::Duration::from_secs(10), provider.interrupted.notified()) => ready.unwrap(),
+        }
+        drop(processing);
+        let first_recovery = latest_turn(&runtime);
+        assert_eq!(
+            first_recovery.effective_owner(),
+            predecessor.effective_owner()
+        );
+        assert!(first_recovery.input_message_ids.contains(operator_id));
+        let runtime = restart_live_runtime(&data, &workspace, runtime, &provider).await;
+        let scheduled = Box::pin(claim(&runtime)).await;
+        Box::pin(process(&runtime, scheduled)).await;
+        assert_eq!(
+            latest_turn(&runtime).input_message_ids,
+            first_recovery.input_message_ids
+        );
+        runtime
+    } else {
+        let terminal = processing.await.unwrap();
+        Box::pin(settle(&runtime, recovered_source, &terminal)).await;
+        runtime
+    };
+    let recovered = latest_turn(&runtime);
+    assert_eq!(recovered.effective_owner(), predecessor.effective_owner());
+    assert_eq!(recovered.live_input_batches.len(), 2);
+    assert_eq!(
+        runtime
+            .storage()
+            .read_message_by_id(operator_id)
+            .unwrap()
+            .unwrap(),
+        operator
+    );
+    let requests = provider.requests.lock().await;
+    assert_eq!(requests.len(), if repeated { 7 } else { 5 });
+    for request in &requests[3..] {
+        let text = visible(request);
+        assert_eq!(
+            text.matches(operator_body.as_str()).count(),
+            1,
+            "full operator body exactly once"
+        );
+        assert!(text.contains(operator_id));
+        assert!(text.contains("p2-operator"));
+        assert!(text.contains("operator_instruction"));
+        assert!(text.contains("http_control_prompt"));
+        assert!(text.contains("control_authenticated"));
+        assert_request_tool_pairs(request);
+    }
+    let settled = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(result_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(settled.work_item_id, original_settlement.work_item_id);
+    assert_eq!(settled.parent_turn_id, predecessor.turn_id);
+    assert_eq!(settled.result_identity, original_settlement.result_identity);
+    assert_eq!(settled.state, TaskResultSettlementState::Settled);
+    assert_eq!(
+        settled.disposition,
+        Some(TaskResultSettlementDisposition::ModelDelivered)
+    );
+    assert_ne!(
+        settled.activation_id.as_deref(),
+        Some(original_activation.as_str())
+    );
+    assert_live_bounds(&recovered);
+}
+
+async fn assert_restart_reuses_local_round_two(result_kind: Option<TaskKind>) {
     let (data, workspace, runtime, provider) = fixture().await;
     let receiver = owner(&runtime, "p2 restart safe point owner").await;
     *provider.steps.lock().await = vec![
@@ -855,6 +1353,14 @@ async fn assert_restart_reuses_local_round_two(is_result: bool) {
         Step {
             inputs: Vec::new(),
             reply: Reply::GatedTool,
+        },
+        Step {
+            inputs: Vec::new(),
+            reply: if result_kind == Some(TaskKind::AgentMessageWait) {
+                Reply::CheckLiveReplyRoute
+            } else {
+                Reply::Final
+            },
         },
     ];
     message(
@@ -912,13 +1418,13 @@ async fn assert_restart_reuses_local_round_two(is_result: bool) {
         }) => ready.expect("the real tool did not start"),
     }
     let current = latest_turn(&runtime);
-    let source = if is_result {
+    let source = if let Some(kind) = result_kind {
         Box::pin(task_result(
             &runtime,
             Some(&receiver),
             "p2-restarted-tool-result",
             "p2 restarted tool result",
-            TaskKind::CommandTask,
+            kind,
             &current.turn_id,
         ))
         .await
@@ -934,6 +1440,9 @@ async fn assert_restart_reuses_local_round_two(is_result: bool) {
         .await
         .id
     };
+    if result_kind == Some(TaskKind::AgentMessageWait) {
+        provider.sources.lock().await.push(source.clone());
+    }
     std::fs::write(workspace.path().join("p2-tool-release"), "").unwrap();
     let terminal = tokio::time::timeout(std::time::Duration::from_secs(10), processing)
         .await
@@ -962,15 +1471,25 @@ async fn assert_restart_reuses_local_round_two(is_result: bool) {
     let requests = provider.requests.lock().await;
     assert_eq!(requests.len(), 4);
     assert_request_tool_pairs(&requests[3]);
+    let source_message = runtime
+        .storage()
+        .read_message_by_id(&source)
+        .unwrap()
+        .unwrap();
+    let body_source =
+        crate::wake_contract::agent_message_reply_reference(&source_message).unwrap_or(&source);
     let bodies = source_bodies(
         &runtime,
-        &[provider.sources.lock().await[0].clone(), source.clone()],
+        &[
+            provider.sources.lock().await[0].clone(),
+            body_source.to_owned(),
+        ],
     );
     for body in &bodies {
         assert_eq!(visible(&requests[3]).matches(body.as_str()).count(), 1);
     }
     assert!(!visible(&requests[2]).contains(&bodies[1]));
-    if is_result {
+    if result_kind.is_some() {
         let settled = runtime
             .inner
             .runtime_db

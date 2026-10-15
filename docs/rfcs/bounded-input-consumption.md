@@ -194,7 +194,14 @@ Context deduplication uses that immutable identity, and the four-batch, 32-ident
 Bootstrap closes the canonical attached turn with the interrupted queue/attempt
 transition, not an ingress turn selected by its envelope ID. Retained queue
 claims recover the validated interrupted lineage leaf rather than the original
-attempt; this does not relax the existing bounded-replay policy for non-lifecycle
+attempt. Direct predecessor selection accepts canonical live or idle attachment;
+invalid or ambiguous attachment cannot fall back to an ingress turn. Only a
+predecessor without any attachment retains the older P1 envelope fallback.
+An attached recovery ancestor requires an explicit interrupted turn terminal.
+A legacy batchless ancestor may lack that terminal only when an interrupted
+attempt and the exact persisted successor replay edge identify it; any existing
+non-interrupted terminal remains ineligible.
+This does not relax the existing bounded-replay policy for non-lifecycle
 attempts. An already-admitted
 notification may yield only to its own interrupted anchor after canonical
 source validation; independent rejoin, operator, and exact-waiter barriers remain.
