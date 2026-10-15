@@ -1653,6 +1653,76 @@ class DockerE2ERunnerTests(unittest.TestCase):
             ):
                 harness.assert_tools("complete", 3, ["CompleteWorkItem"])
 
+    def test_deferred_completion_requires_its_exact_committed_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="deferred-completion",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            event = {
+                "type": "tool_executed",
+                "payload": {
+                    "status": "deferred",
+                    "tool_name": "CompleteWorkItem",
+                    "work_item_id": "work-1",
+                    "input": {"work_item_id": "work-1"},
+                    "turn_id": "turn-1",
+                    "turn_index": 4,
+                },
+            }
+            harness.events = lambda _: [event]
+            item = {
+                "id": "work-1",
+                "state": "completed",
+                "result_brief_id": "brief-1",
+            }
+            brief = {
+                "work_item_id": "work-1",
+                "turn_id": "turn-1",
+                "text": "committed completion report",
+            }
+            harness.work_items = lambda _: [item]
+            harness.brief = lambda *_: brief
+            self.assertEqual(
+                harness.assert_tools("complete", 3, ["CompleteWorkItem"]), [event]
+            )
+            for target, field, value in (
+                (item, "state", "open"),
+                (item, "result_brief_id", None),
+                (brief, "work_item_id", "foreign-work"),
+                (brief, "turn_id", "foreign-turn"),
+                (brief, "text", " "),
+                (event["payload"]["input"], "work_item_id", "foreign-work"),
+                (event["payload"], "tool_name", "WaitFor"),
+            ):
+                with self.subTest(field=field, value=value):
+                    previous = target[field]
+                    target[field] = value
+                    self.assertEqual(harness.successful_tool_events("complete", 3), [])
+                    with self.assertRaisesRegex(AssertionError, "missing successful tools"):
+                        harness.assert_tools("complete", 3, ["CompleteWorkItem"])
+                    target[field] = previous
+
+            for missing_turn_id in (None, ""):
+                with self.subTest(missing_turn_id=missing_turn_id):
+                    event["payload"]["turn_id"] = missing_turn_id
+                    brief["turn_id"] = missing_turn_id
+                    with self.assertRaisesRegex(AssertionError, "missing successful tools"):
+                        harness.assert_tools("complete", 3, ["CompleteWorkItem"])
+            event["payload"]["turn_id"] = brief["turn_id"] = "turn-1"
+            for status in ("failed", "not_dispatched", "pending"):
+                with self.subTest(status=status):
+                    event["payload"]["status"] = status
+                    self.assertEqual(harness.successful_tool_events("complete", 3), [])
+            event["payload"]["status"] = "deferred"
+
     def test_tool_assertion_uses_turn_started_index_for_all_events(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             harness = runner.CaseHarness(
@@ -2011,6 +2081,296 @@ class DockerE2ERunnerTests(unittest.TestCase):
             )
             self.assertNotIn("HOLON_SCHEDULER", case.get("runtime_env", {}))
 
+    def test_scheduler_interject_keeps_setup_conversation_outside_work_item(self) -> None:
+        case = next(
+            case
+            for case in self.manifest["cases"]
+            if case["id"] == "scheduler-operator-interject-during-wait"
+        )
+        item_a = {"id": "work-a", "state": "completed", "result_brief_id": "brief-a"}
+        item_b = {"id": "work-b", "state": "completed", "result_brief_id": "brief-b"}
+        with (
+            patch.object(runner.secrets, "token_hex", return_value="marker"),
+            patch.object(runner, "CaseHarness", autospec=True) as harness_type,
+            patch.object(runner, "require_scheduler_engine_activation_chain") as chain,
+            patch.object(
+                runner, "require_scheduler_interject_setup",
+                return_value=("turn-setup", "turn-resume"),
+            ) as setup,
+            patch.object(
+                runner,
+                "require_scheduler_wait_terminal",
+                return_value=[{"wait_condition_id": "wait-a"}],
+            ),
+            patch.object(runner, "require_scheduler_engine_wait_resolution"),
+            patch.object(runner, "require_execution_work_items_terminal"),
+        ):
+            harness = harness_type.return_value
+            harness.agent_id = "default"
+            harness.prompt.return_value = (0, {})
+            harness.wait_work_item_scheduling_state.return_value = {"id": "work-a"}
+            harness.wait_work_item.side_effect = [item_b, item_a]
+            harness.prompt_scope.side_effect = lambda label: {"message_id": label}
+            harness.brief.side_effect = [
+                {
+                    "work_item_id": f"work-{letter.lower()}",
+                    "text": f"SCHEDULER-INTERJECT-COMPLETE-{letter}-marker",
+                }
+                for letter in ("A", "B")
+            ]
+            harness.runtime_db_snapshot.return_value = {"turn_records": []}
+            harness.work_items.return_value = [item_a, item_b]
+
+            runner.run_scheduler_operator_interject_during_wait_case(harness, case)
+
+        self.assertEqual(setup.call_args.kwargs["work_item_id"], "work-a")
+        self.assertEqual(
+            setup.call_args.kwargs["create_message_id"], "scheduler-interject-create"
+        )
+        self.assertEqual(
+            setup.call_args.kwargs["resume_message_id"], "scheduler-interject-resume"
+        )
+        checks = {
+            call.args[0]: call for call in harness.assert_tools.call_args_list
+        }
+        self.assertEqual(
+            checks["scheduler-interject-create"].args[2],
+            ["CreateWorkItem", "PickWorkItem"],
+        )
+        self.assertEqual(
+            checks["scheduler-interject-a-setup"].kwargs["turn_ids"], {"turn-setup"}
+        )
+        self.assertEqual(
+            checks["scheduler-interject-a-resume"].kwargs["turn_ids"], {"turn-resume"}
+        )
+        self.assertIn("WaitFor", checks["scheduler-interject-a-resume"].args[3])
+        self.assertEqual(chain.call_count, 1)
+        self.assertEqual(chain.call_args.kwargs["work_item_id"], "work-b")
+        self.assertEqual(
+            chain.call_args.kwargs["expected_source_kinds"],
+            ("work_item_continuation",),
+        )
+
+    def _interject_setup_fixture(self, autonomous: bool):
+        setup_turn = "turn-setup" if autonomous else "turn-seed"
+        snapshot = {
+            "turn_records": [],
+            "wait_conditions": [{
+                "agent_id": "default", "work_item_id": "work-a",
+                "wait_condition_id": "wait-a", "kind": "operator",
+                "status": "resolved", "last_turn_id": setup_turn,
+                "trigger_message_id": "message-resume",
+            }],
+            "execution_protocol_attempts": [],
+            "execution_protocol_outcomes": [],
+            "briefs": [{
+                "agent_id": "default", "turn_id": setup_turn, "kind": "result",
+                "payload_json": json.dumps({
+                    "turn_id": setup_turn, "work_item_id": "work-a",
+                    "text": "Waiting for operator input.",
+                }),
+            }],
+        }
+
+        def attempt(name, source, outcome, *, conversation=False):
+            turn_id, message_id = f"turn-{name}", f"message-{name}"
+            binding = (
+                {"kind": "conversation", "interaction_id": "interaction-seed"}
+                if conversation else {"kind": "work_item", "work_item_id": "work-a"}
+            )
+            snapshot["turn_records"].append({
+                "agent_id": "default", "turn_id": turn_id,
+                "turn_index": len(snapshot["turn_records"]) + 1,
+                "owner_kind": binding["kind"],
+                "owner_id": "interaction-seed" if conversation else "work-a",
+                "current_work_item_id": None if conversation else "work-a",
+                "trigger_message_id": message_id,
+            })
+            snapshot["execution_protocol_attempts"].append({
+                "agent_id": "default", "attempt_id": name,
+                "lifecycle_state": "settled", "terminal_outcome_id": f"outcome-{name}",
+                "payload_json": json.dumps({
+                    "attempt_id": name, "turn_id": turn_id,
+                    "source_message_id": message_id, "source": {"identity": source},
+                    "binding": binding,
+                }),
+            })
+            snapshot["execution_protocol_outcomes"].append({
+                "agent_id": "default", "outcome_id": f"outcome-{name}",
+                "payload_json": json.dumps({"attempt_id": name, "outcome": outcome}),
+            })
+
+        attempt(
+            "seed", {"kind": "queue_message", "message_id": "message-seed"},
+            {"owner": "conversation", "outcome": (
+                {"kind": "replied"} if autonomous else {
+                    "kind": "handoff_to_work_item_wait", "work_item_id": "work-a",
+                    "wait": {"wait_id": "wait-a"},
+                }
+            )}, conversation=True,
+        )
+        if autonomous:
+            attempt(
+                "setup", {"kind": "work_item_continuation", "work_item_id": "work-a"},
+                {"owner": "work_item", "outcome": {
+                    "kind": "wait", "wait": {"wait_id": "wait-a"},
+                }},
+            )
+        attempt(
+            "resume", {
+                "kind": "triggered_wait", "wait_id": "wait-a",
+                "trigger_message_id": "message-resume",
+            },
+            {"owner": "work_item", "outcome": {"kind": "complete", "completion": "done"}},
+        )
+        events = [
+            {"type": "tool_executed", "event_seq": index, "payload": {
+                "tool_name": name, "turn_id": "turn-seed",
+                "status": "success", "work_item_id": "work-a",
+                "input": {"work_item_id": "work-a"},
+            }}
+            for index, name in enumerate(["CreateWorkItem", "PickWorkItem"], 1)
+        ]
+        events.append({
+            "type": "tool_executed", "event_seq": 3, "payload": {
+                "tool_name": "WaitFor", "turn_id": setup_turn,
+                "status": "deferred", "work_item_id": "work-a",
+                "input": {"delivery": "final", "wake": "operator_input"},
+            },
+        })
+        harness = type("InterjectHarness", (), {"agent_id": "default"})()
+        harness.events = lambda _: events
+        return harness, snapshot, events
+
+    def test_interject_setup_accepts_both_exact_canonical_paths(self) -> None:
+        for autonomous in (False, True):
+            for status in ("success", "deferred"):
+                with self.subTest(autonomous=autonomous, status=status):
+                    harness, snapshot, events = self._interject_setup_fixture(autonomous)
+                    events[-1]["payload"]["status"] = status
+                    self.assertEqual(
+                        runner.require_scheduler_interject_setup(
+                            harness, snapshot, work_item_id="work-a",
+                            create_message_id="message-seed",
+                            resume_message_id="message-resume",
+                        ),
+                        ("turn-setup" if autonomous else "turn-seed", "turn-resume"),
+                    )
+
+    def test_interject_setup_rejects_unrelated_wait_owner_trigger_and_order(self) -> None:
+        mutations = [
+            ("wait", "last_turn_id", "turn-resume"),
+            ("wait", "trigger_message_id", "message-b"),
+            ("wait", "status", "active"),
+            ("wait", "agent_id", "foreign"),
+            ("setup-turn", "owner_id", "work-b"),
+            ("resume-turn", "owner_id", "work-b"),
+            ("resume-turn", "turn_index", 0),
+            ("wait-event", "turn_id", "turn-b"),
+            ("wait-event", "work_item_id", "work-b"),
+            ("wait-event", "status", "failed"),
+            ("wait-input", "work_item_id", "work-b"),
+            ("wait-input", "wake", "external"),
+            ("wait-input", "delivery", "silent"),
+            ("pick-input", "work_item_id", "work-b"),
+            ("wait-sequence", "event_seq", 1),
+            ("brief", "turn_id", "turn-b"),
+            ("brief", "work_item_id", "work-b"),
+            ("brief", "text", " "),
+        ]
+        for autonomous in (False, True):
+            for target, field, value in mutations:
+                with self.subTest(autonomous=autonomous, target=target, field=field):
+                    harness, snapshot, events = self._interject_setup_fixture(autonomous)
+                    brief = json.loads(snapshot["briefs"][0]["payload_json"])
+                    targets = {
+                        "wait": snapshot["wait_conditions"][0],
+                        "setup-turn": snapshot["turn_records"][-2],
+                        "resume-turn": snapshot["turn_records"][-1],
+                        "wait-event": events[-1]["payload"],
+                        "wait-input": events[-1]["payload"]["input"],
+                        "pick-input": events[1]["payload"]["input"],
+                        "wait-sequence": events[-1],
+                        "brief": brief,
+                    }
+                    targets[target][field] = value
+                    snapshot["briefs"][0]["payload_json"] = json.dumps(brief)
+                    with self.assertRaises(AssertionError):
+                        runner.require_scheduler_interject_setup(
+                            harness, snapshot, work_item_id="work-a",
+                            create_message_id="message-seed",
+                            resume_message_id="message-resume",
+                        )
+
+    def test_interject_setup_rejects_extra_sources_and_uncommitted_wait(self) -> None:
+        for autonomous in (False, True):
+            for fault in (
+                "extra-attempt", "extra-wait", "extra-wait-tool", "missing-wait-tool",
+                "missing-brief", "wrong-outcome", "wrong-resume-source",
+                "wrong-setup-source", "wait-on-seed-instead-of-continuation",
+            ):
+                if not autonomous and fault == "wait-on-seed-instead-of-continuation":
+                    continue
+                with self.subTest(autonomous=autonomous, fault=fault):
+                    harness, snapshot, events = self._interject_setup_fixture(autonomous)
+                    if fault == "extra-attempt":
+                        snapshot["execution_protocol_attempts"].append(
+                            copy.deepcopy(snapshot["execution_protocol_attempts"][-1])
+                        )
+                    elif fault == "extra-wait":
+                        snapshot["wait_conditions"].append(
+                            copy.deepcopy(snapshot["wait_conditions"][0])
+                        )
+                    elif fault == "extra-wait-tool":
+                        events.append(copy.deepcopy(events[-1]))
+                    elif fault == "missing-wait-tool":
+                        events.pop()
+                    elif fault == "missing-brief":
+                        snapshot["briefs"].clear()
+                    elif fault == "wrong-outcome":
+                        row = snapshot["execution_protocol_outcomes"][-2]
+                        payload = json.loads(row["payload_json"])
+                        payload["outcome"]["outcome"]["wait"]["wait_id"] = "wait-b"
+                        row["payload_json"] = json.dumps(payload)
+                    elif fault in {"wrong-resume-source", "wrong-setup-source"}:
+                        row = snapshot["execution_protocol_attempts"][
+                            -1 if fault == "wrong-resume-source" else -2
+                        ]
+                        payload = json.loads(row["payload_json"])
+                        field = "wait_id" if fault == "wrong-resume-source" else (
+                            "work_item_id" if autonomous else "message_id"
+                        )
+                        payload["source"]["identity"][field] = "foreign"
+                        row["payload_json"] = json.dumps(payload)
+                    else:
+                        snapshot["wait_conditions"][0]["last_turn_id"] = "turn-seed"
+                    with self.assertRaises(AssertionError):
+                        runner.require_scheduler_interject_setup(
+                            harness, snapshot, work_item_id="work-a",
+                            create_message_id="message-seed",
+                            resume_message_id="message-resume",
+                        )
+
+    def test_scheduler_multi_requires_marker_in_same_round_or_deferred_report(self) -> None:
+        case = next(
+            case
+            for case in self.manifest["cases"]
+            if case["id"] == "scheduler-multi-workitem-scheduling"
+        )
+        with patch.object(runner, "CaseHarness", autospec=True) as harness_type:
+            harness = harness_type.return_value
+            harness.prompt.side_effect = RuntimeError("stop after seed prompt capture")
+            with self.assertRaisesRegex(RuntimeError, "seed prompt capture"):
+                runner.run_scheduler_multi_workitem_case(harness, case)
+            prompt = harness.prompt.call_args.args[1]
+        for prefix in ("For the first, use objective ", "For the second, use objective "):
+            objective, _ = json.JSONDecoder().raw_decode(prompt.split(prefix, 1)[1])
+            self.assertIn(
+                "same assistant response as CompleteWorkItem", objective
+            )
+            self.assertIn("requests a deferred final report, repeat", objective)
+            self.assertIn("completion report containing the exact marker", objective)
+
     def test_scheduler_task_wait_crashes_daemon_before_task_result_rejoin(self) -> None:
         source = inspect.getsource(runner.run_scheduler_task_wait_resume_case)
         self.assertLess(
@@ -2025,6 +2385,59 @@ class DockerE2ERunnerTests(unittest.TestCase):
             'harness.work_items("scheduler-task-wait-after-restart")',
             source,
         )
+
+    def test_scheduler_task_wait_prompt_expects_interruption_without_retry(self) -> None:
+        case = next(
+            case
+            for case in self.manifest["cases"]
+            if case["id"] == "scheduler-task-wait-resume"
+        )
+        with patch.object(runner, "CaseHarness", autospec=True) as harness_type:
+            harness = harness_type.return_value
+            harness.prompt.side_effect = RuntimeError("stop after seed prompt capture")
+            with self.assertRaisesRegex(RuntimeError, "seed prompt capture"):
+                runner.run_scheduler_task_wait_resume_case(harness, case)
+            harness.prompt.assert_called_once()
+            label, prompt = harness.prompt.call_args.args
+        self.assertEqual(label, "scheduler-task-wait-seed")
+        objective, _ = json.JSONDecoder().raw_decode(
+            prompt.split("whose objective is ", 1)[1]
+        )
+        for instruction in (
+            "intentional crash/restart acceptance drill",
+            "Across the entire WorkItem lifecycle, only one ExecCommand call is allowed",
+            "ExecCommand exactly once",
+            "resource set to that exact task_id",
+            "restart TaskResult saying the task was interrupted is the expected result",
+            "command success and the stdout marker are not required",
+            "Do not repeat or retry ExecCommand after restart",
+            "do not run a replacement command",
+            "Do not call TaskStatus or TaskOutput in any turn, including through CLI workarounds",
+            "On that interrupted task-result rejoin, call GetWorkItem",
+            "the current WorkItem first, then call WaitFor with wake=external",
+            "Do not run diagnostic or recovery commands on that rejoin",
+        ):
+            with self.subTest(instruction=instruction):
+                self.assertIn(instruction, objective)
+
+    def test_scheduler_external_wait_seed_requests_silent_delivery(self) -> None:
+        case = next(
+            case
+            for case in self.manifest["cases"]
+            if case["id"] == "scheduler-external-wait-resume"
+        )
+        with patch.object(runner, "CaseHarness", autospec=True) as harness_type:
+            harness = harness_type.return_value
+            harness.prompt.side_effect = RuntimeError("stop after seed prompt capture")
+            with self.assertRaisesRegex(RuntimeError, "seed prompt capture"):
+                runner.run_scheduler_external_wait_resume_case(harness, case)
+            harness.prompt.assert_called_once()
+            label, prompt = harness.prompt.call_args.args
+        self.assertEqual(label, "scheduler-external-wait")
+        self.assertIn("wake=external", prompt)
+        self.assertIn("delivery=silent", prompt)
+        self.assertIn("tool-only setup wait", prompt)
+        self.assertIn("do not request delivery=final or publish a waiting report", prompt)
 
     def test_crash_restart_uses_docker_sigkill(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2906,6 +3319,553 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "dashscope@token-plan/qwen3.7-max",
                 payload,
             )
+
+
+class LiveAcceptanceEvidenceTests(unittest.TestCase):
+    def test_agent_tail_checks_bounds_scope_cursor_and_null_device(self) -> None:
+        for case in ("good", "foreign-agent", "task-scope", "oversized", "null-error"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                calls = []
+                end = {
+                    "type": "end", "scope": "agent", "agent_id": "receiver",
+                    "cursor": "confirmed-cursor", "stop_reason": "snapshot",
+                }
+                if case == "foreign-agent":
+                    end["agent_id"] = "foreign"
+                elif case == "task-scope":
+                    end["task_id"] = "not-an-agent-observation"
+                elif case == "oversized":
+                    end["padding"] = "x" * 4096
+
+                def docker(*args, **kwargs):
+                    calls.append(args)
+                    if len(calls) == 3:
+                        return subprocess.CompletedProcess(
+                            args, int(case == "null-error"), "", "EPERM"
+                        )
+                    return subprocess.CompletedProcess(args, 0, json.dumps(end) + "\n", "")
+
+                harness = type("Harness", (), {
+                    "evidence": Path(directory), "agent_id": "receiver",
+                    "container": "isolated-runtime", "docker": staticmethod(docker),
+                })()
+                if case != "good":
+                    with self.assertRaises(AssertionError):
+                        runner.require_live_agent_tail(
+                            harness, deadline=time.monotonic() + 10,
+                        )
+                    continue
+                runner.require_live_agent_tail(harness, deadline=time.monotonic() + 10)
+                self.assertEqual(len(calls), 3)
+                self.assertEqual(calls[1][-3:], ("--follow", "--cursor", "confirmed-cursor"))
+                self.assertIn(">/dev/null", calls[2][-3])
+
+    def test_agent_tail_bounds_each_host_exec_by_remaining_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            end = {
+                "type": "end", "scope": "agent", "agent_id": "receiver",
+                "cursor": "cursor", "stop_reason": "timeout",
+            }
+            calls = []
+
+            def docker(*args, **kwargs):
+                calls.append(kwargs)
+                return subprocess.CompletedProcess(args, 0, json.dumps(end) + "\n", "")
+
+            harness = type("Harness", (), {
+                "evidence": Path(directory), "agent_id": "receiver",
+                "container": "isolated-runtime", "docker": staticmethod(docker),
+            })()
+            with patch.object(runner.time, "monotonic", side_effect=[100, 101, 102]):
+                runner.require_live_agent_tail(harness, deadline=103)
+            self.assertEqual([call["timeout"] for call in calls], [3, 2, 1])
+            calls.clear()
+            with patch.object(runner.time, "monotonic", return_value=100):
+                runner.require_live_agent_tail(harness, deadline=1000)
+            self.assertEqual(
+                [call["timeout"] for call in calls],
+                [runner.DOCKER_CONTROL_TIMEOUT_SECONDS] * 3,
+            )
+            for clock, completed_calls in (
+                ([103], 0), ([100, 103], 1), ([100, 101, 103], 2),
+            ):
+                with self.subTest(clock=clock):
+                    calls.clear()
+                    with (
+                        patch.object(runner.time, "monotonic", side_effect=clock),
+                        self.assertRaisesRegex(TimeoutError, "observing agent tail"),
+                    ):
+                        runner.require_live_agent_tail(harness, deadline=103)
+                    self.assertEqual(len(calls), completed_calls)
+
+    def test_agent_tail_propagates_each_host_exec_timeout(self) -> None:
+        for failed_call in (1, 2, 3):
+            with self.subTest(failed_call=failed_call):
+                with tempfile.TemporaryDirectory() as directory:
+                    calls = []
+
+                    def docker(*args, **kwargs):
+                        calls.append(kwargs)
+                        if len(calls) == failed_call:
+                            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+                        return subprocess.CompletedProcess(args, 0, json.dumps({
+                            "type": "end", "scope": "agent", "agent_id": "receiver",
+                            "cursor": "cursor", "stop_reason": "snapshot",
+                        }) + "\n", "")
+
+                    harness = type("Harness", (), {
+                        "evidence": Path(directory), "agent_id": "receiver",
+                        "container": "isolated-runtime", "docker": staticmethod(docker),
+                    })()
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        runner.require_live_agent_tail(
+                            harness, deadline=time.monotonic() + 10,
+                        )
+                    self.assertEqual(len(calls), failed_call)
+                    self.assertTrue(all(0 < call["timeout"] <= 10 for call in calls))
+
+    def test_live_snapshot_preserves_canonical_queue_table(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+            state = evidence / "live-runtime-state"
+            state.mkdir()
+            with sqlite3.connect(state / "runtime.sqlite") as connection:
+                for table in (
+                    "tasks", "task_result_settlements", "agent_message_deliveries",
+                    "transcript_entries", "queue_entries",
+                ):
+                    connection.execute(f"CREATE TABLE {table} (message_id TEXT)")
+            queues = [{"message_id": "original", "status": "queued"}]
+            harness = type("Harness", (), {
+                "evidence": evidence,
+                "runtime_db_snapshot": lambda self, label: {"queue_entries": queues},
+            })()
+            snapshot = runner.live_snapshot(harness, "live")
+            self.assertEqual(snapshot["queue_entries"], queues)
+            self.assertNotIn("queue_entries_current", snapshot)
+            self.assertTrue((evidence / "live-live-db.json").is_file())
+
+    def test_live_profile_is_opt_in_and_does_not_expand_required_stub_gate(self) -> None:
+        manifest = json.loads((ROOT / "tests/e2e/docker/manifest.json").read_text())
+        runner.validate_manifest(manifest)
+        profile = runner.resolve_profile(manifest, "output-input-live-acceptance")
+        self.assertEqual(profile["provider_mode"], "live")
+        self.assertEqual(profile["tool_assertion_mode"], "observe")
+        self.assertEqual(len(profile["case_ids"]), 2)
+        required = manifest["profiles"]["scheduler-required"]["case_ids"]
+        for case in manifest["cases"]:
+            if case["id"] not in profile["case_ids"]:
+                continue
+            self.assertNotIn(case["id"], required)
+            self.assertEqual(case["tier"], "extended")
+            self.assertEqual(case["timeout_seconds"], 480)
+            self.assertIn("TaskOutput", case["phases"][0]["forbidden_tools"])
+
+    def test_bounded_command_reader_uses_confirmed_path_and_finite_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "confirmed output ' file.log"
+            path.write_bytes(b"x" * 524288)
+            result = subprocess.run(
+                ["bash", "-lc", runner.bounded_command_read(str(path))],
+                capture_output=True, text=True, check=True,
+            )
+            self.assertEqual(json.loads(result.stdout), {
+                "path": str(path), "size": 524288,
+                "head_bytes": 1024, "tail_bytes": 1024, "eof": True,
+            })
+            self.assertLess(len(result.stdout), 512)
+
+    def test_live_command_requires_final_waiting_report_before_gate_release(self) -> None:
+        manifest = json.loads((ROOT / "tests/e2e/docker/manifest.json").read_text())
+        case = next(
+            case for case in manifest["cases"]
+            if case["id"] == "live-command-output-reentry"
+        )
+        self.assertEqual(len(case["phases"]), 1)
+        prompt = case["phases"][0]["prompt"].format(
+            command="original-command", read_command="bounded-reader",
+            waiting_marker="COMMAND-WAITING-test",
+            completion_marker="COMMAND-REENTERED-test",
+        )
+        self.assertIn("delivery=final", prompt)
+        self.assertNotIn("delivery=silent", prompt)
+        self.assertIn("awaiting_final_report", prompt)
+        self.assertIn("only the unique waiting marker COMMAND-WAITING-test", prompt)
+        self.assertIn("Do not call any tools in that pending-report continuation", prompt)
+        source = inspect.getsource(runner.run_live_command_observation_case)
+        self.assertIn('waiting_marker = f"COMMAND-WAITING-{marker}"', source)
+        self.assertIn("waiting_marker=waiting_marker", source)
+        self.assertIn('detail.get("status") == "success"', source)
+        self.assertIn('wait_detail["input"].get("delivery") == "final"', source)
+        self.assertLess(
+            source.index("require_live_command_waiting_report("),
+            source.index("gate.touch()"),
+        )
+
+    def command_waiting_snapshot(self) -> dict:
+        brief = {
+            "id": "waiting-brief", "agent_id": "parent",
+            "turn_id": "parent-turn", "kind": "result",
+            "text": "COMMAND-WAITING-test",
+        }
+        return {
+            "wait_conditions": [{
+                "agent_id": "parent", "subject_ref": "task-1",
+                "status": "active", "kind": "task",
+                "last_turn_id": "parent-turn", "work_item_id": None,
+            }],
+            "task_result_settlements": [],
+            "briefs": [{
+                "evidence_id": brief["id"], "agent_id": brief["agent_id"],
+                "turn_id": brief["turn_id"], "kind": brief["kind"],
+                "payload_json": json.dumps(brief),
+            }],
+        }
+
+    def test_command_waiting_requires_real_unique_parent_result_brief(self) -> None:
+        good = self.command_waiting_snapshot()
+        args = {
+            "agent_id": "parent", "task_id": "task-1",
+            "parent_turn_id": "parent-turn", "waiting_marker": "COMMAND-WAITING-test",
+        }
+        runner.require_live_command_waiting_report(good, **args)
+        for case in (
+            "missing", "duplicate", "wrong-turn", "payload-wrong-turn",
+            "row-wrong-turn", "wrong-marker", "empty", "ack", "foreign-agent",
+            "wrong-id", "extra-prose",
+        ):
+            with self.subTest(case=case):
+                broken = copy.deepcopy(good)
+                row = broken["briefs"][0]
+                brief = json.loads(row["payload_json"])
+                if case == "missing":
+                    broken["briefs"] = []
+                elif case == "duplicate":
+                    broken["briefs"] *= 2
+                elif case == "wrong-turn":
+                    row["turn_id"] = brief["turn_id"] = "reentry-turn"
+                elif case == "payload-wrong-turn":
+                    brief["turn_id"] = "reentry-turn"
+                elif case == "row-wrong-turn":
+                    row["turn_id"] = "reentry-turn"
+                elif case == "wrong-marker":
+                    brief["text"] = "COMMAND-WAITING-other"
+                elif case == "empty":
+                    brief["text"] = " "
+                elif case == "ack":
+                    row["kind"] = brief["kind"] = "ack"
+                elif case == "foreign-agent":
+                    row["agent_id"] = brief["agent_id"] = "foreign"
+                elif case == "wrong-id":
+                    brief["id"] = "foreign-brief"
+                elif case == "extra-prose":
+                    brief["text"] += " not the exact waiting report"
+                row["payload_json"] = json.dumps(brief)
+                with self.assertRaisesRegex(AssertionError, "waiting Result brief"):
+                    runner.require_live_command_waiting_report(broken, **args)
+        with self.assertRaisesRegex(AssertionError, "non-empty marker"):
+            runner.require_live_command_waiting_report(
+                good, **{**args, "waiting_marker": " "},
+            )
+
+    def test_command_waiting_brief_does_not_replace_active_exact_wait(self) -> None:
+        for key, value in (
+            ("status", "resolved"), ("kind", "external"),
+            ("last_turn_id", "foreign-turn"), ("subject_ref", "foreign-task"),
+            ("agent_id", "foreign"), ("work_item_id", "migrated-owner"),
+        ):
+            with self.subTest(key=key):
+                broken = self.command_waiting_snapshot()
+                broken["wait_conditions"][0][key] = value
+                with self.assertRaisesRegex(AssertionError, "exact wait"):
+                    runner.require_live_command_waiting_report(
+                        broken, agent_id="parent", task_id="task-1",
+                        parent_turn_id="parent-turn", waiting_marker="COMMAND-WAITING-test",
+                    )
+        for case in ("missing-wait", "duplicate-wait", "early-settlement"):
+            with self.subTest(case=case):
+                broken = self.command_waiting_snapshot()
+                if case == "missing-wait":
+                    broken["wait_conditions"] = []
+                elif case == "duplicate-wait":
+                    broken["wait_conditions"] *= 2
+                else:
+                    broken["task_result_settlements"] = [{"task_id": "task-1"}]
+                with self.assertRaisesRegex(AssertionError, "exact wait"):
+                    runner.require_live_command_waiting_report(
+                        broken, agent_id="parent", task_id="task-1",
+                        parent_turn_id="parent-turn", waiting_marker="COMMAND-WAITING-test",
+                    )
+
+    def test_large_output_stimulus_closes_pipes_without_finishing_task(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            gate = Path(directory) / "release"
+            process = subprocess.Popen(
+                ["bash", "-lc", runner.gated_output_command(str(gate))],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            try:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    process.communicate(timeout=1)
+                self.assertTrue(process.stdout.closed)
+                self.assertTrue(process.stderr.closed)
+                self.assertIsNone(process.poll(), "EOF incorrectly ended the stimulus")
+            finally:
+                gate.touch()
+                try:
+                    output, error = process.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    output, error = process.communicate()
+            self.assertEqual(process.returncode, 0)
+            self.assertEqual(len(output), 524288)
+            self.assertEqual(error, b"")
+
+    def task_snapshot(self) -> dict:
+        return {
+            "task_result_settlements": [{
+                "task_id": "task-1", "agent_id": "parent",
+                "state": "settled", "disposition": "model_delivered",
+                "parent_turn_id": "parent-turn", "message_id": "result-1",
+                "work_item_id": None, "result_identity": "result-identity-1",
+                "rejoin_generation": 1,
+            }],
+            "wait_conditions": [{
+                "agent_id": "parent", "subject_ref": "task-1",
+                "status": "resolved", "last_turn_id": "parent-turn",
+                "trigger_message_id": "result-1", "work_item_id": None,
+            }],
+            "messages": [{
+                "message_id": "result-1", "payload_json": json.dumps({
+                    "kind": "task_result",
+                    "origin": {"kind": "task", "task_id": "task-1"},
+                    "metadata": {"task_id": "task-1"},
+                }),
+            }],
+            "turn_records": [{
+                "agent_id": "parent", "trigger_message_id": "result-1",
+                "turn_id": "reentry-turn", "terminal_kind": "completed",
+            }],
+            "tasks": [{
+                "task_id": "task-1",
+                "payload_json": json.dumps({
+                    "id": "task-1", "status": "completed", "detail": {
+                        "rejoin_obligation_id": "task-1", "rejoin_generation": 1,
+                        "parent_turn_id": "parent-turn",
+                    },
+                }),
+            }],
+        }
+
+    def test_task_reentry_requires_identity_real_turn_settlement_and_stable_owner(self) -> None:
+        good = self.task_snapshot()
+        runner.require_live_task_reentry(
+            good, agent_id="parent", task_id="task-1", parent_turn_id="parent-turn"
+        )
+        mutations = [
+            ("task_result_settlements", 0, "state", "persisted_pending"),
+            ("task_result_settlements", 0, "parent_turn_id", "foreign-turn"),
+            ("wait_conditions", 0, "trigger_message_id", "foreign-result"),
+            ("turn_records", 0, "turn_id", "parent-turn"),
+            ("turn_records", 0, "terminal_kind", "interrupted"),
+            ("task_result_settlements", 0, "work_item_id", "migrated"),
+            ("task_result_settlements", 0, "rejoin_generation", 2),
+        ]
+        for table, index, key, value in mutations:
+            with self.subTest(table=table, key=key):
+                broken = copy.deepcopy(good)
+                broken[table][index][key] = value
+                with self.assertRaises(AssertionError):
+                    runner.require_live_task_reentry(
+                        broken, agent_id="parent", task_id="task-1",
+                        parent_turn_id="parent-turn",
+                    )
+        duplicated = copy.deepcopy(good)
+        duplicated["task_result_settlements"] *= 2
+        with self.assertRaisesRegex(AssertionError, "exactly once"):
+            runner.require_live_task_reentry(
+                duplicated, agent_id="parent", task_id="task-1",
+                parent_turn_id="parent-turn",
+            )
+
+    def input_snapshot(self) -> dict:
+        ids = ["input-1", "input-2", "input-3", "input-4"]
+        snapshot = {
+            "messages": [], "transcript_entries": [], "queue_entries": [],
+            "agent_message_deliveries": [],
+        }
+        items = []
+        for index, message_id in enumerate(ids):
+            original = {
+                "id": message_id, "message_seq": index + 1,
+                "authority_class": "runtime_instruction",
+                "body": {
+                    "type": "text",
+                    "text": f"BATCH-test-{index + 1}: correction value={index + 1}",
+                },
+                "routing_context": {
+                    "sender_agent_id": "sender", "recipient_agent_id": "receiver",
+                    "correlation_id": f"correlation-{index}",
+                },
+            }
+            provenance = {**original, "source_refs": {}}
+            items.append({
+                "message_id": message_id, "source_ref": f"message:{message_id}",
+                "rendered": f"  provenance: {json.dumps(provenance)}\n"
+                f"  body:\n{original['body']['text']}\n",
+            })
+            snapshot["messages"].append({
+                "message_id": message_id, "agent_id": "receiver",
+                "payload_json": json.dumps(original),
+            })
+            snapshot["messages"].append({
+                "message_id": f"reply-{index}", "agent_id": "sender",
+                "payload_json": json.dumps({
+                    "body": {"type": "text", "text": f"ACK BATCH-test-{index + 1}"},
+                    "routing_context": {
+                        "in_reply_to_message_id": message_id,
+                        "sender_agent_id": "receiver", "recipient_agent_id": "sender",
+                        "correlation_id": f"correlation-{index}",
+                    },
+                }),
+            })
+            snapshot["transcript_entries"].append({
+                "message_id": message_id, "agent_id": "receiver",
+                "turn_id": "batch-turn", "kind": "incoming_message",
+            })
+            snapshot["agent_message_deliveries"].append({
+                "message_id": message_id, "state": "consumed",
+            })
+            snapshot["queue_entries"].append({
+                "message_id": message_id,
+                "status": "processed" if index == 0 else "interjected",
+            })
+        turn = {
+            "turn_id": "batch-turn", "input_message_ids": ids,
+            "trigger": {"message_id": ids[0]},
+            "idle_input_batch": {
+                "activation_id": "activation-1",
+                "sender_agent_id": "sender", "items": items[:2], "rendered_bytes": 1000,
+            },
+            "live_input_batches": [{
+                "activation_id": "activation-1",
+                "items": items[2:], "rendered_bytes": 1000,
+                "safe_point": {"provider_round": 2, "activation_id": "activation-1"},
+            }],
+        }
+        snapshot["turn_records"] = [{
+            "agent_id": "receiver", "trigger_message_id": ids[0],
+            "payload_json": json.dumps(turn),
+        }]
+        return snapshot
+
+    def input_replies(self) -> list[dict]:
+        return [
+            {"input": {
+                "agent_id": "sender", "reply_context_id": f"input-{index}",
+                "message": f"ACK BATCH-test-{index}",
+            }}
+            for index in range(1, 5)
+        ]
+
+    def check_batch(self, snapshot: dict, reply_details=None) -> None:
+        runner.require_live_input_batch(
+            snapshot, recipient="receiver", sender="sender",
+            message_ids=["input-1", "input-2", "input-3", "input-4"],
+            reply_details=self.input_replies() if reply_details is None else reply_details,
+        )
+
+    def test_input_batch_rejects_wrong_or_misrouted_ack_bodies(self) -> None:
+        good = self.input_snapshot()
+        for index in range(4):
+            for text in ("", "ACK", "ACK BATCH-foreign-1", f"ACK BATCH-test-{(index + 1) % 4 + 1}"):
+                for source in ("tool", "canonical", "both"):
+                    with self.subTest(index=index, text=text, source=source):
+                        snapshot = copy.deepcopy(good)
+                        details = self.input_replies()
+                        if source in ("tool", "both"):
+                            details[index]["input"]["message"] = text
+                        if source in ("canonical", "both"):
+                            row = snapshot["messages"][index * 2 + 1]
+                            reply = json.loads(row["payload_json"])
+                            reply["body"]["text"] = text
+                            row["payload_json"] = json.dumps(reply)
+                        with self.assertRaisesRegex(AssertionError, "acknowledge original"):
+                            self.check_batch(snapshot, details)
+        for key, value in (
+            ("reply_context_id", "input-2"),
+            ("agent_id", "foreign-sender"),
+        ):
+            with self.subTest(key=key):
+                details = self.input_replies()
+                details[0]["input"][key] = value
+                with self.assertRaisesRegex(AssertionError, "receive order"):
+                    self.check_batch(good, details)
+
+    def test_input_batch_checks_originals_live_boundary_consumption_and_routes(self) -> None:
+        good = self.input_snapshot()
+        self.check_batch(good)
+        for mutation in ("order", "no-live", "provenance", "budget", "body"):
+            with self.subTest(mutation=mutation):
+                broken = copy.deepcopy(good)
+                turn = json.loads(broken["turn_records"][0]["payload_json"])
+                if mutation == "order":
+                    turn["input_message_ids"].reverse()
+                elif mutation == "no-live":
+                    turn["live_input_batches"] = []
+                elif mutation == "provenance":
+                    turn["idle_input_batch"]["items"][0]["rendered"] = (
+                        '  provenance: {"id":"forged"}\ncorrection 0\n'
+                    )
+                elif mutation == "budget":
+                    turn["live_input_batches"][0]["rendered_bytes"] = 98305
+                else:
+                    turn["idle_input_batch"]["items"][0]["rendered"] += "lost correction"
+                broken["turn_records"][0]["payload_json"] = json.dumps(turn)
+                with self.assertRaises(AssertionError):
+                    self.check_batch(broken)
+        for table in ("transcript_entries", "agent_message_deliveries", "queue_entries"):
+            with self.subTest(duplicate=table):
+                broken = copy.deepcopy(good)
+                broken[table].append(broken[table][0])
+                with self.assertRaisesRegex(AssertionError, "exactly once"):
+                    self.check_batch(broken)
+        broken = copy.deepcopy(good)
+        reply = json.loads(broken["messages"][1]["payload_json"])
+        reply["routing_context"]["sender_agent_id"] = "wrong-agent"
+        broken["messages"][1]["payload_json"] = json.dumps(reply)
+        with self.assertRaisesRegex(AssertionError, "reply route"):
+            self.check_batch(broken)
+
+    def test_only_canonical_anchor_may_have_an_ingress_transcript_without_turn(self) -> None:
+        good = self.input_snapshot()
+        good["transcript_entries"][0]["turn_id"] = None
+        self.check_batch(good)
+        for index, value in ((0, "foreign-turn"), (1, None), (2, None)):
+            with self.subTest(index=index, value=value):
+                broken = copy.deepcopy(good)
+                broken["transcript_entries"][index]["turn_id"] = value
+                with self.assertRaisesRegex(AssertionError, "exactly once"):
+                    self.check_batch(broken)
+        broken = copy.deepcopy(good)
+        broken["queue_entries"][1]["status"] = "processed"
+        with self.assertRaisesRegex(AssertionError, "exactly once"):
+            self.check_batch(broken)
+        broken = copy.deepcopy(good)
+        turn = json.loads(broken["turn_records"][0]["payload_json"])
+        turn["trigger"]["message_id"] = "foreign-anchor"
+        broken["turn_records"][0]["payload_json"] = json.dumps(turn)
+        with self.assertRaises(AssertionError):
+            self.check_batch(broken)
+
+    def test_observe_mode_does_not_allow_retired_task_output(self) -> None:
+        harness = type("Harness", (), {
+            "event_batch": lambda *a, **kw: {"events": [{
+                "type": "tool_executed", "payload": {"tool_name": "TaskOutput"},
+            }]},
+        })()
+        with self.assertRaisesRegex(AssertionError, "forbidden TaskOutput"):
+            runner.live_events(harness, 0)
 
 
 if __name__ == "__main__":

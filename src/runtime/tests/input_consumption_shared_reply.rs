@@ -434,15 +434,15 @@ async fn owner(runtime: &RuntimeHandle, label: &str) -> String {
         .id
 }
 
-async fn reply(
-    runtime: &RuntimeHandle,
-    owner: Option<&str>,
+fn prepare_shared_message(
+    recipient: &str,
+    sender: &str,
     key: &str,
     body: &str,
-) -> MessageEnvelope {
-    let mut prepared = AgentMessageDeliveryService::prepare(
+) -> crate::runtime::agent_message_delivery::PreparedAgentMessageDelivery {
+    AgentMessageDeliveryService::prepare(
         AgentMessageSendRequest {
-            target_agent_id: "default".into(),
+            target_agent_id: recipient.into(),
             content: MessageBody::Text { text: body.into() },
             client_idempotency_key: key.into(),
             correlation_id: None,
@@ -452,8 +452,8 @@ async fn reply(
             reply_context_id: None,
         },
         AgentMessageCallerContext {
-            caller_principal: "agent:shared-reply-peer".into(),
-            caller_agent_id: Some("shared-reply-peer".into()),
+            caller_principal: format!("agent:{sender}"),
+            caller_agent_id: Some(sender.into()),
             principal_kind: AgentMessagePrincipalKind::PeerAgent,
             route: "agent_message".into(),
             origin: MessageOrigin::System {
@@ -469,7 +469,16 @@ async fn reply(
             routing_activation_id: None,
         },
     )
-    .unwrap();
+    .unwrap()
+}
+
+async fn reply(
+    runtime: &RuntimeHandle,
+    owner: Option<&str>,
+    key: &str,
+    body: &str,
+) -> MessageEnvelope {
+    let mut prepared = prepare_shared_message("default", "shared-reply-peer", key, body);
     // Explicit receiver ownership is fixture input, never inferred from sender.
     prepared.message.work_item_id = owner.map(str::to_owned);
     prepared.message.created_at = runtime.now();
@@ -484,7 +493,17 @@ async fn reply(
 }
 
 async fn waiter(runtime: &RuntimeHandle, owner: Option<&str>, id: &str) -> TaskRecord {
-    let task = TaskRecord {
+    waiter_in_turn(runtime, owner, id, "shared-reply-parent", None).await
+}
+
+async fn waiter_in_turn(
+    runtime: &RuntimeHandle,
+    owner: Option<&str>,
+    id: &str,
+    parent_turn: &str,
+    request: Option<(String, i64)>,
+) -> TaskRecord {
+    let mut task = TaskRecord {
         id: id.into(),
         agent_id: "default".into(),
         kind: TaskKind::AgentMessageWait,
@@ -497,7 +516,7 @@ async fn waiter(runtime: &RuntimeHandle, owner: Option<&str>, id: &str) -> TaskR
         detail: Some(serde_json::json!({
             "rejoin_obligation_id": id,
             "rejoin_generation": 1,
-            "parent_turn_id": "shared-reply-parent",
+            "parent_turn_id": parent_turn,
         })),
         recovery: Some(crate::types::TaskRecoverySpec::AgentMessageWait {
             summary: "shared reply observation".into(),
@@ -508,6 +527,20 @@ async fn waiter(runtime: &RuntimeHandle, owner: Option<&str>, id: &str) -> TaskR
             after_delivery_rowid: Some(0),
         }),
     };
+    if let Some((delivery_id, boundary)) = request {
+        let Some(crate::types::TaskRecoverySpec::AgentMessageWait {
+            delivery_id: request_id,
+            after_delivery_rowid,
+            ..
+        }) = task.recovery.as_mut()
+        else {
+            unreachable!()
+        };
+        *request_id = Some(delivery_id);
+        *after_delivery_rowid = Some(boundary);
+        task.detail.as_mut().unwrap()["message_wait_after_delivery_rowid"] =
+            serde_json::json!(boundary);
+    }
     runtime
         .persist_task_transition(&task, "task_created")
         .await
@@ -1471,4 +1504,587 @@ async fn p1_shared_reply_waiter_matrix_drains_by_identity_with_restart() {
             requests.len()
         );
     }
+}
+
+async fn live_shared_waiter(
+    runtime: &RuntimeHandle,
+    owner: Option<&str>,
+    id: &str,
+    parent_turn: &str,
+) -> TaskRecord {
+    // Each waiter captures its own accepted outbound receipt before the shared reply.
+    let mut request = prepare_shared_message(
+        "shared-reply-peer",
+        "default",
+        &format!("{id}-request"),
+        "observe shared live reply",
+    );
+    request.record.outcome = crate::types::AgentMessageDeliveryOutcome::Accepted;
+    request.record.state = crate::types::AgentMessageDeliveryState::Queued;
+    request.record.accepted_at = Some(runtime.now());
+    let boundary = runtime
+        .runtime_db()
+        .transaction(|tx| {
+            crate::runtime_db::agent_message_delivery::insert_delivery_tx(tx, &request.record)?;
+            Ok(tx.last_insert_rowid())
+        })
+        .unwrap();
+    waiter_in_turn(
+        runtime,
+        owner,
+        id,
+        parent_turn,
+        Some((request.record.delivery_id, boundary)),
+    )
+    .await
+}
+
+struct LiveSharedReplyProvider {
+    runtime: Mutex<Option<RuntimeHandle>>,
+    requests: Mutex<Vec<ProviderTurnRequest>>,
+    sources: Mutex<Vec<String>>,
+    original: Mutex<Option<MessageEnvelope>>,
+    injection_ready: tokio::sync::Notify,
+    injection_finished: tokio::sync::Notify,
+    waiter_count: usize,
+}
+
+impl LiveSharedReplyProvider {
+    fn new(waiter_count: usize) -> Self {
+        Self {
+            runtime: Mutex::new(None),
+            requests: Mutex::new(Vec::new()),
+            sources: Mutex::new(Vec::new()),
+            original: Mutex::new(None),
+            injection_ready: tokio::sync::Notify::new(),
+            injection_finished: tokio::sync::Notify::new(),
+            waiter_count,
+        }
+    }
+
+    async fn publish_shared_reply(&self) -> Result<()> {
+        let runtime = self.runtime.lock().await.clone().unwrap();
+        let binding = runtime
+            .agent_state()
+            .await?
+            .current_execution_binding
+            .expect("live fixture must run inside an admitted execution");
+        let turn = runtime
+            .storage()
+            .read_turn_by_id(&binding.turn_id)?
+            .expect("live fixture must have its current parent turn");
+        let mut tasks = Vec::new();
+        for index in 0..self.waiter_count {
+            tasks.push(
+                Box::pin(live_shared_waiter(
+                    &runtime,
+                    turn.effective_owner().work_item_id(),
+                    &format!("live-shared-wait-{index:02}"),
+                    &turn.turn_id,
+                ))
+                .await,
+            );
+        }
+        let original = Box::pin(reply(
+            &runtime,
+            turn.effective_owner().work_item_id(),
+            "live-shared-original",
+            "live-shared-original-body",
+        ))
+        .await;
+        for task in tasks {
+            let source = Box::pin(finish(&runtime, &task, &original)).await;
+            let persisted = runtime
+                .storage()
+                .latest_task_record(&task.id)?
+                .expect("live waiter must retain its creation fence");
+            assert_eq!(
+                persisted.rejoin_fence().unwrap(),
+                task.rejoin_fence().unwrap()
+            );
+            assert_eq!(
+                persisted.rejoin_fence().unwrap().parent_turn_id,
+                turn.turn_id
+            );
+            let settlement = runtime
+                .runtime_db()
+                .task_result_settlements()
+                .latest_for_message(&source)?
+                .expect("live waiter must have a pending settlement");
+            assert_eq!(settlement.parent_turn_id, turn.turn_id);
+            assert_eq!(
+                settlement.state,
+                TaskResultSettlementState::PersistedPending
+            );
+            self.sources.lock().await.push(source);
+        }
+        *self.original.lock().await = Some(original);
+        Ok(())
+    }
+}
+
+async fn live_shared_reply_fixture(
+    waiter_count: usize,
+) -> (
+    TempDir,
+    TempDir,
+    Arc<crate::runtime::clock::TestClock>,
+    RuntimeHandle,
+    Arc<LiveSharedReplyProvider>,
+) {
+    let data = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = Arc::new(crate::runtime::clock::TestClock::new(Utc::now()));
+    let provider = Arc::new(LiveSharedReplyProvider::new(waiter_count));
+    // Match the P2 fixture: context pressure must not mask live-input limits.
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        data.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        ContextConfig {
+            prompt_budget_estimated_tokens: 128_000,
+            turn_projection_min_budget: 128_000,
+            turn_projection_max_budget: 128_000,
+            compaction_trigger_estimated_tokens: 128_000,
+            ..context_config()
+        },
+        clock.clone(),
+    )
+    .unwrap();
+    *provider.runtime.lock().await = Some(runtime.clone());
+    (data, workspace, clock, runtime, provider)
+}
+
+#[async_trait]
+impl AgentProvider for LiveSharedReplyProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let round = {
+            let mut requests = self.requests.lock().await;
+            requests.push(request);
+            requests.len()
+        };
+        if round == 1 {
+            self.injection_ready.notify_one();
+            self.injection_finished.notified().await;
+        }
+        let blocks = if round <= 4 {
+            (0..2)
+                .map(|index| ModelBlock::ToolUse {
+                    id: format!("live-shared-tool-{round}-{index}"),
+                    name: "GetAgent".into(),
+                    input: serde_json::json!({}),
+                    kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
+                })
+                .collect()
+        } else {
+            vec![ModelBlock::Text {
+                text: "live shared reply handled".into(),
+            }]
+        };
+        Ok(ProviderTurnResponse {
+            blocks,
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
+fn observe_shared_reply_publication(clock: &crate::runtime::clock::TestClock) {
+    // Terminal task transitions use wall time; the next cutoff must include them.
+    if let Ok(elapsed) = (Utc::now() - clock.now()).to_std() {
+        clock.advance(elapsed);
+    }
+}
+
+async fn run_live_shared_reply_turn(
+    runtime: &RuntimeHandle,
+    work: &str,
+    provider: &LiveSharedReplyProvider,
+    clock: &crate::runtime::clock::TestClock,
+) -> String {
+    // Scheduling the anchor must not satisfy the shared-reply peer's waiters.
+    let mut prepared = prepare_shared_message(
+        "default",
+        "live-anchor-peer",
+        "live-shared-anchor",
+        "live shared anchor",
+    );
+    prepared.message.work_item_id = Some(work.into());
+    prepared.message.created_at = runtime.now();
+    let anchor_id = runtime
+        .agent_message_delivery_service()
+        .deliver(&prepared)
+        .await
+        .unwrap()
+        .message_id
+        .unwrap();
+    for _ in 0..24 {
+        let poll = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+            .poll()
+            .await
+            .unwrap();
+        let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+            continue;
+        };
+        let model_reentry = scheduled.scheduler_decision.model_reentry;
+        if model_reentry {
+            assert_eq!(scheduled.message.id, anchor_id);
+        }
+        let message = scheduled.message;
+        // Keep the large runtime future off the default test thread stack.
+        let mut processing = Box::pin(runtime.process_message_with_plan_deferred(
+            message.clone(),
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
+        ));
+        if model_reentry {
+            tokio::select! {
+                outcome = &mut processing => panic!(
+                    "the first provider request must wait for injection: {:?}", outcome.err(),
+                ),
+                ready = tokio::time::timeout(
+                    std::time::Duration::from_secs(10), provider.injection_ready.notified(),
+                ) => ready.unwrap(),
+            }
+            // Publish outside the runtime/provider poll stack, while its turn is in flight.
+            Box::pin(provider.publish_shared_reply()).await.unwrap();
+            observe_shared_reply_publication(clock);
+            provider.injection_finished.notify_one();
+        }
+        let terminal = processing.await.unwrap();
+        assert!(runtime
+            .commit_queue_terminal_settlement(
+                QueueEntryRecord {
+                    message_id: message.id,
+                    agent_id: message.agent_id,
+                    priority: message.priority,
+                    status: QueueEntryStatus::Processed,
+                    created_at: message.created_at,
+                    updated_at: Utc::now(),
+                },
+                Vec::new(),
+                true,
+                Some(&terminal),
+            )
+            .await
+            .unwrap());
+        if model_reentry {
+            return runtime
+                .storage()
+                .read_recent_turns(1)
+                .unwrap()
+                .remove(0)
+                .turn_id;
+        }
+    }
+    panic!("live shared reply anchor must execute");
+}
+
+#[tokio::test(start_paused = true)]
+async fn p2_shared_reply_live_cap_overflow_recovers_each_waiter_identity() {
+    let (_data, _workspace, clock, runtime, provider) = live_shared_reply_fixture(33).await;
+    let runtime = &runtime;
+    let work = owner(runtime, "live shared reply overflow").await;
+    runtime.pick_work_item(work.clone()).await.unwrap();
+    let turn_id = Box::pin(run_live_shared_reply_turn(
+        runtime, &work, &provider, &clock,
+    ))
+    .await;
+    let turn = runtime
+        .storage()
+        .read_turn_by_id(&turn_id)
+        .unwrap()
+        .unwrap();
+    assert!(turn.terminal.is_some());
+    assert_eq!(
+        turn.effective_owner(),
+        TurnOwner::WorkItem {
+            work_item_id: work.clone()
+        }
+    );
+    assert_eq!(provider.requests.lock().await.len(), 5);
+    assert_eq!(turn.live_input_batches.len(), 4);
+    let attached = turn
+        .live_input_batches
+        .iter()
+        .flat_map(|batch| {
+            assert_eq!(batch.result_identities.len(), 8);
+            assert!(batch.result_identities.len() <= batch.max_items);
+            assert!(batch.ordinary_message_ids.is_empty());
+            batch.result_identities.iter().cloned()
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(attached.len(), 32);
+    let original = provider.original.lock().await.clone().unwrap();
+    assert!(turn.input_message_ids.contains(&original.id));
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&original.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Interjected
+    );
+    let sources = provider.sources.lock().await.clone();
+    assert_eq!(sources.len(), 33);
+    let records = sources
+        .iter()
+        .map(|source| {
+            runtime
+                .runtime_db()
+                .task_result_settlements()
+                .latest_for_message(source)
+                .unwrap()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| &record.result_identity)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        33
+    );
+    for record in &records {
+        assert_eq!(record.work_item_id.as_deref(), Some(work.as_str()));
+        assert_eq!(record.parent_turn_id, turn_id);
+        if attached.contains(&record.result_identity) {
+            assert_eq!(record.state, TaskResultSettlementState::Settled);
+            assert_eq!(
+                record.disposition,
+                Some(TaskResultSettlementDisposition::ModelDelivered)
+            );
+        } else {
+            assert_eq!(record.state, TaskResultSettlementState::PersistedPending);
+            assert!(record.activation_id.is_none());
+        }
+    }
+    let mut recovered = BTreeSet::new();
+    for _ in 0..48 {
+        if all_settled(runtime, &sources) {
+            break;
+        }
+        if runtime.inner.agent.lock().await.queue.is_empty() {
+            advance_lifecycle_time(&clock, std::time::Duration::from_secs(31)).await;
+            runtime.emit_due_task_result_recovery().await.unwrap();
+        }
+        if let Some(batch) = Box::pin(process_next(runtime)).await {
+            for identity in batch.identities {
+                assert!(
+                    !attached.contains(&identity),
+                    "live identity must not be redelivered"
+                );
+                assert!(
+                    recovered.insert(identity),
+                    "overflow identity must settle only once"
+                );
+            }
+        }
+    }
+    assert!(
+        all_settled(runtime, &sources),
+        "the 33rd waiter must settle after its shared reply was durably attached to the completed live turn"
+    );
+    assert_eq!(recovered.len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn p2_shared_reply_cross_parent_exact_wait_does_not_release_foreign_sibling() {
+    let (_data, _workspace, clock, runtime, provider) = live_shared_reply_fixture(0).await;
+    let runtime = &runtime;
+    let receiver = owner(runtime, "live reply consuming owner").await;
+    let captured = owner(runtime, "foreign waiter owner").await;
+    let mut blocked = runtime.latest_work_item(&captured).await.unwrap().unwrap();
+    blocked.blocked_by = Some("independent business gate".into());
+    blocked.revision += 1;
+    runtime.storage().append_work_item(&blocked).unwrap();
+    runtime.pick_work_item(receiver.clone()).await.unwrap();
+    let promised = live_shared_waiter(
+        runtime,
+        Some(&captured),
+        "live-cross-parent-promised",
+        "previous-shared-parent",
+    )
+    .await;
+    let sibling = live_shared_waiter(
+        runtime,
+        Some(&captured),
+        "live-cross-parent-sibling",
+        "previous-shared-parent",
+    )
+    .await;
+    let outcome = runtime
+        .register_wait_for_outcome(
+            "default",
+            Some(receiver.clone()),
+            WaitForWakeKind::TaskResult,
+            Some(promised.id.clone()),
+            "exact dependency on a shared live reply from another parent turn".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let WaitForRegistrationOutcome::Registered { registration } = outcome else {
+        panic!("the still-running promised task must register an exact waiter");
+    };
+    let receiver_record = runtime.latest_work_item(&receiver).await.unwrap().unwrap();
+    seed_waiting_work_execution(
+        runtime.storage(),
+        &receiver_record,
+        &registration.condition.id,
+    );
+    // The exact wait must precede the original reply's canonical admission.
+    let original = reply(
+        runtime,
+        Some(&receiver),
+        "live-cross-parent-original",
+        "live-cross-parent-original-body",
+    )
+    .await;
+    let promised_source = finish(runtime, &promised, &original).await;
+    let sibling_source = finish(runtime, &sibling, &original).await;
+    observe_shared_reply_publication(&clock);
+    // No unrelated anchor turn may consume the reply before its exact waiter.
+    provider.injection_finished.notify_one();
+    let repository = runtime.runtime_db().task_result_settlements();
+    for source in [&promised_source, &sibling_source] {
+        let record = repository.latest_for_message(source).unwrap().unwrap();
+        assert_eq!(record.work_item_id.as_deref(), Some(captured.as_str()));
+        assert_eq!(record.state, TaskResultSettlementState::PersistedPending);
+    }
+    let mut delivered = BTreeSet::new();
+    for _ in 0..48 {
+        if all_settled(runtime, std::slice::from_ref(&promised_source)) {
+            break;
+        }
+        if runtime.inner.agent.lock().await.queue.is_empty() {
+            advance_lifecycle_time(&clock, std::time::Duration::from_secs(31)).await;
+            runtime.emit_due_task_result_recovery().await.unwrap();
+        }
+        if let Some(batch) = Box::pin(process_next(runtime)).await {
+            for identity in batch.identities {
+                assert!(delivered.insert(identity));
+            }
+        }
+    }
+    assert!(
+        all_settled(runtime, std::slice::from_ref(&promised_source)),
+        "the exact cross-owner waiter must consume its shared reply without changing its captured owner"
+    );
+    advance_lifecycle_time(&clock, std::time::Duration::from_secs(31)).await;
+    assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
+    let promised_record = repository
+        .latest_for_message(&promised_source)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        delivered,
+        BTreeSet::from([promised_record.result_identity.clone()])
+    );
+    assert_eq!(
+        promised_record.work_item_id.as_deref(),
+        Some(captured.as_str())
+    );
+    let sibling_record = repository
+        .latest_for_message(&sibling_source)
+        .unwrap()
+        .unwrap();
+    assert_eq!(sibling_record.state, TaskResultSettlementState::Settled);
+    assert_eq!(
+        sibling_record.disposition,
+        Some(TaskResultSettlementDisposition::ReplyConsumedElsewhere)
+    );
+    assert!(sibling_record.activation_id.is_none());
+    assert!(!repository
+        .reply_source_is_consumed_for_owner(&sibling_record)
+        .unwrap());
+    assert_eq!(
+        runtime
+            .latest_work_item(&captured)
+            .await
+            .unwrap()
+            .unwrap()
+            .blocked_by
+            .as_deref(),
+        Some("independent business gate")
+    );
+    let condition = runtime
+        .storage()
+        .latest_wait_conditions_for_agent("default")
+        .unwrap()
+        .into_iter()
+        .find(|wait| wait.id == registration.condition.id)
+        .unwrap();
+    assert_eq!(
+        condition.status,
+        crate::types::WaitConditionStatus::Resolved
+    );
+    let recovery_turn = runtime.storage().read_recent_turns(1).unwrap().remove(0);
+    assert!(recovery_turn.terminal.is_some());
+    assert!(recovery_turn.input_message_ids.contains(&original.id));
+    assert_ne!(promised_record.parent_turn_id, recovery_turn.turn_id);
+    assert_ne!(sibling_record.parent_turn_id, recovery_turn.turn_id);
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&original.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Processed
+    );
+    assert_eq!(
+        recovery_turn.effective_owner(),
+        TurnOwner::WorkItem {
+            work_item_id: receiver
+        }
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn p2_shared_reply_interjected_status_alone_does_not_authorize_recovery() {
+    let (_data, _workspace, clock, runtime, _provider) = live_shared_reply_fixture(0).await;
+    let runtime = &runtime;
+    let work = owner(runtime, "forged live consumption").await;
+    let original = reply(runtime, Some(&work), "forged-live", "not attached").await;
+    let task = waiter(runtime, Some(&work), "unattached-live-waiter").await;
+    let source = finish(runtime, &task, &original).await;
+    observe_shared_reply_publication(&clock);
+    runtime
+        .runtime_db()
+        .queue_entries()
+        .upsert(&QueueEntryRecord {
+            message_id: original.id,
+            agent_id: "default".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Interjected,
+            created_at: original.created_at,
+            updated_at: Utc::now(),
+        })
+        .unwrap();
+    let repository = runtime.runtime_db().task_result_settlements();
+    let record = repository.latest_for_message(&source).unwrap().unwrap();
+    assert!(!repository.reply_source_is_recoverable(&record).unwrap());
+    assert!(!repository
+        .reply_source_is_consumed_for_owner(&record)
+        .unwrap());
+    advance_lifecycle_time(&clock, std::time::Duration::from_secs(31)).await;
+    assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
+    let record = repository.latest_for_message(&source).unwrap().unwrap();
+    assert_eq!(record.state, TaskResultSettlementState::PersistedPending);
+    assert!(record.activation_id.is_none());
+    assert!(record.admitted_at.is_none());
 }

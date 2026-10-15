@@ -442,12 +442,20 @@ pub async fn background_command_task_result_wakes_sleeping_agent_via_canonical_l
 
 struct FastPathWaitProvider {
     requests: Mutex<Vec<String>>,
+    release_path: PathBuf,
+    wait_task_id: Mutex<Option<String>>,
+    wait_request_entered: Notify,
+    allow_wait: Notify,
 }
 
 impl FastPathWaitProvider {
-    fn new() -> Self {
+    fn new(release_path: PathBuf) -> Self {
         Self {
             requests: Mutex::new(Vec::new()),
+            release_path,
+            wait_task_id: Mutex::new(None),
+            wait_request_entered: Notify::new(),
+            allow_wait: Notify::new(),
         }
     }
 
@@ -498,7 +506,10 @@ impl AgentProvider for FastPathWaitProvider {
                 id: "fastpath-exec".into(),
                 name: "ExecCommand".into(),
                 input: json!({
-                    "cmd": "sleep 3 && printf fastpath_e2e_done",
+                    "cmd": format!(
+                        "while [ ! -f '{}' ]; do sleep 0.01; done; printf fastpath_e2e_done",
+                        self.release_path.display()
+                    ),
                     "yield_time_ms": 500
                 }),
                 kind: holon::provider::ModelToolCallKind::Function,
@@ -508,7 +519,7 @@ impl AgentProvider for FastPathWaitProvider {
                 id: "fastpath-hold".into(),
                 name: "ExecCommand".into(),
                 input: json!({
-                    "cmd": "sleep 6",
+                    "cmd": "true",
                     "yield_time_ms": 30000
                 }),
                 kind: holon::provider::ModelToolCallKind::Function,
@@ -517,6 +528,11 @@ impl AgentProvider for FastPathWaitProvider {
             3 => {
                 let task_id = first_task_id_in_tool_results(&request)
                     .expect("promoted task result should expose the task id");
+                *self.wait_task_id.lock().await = Some(task_id.clone());
+                self.wait_request_entered.notify_one();
+                timeout(Duration::from_secs(30), self.allow_wait.notified())
+                    .await
+                    .map_err(|_| anyhow::anyhow!("timed out waiting to issue fast-path WaitFor"))?;
                 response(vec![ModelBlock::ToolUse {
                     id: "fastpath-wait".into(),
                     name: "WaitFor".into(),
@@ -539,14 +555,17 @@ impl AgentProvider for FastPathWaitProvider {
 }
 
 pub async fn late_terminal_task_wait_fast_path_wakes_agent_with_durable_wait() -> Result<()> {
-    let provider = Arc::new(FastPathWaitProvider::new());
+    let gate = tempfile::tempdir()?;
+    let release_path = gate.path().join("release");
+    let provider = Arc::new(FastPathWaitProvider::new(release_path.clone()));
     let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
 
     // Deterministic fast-path shape: a command task is promoted to the
-    // background, completes while the turn is still running (the inline
-    // sleep holds the turn open), and only then does the model call
-    // WaitFor(task_result) on the already-terminal task
+    // background and remains gated until the third provider request has
+    // passed the P2 safe point. Hold that request until the terminal snapshot
+    // and canonical queued result are durable, then let the model call
+    // WaitFor(task_result) on the already-terminal, unconsumed task
     // (holon-run/holon#2743). The fast path must register a durable
     // Triggered wait and re-queue the exact result message so the sleeping
     // agent is woken with model reentry instead of a liveness_only reduce.
@@ -568,6 +587,59 @@ pub async fn late_terminal_task_wait_fast_path_wakes_agent_with_durable_wait() -
         AdmissionContext::LocalProcess,
     );
     runtime.enqueue(prompt).await?;
+
+    timeout(
+        Duration::from_secs(30),
+        provider.wait_request_entered.notified(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for the fast-path provider request"))?;
+    let task_id = provider
+        .wait_task_id
+        .lock()
+        .await
+        .clone()
+        .expect("third provider request should capture the exact task id");
+    std::fs::write(&release_path, b"release")?;
+    wait_until_async_for(Duration::from_secs(10), || async {
+        let Some(task) = runtime.task_record(&task_id).await? else {
+            return Ok(false);
+        };
+        if task.status != TaskStatus::Completed
+            || task
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.get("terminal_snapshot_ready"))
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+        {
+            return Ok(false);
+        }
+        let Some(result_message_id) = task.parent_message_id.as_deref() else {
+            return Ok(false);
+        };
+        let Some(result_message) = runtime.storage().read_message_by_id(result_message_id)? else {
+            return Ok(false);
+        };
+        Ok(result_message.kind == MessageKind::TaskResult
+            && result_message.task_id.as_deref() == Some(task_id.as_str())
+            && runtime
+                .storage()
+                .latest_queue_entries()?
+                .iter()
+                .any(|entry| {
+                    entry.message_id == result_message_id
+                        && entry.status == holon::types::QueueEntryStatus::Queued
+                }))
+    })
+    .await?;
+    let result_message_id = runtime
+        .task_record(&task_id)
+        .await?
+        .expect("terminal task should remain durable")
+        .parent_message_id
+        .expect("terminal task should reference its canonical result");
+    provider.allow_wait.notify_one();
 
     if wait_until_async_for(Duration::from_secs(30), || {
         let provider = provider.clone();
@@ -631,7 +703,8 @@ pub async fn late_terminal_task_wait_fast_path_wakes_agent_with_durable_wait() -
             && event
                 .data
                 .get("trigger_message_id")
-                .is_some_and(serde_json::Value::is_string)
+                .and_then(serde_json::Value::as_str)
+                == Some(result_message_id.as_str())
     }));
     Ok(())
 }

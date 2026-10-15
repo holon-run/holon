@@ -1,5 +1,5 @@
 use super::{scheduler, *};
-use crate::types::{BriefKind, ExecutionAdmissionProvenance};
+use crate::types::{BriefKind, ExecutionAdmissionProvenance, WaitConditionKind, WakeSource};
 use sha2::{Digest, Sha256};
 
 const TASK_TRANSITION_MAX_ATTEMPTS: usize = 3;
@@ -649,10 +649,26 @@ impl RuntimeHandle {
                 .build_reducer_only_terminal_transition("reducer_only/duplicate_task_result", false)
                 .await;
         }
-        let parent_turn_already_delivered =
-            task_result_parent_turn_already_delivered(&self.inner.storage, &task)?;
-        if !model_reentry || parent_turn_already_delivered {
-            self.begin_reducer_only_turn(message).await?;
+        let suppress_delivered_parent_reentry =
+            task_result_parent_turn_already_delivered(&self.inner.storage, &task)?
+                && !(model_reentry
+                    && task_result_has_canonical_exact_wait(
+                        self,
+                        message,
+                        &task,
+                        execution_admission_provenance.as_ref(),
+                    )?);
+        if !model_reentry || suppress_delivered_parent_reentry {
+            let (operator_binding_id, operator_reply_route_id) =
+                Self::operator_transport_from_message(message);
+            // Suppressing model reentry must not discard an admitted settlement.
+            self.begin_interactive_turn_with_provenance(
+                Some(message),
+                operator_binding_id.as_deref(),
+                operator_reply_route_id.as_deref(),
+                execution_admission_provenance.clone(),
+            )
+            .await?;
         }
         self.persist_task_transition(&task, "task_result_received")
             .await?;
@@ -667,7 +683,7 @@ impl RuntimeHandle {
             TaskStatus::Queued => "queued",
         };
         let emit_result_brief =
-            should_emit_task_result_brief(&task) && !parent_turn_already_delivered;
+            should_emit_task_result_brief(&task) && !suppress_delivered_parent_reentry;
         let result_text = match &message.body {
             MessageBody::Text { text } => {
                 format!("Task {} {}: {}", task.id, task_status_label, text)
@@ -679,7 +695,7 @@ impl RuntimeHandle {
                 format!("Task {} {}: {}", task.id, task_status_label, text)
             }
         };
-        if model_reentry && !parent_turn_already_delivered {
+        if model_reentry && !suppress_delivered_parent_reentry {
             if let Some(work_item_id) = message
                 .work_item_id
                 .clone()
@@ -764,7 +780,7 @@ impl RuntimeHandle {
             ))?;
         }
         self.build_reducer_only_terminal_transition(
-            if parent_turn_already_delivered {
+            if suppress_delivered_parent_reentry {
                 "reducer_only/parent_turn_already_delivered"
             } else {
                 "reducer_only/task_result_without_model_reentry"
@@ -818,6 +834,100 @@ fn task_parent_turn_id(task: &TaskRecord) -> Option<&str> {
         .and_then(serde_json::Value::as_str)
 }
 
+fn task_result_has_canonical_exact_wait(
+    runtime: &RuntimeHandle,
+    message: &MessageEnvelope,
+    task: &TaskRecord,
+    provenance: Option<&ExecutionAdmissionProvenance>,
+) -> Result<bool> {
+    use crate::domain::execution_protocol::{
+        ExecutionAttemptState, ExecutionBinding, ExecutionSourceIdentity, WorkItemExecutionState,
+    };
+
+    let Some(ExecutionAdmissionProvenance::Canonical { activation_id, .. }) = provenance else {
+        return Ok(false);
+    };
+    let Some(state) = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized(&message.agent_id)?
+    else {
+        return Ok(false);
+    };
+    let Some(attempt) = state.attempts.get(activation_id) else {
+        return Ok(false);
+    };
+    if attempt.state != ExecutionAttemptState::Open
+        || attempt.agent_id != message.agent_id
+        || attempt.source_message_id.as_deref() != Some(message.id.as_str())
+        || task.agent_id != message.agent_id
+        || message.kind != MessageKind::TaskResult
+        || message.task_id.as_deref() != Some(task.id.as_str())
+        || !matches!(&message.origin, MessageOrigin::Task { task_id } if task_id == &task.id)
+    {
+        return Ok(false);
+    }
+    let owner = match &attempt.binding {
+        ExecutionBinding::WorkItem { work_item_id } => {
+            if !state.work_items.get(work_item_id).is_some_and(|work| {
+                matches!(&work.state, WorkItemExecutionState::InFlight { attempt_id, .. } if attempt_id == activation_id)
+            }) {
+                return Ok(false);
+            }
+            Some(work_item_id.as_str())
+        }
+        ExecutionBinding::AgentLifecycle { agent_id } if agent_id != &message.agent_id => {
+            return Ok(false);
+        }
+        _ => None,
+    };
+    let wait_id = match &attempt.source.identity {
+        ExecutionSourceIdentity::TriggeredWait {
+            wait_id,
+            trigger_message_id,
+            ..
+        } if trigger_message_id == &message.id => Some(wait_id.as_str()),
+        ExecutionSourceIdentity::TaskResult {
+            task_id,
+            result_message_id,
+        } if task_id == &task.id
+            && result_message_id == &message.id
+            && owner.is_some()
+            && task.effective_work_item_id() == owner
+            && message.work_item_id.as_deref() == owner =>
+        {
+            None
+        }
+        _ => return Ok(false),
+    };
+    let waits = runtime
+        .inner
+        .storage
+        .latest_wait_conditions_for_agent(&message.agent_id)?;
+    // A replacement wait must not lend its predecessor's resolved trigger.
+    if waits.iter().any(|wait| {
+        wait.work_item_id.as_deref() == owner
+            && matches!(
+                wait.status,
+                WaitConditionStatus::Active | WaitConditionStatus::Triggered
+            )
+    }) {
+        return Ok(false);
+    }
+    let mut matching = waits.iter().filter(|wait| {
+        wait_id.is_none_or(|wait_id| wait.id == wait_id)
+                && wait.work_item_id.as_deref() == owner
+                && wait.status == WaitConditionStatus::Resolved
+                && wait.kind == WaitConditionKind::Task
+                && wait.trigger_message_id() == Some(message.id.as_str())
+                && wait.wake_sources.iter().any(|source| {
+                    matches!(source, WakeSource::TaskResult { task_id } if task_id == &task.id)
+                })
+    });
+    Ok(matching.next().is_some() && matching.next().is_none())
+}
+
 fn task_result_parent_turn_already_delivered(
     storage: &AppStorage,
     task: &TaskRecord,
@@ -839,6 +949,12 @@ mod tests {
     use super::*;
     use crate::{
         context::ContextConfig,
+        domain::execution_protocol::{
+            AdmittedFences, ExecutionAttempt, ExecutionAttemptState, ExecutionBinding,
+            ExecutionOrigin, ExecutionPriority, ExecutionProtocolState, ExecutionProvenance,
+            ExecutionSource, ExecutionSourceIdentity, ExecutionTrust, WorkItemExecutionRecord,
+            WorkItemExecutionState,
+        },
         provider::StubProvider,
         types::{AuthorityClass, MessageKind, MessageOrigin, Priority},
     };
@@ -920,6 +1036,317 @@ mod tests {
         );
         message.task_id = Some(task_id.into());
         message
+    }
+
+    struct ExactTaskWaitFixture {
+        runtime: RuntimeFixture,
+        task: TaskRecord,
+        message: MessageEnvelope,
+        execution: ExecutionProtocolState,
+        waits: Vec<WaitConditionRecord>,
+        provenance: ExecutionAdmissionProvenance,
+    }
+
+    impl ExactTaskWaitFixture {
+        fn new(triggered_wait: bool) -> Self {
+            let runtime = runtime();
+            let mut task = task_with_kind(
+                "task-exact",
+                TaskStatus::Completed,
+                false,
+                TaskKind::CommandTask,
+            );
+            task.work_item_id = Some("task-owner".into());
+            task.detail = Some(json!({"parent_turn_id": "turn-final-wait"}));
+            let mut message = task_result_message(&task.id);
+            message.work_item_id = task.work_item_id.clone();
+            let owner = if triggered_wait {
+                "wait-owner"
+            } else {
+                "task-owner"
+            };
+            let now = Utc::now();
+            let wait = WaitConditionRecord {
+                id: "wait-exact".into(),
+                agent_id: message.agent_id.clone(),
+                work_item_id: Some(owner.into()),
+                status: WaitConditionStatus::Resolved,
+                kind: WaitConditionKind::Task,
+                source: None,
+                subject_ref: Some(task.id.clone()),
+                waiting_for: "exact command completion".into(),
+                wake_sources: vec![WakeSource::TaskResult {
+                    task_id: task.id.clone(),
+                }],
+                continuation: Some(json!({"delivery": "final"})),
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: Some(now),
+                cancelled_at: None,
+                turn_id: Some("turn-final-wait".into()),
+                trigger_message_id: Some(message.id.clone()),
+                triggered_at: Some(now),
+            };
+            let mut execution = ExecutionProtocolState::empty(&message.agent_id);
+            execution.work_items.insert(
+                owner.into(),
+                WorkItemExecutionRecord {
+                    source_revision: 1,
+                    state: WorkItemExecutionState::InFlight {
+                        generation: 1,
+                        attempt_id: "activation-exact".into(),
+                    },
+                },
+            );
+            execution.attempts.insert(
+                "activation-exact".into(),
+                ExecutionAttempt {
+                    attempt_id: "activation-exact".into(),
+                    agent_id: message.agent_id.clone(),
+                    source_message_id: Some(message.id.clone()),
+                    source: ExecutionSource {
+                        identity: if triggered_wait {
+                            ExecutionSourceIdentity::TriggeredWait {
+                                wait_id: wait.id.clone(),
+                                trigger_message_id: message.id.clone(),
+                                ingress: None,
+                            }
+                        } else {
+                            ExecutionSourceIdentity::TaskResult {
+                                task_id: task.id.clone(),
+                                result_message_id: message.id.clone(),
+                            }
+                        },
+                        generation: 1,
+                    },
+                    binding: ExecutionBinding::WorkItem {
+                        work_item_id: owner.into(),
+                    },
+                    provenance: ExecutionProvenance {
+                        origin: ExecutionOrigin::Task,
+                        trust: ExecutionTrust::RuntimeInstruction,
+                        priority: ExecutionPriority::Normal,
+                        correlation_id: None,
+                        causation_id: None,
+                    },
+                    admitted_fences: AdmittedFences {
+                        source_revision: 1,
+                        work_item_source_revision: Some(1),
+                        work_item_generation: Some(1),
+                        rejoin: None,
+                        agent_control_revision: 1,
+                        host_registry_revision: 1,
+                    },
+                    state: ExecutionAttemptState::Open,
+                    run_id: None,
+                    turn_id: None,
+                    recovery_of_attempt_id: None,
+                    terminal_outcome_id: None,
+                    admitted_at: now.to_rfc3339(),
+                    terminal_at: None,
+                },
+            );
+            Self {
+                runtime,
+                task,
+                message,
+                execution,
+                waits: vec![wait],
+                provenance: ExecutionAdmissionProvenance::Canonical {
+                    scenario_class: if triggered_wait {
+                        scheduler::EXACT_WAIT_RESUME_SCENARIO
+                    } else {
+                        scheduler::EXACT_TASK_REJOIN_SCENARIO
+                    },
+                    activation_id: "activation-exact".into(),
+                },
+            }
+        }
+
+        fn has_exact_wait(&self) -> bool {
+            for wait in &self.waits {
+                self.runtime.storage().append_wait_condition(wait).unwrap();
+            }
+            self.runtime
+                .runtime_db()
+                .transaction(|tx| {
+                    crate::runtime_db::transitions::persist_state_tx(tx, &self.execution)
+                })
+                .unwrap();
+            task_result_has_canonical_exact_wait(
+                &self.runtime,
+                &self.message,
+                &self.task,
+                Some(&self.provenance),
+            )
+            .unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn same_owner_final_wait_task_result_exempts_delivered_parent_suppression() {
+        let fixture = ExactTaskWaitFixture::new(false);
+        let mut delivered = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "Waiting for the exact command.",
+            None,
+            None,
+        );
+        delivered.turn_id = Some("turn-final-wait".into());
+        fixture.runtime.storage().append_brief(&delivered).unwrap();
+        let mut turn = TurnRecord::new("default", "turn-final-wait", 1);
+        turn.produced_brief_ids = vec![delivered.id];
+        fixture.runtime.storage().append_turn(&turn).unwrap();
+
+        assert!(task_result_parent_turn_already_delivered(
+            fixture.runtime.storage(),
+            &fixture.task
+        )
+        .unwrap());
+        assert!(fixture.has_exact_wait());
+        assert!(!task_result_has_canonical_exact_wait(
+            &fixture.runtime,
+            &fixture.message,
+            &fixture.task,
+            None
+        )
+        .unwrap());
+    }
+
+    #[tokio::test]
+    async fn cross_owner_triggered_wait_retains_exact_task_exemption() {
+        assert!(ExactTaskWaitFixture::new(true).has_exact_wait());
+    }
+
+    #[tokio::test]
+    async fn canonical_task_wait_exemption_rejects_missing_replaced_and_mismatched_evidence() {
+        for case in [
+            "no_wait",
+            "cancelled_wait",
+            "unresolved_wait",
+            "sibling_wait",
+            "wrong_wait_kind",
+            "wrong_trigger",
+            "wrong_wake_task",
+            "wrong_message_task",
+            "wrong_message_origin",
+            "wrong_message_kind",
+            "wrong_message_owner",
+            "wrong_task_owner",
+            "wrong_task_agent",
+            "missing_activation",
+            "wrong_activation_message",
+            "wrong_source_task",
+            "wrong_source_message",
+            "wrong_source_kind",
+            "replacement_wait",
+        ] {
+            let mut fixture = ExactTaskWaitFixture::new(false);
+            let attempt = fixture
+                .execution
+                .attempts
+                .get_mut("activation-exact")
+                .unwrap();
+            match case {
+                "no_wait" => fixture.waits.clear(),
+                "cancelled_wait" => fixture.waits[0].status = WaitConditionStatus::Cancelled,
+                "unresolved_wait" => fixture.waits[0].status = WaitConditionStatus::Triggered,
+                "sibling_wait" => fixture.waits[0].work_item_id = Some("sibling".into()),
+                "wrong_wait_kind" => fixture.waits[0].kind = WaitConditionKind::External,
+                "wrong_trigger" => fixture.waits[0].trigger_message_id = Some("other".into()),
+                "wrong_wake_task" => {
+                    fixture.waits[0].wake_sources = vec![WakeSource::TaskResult {
+                        task_id: "other".into(),
+                    }];
+                }
+                "wrong_message_task" => fixture.message.task_id = Some("other".into()),
+                "wrong_message_origin" => {
+                    fixture.message.origin = MessageOrigin::Task {
+                        task_id: "other".into(),
+                    };
+                }
+                "wrong_message_kind" => fixture.message.kind = MessageKind::InternalFollowup,
+                "wrong_message_owner" => fixture.message.work_item_id = Some("sibling".into()),
+                "wrong_task_owner" => fixture.task.work_item_id = Some("sibling".into()),
+                "wrong_task_agent" => fixture.task.agent_id = "other".into(),
+                "missing_activation" => {
+                    fixture.provenance = ExecutionAdmissionProvenance::Canonical {
+                        scenario_class: scheduler::EXACT_TASK_REJOIN_SCENARIO,
+                        activation_id: "other".into(),
+                    };
+                }
+                "wrong_activation_message" => attempt.source_message_id = Some("other".into()),
+                "wrong_source_task" => {
+                    attempt.source.identity = ExecutionSourceIdentity::TaskResult {
+                        task_id: "other".into(),
+                        result_message_id: fixture.message.id.clone(),
+                    };
+                }
+                "wrong_source_message" => {
+                    attempt.source.identity = ExecutionSourceIdentity::TaskResult {
+                        task_id: fixture.task.id.clone(),
+                        result_message_id: "other".into(),
+                    };
+                }
+                "wrong_source_kind" => {
+                    attempt.source.identity = ExecutionSourceIdentity::QueueMessage {
+                        message_id: fixture.message.id.clone(),
+                    };
+                }
+                "replacement_wait" => {
+                    let mut replacement = fixture.waits[0].clone();
+                    replacement.id = "wait-replacement".into();
+                    replacement.status = WaitConditionStatus::Active;
+                    replacement.trigger_message_id = None;
+                    replacement.triggered_at = None;
+                    replacement.resolved_at = None;
+                    fixture.waits.push(replacement);
+                }
+                _ => unreachable!(),
+            }
+            assert!(!fixture.has_exact_wait(), "unexpected exemption: {case}");
+        }
+    }
+
+    #[tokio::test]
+    async fn canonical_task_wait_trigger_cannot_be_duplicated() {
+        let fixture = ExactTaskWaitFixture::new(false);
+        assert!(fixture.has_exact_wait());
+        let mut duplicate = fixture.waits[0].clone();
+        duplicate.id = "wait-duplicate".into();
+        let error = fixture
+            .runtime
+            .storage()
+            .append_wait_condition(&duplicate)
+            .unwrap_err();
+        assert!(error.to_string().contains("UNIQUE constraint failed"));
+    }
+
+    #[tokio::test]
+    async fn triggered_task_wait_exemption_rejects_sibling_and_mismatched_source() {
+        for case in ["sibling", "wait_id", "trigger_message"] {
+            let mut fixture = ExactTaskWaitFixture::new(true);
+            match case {
+                "sibling" => fixture.waits[0].work_item_id = Some("sibling".into()),
+                "wait_id" => fixture.waits[0].id = "other-wait".into(),
+                "trigger_message" => {
+                    let attempt = fixture
+                        .execution
+                        .attempts
+                        .get_mut("activation-exact")
+                        .unwrap();
+                    attempt.source.identity = ExecutionSourceIdentity::TriggeredWait {
+                        wait_id: fixture.waits[0].id.clone(),
+                        trigger_message_id: "other".into(),
+                        ingress: None,
+                    };
+                }
+                _ => unreachable!(),
+            }
+            assert!(!fixture.has_exact_wait(), "unexpected exemption: {case}");
+        }
     }
 
     #[test]

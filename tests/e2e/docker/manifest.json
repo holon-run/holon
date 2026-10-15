@@ -33,6 +33,19 @@
         "scheduler-checkpoint-replay"
       ]
     },
+    "output-input-live-acceptance": {
+      "gate_kind": "live_canary",
+      "provider_mode": "live",
+      "tool_assertion_mode": "observe",
+      "case_ids": [
+        "live-command-output-reentry",
+        "live-input-batch-safe-point"
+      ],
+      "required_coverage_ids": [
+        "live-command-output-reentry",
+        "live-input-batch-safe-point"
+      ]
+    },
     "scheduler-live-canary": {
       "gate_kind": "live_canary",
       "provider_mode": "live",
@@ -46,6 +59,42 @@
     }
   },
   "cases": [
+    {
+      "id": "live-command-output-reentry",
+      "tier": "extended",
+      "provider_mode": "live",
+      "tool_assertion_mode": "observe",
+      "coverage_ids": ["live-command-output-reentry"],
+      "tags": ["live", "output-observation", "command", "task-result", "reentry"],
+      "timeout_seconds": 480,
+      "description": "Hard-assert bounded reads of TaskStatus-confirmed large command output, running EOF, exact WaitFor(final) yield with a unique parent-turn waiting Result brief before gate release, and distinct task-result re-entry.",
+      "phases": [
+        {
+          "id": "observe-then-wait",
+          "required_tools": ["ExecCommand", "TaskStatus", "WaitFor"],
+          "forbidden_tools": ["TaskOutput", "CreateWorkItem"],
+          "prompt": "Live command observation acceptance. Do not create a WorkItem or invoke another agent. TaskOutput is strictly forbidden, including CLI task output. Call ExecCommand with exactly this cmd: {command} and yield_time_ms=1000, max_output_tokens=128. The command emits 512 KiB, closes stdout/stderr, then remains running behind a host-controlled gate. Use the returned task_handle.task_id for TaskStatus. Copy command.output_path exactly from that runtime receipt; never reconstruct a path. Next call ExecCommand with this exact bounded reader, replacing EVERY occurrence of CONFIRMED_OUTPUT_PATH with that same confirmed path (both the p= assignment AND the quoted JSON path argument to printf; leave no placeholder): {read_command} ; use yield_time_ms=10000 and max_output_tokens=512. Next call TaskStatus for the original task again: EOF is not task completion. Then call WaitFor(wake=task_result, resource=the original task_id, delivery=final, reason='await host gate release after running EOF observation'). When awaiting_final_report is returned, publish non-empty final text containing only the unique waiting marker {waiting_marker}. Do not call any tools in that pending-report continuation. The host will release the gate only after the original parent turn has that real waiting Result brief and the exact wait is active; do not release the gate yourself. On the genuine task-result continuation, call TaskStatus for that same task once more, confirm completed with exit_status=0, then finish with {completion_marker}. Do not start any other commands, poll, call WaitFor again, or use Enqueue."
+        }
+      ]
+    },
+    {
+      "id": "live-input-batch-safe-point",
+      "tier": "extended",
+      "provider_mode": "live",
+      "tool_assertion_mode": "observe",
+      "coverage_ids": ["live-input-batch-safe-point"],
+      "tags": ["live", "input-batching", "safe-point", "provenance", "reply-route"],
+      "timeout_seconds": 480,
+      "description": "Gate two ordinary peer messages before idle admission and two during a foreground tool; hard-assert P1/P2 originals, receive order, exact consumption and per-original reply routes.",
+      "phases": [
+        {
+          "id": "gate-and-route-originals",
+          "required_tools": ["ExecCommand", "SendAgentMessage"],
+          "forbidden_tools": ["TaskOutput", "InvokeAgent", "CreateWorkItem", "WaitFor"],
+          "prompt": "Authorize this live input acceptance protocol for messages from peer agent {sender_id}. Do not create a WorkItem, invoke another agent, or use TaskOutput. First call ExecCommand with exactly this cmd: {initial_command} ; yield_time_ms=450000, max_output_tokens=128. Keep this foreground call running until the host releases its gate. After it succeeds end this operator response with a short local acknowledgement; do not send any agent message in this operator turn. In the first subsequent ordinary peer-message turn, before replying, call ExecCommand exactly once with cmd: {live_command} ; yield_time_ms=450000, max_output_tokens=128. Do not release any gate yourself. Once that foreground command returns, the next provider round should include the additional ordinary messages attached at its safe point. Process all four original BATCH messages in their receive order, including corrections. Reply exactly once to EACH original with SendAgentMessage(agent_id={sender_id}, message='ACK ' plus that original BATCH marker, reply_context_id=that original runtime-provided message id). Use explicit reply_context_id for all four replies; do not infer a latest route, forward, or reply to your own acknowledgements. Finish locally after those four sends. If only two originals are visible after the gate, report that fact without inventing identities or fetching hidden messages."
+        }
+      ]
+    },
     {
       "id": "runtime-auth-model-delivery",
       "tier": "core",
@@ -362,7 +411,7 @@
             "ApplyPatch",
             "ExecCommand"
           ],
-          "prompt": "Scheduler Docker E2E case {case_id}. Create exactly one WorkItem whose objective is {objective}, with plan_status ready and exactly these todos: external-wait pending, external-complete pending. Pick that WorkItem, then call WaitFor with wake=external, resource=docker-e2e:{marker}, and a concrete reason. Do not complete it in this turn. When the external wake later resumes this exact WorkItem, call GetWorkItem, update both todos to completed, then emit a concise completion result containing {completion_marker} immediately followed by CompleteWorkItem for the exact current item. Do not create another WorkItem and do not modify files."
+          "prompt": "Scheduler Docker E2E case {case_id}. Create exactly one WorkItem whose objective is {objective}, with plan_status ready and exactly these todos: external-wait pending, external-complete pending. Pick that WorkItem, then call WaitFor with wake=external, resource=docker-e2e:{marker}, delivery=silent, and a concrete reason. This is a tool-only setup wait: do not request delivery=final or publish a waiting report. Do not complete it in this turn. When the external wake later resumes this exact WorkItem, call GetWorkItem, update both todos to completed, then emit a concise completion result containing {completion_marker} immediately followed by CompleteWorkItem for the exact current item. Do not create another WorkItem and do not modify files."
         }
       ]
     },

@@ -141,7 +141,12 @@ impl RuntimeHandle {
                     .runtime_db
                     .queue_entries()
                     .latest(reply_id)?
-                    .is_some_and(|entry| entry.status == QueueEntryStatus::Processed);
+                    .is_some_and(|entry| entry.status == QueueEntryStatus::Processed)
+                    || self
+                        .inner
+                        .runtime_db
+                        .task_result_settlements()
+                        .reply_source_is_consumed(&record)?;
                 let recoverable = self
                     .inner
                     .runtime_db

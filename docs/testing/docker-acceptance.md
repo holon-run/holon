@@ -119,6 +119,28 @@ python3 scripts/docker-e2e.py --list
 python3 scripts/docker-e2e.py --suite core --tag restart ...
 ```
 
+For an opt-in real-provider check of output observation and bounded input
+consumption, run:
+
+```bash
+python3 scripts/docker-e2e.py \
+  --image holon:release-candidate --skip-build \
+  --profile output-input-live-acceptance \
+  --model deepseek/deepseek-flash \
+  --env-file /path/to/provider.env --config-file /path/to/config.json \
+  --timeout 480
+```
+
+The command case observes a promoted command's large output and running EOF,
+then verifies exact-wait model reentry with the original task creation fence.
+Before releasing the command, it requires a persisted nonempty waiting Result
+brief from `WaitFor(delivery=final)` and the active exact-task wait.
+The input case verifies four original messages, their independently routed
+replies, and agent-tail snapshot, cursor-follow, and `/dev/null` output. The
+profile observes tool variation, but canonical owner, identity, attachment,
+settlement, and output assertions remain mandatory. It does not replace the
+deterministic shared-reply overflow and recovery tests.
+
 Evidence is written below `target/docker-e2e/<timestamp>/`. Every run produces
 `run.json`, `summary.json`, `junit.xml`, `secret-scan.json`, per-case results,
 prompts, state snapshots, WorkItem read models, event pages, transcripts,

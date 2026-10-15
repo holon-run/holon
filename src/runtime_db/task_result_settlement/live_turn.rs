@@ -12,7 +12,7 @@ use crate::types::{
     AdmissionContext, AgentMessageDeliveryOutcome, AgentMessageDeliveryRecord,
     AgentMessageDeliveryState, AuthorityClass, MessageDeliverySurface, MessageEnvelope,
     MessageKind, MessageOrigin, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TurnOwner,
-    TurnRecord,
+    TurnRecord, TurnTerminalKind,
 };
 
 const LIVE_TASK_RESULT_CANDIDATE_LIMIT: usize = 64;
@@ -1024,17 +1024,144 @@ fn reply_is_live_tx(
     )?)
 }
 
-fn consumed_reply_owner_matches_tx(
+/// Followers stay interjected: only a completed canonical attachment proves
+/// their content was consumed. Queue state alone never grants another waiter.
+pub(super) fn reply_source_queue_is_consumed_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    reply_id: &str,
+    response: &AgentMessageDeliveryRecord,
+) -> Result<bool> {
+    let status: Option<String> = tx
+        .query_row(
+            "SELECT status FROM queue_entries WHERE agent_id = ?1 AND message_id = ?2",
+            params![agent_id, reply_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if status.as_deref() == Some("processed") {
+        return Ok(true);
+    }
+    if status.as_deref() != Some("interjected") {
+        return Ok(false);
+    }
+    Ok(completed_reply_attachment_tx(tx, agent_id, reply_id, response)?.is_some())
+}
+
+fn completed_reply_attachment_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    reply_id: &str,
+    response: &AgentMessageDeliveryRecord,
+) -> Result<Option<TurnRecord>> {
+    use crate::domain::execution_protocol::ExecutionAttemptState;
+
+    if response.state != AgentMessageDeliveryState::Consumed
+        || response.outcome != AgentMessageDeliveryOutcome::Accepted
+        || response.target_agent_id != agent_id
+        || response.message_id.as_deref() != Some(reply_id)
+    {
+        return Ok(None);
+    }
+    // Live followers need not carry delivery bindings. Resolve the original reply,
+    // not an arbitrary completed turn with a compatible owner. Interrupted
+    // predecessors are not consumption witnesses; their completed replay is.
+    let mut statement = tx.prepare(
+        "SELECT turn_id, payload_json FROM turn_records
+         WHERE agent_id = ?1 AND terminal_kind = 'completed'
+           AND (trigger_message_id = ?2 OR EXISTS(
+             SELECT 1 FROM json_each(turn_records.payload_json, '$.input_message_ids') input
+             WHERE input.value = ?2))
+           AND (?3 IS NULL OR turn_id = ?3)
+         LIMIT 2",
+    )?;
+    let mut rows = statement.query(params![agent_id, reply_id, response.turn_id])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let turn_id: String = row.get(0)?;
+    let payload: String = row.get(1)?;
+    let Ok(turn) = serde_json::from_str::<TurnRecord>(&payload) else {
+        return Ok(None);
+    };
+    if rows.next()?.is_some()
+        || turn.turn_id != turn_id
+        || turn.agent_id != agent_id
+        || !turn
+            .terminal
+            .as_ref()
+            .is_some_and(|terminal| terminal.kind == TurnTerminalKind::Completed)
+        || !turn.input_message_ids.iter().any(|id| id == reply_id)
+        || response.turn_id.as_ref().is_some_and(|id| id != &turn_id)
+    {
+        return Ok(None);
+    }
+    let source_ref = format!("message:{reply_id}");
+    let mut activations = Vec::new();
+    for batch in &turn.live_input_batches {
+        for item in &batch.items {
+            if item.message_id == reply_id {
+                // Result batches render shared originals in items without
+                // classifying them as ordinary live inputs.
+                if item.source_ref != source_ref {
+                    return Ok(None);
+                }
+                activations.push(batch.activation_id.as_str());
+            }
+        }
+    }
+    if let Some(batch) = &turn.idle_input_batch {
+        for item in &batch.items {
+            if item.message_id == reply_id {
+                let Some(activation_id) = batch.activation_id.as_deref() else {
+                    return Ok(None);
+                };
+                if item.source_ref != source_ref {
+                    return Ok(None);
+                }
+                activations.push(activation_id);
+            }
+        }
+    }
+    let [activation_id] = activations.as_slice() else {
+        return Ok(None);
+    };
+    if response
+        .activation_id
+        .as_deref()
+        .is_some_and(|id| id != *activation_id)
+    {
+        return Ok(None);
+    }
+    let Some(attempt) = super::reply_admission_attempt_tx(tx, agent_id, activation_id)? else {
+        return Ok(None);
+    };
+    if attempt.attempt_id != *activation_id
+        || attempt.agent_id != agent_id
+        || attempt.state != ExecutionAttemptState::Settled
+    {
+        return Ok(None);
+    }
+    Ok(attached_turn_for_activation_tx(tx, &attempt, true)?
+        .filter(|attached| attached.turn_id == turn_id))
+}
+
+pub(super) fn consumed_reply_owner_matches_tx(
     tx: &Transaction<'_>,
     task: &TaskRecord,
     reply_id: &str,
     response: &AgentMessageDeliveryRecord,
 ) -> Result<bool> {
-    if response.state != AgentMessageDeliveryState::Consumed {
+    if response.state != AgentMessageDeliveryState::Consumed
+        || !reply_source_queue_is_consumed_tx(tx, &task.agent_id, reply_id, response)?
+    {
         return Ok(false);
     }
-    let mut witness_turn_id = response.turn_id.clone();
-    if let Some(activation_id) = response.activation_id.as_deref() {
+    let witness_turn_id = if let Some(turn) =
+        completed_reply_attachment_tx(tx, &task.agent_id, reply_id, response)?
+    {
+        turn.turn_id
+    } else if let Some(activation_id) = response.activation_id.as_deref() {
         let Some(attempt) = super::reply_admission_attempt_tx(tx, &task.agent_id, activation_id)?
         else {
             return Ok(false);
@@ -1081,15 +1208,18 @@ fn consumed_reply_owner_matches_tx(
                     item.message_id == reply_id && item.source_ref == format!("message:{reply_id}")
                 })
         });
-        if witness_turn_id
+        if response
+            .turn_id
             .as_ref()
             .is_some_and(|id| id != &turn.turn_id)
             || (attempt.source_message_id.as_deref() != Some(reply_id) && !batch_admits_reply)
         {
             return Ok(false);
         }
-        witness_turn_id = Some(turn.turn_id);
-    }
+        turn.turn_id
+    } else {
+        return Ok(false);
+    };
     // P1's completed-source grant remains owner/exact-waiter scoped. Transfer
     // its existing obligation, never consume the shared delivery a second time.
     Ok(tx.query_row(
@@ -1099,7 +1229,7 @@ fn consumed_reply_owner_matches_tx(
              AND (turns.trigger_message_id = ?2 OR EXISTS(
                SELECT 1 FROM json_each(turns.payload_json, '$.input_message_ids') input
                WHERE input.value = ?2))
-             AND (?5 IS NULL OR turns.turn_id = ?5)
+           AND turns.turn_id = ?5
              AND (turns.current_work_item_id IS ?3 OR EXISTS(
                SELECT 1 FROM wait_conditions waits,
                             json_each(waits.wake_sources_json) wake
@@ -1108,8 +1238,7 @@ fn consumed_reply_owner_matches_tx(
                  AND waits.trigger_message_id = ?2
                  AND json_extract(wake.value, '$.kind') = 'task_result'
                  AND json_extract(wake.value, '$.task_id') = ?4))
-         ) AND EXISTS(SELECT 1 FROM queue_entries
-           WHERE message_id = ?2 AND agent_id = ?1 AND status = 'processed')",
+         )",
         params![
             task.agent_id,
             reply_id,

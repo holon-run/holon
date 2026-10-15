@@ -406,56 +406,21 @@ impl TaskResultSettlementRepository<'_> {
         &self,
         record: &TaskResultSettlementRecord,
     ) -> Result<bool> {
-        if !self.reply_source_is_consumed(record)? {
-            return Ok(false);
-        }
-        self.db.transaction(|tx| {
-            let payload: String = tx.query_row(
-                "SELECT payload_json FROM messages WHERE message_id = ?1",
-                [&record.message_id],
-                |row| row.get(0),
-            )?;
-            let message: MessageEnvelope = serde_json::from_str(&payload)?;
-            let Some(reply_id) = crate::wake_contract::agent_message_reply_reference(&message)
-            else {
-                return Ok(false);
-            };
-            // Consuming owner and task owner remain distinct. An exact waiter
-            // grants only its own captured task, not every sibling reference.
-            Ok(tx.query_row(
-                "SELECT EXISTS(
-                   SELECT 1 FROM turn_records turns
-                   WHERE turns.agent_id = ?1 AND turns.terminal_kind = 'completed'
-                     AND (turns.trigger_message_id = ?2 OR EXISTS(
-                       SELECT 1 FROM json_each(turns.payload_json, '$.input_message_ids') input
-                       WHERE input.value = ?2
-                     ))
-                     AND (turns.current_work_item_id IS ?3 OR EXISTS(
-                       SELECT 1 FROM wait_conditions waits,
-                                      json_each(waits.wake_sources_json) wake
-                       WHERE waits.agent_id = ?1
-                         AND waits.work_item_id IS turns.current_work_item_id
-                         AND waits.status = 'resolved' AND waits.kind = 'task'
-                         AND waits.trigger_message_id = ?2
-                         AND json_extract(wake.value, '$.kind') = 'task_result'
-                         AND json_extract(wake.value, '$.task_id') = ?4
-                     ))
-                 )",
-                params![
-                    record.agent_id,
-                    reply_id,
-                    record.work_item_id,
-                    record.task_id
-                ],
-                |row| row.get::<_, bool>(0),
-            )?)
-        })
+        self.reply_source_consumption_matches(record, true)
     }
 
     /// Consumption evidence is not itself a grant to admit another waiter.
     pub(crate) fn reply_source_is_consumed(
         &self,
         record: &TaskResultSettlementRecord,
+    ) -> Result<bool> {
+        self.reply_source_consumption_matches(record, false)
+    }
+
+    fn reply_source_consumption_matches(
+        &self,
+        record: &TaskResultSettlementRecord,
+        require_owner_grant: bool,
     ) -> Result<bool> {
         self.db.transaction(|tx| {
             if !record_matches_durable_task_tx(tx, record)? {
@@ -550,12 +515,16 @@ impl TaskResultSettlementRepository<'_> {
             }
             // The original queue source owns the first delivery. Its terminal
             // consumption permits recovery of this independently fenced waiter.
-            Ok(tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM queue_entries
-                 WHERE message_id = ?1 AND agent_id = ?2 AND status = 'processed')",
-                params![reply_id, record.agent_id],
-                |row| row.get::<_, bool>(0),
-            )?)
+            if require_owner_grant {
+                live_turn::consumed_reply_owner_matches_tx(tx, &task, reply_id, &delivery)
+            } else {
+                live_turn::reply_source_queue_is_consumed_tx(
+                    tx,
+                    &record.agent_id,
+                    reply_id,
+                    &delivery,
+                )
+            }
         })
     }
 
