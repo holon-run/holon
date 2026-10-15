@@ -1907,7 +1907,7 @@ mod tests {
     fn resolves_built_in_policy_from_known_model() {
         let catalog = BuiltInModelCatalog::new();
         let policy = catalog.resolve_policy(
-            &ModelRef::new(ProviderId::openai_codex(), "gpt-5.4"),
+            &ModelRef::new(ProviderId::openai_codex(), "gpt-6-sol"),
             &HashMap::new(),
             &HashMap::new(),
             None,
@@ -1944,21 +1944,21 @@ mod tests {
     }
 
     #[test]
-    fn resolves_built_in_policy_for_codex_spark_benchmark_model() {
-        let catalog = BuiltInModelCatalog::new();
-        let policy = catalog.resolve_policy(
-            &ModelRef::new(ProviderId::openai_codex(), "gpt-5.3-codex-spark"),
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-            &base_context(),
-            8192,
-        );
-        assert_eq!(policy.context_window_tokens, Some(128_000));
-        assert_eq!(policy.prompt_budget_estimated_tokens, 121_600);
-        assert_eq!(policy.compaction_trigger_estimated_tokens, 109_440);
-        assert_eq!(policy.compaction_keep_recent_estimated_tokens, 41_587);
-        assert_eq!(policy.source, ModelMetadataSource::BuiltInCatalog);
+    fn retired_chatgpt_codex_models_are_not_catalog_candidates() {
+        for catalog in [BuiltInModelCatalog::new(), curated_catalog()] {
+            for model_id in [
+                "gpt-5.2",
+                "gpt-5.3-codex",
+                "gpt-5.3-codex-spark",
+                "gpt-5.4",
+                "gpt-5.4-mini",
+                "gpt-5.5",
+            ] {
+                assert!(catalog
+                    .get(&ModelRef::new(ProviderId::openai_codex(), model_id))
+                    .is_none());
+            }
+        }
     }
 
     #[test]
@@ -2358,19 +2358,19 @@ mod tests {
         );
         assert_eq!(openai_sol.source, ModelMetadataSource::ModelsDevSupplement);
 
-        let codex_55 = catalog.resolve_policy(
-            &ModelRef::parse("openai-codex/gpt-5.5").unwrap(),
+        let codex_sol = catalog.resolve_policy(
+            &ModelRef::parse("openai-codex/gpt-6-sol").unwrap(),
             &HashMap::new(),
             &HashMap::new(),
             None,
             &base_context(),
             8192,
         );
-        let unsupported = codex_55
-            .validate_reasoning_effort("max")
+        let unsupported = codex_sol
+            .validate_reasoning_effort("minimal")
             .unwrap_err()
             .to_string();
-        assert!(unsupported.contains("openai-codex/gpt-5.5"));
+        assert!(unsupported.contains("openai-codex/gpt-6-sol"));
         assert!(unsupported.contains("low, medium, high, xhigh"));
         assert!(catalog
             .get(&ModelRef::parse("openai/gpt-5.5").unwrap())
@@ -2384,18 +2384,6 @@ mod tests {
         assert!(catalog
             .get(&ModelRef::parse("openai-codex/gpt-5.3-codex").unwrap())
             .is_none());
-        let codex_mini = catalog
-            .get(&ModelRef::parse("openai-codex/gpt-5.4-mini").unwrap())
-            .unwrap();
-        assert_eq!(codex_mini.context_window_tokens, Some(272_000));
-        assert_eq!(codex_mini.default_verbosity, Some(ModelVerbosity::Medium));
-        let codex_spark = catalog
-            .get(&ModelRef::parse("openai-codex/gpt-5.3-codex-spark").unwrap())
-            .unwrap();
-        assert_eq!(codex_spark.context_window_tokens, Some(128_000));
-        assert!(!codex_spark.capabilities.image_input);
-        assert!(!codex_spark.capabilities.image_generation);
-
         let nearai = catalog.resolve_policy(
             &ModelRef::parse("nearai/zai-org/GLM-5.1-FP8").unwrap(),
             &HashMap::new(),
@@ -3172,6 +3160,25 @@ mod tests {
     }
 
     #[test]
+    fn xiaomi_ultraspeed_is_api_only() {
+        let catalog = BuiltInModelCatalog::new();
+        assert!(catalog
+            .get(&ModelRef::parse("xiaomi/mimo-v2.6-pro-ultraspeed").unwrap())
+            .is_some());
+        assert!(catalog
+            .get_route(&ModelRouteRef::parse("xiaomi@default/mimo-v2.6-pro-ultraspeed").unwrap())
+            .is_some());
+        assert!(catalog
+            .get_route(&ModelRouteRef::parse("xiaomi@token-plan/mimo-v2.6-pro-ultraspeed").unwrap())
+            .is_none());
+        for model in ["mimo-v2.6-pro", "mimo-v2.6-flash"] {
+            assert!(catalog
+                .get_route(&ModelRouteRef::parse(&format!("xiaomi@token-plan/{model}")).unwrap())
+                .is_some());
+        }
+    }
+
+    #[test]
     fn stepfun_plan_shares_canonical_models_with_exact_routes() {
         let catalog = BuiltInModelCatalog::new();
 
@@ -3332,18 +3339,44 @@ mod tests {
     #[test]
     fn byteplus_catalog_does_not_infer_models_from_volcengine() {
         let catalog = BuiltInModelCatalog::new();
-        let byteplus_providers = [
-            ProviderId::parse("byteplus").unwrap(),
-            ProviderId::parse("byteplus-coding").unwrap(),
-        ];
-
-        assert!(
-            catalog
-                .list()
-                .into_iter()
-                .all(|entry| !byteplus_providers.contains(&entry.model_ref.provider)),
-            "BytePlus model IDs and metadata require independent BytePlus documentation"
-        );
+        for model in [
+            "ark-code-latest",
+            "dola-seed-2.0-pro",
+            "dola-seed-2.0-lite",
+            "dola-seed-2.0-code",
+            "bytedance-seed-code",
+            "glm-5.3-flash",
+            "glm-5.2",
+            "glm-5.1",
+            "kimi-k2.5",
+            "gpt-oss-120b",
+            "deepseek-v4.1-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ] {
+            let coding = ModelRouteRef::parse(&format!("byteplus@coding/{model}")).unwrap();
+            assert!(
+                catalog.get_route(&coding).is_some(),
+                "{}",
+                coding.as_string()
+            );
+            let api = ModelRouteRef::parse(&format!("byteplus@default/{model}")).unwrap();
+            assert!(catalog.get_route(&api).is_none(), "{}", api.as_string());
+            let metadata = catalog
+                .get(&ModelRef::parse(&format!("byteplus/{model}")).unwrap())
+                .unwrap();
+            assert_eq!(metadata.context_window_tokens, None);
+            assert_eq!(metadata.max_output_tokens_upper_limit, None);
+        }
+        for unsupported in [
+            "byteplus@coding/doubao-seed-2.1-pro",
+            "byteplus@coding/doubao-seed-2-0-pro-260215",
+            "byteplus@coding/Auto",
+        ] {
+            assert!(catalog
+                .get_route(&ModelRouteRef::parse(unsupported).unwrap())
+                .is_none());
+        }
     }
 
     #[test]
@@ -3371,8 +3404,11 @@ mod tests {
             "dashscope@token-plan/qwen3.8-max",
             "dashscope@token-plan/qwen3.8-flash",
             "dashscope@token-plan/deepseek-v4-flash-0731",
+            "dashscope@token-plan/deepseek-v4.1-flash",
+            "dashscope@token-plan/deepseek-v4-pro-0813",
             "dashscope@token-plan/kimi-k2.7-code",
             "dashscope@token-plan/glm-5.2",
+            "dashscope@token-plan/glm-5.3",
             "dashscope@token-plan/MiniMax-M2.5",
             "dashscope@coding-plan/qwen3-coder-plus",
             "dashscope@coding-plan/glm-5",
@@ -3390,9 +3426,11 @@ mod tests {
         for unsupported in [
             "dashscope@token-plan/ZHIPU/GLM-5.2",
             "dashscope@token-plan/MiniMax/MiniMax-M3",
-            // GLM-5.3 is not part of the DashScope subscription plans yet:
-            // the token-plan endpoint reports "Model not exist" (verified 2026-08).
-            "dashscope@token-plan/glm-5.3",
+            "dashscope@default/glm-5.3",
+            "dashscope@default/deepseek-v4.1-flash",
+            "dashscope@default/deepseek-v4-pro-0813",
+            "dashscope@coding-plan/deepseek-v4.1-flash",
+            "dashscope@coding-plan/deepseek-v4-pro-0813",
             "dashscope@coding-plan/glm-5.2",
             "dashscope@coding-plan/glm-5.3",
             "dashscope@coding-plan/kimi-k2.7-code",
@@ -3403,6 +3441,22 @@ mod tests {
                     .is_none(),
                 "{unsupported} should not be inferred from another DashScope catalog"
             );
+        }
+
+        for (model, output, image) in [
+            ("glm-5.3", 131_072, false),
+            ("deepseek-v4.1-flash", 384_000, true),
+            ("deepseek-v4-pro-0813", 384_000, false),
+        ] {
+            let metadata = catalog
+                .get(&ModelRef::parse(&format!("dashscope/{model}")).unwrap())
+                .unwrap();
+            assert_eq!(metadata.context_window_tokens, Some(1_000_000));
+            assert_eq!(metadata.max_output_tokens_upper_limit, Some(output));
+            assert_eq!(metadata.capabilities.image_input, image);
+            assert!(metadata.capabilities.agent_turn);
+            assert!(metadata.capabilities.supports_reasoning);
+            assert!(metadata.description.contains("alibaba-token-plan-cn"));
         }
     }
 
@@ -4152,7 +4206,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_go_catalog_tracks_the_current_dual_transport_model_table() {
+    fn opencode_go_catalog_tracks_the_current_three_transport_model_table() {
         let catalog = curated_catalog();
         let provider = provider_id("opencode-go");
         let models = catalog
@@ -4161,7 +4215,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 14);
+        assert_eq!(models.len(), 35);
         for model in &models {
             assert!(model.capabilities.supports_reasoning);
             assert!(model.reasoning_effort_options.is_empty());
@@ -4169,14 +4223,27 @@ mod tests {
         }
 
         for model in [
+            "deepseek-v4.1-flash",
             "deepseek-v4-pro",
             "deepseek-v4-flash",
+            "glm-5.3",
+            "glm-5.3-flash",
             "glm-5.2",
             "glm-5.1",
+            "kimi-k3",
             "kimi-k2.7-code",
             "kimi-k2.6",
+            "longcat-2.0",
+            "longcat-2.5-preview-free",
+            "mimo-v2.6-pro",
+            "mimo-v2.6-flash",
             "mimo-v2.5-pro",
             "mimo-v2.5",
+            "hy4-preview",
+            "hy3",
+            "space-bunny",
+            "step-5-preview-free",
+            "cat-jam-free",
         ] {
             assert_eq!(
                 catalog
@@ -4188,9 +4255,12 @@ mod tests {
             );
         }
         for model in [
+            "claude-haiku-5-5",
             "minimax-m3",
             "minimax-m2.7",
             "minimax-m2.5",
+            "qwen3.8-max",
+            "qwen3.8-flash",
             "qwen3.7-max",
             "qwen3.7-plus",
             "qwen3.6-plus",
@@ -4204,6 +4274,68 @@ mod tests {
                 "messages",
                 "{model}"
             );
+        }
+        for model in [
+            "grok-4.7",
+            "gpt-6-luna",
+            "gpt-5.6-luna",
+            "muse-spark-1.3-contributor",
+            "muse-spark-1.2-contributor",
+        ] {
+            assert_eq!(
+                catalog
+                    .preferred_route_for_model(&ModelRef::new(provider.clone(), model))
+                    .unwrap()
+                    .endpoint
+                    .as_str(),
+                "responses",
+                "{model}"
+            );
+        }
+        for model in ["grok-4.6", "gemini-4-argon-contributor"] {
+            assert!(catalog
+                .get(&ModelRef::new(provider.clone(), model))
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn opencode_go_new_metadata_uses_advisory_go_specific_models_dev_limits() {
+        let catalog = curated_catalog();
+        for (id, context, output, image_input) in [
+            ("grok-4.7", 500_000, 500_000, true),
+            ("gpt-6-luna", 1_050_000, 128_000, true),
+            ("gpt-5.6-luna", 1_050_000, 128_000, true),
+            ("claude-haiku-5-5", 1_000_000, 128_000, true),
+            ("glm-5.3-flash", 1_000_000, 131_072, true),
+            ("glm-5.3", 1_000_000, 131_072, false),
+            ("kimi-k3", 1_048_576, 131_072, true),
+            ("longcat-2.0", 1_000_000, 131_072, false),
+            ("deepseek-v4.1-flash", 1_000_000, 384_000, true),
+            ("mimo-v2.6-flash", 1_048_576, 131_072, true),
+            ("mimo-v2.6-pro", 1_048_576, 131_072, true),
+            ("muse-spark-1.3-contributor", 1_048_576, 131_072, true),
+            ("muse-spark-1.2-contributor", 1_048_576, 131_072, true),
+            ("qwen3.8-max", 1_000_000, 131_072, true),
+            ("qwen3.8-flash", 1_000_000, 131_072, true),
+            ("hy4-preview", 1_024_000, 64_000, false),
+            ("hy3", 256_000, 128_000, false),
+            ("space-bunny", 1_048_576, 524_288, true),
+            ("longcat-2.5-preview-free", 1_000_000, 131_072, true),
+            ("step-5-preview-free", 1_000_000, 65_536, true),
+            ("cat-jam-free", 262_144, 131_072, false),
+        ] {
+            let metadata = catalog
+                .get(&ModelRef::new(provider_id("opencode-go"), id))
+                .unwrap();
+            assert_eq!(metadata.context_window_tokens, Some(context), "{id}");
+            assert_eq!(metadata.max_output_tokens_upper_limit, Some(output), "{id}");
+            assert_eq!(metadata.default_max_output_tokens, Some(output), "{id}");
+            assert_eq!(metadata.capabilities.image_input, image_input, "{id}");
+            assert!(metadata.description.contains("models.dev's opencode-go"));
+            assert!(metadata
+                .description
+                .contains("not independently verified service hard limits"));
         }
     }
 
@@ -4240,7 +4372,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 27);
+        assert_eq!(models.len(), 46);
         for model in &models {
             assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
             assert!(model.reasoning_effort_options.is_empty());
@@ -4251,13 +4383,6 @@ mod tests {
                     .endpoint,
                 ProviderEndpointId::default_endpoint()
             );
-            assert!(catalog
-                .get_route(&ModelRouteRef::new(
-                    provider.clone(),
-                    ProviderEndpointId::parse("messages").unwrap(),
-                    model.model_ref.model.clone(),
-                ))
-                .is_some());
         }
 
         let hy3 = catalog

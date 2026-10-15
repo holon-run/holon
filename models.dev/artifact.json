@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-94443e070c993dd16f330d05b9d4bc4ecef7684138d19c9fcfe8f423a1f5415d",
+  "revision": "models-dev-5087b02d80c580601ae37826c6bfd37b84dd49545d34fc909ab7a9b123a12e31",
   "upstream": {
     "source": "models.dev",
-    "revision": "94443e070c993dd16f330d05b9d4bc4ecef7684138d19c9fcfe8f423a1f5415d",
-    "fetched_at": "2026-10-14T20:35:19.731852251+00:00",
-    "content_sha256": "94443e070c993dd16f330d05b9d4bc4ecef7684138d19c9fcfe8f423a1f5415d",
-    "adapter_version": "0.52.0 (10100e22)"
+    "revision": "5087b02d80c580601ae37826c6bfd37b84dd49545d34fc909ab7a9b123a12e31",
+    "fetched_at": "2026-10-15T21:21:30.873766575+00:00",
+    "content_sha256": "5087b02d80c580601ae37826c6bfd37b84dd49545d34fc909ab7a9b123a12e31",
+    "adapter_version": "0.52.0 (5eb18b18-dirty)"
   },
   "models": [
     {
@@ -2868,6 +2868,33 @@
         "low",
         "medium",
         "high"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "fireworks/accounts/fireworks/models/muse-spark-open",
+      "display_name": "Muse Spark Open",
+      "description": "Muse Spark Open is an 816B total / 42B active open-weight multimodal reasoning model from Meta for coding and long-horizon agentic work, with 1M-token context.",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
       ],
       "source": "remote_discovered"
     },
@@ -9976,27 +10003,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "nvidia/nvidia/nemotron-3-super-120b-a12b",
-      "display_name": "Nemotron 3 Super",
-      "description": "Nemotron middle tier for collaborative agents and high-volume reasoning workloads",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 262144,
-      "max_output_tokens_upper_limit": 262144,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "nvidia/nvidia/nemotron-3-ultra-550b-a55b",
       "display_name": "Nemotron 3 Ultra 550B A55B",
       "description": "Largest Nemotron 3 model for maximum open-weight reasoning and agent accuracy",
@@ -10053,6 +10059,27 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b",
+      "display_name": "Nemotron 3.5 Super VL 120B A12B",
+      "description": "NVIDIA vision-language reasoning model for text, image, and video understanding and agentic tool use",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 8192,
+      "max_output_tokens_upper_limit": 8192,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
         "interactive_exec": false
@@ -12461,6 +12488,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "medium",
         "high",
@@ -12531,6 +12559,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "medium",
         "high",
@@ -12558,6 +12587,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "medium",
         "high",
@@ -12586,6 +12616,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "medium",
         "high",
@@ -12614,6 +12645,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "medium",
         "high",
@@ -12648,27 +12680,6 @@
         "xhigh",
         "max"
       ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/anthropic/claude-sonnet-4",
-      "display_name": "Claude Sonnet 4",
-      "description": "Balanced Claude model for coding, analysis, agent workflows, and cost control",
-      "context_window_tokens": 200000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 190000,
-      "default_max_output_tokens": 64000,
-      "max_output_tokens_upper_limit": 64000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
       "source": "remote_discovered"
     },
     {
@@ -12712,6 +12723,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "medium",
         "high",
@@ -12739,6 +12751,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "medium",
         "high",
@@ -12879,6 +12892,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "medium",
         "high"
@@ -12905,6 +12919,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "minimal",
         "low",
         "medium",
@@ -12932,6 +12947,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "minimal",
         "low",
         "medium",
@@ -13295,6 +13311,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "high",
         "xhigh"
       ],
@@ -13320,6 +13337,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "high",
         "max"
@@ -13346,6 +13364,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "high",
         "max"
@@ -13372,6 +13391,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "high",
         "xhigh"
       ],
@@ -13397,6 +13417,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "high",
         "max"
@@ -13423,6 +13444,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "high",
         "max"
@@ -13470,6 +13492,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "high",
         "max"
@@ -13601,6 +13624,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "minimal",
         "low",
         "medium",
@@ -13670,6 +13694,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "minimal",
         "high"
       ],
@@ -13695,6 +13720,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "minimal",
         "high"
       ],
@@ -13720,6 +13746,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "minimal",
         "low",
         "medium",
@@ -13747,6 +13774,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "minimal",
         "high"
       ],
@@ -13772,6 +13800,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "minimal",
         "low",
         "medium",
@@ -14010,6 +14039,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "minimal",
         "high"
       ],
@@ -14874,6 +14904,33 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/meta/muse-spark-open",
+      "display_name": "Muse Spark Open",
+      "description": "Open Llama multimodal model for image understanding and text reasoning",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/meta/muse-wonder",
       "display_name": "Muse Wonder",
       "description": "Open Llama multimodal model for image understanding and text reasoning",
@@ -15056,8 +15113,8 @@
       "context_window_tokens": 204800,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 194560,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -15690,6 +15747,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "high",
         "max"
@@ -15915,6 +15973,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "medium"
       ],
@@ -15940,6 +15999,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "medium"
       ],
@@ -15965,6 +16025,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "medium",
         "high"
       ],
@@ -15990,6 +16051,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "medium",
         "high"
       ],
@@ -16073,6 +16135,48 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "openrouter/nvidia/nemotron-3.5-super-vl",
+      "display_name": "Nemotron 3.5 Super VL",
+      "description": "Nemotron multimodal model for visual reasoning and agentic AI workflows",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 235929,
+      "max_output_tokens_upper_limit": 235929,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "openrouter/nvidia/nemotron-3.5-super-vl:free",
+      "display_name": "Nemotron 3.5 Super VL (free)",
+      "description": "Nemotron multimodal model for visual reasoning and agentic AI workflows",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
         "interactive_exec": false
@@ -17441,8 +17545,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 117964,
-      "max_output_tokens_upper_limit": 117964,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -18049,6 +18153,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "medium",
         "xhigh"
       ],
@@ -18670,8 +18775,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 81920,
-      "max_output_tokens_upper_limit": 81920,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -18691,8 +18796,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
+      "default_max_output_tokens": 235929,
+      "max_output_tokens_upper_limit": 235929,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -18856,6 +18961,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "medium",
         "xhigh"
@@ -19303,9 +19409,9 @@
       "model_ref": "openrouter/stepfun/step-5-preview",
       "display_name": "Step 5 Preview",
       "description": "StepFun flash model for efficient multimodal reasoning, coding, and tool use",
-      "context_window_tokens": 1000000,
+      "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
+      "auto_compact_token_limit": 996147,
       "default_max_output_tokens": 64000,
       "max_output_tokens_upper_limit": 64000,
       "default_verbosity": null,
@@ -19664,27 +19770,6 @@
         "high",
         "max"
       ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/unbiased/pareto-26.10-preview",
-      "display_name": "Pareto 26.10 Preview",
-      "description": "Preview model for early access evaluation, prototyping, and compatibility testing",
-      "context_window_tokens": 1048576,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
       "source": "remote_discovered"
     },
     {
@@ -20273,8 +20358,8 @@
       "context_window_tokens": 204800,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 194560,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -20315,8 +20400,8 @@
       "context_window_tokens": 204800,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 194560,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -20349,6 +20434,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "high",
         "xhigh"
       ],
@@ -20387,8 +20473,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 943717,
+      "max_output_tokens_upper_limit": 943717,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -20527,6 +20613,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "medium",
         "high",
@@ -20611,6 +20698,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "high",
         "max"
@@ -20637,6 +20725,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "high",
         "max"
@@ -20663,6 +20752,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "high",
         "max"
@@ -20741,6 +20831,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "high",
         "max"
@@ -22742,6 +22833,27 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "venice/gemini-4-argon",
+      "display_name": "Gemini 4 Argon",
+      "description": "Gemini multimodal model for text, image, audio, video, and document tasks",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "venice/gemma-4-uncensored",
       "display_name": "Gemma 4 Uncensored",
       "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
@@ -23378,6 +23490,34 @@
         "supports_reasoning": false,
         "interactive_exec": false
       },
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "venice/muse-wonder",
+      "display_name": "Muse Wonder",
+      "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "max"
+      ],
       "source": "remote_discovered"
     },
     {

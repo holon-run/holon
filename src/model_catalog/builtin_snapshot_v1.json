@@ -591,6 +591,279 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "byteplus/ark-code-latest",
+      "display_name": "Ark Code Latest",
+      "description": "byteplus coding subscription Ark Code Latest; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "byteplus/bytedance-seed-code",
+      "display_name": "ByteDance Seed Code",
+      "description": "byteplus coding subscription ByteDance Seed Code; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "byteplus/deepseek-v4-flash",
+      "display_name": "DeepSeek V4 Flash Preview",
+      "description": "byteplus coding subscription DeepSeek V4 Flash Preview; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "byteplus/deepseek-v4-pro",
+      "display_name": "DeepSeek V4 Pro Preview",
+      "description": "byteplus coding subscription DeepSeek V4 Pro Preview; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "byteplus/deepseek-v4.1-flash",
+      "display_name": "DeepSeek V4.1 Flash",
+      "description": "byteplus coding subscription DeepSeek V4.1 Flash; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "byteplus/dola-seed-2.0-code",
+      "display_name": "Dola Seed 2.0 Code",
+      "description": "byteplus coding subscription Dola Seed 2.0 Code; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "byteplus/dola-seed-2.0-lite",
+      "display_name": "Dola Seed 2.0 Lite",
+      "description": "byteplus coding subscription Dola Seed 2.0 Lite; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "byteplus/dola-seed-2.0-pro",
+      "display_name": "Dola Seed 2.0 Pro",
+      "description": "byteplus coding subscription Dola Seed 2.0 Pro; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "byteplus/glm-5.1",
+      "display_name": "GLM-5.1",
+      "description": "byteplus coding subscription GLM-5.1; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "byteplus/glm-5.2",
+      "display_name": "GLM-5.2",
+      "description": "byteplus coding subscription GLM-5.2; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "byteplus/glm-5.3-flash",
+      "display_name": "GLM-5.3 Flash",
+      "description": "byteplus coding subscription GLM-5.3 Flash; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "byteplus/gpt-oss-120b",
+      "display_name": "GPT OSS 120B",
+      "description": "byteplus coding subscription GPT OSS 120B; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "byteplus/kimi-k2.5",
+      "display_name": "Kimi K2.5",
+      "description": "byteplus coding subscription Kimi K2.5; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "chutes/MiniMaxAI/MiniMax-M2.5-TEE",
       "display_name": "MiniMaxAI/MiniMax-M2.5-TEE",
       "description": "Holon built-in runtime metadata for the chutes/MiniMaxAI/MiniMax-M2.5-TEE compatible provider model.",
@@ -1032,6 +1305,48 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "dashscope/deepseek-v4-pro-0813",
+      "display_name": "DeepSeek V4 Pro 0813",
+      "description": "DashScope Token Plan DeepSeek V4 Pro 0813; limits and tool support from models.dev alibaba-token-plan-cn, not confirmed official endpoint limits.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 384000,
+      "max_output_tokens_upper_limit": 384000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "built_in_catalog"
+    },
+    {
+      "model_ref": "dashscope/deepseek-v4.1-flash",
+      "display_name": "DeepSeek V4.1 Flash",
+      "description": "DashScope Token Plan DeepSeek V4.1 Flash; limits and tool support from models.dev alibaba-token-plan-cn, not confirmed official endpoint limits.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 384000,
+      "max_output_tokens_upper_limit": 384000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "built_in_catalog"
+    },
+    {
       "model_ref": "dashscope/glm-4.7",
       "display_name": "glm-4.7",
       "description": "Holon built-in runtime metadata for the dashscope/glm-4.7 compatible provider model.",
@@ -1103,6 +1418,27 @@
       "auto_compact_token_limit": null,
       "default_max_output_tokens": 128000,
       "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "built_in_catalog"
+    },
+    {
+      "model_ref": "dashscope/glm-5.3",
+      "display_name": "GLM-5.3",
+      "description": "DashScope Token Plan GLM-5.3; limits and tool support from models.dev alibaba-token-plan-cn, not confirmed official endpoint limits.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -2780,90 +3116,6 @@
       "source": "conservative_builtin"
     },
     {
-      "model_ref": "openai-codex/gpt-5.3-codex-spark",
-      "display_name": "GPT-5.3 Codex Spark (Codex)",
-      "description": "Codex Spark runtime defaults mirrored from the local OpenAI Codex model metadata contract.",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
-      "default_verbosity": "low",
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": true
-      },
-      "source": "built_in_catalog"
-    },
-    {
-      "model_ref": "openai-codex/gpt-5.4",
-      "display_name": "GPT-5.4 (Codex)",
-      "description": "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.",
-      "context_window_tokens": 272000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
-      "default_verbosity": "low",
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": true,
-        "supports_reasoning": true,
-        "interactive_exec": true
-      },
-      "source": "built_in_catalog"
-    },
-    {
-      "model_ref": "openai-codex/gpt-5.4-mini",
-      "display_name": "GPT-5.4-Mini (Codex)",
-      "description": "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.",
-      "context_window_tokens": 272000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
-      "default_verbosity": "medium",
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": true,
-        "supports_reasoning": true,
-        "interactive_exec": true
-      },
-      "source": "built_in_catalog"
-    },
-    {
-      "model_ref": "openai-codex/gpt-5.5",
-      "display_name": "GPT-5.5 (Codex)",
-      "description": "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.",
-      "context_window_tokens": 272000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
-      "default_verbosity": "low",
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": true,
-        "supports_reasoning": true,
-        "interactive_exec": true
-      },
-      "source": "built_in_catalog"
-    },
-    {
       "model_ref": "openai-codex/gpt-5.6-luna",
       "display_name": "GPT-5.6-Luna (Codex)",
       "description": "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.",
@@ -3116,6 +3368,48 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "opencode-go/cat-jam-free",
+      "display_name": "Cat Jam Free",
+      "description": "OpenCode Go cat-jam-free route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 262144,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/claude-haiku-5-5",
+      "display_name": "Claude Haiku 5.5",
+      "description": "OpenCode Go claude-haiku-5-5 route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "opencode-go/deepseek-v4-flash",
       "display_name": "DeepSeek V4 Flash",
       "description": "Holon conservative built-in metadata for the OpenCode Go deepseek-v4-flash route.",
@@ -3158,6 +3452,27 @@
       "source": "conservative_builtin"
     },
     {
+      "model_ref": "opencode-go/deepseek-v4.1-flash",
+      "display_name": "DeepSeek V4.1 Flash",
+      "description": "OpenCode Go deepseek-v4.1-flash route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 384000,
+      "max_output_tokens_upper_limit": 384000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "opencode-go/glm-5.1",
       "display_name": "GLM-5.1",
       "description": "Holon conservative built-in metadata for the OpenCode Go glm-5.1 route.",
@@ -3187,6 +3502,153 @@
       "auto_compact_token_limit": null,
       "default_max_output_tokens": 131072,
       "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/glm-5.3",
+      "display_name": "GLM-5.3",
+      "description": "OpenCode Go glm-5.3 route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/glm-5.3-flash",
+      "display_name": "GLM-5.3-Flash",
+      "description": "OpenCode Go glm-5.3-flash route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/gpt-5.6-luna",
+      "display_name": "GPT-5.6 Luna",
+      "description": "OpenCode Go gpt-5.6-luna route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1050000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/gpt-6-luna",
+      "display_name": "GPT-6 Luna",
+      "description": "OpenCode Go gpt-6-luna route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1050000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/grok-4.7",
+      "display_name": "Grok 4.7",
+      "description": "OpenCode Go grok-4.7 route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 500000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 500000,
+      "max_output_tokens_upper_limit": 500000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/hy3",
+      "display_name": "Hy3",
+      "description": "OpenCode Go hy3 route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 256000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/hy4-preview",
+      "display_name": "Hy4 preview",
+      "description": "OpenCode Go hy4-preview route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1024000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 64000,
+      "max_output_tokens_upper_limit": 64000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -3242,6 +3704,69 @@
       "source": "conservative_builtin"
     },
     {
+      "model_ref": "opencode-go/kimi-k3",
+      "display_name": "Kimi K3",
+      "description": "OpenCode Go kimi-k3 route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/longcat-2.0",
+      "display_name": "LongCat-2.0",
+      "description": "OpenCode Go longcat-2.0 route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/longcat-2.5-preview-free",
+      "display_name": "LongCat 2.5 Preview Free",
+      "description": "OpenCode Go longcat-2.5-preview-free route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "opencode-go/mimo-v2.5",
       "display_name": "MiMo V2.5",
       "description": "Holon conservative built-in metadata for the OpenCode Go mimo-v2.5 route.",
@@ -3277,6 +3802,48 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/mimo-v2.6-flash",
+      "display_name": "MiMo-V2.6-Flash",
+      "description": "OpenCode Go mimo-v2.6-flash route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/mimo-v2.6-pro",
+      "display_name": "MiMo-V2.6-Pro",
+      "description": "OpenCode Go mimo-v2.6-pro route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
         "interactive_exec": false
@@ -3347,6 +3914,48 @@
       "source": "conservative_builtin"
     },
     {
+      "model_ref": "opencode-go/muse-spark-1.2-contributor",
+      "display_name": "Muse Spark 1.2 Contributor",
+      "description": "OpenCode Go muse-spark-1.2-contributor route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/muse-spark-1.3-contributor",
+      "display_name": "Muse Spark 1.3 Contributor",
+      "description": "OpenCode Go muse-spark-1.3-contributor route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "opencode-go/qwen3.6-plus",
       "display_name": "Qwen3.6 Plus",
       "description": "Holon conservative built-in metadata for the OpenCode Go qwen3.6-plus route.",
@@ -3392,6 +4001,90 @@
       "model_ref": "opencode-go/qwen3.7-plus",
       "display_name": "Qwen3.7 Plus",
       "description": "Holon conservative built-in metadata for the OpenCode Go qwen3.7-plus route.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/qwen3.8-flash",
+      "display_name": "Qwen3.8 Flash",
+      "description": "OpenCode Go qwen3.8-flash route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/qwen3.8-max",
+      "display_name": "Qwen3.8 Max",
+      "description": "OpenCode Go qwen3.8-max route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/space-bunny",
+      "display_name": "Space Bunny",
+      "description": "OpenCode Go space-bunny route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 524288,
+      "max_output_tokens_upper_limit": 524288,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/step-5-preview-free",
+      "display_name": "Step 5 Preview Free",
+      "description": "OpenCode Go step-5-preview-free route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -3893,6 +4586,48 @@
       "source": "conservative_builtin"
     },
     {
+      "model_ref": "tencent-tokenhub/deepseek-v4-flash-0731",
+      "display_name": "deepseek-v4-flash-0731",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek-v4-flash-202605",
+      "display_name": "deepseek-v4-flash-202605",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "tencent-tokenhub/deepseek-v4-pro",
       "display_name": "DeepSeek V4 Pro",
       "description": "Holon conservative built-in metadata for the Tencent TokenHub deepseek-v4-pro model.",
@@ -3909,6 +4644,174 @@
         "image_input": false,
         "image_generation": false,
         "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek-v4-pro-0813",
+      "display_name": "deepseek-v4-pro-0813",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek-v4-pro-202606",
+      "display_name": "deepseek-v4-pro-202606",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek/deepseek-flash",
+      "display_name": "deepseek/deepseek-flash",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-flash",
+      "display_name": "deepseek/deepseek-v4-flash",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-flash-0731",
+      "display_name": "deepseek/deepseek-v4-flash-0731",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-flash-vision-exp",
+      "display_name": "deepseek/deepseek-v4-flash-vision-exp",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-pro",
+      "display_name": "deepseek/deepseek-v4-pro",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-pro-0813",
+      "display_name": "deepseek/deepseek-v4-pro-0813",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -3993,6 +4896,69 @@
         "image_input": false,
         "image_generation": false,
         "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/glm-5.3",
+      "display_name": "glm-5.3",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/glm-5.3-flash",
+      "display_name": "glm-5.3-flash",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/glm-5.3-flashx",
+      "display_name": "glm-5.3-flashx",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -4208,6 +5174,27 @@
       "source": "conservative_builtin"
     },
     {
+      "model_ref": "tencent-tokenhub/hy4-preview",
+      "display_name": "hy4-preview",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "tencent-tokenhub/kimi-k2.5",
       "display_name": "Kimi K2.5",
       "description": "Holon conservative built-in metadata for the Tencent TokenHub kimi-k2.5 model.",
@@ -4287,6 +5274,111 @@
         "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/kimi-k2.8-preview",
+      "display_name": "kimi-k2.8-preview",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/kimi-k3",
+      "display_name": "kimi-k3",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/mimo-v2.5-pro",
+      "display_name": "mimo-v2.5-pro",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/mimo-v2.6-flash",
+      "display_name": "mimo-v2.6-flash",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/mimo-v2.6-pro",
+      "display_name": "mimo-v2.6-pro",
+      "description": "Official TokenHub language-model ID; exact endpoint limits, capabilities and Messages support unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -4953,6 +6045,27 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "volcengine/deepseek-v4.1-flash",
+      "display_name": "DeepSeek V4.1 Flash",
+      "description": "volcengine coding subscription DeepSeek V4.1 Flash; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "volcengine/doubao-seed-1-8-251228",
       "display_name": "Doubao Seed 1.8",
       "description": "Holon built-in runtime metadata for the volcengine/doubao-seed-1-8-251228 compatible provider model.",
@@ -5058,6 +6171,90 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "volcengine/doubao-seed-2.0-mini",
+      "display_name": "Doubao Seed 2.0 Mini",
+      "description": "volcengine coding subscription Doubao Seed 2.0 Mini; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "volcengine/doubao-seed-2.1-lite",
+      "display_name": "Doubao Seed 2.1 Lite",
+      "description": "volcengine coding subscription Doubao Seed 2.1 Lite; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "volcengine/doubao-seed-2.1-pro",
+      "display_name": "Doubao Seed 2.1 Pro",
+      "description": "volcengine coding subscription Doubao Seed 2.1 Pro; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "volcengine/doubao-seed-evolving",
+      "display_name": "Doubao Seed Evolving",
+      "description": "volcengine coding subscription Doubao Seed Evolving; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "volcengine/doubao-seedream-5.0-lite",
       "display_name": "Doubao Seedream 5.0 Lite",
       "description": "Volcengine Ark Seedream image generation model for the OpenAI Images-compatible API.",
@@ -5121,6 +6318,27 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "volcengine/glm-5.3-flash",
+      "display_name": "GLM-5.3 Flash",
+      "description": "volcengine coding subscription GLM-5.3 Flash; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "volcengine/kimi-k2.6",
       "display_name": "Kimi K2.6",
       "description": "Holon built-in runtime metadata for the volcengine-coding/kimi-k2.6 compatible provider model.",
@@ -5161,6 +6379,69 @@
         "interactive_exec": false
       },
       "source": "built_in_catalog"
+    },
+    {
+      "model_ref": "volcengine/kimi-k2.8-preview",
+      "display_name": "Kimi K2.8 Preview",
+      "description": "volcengine coding subscription Kimi K2.8 Preview; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "volcengine/kimi-k3",
+      "display_name": "Kimi K3",
+      "description": "volcengine coding subscription Kimi K3; exact token limits unconfirmed. Kimi K3 requires Medium/Large/Max on Agent Plan.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "volcengine/minimax-m3",
+      "display_name": "MiniMax M3",
+      "description": "volcengine coding subscription MiniMax M3; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
     },
     {
       "model_ref": "xai/grok-4.3",
@@ -6201,6 +7482,214 @@
       }
     },
     {
+      "route_ref": "byteplus@coding/ark-code-latest",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "byteplus@coding/bytedance-seed-code",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "byteplus@coding/deepseek-v4-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "byteplus@coding/deepseek-v4-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "byteplus@coding/deepseek-v4.1-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "byteplus@coding/dola-seed-2.0-code",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "byteplus@coding/dola-seed-2.0-lite",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "byteplus@coding/dola-seed-2.0-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "byteplus@coding/glm-5.1",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "byteplus@coding/glm-5.2",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "byteplus@coding/glm-5.3-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "byteplus@coding/gpt-oss-120b",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "byteplus@coding/kimi-k2.5",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "chutes@default/MiniMaxAI/MiniMax-M2.5-TEE",
       "policy": {
         "display_name": null,
@@ -7161,6 +8650,38 @@
       }
     },
     {
+      "route_ref": "dashscope@token-plan/deepseek-v4-pro-0813",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "dashscope@token-plan/deepseek-v4.1-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "dashscope@token-plan/glm-5",
       "policy": {
         "display_name": null,
@@ -7202,6 +8723,22 @@
         "auto_compact_token_limit": null,
         "default_max_output_tokens": 65536,
         "max_output_tokens_upper_limit": 65536,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "dashscope@token-plan/glm-5.3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
         "default_verbosity": null,
         "tool_output_truncation_estimated_tokens": null,
         "capabilities": {},
@@ -8345,70 +9882,6 @@
       }
     },
     {
-      "route_ref": "openai-codex@default/gpt-5.3-codex-spark",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "context_window_tokens": null,
-        "effective_context_window_percent": null,
-        "auto_compact_token_limit": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "default_verbosity": null,
-        "tool_output_truncation_estimated_tokens": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "openai-codex@default/gpt-5.4",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "context_window_tokens": null,
-        "effective_context_window_percent": null,
-        "auto_compact_token_limit": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "default_verbosity": null,
-        "tool_output_truncation_estimated_tokens": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "openai-codex@default/gpt-5.4-mini",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "context_window_tokens": null,
-        "effective_context_window_percent": null,
-        "auto_compact_token_limit": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "default_verbosity": null,
-        "tool_output_truncation_estimated_tokens": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "openai-codex@default/gpt-5.5",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "context_window_tokens": null,
-        "effective_context_window_percent": null,
-        "auto_compact_token_limit": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "default_verbosity": null,
-        "tool_output_truncation_estimated_tokens": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "openai-codex@default/gpt-5.6-luna",
       "policy": {
         "display_name": null,
@@ -8601,6 +10074,22 @@
       }
     },
     {
+      "route_ref": "opencode-go@default/cat-jam-free",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "opencode-go@default/deepseek-v4-flash",
       "policy": {
         "display_name": null,
@@ -8618,6 +10107,22 @@
     },
     {
       "route_ref": "opencode-go@default/deepseek-v4-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/deepseek-v4.1-flash",
       "policy": {
         "display_name": null,
         "description": null,
@@ -8665,6 +10170,70 @@
       }
     },
     {
+      "route_ref": "opencode-go@default/glm-5.3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/glm-5.3-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/hy3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/hy4-preview",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "opencode-go@default/kimi-k2.6",
       "policy": {
         "display_name": null,
@@ -8697,6 +10266,54 @@
       }
     },
     {
+      "route_ref": "opencode-go@default/kimi-k3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/longcat-2.0",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/longcat-2.5-preview-free",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "opencode-go@default/mimo-v2.5",
       "policy": {
         "display_name": null,
@@ -8714,6 +10331,86 @@
     },
     {
       "route_ref": "opencode-go@default/mimo-v2.5-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/mimo-v2.6-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/mimo-v2.6-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/space-bunny",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/step-5-preview-free",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/claude-haiku-5-5",
       "policy": {
         "display_name": null,
         "description": null,
@@ -8810,6 +10507,118 @@
     },
     {
       "route_ref": "opencode-go@messages/qwen3.7-plus",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/qwen3.8-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/qwen3.8-max",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/gpt-5.6-luna",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/gpt-6-luna",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/grok-4.7",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/muse-spark-1.2-contributor",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/muse-spark-1.3-contributor",
       "policy": {
         "display_name": null,
         "description": null,
@@ -9241,7 +11050,167 @@
       }
     },
     {
+      "route_ref": "tencent-tokenhub@default/deepseek-v4-flash-0731",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/deepseek-v4-flash-202605",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "tencent-tokenhub@default/deepseek-v4-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/deepseek-v4-pro-0813",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/deepseek-v4-pro-202606",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-flash-0731",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-flash-vision-exp",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-pro-0813",
       "policy": {
         "display_name": null,
         "description": null,
@@ -9306,6 +11275,54 @@
     },
     {
       "route_ref": "tencent-tokenhub@default/glm-5.2",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/glm-5.3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/glm-5.3-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/glm-5.3-flashx",
       "policy": {
         "display_name": null,
         "description": null,
@@ -9481,6 +11498,22 @@
       }
     },
     {
+      "route_ref": "tencent-tokenhub@default/hy4-preview",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "tencent-tokenhub@default/kimi-k2.5",
       "policy": {
         "display_name": null,
@@ -9530,6 +11563,86 @@
     },
     {
       "route_ref": "tencent-tokenhub@default/kimi-k2.7-code-highspeed",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/kimi-k2.8-preview",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/kimi-k3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/mimo-v2.5-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/mimo-v2.6-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/mimo-v2.6-pro",
       "policy": {
         "display_name": null,
         "description": null,
@@ -10460,6 +12573,22 @@
       }
     },
     {
+      "route_ref": "volcengine@coding/deepseek-v4.1-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "volcengine@coding/doubao-seed-2-0-code-preview-260215",
       "policy": {
         "display_name": "Doubao Seed 2.0 Code",
@@ -10508,6 +12637,70 @@
       }
     },
     {
+      "route_ref": "volcengine@coding/doubao-seed-2.0-mini",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@coding/doubao-seed-2.1-lite",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@coding/doubao-seed-2.1-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@coding/doubao-seed-evolving",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "volcengine@coding/glm-5.2",
       "policy": {
         "display_name": null,
@@ -10540,6 +12733,22 @@
       }
     },
     {
+      "route_ref": "volcengine@coding/glm-5.3-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "volcengine@coding/kimi-k2.6",
       "policy": {
         "display_name": null,
@@ -10557,6 +12766,54 @@
     },
     {
       "route_ref": "volcengine@coding/kimi-k2.7-code",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@coding/kimi-k2.8-preview",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@coding/kimi-k3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@coding/minimax-m3",
       "policy": {
         "display_name": null,
         "description": null,
@@ -10732,6 +12989,22 @@
       }
     },
     {
+      "route_ref": "volcengine@plan/deepseek-v4.1-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "volcengine@plan/doubao-seed-2-0-code-preview-260215",
       "policy": {
         "display_name": "Doubao Seed 2.0 Code",
@@ -10796,6 +13069,70 @@
       }
     },
     {
+      "route_ref": "volcengine@plan/doubao-seed-2.0-mini",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@plan/doubao-seed-2.1-lite",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@plan/doubao-seed-2.1-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@plan/doubao-seed-evolving",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "volcengine@plan/glm-5.2",
       "policy": {
         "display_name": null,
@@ -10828,6 +13165,22 @@
       }
     },
     {
+      "route_ref": "volcengine@plan/glm-5.3-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "volcengine@plan/kimi-k2.6",
       "policy": {
         "display_name": null,
@@ -10845,6 +13198,54 @@
     },
     {
       "route_ref": "volcengine@plan/kimi-k2.7-code",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@plan/kimi-k2.8-preview",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@plan/kimi-k3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@plan/minimax-m3",
       "policy": {
         "display_name": null,
         "description": null,
@@ -11402,6 +13803,14 @@
       "target": "dashscope/deepseek-v4-pro"
     },
     {
+      "alias": "dashscope-token-plan/deepseek-v4-pro-0813",
+      "target": "dashscope/deepseek-v4-pro-0813"
+    },
+    {
+      "alias": "dashscope-token-plan/deepseek-v4.1-flash",
+      "target": "dashscope/deepseek-v4.1-flash"
+    },
+    {
       "alias": "dashscope-token-plan/glm-5",
       "target": "dashscope/glm-5"
     },
@@ -11412,6 +13821,10 @@
     {
       "alias": "dashscope-token-plan/glm-5.2",
       "target": "dashscope/glm-5.2"
+    },
+    {
+      "alias": "dashscope-token-plan/glm-5.3",
+      "target": "dashscope/glm-5.3"
     },
     {
       "alias": "dashscope-token-plan/kimi-k2.5",
@@ -11614,6 +14027,10 @@
       "target": "volcengine/deepseek-v4-pro"
     },
     {
+      "alias": "volcengine-agent/deepseek-v4.1-flash",
+      "target": "volcengine/deepseek-v4.1-flash"
+    },
+    {
       "alias": "volcengine-agent/doubao-seed-2-0-code-preview-260215",
       "target": "volcengine/doubao-seed-2-0-code-preview-260215"
     },
@@ -11630,6 +14047,22 @@
       "target": "volcengine/doubao-seed-2-0-pro-260215"
     },
     {
+      "alias": "volcengine-agent/doubao-seed-2.0-mini",
+      "target": "volcengine/doubao-seed-2.0-mini"
+    },
+    {
+      "alias": "volcengine-agent/doubao-seed-2.1-lite",
+      "target": "volcengine/doubao-seed-2.1-lite"
+    },
+    {
+      "alias": "volcengine-agent/doubao-seed-2.1-pro",
+      "target": "volcengine/doubao-seed-2.1-pro"
+    },
+    {
+      "alias": "volcengine-agent/doubao-seed-evolving",
+      "target": "volcengine/doubao-seed-evolving"
+    },
+    {
       "alias": "volcengine-agent/glm-5.2",
       "target": "volcengine/glm-5.2"
     },
@@ -11638,12 +14071,28 @@
       "target": "volcengine/glm-5.3"
     },
     {
+      "alias": "volcengine-agent/glm-5.3-flash",
+      "target": "volcengine/glm-5.3-flash"
+    },
+    {
       "alias": "volcengine-agent/kimi-k2.6",
       "target": "volcengine/kimi-k2.6"
     },
     {
       "alias": "volcengine-agent/kimi-k2.7-code",
       "target": "volcengine/kimi-k2.7-code"
+    },
+    {
+      "alias": "volcengine-agent/kimi-k2.8-preview",
+      "target": "volcengine/kimi-k2.8-preview"
+    },
+    {
+      "alias": "volcengine-agent/kimi-k3",
+      "target": "volcengine/kimi-k3"
+    },
+    {
+      "alias": "volcengine-agent/minimax-m3",
+      "target": "volcengine/minimax-m3"
     },
     {
       "alias": "volcengine-coding/ark-code-latest",
@@ -11716,6 +14165,10 @@
       "model_ref": "bigmodel/glm-5.3"
     },
     {
+      "provider": "byteplus",
+      "model_ref": "byteplus/glm-5.3-flash"
+    },
+    {
       "provider": "chutes",
       "model_ref": "chutes/moonshotai/Kimi-K2.6-TEE"
     },
@@ -11777,7 +14230,7 @@
     },
     {
       "provider": "openai-codex",
-      "model_ref": "openai-codex/gpt-5.5"
+      "model_ref": "openai-codex/gpt-6-astra"
     },
     {
       "provider": "opencode-go",
@@ -11866,6 +14319,10 @@
       "route_ref": "bigmodel@default/glm-5.3"
     },
     {
+      "provider": "byteplus",
+      "route_ref": "byteplus@coding/glm-5.3-flash"
+    },
+    {
       "provider": "chutes",
       "route_ref": "chutes@default/moonshotai/Kimi-K2.6-TEE"
     },
@@ -11927,7 +14384,7 @@
     },
     {
       "provider": "openai-codex",
-      "route_ref": "openai-codex@default/gpt-5.5"
+      "route_ref": "openai-codex@default/gpt-6-astra"
     },
     {
       "provider": "opencode-go",
@@ -12116,6 +14573,58 @@
       "route_ref": "bigmodel@default/glm-5v-turbo"
     },
     {
+      "model_ref": "byteplus/ark-code-latest",
+      "route_ref": "byteplus@coding/ark-code-latest"
+    },
+    {
+      "model_ref": "byteplus/bytedance-seed-code",
+      "route_ref": "byteplus@coding/bytedance-seed-code"
+    },
+    {
+      "model_ref": "byteplus/deepseek-v4-flash",
+      "route_ref": "byteplus@coding/deepseek-v4-flash"
+    },
+    {
+      "model_ref": "byteplus/deepseek-v4-pro",
+      "route_ref": "byteplus@coding/deepseek-v4-pro"
+    },
+    {
+      "model_ref": "byteplus/deepseek-v4.1-flash",
+      "route_ref": "byteplus@coding/deepseek-v4.1-flash"
+    },
+    {
+      "model_ref": "byteplus/dola-seed-2.0-code",
+      "route_ref": "byteplus@coding/dola-seed-2.0-code"
+    },
+    {
+      "model_ref": "byteplus/dola-seed-2.0-lite",
+      "route_ref": "byteplus@coding/dola-seed-2.0-lite"
+    },
+    {
+      "model_ref": "byteplus/dola-seed-2.0-pro",
+      "route_ref": "byteplus@coding/dola-seed-2.0-pro"
+    },
+    {
+      "model_ref": "byteplus/glm-5.1",
+      "route_ref": "byteplus@coding/glm-5.1"
+    },
+    {
+      "model_ref": "byteplus/glm-5.2",
+      "route_ref": "byteplus@coding/glm-5.2"
+    },
+    {
+      "model_ref": "byteplus/glm-5.3-flash",
+      "route_ref": "byteplus@coding/glm-5.3-flash"
+    },
+    {
+      "model_ref": "byteplus/gpt-oss-120b",
+      "route_ref": "byteplus@coding/gpt-oss-120b"
+    },
+    {
+      "model_ref": "byteplus/kimi-k2.5",
+      "route_ref": "byteplus@coding/kimi-k2.5"
+    },
+    {
       "model_ref": "chutes/MiniMaxAI/MiniMax-M2.5-TEE",
       "route_ref": "chutes@default/MiniMaxAI/MiniMax-M2.5-TEE"
     },
@@ -12200,6 +14709,14 @@
       "route_ref": "dashscope@default/deepseek-v4-pro"
     },
     {
+      "model_ref": "dashscope/deepseek-v4-pro-0813",
+      "route_ref": "dashscope@token-plan/deepseek-v4-pro-0813"
+    },
+    {
+      "model_ref": "dashscope/deepseek-v4.1-flash",
+      "route_ref": "dashscope@token-plan/deepseek-v4.1-flash"
+    },
+    {
       "model_ref": "dashscope/glm-4.7",
       "route_ref": "dashscope@default/glm-4.7"
     },
@@ -12214,6 +14731,10 @@
     {
       "model_ref": "dashscope/glm-5.2",
       "route_ref": "dashscope@default/glm-5.2"
+    },
+    {
+      "model_ref": "dashscope/glm-5.3",
+      "route_ref": "dashscope@token-plan/glm-5.3"
     },
     {
       "model_ref": "dashscope/kimi-k2.5",
@@ -12532,22 +15053,6 @@
       "route_ref": "nvidia@default/z-ai/glm-5.2"
     },
     {
-      "model_ref": "openai-codex/gpt-5.3-codex-spark",
-      "route_ref": "openai-codex@default/gpt-5.3-codex-spark"
-    },
-    {
-      "model_ref": "openai-codex/gpt-5.4",
-      "route_ref": "openai-codex@default/gpt-5.4"
-    },
-    {
-      "model_ref": "openai-codex/gpt-5.4-mini",
-      "route_ref": "openai-codex@default/gpt-5.4-mini"
-    },
-    {
-      "model_ref": "openai-codex/gpt-5.5",
-      "route_ref": "openai-codex@default/gpt-5.5"
-    },
-    {
       "model_ref": "openai-codex/gpt-5.6-luna",
       "route_ref": "openai-codex@default/gpt-5.6-luna"
     },
@@ -12596,12 +15101,24 @@
       "route_ref": "openai@default/gpt-image-2"
     },
     {
+      "model_ref": "opencode-go/cat-jam-free",
+      "route_ref": "opencode-go@default/cat-jam-free"
+    },
+    {
+      "model_ref": "opencode-go/claude-haiku-5-5",
+      "route_ref": "opencode-go@messages/claude-haiku-5-5"
+    },
+    {
       "model_ref": "opencode-go/deepseek-v4-flash",
       "route_ref": "opencode-go@default/deepseek-v4-flash"
     },
     {
       "model_ref": "opencode-go/deepseek-v4-pro",
       "route_ref": "opencode-go@default/deepseek-v4-pro"
+    },
+    {
+      "model_ref": "opencode-go/deepseek-v4.1-flash",
+      "route_ref": "opencode-go@default/deepseek-v4.1-flash"
     },
     {
       "model_ref": "opencode-go/glm-5.1",
@@ -12612,6 +15129,34 @@
       "route_ref": "opencode-go@default/glm-5.2"
     },
     {
+      "model_ref": "opencode-go/glm-5.3",
+      "route_ref": "opencode-go@default/glm-5.3"
+    },
+    {
+      "model_ref": "opencode-go/glm-5.3-flash",
+      "route_ref": "opencode-go@default/glm-5.3-flash"
+    },
+    {
+      "model_ref": "opencode-go/gpt-5.6-luna",
+      "route_ref": "opencode-go@responses/gpt-5.6-luna"
+    },
+    {
+      "model_ref": "opencode-go/gpt-6-luna",
+      "route_ref": "opencode-go@responses/gpt-6-luna"
+    },
+    {
+      "model_ref": "opencode-go/grok-4.7",
+      "route_ref": "opencode-go@responses/grok-4.7"
+    },
+    {
+      "model_ref": "opencode-go/hy3",
+      "route_ref": "opencode-go@default/hy3"
+    },
+    {
+      "model_ref": "opencode-go/hy4-preview",
+      "route_ref": "opencode-go@default/hy4-preview"
+    },
+    {
       "model_ref": "opencode-go/kimi-k2.6",
       "route_ref": "opencode-go@default/kimi-k2.6"
     },
@@ -12620,12 +15165,32 @@
       "route_ref": "opencode-go@default/kimi-k2.7-code"
     },
     {
+      "model_ref": "opencode-go/kimi-k3",
+      "route_ref": "opencode-go@default/kimi-k3"
+    },
+    {
+      "model_ref": "opencode-go/longcat-2.0",
+      "route_ref": "opencode-go@default/longcat-2.0"
+    },
+    {
+      "model_ref": "opencode-go/longcat-2.5-preview-free",
+      "route_ref": "opencode-go@default/longcat-2.5-preview-free"
+    },
+    {
       "model_ref": "opencode-go/mimo-v2.5",
       "route_ref": "opencode-go@default/mimo-v2.5"
     },
     {
       "model_ref": "opencode-go/mimo-v2.5-pro",
       "route_ref": "opencode-go@default/mimo-v2.5-pro"
+    },
+    {
+      "model_ref": "opencode-go/mimo-v2.6-flash",
+      "route_ref": "opencode-go@default/mimo-v2.6-flash"
+    },
+    {
+      "model_ref": "opencode-go/mimo-v2.6-pro",
+      "route_ref": "opencode-go@default/mimo-v2.6-pro"
     },
     {
       "model_ref": "opencode-go/minimax-m2.5",
@@ -12640,6 +15205,14 @@
       "route_ref": "opencode-go@messages/minimax-m3"
     },
     {
+      "model_ref": "opencode-go/muse-spark-1.2-contributor",
+      "route_ref": "opencode-go@responses/muse-spark-1.2-contributor"
+    },
+    {
+      "model_ref": "opencode-go/muse-spark-1.3-contributor",
+      "route_ref": "opencode-go@responses/muse-spark-1.3-contributor"
+    },
+    {
       "model_ref": "opencode-go/qwen3.6-plus",
       "route_ref": "opencode-go@messages/qwen3.6-plus"
     },
@@ -12650,6 +15223,22 @@
     {
       "model_ref": "opencode-go/qwen3.7-plus",
       "route_ref": "opencode-go@messages/qwen3.7-plus"
+    },
+    {
+      "model_ref": "opencode-go/qwen3.8-flash",
+      "route_ref": "opencode-go@messages/qwen3.8-flash"
+    },
+    {
+      "model_ref": "opencode-go/qwen3.8-max",
+      "route_ref": "opencode-go@messages/qwen3.8-max"
+    },
+    {
+      "model_ref": "opencode-go/space-bunny",
+      "route_ref": "opencode-go@default/space-bunny"
+    },
+    {
+      "model_ref": "opencode-go/step-5-preview-free",
+      "route_ref": "opencode-go@default/step-5-preview-free"
     },
     {
       "model_ref": "openrouter/auto",
@@ -12744,8 +15333,48 @@
       "route_ref": "tencent-tokenhub@default/deepseek-v4-flash"
     },
     {
+      "model_ref": "tencent-tokenhub/deepseek-v4-flash-0731",
+      "route_ref": "tencent-tokenhub@default/deepseek-v4-flash-0731"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek-v4-flash-202605",
+      "route_ref": "tencent-tokenhub@default/deepseek-v4-flash-202605"
+    },
+    {
       "model_ref": "tencent-tokenhub/deepseek-v4-pro",
       "route_ref": "tencent-tokenhub@default/deepseek-v4-pro"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek-v4-pro-0813",
+      "route_ref": "tencent-tokenhub@default/deepseek-v4-pro-0813"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek-v4-pro-202606",
+      "route_ref": "tencent-tokenhub@default/deepseek-v4-pro-202606"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek/deepseek-flash",
+      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-flash"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-flash",
+      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-flash"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-flash-0731",
+      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-flash-0731"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-flash-vision-exp",
+      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-flash-vision-exp"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-pro",
+      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-pro"
+    },
+    {
+      "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-pro-0813",
+      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-pro-0813"
     },
     {
       "model_ref": "tencent-tokenhub/glm-5",
@@ -12762,6 +15391,18 @@
     {
       "model_ref": "tencent-tokenhub/glm-5.2",
       "route_ref": "tencent-tokenhub@default/glm-5.2"
+    },
+    {
+      "model_ref": "tencent-tokenhub/glm-5.3",
+      "route_ref": "tencent-tokenhub@default/glm-5.3"
+    },
+    {
+      "model_ref": "tencent-tokenhub/glm-5.3-flash",
+      "route_ref": "tencent-tokenhub@default/glm-5.3-flash"
+    },
+    {
+      "model_ref": "tencent-tokenhub/glm-5.3-flashx",
+      "route_ref": "tencent-tokenhub@default/glm-5.3-flashx"
     },
     {
       "model_ref": "tencent-tokenhub/glm-5v-turbo",
@@ -12804,6 +15445,10 @@
       "route_ref": "tencent-tokenhub@default/hy3-preview"
     },
     {
+      "model_ref": "tencent-tokenhub/hy4-preview",
+      "route_ref": "tencent-tokenhub@default/hy4-preview"
+    },
+    {
       "model_ref": "tencent-tokenhub/kimi-k2.5",
       "route_ref": "tencent-tokenhub@default/kimi-k2.5"
     },
@@ -12818,6 +15463,26 @@
     {
       "model_ref": "tencent-tokenhub/kimi-k2.7-code-highspeed",
       "route_ref": "tencent-tokenhub@default/kimi-k2.7-code-highspeed"
+    },
+    {
+      "model_ref": "tencent-tokenhub/kimi-k2.8-preview",
+      "route_ref": "tencent-tokenhub@default/kimi-k2.8-preview"
+    },
+    {
+      "model_ref": "tencent-tokenhub/kimi-k3",
+      "route_ref": "tencent-tokenhub@default/kimi-k3"
+    },
+    {
+      "model_ref": "tencent-tokenhub/mimo-v2.5-pro",
+      "route_ref": "tencent-tokenhub@default/mimo-v2.5-pro"
+    },
+    {
+      "model_ref": "tencent-tokenhub/mimo-v2.6-flash",
+      "route_ref": "tencent-tokenhub@default/mimo-v2.6-flash"
+    },
+    {
+      "model_ref": "tencent-tokenhub/mimo-v2.6-pro",
+      "route_ref": "tencent-tokenhub@default/mimo-v2.6-pro"
     },
     {
       "model_ref": "tencent-tokenhub/minimax-m2.5",
@@ -12944,6 +15609,10 @@
       "route_ref": "volcengine@coding/deepseek-v4-pro"
     },
     {
+      "model_ref": "volcengine/deepseek-v4.1-flash",
+      "route_ref": "volcengine@coding/deepseek-v4.1-flash"
+    },
+    {
       "model_ref": "volcengine/doubao-seed-1-8-251228",
       "route_ref": "volcengine@default/doubao-seed-1-8-251228"
     },
@@ -12964,6 +15633,22 @@
       "route_ref": "volcengine@default/doubao-seed-2-0-pro-260215"
     },
     {
+      "model_ref": "volcengine/doubao-seed-2.0-mini",
+      "route_ref": "volcengine@coding/doubao-seed-2.0-mini"
+    },
+    {
+      "model_ref": "volcengine/doubao-seed-2.1-lite",
+      "route_ref": "volcengine@coding/doubao-seed-2.1-lite"
+    },
+    {
+      "model_ref": "volcengine/doubao-seed-2.1-pro",
+      "route_ref": "volcengine@coding/doubao-seed-2.1-pro"
+    },
+    {
+      "model_ref": "volcengine/doubao-seed-evolving",
+      "route_ref": "volcengine@coding/doubao-seed-evolving"
+    },
+    {
       "model_ref": "volcengine/doubao-seedream-5.0-lite",
       "route_ref": "volcengine@default/doubao-seedream-5.0-lite"
     },
@@ -12976,12 +15661,28 @@
       "route_ref": "volcengine@coding/glm-5.3"
     },
     {
+      "model_ref": "volcengine/glm-5.3-flash",
+      "route_ref": "volcengine@coding/glm-5.3-flash"
+    },
+    {
       "model_ref": "volcengine/kimi-k2.6",
       "route_ref": "volcengine@coding/kimi-k2.6"
     },
     {
       "model_ref": "volcengine/kimi-k2.7-code",
       "route_ref": "volcengine@coding/kimi-k2.7-code"
+    },
+    {
+      "model_ref": "volcengine/kimi-k2.8-preview",
+      "route_ref": "volcengine@coding/kimi-k2.8-preview"
+    },
+    {
+      "model_ref": "volcengine/kimi-k3",
+      "route_ref": "volcengine@coding/kimi-k3"
+    },
+    {
+      "model_ref": "volcengine/minimax-m3",
+      "route_ref": "volcengine@coding/minimax-m3"
     },
     {
       "model_ref": "xai/grok-4.3",

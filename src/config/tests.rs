@@ -352,7 +352,7 @@ fn built_in_openai_codex_defaults_to_holon_oauth_profile() {
 }
 
 #[test]
-fn opencode_go_registers_chat_and_messages_endpoints() {
+fn opencode_go_registers_chat_messages_and_responses_endpoints() {
     let entries = built_in_provider_doc_entries().unwrap();
     let mut endpoints = entries
         .into_iter()
@@ -375,13 +375,19 @@ fn opencode_go_registers_chat_and_messages_endpoints() {
                 "default".to_string(),
                 "opencode-go".to_string(),
                 ProviderTransportKind::OpenAiChatCompletions,
-                "https://opencode.ai/zen/go/v1".to_string(),
+                "https://opencode.ai/inference/go/openai/v1".to_string(),
             ),
             (
                 "messages".to_string(),
                 "opencode-go-messages".to_string(),
                 ProviderTransportKind::AnthropicMessages,
-                "https://opencode.ai/zen/go/v1".to_string(),
+                "https://opencode.ai/inference/go/anthropic/v1".to_string(),
+            ),
+            (
+                "responses".to_string(),
+                "opencode-go-responses".to_string(),
+                ProviderTransportKind::OpenAiResponses,
+                "https://opencode.ai/inference/go/openai/v1".to_string(),
             ),
         ]
     );
@@ -3755,14 +3761,14 @@ fn runtime_model_catalog_exposes_deepseek_responses_without_changing_default_rou
         responses_route.endpoint.runtime_config.base_url,
         "https://api.deepseek.com/v1"
     );
-    let responses_search = responses_route
-        .endpoint
-        .runtime_config
-        .builtin_web_search
-        .as_ref()
-        .expect("DeepSeek Responses should advertise native web search");
-    assert_eq!(responses_search.kind, ProviderNativeWebSearchKind::DeepSeek);
-    assert_eq!(responses_search.advertised_tool_type, "web_search");
+    assert!(
+        responses_route
+            .endpoint
+            .runtime_config
+            .builtin_web_search
+            .is_none(),
+        "DeepSeek Responses ignores built-in tools, including web_search"
+    );
 
     assert_eq!(
         ModelRouteRef::parse_compatible("deepseek/deepseek-v4-pro")
@@ -3803,10 +3809,95 @@ fn runtime_model_catalog_derives_deepseek_responses_from_an_explicit_allowlist()
 }
 
 #[test]
+fn runtime_model_catalog_preserves_discovery_only_endpoints() {
+    let mut fixture = test_app_config("opencode-go/kimi-k2.7-code", &[]);
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    for legacy_provider in [
+        "opencode-go",
+        "opencode-go-messages",
+        "opencode-go-responses",
+    ] {
+        let provider = ProviderId::parse(legacy_provider).unwrap();
+        fixture
+            .config
+            .providers
+            .insert(provider.clone(), built_ins.get(&provider).unwrap().clone());
+    }
+    let mut catalog = RuntimeModelCatalog::from_config(&fixture.config);
+    let template = catalog
+        .built_in_catalog
+        .get(&ModelRef::parse("opencode-go/kimi-k2.7-code").unwrap())
+        .unwrap()
+        .clone();
+    for (model, endpoint, transport) in [
+        (
+            "discovery-only-responses",
+            "responses",
+            ProviderTransportKind::OpenAiResponses,
+        ),
+        (
+            "discovery-only-messages",
+            "messages",
+            ProviderTransportKind::AnthropicMessages,
+        ),
+        (
+            "discovery-only-chat",
+            "default",
+            ProviderTransportKind::OpenAiChatCompletions,
+        ),
+    ] {
+        let model_ref = ModelRef::parse(&format!("opencode-go/{model}")).unwrap();
+        let mut metadata = template.clone();
+        metadata.model_ref = model_ref.clone();
+        metadata.endpoint = Some(ProviderEndpointId::parse(endpoint).unwrap());
+        catalog
+            .discovered_models
+            .insert(model_ref.clone(), metadata);
+        let expected_route = route_ref(&format!("opencode-go@{endpoint}/{model}"));
+        let routes = catalog.available_model_routes();
+        assert!(routes.contains(&expected_route));
+        if endpoint != "default" {
+            assert!(!routes.contains(&route_ref(&format!("opencode-go@default/{model}"))));
+        }
+        let resolved = catalog
+            .resolve_model_route(
+                &ContextConfig::default(),
+                &model_ref,
+                ModelRouteCapability::Turn,
+            )
+            .unwrap();
+        assert_eq!(resolved.route_ref, expected_route);
+        assert_eq!(resolved.endpoint.runtime_config.transport, transport);
+    }
+
+    // Discovery must not replace an explicitly reviewed built-in route.
+    let mut conflicting = template.clone();
+    conflicting.endpoint = Some(ProviderEndpointId::parse("messages").unwrap());
+    catalog
+        .discovered_models
+        .insert(template.model_ref.clone(), conflicting);
+    let resolved = catalog
+        .resolve_model_route(
+            &ContextConfig::default(),
+            &template.model_ref,
+            ModelRouteCapability::Turn,
+        )
+        .unwrap();
+    assert_eq!(resolved.endpoint.endpoint.as_str(), "default");
+    assert!(catalog
+        .available_model_routes()
+        .contains(&route_ref("opencode-go@default/kimi-k2.7-code")));
+}
+
+#[test]
 fn runtime_model_catalog_routes_opencode_go_models_by_published_transport() {
     let mut fixture = test_app_config("opencode-go/minimax-m3", &[]);
     let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
-    for legacy_provider in ["opencode-go", "opencode-go-messages"] {
+    for legacy_provider in [
+        "opencode-go",
+        "opencode-go-messages",
+        "opencode-go-responses",
+    ] {
         let provider = ProviderId::parse(legacy_provider).unwrap();
         fixture
             .config
@@ -3828,6 +3919,10 @@ fn runtime_model_catalog_routes_opencode_go_models_by_published_transport() {
         messages.endpoint.runtime_config.transport,
         ProviderTransportKind::AnthropicMessages
     );
+    assert_eq!(
+        messages.endpoint.runtime_config.base_url,
+        "https://opencode.ai/inference/go/anthropic/v1"
+    );
 
     let chat = catalog
         .resolve_model_route(
@@ -3842,6 +3937,36 @@ fn runtime_model_catalog_routes_opencode_go_models_by_published_transport() {
         chat.endpoint.runtime_config.transport,
         ProviderTransportKind::OpenAiChatCompletions
     );
+    assert_eq!(
+        chat.endpoint.runtime_config.base_url,
+        "https://opencode.ai/inference/go/openai/v1"
+    );
+
+    for model in [
+        "grok-4.7",
+        "gpt-6-luna",
+        "gpt-5.6-luna",
+        "muse-spark-1.3-contributor",
+        "muse-spark-1.2-contributor",
+    ] {
+        let responses = catalog
+            .resolve_model_route(
+                &ContextConfig::default(),
+                &ModelRef::parse(&format!("opencode-go/{model}")).unwrap(),
+                ModelRouteCapability::Turn,
+            )
+            .unwrap();
+        assert_eq!(responses.endpoint.provider.as_str(), "opencode-go");
+        assert_eq!(responses.endpoint.endpoint.as_str(), "responses");
+        assert_eq!(
+            responses.endpoint.runtime_config.transport,
+            ProviderTransportKind::OpenAiResponses
+        );
+        assert_eq!(
+            responses.endpoint.runtime_config.base_url,
+            "https://opencode.ai/inference/go/openai/v1"
+        );
+    }
 }
 
 #[test]
@@ -4013,14 +4138,14 @@ fn generate_image_selection_uses_current_turn_fallback_model() {
 #[test]
 fn generate_image_selection_uses_explicit_image_generation_model() {
     let mut fixture = test_app_config("openai@default/gpt-image-2", &[]);
-    fixture.config.image_generation_model = Some(route_ref("openai-codex@default/gpt-5.5"));
+    fixture.config.image_generation_model = Some(route_ref("openai-codex@default/gpt-6-sol"));
     let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
     let selected = catalog
         .select_generate_image_model(&ContextConfig::default(), None, None)
         .unwrap();
 
-    assert_eq!(selected.as_string(), "openai-codex@default/gpt-5.5");
+    assert_eq!(selected.as_string(), "openai-codex@default/gpt-6-sol");
 }
 
 #[test]
@@ -4235,8 +4360,8 @@ fn runtime_model_catalog_uses_discovery_cache_between_overrides_and_builtins() {
 }
 
 #[test]
-fn runtime_model_catalog_resolves_codex_spark_to_builtin_budget() {
-    let fixture = test_app_config("openai-codex/gpt-5.3-codex-spark", &[]);
+fn runtime_model_catalog_resolves_codex_sol_to_builtin_budget() {
+    let fixture = test_app_config("openai-codex/gpt-6-sol", &[]);
     let catalog = RuntimeModelCatalog::from_config(&fixture.config);
     let base_context = ContextConfig {
         recent_messages: fixture.config.context_window_messages,
@@ -4254,13 +4379,10 @@ fn runtime_model_catalog_resolves_codex_spark_to_builtin_budget() {
     };
 
     let resolved = catalog.resolved_model_policy(&base_context, None);
-    assert_eq!(
-        resolved.model_ref.as_string(),
-        "openai-codex/gpt-5.3-codex-spark"
-    );
-    assert_eq!(resolved.prompt_budget_estimated_tokens, 121_600);
-    assert_eq!(resolved.compaction_trigger_estimated_tokens, 109_440);
-    assert_eq!(resolved.compaction_keep_recent_estimated_tokens, 41_587);
+    assert_eq!(resolved.model_ref.as_string(), "openai-codex/gpt-6-sol");
+    assert_eq!(resolved.prompt_budget_estimated_tokens, 258_400);
+    assert_eq!(resolved.compaction_trigger_estimated_tokens, 232_560);
+    assert_eq!(resolved.compaction_keep_recent_estimated_tokens, 88_372);
     assert_eq!(
         resolved.source,
         crate::model_catalog::ModelMetadataSource::BuiltInCatalog

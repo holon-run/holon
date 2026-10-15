@@ -37,6 +37,17 @@ fixes and validates necessary changes before submitting a PR. Refresh
 output alone is not a reviewed catalog update. No PR is created when
 there is no substantive change; merging still requires maintainer approval.
 
+Non-default subscription routes (such as `coding-plan`, `token-plan`, and
+`plan`) are not inferred from a provider's general API model list. Refresh
+retains explicitly reviewed routes while their models remain in the
+supplement. Check each endpoint's official model IDs, capabilities, and
+token limits before manually adding a new route to
+`supplemental_catalog.json`; record unresolved support rather than assuming
+that the API and subscription catalogs match.
+
+See the [endpoint-specific review](endpoint-review.md) for the current manual
+decisions, evidence sources, and unresolved subscription/transport limits.
+
 ## Validate
 
 ```bash

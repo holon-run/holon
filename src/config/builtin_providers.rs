@@ -1284,15 +1284,6 @@ pub(crate) fn deepseek_builtin_web_search_config() -> ProviderBuiltinWebSearchCo
     }
 }
 
-pub(crate) fn deepseek_responses_builtin_web_search_config() -> ProviderBuiltinWebSearchConfig {
-    ProviderBuiltinWebSearchConfig {
-        enabled: true,
-        kind: ProviderNativeWebSearchKind::DeepSeek,
-        advertised_tool_type: "web_search".to_string(),
-        backend_kind: "deepseek_web_search".to_string(),
-    }
-}
-
 pub(crate) fn env_key_fragment(provider: &str) -> String {
     provider
         .chars()

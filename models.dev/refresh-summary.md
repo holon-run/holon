@@ -1,7 +1,7 @@
 # models.dev refresh summary
 
-- Supplement models: 56 (drafted this run: 0, retained: 56, removed: 0)
-- Deferred candidates: 208 (not auto-drafted; see below)
+- Supplement models: 55 (drafted this run: 0, retained: 55, removed: 0)
+- Deferred candidates: 212 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
@@ -50,4 +50,4 @@
 - `dashscope/qwen3-livetranslate-flash-realtime` — ReleaseOutsideWindow (release 2025-09-22)
 - `dashscope/qwen3-max` — ReleaseOutsideWindow (release 2025-09-23)
 - `dashscope/qwen3-next-80b-a3b-instruct` — ReleaseOutsideWindow (release 2025-09)
-- … and 168 more (see `holon models-dev audit`)
+- … and 172 more (see `holon models-dev audit`)
